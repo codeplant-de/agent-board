@@ -1,0 +1,9 @@
+[Unit]
+Description=agent-board intake: review requests to cards
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/flock -n -E 75 %t/agent-board-intake.lock %h/workspace/agent-board/bin/intake
+SuccessExitStatus=75
+TimeoutStartSec=300

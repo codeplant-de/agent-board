@@ -1,0 +1,11 @@
+[Unit]
+Description=agent-board dispatcher: one tick
+
+[Service]
+Type=oneshot
+# Node lives under mise and is not on the default user PATH.
+Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Exit 75 means another tick holds the lock, which is not a failure.
+ExecStart=/usr/bin/flock -n -E 75 %t/agent-board-dispatch.lock %h/workspace/agent-board/bin/dispatch
+SuccessExitStatus=75
+TimeoutStartSec=110
