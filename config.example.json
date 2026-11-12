@@ -1,5 +1,7 @@
 {
-  "boardId": "REPLACE_WITH_BOARD_ID_OR_SHORT_LINK",
+  "backend": {
+    "command": ["~/workspace/agent-board/bin/trello-backend"]
+  },
   "maxParallel": 2,
   "timeoutMinutes": 45,
   "slackWebhookFile": "~/.config/watch-review-requests/slack-webhook",

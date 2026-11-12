@@ -1,13 +1,13 @@
 import { GitHubError } from "./github.mts";
 import { SystemError } from "./system.mts";
-import { ConfigError, getPaths, loadConfig, loadCredentials } from "./config.mts";
+import { BackendError, createCliBackend, dryRunBackend } from "./backend.mts";
+import { ConfigError, getPaths, loadConfig } from "./config.mts";
 import type { Config } from "./config.mts";
-import { createTrelloClient, TrelloError } from "./trello.mts";
-import type { TrelloClient } from "./trello.mts";
+import type { Backend } from "./contract.mts";
 
 export interface Context {
   config: Config;
-  trello: TrelloClient;
+  backend: Backend;
   dryRun: boolean;
   print: (line: string) => void;
 }
@@ -19,9 +19,8 @@ export function print(line: string): void {
 export function buildContext(dryRun: boolean): Context {
   const paths = getPaths();
   const config = loadConfig(paths.configFile);
-  const credentials = loadCredentials(paths.envFile);
-  const trello = createTrelloClient({ credentials, boardId: config.boardId, dryRun, print });
-  return { config, trello, dryRun, print };
+  const backend = createCliBackend({ command: config.backendCommand });
+  return { config, backend: dryRun ? dryRunBackend(backend, print) : backend, dryRun, print };
 }
 
 // Expected failures end as one line on stderr, not a stack trace.
@@ -30,7 +29,7 @@ export async function runMain(main: () => Promise<void>): Promise<void> {
     await main();
   } catch (error) {
     if (error instanceof ConfigError ||
-      error instanceof TrelloError ||
+      error instanceof BackendError ||
       error instanceof UsageError ||
       error instanceof GitHubError ||
       error instanceof SystemError) {

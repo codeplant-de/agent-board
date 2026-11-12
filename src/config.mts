@@ -5,9 +5,6 @@ import { isRecord } from "./guards.mts";
 
 export class ConfigError extends Error {}
 
-export const LIST = { todo: "Todo", running: "Running", needsMe: "Needs me", done: "Done" } as const;
-export const LIST_NAMES: string[] = Object.values(LIST);
-
 export type LabelEntry =
   | {
       kind: "skill";
@@ -20,7 +17,8 @@ export type LabelEntry =
   | { kind: "command"; command: string[]; cwd: string | undefined };
 
 export interface Config {
-  boardId: string;
+  // Executable and fixed arguments of the task backend; the core appends the contract's subcommand.
+  backendCommand: string[];
   maxParallel: number;
   timeoutMinutes: number;
   slackWebhookFile: string;
@@ -32,7 +30,6 @@ export interface Config {
 export interface Paths {
   configDir: string;
   configFile: string;
-  envFile: string;
   logDir: string;
 }
 
@@ -43,7 +40,6 @@ export function getPaths(env: NodeJS.ProcessEnv = process.env): Paths {
   return {
     configDir,
     configFile: join(configDir, "config.json"),
-    envFile: join(configDir, "env"),
     logDir: join(stateDir, "logs"),
   };
 }
@@ -103,6 +99,14 @@ function parseLabelEntry(name: string, raw: unknown): LabelEntry {
   return { kind: "skill", skill, allowedTools, disallowedTools: tools("disallowedTools"), cwd: cwd ?? "pr-repo" };
 }
 
+function parseBackendCommand(raw: unknown): string[] {
+  const command = isRecord(raw) ? raw["command"] : undefined;
+  if (!isStringList(command) || command.length === 0 || command.some((part) => part === "")) {
+    throw new ConfigError("config: backend.command must be a non-empty list of strings");
+  }
+  return command.map(expandHome);
+}
+
 export function parseConfig(raw: unknown): Config {
   if (!isRecord(raw)) throw new ConfigError("config: top level must be an object");
   const rawLabels = field(raw, "labels", "");
@@ -130,7 +134,7 @@ export function parseConfig(raw: unknown): Config {
     }
   }
   return {
-    boardId: text(raw, "boardId", ""),
+    backendCommand: parseBackendCommand(field(raw, "backend", "")),
     maxParallel: positiveInt(raw, "maxParallel", "", 2),
     timeoutMinutes: positiveInt(raw, "timeoutMinutes", "", 45),
     slackWebhookFile: expandHome(webhook),
@@ -172,27 +176,4 @@ export function readSecretFile(path: string, what: string): string {
     throw new ConfigError(`${what} must be mode 600 or 400, is ${(mode & 0o777).toString(8)}: ${path}`);
   }
   return readFileSync(path, "utf8");
-}
-
-export function parseEnv(content: string): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const line of content.split("\n")) {
-    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-    if (match?.[1] === undefined || match[2] === undefined) continue;
-    env[match[1]] = match[2].replace(/^(["'])(.*)\1$/, "$2");
-  }
-  return env;
-}
-
-export interface Credentials {
-  key: string;
-  token: string;
-}
-
-export function loadCredentials(path: string): Credentials {
-  const env = parseEnv(readSecretFile(path, "credentials file"));
-  const key = env["TRELLO_API_KEY"];
-  const token = env["TRELLO_TOKEN"];
-  if (!key || !token) throw new ConfigError(`credentials file needs TRELLO_API_KEY and TRELLO_TOKEN: ${path}`);
-  return { key, token };
 }

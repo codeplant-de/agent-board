@@ -1,30 +1,20 @@
 import type { Config } from "../src/config.mts";
-import type { NewCard, TrelloCard, TrelloClient, TrelloComment, TrelloLabel, TrelloList } from "../src/trello.mts";
+import type { Backend, Note, Task } from "../src/contract.mts";
 
-export const LISTS: TrelloList[] = [
-  { id: "l-todo", name: "Todo" },
-  { id: "l-running", name: "Running" },
-  { id: "l-needs", name: "Needs me" },
-  { id: "l-done", name: "Done" },
-];
-
-export function card(overrides: Partial<TrelloCard> & { shortLink: string }): TrelloCard {
+export function task(overrides: Partial<Task> & { id: string }): Task {
   return {
-    id: `id-${overrides.shortLink}`,
-    shortUrl: `https://trello.com/c/${overrides.shortLink}`,
-    name: `card ${overrides.shortLink}`,
-    desc: "",
-    idList: "l-todo",
-    idBoard: "board-long",
-    closed: false,
-    pos: 1,
+    title: `task ${overrides.id}`,
+    input: "",
     labels: [],
+    status: "todo",
+    url: `https://tasks.example/${overrides.id}`,
+    closed: false,
     ...overrides,
   };
 }
 
 export const CONFIG: Config = {
-  boardId: "board",
+  backendCommand: ["backend"],
   maxParallel: 2,
   timeoutMinutes: 45,
   slackWebhookFile: "/nonexistent",
@@ -42,61 +32,47 @@ export const CONFIG: Config = {
   },
 };
 
-export interface FakeTrello extends TrelloClient {
-  cards: TrelloCard[];
-  comments: Map<string, TrelloComment[]>;
+export interface FakeBackend extends Backend {
+  tasks: Task[];
+  notes: Map<string, Note[]>;
   writes: string[];
 }
 
-// In-memory board. Every write lands in `writes` as a short string, so tests assert on what was done.
-export function fakeTrello(cards: TrelloCard[], labels: TrelloLabel[] = [{ id: "lab-review", name: "review-pr" }]): FakeTrello {
-  const state: FakeTrello = {
-    cards,
-    comments: new Map(),
+// In-memory task store; the array order is the priority. Every write lands in `writes` as a short string, so tests assert on what was done.
+export function fakeBackend(tasks: Task[]): FakeBackend {
+  const state: FakeBackend = {
+    tasks,
+    notes: new Map(),
     writes: [],
-    async getLists() {
-      return LISTS;
+    async listTasks({ all = false } = {}) {
+      return state.tasks.filter((t) => all || !t.closed).map((t) => ({ ...t }));
     },
-    async getLabels() {
-      return labels;
-    },
-    async getBoardId() {
-      return "board-long";
-    },
-    async getAllCards() {
-      return state.cards.map((c) => ({ ...c }));
-    },
-    async getCards() {
-      return state.cards.filter((c) => !c.closed).map((c) => ({ ...c }));
-    },
-    async getCard(idOrShortLink) {
-      const found = state.cards.find((c) => c.id === idOrShortLink || c.shortLink === idOrShortLink);
-      if (!found) throw new Error(`no card ${idOrShortLink}`);
+    async getTask(id) {
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new Error(`no task ${id}`);
       return { ...found };
     },
-    async getComments(cardId) {
-      return state.comments.get(cardId) ?? [];
+    async addTask(draft) {
+      state.writes.push(`create ${draft.title} | ${draft.input} | ${draft.labels.join(",")}`);
+      return task({ id: "new", ...draft });
     },
-    async addComment(cardId, text) {
-      state.writes.push(`comment ${cardId}: ${text}`);
+    async updateTask(id, patch) {
+      if (patch.status !== undefined) state.writes.push(`status ${id} -> ${patch.status}`);
+      if (patch.input !== undefined) state.writes.push(`input ${id}: ${patch.input}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new Error(`no task ${id}`);
+      Object.assign(found, patch);
+      return { ...found };
     },
-    async moveCard(cardId, listId) {
-      state.writes.push(`move ${cardId} -> ${LISTS.find((l) => l.id === listId)?.name}`);
-      const found = state.cards.find((c) => c.id === cardId);
-      if (found) found.idList = listId;
+    async addNote(id, text) {
+      state.writes.push(`note ${id}: ${text}`);
     },
-    async setDescription(cardId, desc) {
-      state.writes.push(`desc ${cardId}: ${desc}`);
+    async readNotes(id) {
+      return state.notes.get(id) ?? [];
     },
-    async createCard(newCard: NewCard) {
-      state.writes.push(`create ${newCard.name} | ${newCard.desc}`);
-      return card({ shortLink: "new", name: newCard.name, desc: newCard.desc });
-    },
-    async createList(name) {
-      state.writes.push(`list ${name}`);
-    },
-    async createLabel(name) {
-      state.writes.push(`label ${name}`);
+    async setup(labels) {
+      state.writes.push(`setup ${labels.join(",")}`);
+      return [];
     },
   };
   return state;

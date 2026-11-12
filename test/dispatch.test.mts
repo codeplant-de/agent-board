@@ -5,14 +5,14 @@ import type { DispatchDeps } from "../src/dispatch.mts";
 import { SystemError } from "../src/system.mts";
 import type { System } from "../src/system.mts";
 import { START_MARKER } from "../src/decide.mts";
-import { card, CONFIG, fakeTrello } from "./helpers.mts";
-import type { FakeTrello } from "./helpers.mts";
+import { CONFIG, fakeBackend, task } from "./helpers.mts";
+import type { FakeBackend } from "./helpers.mts";
 
-const selftest = { id: "1", name: "selftest" };
+const selftest = "selftest";
 const NOW = new Date("2026-01-01T12:00:00Z");
 
-function setup(cards: ReturnType<typeof card>[], active: string[] = [], unitStarts: Record<string, Date> = {}) {
-  const trello: FakeTrello = fakeTrello(cards);
+function setup(tasks: ReturnType<typeof task>[], active: string[] = [], unitStarts: Record<string, Date> = {}) {
+  const backend: FakeBackend = fakeBackend(tasks);
   const started: string[] = [];
   const stopped: string[] = [];
   const logs: string[] = [];
@@ -35,7 +35,7 @@ function setup(cards: ReturnType<typeof card>[], active: string[] = [], unitStar
     },
   };
   const deps: DispatchDeps = {
-    trello,
+    backend,
     config: CONFIG,
     dryRun: false,
     print: (line) => logs.push(line),
@@ -44,53 +44,53 @@ function setup(cards: ReturnType<typeof card>[], active: string[] = [], unitStar
     logTail: () => "last log line",
     notify: async () => undefined,
   };
-  return { trello, deps, started, stopped, logs };
+  return { backend, deps, started, stopped, logs };
 }
 
-const running = (shortLink: string) => card({ shortLink, idList: "l-running", labels: [selftest] });
-const todo = (shortLink: string, pos: number) => card({ shortLink, pos, labels: [selftest] });
+const running = (id: string) => task({ id, status: "running", labels: [selftest] });
+const todo = (id: string) => task({ id, labels: [selftest] });
 
 test("starts from the top of Todo up to the cap", async () => {
-  const { deps, started, trello } = setup([running("r1"), todo("t3", 30), todo("t1", 10), todo("t2", 20)], ["agent-board-r1"]);
+  const { deps, started, backend } = setup([running("r1"), todo("t1"), todo("t2"), todo("t3")], ["agent-board-r1"]);
   await runDispatch(deps);
   assert.deepEqual(started, ["t1"]);
-  assert.ok(trello.writes.some((w) => w.startsWith("move id-t1 -> Running")));
-  assert.ok(trello.writes.some((w) => w.includes(START_MARKER) && w.includes("pid 42")));
+  assert.ok(backend.writes.some((w) => w.startsWith("status t1 -> running")));
+  assert.ok(backend.writes.some((w) => w.includes(START_MARKER) && w.includes("pid 42")));
 });
 
 test("with all slots taken nothing starts", async () => {
-  const { deps, started } = setup([running("r1"), running("r2"), todo("t1", 1)], ["agent-board-r1", "agent-board-r2"]);
+  const { deps, started } = setup([running("r1"), running("r2"), todo("t1")], ["agent-board-r1", "agent-board-r2"]);
   await runDispatch(deps);
   assert.deepEqual(started, []);
 });
 
-test("a card with an unknown label goes to Needs me and does not use a slot", async () => {
-  const odd = card({ shortLink: "odd", pos: 1, labels: [{ id: "9", name: "mystery" }] });
-  const { deps, started, trello } = setup([odd, todo("t1", 2), todo("t2", 3), todo("t3", 4)]);
+test("a task with an unknown label goes to Needs me and does not use a slot", async () => {
+  const odd = task({ id: "odd", labels: ["mystery"] });
+  const { deps, started, backend } = setup([odd, todo("t1"), todo("t2"), todo("t3")]);
   await runDispatch(deps);
   assert.deepEqual(started, ["t1", "t2"]);
-  assert.ok(trello.writes.some((w) => w.includes("move id-odd -> Needs me")));
-  assert.ok(trello.writes.some((w) => w.includes("mystery")));
+  assert.ok(backend.writes.some((w) => w.includes("status odd -> needs-me")));
+  assert.ok(backend.writes.some((w) => w.includes("mystery")));
 });
 
-test("a stale Running card goes to Needs me with the log tail and frees its slot", async () => {
-  const { deps, started, trello } = setup([running("dead"), todo("t1", 1)]);
+test("a stale Running task goes to Needs me with the log tail and frees its slot", async () => {
+  const { deps, started, backend } = setup([running("dead"), todo("t1")]);
   await runDispatch(deps);
-  assert.ok(trello.writes.some((w) => w.includes("comment id-dead") && w.includes("last log line")));
-  assert.ok(trello.writes.some((w) => w === "move id-dead -> Needs me"));
+  assert.ok(backend.writes.some((w) => w.includes("note dead") && w.includes("last log line")));
+  assert.ok(backend.writes.some((w) => w === "status dead -> needs-me"));
   assert.deepEqual(started, ["t1"]);
 });
 
 test("a timed-out active worker is stopped, then reported", async () => {
-  const { deps, trello, stopped } = setup([running("slow")], ["agent-board-slow"]);
-  trello.comments.set("id-slow", [{ id: "c", text: `${START_MARKER} x`, date: new Date(NOW.getTime() - 60 * 60_000) }]);
+  const { deps, backend, stopped } = setup([running("slow")], ["agent-board-slow"]);
+  backend.notes.set("slow", [{ text: `${START_MARKER} x`, createdAt: new Date(NOW.getTime() - 60 * 60_000) }]);
   await runDispatch(deps);
   assert.deepEqual(stopped, ["agent-board-slow"]);
-  assert.ok(trello.writes.some((w) => w === "move id-slow -> Needs me"));
+  assert.ok(backend.writes.some((w) => w === "status slow -> needs-me"));
 });
 
-test("a failed start sends the card to Needs me and stops filling slots", async () => {
-  const { deps, trello } = setup([todo("t1", 1), todo("t2", 2)]);
+test("a failed start sends the task to Needs me and stops filling slots", async () => {
+  const { deps, backend } = setup([todo("t1"), todo("t2")]);
   let calls = 0;
   deps.system = {
     ...deps.system,
@@ -101,24 +101,24 @@ test("a failed start sends the card to Needs me and stops filling slots", async 
     },
   };
   await runDispatch(deps);
-  assert.equal(calls, 1, "no further card is started after a failure");
-  assert.ok(trello.writes.some((w) => w.includes("could not be started: unit exists")));
+  assert.equal(calls, 1, "no further task is started after a failure");
+  assert.ok(backend.writes.some((w) => w.includes("could not be started: unit exists")));
 });
 
-test("a failed start comment does not send the running card to Needs me", async () => {
-  const { deps, trello, started } = setup([todo("t1", 1)]);
-  const addComment = trello.addComment.bind(trello);
-  trello.addComment = async (cardId, text) => {
-    if (text.startsWith(START_MARKER)) throw new Error("trello down");
-    return addComment(cardId, text);
+test("a failed start comment does not send the running task to Needs me", async () => {
+  const { deps, backend, started } = setup([todo("t1")]);
+  const addNote = backend.addNote.bind(backend);
+  backend.addNote = async (id, text) => {
+    if (text.startsWith(START_MARKER)) throw new Error("backend down");
+    return addNote(id, text);
   };
   await runDispatch(deps);
   assert.deepEqual(started, ["t1"]);
-  assert.ok(!trello.writes.some((w) => w.includes("Needs me")));
+  assert.ok(!backend.writes.some((w) => w.includes("needs-me")));
 });
 
 test("unknown systemd state starts nothing and changes nothing", async () => {
-  const { deps, trello, started } = setup([running("r1"), todo("t1", 1)]);
+  const { deps, backend, started } = setup([running("r1"), todo("t1")]);
   deps.system = {
     ...deps.system,
     async isActive() {
@@ -127,19 +127,29 @@ test("unknown systemd state starts nothing and changes nothing", async () => {
   };
   await assert.rejects(runDispatch(deps), SystemError);
   assert.deepEqual(started, []);
-  assert.deepEqual(trello.writes, []);
+  assert.deepEqual(backend.writes, []);
 });
 
 test("the run is timed from its unit, not from a comment of an earlier run", async () => {
-  const { deps, trello, stopped } = setup([running("again")], ["agent-board-again"], { "agent-board-again": new Date(NOW.getTime() - 5 * 60_000) });
-  trello.comments.set("id-again", [{ id: "c", text: `${START_MARKER} old`, date: new Date(NOW.getTime() - 5 * 60 * 60_000) }]);
+  const { deps, backend, stopped } = setup([running("again")], ["agent-board-again"], { "agent-board-again": new Date(NOW.getTime() - 5 * 60_000) });
+  backend.notes.set("again", [{ text: `${START_MARKER} old`, createdAt: new Date(NOW.getTime() - 5 * 60 * 60_000) }]);
   await runDispatch(deps);
   assert.deepEqual(stopped, []);
-  assert.deepEqual(trello.writes, []);
+  assert.deepEqual(backend.writes, []);
 });
 
-test("the cap counts active units even when fewer cards sit in Running", async () => {
-  const { deps, started } = setup([running("r1"), todo("t1", 1)], ["agent-board-r1", "agent-board-orphan"]);
+test("the cap counts active units even when fewer tasks sit in Running", async () => {
+  const { deps, started } = setup([running("r1"), todo("t1")], ["agent-board-r1", "agent-board-orphan"]);
   await runDispatch(deps);
   assert.deepEqual(started, []);
+});
+
+test("a failed listing starts nothing and changes nothing", async () => {
+  const { deps, backend, started } = setup([running("r1"), todo("t1")]);
+  backend.listTasks = async () => {
+    throw new Error("backend list-tasks failed");
+  };
+  await assert.rejects(runDispatch(deps), /list-tasks failed/);
+  assert.deepEqual(started, []);
+  assert.deepEqual(backend.writes, []);
 });

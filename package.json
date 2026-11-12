@@ -2,7 +2,7 @@
   "name": "agent-board",
   "version": "0.1.0",
   "private": true,
-  "description": "Trello board as a queue for headless Claude Code runs",
+  "description": "A pluggable task backend as a queue for headless Claude Code runs",
   "type": "module",
   "engines": {
     "node": ">=24"

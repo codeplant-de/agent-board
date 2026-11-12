@@ -4,8 +4,8 @@ function escapeSlack(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
-export function slackText(card: { name: string; shortUrl: string }, text: string): string {
-  return `<${card.shortUrl}|${escapeSlack(card.name)}>\n${escapeSlack(text)}`;
+export function slackText(task: { title: string; url: string }, text: string): string {
+  return `<${task.url}|${escapeSlack(task.title)}>\n${escapeSlack(text)}`;
 }
 
 // The webhook URL is a secret: it is never printed and errors never carry it.

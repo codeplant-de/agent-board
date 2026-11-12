@@ -2,20 +2,19 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   buildInvocation,
-  byPriority,
   decideOutcome,
   decideStale,
   expandRule,
-  formatDesc,
+  formatInput,
   freeSlots,
-  parseDesc,
+  parseInput,
   parsePrUrl,
   resolveLabel,
   START_MARKER,
   startedAt,
 } from "../src/decide.mts";
-import { splitText, tail } from "../src/text.mts";
-import { card, CONFIG } from "./helpers.mts";
+import { tail } from "../src/text.mts";
+import { CONFIG, task } from "./helpers.mts";
 
 test("free slots never go below zero", () => {
   assert.equal(freeSlots(0, 2), 2);
@@ -24,21 +23,16 @@ test("free slots never go below zero", () => {
   assert.equal(freeSlots(3, 2), 0);
 });
 
-test("the top of Todo is the lowest position", () => {
-  const ordered = byPriority([card({ shortLink: "b", pos: 20 }), card({ shortLink: "a", pos: 5 }), card({ shortLink: "c", pos: 7 })]);
-  assert.deepEqual(ordered.map((c) => c.shortLink), ["a", "c", "b"]);
-});
-
 test("a known label resolves, the first known label wins", () => {
-  const resolved = resolveLabel(card({ shortLink: "a", labels: [{ id: "1", name: "other" }, { id: "2", name: "selftest" }] }), CONFIG.labels);
+  const resolved = resolveLabel(task({ id: "a", labels: ["other", "selftest"] }), CONFIG.labels);
   assert.equal(resolved.known && resolved.label, "selftest");
 });
 
 test("an unknown or missing label explains itself", () => {
-  const unknown = resolveLabel(card({ shortLink: "a", labels: [{ id: "1", name: "nope" }] }), CONFIG.labels);
+  const unknown = resolveLabel(task({ id: "a", labels: ["nope"] }), CONFIG.labels);
   assert.equal(unknown.known, false);
   assert.match(unknown.known ? "" : unknown.reason, /nope.*Known labels: selftest, review-pr/);
-  const none = resolveLabel(card({ shortLink: "a" }), CONFIG.labels);
+  const none = resolveLabel(task({ id: "a" }), CONFIG.labels);
   assert.match(none.known ? "" : none.reason, /no label/);
 });
 
@@ -56,16 +50,16 @@ test("stale: active unit is kept until past the timeout plus grace, then stopped
   assert.equal(decision.stale && decision.stopUnit, true);
 });
 
-test("stale: active unit without a start comment is left alone", () => {
+test("stale: active unit without a start note is left alone", () => {
   assert.equal(decideStale({ unitActive: true, startedAt: undefined, now: new Date(), timeoutMinutes: 45 }).stale, false);
 });
 
-test("the start time is the latest start comment", () => {
-  const comment = (text: string, iso: string) => ({ id: iso, text, date: new Date(iso) });
+test("the start time is the latest start note", () => {
+  const note = (text: string, iso: string) => ({ text, createdAt: new Date(iso) });
   const found = startedAt([
-    comment(`${START_MARKER} old`, "2026-01-01T10:00:00Z"),
-    comment("unrelated", "2026-01-01T12:00:00Z"),
-    comment(`${START_MARKER} new`, "2026-01-01T11:00:00Z"),
+    note(`${START_MARKER} old`, "2026-01-01T10:00:00Z"),
+    note("unrelated", "2026-01-01T12:00:00Z"),
+    note(`${START_MARKER} new`, "2026-01-01T11:00:00Z"),
   ]);
   assert.equal(found?.toISOString(), "2026-01-01T11:00:00.000Z");
   assert.equal(startedAt([]), undefined);
@@ -79,10 +73,10 @@ test("outcomes: timeout and non-zero exit fail, exit 0 in Running is unreported"
   assert.equal(decideOutcome({ ...base, exitCode: 0, timedOut: false, reported: true }).kind, "ok");
 });
 
-test("description round trip and PR URL parsing", () => {
+test("input round trip and PR URL parsing", () => {
   const url = "https://github.com/cosuno/cosuno/pull/17711";
-  assert.deepEqual(parseDesc(formatDesc(url, "79ad544abc")), { input: url, head: "79ad544abc" });
-  assert.deepEqual(parseDesc(url), { input: url, head: undefined });
+  assert.deepEqual(parseInput(formatInput(url, "79ad544abc")), { input: url, head: "79ad544abc" });
+  assert.deepEqual(parseInput(url), { input: url, head: undefined });
   assert.deepEqual(parsePrUrl(url), { repo: "cosuno/cosuno", number: 17711 });
   assert.equal(parsePrUrl("https://example.com/x"), undefined);
 });
@@ -92,7 +86,7 @@ test("skill invocation: prompt first, repo cwd, tools expanded, no skip flags", 
   assert.ok(entry);
   const plan = buildInvocation({
     entry,
-    card: card({ shortLink: "abc", desc: "https://github.com/cosuno/cosuno/pull/1" }),
+    task: task({ id: "abc", input: "https://github.com/cosuno/cosuno/pull/1" }),
     repos: CONFIG.repos,
     home: "/home/u",
     fallbackCwd: "/",
@@ -107,7 +101,7 @@ test("skill invocation: prompt first, repo cwd, tools expanded, no skip flags", 
 test("skill invocation refuses an unmapped repo and a non-PR input", () => {
   const entry = CONFIG.labels["review-pr"];
   assert.ok(entry);
-  const run = (desc: string) => buildInvocation({ entry, card: card({ shortLink: "a", desc }), repos: CONFIG.repos, home: "/h", fallbackCwd: "/", prReviewPath: undefined });
+  const run = (input: string) => buildInvocation({ entry, task: task({ id: "a", input }), repos: CONFIG.repos, home: "/h", fallbackCwd: "/", prReviewPath: undefined });
   const unmapped = run("https://github.com/other/repo/pull/2");
   assert.ok(!unmapped.ok);
   assert.match(unmapped.reason, /other\/repo/);
@@ -117,17 +111,13 @@ test("skill invocation refuses an unmapped repo and a non-PR input", () => {
 test("command invocation runs the plain command", () => {
   const entry = CONFIG.labels["selftest"];
   assert.ok(entry);
-  const plan = buildInvocation({ entry, card: card({ shortLink: "a" }), repos: {}, home: "/h", fallbackCwd: "/fallback", prReviewPath: undefined });
+  const plan = buildInvocation({ entry, task: task({ id: "a" }), repos: {}, home: "/h", fallbackCwd: "/fallback", prReviewPath: undefined });
   assert.ok(plan.ok);
   assert.deepEqual(plan.invocation, { command: "sleep", args: ["300"], cwd: "/fallback" });
 });
 
-test("long text is tailed and split within the comment limit", () => {
+test("long text is tailed", () => {
   assert.equal(tail("abcdef", 4), "…def");
-  const pieces = splitText("line\n".repeat(100), 120);
-  assert.ok(pieces.length > 1);
-  assert.ok(pieces.every((piece) => piece.length <= 120));
-  assert.deepEqual(splitText("short", 120), ["short"]);
 });
 
 test("the skill run loads user settings only, so a checkout's own allow rules never apply", () => {
@@ -135,7 +125,7 @@ test("the skill run loads user settings only, so a checkout's own allow rules ne
   assert.ok(entry);
   const plan = buildInvocation({
     entry,
-    card: card({ shortLink: "abc", desc: "https://github.com/cosuno/cosuno/pull/1" }),
+    task: task({ id: "abc", input: "https://github.com/cosuno/cosuno/pull/1" }),
     repos: CONFIG.repos,
     home: "/home/u",
     fallbackCwd: "/",
@@ -156,7 +146,7 @@ test("{pr-review} expands to the plugin path in Bash rules; ~/ only in Bash rule
 
 test("a rule with {pr-review} fails the plan when the plugin path is unknown", () => {
   const entry = { kind: "skill" as const, skill: "s", allowedTools: ["Bash({pr-review}/skills/x.sh *)"], disallowedTools: [], cwd: "/tmp" };
-  const input = { entry, card: card({ shortLink: "a", desc: "x" }), repos: {}, home: "/h", fallbackCwd: "/" };
+  const input = { entry, task: task({ id: "a", input: "x" }), repos: {}, home: "/h", fallbackCwd: "/" };
   const missing = buildInvocation({ ...input, prReviewPath: undefined });
   assert.ok(!missing.ok);
   assert.match(missing.reason, /pr-review plugin path/);
@@ -166,6 +156,6 @@ test("a rule with {pr-review} fails the plan when the plugin path is unknown", (
 });
 
 test("a label named like an Object.prototype member is unknown", () => {
-  const resolved = resolveLabel(card({ shortLink: "a", labels: [{ id: "1", name: "toString" }] }), CONFIG.labels);
+  const resolved = resolveLabel(task({ id: "a", labels: ["toString"] }), CONFIG.labels);
   assert.equal(resolved.known, false);
 });

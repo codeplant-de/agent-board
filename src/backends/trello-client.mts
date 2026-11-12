@@ -1,9 +1,16 @@
-import type { Credentials } from "./config.mts";
-import { isRecord } from "./guards.mts";
-import { oneLine, splitText } from "./text.mts";
+import { isRecord } from "../guards.mts";
+import { oneLine } from "../text.mts";
 
 const BASE_URL = "https://api.trello.com/1";
 const CARD_FIELDS = "name,desc,idList,idBoard,closed,shortLink,shortUrl,pos,labels";
+
+// Trello caps a comment at 16384 characters; stay well under it.
+export const COMMENT_MAX = 16000;
+
+export interface Credentials {
+  key: string;
+  token: string;
+}
 
 export interface TrelloList {
   id: string;
@@ -106,18 +113,32 @@ function parseComment(value: unknown): TrelloComment {
   return { id: str(value, "id"), text: str(value["data"], "text"), date: new Date(str(value, "date")) };
 }
 
+// Splits at line breaks where possible, so each piece fits in one comment.
+export function splitText(text: string, max: number = COMMENT_MAX): string[] {
+  if (text.length <= max) return [text];
+  const room = max - 20;
+  const pieces: string[] = [];
+  let rest = text;
+  while (rest.length > room) {
+    const cut = rest.lastIndexOf("\n", room);
+    const at = cut > room / 2 ? cut : room;
+    pieces.push(rest.slice(0, at));
+    rest = rest.slice(at).replace(/^\n/, "");
+  }
+  pieces.push(rest);
+  return pieces.map((piece, i) => `(part ${i + 1}/${pieces.length})\n${piece}`);
+}
+
 export interface ClientOptions {
   credentials: Credentials;
   boardId: string;
-  dryRun: boolean;
-  print: (line: string) => void;
   fetchFn?: typeof fetch;
 }
 
 // The key and token travel in the Authorization header, never in the URL, so no URL needs hiding in logs.
 // Documented at https://developer.atlassian.com/cloud/trello/guides/rest-api/authorization/
 export function createTrelloClient(options: ClientOptions): TrelloClient {
-  const { credentials, boardId, dryRun, print } = options;
+  const { credentials, boardId } = options;
   const fetchFn = options.fetchFn ?? fetch;
   const authorization = `OAuth oauth_consumer_key="${credentials.key}", oauth_token="${credentials.token}"`;
 
@@ -133,7 +154,7 @@ export function createTrelloClient(options: ClientOptions): TrelloClient {
           ...(body ? { "Content-Type": "application/json" } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(15_000),
       });
     } catch {
       throw new TrelloError(`Trello ${method} ${path} failed: network error`);
@@ -143,12 +164,6 @@ export function createTrelloClient(options: ClientOptions): TrelloClient {
       throw new TrelloError(`Trello ${method} ${path} failed: ${response.status} ${detail}`);
     }
     return response.json();
-  }
-
-  function write(method: string, path: string, body: object): Promise<unknown> | undefined {
-    if (!dryRun) return call(method, path, {}, body);
-    print(`DRY ${method} ${path} ${oneLine(JSON.stringify(body), 160)}`);
-    return undefined;
   }
 
   let longBoardId: Promise<string> | undefined;
@@ -181,38 +196,24 @@ export function createTrelloClient(options: ClientOptions): TrelloClient {
       return list(await call("GET", `/cards/${cardId}/actions`, { filter: "commentCard", limit: "1000" })).map(parseComment);
     },
     async addComment(cardId, text) {
-      for (const piece of splitText(text)) await write("POST", `/cards/${cardId}/actions/comments`, { text: piece });
+      for (const piece of splitText(text)) await call("POST", `/cards/${cardId}/actions/comments`, {}, { text: piece });
     },
     async moveCard(cardId, listId) {
-      await write("PUT", `/cards/${cardId}`, { idList: listId, pos: "bottom" });
+      await call("PUT", `/cards/${cardId}`, {}, { idList: listId, pos: "bottom" });
     },
     async setDescription(cardId, desc) {
-      await write("PUT", `/cards/${cardId}`, { desc });
+      await call("PUT", `/cards/${cardId}`, {}, { desc });
     },
     async createCard(card) {
-      const created = await write("POST", "/cards", {
-        idList: card.listId,
-        name: card.name,
-        desc: card.desc,
-        idLabels: card.labelIds.join(","),
-        pos: "bottom",
-      });
-      if (created === undefined) {
-        return { id: "dry", shortLink: "dry", shortUrl: "dry", name: card.name, desc: card.desc, idList: card.listId, idBoard: "dry", closed: false, pos: 0, labels: [] };
-      }
-      return parseCard(await created);
+      return parseCard(
+        await call("POST", "/cards", {}, { idList: card.listId, name: card.name, desc: card.desc, idLabels: card.labelIds.join(","), pos: "bottom" }),
+      );
     },
     async createList(name) {
-      await write("POST", "/lists", { name, idBoard: await boardLongId(), pos: "bottom" });
+      await call("POST", "/lists", {}, { name, idBoard: await boardLongId(), pos: "bottom" });
     },
     async createLabel(name) {
-      await write("POST", "/labels", { name, color: null, idBoard: await boardLongId() });
+      await call("POST", "/labels", {}, { name, color: null, idBoard: await boardLongId() });
     },
   };
-}
-
-export function listId(lists: TrelloList[], name: string): string {
-  const found = lists.find((candidate) => candidate.name === name);
-  if (!found) throw new TrelloError(`board has no list "${name}" (run: board setup)`);
-  return found.id;
 }

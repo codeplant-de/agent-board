@@ -10,10 +10,10 @@ export interface System {
   isActive(unit: string): Promise<boolean>;
   // When the unit last became active; undefined if it is not loaded.
   startedAt(unit: string): Promise<Date | undefined>;
-  // Short links of the worker units that are running now.
+  // Task ids of the worker units that are running now.
   activeWorkers(): Promise<string[]>;
   stop(unit: string): Promise<void>;
-  startWorker(shortLink: string): Promise<{ pid: number | undefined }>;
+  startWorker(taskId: string): Promise<{ pid: number | undefined }>;
 }
 
 const LIVE_STATES = ["active", "activating", "reloading", "deactivating", "refreshing"];
@@ -31,13 +31,13 @@ export function parseUnitState(stdout: string): boolean {
 const NON_WORKER_UNITS = ["agent-board-dispatch", "agent-board-intake"];
 
 export function parseWorkerUnits(stdout: string): string[] {
-  const shortLinks: string[] = [];
+  const taskIds: string[] = [];
   for (const line of stdout.split("\n")) {
     const name = /^\s*[●*]?\s*(agent-board-[^\s.]+)\.service\s/.exec(line)?.[1];
     if (name === undefined || NON_WORKER_UNITS.includes(name)) continue;
-    shortLinks.push(name.slice("agent-board-".length));
+    taskIds.push(name.slice("agent-board-".length));
   }
-  return shortLinks;
+  return taskIds;
 }
 
 // `systemctl --timestamp=unix` prints "@<seconds>", or an empty value for a unit that never started.
@@ -74,14 +74,14 @@ export function createSystem(input: { workerScript: string; dryRun: boolean; pri
       if (input.dryRun) return input.print(`DRY systemctl --user stop ${unit}`);
       await run("systemctl", ["--user", "stop", unit]).catch(() => undefined);
     },
-    async startWorker(shortLink) {
-      const unit = unitName(shortLink);
+    async startWorker(taskId) {
+      const unit = unitName(taskId);
       // A transient unit does not inherit this environment, so pass on what the worker needs.
       const args = ["--user", "--quiet", "--collect", `--unit=${unit}`, "--setenv=PATH", "--setenv=HOME"];
       for (const name of ["AGENT_BOARD_CONFIG_DIR", "AGENT_BOARD_STATE_DIR", "XDG_STATE_HOME"]) {
         if (process.env[name]) args.push(`--setenv=${name}`);
       }
-      args.push("--", process.execPath, input.workerScript, shortLink);
+      args.push("--", process.execPath, input.workerScript, taskId);
       if (input.dryRun) {
         input.print(`DRY systemd-run ${args.join(" ")}`);
         return { pid: undefined };

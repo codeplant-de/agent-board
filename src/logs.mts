@@ -5,27 +5,27 @@ import { tail } from "./text.mts";
 
 const TAIL_CHARS = 4000;
 
-export function logPath(shortLink: string): string {
-  return join(getPaths().logDir, `${shortLink}.log`);
+export function logPath(taskId: string): string {
+  return join(getPaths().logDir, `${taskId}.log`);
 }
 
-// One log per card; a new run replaces the previous one. Logs can hold review findings, so owner-only.
-export function openLog(shortLink: string): number {
+// One log per task; a new run replaces the previous one. Logs can hold review findings, so owner-only.
+export function openLog(taskId: string): number {
   const { logDir } = getPaths();
   mkdirSync(logDir, { recursive: true, mode: 0o700 });
-  return openSync(logPath(shortLink), "w", 0o600);
+  return openSync(logPath(taskId), "w", 0o600);
 }
 
 // First thing a worker does, so the sweep never shows the log of an earlier run.
-export function resetLog(shortLink: string): void {
-  closeSync(openLog(shortLink));
+export function resetLog(taskId: string): void {
+  closeSync(openLog(taskId));
 }
 
-export function appendLog(shortLink: string, text: string): void {
+export function appendLog(taskId: string, text: string): void {
   try {
-    appendFileSync(logPath(shortLink), `\n${text}\n`, { mode: 0o600 });
+    appendFileSync(logPath(taskId), `\n${text}\n`, { mode: 0o600 });
   } catch {
-    // The log is a courtesy; the card comment still carries the reason.
+    // The log is a courtesy; the task note still carries the reason.
   }
 }
 
@@ -33,9 +33,9 @@ export function closeLog(fd: number): void {
   closeSync(fd);
 }
 
-export function readLogTail(shortLink: string): string {
+export function readLogTail(taskId: string): string {
   try {
-    return tail(readFileSync(logPath(shortLink), "utf8").trim(), TAIL_CHARS);
+    return tail(readFileSync(logPath(taskId), "utf8").trim(), TAIL_CHARS);
   } catch {
     return "";
   }

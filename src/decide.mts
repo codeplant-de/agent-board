@@ -1,40 +1,34 @@
 import type { LabelEntry } from "./config.mts";
-import type { TrelloCard, TrelloComment } from "./trello.mts";
+import type { Note, Task } from "./contract.mts";
 
 export const START_MARKER = "agent-board: started";
 // The worker enforces the timeout itself; the sweep only catches a worker that cannot.
 const SWEEP_GRACE_MINUTES = 5;
 
-export function unitName(shortLink: string): string {
-  return `agent-board-${shortLink}`;
+export function unitName(taskId: string): string {
+  return `agent-board-${taskId}`;
 }
 
 export type LabelResolution =
   | { known: true; label: string; entry: LabelEntry }
   | { known: false; reason: string };
 
-export function resolveLabel(card: TrelloCard, labels: Record<string, LabelEntry>): LabelResolution {
-  for (const { name } of card.labels) {
+export function resolveLabel(task: Task, labels: Record<string, LabelEntry>): LabelResolution {
+  for (const name of task.labels) {
     const entry = Object.hasOwn(labels, name) ? labels[name] : undefined;
     if (entry) return { known: true, label: name, entry };
   }
-  const names = card.labels.map((label) => label.name);
-  const have = names.length > 0 ? `its labels are ${names.join(", ")}` : "it has no label";
-  return { known: false, reason: `No worker is configured for this card: ${have}. Known labels: ${Object.keys(labels).join(", ")}.` };
+  const have = task.labels.length > 0 ? `its labels are ${task.labels.join(", ")}` : "it has no label";
+  return { known: false, reason: `No worker is configured for this task: ${have}. Known labels: ${Object.keys(labels).join(", ")}.` };
 }
 
 export function freeSlots(runningCount: number, maxParallel: number): number {
   return Math.max(0, maxParallel - runningCount);
 }
 
-// A card's position in its list is its priority: lowest first.
-export function byPriority(cards: TrelloCard[]): TrelloCard[] {
-  return [...cards].sort((a, b) => a.pos - b.pos);
-}
-
-export function startedAt(comments: TrelloComment[]): Date | undefined {
-  const starts = comments.filter((comment) => comment.text.startsWith(START_MARKER));
-  return starts.sort((a, b) => b.date.getTime() - a.date.getTime())[0]?.date;
+export function startedAt(notes: Note[]): Date | undefined {
+  const starts = notes.filter((note) => note.text.startsWith(START_MARKER));
+  return starts.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]?.createdAt;
 }
 
 export type StaleDecision = { stale: false } | { stale: true; reason: string; stopUnit: boolean };
@@ -58,19 +52,20 @@ export function decideStale(input: {
   return { stale: false };
 }
 
-export interface CardInput {
+export interface ParsedInput {
+  // First line: the PR URL.
   input: string;
   head: string | undefined;
 }
 
 // First line is the input (the PR URL); intake adds a `head: <sha>` line.
-export function parseDesc(desc: string): CardInput {
-  const lines = desc.split("\n").map((line) => line.trim());
+export function parseInput(input: string): ParsedInput {
+  const lines = input.split("\n").map((line) => line.trim());
   const head = lines.map((line) => /^head:\s*([0-9a-f]{7,40})$/i.exec(line)?.[1]).find((sha) => sha !== undefined);
   return { input: lines[0] ?? "", head };
 }
 
-export function formatDesc(url: string, head: string): string {
+export function formatInput(url: string, head: string): string {
   return `${url}\nhead: ${head}`;
 }
 
@@ -100,7 +95,7 @@ export function decideOutcome(input: {
   signal: string | null;
   timedOut: boolean;
   timeoutMinutes: number;
-  // The worker (or the skill) moved the card to Needs me or Done.
+  // The worker (or the skill) moved the task to Needs me or Done.
   reported: boolean;
 }): Outcome {
   if (input.timedOut) return { kind: "failed", reason: `Timed out after ${input.timeoutMinutes} minutes and was stopped.` };
@@ -121,24 +116,24 @@ export type InvocationPlan = { ok: true; invocation: Invocation } | { ok: false;
 
 export function buildInvocation(input: {
   entry: LabelEntry;
-  card: TrelloCard;
+  task: Task;
   repos: Record<string, string>;
   home: string;
   fallbackCwd: string;
   // Install path of the pr-review plugin; undefined when it could not be resolved.
   prReviewPath: string | undefined;
 }): InvocationPlan {
-  const { entry, card, repos, home } = input;
+  const { entry, task, repos, home } = input;
   if (entry.kind === "command") {
     const [command, ...args] = entry.command;
     if (command === undefined) return { ok: false, reason: "The label's command is empty." };
     return { ok: true, invocation: { command, args, cwd: entry.cwd ?? input.fallbackCwd } };
   }
-  const prompt = parseDesc(card.desc).input;
+  const prompt = parseInput(task.input).input;
   let cwd = entry.cwd;
   if (cwd === "pr-repo") {
     const pr = parsePrUrl(prompt);
-    if (!pr) return { ok: false, reason: `The first line of the description is not a GitHub PR URL: ${prompt || "(empty)"}` };
+    if (!pr) return { ok: false, reason: `The first line of the task input is not a GitHub PR URL: ${prompt || "(empty)"}` };
     const dir = repos[pr.repo];
     if (!dir) return { ok: false, reason: `No checkout is configured for ${pr.repo}. Add it to "repos" in config.json.` };
     cwd = dir;
@@ -150,7 +145,7 @@ export function buildInvocation(input: {
   // Prompt first: --allowedTools and --disallowedTools take every following argument.
   const args = [
     "-p",
-    `/${entry.skill} ${card.shortLink} ${prompt}`,
+    `/${entry.skill} ${task.id} ${prompt}`,
     "--permission-mode",
     "dontAsk",
     // Project and local settings of the checkout carry their own allow rules and tokens; only the user's settings load.

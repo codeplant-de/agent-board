@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 /**
- * One card: resolve its label, run the worker command, log, and report failures on the card.
- * Started by the dispatcher as the transient unit agent-board-<shortLink>.
+ * One task: resolve its label, run the worker command, log, and report failures on the task.
+ * Started by the dispatcher as the transient unit agent-board-<id>.
  */
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { buildContext, print, rejectExtraArgs, runMain, UsageError } from "./cli.mts";
 import type { Context } from "./cli.mts";
-import { LIST } from "./config.mts";
+import { isSafeTaskId } from "./contract.mts";
+import type { Task } from "./contract.mts";
 import { buildInvocation, decideOutcome, resolveLabel, usesPluginPlaceholder } from "./decide.mts";
 import type { Invocation } from "./decide.mts";
 import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from "./logs.mts";
@@ -16,8 +17,6 @@ import { resolveInstallPath } from "./plugins.mts";
 import { postSlack, slackText } from "./notify.mts";
 import { sendToNeedsMe } from "./report.mts";
 import { fence } from "./text.mts";
-import { listId } from "./trello.mts";
-import type { TrelloCard } from "./trello.mts";
 
 export interface RunResult {
   exitCode: number | null;
@@ -26,11 +25,11 @@ export interface RunResult {
 }
 
 export interface WorkerDeps extends Context {
-  run: (invocation: Invocation, shortLink: string, timeoutMs: number) => Promise<RunResult>;
-  logTail: (shortLink: string) => string;
-  notify: (card: TrelloCard, text: string) => Promise<void>;
-  resetLog: (shortLink: string) => void;
-  appendLog: (shortLink: string, text: string) => void;
+  run: (invocation: Invocation, taskId: string, timeoutMs: number) => Promise<RunResult>;
+  logTail: (taskId: string) => string;
+  notify: (task: Task, text: string) => Promise<void>;
+  resetLog: (taskId: string) => void;
+  appendLog: (taskId: string, text: string) => void;
   // Install path of a plugin such as "pr-review@ccc"; throws with the reason when it cannot be resolved.
   pluginPath: (key: string) => string;
   dirExists: (path: string) => boolean;
@@ -38,21 +37,20 @@ export interface WorkerDeps extends Context {
   fallbackCwd: string;
 }
 
-export async function runWorker(deps: WorkerDeps, shortLink: string): Promise<void> {
-  const { trello, config } = deps;
-  deps.resetLog(shortLink);
-  const [card, lists] = await Promise.all([trello.getCard(shortLink), trello.getLists()]);
-  const needsMeId = listId(lists, LIST.needsMe);
+export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void> {
+  const { backend, config } = deps;
+  deps.resetLog(taskId);
+  const task = await backend.getTask(taskId);
 
-  const report = (text: string): Promise<void> => sendToNeedsMe(deps, card, needsMeId, text);
+  const report = (text: string): Promise<void> => sendToNeedsMe(deps, task, text);
 
   // A failure before the process starts leaves the log empty, so it goes in the log too.
   const fail = async (reason: string): Promise<void> => {
-    deps.appendLog(shortLink, reason);
+    deps.appendLog(taskId, reason);
     await report(reason);
   };
 
-  const resolved = resolveLabel(card, config.labels);
+  const resolved = resolveLabel(task, config.labels);
   if (!resolved.known) return fail(resolved.reason);
   let prReviewPath: string | undefined;
   if (usesPluginPlaceholder(resolved.entry)) {
@@ -64,7 +62,7 @@ export async function runWorker(deps: WorkerDeps, shortLink: string): Promise<vo
   }
   const plan = buildInvocation({
     entry: resolved.entry,
-    card,
+    task,
     repos: config.repos,
     home: deps.home,
     fallbackCwd: deps.fallbackCwd,
@@ -75,23 +73,23 @@ export async function runWorker(deps: WorkerDeps, shortLink: string): Promise<vo
 
   let result: RunResult;
   try {
-    result = await deps.run(plan.invocation, shortLink, config.timeoutMinutes * 60_000);
+    result = await deps.run(plan.invocation, taskId, config.timeoutMinutes * 60_000);
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
   }
-  const after = await trello.getCard(card.id);
+  const after = await backend.getTask(task.id);
   const outcome = decideOutcome({
     ...result,
     timeoutMinutes: config.timeoutMinutes,
-    reported: after.idList === listId(lists, LIST.needsMe) || after.idList === listId(lists, LIST.done),
+    reported: after.status === "needs-me" || after.status === "done",
   });
   if (outcome.kind === "ok") return;
-  const why = outcome.kind === "failed" ? outcome.reason : "The worker finished without reporting on the card.";
-  await report(`${why}\n\nEnd of the log:\n${fence(deps.logTail(shortLink) || "(empty)")}`);
+  const why = outcome.kind === "failed" ? outcome.reason : "The worker finished without reporting on the task.";
+  await report(`${why}\n\nEnd of the log:\n${fence(deps.logTail(taskId) || "(empty)")}`);
 }
 
-export function runProcess(invocation: Invocation, shortLink: string, timeoutMs: number): Promise<RunResult> {
-  const fd = openLog(shortLink);
+export function runProcess(invocation: Invocation, taskId: string, timeoutMs: number): Promise<RunResult> {
+  const fd = openLog(taskId);
   return new Promise((resolve, reject) => {
     // A new process group, so a timeout also stops what the worker started.
     const child = spawn(invocation.command, invocation.args, {
@@ -134,17 +132,17 @@ export function runProcess(invocation: Invocation, shortLink: string, timeoutMs:
 
 if (import.meta.main) {
   await runMain(async () => {
-    const [shortLink, ...extra] = process.argv.slice(2);
-    const usage = "usage: worker <card>";
-    if (!shortLink || shortLink.startsWith("-")) throw new UsageError(usage);
+    const [taskId, ...extra] = process.argv.slice(2);
+    const usage = "usage: worker <task>";
+    if (!taskId || !isSafeTaskId(taskId)) throw new UsageError(usage);
     rejectExtraArgs(extra, usage);
     const context = buildContext(false);
-    print(`worker ${shortLink} log=${logPath(shortLink)}`);
+    print(`worker ${taskId} log=${logPath(taskId)}`);
     const deps: WorkerDeps = {
       ...context,
       run: runProcess,
       logTail: readLogTail,
-      notify: (card, text) => postSlack(context.config.slackWebhookFile, slackText(card, text)),
+      notify: (task, text) => postSlack(context.config.slackWebhookFile, slackText(task, text)),
       resetLog,
       appendLog,
       pluginPath: resolveInstallPath,
@@ -153,9 +151,9 @@ if (import.meta.main) {
       fallbackCwd: homedir(),
     };
     try {
-      await runWorker(deps, shortLink);
+      await runWorker(deps, taskId);
     } catch (error) {
-      appendLog(shortLink, `worker failed: ${error instanceof Error ? error.message : String(error)}`);
+      appendLog(taskId, `worker failed: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
   });

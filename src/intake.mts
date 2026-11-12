@@ -1,48 +1,43 @@
 #!/usr/bin/env node
 /**
- * Review requests to cards: one card per PR URL, checked against every list.
- * A card in Needs me or Done goes back to Todo when the PR's head moved and has settled.
+ * Review requests to tasks: one task per PR URL, checked against every task, closed ones included.
+ * A task in Needs me or Done goes back to Todo when the PR's head moved and has settled.
  * Add --dry-run to read everything and print every write instead.
  */
 import { buildContext, print, rejectExtraArgs, runMain, takeFlag } from "./cli.mts";
 import type { Context } from "./cli.mts";
-import { LIST } from "./config.mts";
-import { formatDesc, parseDesc, parsePrUrl } from "./decide.mts";
+import type { Task } from "./contract.mts";
+import { formatInput, parseInput, parsePrUrl } from "./decide.mts";
 import { createGitHub } from "./github.mts";
 import type { GitHub, LivePr } from "./github.mts";
-import { listId, TrelloError } from "./trello.mts";
-import type { TrelloCard, TrelloList } from "./trello.mts";
 
 const SETTLE_MS = 10 * 60_000;
 
 export type IntakeAction =
   | { kind: "create"; pr: LivePr }
-  | { kind: "requeue"; pr: LivePr; card: TrelloCard }
+  | { kind: "requeue"; pr: LivePr; task: Task }
   | { kind: "skip"; pr: LivePr; reason: string };
 
 export function planIntake(input: {
   prs: LivePr[];
-  cards: TrelloCard[];
-  lists: TrelloList[];
+  tasks: Task[];
   repos: string[];
   now: Date;
 }): IntakeAction[] {
-  const listName = new Map(input.lists.map((list) => [list.id, list.name]));
   return input.prs.map((pr): IntakeAction => {
     if (pr.isDraft) return { kind: "skip", pr, reason: "draft" };
     const repo = parsePrUrl(pr.url)?.repo;
     if (repo === undefined || !input.repos.includes(repo)) return { kind: "skip", pr, reason: "repository not in config" };
     const settled = input.now.getTime() - pr.headCommittedAt.getTime() >= SETTLE_MS;
-    const matches = input.cards.filter((candidate) => parseDesc(candidate.desc).input === pr.url);
-    const card = matches.find((candidate) => !candidate.closed) ?? matches[0];
-    if (card?.closed) return { kind: "skip", pr, reason: "card archived" };
-    if (!card) return settled ? { kind: "create", pr } : { kind: "skip", pr, reason: "head not settled" };
+    const matches = input.tasks.filter((candidate) => parseInput(candidate.input).input === pr.url);
+    const task = matches.find((candidate) => !candidate.closed) ?? matches[0];
+    if (task?.closed) return { kind: "skip", pr, reason: "task closed" };
+    if (!task) return settled ? { kind: "create", pr } : { kind: "skip", pr, reason: "head not settled" };
 
-    const { head } = parseDesc(card.desc);
-    if (head === undefined || head === pr.headSha) return { kind: "skip", pr, reason: "card exists" };
-    const name = listName.get(card.idList);
-    if (name !== LIST.needsMe && name !== LIST.done) return { kind: "skip", pr, reason: `head moved, card is in ${name}` };
-    return settled ? { kind: "requeue", pr, card } : { kind: "skip", pr, reason: "head moved, not settled" };
+    const { head } = parseInput(task.input);
+    if (head === undefined || head === pr.headSha) return { kind: "skip", pr, reason: "task exists" };
+    if (task.status !== "needs-me" && task.status !== "done") return { kind: "skip", pr, reason: `head moved, task is ${task.status}` };
+    return settled ? { kind: "requeue", pr, task } : { kind: "skip", pr, reason: "head moved, not settled" };
   });
 }
 
@@ -52,13 +47,12 @@ export interface IntakeDeps extends Context {
 }
 
 export async function runIntake(deps: IntakeDeps): Promise<void> {
-  const { trello, config, print: log } = deps;
+  const { backend, config, print: log } = deps;
   // A failed listing throws before any write: it must not read as an empty queue.
   const prs = await deps.github.listReviewRequested(Object.keys(config.repos));
-  // Archived cards count too, or an archived card would get a second one.
-  const [lists, labels, cards] = await Promise.all([trello.getLists(), trello.getLabels(), trello.getAllCards()]);
-  const todoId = listId(lists, LIST.todo);
-  const actions = planIntake({ prs, cards, lists, repos: Object.keys(config.repos), now: deps.now() });
+  // Closed tasks count too, or a closed task would get a second one.
+  const tasks = await backend.listTasks({ all: true });
+  const actions = planIntake({ prs, tasks, repos: Object.keys(config.repos), now: deps.now() });
 
   let created = 0;
   let requeued = 0;
@@ -67,21 +61,19 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
     if (action.kind === "skip") {
       log(`SKIP #${pr.number} ${action.reason}`);
     } else if (action.kind === "create") {
-      const label = labels.find((candidate) => candidate.name === config.intakeLabel);
-      if (!label) throw new TrelloError(`board has no label "${config.intakeLabel}" (run: board setup)`);
-      await trello.createCard({
-        listId: todoId,
-        name: `#${pr.number} ${pr.title} (${pr.author})`,
-        desc: formatDesc(pr.url, pr.headSha),
-        labelIds: [label.id],
+      await backend.addTask({
+        title: `#${pr.number} ${pr.title} (${pr.author})`,
+        input: formatInput(pr.url, pr.headSha),
+        labels: [config.intakeLabel],
+        status: "todo",
       });
       log(`CREATED #${pr.number}`);
       created++;
     } else {
-      // Move first: a card whose head line is updated but that never left Needs me would stay there for good.
-      await trello.moveCard(action.card.id, todoId);
-      await trello.setDescription(action.card.id, formatDesc(pr.url, pr.headSha));
-      await trello.addComment(action.card.id, `New head ${pr.headSha.slice(0, 7)} on the PR. Queued again.`);
+      // Move first: a task whose head line is updated but that never left Needs me would stay there for good.
+      await backend.updateTask(action.task.id, { status: "todo" });
+      await backend.updateTask(action.task.id, { input: formatInput(pr.url, pr.headSha) });
+      await backend.addNote(action.task.id, `New head ${pr.headSha.slice(0, 7)} on the PR. Queued again.`);
       log(`REQUEUED #${pr.number} ${pr.headSha.slice(0, 7)}`);
       requeued++;
     }

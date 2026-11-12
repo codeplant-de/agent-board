@@ -1,19 +1,18 @@
 #!/usr/bin/env node
 /**
- *   board comment <card> <text>   add a comment (long text is split; `-` reads the text from stdin)
- *   board move <card> <list>      move a card to the bottom of a list
- *   board notify <card> <text>    Slack message with the card link
- *   board lists                   cards per list
- *   board setup                   create missing lists and labels
+ *   board comment <task> <text>   add a note (long text is fine; `-` reads the text from stdin)
+ *   board move <task> <status>    move a task to the bottom of a status (todo, running, needs-me, done)
+ *   board notify <task> <text>    Slack message with the task link
+ *   board tasks                   open tasks per status
+ *   board setup                   ask the backend to create what it needs (statuses, labels)
  *
- * <card> is the short link (the 8 characters in the card URL) or the card id. Add --dry-run to print writes.
+ * <task> is the task id the backend gives. Add --dry-run to print writes.
  */
 import { buildContext, rejectExtraArgs, runMain, takeFlag, UsageError } from "./cli.mts";
 import type { Context } from "./cli.mts";
-import { LIST_NAMES } from "./config.mts";
+import { isStatus, STATUSES } from "./contract.mts";
+import type { Status } from "./contract.mts";
 import { postSlack, slackText } from "./notify.mts";
-import { listId } from "./trello.mts";
-import type { TrelloCard } from "./trello.mts";
 
 async function readStdin(): Promise<string> {
   let content = "";
@@ -21,76 +20,57 @@ async function readStdin(): Promise<string> {
   return content.trim();
 }
 
-const USAGE = "usage: board comment <card> <text> | move <card> <list> | notify <card> <text> | lists | setup";
+const USAGE = "usage: board comment <task> <text> | move <task> <status> | notify <task> <text> | tasks | setup";
 
-// The board CLI is reachable by the reviewer, so it only touches cards of the configured board.
-async function boardCard(context: Context, card: string): Promise<TrelloCard> {
-  const [found, boardId] = await Promise.all([context.trello.getCard(card), context.trello.getBoardId()]);
-  if (found.idBoard !== boardId) throw new UsageError(`card ${card} is not on the configured board`);
-  return found;
+// "Needs me" and "needs-me" name the same status, so the skill can keep saying the former.
+export function parseStatus(name: string): Status {
+  const normalised = name.trim().toLowerCase().replaceAll(" ", "-");
+  if (!isStatus(normalised)) throw new UsageError(`unknown status "${name}"; use one of ${STATUSES.join(", ")}`);
+  return normalised;
 }
 
-async function comment(context: Context, card: string, text: string): Promise<void> {
-  const { id } = await boardCard(context, card);
-  await context.trello.addComment(id, text);
-}
-
-async function move(context: Context, card: string, list: string): Promise<void> {
-  const [{ id }, lists] = await Promise.all([boardCard(context, card), context.trello.getLists()]);
-  await context.trello.moveCard(id, listId(lists, list));
-}
-
-async function notify(context: Context, card: string, text: string): Promise<void> {
-  const found = await boardCard(context, card);
-  const message = slackText(found, text);
+async function notify(context: Context, id: string, text: string): Promise<void> {
+  const message = slackText(await context.backend.getTask(id), text);
   if (context.dryRun) return context.print(`DRY slack ${message.replaceAll("\n", " | ")}`);
   await postSlack(context.config.slackWebhookFile, message);
 }
 
-async function lists(context: Context): Promise<void> {
-  const [boardLists, cards] = await Promise.all([context.trello.getLists(), context.trello.getCards()]);
-  for (const list of boardLists) {
-    const inList = cards.filter((card) => card.idList === list.id);
-    context.print(`${list.name} (${inList.length})`);
-    for (const card of inList.sort((a, b) => a.pos - b.pos)) {
-      const labels = card.labels.map((label) => label.name).join(",") || "-";
-      context.print(`  ${card.shortLink}  [${labels}]  ${card.name}`);
-    }
+async function tasks(context: Context): Promise<void> {
+  const open = await context.backend.listTasks();
+  for (const status of STATUSES) {
+    const inStatus = open.filter((task) => task.status === status);
+    context.print(`${status} (${inStatus.length})`);
+    for (const task of inStatus) context.print(`  ${task.id}  [${task.labels.join(",") || "-"}]  ${task.title}`);
   }
 }
 
 async function setup(context: Context): Promise<void> {
-  const [boardLists, labels] = await Promise.all([context.trello.getLists(), context.trello.getLabels()]);
-  for (const name of LIST_NAMES) {
-    if (boardLists.some((list) => list.name === name)) continue;
-    await context.trello.createList(name);
-    context.print(`created list ${name}`);
-  }
-  for (const name of Object.keys(context.config.labels)) {
-    if (labels.some((label) => label.name === name)) continue;
-    await context.trello.createLabel(name);
-    context.print(`created label ${name}`);
-  }
+  const created = await context.backend.setup(Object.keys(context.config.labels));
+  if (created === undefined) return context.print("this backend has no setup; create its statuses and labels there by hand");
+  for (const what of created) context.print(`created ${what}`);
 }
 
 export async function main(argv: string[]): Promise<void> {
   const args = [...argv];
   const dryRun = takeFlag(args, "--dry-run");
-  const [command, card, ...rest] = args;
-  if (!command || command.startsWith("--") || card?.startsWith("--")) throw new UsageError(USAGE);
-  if ((command === "lists" || command === "setup") && (card !== undefined || rest.length > 0)) rejectExtraArgs([card ?? "", ...rest], USAGE);
+  const [command, id, ...rest] = args;
+  if (!command || command.startsWith("--") || id?.startsWith("--")) throw new UsageError(USAGE);
+  if ((command === "tasks" || command === "setup") && (id !== undefined || rest.length > 0)) rejectExtraArgs([id ?? "", ...rest], USAGE);
   const context = buildContext(dryRun);
   const text = rest.join(" ") === "-" ? await readStdin() : rest.join(" ");
   switch (command) {
     case "comment":
+      if (!id || !text) throw new UsageError(USAGE);
+      return context.backend.addNote(id, text);
     case "notify":
-      if (!card || !text) throw new UsageError(USAGE);
-      return command === "comment" ? comment(context, card, text) : notify(context, card, text);
+      if (!id || !text) throw new UsageError(USAGE);
+      return notify(context, id, text);
     case "move":
-      if (!card || !text) throw new UsageError(USAGE);
-      return move(context, card, text);
-    case "lists":
-      return lists(context);
+      if (!id || !text) throw new UsageError(USAGE);
+      await context.backend.updateTask(id, { status: parseStatus(text) });
+      return;
+    case "tasks":
+      return tasks(context);
     case "setup":
       return setup(context);
     default:

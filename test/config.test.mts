@@ -3,10 +3,10 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ConfigError, isSafeMode, loadCredentials, parseConfig, parseEnv } from "../src/config.mts";
+import { ConfigError, isSafeMode, parseConfig, readSecretFile } from "../src/config.mts";
 
 const valid = {
-  boardId: "abc",
+  backend: { command: ["~/bin/backend", "--flag"] },
   repos: { "cosuno/cosuno": "~/x" },
   labels: {
     selftest: { command: ["sleep", "300"] },
@@ -17,6 +17,8 @@ const valid = {
 test("a valid config gets defaults and normalised label entries", () => {
   const config = parseConfig(valid);
   assert.equal(config.maxParallel, 2);
+  assert.equal(config.backendCommand[1], "--flag");
+  assert.ok(!config.backendCommand[0]?.startsWith("~"));
   assert.equal(config.timeoutMinutes, 45);
   assert.equal(config.labels["selftest"]?.kind, "command");
   const skill = config.labels["review-pr"];
@@ -28,7 +30,9 @@ test("a valid config gets defaults and normalised label entries", () => {
 test("invalid configs are refused with a pointed message", () => {
   const cases: [unknown, RegExp][] = [
     ["nope", /top level/],
-    [{ ...valid, boardId: "" }, /boardId/],
+    [{ ...valid, backend: undefined }, /backend.command/],
+    [{ ...valid, backend: { command: [] } }, /backend.command/],
+    [{ ...valid, backend: { command: ["ok", 3] } }, /backend.command/],
     [{ ...valid, labels: {} }, /labels/],
     [{ ...valid, maxParallel: 0 }, /maxParallel/],
     [{ ...valid, labels: { x: { skill: "s", allowedTools: [] } } }, /allowedTools must not be empty/],
@@ -46,19 +50,13 @@ test("only modes 600 and 400 pass", () => {
   for (const mode of [0o644, 0o640, 0o660, 0o700, 0o666]) assert.equal(isSafeMode(mode), false);
 });
 
-test("the env file is refused unless owner-only, and must hold both keys", () => {
+test("a secret file is refused unless owner-only", () => {
   const dir = mkdtempSync(join(tmpdir(), "agent-board-"));
-  const file = join(dir, "env");
-  writeFileSync(file, "TRELLO_API_KEY=k\nTRELLO_TOKEN='t'\n");
+  const file = join(dir, "secret");
+  writeFileSync(file, "x\n");
   chmodSync(file, 0o644);
-  assert.throws(() => loadCredentials(file), /mode 600 or 400, is 644/);
+  assert.throws(() => readSecretFile(file, "secret file"), /mode 600 or 400, is 644/);
   chmodSync(file, 0o600);
-  assert.deepEqual(loadCredentials(file), { key: "k", token: "t" });
-  writeFileSync(file, "TRELLO_API_KEY=k\n");
-  assert.throws(() => loadCredentials(file), /needs TRELLO_API_KEY and TRELLO_TOKEN/);
-  assert.throws(() => loadCredentials(join(dir, "missing")), /credentials file missing/);
-});
-
-test("env parsing ignores comments and strips quotes and export", () => {
-  assert.deepEqual(parseEnv("# c\nexport A=1\nB=\"two\"\n\nC = 3\n"), { A: "1", B: "two", C: "3" });
+  assert.equal(readSecretFile(file, "secret file"), "x\n");
+  assert.throws(() => readSecretFile(join(dir, "missing"), "secret file"), /secret file missing/);
 });
