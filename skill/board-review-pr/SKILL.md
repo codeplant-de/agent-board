@@ -15,6 +15,7 @@ Arguments: `<task>` (the task id) and `<pr-url>`. Nobody is watching, so never a
 - Never write the review into a brain journal; the headless run has no journal access.
 - The Shortcut story lookup (`mcp__shortcut__get_story`) is best effort: this run loads only user settings, so the Shortcut token may be missing. If the lookup fails, review without the story and list "story not read" under **Check by hand**.
 - A denied tool is a result, not an obstacle. Do not look for another way around it. Report it on the task.
+- Run every command on its own, by its full path: no `cd`, no `VAR=... ; $VAR` indirection, and never a `board` call chained with another command (it would run in the sandbox, where `board` is not found). Such calls are refused or fail, and each one costs a turn.
 - Bash runs in a sandbox that hides your home directory. `board`, `gh` and `git fetch` have what they need; for anything else a "no such file" error means the sandbox said no, so do not try to get around it.
 
 ## Steps
@@ -26,5 +27,7 @@ Arguments: `<task>` (the task id) and `<pr-url>`. Nobody is watching, so never a
    - **Issues:** by severity, highest first, one line each: `severity path:line first sentence`. Say "none" if there are none. Add how many comments were staged, edited and removed.
    - **Check by hand:** what the review could not settle: things that need running the code, a design call, a story requirement it could not read, any step that was denied or skipped.
 4. `board move <task> needs-me`, then `board notify <task> "<verdict>, <n> issues"`.
+
+Your last message, after step 4, ends with the `auto-result` line that `review-pr --auto` printed, unchanged, so the log shows the flow reached its end.
 
 If any step fails, post what failed with `board comment`, then still do step 4 so the task does not stay in running.
