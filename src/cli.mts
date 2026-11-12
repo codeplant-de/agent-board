@@ -1,3 +1,5 @@
+import { GitHubError } from "./github.mts";
+import { SystemError } from "./system.mts";
 import { ConfigError, getPaths, loadConfig, loadCredentials } from "./config.mts";
 import type { Config } from "./config.mts";
 import { createTrelloClient, TrelloError } from "./trello.mts";
@@ -27,7 +29,11 @@ export async function runMain(main: () => Promise<void>): Promise<void> {
   try {
     await main();
   } catch (error) {
-    if (error instanceof ConfigError || error instanceof TrelloError || error instanceof UsageError) {
+    if (error instanceof ConfigError ||
+      error instanceof TrelloError ||
+      error instanceof UsageError ||
+      error instanceof GitHubError ||
+      error instanceof SystemError) {
       console.error(`agent-board: ${error.message}`);
     } else {
       console.error(`agent-board: unexpected error: ${error instanceof Error ? error.message : String(error)}`);
@@ -43,4 +49,9 @@ export function takeFlag(args: string[], flag: string): boolean {
   if (index === -1) return false;
   args.splice(index, 1);
   return true;
+}
+
+// Anything left after the known flags is a typo, and a typo must never turn into a real run.
+export function rejectExtraArgs(args: string[], usage: string): void {
+  if (args.length > 0) throw new UsageError(`unexpected argument "${args[0]}"; ${usage}`);
 }

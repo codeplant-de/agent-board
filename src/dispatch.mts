@@ -4,7 +4,7 @@
  * No LLM calls. Add --dry-run to read everything and print every write and process start instead.
  */
 import { fileURLToPath } from "node:url";
-import { buildContext, print, runMain, takeFlag } from "./cli.mts";
+import { buildContext, print, rejectExtraArgs, runMain, takeFlag } from "./cli.mts";
 import type { Context } from "./cli.mts";
 import { LIST } from "./config.mts";
 import { byPriority, decideStale, freeSlots, resolveLabel, startedAt, START_MARKER, unitName } from "./decide.mts";
@@ -14,21 +14,14 @@ import { postSlack, slackText } from "./notify.mts";
 import { listId } from "./trello.mts";
 import type { TrelloCard } from "./trello.mts";
 import { readLogTail } from "./logs.mts";
-import { fence, oneLine } from "./text.mts";
+import { sendToNeedsMe } from "./report.mts";
+import { fence } from "./text.mts";
 
 export interface DispatchDeps extends Context {
   system: System;
   now: () => Date;
   logTail: (shortLink: string) => string;
   notify: (card: TrelloCard, text: string) => Promise<void>;
-}
-
-export async function sendToNeedsMe(deps: DispatchDeps, card: TrelloCard, needsMeId: string, text: string): Promise<void> {
-  await deps.trello.addComment(card.id, text);
-  await deps.trello.moveCard(card.id, needsMeId);
-  await deps.notify(card, oneLine(text, 300)).catch((error: unknown) => {
-    deps.print(`WARN notify failed: ${error instanceof Error ? error.message : String(error)}`);
-  });
 }
 
 export async function runDispatch(deps: DispatchDeps): Promise<void> {
@@ -40,9 +33,12 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   let stillRunning = 0;
   for (const card of running) {
     const unit = unitName(card.shortLink);
+    const unitActive = await system.isActive(unit);
+    // The unit knows when this run began; a comment would also count an earlier run of a requeued card.
+    const unitStart = unitActive ? await system.startedAt(unit) : undefined;
     const decision = decideStale({
-      unitActive: await system.isActive(unit),
-      startedAt: startedAt(await trello.getComments(card.id)),
+      unitActive,
+      startedAt: unitStart ?? startedAt(await trello.getComments(card.id)),
       now: deps.now(),
       timeoutMinutes: config.timeoutMinutes,
     });
@@ -58,7 +54,9 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     await sendToNeedsMe(deps, card, ids.needsMe, `${decision.reason}\n\nEnd of the log:\n${fence(tail || "(empty)")}`);
   }
 
-  let slots = freeSlots(stillRunning, config.maxParallel);
+  // A card can be in Running with its unit gone, or a unit can outlive its card: count the larger of the two.
+  const activeWorkers = await system.activeWorkers();
+  let slots = freeSlots(Math.max(stillRunning, activeWorkers.length), config.maxParallel);
   let started = 0;
   for (const card of byPriority(cards.filter((candidate) => candidate.idList === ids.todo))) {
     if (slots === 0) break;
@@ -69,18 +67,23 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
       continue;
     }
     await trello.moveCard(card.id, ids.running);
+    let pid: number | undefined;
     try {
-      const { pid } = await system.startWorker(card.shortLink);
-      const where = `unit ${unitName(card.shortLink)}${pid ? `, pid ${pid}` : ""}`;
-      await trello.addComment(card.id, `${START_MARKER} ${deps.now().toISOString()} (${resolved.label}, ${where})`);
-      log(`STARTED ${card.shortLink} ${resolved.label}`);
-      slots--;
-      started++;
+      ({ pid } = await system.startWorker(card.shortLink));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       log(`START-FAILED ${card.shortLink} ${reason}`);
       await sendToNeedsMe(deps, card, ids.needsMe, `The worker could not be started: ${reason}`);
+      // Whatever broke it will break the next start too.
+      break;
     }
+    slots--;
+    started++;
+    log(`STARTED ${card.shortLink} ${resolved.label}`);
+    const where = `unit ${unitName(card.shortLink)}${pid ? `, pid ${pid}` : ""}`;
+    await trello.addComment(card.id, `${START_MARKER} ${deps.now().toISOString()} (${resolved.label}, ${where})`).catch((error: unknown) => {
+      log(`WARN start comment failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
   log(`TICK running=${stillRunning + started} started=${started} max=${config.maxParallel}`);
 }
@@ -89,6 +92,7 @@ if (import.meta.main) {
   await runMain(async () => {
     const args = process.argv.slice(2);
     const dryRun = takeFlag(args, "--dry-run");
+    rejectExtraArgs(args, "usage: dispatch [--dry-run]");
     const context = buildContext(dryRun);
     const workerScript = fileURLToPath(new URL("./worker.mts", import.meta.url));
     await runDispatch({

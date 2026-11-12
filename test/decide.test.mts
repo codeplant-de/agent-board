@@ -5,6 +5,7 @@ import {
   byPriority,
   decideOutcome,
   decideStale,
+  expandRule,
   formatDesc,
   freeSlots,
   parseDesc,
@@ -71,11 +72,11 @@ test("the start time is the latest start comment", () => {
 });
 
 test("outcomes: timeout and non-zero exit fail, exit 0 in Running is unreported", () => {
-  const base = { signal: null, timeoutMinutes: 45, stillRunning: true };
+  const base = { signal: null, timeoutMinutes: 45, reported: false };
   assert.equal(decideOutcome({ ...base, exitCode: null, timedOut: true }).kind, "failed");
   assert.equal(decideOutcome({ ...base, exitCode: 1, timedOut: false }).kind, "failed");
   assert.equal(decideOutcome({ ...base, exitCode: 0, timedOut: false }).kind, "unreported");
-  assert.equal(decideOutcome({ ...base, exitCode: 0, timedOut: false, stillRunning: false }).kind, "ok");
+  assert.equal(decideOutcome({ ...base, exitCode: 0, timedOut: false, reported: true }).kind, "ok");
 });
 
 test("description round trip and PR URL parsing", () => {
@@ -95,17 +96,18 @@ test("skill invocation: prompt first, repo cwd, tools expanded, no skip flags", 
     repos: CONFIG.repos,
     home: "/home/u",
     fallbackCwd: "/",
+    prReviewPath: undefined,
   });
   assert.ok(plan.ok);
   assert.equal(plan.invocation.cwd, "/work/cosuno");
-  assert.deepEqual(plan.invocation.args.slice(0, 5), ["-p", "/board-review-pr abc https://github.com/cosuno/cosuno/pull/1", "--permission-mode", "dontAsk", "--allowedTools"]);
+  assert.deepEqual(plan.invocation.args.slice(0, 4), ["-p", "/board-review-pr abc https://github.com/cosuno/cosuno/pull/1", "--permission-mode", "dontAsk"]);
   assert.equal(plan.invocation.args.some((arg) => arg.includes("dangerously") || arg === "auto" || arg === "bypassPermissions"), false);
 });
 
 test("skill invocation refuses an unmapped repo and a non-PR input", () => {
   const entry = CONFIG.labels["review-pr"];
   assert.ok(entry);
-  const run = (desc: string) => buildInvocation({ entry, card: card({ shortLink: "a", desc }), repos: CONFIG.repos, home: "/h", fallbackCwd: "/" });
+  const run = (desc: string) => buildInvocation({ entry, card: card({ shortLink: "a", desc }), repos: CONFIG.repos, home: "/h", fallbackCwd: "/", prReviewPath: undefined });
   const unmapped = run("https://github.com/other/repo/pull/2");
   assert.ok(!unmapped.ok);
   assert.match(unmapped.reason, /other\/repo/);
@@ -115,7 +117,7 @@ test("skill invocation refuses an unmapped repo and a non-PR input", () => {
 test("command invocation runs the plain command", () => {
   const entry = CONFIG.labels["selftest"];
   assert.ok(entry);
-  const plan = buildInvocation({ entry, card: card({ shortLink: "a" }), repos: {}, home: "/h", fallbackCwd: "/fallback" });
+  const plan = buildInvocation({ entry, card: card({ shortLink: "a" }), repos: {}, home: "/h", fallbackCwd: "/fallback", prReviewPath: undefined });
   assert.ok(plan.ok);
   assert.deepEqual(plan.invocation, { command: "sleep", args: ["300"], cwd: "/fallback" });
 });
@@ -126,4 +128,44 @@ test("long text is tailed and split within the comment limit", () => {
   assert.ok(pieces.length > 1);
   assert.ok(pieces.every((piece) => piece.length <= 120));
   assert.deepEqual(splitText("short", 120), ["short"]);
+});
+
+test("the skill run loads user settings only, so a checkout's own allow rules never apply", () => {
+  const entry = CONFIG.labels["review-pr"];
+  assert.ok(entry);
+  const plan = buildInvocation({
+    entry,
+    card: card({ shortLink: "abc", desc: "https://github.com/cosuno/cosuno/pull/1" }),
+    repos: CONFIG.repos,
+    home: "/home/u",
+    fallbackCwd: "/",
+    prReviewPath: undefined,
+  });
+  assert.ok(plan.ok);
+  const { args } = plan.invocation;
+  const at = args.indexOf("--setting-sources");
+  assert.equal(args[at + 1], "user");
+  assert.ok(at !== -1 && at < args.indexOf("--allowedTools"), "flag must come before the variadic tool lists");
+});
+
+test("{pr-review} expands to the plugin path in Bash rules; ~/ only in Bash rules", () => {
+  assert.equal(expandRule("Bash({pr-review}/skills/x.sh *)", "/h", "/plugins/pr"), "Bash(/plugins/pr/skills/x.sh *)");
+  assert.equal(expandRule("Bash(~/bin/tool *)", "/h", undefined), "Bash(/h/bin/tool *)");
+  assert.equal(expandRule("Read(~/.config/**)", "/h", "/p"), "Read(~/.config/**)");
+});
+
+test("a rule with {pr-review} fails the plan when the plugin path is unknown", () => {
+  const entry = { kind: "skill" as const, skill: "s", allowedTools: ["Bash({pr-review}/skills/x.sh *)"], disallowedTools: [], cwd: "/tmp" };
+  const input = { entry, card: card({ shortLink: "a", desc: "x" }), repos: {}, home: "/h", fallbackCwd: "/" };
+  const missing = buildInvocation({ ...input, prReviewPath: undefined });
+  assert.ok(!missing.ok);
+  assert.match(missing.reason, /pr-review plugin path/);
+  const found = buildInvocation({ ...input, prReviewPath: "/plugins/pr" });
+  assert.ok(found.ok);
+  assert.ok(found.invocation.args.includes("Bash(/plugins/pr/skills/x.sh *)"));
+});
+
+test("a label named like an Object.prototype member is unknown", () => {
+  const resolved = resolveLabel(card({ shortLink: "a", labels: [{ id: "1", name: "toString" }] }), CONFIG.labels);
+  assert.equal(resolved.known, false);
 });

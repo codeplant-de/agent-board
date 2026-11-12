@@ -15,6 +15,8 @@ export function card(overrides: Partial<TrelloCard> & { shortLink: string }): Tr
     name: `card ${overrides.shortLink}`,
     desc: "",
     idList: "l-todo",
+    idBoard: "board-long",
+    closed: false,
     pos: 1,
     labels: [],
     ...overrides,
@@ -58,8 +60,14 @@ export function fakeTrello(cards: TrelloCard[], labels: TrelloLabel[] = [{ id: "
     async getLabels() {
       return labels;
     },
-    async getCards() {
+    async getBoardId() {
+      return "board-long";
+    },
+    async getAllCards() {
       return state.cards.map((c) => ({ ...c }));
+    },
+    async getCards() {
+      return state.cards.filter((c) => !c.closed).map((c) => ({ ...c }));
     },
     async getCard(idOrShortLink) {
       const found = state.cards.find((c) => c.id === idOrShortLink || c.shortLink === idOrShortLink);

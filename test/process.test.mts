@@ -15,10 +15,14 @@ test("a finished process reports its exit code and writes its log", async () => 
 });
 
 test("a process past its timeout is stopped with everything it started", async () => {
+  const pidFile = join(mkdtempSync(join(tmpdir(), "agent-board-pid-")), "child.pid");
   const started = Date.now();
-  const result = await runProcess({ command: "sh", args: ["-c", "sleep 30 & wait"], cwd: tmpdir() }, "proc2", 200);
+  const result = await runProcess({ command: "sh", args: ["-c", `sleep 30 & echo $! > ${pidFile}; wait`], cwd: tmpdir() }, "proc2", 500);
   assert.equal(result.timedOut, true);
   assert.ok(Date.now() - started < 5_000);
+  const grandchild = Number(readFileSync(pidFile, "utf8").trim());
+  assert.ok(grandchild > 0);
+  assert.throws(() => process.kill(grandchild, 0), /ESRCH/, "the grandchild must be dead");
 });
 
 test("a missing command rejects", async () => {

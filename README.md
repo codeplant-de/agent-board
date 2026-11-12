@@ -2,7 +2,7 @@
 
 A Trello board is the queue. A systemd user timer runs a dispatcher every two minutes. The dispatcher takes cards from the top of Todo and starts a headless `claude -p` worker for each, with a cap on parallel runs. The worker reports on the card. Phase 1 is PR review.
 
-Trello is the only state. There is no database and no state file: the card's list says where it is, and the dispatcher's start comment says when it started.
+Trello is the only state. There is no database and no state file: the card's list says where it is, and the worker unit says when it started.
 
 ## Board
 
@@ -51,7 +51,7 @@ User timers only run while you are logged in. For runs after logout: `loginctl e
 | `repos` | `owner/name` to local checkout. A PR in another repo is ignored by intake and sent to Needs me by the worker. |
 | `labels` | Label name to worker, below. |
 
-Logs: `~/.local/state/agent-board/logs/<card>.log`, one per card, replaced on each run.
+Logs: `~/.local/state/agent-board/logs/<card>.log`, one per card, emptied when a worker starts. The worker's own fatal errors are appended to it.
 
 ## Adding a label-to-worker mapping
 
@@ -66,13 +66,17 @@ Create a label on the board with the same name as the key, or run `board setup`.
 }
 ```
 
-Runs `claude -p "/<skill> <card> <first line of description>" --permission-mode dontAsk` with exactly these tools. `dontAsk` denies everything not allowed, without prompting. `cwd` is `pr-repo` (the checkout `repos` maps the PR's repository to) or a directory. The skill must exist in `~/.claude/skills`, and it should end by moving the card to Needs me.
+Runs `claude -p "/<skill> <card> <first line of description>" --permission-mode dontAsk --setting-sources user` with these allow and deny rules. `dontAsk` denies everything not allowed, without prompting. `--setting-sources user` keeps the checkout's `.claude/settings*.json` (their allow rules and env tokens) out of the run; only `~/.claude/settings.json` loads. If you ever add `permissions.allow` rules there, they widen the reviewer's sandbox too. Rules starting with `Bash(` expand `~/` to your home directory and `{pr-review}` to the install path of the `pr-review@ccc` plugin, read from `~/.claude/plugins/installed_plugins.json` when the worker starts. A rule must not start with `*` before a script path: a leading `*` matches any command that merely contains the path. If the plugin path cannot be resolved the card goes to Needs me with the reason. `Read(...)` rules are passed on unchanged (they take `~/` themselves).
+
+`cwd` is `pr-repo` (the checkout `repos` maps the PR's repository to) or a directory. The skill must exist in `~/.claude/skills`, and it should end by moving the card to Needs me.
 
 ```json
 "selftest": { "command": ["sleep", "300"] }
 ```
 
-Runs a plain command (optional `cwd`). Use it to test the cap and the sweep without spending tokens. An exit code other than 0 is a failure; exit 0 with the card still in Running is reported as "finished without reporting".
+Runs a plain command (optional `cwd`). Use it to test the cap and the sweep without spending tokens. An exit code other than 0 is a failure; exit 0 with the card in any list but Needs me or Done is reported as "finished without reporting".
+
+Known gaps of the headless review: it loads no project settings, so the Shortcut MCP token from the project settings is missing and `mcp__shortcut__get_story` may fail (the skill treats the story lookup as best effort). The review is not mirrored into the brain journal; do that by hand if you want it.
 
 A missing allowed tool shows up as a failed run: the log says what was denied. Add it to `allowedTools`.
 
@@ -88,18 +92,18 @@ dispatch                        one dispatcher tick
 intake                          review requests to cards
 ```
 
-`<card>` is the short link from the card URL. `dispatch`, `intake` and `board` take `--dry-run`: reads happen, every write and process start is printed as `DRY ...`.
+`<card>` is the short link from the card URL. `dispatch`, `intake` and `board` take `--dry-run`: reads happen, every write and process start is printed as `DRY ...`. An unknown argument is a usage error. `board` only touches cards of the configured board.
 
-Run `bin/dispatch` by hand through the same lock the timer uses: `flock -n $XDG_RUNTIME_DIR/agent-board-dispatch.lock bin/dispatch`.
+`bin/dispatch` and `bin/intake` take their own lock (`$XDG_RUNTIME_DIR/agent-board-{dispatch,intake}.lock`), so a run by hand cannot overlap a timer run. When the lock is held they exit 75 without output.
 
 ## How it decides
 
 Dispatcher, per tick:
 
-1. For each card in Running, ask `systemctl --user is-active agent-board-<card>`. A card whose unit is gone, or whose start comment is older than the timeout plus five minutes, moves to Needs me with the log tail. The worker enforces the timeout itself; this catches a worker that died.
-2. While fewer than `maxParallel` cards run, take the top card of Todo. No known label: Needs me with a comment. Otherwise: Running, start `systemd-run --user --collect --unit agent-board-<card>`, then comment the start time and PID.
+1. For each card in Running, ask `systemctl --user is-active agent-board-<card>`. A card whose unit is gone, or whose unit started more than the timeout plus five minutes ago (the start comment is the fallback), moves to Needs me with the log tail. If `systemctl` gives no known state, the tick stops before starting anything and exits non-zero. The worker enforces the timeout itself; this catches a worker that died.
+2. While fewer than `maxParallel` run (the larger of the cards in Running and the active `agent-board-*` units), take the top card of Todo. No known label: Needs me with a comment. Otherwise: Running, start `systemd-run --user --collect --unit agent-board-<card>`, then comment the start time and PID. The first failed start ends the tick's starting.
 
-Intake, per run: list open PRs that request your review (skipping drafts and repos not in `repos`), then create one card per PR URL, checked against all four lists. A PR whose head moved and whose last commit is at least ten minutes old sends its card from Needs me or Done back to Todo. A failed card stays in Needs me until the head moves. A failed GitHub listing changes nothing. The age of a head is the date of its last commit, so a push of old commits counts as settled.
+Intake, per run: search each repo in `repos` for open, non-draft PRs that request your review, then create one card per PR URL, checked against every card on the board, archived ones included (an archived card is never requeued). A PR that `gh pr view` cannot read is logged and skipped. A PR whose head moved and whose last commit is at least ten minutes old sends its card from Needs me or Done back to Todo. A failed card stays in Needs me until the head moves. A failed GitHub search changes nothing and exits non-zero. The age of a head is the date of its last commit, so a push of old commits counts as settled.
 
 ## Development
 

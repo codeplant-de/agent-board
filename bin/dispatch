@@ -1,2 +1,4 @@
 #!/bin/sh
-exec node "$(dirname "$(readlink -f "$0")")/../src/dispatch.mts" "$@"
+# One tick at a time, whoever starts it. Exit 75 (lock held) is not a failure.
+runtime=${XDG_RUNTIME_DIR:-/tmp}
+exec flock -n -E 75 "$runtime/agent-board-dispatch.lock" node "$(dirname "$(readlink -f "$0")")/../src/dispatch.mts" "$@"

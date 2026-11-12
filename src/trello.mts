@@ -1,8 +1,9 @@
 import type { Credentials } from "./config.mts";
+import { isRecord } from "./guards.mts";
 import { oneLine, splitText } from "./text.mts";
 
 const BASE_URL = "https://api.trello.com/1";
-const CARD_FIELDS = "name,desc,idList,shortLink,shortUrl,pos,labels";
+const CARD_FIELDS = "name,desc,idList,idBoard,closed,shortLink,shortUrl,pos,labels";
 
 export interface TrelloList {
   id: string;
@@ -21,6 +22,8 @@ export interface TrelloCard {
   name: string;
   desc: string;
   idList: string;
+  idBoard: string;
+  closed: boolean;
   pos: number;
   labels: TrelloLabel[];
 }
@@ -42,6 +45,10 @@ export interface TrelloClient {
   getLists(): Promise<TrelloList[]>;
   getLabels(): Promise<TrelloLabel[]>;
   getCards(): Promise<TrelloCard[]>;
+  // Every card on the board, archived ones included.
+  getAllCards(): Promise<TrelloCard[]>;
+  // The board's long id; the config may hold a short link.
+  getBoardId(): Promise<string>;
   getCard(idOrShortLink: string): Promise<TrelloCard>;
   getComments(cardId: string): Promise<TrelloComment[]>;
   addComment(cardId: string, text: string): Promise<void>;
@@ -54,13 +61,15 @@ export interface TrelloClient {
 
 export class TrelloError extends Error {}
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function str(obj: Record<string, unknown>, key: string): string {
   const value = obj[key];
   if (typeof value !== "string") throw new TrelloError(`unexpected Trello response: ${key} is not a string`);
+  return value;
+}
+
+function bool(obj: Record<string, unknown>, key: string): boolean {
+  const value = obj[key];
+  if (typeof value !== "boolean") throw new TrelloError(`unexpected Trello response: ${key} is not a boolean`);
   return value;
 }
 
@@ -85,6 +94,8 @@ export function parseCard(value: unknown): TrelloCard {
     name: str(value, "name"),
     desc: str(value, "desc"),
     idList: str(value, "idList"),
+    idBoard: str(value, "idBoard"),
+    closed: bool(value, "closed"),
     pos,
     labels: list(value["labels"] ?? []).map(parseNamed),
   };
@@ -140,7 +151,20 @@ export function createTrelloClient(options: ClientOptions): TrelloClient {
     return undefined;
   }
 
+  let longBoardId: Promise<string> | undefined;
+  const boardLongId = (): Promise<string> => {
+    longBoardId ??= call("GET", `/boards/${boardId}`, { fields: "id" }).then((board) => {
+      if (!isRecord(board)) throw new TrelloError("unexpected Trello response: expected a board");
+      return str(board, "id");
+    });
+    return longBoardId;
+  };
+
   return {
+    getBoardId: boardLongId,
+    async getAllCards() {
+      return list(await call("GET", `/boards/${boardId}/cards/all`, { fields: CARD_FIELDS })).map(parseCard);
+    },
     async getLists() {
       return list(await call("GET", `/boards/${boardId}/lists`, { filter: "open", fields: "name" })).map(parseNamed);
     },
@@ -174,15 +198,15 @@ export function createTrelloClient(options: ClientOptions): TrelloClient {
         pos: "bottom",
       });
       if (created === undefined) {
-        return { id: "dry", shortLink: "dry", shortUrl: "dry", name: card.name, desc: card.desc, idList: card.listId, pos: 0, labels: [] };
+        return { id: "dry", shortLink: "dry", shortUrl: "dry", name: card.name, desc: card.desc, idList: card.listId, idBoard: "dry", closed: false, pos: 0, labels: [] };
       }
       return parseCard(await created);
     },
     async createList(name) {
-      await write("POST", "/lists", { name, idBoard: boardId, pos: "bottom" });
+      await write("POST", "/lists", { name, idBoard: await boardLongId(), pos: "bottom" });
     },
     async createLabel(name) {
-      await write("POST", "/labels", { name, color: null, idBoard: boardId });
+      await write("POST", "/labels", { name, color: null, idBoard: await boardLongId() });
     },
   };
 }

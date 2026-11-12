@@ -4,11 +4,11 @@
  * A card in Needs me or Done goes back to Todo when the PR's head moved and has settled.
  * Add --dry-run to read everything and print every write instead.
  */
-import { buildContext, print, runMain, takeFlag } from "./cli.mts";
+import { buildContext, print, rejectExtraArgs, runMain, takeFlag } from "./cli.mts";
 import type { Context } from "./cli.mts";
 import { LIST } from "./config.mts";
 import { formatDesc, parseDesc, parsePrUrl } from "./decide.mts";
-import { createGitHub, GitHubError } from "./github.mts";
+import { createGitHub } from "./github.mts";
 import type { GitHub, LivePr } from "./github.mts";
 import { listId, TrelloError } from "./trello.mts";
 import type { TrelloCard, TrelloList } from "./trello.mts";
@@ -33,7 +33,9 @@ export function planIntake(input: {
     const repo = parsePrUrl(pr.url)?.repo;
     if (repo === undefined || !input.repos.includes(repo)) return { kind: "skip", pr, reason: "repository not in config" };
     const settled = input.now.getTime() - pr.headCommittedAt.getTime() >= SETTLE_MS;
-    const card = input.cards.find((candidate) => parseDesc(candidate.desc).input === pr.url);
+    const matches = input.cards.filter((candidate) => parseDesc(candidate.desc).input === pr.url);
+    const card = matches.find((candidate) => !candidate.closed) ?? matches[0];
+    if (card?.closed) return { kind: "skip", pr, reason: "card archived" };
     if (!card) return settled ? { kind: "create", pr } : { kind: "skip", pr, reason: "head not settled" };
 
     const { head } = parseDesc(card.desc);
@@ -51,16 +53,10 @@ export interface IntakeDeps extends Context {
 
 export async function runIntake(deps: IntakeDeps): Promise<void> {
   const { trello, config, print: log } = deps;
-  let prs: LivePr[];
-  try {
-    prs = await deps.github.listReviewRequested();
-  } catch (error) {
-    // A failed listing reads as an empty queue; change nothing.
-    if (!(error instanceof GitHubError)) throw error;
-    log(`LISTING-FAILED ${error.message}`);
-    return;
-  }
-  const [lists, labels, cards] = await Promise.all([trello.getLists(), trello.getLabels(), trello.getCards()]);
+  // A failed listing throws before any write: it must not read as an empty queue.
+  const prs = await deps.github.listReviewRequested(Object.keys(config.repos));
+  // Archived cards count too, or an archived card would get a second one.
+  const [lists, labels, cards] = await Promise.all([trello.getLists(), trello.getLabels(), trello.getAllCards()]);
   const todoId = listId(lists, LIST.todo);
   const actions = planIntake({ prs, cards, lists, repos: Object.keys(config.repos), now: deps.now() });
 
@@ -97,6 +93,7 @@ if (import.meta.main) {
   await runMain(async () => {
     const args = process.argv.slice(2);
     const dryRun = takeFlag(args, "--dry-run");
-    await runIntake({ ...buildContext(dryRun), print, github: createGitHub(), now: () => new Date() });
+    rejectExtraArgs(args, "usage: intake [--dry-run]");
+    await runIntake({ ...buildContext(dryRun), print, github: createGitHub(print), now: () => new Date() });
   });
 }

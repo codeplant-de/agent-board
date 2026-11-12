@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runDispatch } from "../src/dispatch.mts";
 import type { DispatchDeps } from "../src/dispatch.mts";
+import { SystemError } from "../src/system.mts";
 import type { System } from "../src/system.mts";
 import { START_MARKER } from "../src/decide.mts";
 import { card, CONFIG, fakeTrello } from "./helpers.mts";
@@ -10,7 +11,7 @@ import type { FakeTrello } from "./helpers.mts";
 const selftest = { id: "1", name: "selftest" };
 const NOW = new Date("2026-01-01T12:00:00Z");
 
-function setup(cards: ReturnType<typeof card>[], active: string[] = []) {
+function setup(cards: ReturnType<typeof card>[], active: string[] = [], unitStarts: Record<string, Date> = {}) {
   const trello: FakeTrello = fakeTrello(cards);
   const started: string[] = [];
   const stopped: string[] = [];
@@ -18,6 +19,12 @@ function setup(cards: ReturnType<typeof card>[], active: string[] = []) {
   const system: System = {
     async isActive(unit) {
       return active.includes(unit);
+    },
+    async startedAt(unit) {
+      return unitStarts[unit];
+    },
+    async activeWorkers() {
+      return active.map((unit) => unit.replace("agent-board-", ""));
     },
     async stop(unit) {
       stopped.push(unit);
@@ -82,7 +89,7 @@ test("a timed-out active worker is stopped, then reported", async () => {
   assert.ok(trello.writes.some((w) => w === "move id-slow -> Needs me"));
 });
 
-test("a failed start sends the card to Needs me and keeps the slot free", async () => {
+test("a failed start sends the card to Needs me and stops filling slots", async () => {
   const { deps, trello } = setup([todo("t1", 1), todo("t2", 2)]);
   let calls = 0;
   deps.system = {
@@ -94,6 +101,45 @@ test("a failed start sends the card to Needs me and keeps the slot free", async 
     },
   };
   await runDispatch(deps);
-  assert.equal(calls, 2);
+  assert.equal(calls, 1, "no further card is started after a failure");
   assert.ok(trello.writes.some((w) => w.includes("could not be started: unit exists")));
+});
+
+test("a failed start comment does not send the running card to Needs me", async () => {
+  const { deps, trello, started } = setup([todo("t1", 1)]);
+  const addComment = trello.addComment.bind(trello);
+  trello.addComment = async (cardId, text) => {
+    if (text.startsWith(START_MARKER)) throw new Error("trello down");
+    return addComment(cardId, text);
+  };
+  await runDispatch(deps);
+  assert.deepEqual(started, ["t1"]);
+  assert.ok(!trello.writes.some((w) => w.includes("Needs me")));
+});
+
+test("unknown systemd state starts nothing and changes nothing", async () => {
+  const { deps, trello, started } = setup([running("r1"), todo("t1", 1)]);
+  deps.system = {
+    ...deps.system,
+    async isActive() {
+      throw new SystemError("bus unreachable");
+    },
+  };
+  await assert.rejects(runDispatch(deps), SystemError);
+  assert.deepEqual(started, []);
+  assert.deepEqual(trello.writes, []);
+});
+
+test("the run is timed from its unit, not from a comment of an earlier run", async () => {
+  const { deps, trello, stopped } = setup([running("again")], ["agent-board-again"], { "agent-board-again": new Date(NOW.getTime() - 5 * 60_000) });
+  trello.comments.set("id-again", [{ id: "c", text: `${START_MARKER} old`, date: new Date(NOW.getTime() - 5 * 60 * 60_000) }]);
+  await runDispatch(deps);
+  assert.deepEqual(stopped, []);
+  assert.deepEqual(trello.writes, []);
+});
+
+test("the cap counts active units even when fewer cards sit in Running", async () => {
+  const { deps, started } = setup([running("r1"), todo("t1", 1)], ["agent-board-r1", "agent-board-orphan"]);
+  await runDispatch(deps);
+  assert.deepEqual(started, []);
 });

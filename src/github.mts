@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { isRecord } from "./guards.mts";
 
 const run = promisify(execFile);
 
@@ -14,14 +15,11 @@ export interface LivePr {
 }
 
 export interface GitHub {
-  listReviewRequested(): Promise<LivePr[]>;
+  // Open, non-draft PRs in the given repositories that request the user's review.
+  listReviewRequested(repos: string[]): Promise<LivePr[]>;
 }
 
 export class GitHubError extends Error {}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 export function parsePrView(url: string, value: unknown): LivePr {
   if (!isRecord(value)) throw new GitHubError(`unreadable gh output for ${url}`);
@@ -52,16 +50,24 @@ async function gh(args: string[]): Promise<unknown> {
   }
 }
 
-export function createGitHub(): GitHub {
+// A failed search throws; a single PR that cannot be read is skipped with a warning, so one bad PR cannot hide the rest.
+export function createGitHub(warn: (line: string) => void): GitHub {
   return {
-    async listReviewRequested() {
-      const found = await gh(["search", "prs", "--review-requested=@me", "--state=open", "--json", "url", "--limit", "50"]);
-      if (!Array.isArray(found)) throw new GitHubError("unreadable gh search output");
+    async listReviewRequested(repos) {
       const prs: LivePr[] = [];
-      for (const item of found) {
-        const url = isRecord(item) ? item["url"] : undefined;
-        if (typeof url !== "string") throw new GitHubError("unreadable gh search output");
-        prs.push(parsePrView(url, await gh(["pr", "view", url, "--json", "headRefOid,isDraft,title,number,author,commits"])));
+      for (const repo of repos) {
+        const found = await gh(["search", "prs", "--review-requested=@me", "--state=open", "--draft=false", "--repo", repo, "--json", "url", "--limit", "50"]);
+        if (!Array.isArray(found)) throw new GitHubError("unreadable gh search output");
+        for (const item of found) {
+          const url = isRecord(item) ? item["url"] : undefined;
+          if (typeof url !== "string") throw new GitHubError("unreadable gh search output");
+          try {
+            prs.push(parsePrView(url, await gh(["pr", "view", url, "--json", "headRefOid,isDraft,title,number,author,commits"])));
+          } catch (error) {
+            if (!(error instanceof GitHubError)) throw error;
+            warn(`WARN skipped ${url}: ${error.message}`);
+          }
+        }
       }
       return prs;
     },

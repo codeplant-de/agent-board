@@ -1,6 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isRecord } from "./guards.mts";
 
 export class ConfigError extends Error {}
 
@@ -49,10 +50,6 @@ export function getPaths(env: NodeJS.ProcessEnv = process.env): Paths {
 
 export function expandHome(path: string): string {
   return path === "~" || path.startsWith("~/") ? homedir() + path.slice(1) : path;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isStringList(value: unknown): value is string[] {

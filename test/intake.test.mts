@@ -84,19 +84,39 @@ test("requeue moves the card, updates the head line and comments", async () => {
   assert.deepEqual(trello.writes.map((w) => w.split(":")[0]), ["move id-c1 -> Todo", "desc id-c1", "comment id-c1"]);
 });
 
-test("a failed listing changes nothing", async () => {
+test("a failed listing changes nothing and fails the run", async () => {
   const trello = fakeTrello([cardFor(1, "l-needs")]);
-  const logs: string[] = [];
-  await runIntake({
-    trello,
-    config: CONFIG,
-    dryRun: false,
-    print: (line) => logs.push(line),
-    github: { listReviewRequested: async () => { throw new GitHubError("gh search failed: boom"); } },
-    now: () => NOW,
-  });
+  await assert.rejects(
+    runIntake({
+      trello,
+      config: CONFIG,
+      dryRun: false,
+      print: () => undefined,
+      github: { listReviewRequested: async () => { throw new GitHubError("gh search failed: boom"); } },
+      now: () => NOW,
+    }),
+    GitHubError,
+  );
   assert.deepEqual(trello.writes, []);
-  assert.match(logs[0] ?? "", /^LISTING-FAILED/);
+});
+
+test("an archived card still counts, so no second card and no requeue", () => {
+  const archived = { ...cardFor(1, "l-done"), closed: true };
+  assert.deepEqual(plan([pr(1)], [archived]), ["skip:card archived"]);
+  assert.deepEqual(plan([pr(1, { headSha: "aaaaaaa1" })], [archived]), ["skip:card archived"]);
+});
+
+test("intake reads every card on the board, archived included", async () => {
+  const trello = fakeTrello([{ ...cardFor(1, "l-done"), closed: true }]);
+  await runIntake({ trello, config: CONFIG, dryRun: false, print: () => undefined, github: { listReviewRequested: async () => [pr(1)] }, now: () => NOW });
+  assert.deepEqual(trello.writes, []);
+});
+
+test("the search is asked per configured repo", async () => {
+  const asked: string[][] = [];
+  const trello = fakeTrello([]);
+  await runIntake({ trello, config: CONFIG, dryRun: false, print: () => undefined, github: { listReviewRequested: async (repos) => { asked.push(repos); return []; } }, now: () => NOW });
+  assert.deepEqual(asked, [["cosuno/cosuno"]]);
 });
 
 test("gh pr view output is checked, not cast", () => {

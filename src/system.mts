@@ -4,21 +4,71 @@ import { unitName } from "./decide.mts";
 
 const run = promisify(execFile);
 
+export class SystemError extends Error {}
+
 export interface System {
   isActive(unit: string): Promise<boolean>;
+  // When the unit last became active; undefined if it is not loaded.
+  startedAt(unit: string): Promise<Date | undefined>;
+  // Short links of the worker units that are running now.
+  activeWorkers(): Promise<string[]>;
   stop(unit: string): Promise<void>;
   startWorker(shortLink: string): Promise<{ pid: number | undefined }>;
+}
+
+const LIVE_STATES = ["active", "activating", "reloading", "deactivating", "refreshing"];
+const GONE_STATES = ["inactive", "failed"];
+
+// Only a state systemd names counts as an answer. A broken bus or a missing binary prints nothing known,
+// and must not read as "the unit is gone".
+export function parseUnitState(stdout: string): boolean {
+  const state = stdout.trim();
+  if (LIVE_STATES.includes(state)) return true;
+  if (GONE_STATES.includes(state)) return false;
+  throw new SystemError(`systemctl gave no known unit state (got "${state.slice(0, 40)}")`);
+}
+
+const NON_WORKER_UNITS = ["agent-board-dispatch", "agent-board-intake"];
+
+export function parseWorkerUnits(stdout: string): string[] {
+  const shortLinks: string[] = [];
+  for (const line of stdout.split("\n")) {
+    const name = /^\s*[●*]?\s*(agent-board-[^\s.]+)\.service\s/.exec(line)?.[1];
+    if (name === undefined || NON_WORKER_UNITS.includes(name)) continue;
+    shortLinks.push(name.slice("agent-board-".length));
+  }
+  return shortLinks;
+}
+
+// `systemctl --timestamp=unix` prints "@<seconds>", or an empty value for a unit that never started.
+export function parseUnixTimestamp(stdout: string): Date | undefined {
+  const seconds = /^@(\d+)$/.exec(stdout.trim())?.[1];
+  if (seconds === undefined || Number(seconds) === 0) return undefined;
+  return new Date(Number(seconds) * 1000);
+}
+
+async function systemctl(args: string[]): Promise<string> {
+  try {
+    return (await run("systemctl", ["--user", ...args])).stdout;
+  } catch (error) {
+    // is-active exits non-zero for a unit that is not running but still prints its state.
+    if (typeof error === "object" && error !== null && "stdout" in error && typeof error.stdout === "string" && error.stdout.trim() !== "") {
+      return error.stdout;
+    }
+    throw new SystemError(`systemctl --user ${args[0]} failed: ${error instanceof Error ? error.message.split("\n")[0] : "unknown error"}`);
+  }
 }
 
 export function createSystem(input: { workerScript: string; dryRun: boolean; print: (line: string) => void }): System {
   return {
     async isActive(unit) {
-      try {
-        const { stdout } = await run("systemctl", ["--user", "is-active", unit]);
-        return stdout.trim() === "active";
-      } catch {
-        return false;
-      }
+      return parseUnitState(await systemctl(["is-active", unit]));
+    },
+    async startedAt(unit) {
+      return parseUnixTimestamp(await systemctl(["--timestamp=unix", "show", "--property=ActiveEnterTimestamp", "--value", unit]));
+    },
+    async activeWorkers() {
+      return parseWorkerUnits(await systemctl(["list-units", "agent-board-*", "--type=service", "--state=active,activating,reloading,deactivating", "--plain", "--no-legend", "--no-pager"]));
     },
     async stop(unit) {
       if (input.dryRun) return input.print(`DRY systemctl --user stop ${unit}`);

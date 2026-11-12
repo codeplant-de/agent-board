@@ -8,11 +8,12 @@
  *
  * <card> is the short link (the 8 characters in the card URL) or the card id. Add --dry-run to print writes.
  */
-import { buildContext, runMain, takeFlag, UsageError } from "./cli.mts";
+import { buildContext, rejectExtraArgs, runMain, takeFlag, UsageError } from "./cli.mts";
 import type { Context } from "./cli.mts";
 import { LIST_NAMES } from "./config.mts";
 import { postSlack, slackText } from "./notify.mts";
 import { listId } from "./trello.mts";
+import type { TrelloCard } from "./trello.mts";
 
 async function readStdin(): Promise<string> {
   let content = "";
@@ -22,18 +23,25 @@ async function readStdin(): Promise<string> {
 
 const USAGE = "usage: board comment <card> <text> | move <card> <list> | notify <card> <text> | lists | setup";
 
+// The board CLI is reachable by the reviewer, so it only touches cards of the configured board.
+async function boardCard(context: Context, card: string): Promise<TrelloCard> {
+  const [found, boardId] = await Promise.all([context.trello.getCard(card), context.trello.getBoardId()]);
+  if (found.idBoard !== boardId) throw new UsageError(`card ${card} is not on the configured board`);
+  return found;
+}
+
 async function comment(context: Context, card: string, text: string): Promise<void> {
-  const { id } = await context.trello.getCard(card);
+  const { id } = await boardCard(context, card);
   await context.trello.addComment(id, text);
 }
 
 async function move(context: Context, card: string, list: string): Promise<void> {
-  const [{ id }, lists] = await Promise.all([context.trello.getCard(card), context.trello.getLists()]);
+  const [{ id }, lists] = await Promise.all([boardCard(context, card), context.trello.getLists()]);
   await context.trello.moveCard(id, listId(lists, list));
 }
 
 async function notify(context: Context, card: string, text: string): Promise<void> {
-  const found = await context.trello.getCard(card);
+  const found = await boardCard(context, card);
   const message = slackText(found, text);
   if (context.dryRun) return context.print(`DRY slack ${message.replaceAll("\n", " | ")}`);
   await postSlack(context.config.slackWebhookFile, message);
@@ -69,7 +77,8 @@ export async function main(argv: string[]): Promise<void> {
   const args = [...argv];
   const dryRun = takeFlag(args, "--dry-run");
   const [command, card, ...rest] = args;
-  if (!command) throw new UsageError(USAGE);
+  if (!command || command.startsWith("--") || card?.startsWith("--")) throw new UsageError(USAGE);
+  if ((command === "lists" || command === "setup") && (card !== undefined || rest.length > 0)) rejectExtraArgs([card ?? "", ...rest], USAGE);
   const context = buildContext(dryRun);
   const text = rest.join(" ") === "-" ? await readStdin() : rest.join(" ");
   switch (command) {

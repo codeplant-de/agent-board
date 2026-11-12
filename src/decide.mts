@@ -15,7 +15,7 @@ export type LabelResolution =
 
 export function resolveLabel(card: TrelloCard, labels: Record<string, LabelEntry>): LabelResolution {
   for (const { name } of card.labels) {
-    const entry = labels[name];
+    const entry = Object.hasOwn(labels, name) ? labels[name] : undefined;
     if (entry) return { known: true, label: name, entry };
   }
   const names = card.labels.map((label) => label.name);
@@ -80,6 +80,19 @@ export function parsePrUrl(url: string): { repo: string; number: number } | unde
   return { repo: match[1], number: Number(match[2]) };
 }
 
+export const PLUGIN_PLACEHOLDER = "{pr-review}";
+
+export function usesPluginPlaceholder(entry: LabelEntry): boolean {
+  return entry.kind === "skill" && [...entry.allowedTools, ...entry.disallowedTools].some((rule) => rule.includes(PLUGIN_PLACEHOLDER));
+}
+
+// `~/` is expanded inside Bash rules only: Read rules read `~/` themselves, and an absolute path there would mean "from the project root".
+export function expandRule(rule: string, home: string, prReviewPath: string | undefined): string {
+  if (!rule.startsWith("Bash(")) return rule;
+  const expanded = rule.replaceAll("~/", `${home}/`);
+  return prReviewPath === undefined ? expanded : expanded.replaceAll(PLUGIN_PLACEHOLDER, prReviewPath);
+}
+
 export type Outcome = { kind: "ok" } | { kind: "failed"; reason: string } | { kind: "unreported" };
 
 export function decideOutcome(input: {
@@ -87,14 +100,15 @@ export function decideOutcome(input: {
   signal: string | null;
   timedOut: boolean;
   timeoutMinutes: number;
-  stillRunning: boolean;
+  // The worker (or the skill) moved the card to Needs me or Done.
+  reported: boolean;
 }): Outcome {
   if (input.timedOut) return { kind: "failed", reason: `Timed out after ${input.timeoutMinutes} minutes and was stopped.` };
   if (input.exitCode !== 0) {
     const how = input.signal ? `was killed by ${input.signal}` : `exited with code ${input.exitCode}`;
     return { kind: "failed", reason: `The worker ${how}.` };
   }
-  return input.stillRunning ? { kind: "unreported" } : { kind: "ok" };
+  return input.reported ? { kind: "ok" } : { kind: "unreported" };
 }
 
 export interface Invocation {
@@ -111,6 +125,8 @@ export function buildInvocation(input: {
   repos: Record<string, string>;
   home: string;
   fallbackCwd: string;
+  // Install path of the pr-review plugin; undefined when it could not be resolved.
+  prReviewPath: string | undefined;
 }): InvocationPlan {
   const { entry, card, repos, home } = input;
   if (entry.kind === "command") {
@@ -127,13 +143,19 @@ export function buildInvocation(input: {
     if (!dir) return { ok: false, reason: `No checkout is configured for ${pr.repo}. Add it to "repos" in config.json.` };
     cwd = dir;
   }
-  const expand = (tool: string): string => tool.replaceAll("~/", `${home}/`);
+  if (usesPluginPlaceholder(entry) && input.prReviewPath === undefined) {
+    return { ok: false, reason: `The pr-review plugin path is unknown, but the allow rules need ${PLUGIN_PLACEHOLDER}.` };
+  }
+  const expand = (rule: string): string => expandRule(rule, home, input.prReviewPath);
   // Prompt first: --allowedTools and --disallowedTools take every following argument.
   const args = [
     "-p",
     `/${entry.skill} ${card.shortLink} ${prompt}`,
     "--permission-mode",
     "dontAsk",
+    // Project and local settings of the checkout carry their own allow rules and tokens; only the user's settings load.
+    "--setting-sources",
+    "user",
     "--allowedTools",
     ...entry.allowedTools.map(expand),
   ];
