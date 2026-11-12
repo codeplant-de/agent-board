@@ -35,7 +35,7 @@ Needs Node 24+, `flock`, `systemd-run`, `gh` and `claude`. No runtime dependenci
    systemctl --user enable --now agent-board-intake.timer
    ```
 
-The units expect the repo at `~/workspace/agent-board`; edit `ExecStart` if it lives elsewhere. They set `PATH` to include `~/.local/share/mise/shims` because Node is not on the default user PATH.
+The units expect the repo at `~/workspace/agent-board`; edit `ExecStart` if it lives elsewhere. `install.sh` links `bin/.node` to a real Node 24+ binary (set `NODE=` to choose one), because a mise shim does not resolve a version outside a project directory. Run it again after a Node upgrade.
 
 User timers only run while you are logged in. For runs after logout: `loginctl enable-linger $USER`.
 

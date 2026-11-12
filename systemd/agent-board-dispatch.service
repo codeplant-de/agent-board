@@ -3,8 +3,8 @@ Description=agent-board dispatcher: one tick
 
 [Service]
 Type=oneshot
-# Node lives under mise and is not on the default user PATH.
-Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# bin/_node finds Node; PATH is for flock, gh, claude and systemd-run.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # bin/dispatch takes the lock itself; exit 75 means another tick holds it, which is not a failure.
 ExecStart=%h/workspace/agent-board/bin/dispatch
 SuccessExitStatus=75
