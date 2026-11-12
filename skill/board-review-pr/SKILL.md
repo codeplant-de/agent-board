@@ -15,7 +15,8 @@ Arguments: `<task>` (the task id) and `<pr-url>`. Nobody is watching, so never a
 - Never write the review into a brain journal; the headless run has no journal access.
 - The Shortcut story lookup (`mcp__shortcut__get_story`) is best effort: this run loads only user settings, so the Shortcut token may be missing. If the lookup fails, review without the story and list "story not read" under **Check by hand**.
 - A denied tool is a result, not an obstacle. Do not look for another way around it. Report it on the task.
-- Run every command on its own, by its full path: no `cd`, no `VAR=... ; $VAR` indirection, and never a `board` call chained with another command (it would run in the sandbox, where `board` is not found). Such calls are refused or fail, and each one costs a turn.
+- Run every command on its own, by its full path: no `cd`, no `VAR=... ; $VAR` indirection, and never a `board` call chained with a command that is not `board` (it would run in the sandbox, where `board` is not found). Such calls are refused or fail, and each one costs a turn.
+- Temp files go in `/tmp/pr-<n>-<sha7>-<what>`, never under `$TMPDIR` (inside the sandbox that is `/tmp/claude`, and the script rules only allow `/tmp/pr-*`). Use that path wherever `pr-review:review-pr` says `${TMPDIR:-/tmp}/pr-...`, and create the files with the Write tool.
 - Bash runs in a sandbox that hides your home directory. `board`, `gh` and `git fetch` have what they need; for anything else a "no such file" error means the sandbox said no, so do not try to get around it.
 
 ## Steps
