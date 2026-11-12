@@ -26,7 +26,7 @@ Needs Node 24+, `flock`, `systemd-run`, `gh`, `claude`, and for the reviewer's s
       The key and token are sent in the `Authorization` header and are never put in a URL or printed. A file with any other mode is refused. Only the Trello backend reads this file.
    3. Write `~/.config/agent-board/trello.json` with the board: `{ "boardId": "<id or short link>" }`.
 2. Copy `config.example.json` to `~/.config/agent-board/config.json` and check `backend.command`.
-3. `./install.sh` symlinks the units into `~/.config/systemd/user`, `bin/board` into `~/.local/bin` and the skill into `~/.claude/skills`. It enables and starts nothing.
+3. `./install.sh` copies the units into `~/.config/systemd/user` and symlinks `bin/board` into `~/.local/bin` and the skill into `~/.claude/skills`. Run it again after changing a unit file. It enables and starts nothing.
 4. `board setup` asks the backend to create what it needs. For Trello: the four lists and one label per entry in `labels`.
 5. Enable when ready:
 

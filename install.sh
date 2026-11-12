@@ -1,11 +1,12 @@
 #!/bin/sh
-# Symlinks the units, the board command and the skill into place. Enables nothing and starts nothing.
+# Copies the units and symlinks the board command and the skill into place. Enables nothing and starts nothing.
 # The backend runs from the repo, wherever config.json points; nothing to link for it.
 set -eu
 root=$(dirname "$(readlink -f "$0")")
 mkdir -p "$HOME/.config/systemd/user" "$HOME/.local/bin" "$HOME/.claude/skills"
 for unit in "$root"/systemd/*; do
-  ln -sfn "$unit" "$HOME/.config/systemd/user/$(basename "$unit")"
+  # Copied, not linked: `systemctl disable` deletes a unit file that is a symlink.
+  install -m 644 "$unit" "$HOME/.config/systemd/user/$(basename "$unit")"
 done
 ln -sfn "$root/bin/board" "$HOME/.local/bin/board"
 ln -sfn "$root/skill/board-review-pr" "$HOME/.claude/skills/board-review-pr"
