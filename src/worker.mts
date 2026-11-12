@@ -13,7 +13,7 @@ import type { Task } from "./contract.mts";
 import { buildInvocation, decideOutcome, resolveLabel, usesPluginPlaceholder } from "./decide.mts";
 import type { Invocation } from "./decide.mts";
 import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from "./logs.mts";
-import { resolveInstallPath } from "./plugins.mts";
+import { resolvePluginPath } from "./plugins.mts";
 import { postSlack, slackText } from "./notify.mts";
 import { sendToNeedsMe } from "./report.mts";
 import { fence } from "./text.mts";
@@ -34,7 +34,7 @@ export interface WorkerDeps extends Context {
   notify: (task: Task, text: string) => Promise<void>;
   resetLog: (taskId: string) => void;
   appendLog: (taskId: string, text: string) => void;
-  // Install path of a plugin such as "pr-review@ccc"; throws with the reason when it cannot be resolved.
+  // Root of a plugin such as "pr-review@ccc"; throws with the reason when it cannot be resolved.
   pluginPath: (key: string) => string;
   dirExists: (path: string) => boolean;
   home: string;
@@ -179,7 +179,7 @@ if (import.meta.main) {
       notify: (task, text) => postSlack(context.config.slackWebhookFile, slackText(task, text)),
       resetLog,
       appendLog,
-      pluginPath: resolveInstallPath,
+      pluginPath: resolvePluginPath,
       dirExists: (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true,
       home: homedir(),
       fallbackCwd: homedir(),

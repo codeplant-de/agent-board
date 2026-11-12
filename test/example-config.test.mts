@@ -17,7 +17,7 @@ test("no shipped rule starts with a wildcard before a path", () => {
 test("git cannot be made to write files, and secrets are denied", () => {
   assert.ok(entry?.kind === "skill");
   const secrets = ["~/.config/**", "~/.ssh/**", "~/.aws/**", "~/.gnupg/**", "~/.kube/**", "~/.docker/**", "~/.netrc", "~/.claude/.credentials.json", "**/.env*"].map((path) => `Read(${path})`);
-  for (const rule of ["Bash(git log *--output*)", "Bash(git show *--output*)", "Bash(git diff *--output*)", "Bash(git diff *--no-index*)", "Bash(git fetch *:*)", "Bash(git fetch *--upload-pack*)", ...secrets]) {
+  for (const rule of ["Bash(git log *--output*)", "Bash(git show *--output*)", "Bash(git diff *--output*)", "Bash(git diff *--no-index*)", "Bash(git fetch *:**)", "Bash(git fetch *--up*)", ...secrets]) {
     assert.ok(entry.disallowedTools.includes(rule), rule);
   }
   for (const rule of ["Bash(jq *)", "Bash(brain notes append *)"]) assert.ok(!entry.allowedTools.includes(rule), rule);
@@ -61,4 +61,10 @@ test("the sandbox derived from the shipped entry denies the home directory and k
   assert.match(settings, /"denyWrite":\["\/work\/c\/api","\/work\/c\/frontend"\]/);
   assert.match(settings, /"allowWrite":\["\/work\/c\/\.git","\/tmp",/);
   assert.match(settings, /"autoAllowBashIfSandboxed":false/);
+});
+
+test("no rule ends in the legacy `:*` prefix syntax after a wildcard, which Claude Code would match as a literal", () => {
+  assert.ok(entry?.kind === "skill");
+  const rules = [...entry.allowedTools, ...entry.disallowedTools, ...(entry.sandbox?.excludedCommands ?? [])];
+  for (const rule of rules) assert.ok(!/\*.*:\*\)?$/.test(rule), rule);
 });
