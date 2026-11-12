@@ -1,11 +1,19 @@
 import { ConfigError, readSecretFile } from "./config.mts";
 
+// Slack reads `&`, `<` and `>` as markup; `&` goes first so the others' escapes survive.
 function escapeSlack(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
+// `<`, `>` and `|` end a Slack link, so they are percent-encoded in the URL. The label can hold anything but
+// `<` and `>`, which are escaped with the rest.
+function slackLink(url: string, label: string): string {
+  const safeUrl = url.replace(/[\s<>|]/g, (char) => encodeURIComponent(char));
+  return `<${safeUrl}|${escapeSlack(label)}>`;
+}
+
 export function slackText(task: { title: string; url: string }, text: string): string {
-  return `<${task.url}|${escapeSlack(task.title)}>\n${escapeSlack(text)}`;
+  return `${slackLink(task.url, task.title)}\n${escapeSlack(text)}`;
 }
 
 // The webhook URL is a secret: it is never printed and errors never carry it.

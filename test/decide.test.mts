@@ -12,9 +12,10 @@ import {
   resolveLabel,
   START_MARKER,
   startedAt,
+  usesPluginPlaceholder,
 } from "../src/decide.mts";
 import { tail } from "../src/text.mts";
-import { CONFIG, task } from "./helpers.mts";
+import { CONFIG, NO_SANDBOX_EXTRAS, task } from "./helpers.mts";
 
 test("free slots never go below zero", () => {
   assert.equal(freeSlots(0, 2), 2);
@@ -91,6 +92,7 @@ test("skill invocation: prompt first, repo cwd, tools expanded, no skip flags", 
     home: "/home/u",
     fallbackCwd: "/",
     prReviewPath: undefined,
+    listDir: () => [],
   });
   assert.ok(plan.ok);
   assert.equal(plan.invocation.cwd, "/work/cosuno");
@@ -101,7 +103,7 @@ test("skill invocation: prompt first, repo cwd, tools expanded, no skip flags", 
 test("skill invocation refuses an unmapped repo and a non-PR input", () => {
   const entry = CONFIG.labels["review-pr"];
   assert.ok(entry);
-  const run = (input: string) => buildInvocation({ entry, task: task({ id: "a", input }), repos: CONFIG.repos, home: "/h", fallbackCwd: "/", prReviewPath: undefined });
+  const run = (input: string) => buildInvocation({ entry, task: task({ id: "a", input }), repos: CONFIG.repos, home: "/h", fallbackCwd: "/", prReviewPath: undefined, listDir: () => [] });
   const unmapped = run("https://github.com/other/repo/pull/2");
   assert.ok(!unmapped.ok);
   assert.match(unmapped.reason, /other\/repo/);
@@ -111,9 +113,9 @@ test("skill invocation refuses an unmapped repo and a non-PR input", () => {
 test("command invocation runs the plain command", () => {
   const entry = CONFIG.labels["selftest"];
   assert.ok(entry);
-  const plan = buildInvocation({ entry, task: task({ id: "a" }), repos: {}, home: "/h", fallbackCwd: "/fallback", prReviewPath: undefined });
+  const plan = buildInvocation({ entry, task: task({ id: "a" }), repos: {}, home: "/h", fallbackCwd: "/fallback", prReviewPath: undefined, listDir: () => [] });
   assert.ok(plan.ok);
-  assert.deepEqual(plan.invocation, { command: "sleep", args: ["300"], cwd: "/fallback" });
+  assert.deepEqual(plan.invocation, { command: "sleep", args: ["300"], cwd: "/fallback", maskedEnv: [] });
 });
 
 test("long text is tailed", () => {
@@ -130,6 +132,7 @@ test("the skill run loads user settings only, so a checkout's own allow rules ne
     home: "/home/u",
     fallbackCwd: "/",
     prReviewPath: undefined,
+    listDir: () => [],
   });
   assert.ok(plan.ok);
   const { args } = plan.invocation;
@@ -145,9 +148,9 @@ test("{pr-review} expands to the plugin path in Bash rules; ~/ only in Bash rule
 });
 
 test("a rule with {pr-review} fails the plan when the plugin path is unknown", () => {
-  const entry = { kind: "skill" as const, skill: "s", allowedTools: ["Bash({pr-review}/skills/x.sh *)"], disallowedTools: [], cwd: "/tmp" };
-  const input = { entry, task: task({ id: "a", input: "x" }), repos: {}, home: "/h", fallbackCwd: "/" };
-  const missing = buildInvocation({ ...input, prReviewPath: undefined });
+  const entry = { kind: "skill" as const, skill: "s", allowedTools: ["Bash({pr-review}/skills/x.sh *)"], disallowedTools: [], sandbox: NO_SANDBOX_EXTRAS, cwd: "/tmp" };
+  const input = { entry, task: task({ id: "a", input: "x" }), repos: {}, home: "/h", fallbackCwd: "/", listDir: () => [] };
+  const missing = buildInvocation({ ...input, prReviewPath: undefined, listDir: () => [] });
   assert.ok(!missing.ok);
   assert.match(missing.reason, /pr-review plugin path/);
   const found = buildInvocation({ ...input, prReviewPath: "/plugins/pr" });
@@ -158,4 +161,50 @@ test("a rule with {pr-review} fails the plan when the plugin path is unknown", (
 test("a label named like an Object.prototype member is unknown", () => {
   const resolved = resolveLabel(task({ id: "a", labels: ["toString"] }), CONFIG.labels);
   assert.equal(resolved.known, false);
+});
+
+test("the skill run gets the sandbox as inline settings, before the variadic tool lists", () => {
+  const entry = CONFIG.labels["review-pr"];
+  assert.ok(entry?.kind === "skill");
+  const sandboxed = { ...entry, sandbox: { ...NO_SANDBOX_EXTRAS, maskedEnv: [{ name: "GH_TOKEN", command: ["gh", "auth", "token"], injectHosts: ["api.github.com"] }] } };
+  const plan = buildInvocation({
+    entry: sandboxed,
+    task: task({ id: "abc", input: "https://github.com/cosuno/cosuno/pull/1" }),
+    repos: CONFIG.repos,
+    home: "/home/u",
+    fallbackCwd: "/",
+    prReviewPath: undefined,
+    listDir: (dir) => (dir === "/work/cosuno" ? [".git", "api"] : []),
+  });
+  assert.ok(plan.ok);
+  const { args } = plan.invocation;
+  const at = args.indexOf("--settings");
+  assert.ok(at !== -1 && at < args.indexOf("--allowedTools"));
+  const settings: unknown = JSON.parse(args[at + 1] ?? "");
+  assert.match(JSON.stringify(settings), /"enabled":true.*"failIfUnavailable":true.*"denyWrite":\["\/work\/cosuno\/api"\]/);
+  assert.deepEqual(plan.invocation.maskedEnv.map((env) => env.name), ["GH_TOKEN"]);
+  assert.ok(!args.some((arg) => arg.includes("ghp_")));
+});
+
+test("a skill label without a sandbox entry is never started", () => {
+  const entry = CONFIG.labels["review-pr"];
+  assert.ok(entry?.kind === "skill");
+  const plan = buildInvocation({
+    entry: { ...entry, sandbox: undefined },
+    task: task({ id: "abc", input: "https://github.com/cosuno/cosuno/pull/1" }),
+    repos: CONFIG.repos,
+    home: "/home/u",
+    fallbackCwd: "/",
+    prReviewPath: undefined,
+    listDir: () => [],
+  });
+  assert.ok(!plan.ok);
+  assert.match(plan.reason, /no "sandbox" entry/);
+});
+
+test("{pr-review} in the sandbox entry also needs the plugin path", () => {
+  const entry = { kind: "skill" as const, skill: "s", allowedTools: ["Read"], disallowedTools: [], sandbox: { ...NO_SANDBOX_EXTRAS, allowRead: ["{pr-review}"] }, cwd: "/tmp" };
+  assert.equal(usesPluginPlaceholder(entry), true);
+  const plan = buildInvocation({ entry, task: task({ id: "a", input: "x" }), repos: {}, home: "/h", fallbackCwd: "/", prReviewPath: undefined, listDir: () => [] });
+  assert.ok(!plan.ok);
 });

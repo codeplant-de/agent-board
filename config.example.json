@@ -19,7 +19,7 @@
         "Glob",
         "Skill",
         "Agent",
-        "Write(//tmp/pr-*)",
+        "Edit(//tmp/pr-*)",
         "Bash(board *)",
         "Bash({pr-review}/skills/review-pr/review-notes.sh path *)",
         "Bash({pr-review}/skills/review-pr/review-notes.sh status *)",
@@ -73,13 +73,33 @@
         "Bash(git diff *--output*)",
         "Bash(git diff *--no-index*)",
         "Bash(git fetch *:*)",
+        "Bash(git fetch *--upload-pack*)",
         "Bash({pr-review}/skills/draft-review-reference/draft-review.sh create *)",
         "Bash({pr-review}/skills/draft-review-reference/draft-review.sh replace *)",
         "Bash({pr-review}/skills/draft-review-reference/draft-review.sh delete *)",
         "Read(~/.config/**)",
         "Read(~/.ssh/**)",
-        "Read(**/.env*)"
-      ]
+        "Read(~/.aws/**)",
+        "Read(~/.gnupg/**)",
+        "Read(~/.kube/**)",
+        "Read(~/.docker/**)",
+        "Read(~/.netrc)",
+        "Read(~/.git-credentials)",
+        "Read(~/.npmrc)",
+        "Read(~/.claude/.credentials.json)",
+        "Read(~/.local/share/keyrings/**)",
+        "Read(**/.env*)",
+        "Read(//proc/**)"
+      ],
+      "sandbox": {
+        "allowRead": ["{pr-review}", "~/.local/state/pr-review"],
+        "allowWrite": ["~/.local/state/pr-review"],
+        "allowedDomains": ["api.github.com"],
+        "excludedCommands": ["board *", "git fetch origin *"],
+        "maskedEnv": [
+          { "name": "GH_TOKEN", "command": ["gh", "auth", "token"], "injectHosts": ["api.github.com"] }
+        ]
+      }
     },
     "selftest": {
       "command": ["sleep", "300"]

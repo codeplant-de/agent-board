@@ -1,4 +1,4 @@
-import type { Config } from "../src/config.mts";
+import type { Config, SandboxEntry } from "../src/config.mts";
 import type { Backend, Note, Task } from "../src/contract.mts";
 
 export function task(overrides: Partial<Task> & { id: string }): Task {
@@ -12,6 +12,8 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     ...overrides,
   };
 }
+
+export const NO_SANDBOX_EXTRAS: SandboxEntry = { allowRead: [], allowWrite: [], allowedDomains: [], excludedCommands: [], maskedEnv: [] };
 
 export const CONFIG: Config = {
   backendCommand: ["backend"],
@@ -27,6 +29,7 @@ export const CONFIG: Config = {
       skill: "board-review-pr",
       allowedTools: ["Read", "Bash(board *)"],
       disallowedTools: ["Bash(git push *)"],
+      sandbox: NO_SANDBOX_EXTRAS,
       cwd: "pr-repo",
     },
   },

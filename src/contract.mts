@@ -44,15 +44,23 @@ export interface Backend {
   addNote(id: string, text: string): Promise<void>;
   // Oldest first.
   readNotes(id: string): Promise<Note[]>;
-  // What it created; undefined when the backend has no setup.
-  setup(labels: string[]): Promise<string[] | undefined>;
+  // What it created (with dryRun: what it would create, writing nothing); undefined when the backend has no setup.
+  setup(labels: string[], options?: { dryRun?: boolean }): Promise<string[] | undefined>;
 }
 
 export class ContractError extends Error {}
 
+// "dispatch" and "intake" would make the worker unit agent-board-<id> collide with the tool's own units.
+const RESERVED_TASK_IDS = ["dispatch", "intake"];
+
 // The id ends up in a systemd unit name, a log file name and argv, so the core never trusts a backend's.
 export function isSafeTaskId(id: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id);
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id) && !RESERVED_TASK_IDS.includes(id);
+}
+
+// The url lands inside a Slack link, where `<`, `>` and `|` end the link early.
+export function isSafeTaskUrl(url: string): boolean {
+  return /^https?:\/\/[^\s<>|]+$/.test(url);
 }
 
 export function isStatus(value: unknown): value is Status {
@@ -94,7 +102,9 @@ function rejectUnknownKeys(obj: Record<string, unknown>, allowed: string[], what
 export function parseTask(value: unknown): Task {
   const obj = record(value, "task");
   const id = string(obj, "id", "task");
-  if (!isSafeTaskId(id)) throw new ContractError(`task id "${id.slice(0, 40)}" is not safe (letters, digits, - and _, at most 64)`);
+  if (!isSafeTaskId(id)) throw new ContractError(`task id "${id.slice(0, 40)}" is not safe (letters, digits, - and _, at most 64, not "dispatch" or "intake")`);
+  const url = string(obj, "url", "task");
+  if (!isSafeTaskUrl(url)) throw new ContractError(`task url "${url.slice(0, 40)}" must be an http(s) URL without spaces, <, > or |`);
   const closed = obj["closed"];
   if (typeof closed !== "boolean") throw new ContractError("task.closed must be a boolean");
   return {
@@ -103,7 +113,7 @@ export function parseTask(value: unknown): Task {
     input: string(obj, "input", "task"),
     labels: labels(obj, "task"),
     status: status(obj, "task"),
-    url: string(obj, "url", "task"),
+    url,
     closed,
   };
 }

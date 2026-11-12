@@ -1,20 +1,22 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BackendError, createCliBackend, dryRunBackend } from "../src/backend.mts";
+import { isSafeTaskId } from "../src/contract.mts";
 import type { Backend } from "../src/contract.mts";
 import { fakeBackend, task } from "./helpers.mts";
 
 const FIXTURE = new URL("./fixtures/fake-backend.mts", import.meta.url).pathname;
 
-function setup(mode = "", timeoutMs?: number): { backend: Backend; stateFile: string } {
+function setup(mode = "", timeoutMs?: number, maxOutputChars?: number): { backend: Backend; stateFile: string } {
   const stateFile = join(mkdtempSync(join(tmpdir(), "agent-board-backend-")), "state.json");
   writeFileSync(stateFile, JSON.stringify({ tasks: [], notes: {}, calls: [] }));
   process.env["FAKE_BACKEND_FILE"] = stateFile;
   process.env["FAKE_BACKEND_MODE"] = mode;
-  return { backend: createCliBackend({ command: [process.execPath, FIXTURE], timeoutMs }), stateFile };
+  return { backend: createCliBackend({ command: [process.execPath, FIXTURE], timeoutMs, maxOutputChars }), stateFile };
 }
 
 function calls(stateFile: string): { argv: string[]; stdin: string }[] {
@@ -117,4 +119,105 @@ test("dry run reads through and prints every write instead of making it", async 
   assert.match(printed[0] ?? "", /^DRY update-task a \{"status":"running"\}$/);
   assert.match(printed[1] ?? "", /^DRY add-note a hello$/);
   assert.match(printed[2] ?? "", /^DRY add-task /);
+});
+
+test("the reason shown is the start of the backend's stderr, not the end", async () => {
+  await assert.rejects(setup("noisy-fail").backend.listTasks(), (error: Error) => /exit 4\): FIRST-LINE-REASON/.test(error.message) && !error.message.includes("LAST-LINE"));
+});
+
+test("a task with a url Slack could misread is refused", async () => {
+  const { backend, stateFile } = setup();
+  const created = await backend.addTask({ title: "t", input: "", labels: [], status: "todo" });
+  for (const url of ["javascript:alert(1)", "https://x.example/a|b", "https://x.example/<a>", "https://x.example/a b", "", "ftp://x.example/a"]) {
+    const state = JSON.parse(readFileSync(stateFile, "utf8"));
+    state.tasks[0].url = url;
+    writeFileSync(stateFile, JSON.stringify(state));
+    await assert.rejects(backend.getTask(created.id), /task url/, url);
+  }
+});
+
+test("the ids dispatch and intake are refused, they would collide with the tool's own units", async () => {
+  const { backend, stateFile } = setup();
+  for (const id of ["dispatch", "intake"]) await assert.rejects(backend.getTask(id), /not a valid task id/);
+  assert.deepEqual(calls(stateFile), []);
+  assert.equal(isSafeTaskId("dispatcher"), true);
+});
+
+test("concurrent calls on the fake backend lose nothing, and a status change goes to the bottom", async () => {
+  const { backend } = setup();
+  const [first, second] = [await backend.addTask({ title: "a", input: "", labels: [], status: "todo" }), await backend.addTask({ title: "b", input: "", labels: [], status: "todo" })];
+  await Promise.all([
+    ...Array.from({ length: 8 }, (_, i) => backend.addNote(first.id, `note ${i}`)),
+    ...Array.from({ length: 8 }, (_, i) => backend.addTask({ title: `c${i}`, input: "", labels: [], status: "todo" })),
+  ]);
+  assert.equal((await backend.readNotes(first.id)).length, 8);
+  const ids = (await backend.listTasks()).map((t) => t.id);
+  assert.equal(ids.length, 10);
+  assert.equal(new Set(ids).size, 10, "every task got its own id");
+  await backend.updateTask(first.id, { status: "todo" });
+  const after = await backend.listTasks();
+  assert.equal(after.at(-1)?.id, first.id);
+  assert.equal(after[0]?.id, second.id);
+});
+
+test("update-task refuses keys it does not know", () => {
+  const { stateFile } = setup();
+  const created = spawnSync(process.execPath, [FIXTURE, "add-task"], { input: '{"title":"t"}', encoding: "utf8", env: process.env });
+  assert.equal(created.status, 0);
+  const result = spawnSync(process.execPath, [FIXTURE, "update-task", "t1"], { input: '{"title":"renamed"}', encoding: "utf8", env: process.env });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /unknown key "title"/);
+  assert.equal(JSON.parse(readFileSync(stateFile, "utf8")).tasks[0].title, "t");
+});
+
+// A backend that is a shell wrapper around a long-running child (no exec): the wrapper dies at the kill, and the
+// child must go with it.
+function wrapperBackend(body: string): { command: string[]; pidFile: string } {
+  const dir = mkdtempSync(join(tmpdir(), "agent-board-wrapper-"));
+  const pidFile = join(dir, "child.pid");
+  const script = join(dir, "backend");
+  writeFileSync(script, `#!/bin/sh\nsleep 30 &\necho $! > ${pidFile}\n${body}\n`);
+  chmodSync(script, 0o755);
+  return { command: [script], pidFile };
+}
+
+async function assertGone(pidFile: string): Promise<void> {
+  const child = Number(readFileSync(pidFile, "utf8").trim());
+  assert.ok(child > 0);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try {
+      process.kill(child, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.fail("the backend's child is still running");
+}
+
+test("a timeout kills the backend's children too, and does not wait for pipes they hold", async () => {
+  const { command, pidFile } = wrapperBackend("wait");
+  const started = Date.now();
+  await assert.rejects(createCliBackend({ command, timeoutMs: 400 }).listTasks(), /timed out after 0.4s/);
+  assert.ok(Date.now() - started < 5_000);
+  await assertGone(pidFile);
+});
+
+test("the output cap kills the backend's children too", async () => {
+  const { command, pidFile } = wrapperBackend("yes x");
+  const started = Date.now();
+  await assert.rejects(createCliBackend({ command, maxOutputChars: 1_000 }).listTasks(), /printed more than 1000 characters/);
+  assert.ok(Date.now() - started < 5_000);
+  await assertGone(pidFile);
+});
+
+test("a backend setup that is only planned writes nothing, and dry run prints the plan", async () => {
+  const { backend, stateFile } = setup();
+  const printed: string[] = [];
+  const dry = dryRunBackend(backend, (line) => printed.push(line));
+  assert.deepEqual(await dry.setup(["review-pr"]), []);
+  assert.deepEqual(printed, ["DRY create list Todo"]);
+  assert.deepEqual(await backend.setup(["review-pr"]), ["list Todo"], "the dry run did not create it");
+  assert.deepEqual(calls(stateFile).map((call) => call.argv.join(" ")).filter((line) => line.startsWith("setup")), ["setup --dry-run", "setup"]);
+  assert.equal(await setup("no-setup").backend.setup([], { dryRun: true }), undefined);
 });

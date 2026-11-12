@@ -40,6 +40,14 @@ test("invalid configs are refused with a pointed message", () => {
     [{ ...valid, labels: { x: { skill: "s" } } }, /allowedTools/],
     [{ ...valid, repos: { bad: "/x" } }, /owner\/name/],
     [{ ...valid, repos: {} }, /repos must not be empty/],
+    [{ ...valid, backend: { command: ["bin/backend"] } }, /backend.command\[0\] must be an absolute path/],
+    [{ ...valid, backend: { command: ["./backend"] } }, /backend.command\[0\] must be an absolute path/],
+    [{ ...valid, backend: { command: ["../backend"] } }, /backend.command\[0\] must be an absolute path/],
+    [{ ...valid, labels: { x: { skill: "s", allowedTools: ["Read"], sandbox: { allowRead: "x" } } } }, /sandbox.allowRead must be a list/],
+    [{ ...valid, labels: { x: { skill: "s", allowedTools: ["Read"], sandbox: { allowWrte: [] } } } }, /allowWrte is not a sandbox key/],
+    [{ ...valid, labels: { x: { skill: "s", allowedTools: ["Read"], sandbox: { maskedEnv: [{ name: "gh token", command: ["gh"], injectHosts: ["a.com"] }] } } } }, /name must be an environment variable name/],
+    [{ ...valid, labels: { x: { skill: "s", allowedTools: ["Read"], sandbox: { maskedEnv: [{ name: "GH_TOKEN", command: ["gh"], injectHosts: [] }] } } } }, /injectHosts must be a non-empty list/],
+    [{ ...valid, labels: { x: { skill: "s", allowedTools: ["Read"], sandbox: { maskedEnv: [{ name: "GH_TOKEN", command: ["bin/gh"], injectHosts: ["a.com"] }] } } } }, /maskedEnv\[0\].command\[0\] must be an absolute path/],
   ];
   for (const [input, message] of cases) assert.throws(() => parseConfig(input), (error) => error instanceof ConfigError && message.test(error.message));
 });
@@ -59,4 +67,35 @@ test("a secret file is refused unless owner-only", () => {
   chmodSync(file, 0o600);
   assert.equal(readSecretFile(file, "secret file"), "x\n");
   assert.throws(() => readSecretFile(join(dir, "missing"), "secret file"), /secret file missing/);
+});
+
+test("a backend command is an absolute path, a ~/ path or a bare command name", () => {
+  assert.deepEqual(parseConfig({ ...valid, backend: { command: ["trello-backend", "--x"] } }).backendCommand, ["trello-backend", "--x"]);
+  assert.equal(parseConfig({ ...valid, backend: { command: ["/opt/backend"] } }).backendCommand[0], "/opt/backend");
+  assert.ok(parseConfig(valid).backendCommand[0]?.startsWith("/"));
+});
+
+test("a skill label's sandbox entry is parsed, with ~/ expanded in paths and the masked command", () => {
+  const raw = {
+    ...valid,
+    labels: {
+      "review-pr": {
+        skill: "s",
+        allowedTools: ["Read"],
+        sandbox: {
+          allowRead: ["~/state", "{pr-review}"],
+          allowWrite: ["~/state"],
+          allowedDomains: ["api.github.com"],
+          excludedCommands: ["board *"],
+          maskedEnv: [{ name: "GH_TOKEN", command: ["gh", "auth", "token"], injectHosts: ["api.github.com"] }],
+        },
+      },
+    },
+  };
+  const entry = parseConfig(raw).labels["review-pr"];
+  assert.ok(entry?.kind === "skill" && entry.sandbox);
+  assert.ok(entry.sandbox.allowRead[0]?.startsWith("/") && entry.sandbox.allowRead[0].endsWith("/state"));
+  assert.equal(entry.sandbox.allowRead[1], "{pr-review}");
+  assert.deepEqual(entry.sandbox.maskedEnv[0]?.command, ["gh", "auth", "token"]);
+  assert.deepEqual(entry.sandbox.excludedCommands, ["board *"]);
 });

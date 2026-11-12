@@ -7,6 +7,8 @@ import { oneLine } from "./text.mts";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 16 * 1024 * 1024;
+// stderr is only shown as a one-line reason, and the reason is the first line.
+const STDERR_KEEP_CHARS = 4000;
 
 export class BackendError extends Error {
   exitCode: number | undefined;
@@ -24,52 +26,70 @@ interface Finished {
   stderr: string;
 }
 
-function execute(command: string[], args: string[], stdin: string | undefined, timeoutMs: number): Promise<Finished | "timeout"> {
+interface ExecuteOptions {
+  timeoutMs: number;
+  maxOutputChars: number;
+}
+
+function execute(command: string[], args: string[], stdin: string | undefined, options: ExecuteOptions): Promise<Finished | "timeout"> {
   return new Promise((resolve, reject) => {
     const [file, ...fixed] = command;
     if (file === undefined) return reject(new BackendError("backend command is empty"));
-    // No shell: the arguments reach the backend as they are.
-    const child = spawn(file, [...fixed, ...args], { stdio: ["pipe", "pipe", "pipe"] });
+    // No shell: the arguments reach the backend as they are. Its own process group, so a kill also reaches what it started.
+    const child = spawn(file, [...fixed, ...args], { stdio: ["pipe", "pipe", "pipe"], detached: true });
     let stdout = "";
     let stderr = "";
-    let tooLarge = false;
-    let timedOut = false;
+    let settled = false;
+    // Settles once. A killed backend's children may hold the pipes open, so nothing waits for "close" after a kill.
+    const settle = (finish: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      finish();
+    };
+    const killGroup = (): void => {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
       stdout += chunk;
-      if (stdout.length > MAX_OUTPUT_CHARS && !tooLarge) {
-        tooLarge = true;
-        child.kill("SIGKILL");
+      if (stdout.length > options.maxOutputChars) {
+        killGroup();
+        settle(() => reject(new BackendError(`${basename(file)} printed more than ${options.maxOutputChars} characters`)));
       }
     });
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-      stderr = (stderr + chunk).slice(-4000);
+      if (stderr.length < STDERR_KEEP_CHARS) stderr = (stderr + chunk).slice(0, STDERR_KEEP_CHARS);
     });
     // The backend may exit before it has read its stdin.
     child.stdin.on("error", () => undefined);
     child.stdin.end(stdin);
     const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, timeoutMs);
+      killGroup();
+      settle(() => resolve("timeout"));
+    }, options.timeoutMs);
     child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(new BackendError(`could not start ${basename(file)}: ${error.message}`));
+      settle(() => reject(new BackendError(`could not start ${basename(file)}: ${error.message}`)));
     });
     child.on("close", (exitCode, signal) => {
-      clearTimeout(timer);
-      if (tooLarge) return reject(new BackendError(`${basename(file)} printed more than ${MAX_OUTPUT_CHARS} characters`));
-      resolve(timedOut ? "timeout" : { exitCode, signal, stdout, stderr });
+      settle(() => resolve({ exitCode, signal, stdout, stderr }));
     });
   });
 }
 
-export function createCliBackend(options: { command: string[]; timeoutMs?: number }): Backend {
+export function createCliBackend(options: { command: string[]; timeoutMs?: number; maxOutputChars?: number }): Backend {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxOutputChars = options.maxOutputChars ?? MAX_OUTPUT_CHARS;
   const name = basename(options.command[0] ?? "backend");
 
   async function invoke(subcommand: string, args: string[], stdin?: string): Promise<string> {
     const where = `backend ${name} ${subcommand}`;
-    const result = await execute(options.command, [subcommand, ...args], stdin, timeoutMs);
+    const result = await execute(options.command, [subcommand, ...args], stdin, { timeoutMs, maxOutputChars });
     if (result === "timeout") throw new BackendError(`${where} timed out after ${timeoutMs / 1000}s`);
     if (result.exitCode !== 0) {
       const reason = oneLine(result.stderr, 200) || (result.signal ? `killed by ${result.signal}` : "no message");
@@ -121,10 +141,10 @@ export function createCliBackend(options: { command: string[]; timeoutMs?: numbe
       await invoke("add-note", [safeId], text);
     },
     readNotes: async (id) => call("read-notes", parseNotes, [taskId(id)]),
-    async setup(labels) {
+    async setup(labels, { dryRun = false } = {}) {
       await verify();
       try {
-        return await invokeJson("setup", parseSetupResult, [], JSON.stringify({ labels }));
+        return await invokeJson("setup", parseSetupResult, dryRun ? ["--dry-run"] : [], JSON.stringify({ labels }));
       } catch (error) {
         if (error instanceof BackendError && error.exitCode === UNKNOWN_COMMAND_EXIT) return undefined;
         throw error;
@@ -148,9 +168,10 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     async addNote(id, text) {
       print(`DRY add-note ${id} ${oneLine(text, 160)}`);
     },
-    async setup() {
-      print("DRY setup");
-      return [];
+    async setup(labels) {
+      const planned = await inner.setup(labels, { dryRun: true });
+      for (const what of planned ?? []) print(`DRY create ${what}`);
+      return planned === undefined ? undefined : [];
     },
   };
 }

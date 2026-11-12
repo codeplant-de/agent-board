@@ -5,12 +5,36 @@ import { isRecord } from "./guards.mts";
 
 export class ConfigError extends Error {}
 
+// An environment variable the worker fills from a command's output and hands to claude, where the sandbox
+// masks it: sandboxed commands see a placeholder, and the sandbox proxy swaps in the real value on requests
+// to `injectHosts` only.
+export interface MaskedEnv {
+  name: string;
+  // Executable and arguments, run without a shell by the worker; stdout is the value.
+  command: string[];
+  injectHosts: string[];
+}
+
+// What the Bash commands of a skill run may reach. See "Reviewer isolation" in the README.
+export interface SandboxEntry {
+  // Besides the checkout and the pr-review plugin, which are always readable.
+  allowRead: string[];
+  // Besides the checkout's `.git` and the temp directory.
+  allowWrite: string[];
+  allowedDomains: string[];
+  // Commands that run outside the sandbox (Bash rule syntax); they need credentials the sandbox hides.
+  excludedCommands: string[];
+  maskedEnv: MaskedEnv[];
+}
+
 export type LabelEntry =
   | {
       kind: "skill";
       skill: string;
       allowedTools: string[];
       disallowedTools: string[];
+      // Required to run: a skill label without it is refused by the worker, not by the parser, so `board` keeps working.
+      sandbox: SandboxEntry | undefined;
       // "pr-repo" runs in the checkout that `repos` maps the PR's repository to.
       cwd: string;
     }
@@ -96,7 +120,58 @@ function parseLabelEntry(name: string, raw: unknown): LabelEntry {
   };
   const allowedTools = tools("allowedTools");
   if (allowedTools.length === 0) throw new ConfigError(`config: ${where}allowedTools must not be empty`);
-  return { kind: "skill", skill, allowedTools, disallowedTools: tools("disallowedTools"), cwd: cwd ?? "pr-repo" };
+  return {
+    kind: "skill",
+    skill,
+    allowedTools,
+    disallowedTools: tools("disallowedTools"),
+    sandbox: raw["sandbox"] === undefined ? undefined : parseSandbox(raw["sandbox"], `${where}sandbox.`),
+    cwd: cwd ?? "pr-repo",
+  };
+}
+
+function parseSandbox(raw: unknown, where: string): SandboxEntry {
+  if (!isRecord(raw)) throw new ConfigError(`config: ${where.slice(0, -1)} must be an object`);
+  const extra = Object.keys(raw).find((key) => !["allowRead", "allowWrite", "allowedDomains", "excludedCommands", "maskedEnv"].includes(key));
+  if (extra !== undefined) throw new ConfigError(`config: ${where}${extra} is not a sandbox key`);
+  const list = (key: string): string[] => {
+    const value = raw[key] ?? [];
+    if (!isStringList(value)) throw new ConfigError(`config: ${where}${key} must be a list of strings`);
+    return value;
+  };
+  const rawEnv = raw["maskedEnv"] ?? [];
+  if (!Array.isArray(rawEnv)) throw new ConfigError(`config: ${where}maskedEnv must be a list`);
+  const maskedEnv = rawEnv.map((item, index): MaskedEnv => {
+    const at = `${where}maskedEnv[${index}].`;
+    if (!isRecord(item)) throw new ConfigError(`config: ${at.slice(0, -1)} must be an object`);
+    const name = text(item, "name", at);
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) throw new ConfigError(`config: ${at}name must be an environment variable name`);
+    const command = item["command"];
+    if (!isStringList(command) || command.length === 0 || command.some((part) => part === "")) {
+      throw new ConfigError(`config: ${at}command must be a non-empty list of strings`);
+    }
+    const injectHosts = item["injectHosts"];
+    if (!isStringList(injectHosts) || injectHosts.length === 0) {
+      throw new ConfigError(`config: ${at}injectHosts must be a non-empty list of hosts (the value reaches only these)`);
+    }
+    return { name, command: parseExecutable(command.map(expandHome), `${at}command`), injectHosts };
+  });
+  return {
+    allowRead: list("allowRead").map(expandHome),
+    allowWrite: list("allowWrite").map(expandHome),
+    allowedDomains: list("allowedDomains"),
+    excludedCommands: list("excludedCommands"),
+    maskedEnv,
+  };
+}
+
+// An absolute path or a bare command name. A relative path with a slash would depend on the cwd of whoever runs it.
+function parseExecutable(command: string[], where: string): string[] {
+  const [file] = command;
+  if (file !== undefined && file.includes("/") && !file.startsWith("/")) {
+    throw new ConfigError(`config: ${where}[0] must be an absolute path (or ~/...) or a bare command name, not "${file}"`);
+  }
+  return command;
 }
 
 function parseBackendCommand(raw: unknown): string[] {
@@ -104,7 +179,7 @@ function parseBackendCommand(raw: unknown): string[] {
   if (!isStringList(command) || command.length === 0 || command.some((part) => part === "")) {
     throw new ConfigError("config: backend.command must be a non-empty list of strings");
   }
-  return command.map(expandHome);
+  return parseExecutable(command.map(expandHome), "backend.command");
 }
 
 export function parseConfig(raw: unknown): Config {

@@ -59,8 +59,8 @@ export interface TrelloClient {
   getCard(idOrShortLink: string): Promise<TrelloCard>;
   getComments(cardId: string): Promise<TrelloComment[]>;
   addComment(cardId: string, text: string): Promise<void>;
-  moveCard(cardId: string, listId: string): Promise<void>;
-  setDescription(cardId: string, desc: string): Promise<void>;
+  // One request: a new list (the card goes to its bottom) and/or a new description. Returns the card as it is now.
+  updateCard(cardId: string, change: { listId?: string; desc?: string }): Promise<TrelloCard>;
   createCard(card: NewCard): Promise<TrelloCard>;
   createList(name: string): Promise<void>;
   createLabel(name: string): Promise<void>;
@@ -198,11 +198,12 @@ export function createTrelloClient(options: ClientOptions): TrelloClient {
     async addComment(cardId, text) {
       for (const piece of splitText(text)) await call("POST", `/cards/${cardId}/actions/comments`, {}, { text: piece });
     },
-    async moveCard(cardId, listId) {
-      await call("PUT", `/cards/${cardId}`, {}, { idList: listId, pos: "bottom" });
-    },
-    async setDescription(cardId, desc) {
-      await call("PUT", `/cards/${cardId}`, {}, { desc });
+    async updateCard(cardId, change) {
+      const body = {
+        ...(change.listId !== undefined ? { idList: change.listId, pos: "bottom" } : {}),
+        ...(change.desc !== undefined ? { desc: change.desc } : {}),
+      };
+      return parseCard(await call("PUT", `/cards/${cardId}`, {}, body));
     },
     async createCard(card) {
       return parseCard(

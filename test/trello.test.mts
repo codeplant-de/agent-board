@@ -59,7 +59,11 @@ function trello(cards: Record<string, unknown>[], extra: { lists?: unknown[]; la
       if (cardPath[2] && method === "GET") return Response.json(extra.comments ?? []);
       if (cardPath[2]) return Response.json({});
       if (found && method === "GET") return Response.json(found);
-      if (found && method === "PUT") return Response.json(found);
+      if (found && method === "PUT") {
+        const moved = typeof body?.["idList"] === "string" ? { idList: body["idList"] } : {};
+        const described = typeof body?.["desc"] === "string" ? { desc: body["desc"] } : {};
+        return Response.json({ ...found, ...moved, ...described });
+      }
     }
     if (method === "POST" && path === "/cards") return Response.json(trelloCard("new1", { name: body?.["name"], desc: body?.["desc"], idList: body?.["idList"] }));
     if (method === "POST") return Response.json({});
@@ -93,27 +97,38 @@ test("all includes archived cards and cards parked outside the four lists, as cl
   assert.deepEqual((await backend.listTasks()).map((t) => t.id), ["t"]);
 });
 
-test("a status change moves the card to the bottom of the matching list", async () => {
-  const { backend, writes } = trello([trelloCard("a")]);
+test("a status change moves the card to the bottom of the matching list, in one write", async () => {
+  const { backend, seen, writes } = trello([trelloCard("a")]);
   const updated = await backend.updateTask("a", { status: "needs-me" });
   assert.equal(updated.id, "a");
+  assert.equal(updated.status, "needs-me", "the task comes from the response of the write");
   const [move, ...rest] = writes();
   assert.equal(move?.method, "PUT");
   assert.equal(move?.url.pathname, "/1/cards/long-a");
   assert.deepEqual(move?.body, { idList: "l-needs", pos: "bottom" });
   assert.equal(rest.length, 0);
+  // Card, board and lists are read together, then the write: two rounds, not four requests in a row.
+  assert.deepEqual(seen.map((request) => request.method), ["GET", "GET", "GET", "PUT"]);
 });
 
-test("a patch with a status and an input moves first, then sets the description", async () => {
-  const { backend, writes } = trello([trelloCard("a")]);
-  await backend.updateTask("a", { status: "todo" });
-  await backend.updateTask("a", { input: "new" });
-  assert.deepEqual(writes().map((w) => w.body), [{ idList: "l-todo", pos: "bottom" }, { desc: "new" }]);
+test("a patch with a status and an input is one combined write", async () => {
+  const { backend, writes } = trello([trelloCard("a", { idList: "l-needs" })]);
+  const updated = await backend.updateTask("a", { status: "todo", input: "new" });
+  assert.deepEqual(writes().map((w) => w.body), [{ idList: "l-todo", pos: "bottom", desc: "new" }]);
+  assert.deepEqual([updated.status, updated.input], ["todo", "new"]);
+  await backend.updateTask("a", { input: "newer" });
+  assert.deepEqual(writes().map((w) => w.body).at(-1), { desc: "newer" });
 });
 
-test("a missing list is named, and board setup is the hint", async () => {
+test("a board without one of the four lists fails every read and write by name, before any write", async () => {
   const { backend, writes } = trello([trelloCard("a")], { lists: [{ id: "l-todo", name: "Todo" }] });
-  await assert.rejects(backend.updateTask("a", { status: "running" }), /board has no list "Running" \(run: board setup\)/);
+  const expected = /board has no list "Running" \(run: board setup\)/;
+  await assert.rejects(backend.listTasks(), expected);
+  await assert.rejects(backend.listTasks({ all: true }), expected);
+  await assert.rejects(backend.getTask("a"), expected);
+  await assert.rejects(backend.updateTask("a", { status: "todo" }), expected);
+  await assert.rejects(backend.addNote("a", "hi"), expected);
+  await assert.rejects(backend.addTask({ title: "t", input: "", labels: [], status: "todo" }), expected);
   assert.deepEqual(writes(), []);
 });
 
@@ -122,6 +137,12 @@ test("list names can be overridden per status", async () => {
   assert.deepEqual(lists, { ...DEFAULT_LIST_NAMES, "needs-me": "Review" });
   assert.throws(() => parseTrelloConfig({ boardId: "b", lists: { waiting: "x" } }), ConfigError);
   assert.throws(() => parseTrelloConfig({ boardId: "" }), ConfigError);
+});
+
+test("two statuses on one list are refused", () => {
+  assert.throws(() => parseTrelloConfig({ boardId: "b", lists: { running: "Todo" } }), /"todo" and "running"|"running" and "todo"/);
+  assert.throws(() => parseTrelloConfig({ boardId: "b", lists: { done: "Needs me" } }), ConfigError);
+  assert.doesNotThrow(() => parseTrelloConfig({ boardId: "b", lists: { done: "Finished" } }));
 });
 
 test("a card of another board is refused before any write", async () => {
@@ -181,6 +202,14 @@ test("setup creates only what is missing", async () => {
   const { backend, writes } = trello([], { lists: [{ id: "l-todo", name: "Todo" }], labels: [{ id: "x", name: "review-pr" }] });
   assert.deepEqual(await backend.setup(["review-pr", "other"]), ["list Running", "list Needs me", "list Done", "label other"]);
   assert.equal(writes().length, 4);
+});
+
+test("setup works on an empty board and a dry run creates nothing", async () => {
+  const empty = trello([], { lists: [], labels: [] });
+  assert.deepEqual(await empty.backend.setup(["review-pr"], { dryRun: true }), ["list Todo", "list Running", "list Needs me", "list Done", "label review-pr"]);
+  assert.deepEqual(empty.writes(), []);
+  assert.equal((await empty.backend.setup(["review-pr"]))?.length, 5);
+  assert.equal(empty.writes().length, 5);
 });
 
 test("the env file is refused unless owner-only, and must hold both keys", () => {

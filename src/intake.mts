@@ -70,9 +70,8 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
       log(`CREATED #${pr.number}`);
       created++;
     } else {
-      // Move first: a task whose head line is updated but that never left Needs me would stay there for good.
-      await backend.updateTask(action.task.id, { status: "todo" });
-      await backend.updateTask(action.task.id, { input: formatInput(pr.url, pr.headSha) });
+      // One atomic update: a head line changed without the move would leave the task in Needs me for good.
+      await backend.updateTask(action.task.id, { status: "todo", input: formatInput(pr.url, pr.headSha) });
       await backend.addNote(action.task.id, `New head ${pr.headSha.slice(0, 7)} on the PR. Queued again.`);
       log(`REQUEUED #${pr.number} ${pr.headSha.slice(0, 7)}`);
       requeued++;

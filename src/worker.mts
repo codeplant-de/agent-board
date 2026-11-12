@@ -3,8 +3,8 @@
  * One task: resolve its label, run the worker command, log, and report failures on the task.
  * Started by the dispatcher as the transient unit agent-board-<id>.
  */
-import { spawn } from "node:child_process";
-import { statSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { buildContext, print, rejectExtraArgs, runMain, UsageError } from "./cli.mts";
 import type { Context } from "./cli.mts";
@@ -25,7 +25,11 @@ export interface RunResult {
 }
 
 export interface WorkerDeps extends Context {
-  run: (invocation: Invocation, taskId: string, timeoutMs: number) => Promise<RunResult>;
+  // `env` is added to the process's environment: the secrets of the invocation's masked variables.
+  run: (invocation: Invocation, taskId: string, timeoutMs: number, env: Record<string, string>) => Promise<RunResult>;
+  // Output of a command, trimmed; throws with a reason that never contains the output.
+  secret: (command: string[]) => Promise<string>;
+  listDir: (dir: string) => string[];
   logTail: (taskId: string) => string;
   notify: (task: Task, text: string) => Promise<void>;
   resetLog: (taskId: string) => void;
@@ -67,17 +71,30 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     home: deps.home,
     fallbackCwd: deps.fallbackCwd,
     prReviewPath,
+    listDir: deps.listDir,
   });
   if (!plan.ok) return fail(plan.reason);
   if (!deps.dirExists(plan.invocation.cwd)) return fail(`The working directory does not exist: ${plan.invocation.cwd}`);
 
+  const env: Record<string, string> = {};
+  for (const masked of plan.invocation.maskedEnv) {
+    try {
+      env[masked.name] = await deps.secret(masked.command);
+    } catch (error) {
+      return fail(`Cannot read ${masked.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   let result: RunResult;
   try {
-    result = await deps.run(plan.invocation, taskId, config.timeoutMinutes * 60_000);
+    result = await deps.run(plan.invocation, taskId, config.timeoutMinutes * 60_000, env);
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
   }
   const after = await backend.getTask(task.id);
+  // Closed during the run (archived, or parked by hand): the task left the workflow, so nobody is waiting for a report.
+  // The core never writes to a closed task, whatever the run's outcome.
+  if (after.closed) return;
   const outcome = decideOutcome({
     ...result,
     timeoutMinutes: config.timeoutMinutes,
@@ -88,7 +105,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   await report(`${why}\n\nEnd of the log:\n${fence(deps.logTail(taskId) || "(empty)")}`);
 }
 
-export function runProcess(invocation: Invocation, taskId: string, timeoutMs: number): Promise<RunResult> {
+export function runProcess(invocation: Invocation, taskId: string, timeoutMs: number, env: Record<string, string>): Promise<RunResult> {
   const fd = openLog(taskId);
   return new Promise((resolve, reject) => {
     // A new process group, so a timeout also stops what the worker started.
@@ -96,6 +113,7 @@ export function runProcess(invocation: Invocation, taskId: string, timeoutMs: nu
       cwd: invocation.cwd,
       stdio: ["ignore", fd, fd],
       detached: true,
+      env: { ...process.env, ...env },
     });
     let timedOut = false;
     const killGroup = (signal: NodeJS.Signals): void => {
@@ -130,6 +148,20 @@ export function runProcess(invocation: Invocation, taskId: string, timeoutMs: nu
   });
 }
 
+// stdout of a command, for a secret the worker hands to claude. Errors name the command, never its output.
+export function readSecret(command: string[]): Promise<string> {
+  const [file, ...args] = command;
+  return new Promise((resolve, reject) => {
+    if (file === undefined) return reject(new Error("the command is empty"));
+    execFile(file, args, { timeout: 15_000, maxBuffer: 64 * 1024, encoding: "utf8" }, (error, stdout) => {
+      if (error) return reject(new Error(`${file} failed`));
+      const value = stdout.trim();
+      if (value === "") return reject(new Error(`${file} printed nothing`));
+      resolve(value);
+    });
+  });
+}
+
 if (import.meta.main) {
   await runMain(async () => {
     const [taskId, ...extra] = process.argv.slice(2);
@@ -141,6 +173,8 @@ if (import.meta.main) {
     const deps: WorkerDeps = {
       ...context,
       run: runProcess,
+      secret: readSecret,
+      listDir: (dir) => readdirSync(dir),
       logTail: readLogTail,
       notify: (task, text) => postSlack(context.config.slackWebhookFile, slackText(task, text)),
       resetLog,

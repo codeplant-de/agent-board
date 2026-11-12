@@ -55,6 +55,11 @@ export function parseTrelloConfig(raw: unknown): TrelloConfig {
     if (typeof name !== "string" || name === "") throw new ConfigError(`trello.json: lists.${status} must be a non-empty string`);
     lists[known] = name;
   }
+  // Two statuses on one list could not be told apart again.
+  for (const status of STATUSES) {
+    const other = STATUSES.find((candidate) => candidate !== status && lists[candidate] === lists[status]);
+    if (other !== undefined) throw new ConfigError(`trello.json: "${status}" and "${other}" are both mapped to the list "${lists[status]}"`);
+  }
   return { boardId, lists };
 }
 
@@ -80,12 +85,15 @@ function cardId(id: string): string {
 }
 
 export function createTrelloBackend(client: TrelloClient, listNames: ListNames): Backend {
+  // All four lists are required, so a board without one fails every read before anything is written: otherwise a
+  // task that cannot be moved would be reported again on every tick.
   async function statusByListId(): Promise<Map<string, Status>> {
     const lists = await client.getLists();
     const byId = new Map<string, Status>();
     for (const status of STATUSES) {
       const found = lists.find((list) => list.name === listNames[status]);
-      if (found) byId.set(found.id, status);
+      if (!found) throw new TrelloError(`board has no list "${listNames[status]}" (run: board setup)`);
+      byId.set(found.id, status);
     }
     return byId;
   }
@@ -104,21 +112,17 @@ export function createTrelloBackend(client: TrelloClient, listNames: ListNames):
     };
   }
 
-  async function listIdFor(status: Status): Promise<string> {
-    for (const [id, candidate] of await statusByListId()) if (candidate === status) return id;
+  function listIdFor(status: Status, statuses: Map<string, Status>): string {
+    for (const [id, candidate] of statuses) if (candidate === status) return id;
     throw new TrelloError(`board has no list "${listNames[status]}" (run: board setup)`);
   }
 
   // Everything that touches a card by id goes through here: a foreign card is never read or written.
-  async function boardCard(id: string): Promise<TrelloCard> {
-    const [card, boardId] = await Promise.all([client.getCard(cardId(id)), client.getBoardId()]);
+  // The lists come in the same round, so a missing list fails before any write.
+  async function boardCard(id: string): Promise<{ card: TrelloCard; statuses: Map<string, Status> }> {
+    const [card, boardId, statuses] = await Promise.all([client.getCard(cardId(id)), client.getBoardId(), statusByListId()]);
     if (card.idBoard !== boardId) throw new TrelloError(`task ${id} is not on the configured board`);
-    return card;
-  }
-
-  async function getTask(id: string): Promise<Task> {
-    const [card, statuses] = await Promise.all([boardCard(id), statusByListId()]);
-    return toTask(card, statuses);
+    return { card, statuses };
   }
 
   return {
@@ -129,43 +133,48 @@ export function createTrelloBackend(client: TrelloClient, listNames: ListNames):
         .map((card) => toTask(card, statuses))
         .filter((task) => all || !task.closed);
     },
-    getTask,
+    async getTask(id) {
+      const { card, statuses } = await boardCard(id);
+      return toTask(card, statuses);
+    },
     async addTask(draft) {
-      const [listId, labels] = await Promise.all([listIdFor(draft.status), client.getLabels()]);
+      const [statuses, labels] = await Promise.all([statusByListId(), client.getLabels()]);
+      const listId = listIdFor(draft.status, statuses);
       const labelIds = draft.labels.map((name) => {
         const found = labels.find((label) => label.name === name);
         if (!found) throw new TrelloError(`board has no label "${name}" (run: board setup)`);
         return found.id;
       });
-      const card = await client.createCard({ listId, name: draft.title, desc: draft.input, labelIds });
-      return toTask(card, await statusByListId());
+      return toTask(await client.createCard({ listId, name: draft.title, desc: draft.input, labelIds }), statuses);
     },
     async updateTask(id, patch) {
-      const card = await boardCard(id);
-      // Move before the description, so a failure in between leaves the card where it was reported.
-      if (patch.status !== undefined) await client.moveCard(card.id, await listIdFor(patch.status));
-      if (patch.input !== undefined) await client.setDescription(card.id, patch.input);
-      return getTask(id);
+      const { card, statuses } = await boardCard(id);
+      // One request for both fields: the card is never moved without its new description, or the other way round.
+      const updated = await client.updateCard(card.id, {
+        listId: patch.status === undefined ? undefined : listIdFor(patch.status, statuses),
+        desc: patch.input,
+      });
+      return toTask(updated, statuses);
     },
     async addNote(id, text) {
-      await client.addComment((await boardCard(id)).id, text);
+      await client.addComment((await boardCard(id)).card.id, text);
     },
     async readNotes(id) {
-      const comments = await client.getComments((await boardCard(id)).id);
+      const comments = await client.getComments((await boardCard(id)).card.id);
       // Trello lists the newest first.
       return comments.map((comment): Note => ({ text: comment.text, createdAt: comment.date })).reverse();
     },
-    async setup(labels) {
+    async setup(labels, { dryRun = false } = {}) {
       const [lists, existing] = await Promise.all([client.getLists(), client.getLabels()]);
       const created: string[] = [];
       for (const status of STATUSES) {
         if (lists.some((list) => list.name === listNames[status])) continue;
-        await client.createList(listNames[status]);
+        if (!dryRun) await client.createList(listNames[status]);
         created.push(`list ${listNames[status]}`);
       }
       for (const name of labels) {
         if (existing.some((label) => label.name === name)) continue;
-        await client.createLabel(name);
+        if (!dryRun) await client.createLabel(name);
         created.push(`label ${name}`);
       }
       return created;
@@ -231,8 +240,10 @@ export async function main(argv: string[]): Promise<void> {
     }
     case "read-notes":
       return printJson((await backend.readNotes(needId())).map((note) => ({ text: note.text, createdAt: note.createdAt.toISOString() })));
-    case "setup":
-      return printJson({ created: await backend.setup(parseSetupRequest(parseJson(await readStdin(), "setup request"))) });
+    case "setup": {
+      if (args.length > (id === "--dry-run" ? 1 : 0)) throw new ContractError("usage: setup [--dry-run]");
+      return printJson({ created: await backend.setup(parseSetupRequest(parseJson(await readStdin(), "setup request")), { dryRun: id === "--dry-run" }) });
+    }
   }
 }
 

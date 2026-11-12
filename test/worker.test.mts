@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runWorker } from "../src/worker.mts";
 import type { RunResult, WorkerDeps } from "../src/worker.mts";
-import { CONFIG, fakeBackend, task } from "./helpers.mts";
+import { CONFIG, fakeBackend, NO_SANDBOX_EXTRAS, task } from "./helpers.mts";
 
 function setup(result: RunResult | Error, moveDuringRun = false) {
   const running = task({ id: "w1", status: "running", labels: ["selftest"] });
@@ -14,6 +14,8 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
     config: CONFIG,
     dryRun: false,
     print: () => undefined,
+    secret: async () => "SECRET-VALUE",
+    listDir: () => [],
     run: async () => {
       if (moveDuringRun) running.status = "needs-me";
       if (result instanceof Error) throw result;
@@ -86,7 +88,7 @@ test("an unresolvable pr-review plugin sends the task to Needs me with the reaso
   const { deps, backend, calls } = setup({ exitCode: 0, signal: null, timedOut: false });
   deps.config = {
     ...CONFIG,
-    labels: { selftest: { kind: "skill", skill: "s", allowedTools: ["Bash({pr-review}/skills/x.sh *)"], disallowedTools: [], cwd: "/tmp" } },
+    labels: { selftest: { kind: "skill", skill: "s", allowedTools: ["Bash({pr-review}/skills/x.sh *)"], disallowedTools: [], sandbox: NO_SANDBOX_EXTRAS, cwd: "/tmp" } },
   };
   deps.pluginPath = () => {
     throw new Error("plugin pr-review@ccc is not installed");
@@ -103,4 +105,66 @@ test("a missing working directory is named in the error", async () => {
   deps.config = { ...CONFIG, labels: { selftest: { kind: "command", command: ["true"], cwd: "/no/such/dir" } } };
   await runWorker(deps, "w1");
   assert.ok(backend.writes.some((w) => w.includes("/no/such/dir")));
+});
+
+test("a task closed during the run is left alone, whatever the outcome", async () => {
+  for (const result of [{ exitCode: 0, signal: null, timedOut: false }, { exitCode: 1, signal: null, timedOut: false }, { exitCode: null, signal: "SIGTERM", timedOut: true }]) {
+    const { deps, backend, notes } = setup(result);
+    deps.run = async () => {
+      backend.tasks[0]!.closed = true;
+      return result;
+    };
+    await runWorker(deps, "w1");
+    assert.deepEqual(backend.writes, []);
+    assert.deepEqual(notes, []);
+  }
+});
+
+test("the secrets of the masked variables reach the run, and a failing secret fails the task without its output", async () => {
+  const sandboxed = { kind: "skill" as const, skill: "s", allowedTools: ["Read"], disallowedTools: [], cwd: "/tmp", sandbox: { ...NO_SANDBOX_EXTRAS, maskedEnv: [{ name: "GH_TOKEN", command: ["gh", "auth", "token"], injectHosts: ["api.github.com"] }] } };
+  const { deps, backend } = setup({ exitCode: 0, signal: null, timedOut: false }, true);
+  deps.config = { ...CONFIG, labels: { selftest: sandboxed } };
+  const seen: Record<string, string>[] = [];
+  const asked: string[][] = [];
+  deps.secret = async (command) => {
+    asked.push(command);
+    return "SECRET-VALUE";
+  };
+  deps.run = async (_invocation, _taskId, _timeout, env) => {
+    seen.push(env);
+    backend.tasks[0]!.status = "needs-me";
+    return { exitCode: 0, signal: null, timedOut: false };
+  };
+  await runWorker(deps, "w1");
+  assert.deepEqual(asked, [["gh", "auth", "token"]]);
+  assert.deepEqual(seen, [{ GH_TOKEN: "SECRET-VALUE" }]);
+
+  const failing = setup({ exitCode: 0, signal: null, timedOut: false });
+  failing.deps.config = { ...CONFIG, labels: { selftest: sandboxed } };
+  failing.deps.secret = async () => {
+    throw new Error("gh failed");
+  };
+  let started = false;
+  failing.deps.run = async () => {
+    started = true;
+    return { exitCode: 0, signal: null, timedOut: false };
+  };
+  await runWorker(failing.deps, "w1");
+  assert.equal(started, false);
+  assert.ok(failing.backend.writes.some((w) => w.includes("Cannot read GH_TOKEN: gh failed")));
+  assert.ok(failing.backend.writes.includes("status w1 -> needs-me"));
+  assert.ok(failing.backend.writes.every((w) => !w.includes("SECRET-VALUE")));
+});
+
+test("a skill label without a sandbox entry ends in Needs me with the reason, and nothing is started", async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null, timedOut: false });
+  deps.config = { ...CONFIG, labels: { selftest: { kind: "skill", skill: "s", allowedTools: ["Read"], disallowedTools: [], cwd: "/tmp", sandbox: undefined } } };
+  let started = false;
+  deps.run = async () => {
+    started = true;
+    return { exitCode: 0, signal: null, timedOut: false };
+  };
+  await runWorker(deps, "w1");
+  assert.equal(started, false);
+  assert.ok(backend.writes.some((w) => w.includes('no "sandbox" entry')));
 });
