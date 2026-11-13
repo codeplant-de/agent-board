@@ -1,18 +1,19 @@
 {
   "name": "agent-board",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "A pluggable task backend as a queue for headless Claude Code runs",
+  "packageManager": "pnpm@11.28.9",
   "type": "module",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test test/*.test.mts",
-    "typecheck": "tsc --noEmit"
-  },
-  "devDependencies": {
-    "@types/node": "^26.6.6",
-    "typescript": "^7.0.2"
+    "dev:backend": "pnpm --filter @agent-board/backend dev",
+    "dev:frontend": "pnpm --filter @agent-board/frontend dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "db:generate": "pnpm --filter @agent-board/backend db:generate",
+    "db:migrate": "pnpm --filter @agent-board/backend db:migrate"
   }
 }

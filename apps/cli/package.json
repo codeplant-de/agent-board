@@ -1,0 +1,21 @@
+{
+  "name": "@agent-board/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dispatcher, worker, intake and the board command: run headless Claude Code tasks from the board",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@agent-board/shared": "workspace:*"
+  }
+}

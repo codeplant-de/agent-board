@@ -1,0 +1,507 @@
+diff --git a/cluster/README.md b/cluster/README.md
+index a0090cb..044f2f5 100644
+--- a/cluster/README.md
++++ b/cluster/README.md
+@@ -15,7 +15,7 @@ infrastructure/
+ apps/
+   image-update-automation.yaml, image-policies.yaml   Flux image automation (flux-system)
+   ghcr-pull.sops.yaml      GHCR pull secret for every namespace that needs one
+-  hct/ estimation-bot/ happy/ frps/ hermes-dashboard/ home-egress/ authelia/ lldap/ homepage/ it-tools/ webhook-tester/ ntfy/ sonarqube/
++  hct/ estimation-bot/ happy/ frps/ hermes-dashboard/ home-egress/ authelia/ lldap/ homepage/ it-tools/ webhook-tester/ ntfy/ sonarqube/ agent-board/
+   flux-alerts.yaml         Flux error events → ntfy (topic alerts)
+ ```
+ 
+@@ -48,7 +48,8 @@ automation commits new tags of our own images straight to main.
+ | happy | cli-1.2.2 | `ghcr.io/codeplant-de/happy-server`, built by images.yml from `slopus/happy` | by hand (`HAPPY_VERSION`) |
+ | happy: probe sidecar | 1.29 | `nginx` (alpine-slim) | Renovate |
+ | hct: Postgres | 16 | `postgres:16-alpine` (floating tag: a new 16.x arrives when the node pulls again) | by hand: a major needs dump and restore |
+-| hct, estimation-bot | `main-<sha8>-<time>` | `ghcr.io/codeplant-de/hct-*`, `ghcr.io/jascha-schiffer/estimation-bot` | Flux image automation |
++| agent-board: Postgres | 16 | `postgres:16-alpine` (floating tag) | by hand: a major needs dump and restore |
++| hct, estimation-bot, agent-board | `main-<sha8>-<time>` | `ghcr.io/codeplant-de/hct-*`, `ghcr.io/jascha-schiffer/estimation-bot`, `ghcr.io/jascha-schiffer/agent-board-*` | Flux image automation |
+ | SonarQube (off) | 26.10 Community Build, Postgres 17 | `sonarqube` | nobody: LTA steps by hand if it comes back |
+ 
+ ## Routing
+@@ -70,6 +71,7 @@ HTTPS. Every certificate uses DNS-01 against the Hetzner Cloud DNS API.
+ | tools.codeplant.de | it-tools/it-tools:80 | login |
+ | hooks.codeplant.de | webhook-tester/webhook-tester:8080 | login, except `/<session uuid>/…` (the webhooks themselves) |
+ | sonar.codeplant.de | sonarqube/sonarqube:9000 | off (replicas 0, Postgres too); login (SSO into SonarQube), except requests with an `Authorization` header (scanner tokens) |
++| board.codeplant.de | agent-board/web:80 | login, `admins` group only; except `/api/machine/*` with a bearer token (worker machines; the backend checks the token); web proxies /trpc and /api to backend:4000 |
+ | ntfy.codeplant.de | ntfy/ntfy:80 | no Authelia: ntfy's own users and tokens, deny-all by default |
+ 
+ ## Domains
+@@ -157,8 +159,9 @@ sops -e -i apps/hct/env.sops.yaml
+ | File | Contents |
+ |---|---|
+ | infrastructure/controllers/hetzner-dns-token.sops.yaml | Hetzner token for the zone project (DNS-01) |
+-| apps/ghcr-pull.sops.yaml | GHCR read:packages pull secret, 4 namespaces |
++| apps/ghcr-pull.sops.yaml | GHCR read:packages pull secret, 5 namespaces |
+ | apps/hct/env.sops.yaml | hct backend + Postgres env |
++| apps/agent-board/env.sops.yaml | agent board backend + Postgres env (no app secrets; UI login is Authelia, machine tokens live hashed in Postgres) |
+ | apps/estimation-bot/env.sops.yaml | Slack and Shortcut credentials |
+ | apps/happy/env.sops.yaml | HANDY_MASTER_SECRET etc. |
+ | apps/frps/env.sops.yaml | LLDAP password of the frp-auth sidecar (same as `FRPS_BIND_PASSWORD` in lldap) |
+diff --git a/cluster/apps/agent-board/backend.yaml b/cluster/apps/agent-board/backend.yaml
+new file mode 100644
+index 0000000..a068226
+--- /dev/null
++++ b/cluster/apps/agent-board/backend.yaml
+@@ -0,0 +1,57 @@
++apiVersion: v1
++kind: Service
++metadata:
++  # The web container's Caddy proxies /trpc and /api to backend:4000.
++  name: backend
++spec:
++  selector:
++    app.kubernetes.io/name: backend
++  ports:
++    - name: http
++      port: 4000
++---
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: backend
++spec:
++  replicas: 1
++  # Migrations run on start: one pod at a time.
++  strategy:
++    type: Recreate
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: backend
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: backend
++    spec:
++      imagePullSecrets:
++        - name: ghcr-pull
++      containers:
++        - name: backend
++          image: ghcr.io/jascha-schiffer/agent-board-backend:latest # {"$imagepolicy": "flux-system:agent-board-backend"}
++          envFrom:
++            - secretRef:
++                name: agent-board-env
++          ports:
++            - name: http
++              containerPort: 4000
++          readinessProbe:
++            httpGet:
++              path: /healthz
++              port: http
++            periodSeconds: 10
++          livenessProbe:
++            httpGet:
++              path: /healthz
++              port: http
++            periodSeconds: 30
++            failureThreshold: 4
++          resources:
++            requests:
++              cpu: 25m
++              memory: 96Mi
++            limits:
++              memory: 384Mi
+diff --git a/cluster/apps/agent-board/env.sops.yaml.example b/cluster/apps/agent-board/env.sops.yaml.example
+new file mode 100644
+index 0000000..d47c3d2
+--- /dev/null
++++ b/cluster/apps/agent-board/env.sops.yaml.example
+@@ -0,0 +1,17 @@
++# Encrypt as env.sops.yaml (see cluster/README.md). DATABASE_URL uses the host "postgres" (the
++# Service name). The UI login is Authelia's; worker machines use tokens made on the board's Settings
++# page, stored hashed in Postgres. No app secrets here.
++apiVersion: v1
++kind: Secret
++metadata:
++  name: agent-board-env
++  namespace: agent-board
++stringData:
++  POSTGRES_USER: board
++  POSTGRES_PASSWORD: <fill-in>
++  POSTGRES_DB: board
++  NODE_ENV: production
++  PORT: "4000"
++  DATABASE_URL: postgresql://board:<fill-in>@postgres:5432/board
++  PUBLIC_URL: https://board.codeplant.de
++  ALLOWED_GROUPS: admins
+diff --git a/cluster/apps/agent-board/ingress.yaml b/cluster/apps/agent-board/ingress.yaml
+new file mode 100644
+index 0000000..6815d4c
+--- /dev/null
++++ b/cluster/apps/agent-board/ingress.yaml
+@@ -0,0 +1,64 @@
++apiVersion: cert-manager.io/v1
++kind: Certificate
++metadata:
++  name: board-codeplant-de
++spec:
++  secretName: board-codeplant-de-tls
++  dnsNames: [board.codeplant.de]
++  issuerRef:
++    kind: ClusterIssuer
++    name: letsencrypt-prod
++---
++# Browsers go through Authelia (access_control: group admins), which hands the backend the user in
++# Remote-* headers. The worker machines' CLI (bin/web-backend) cannot do a browser login: it sends a
++# machine token in the Authorization header to /api/machine/*, which skips Authelia, and the backend
++# checks the token. That route matches nothing else, so a token never opens the UI. Both routes strip
++# the Remote-* headers first: the backend trusts them, so a client must never be able to send its own.
++apiVersion: traefik.io/v1alpha1
++kind: IngressRoute
++metadata:
++  name: agent-board
++  annotations:
++    gethomepage.dev/enabled: "true"
++    gethomepage.dev/instance: codeplant
++    gethomepage.dev/href: https://board.codeplant.de
++    gethomepage.dev/name: Agent Board
++    gethomepage.dev/description: Queue and conversations of the headless Claude workers
++    gethomepage.dev/group: Tools
++    gethomepage.dev/icon: mdi-view-column
++spec:
++  entryPoints: [websecure]
++  routes:
++    - kind: Rule
++      match: Host(`board.codeplant.de`) && PathPrefix(`/api/machine/`) && HeaderRegexp(`Authorization`, `^Bearer .+`)
++      priority: 20
++      middlewares:
++        - name: strip-sso-headers
++      services:
++        - name: web
++          port: 80
++    - kind: Rule
++      match: Host(`board.codeplant.de`)
++      priority: 10
++      middlewares:
++        - name: strip-sso-headers
++        - name: forward-auth
++          namespace: authelia
++      services:
++        - name: web
++          port: 80
++  tls:
++    secretName: board-codeplant-de-tls
++---
++apiVersion: traefik.io/v1alpha1
++kind: Middleware
++metadata:
++  name: strip-sso-headers
++spec:
++  headers:
++    # An empty value removes the header.
++    customRequestHeaders:
++      Remote-User: ""
++      Remote-Name: ""
++      Remote-Email: ""
++      Remote-Groups: ""
+diff --git a/cluster/apps/agent-board/kustomization.yaml b/cluster/apps/agent-board/kustomization.yaml
+new file mode 100644
+index 0000000..6fd077a
+--- /dev/null
++++ b/cluster/apps/agent-board/kustomization.yaml
+@@ -0,0 +1,10 @@
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++namespace: agent-board
++resources:
++  - namespace.yaml
++  - env.sops.yaml
++  - postgres.yaml
++  - backend.yaml
++  - web.yaml
++  - ingress.yaml
+diff --git a/cluster/apps/agent-board/namespace.yaml b/cluster/apps/agent-board/namespace.yaml
+new file mode 100644
+index 0000000..77bc771
+--- /dev/null
++++ b/cluster/apps/agent-board/namespace.yaml
+@@ -0,0 +1,4 @@
++apiVersion: v1
++kind: Namespace
++metadata:
++  name: agent-board
+diff --git a/cluster/apps/agent-board/postgres.yaml b/cluster/apps/agent-board/postgres.yaml
+new file mode 100644
+index 0000000..cad49bf
+--- /dev/null
++++ b/cluster/apps/agent-board/postgres.yaml
+@@ -0,0 +1,72 @@
++apiVersion: v1
++kind: Service
++metadata:
++  # The name is part of DATABASE_URL, as it was the compose service name.
++  name: postgres
++spec:
++  selector:
++    app.kubernetes.io/name: postgres
++  ports:
++    - name: postgres
++      port: 5432
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: postgres
++spec:
++  serviceName: postgres
++  replicas: 1
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: postgres
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: postgres
++    spec:
++      containers:
++        - name: postgres
++          image: postgres:16-alpine
++          env:
++            - name: POSTGRES_USER
++              valueFrom:
++                secretKeyRef: {name: agent-board-env, key: POSTGRES_USER}
++            - name: POSTGRES_PASSWORD
++              valueFrom:
++                secretKeyRef: {name: agent-board-env, key: POSTGRES_PASSWORD}
++            - name: POSTGRES_DB
++              valueFrom:
++                secretKeyRef: {name: agent-board-env, key: POSTGRES_DB}
++            - name: PGDATA
++              value: /var/lib/postgresql/data/pgdata
++          ports:
++            - name: postgres
++              containerPort: 5432
++          readinessProbe:
++            exec:
++              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
++            periodSeconds: 5
++          livenessProbe:
++            exec:
++              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
++            periodSeconds: 30
++            failureThreshold: 6
++          resources:
++            requests:
++              cpu: 50m
++              memory: 128Mi
++            limits:
++              memory: 768Mi
++          volumeMounts:
++            - name: data
++              mountPath: /var/lib/postgresql/data
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes: [ReadWriteOnce]
++        storageClassName: local-path
++        resources:
++          requests:
++            storage: 2Gi
+diff --git a/cluster/apps/agent-board/web.yaml b/cluster/apps/agent-board/web.yaml
+new file mode 100644
+index 0000000..d3822b2
+--- /dev/null
++++ b/cluster/apps/agent-board/web.yaml
+@@ -0,0 +1,44 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: web
++spec:
++  selector:
++    app.kubernetes.io/name: web
++  ports:
++    - name: http
++      port: 80
++---
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: web
++spec:
++  replicas: 1
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: web
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: web
++    spec:
++      imagePullSecrets:
++        - name: ghcr-pull
++      containers:
++        - name: web
++          image: ghcr.io/jascha-schiffer/agent-board-web:latest # {"$imagepolicy": "flux-system:agent-board-web"}
++          ports:
++            - name: http
++              containerPort: 80
++          readinessProbe:
++            httpGet:
++              path: /
++              port: http
++            periodSeconds: 10
++          resources:
++            requests:
++              cpu: 10m
++              memory: 16Mi
++            limits:
++              memory: 96Mi
+diff --git a/cluster/apps/authelia/configuration.yml b/cluster/apps/authelia/configuration.yml
+index 404603e..d8ee52e 100644
+--- a/cluster/apps/authelia/configuration.yml
++++ b/cluster/apps/authelia/configuration.yml
+@@ -57,6 +57,13 @@ access_control:
+       policy: two_factor
+     - domain: [agent.codeplant.de]
+       policy: deny
++    # The agent board starts Claude runs on the worker machines: admins only. Its /api/machine/*
++    # route skips Authelia (machine tokens, see apps/agent-board/ingress.yaml).
++    - domain: [board.codeplant.de]
++      subject: ["group:admins"]
++      policy: two_factor
++    - domain: [board.codeplant.de]
++      policy: deny
+     - domain: ["*.codeplant.de"]
+       policy: two_factor
+ 
+diff --git a/cluster/apps/ghcr-pull.sops.yaml.example b/cluster/apps/ghcr-pull.sops.yaml.example
+index c1360e1..9715df6 100644
+--- a/cluster/apps/ghcr-pull.sops.yaml.example
++++ b/cluster/apps/ghcr-pull.sops.yaml.example
+@@ -38,3 +38,12 @@ metadata:
+ type: kubernetes.io/dockerconfigjson
+ stringData:
+   .dockerconfigjson: <fill-in>
++---
++apiVersion: v1
++kind: Secret
++metadata:
++  name: ghcr-pull
++  namespace: agent-board
++type: kubernetes.io/dockerconfigjson
++stringData:
++  .dockerconfigjson: <fill-in>
+diff --git a/cluster/apps/image-policies.yaml b/cluster/apps/image-policies.yaml
+index 3c1c4d0..4146b34 100644
+--- a/cluster/apps/image-policies.yaml
++++ b/cluster/apps/image-policies.yaml
+@@ -78,3 +78,55 @@ spec:
+   policy:
+     numerical:
+       order: asc
++---
++apiVersion: image.toolkit.fluxcd.io/v1
++kind: ImageRepository
++metadata:
++  name: agent-board-backend
++  namespace: flux-system
++spec:
++  image: ghcr.io/jascha-schiffer/agent-board-backend
++  interval: 5m
++  secretRef:
++    name: ghcr-pull
++---
++apiVersion: image.toolkit.fluxcd.io/v1
++kind: ImagePolicy
++metadata:
++  name: agent-board-backend
++  namespace: flux-system
++spec:
++  imageRepositoryRef:
++    name: agent-board-backend
++  filterTags:
++    pattern: '^main-[a-f0-9]{8}-(?P<ts>[0-9]+)$'
++    extract: '$ts'
++  policy:
++    numerical:
++      order: asc
++---
++apiVersion: image.toolkit.fluxcd.io/v1
++kind: ImageRepository
++metadata:
++  name: agent-board-web
++  namespace: flux-system
++spec:
++  image: ghcr.io/jascha-schiffer/agent-board-web
++  interval: 5m
++  secretRef:
++    name: ghcr-pull
++---
++apiVersion: image.toolkit.fluxcd.io/v1
++kind: ImagePolicy
++metadata:
++  name: agent-board-web
++  namespace: flux-system
++spec:
++  imageRepositoryRef:
++    name: agent-board-web
++  filterTags:
++    pattern: '^main-[a-f0-9]{8}-(?P<ts>[0-9]+)$'
++    extract: '$ts'
++  policy:
++    numerical:
++      order: asc
+diff --git a/cluster/apps/kustomization.yaml b/cluster/apps/kustomization.yaml
+index 5b3a5f5..e33f08f 100644
+--- a/cluster/apps/kustomization.yaml
++++ b/cluster/apps/kustomization.yaml
+@@ -19,3 +19,4 @@ resources:
+   - webhook-tester
+   - ntfy
+   - sonarqube
++  - agent-board
+diff --git a/host/inventory/group_vars/prod.yml b/host/inventory/group_vars/prod.yml
+index bc6f582..3c6257b 100644
+--- a/host/inventory/group_vars/prod.yml
++++ b/host/inventory/group_vars/prod.yml
+@@ -15,17 +15,21 @@ backup_paths:
+   # k3s local-path volumes: every PVC (happy, estimation-bot, camofox profiles, hct appdata).
+   - /var/lib/rancher/k3s/storage
+   - /var/backups/hct
++  - /var/backups/agent-board
+   - /var/backups/authelia
+   - /var/backups/lldap
+   # SonarQube is off (replicas 0) and its dump command is gone: this keeps backing up the last dump.
+   - /var/backups/sonarqube
+-# Database copies: hct's Postgres (its own upload to Google Drive was dropped 2026-10-29), Authelia's and
++# Database copies: hct's and the agent board's Postgres (its own upload to Google Drive was dropped 2026-10-29), Authelia's and
+ # LLDAP's SQLite (online backup API, safe while it writes). The excludes from the role defaults skip the live
+ # files. The assignment fails, and with it the backup, if Authelia's volume isn't there.
+ backup_pre_commands:
+   - install -d -m 700 /var/backups/hct
+   - k3s kubectl -n hct exec postgres-0 -c postgres -- sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' > /var/backups/hct/hct.dump.tmp
+   - mv /var/backups/hct/hct.dump.tmp /var/backups/hct/hct.dump
++  - install -d -m 700 /var/backups/agent-board
++  - k3s kubectl -n agent-board exec postgres-0 -c postgres -- sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' > /var/backups/agent-board/agent-board.dump.tmp
++  - mv /var/backups/agent-board/agent-board.dump.tmp /var/backups/agent-board/agent-board.dump
+   - install -d -m 700 /var/backups/authelia
+   - db=$(ls /var/lib/rancher/k3s/storage/*_authelia_data/db.sqlite3)
+   - sqlite3 "$db" ".backup /var/backups/authelia/db.sqlite3"
+diff --git a/host/roles/backup/defaults/main.yml b/host/roles/backup/defaults/main.yml
+index 583bdda..dce6ad1 100644
+--- a/host/roles/backup/defaults/main.yml
++++ b/host/roles/backup/defaults/main.yml
+@@ -11,6 +11,7 @@ backup_paths:
+ backup_excludes:
+   # A file-level copy of a running Postgres isn't consistent; a pre-command dumps it instead.
+   - /var/lib/rancher/k3s/storage/*_hct_data-postgres-*
++  - /var/lib/rancher/k3s/storage/*_agent-board_data-postgres-*
+   - /var/lib/rancher/k3s/storage/*_sonarqube_data-postgres-*
+   # SonarQube's data volume is its Elasticsearch index, rebuilt from the database on start.
+   - /var/lib/rancher/k3s/storage/*_sonarqube_sonarqube-data
+diff --git a/tofu/prod/dns.tf b/tofu/prod/dns.tf
+index 3fe1b9c..8d4e9a9 100644
+--- a/tofu/prod/dns.tf
++++ b/tofu/prod/dns.tf
+@@ -47,6 +47,7 @@ locals {
+       "sonar/A" = { ttl = 300, records = [local.hermes_ipv4], comment = "SonarQube" }
+       "users/A" = { ttl = 300, records = [local.hermes_ipv4], comment = "LLDAP" }
+       "agent/A" = { ttl = 300, records = [local.hermes_ipv4], comment = "hermes dashboard" }
++      "board/A" = { ttl = 300, records = [local.hermes_ipv4], comment = "agent board" }
+ 
+       "tn/A"   = { ttl = 300, records = [local.hermes_ipv4] }
+       "*.tn/A" = { ttl = 300, records = [local.hermes_ipv4] }
