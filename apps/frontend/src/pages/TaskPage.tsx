@@ -71,6 +71,12 @@ export function TaskPage() {
               created by {task.createdBy} {ago(task.createdAt)}
             </Text>
           </Group>
+          {task.workdir && (
+            <Text size="xs" c="dimmed" ff="monospace" title="Where the task's session last worked; a resume starts here">
+              {task.machine ? `${task.machine}:` : ''}
+              {task.workdir}
+            </Text>
+          )}
           {pr && (
             <Group>
               <Button component="a" href={pr} target="_blank" rel="noopener noreferrer" variant="default" size="xs" leftSection={<IconBrandGithub size={14} />}>

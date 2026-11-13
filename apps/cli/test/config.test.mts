@@ -16,10 +16,10 @@ const valid = {
 
 test("a valid config gets defaults and normalised label entries", () => {
   const config = parseConfig(valid);
-  assert.equal(config.maxParallel, 2);
+  assert.deepEqual(config.lanes, [{ name: "default", labels: ["selftest", "review-pr"], slots: 2 }]);
+  assert.deepEqual([config.pauseAfterMinutes, config.inactivityMinutes, config.maxRunHours], [5, 15, 6]);
   assert.equal(config.backendCommand[1], "--flag");
   assert.ok(!config.backendCommand[0]?.startsWith("~"));
-  assert.equal(config.timeoutMinutes, 45);
   assert.equal(config.labels["selftest"]?.kind, "command");
   const skill = config.labels["review-pr"];
   assert.ok(skill?.kind === "skill");
@@ -34,7 +34,11 @@ test("invalid configs are refused with a pointed message", () => {
     [{ ...valid, backend: { command: [] } }, /backend.command/],
     [{ ...valid, backend: { command: ["ok", 3] } }, /backend.command/],
     [{ ...valid, labels: {} }, /labels/],
-    [{ ...valid, maxParallel: 0 }, /maxParallel/],
+    [{ ...valid, inactivityMinutes: 0 }, /inactivityMinutes/],
+    [{ ...valid, lanes: { reviews: { labels: ["nope"] } } }, /not in labels/],
+    [{ ...valid, lanes: { a: { labels: ["selftest"] }, b: { labels: ["selftest"] } } }, /in lanes a and b/],
+    [{ ...valid, lanes: { "a b": { labels: ["selftest"] } } }, /lane name/],
+    [{ ...valid, lanes: { a: { labels: ["selftest"], slots: 0 } } }, /lanes.a.slots/],
     [{ ...valid, labels: { x: { skill: "s", allowedTools: [] } } }, /allowedTools must not be empty/],
     [{ ...valid, labels: { x: { command: [] } } }, /command/],
     [{ ...valid, labels: { x: { skill: "s" } } }, /allowedTools/],
@@ -43,11 +47,6 @@ test("invalid configs are refused with a pointed message", () => {
     [{ ...valid, backend: { command: ["bin/backend"] } }, /backend.command\[0\] must be an absolute path/],
     [{ ...valid, backend: { command: ["./backend"] } }, /backend.command\[0\] must be an absolute path/],
     [{ ...valid, backend: { command: ["../backend"] } }, /backend.command\[0\] must be an absolute path/],
-    [{ ...valid, labels: { x: { skill: "s", allowedTools: ["Read"], sandbox: { allowRead: "x" } } } }, /sandbox.allowRead must be a list/],
-    [{ ...valid, labels: { x: { skill: "s", allowedTools: ["Read"], sandbox: { allowWrte: [] } } } }, /allowWrte is not a sandbox key/],
-    [{ ...valid, labels: { x: { skill: "s", allowedTools: ["Read"], sandbox: { maskedEnv: [{ name: "gh token", command: ["gh"], injectHosts: ["a.com"] }] } } } }, /name must be an environment variable name/],
-    [{ ...valid, labels: { x: { skill: "s", allowedTools: ["Read"], sandbox: { maskedEnv: [{ name: "GH_TOKEN", command: ["gh"], injectHosts: [] }] } } } }, /injectHosts must be a non-empty list/],
-    [{ ...valid, labels: { x: { skill: "s", allowedTools: ["Read"], sandbox: { maskedEnv: [{ name: "GH_TOKEN", command: ["bin/gh"], injectHosts: ["a.com"] }] } } } }, /maskedEnv\[0\].command\[0\] must be an absolute path/],
   ];
   for (const [input, message] of cases) assert.throws(() => parseConfig(input), (error) => error instanceof ConfigError && message.test(error.message));
 });
@@ -75,33 +74,21 @@ test("a backend command is an absolute path, a ~/ path or a bare command name", 
   assert.ok(parseConfig(valid).backendCommand[0]?.startsWith("/"));
 });
 
-test("a skill label's sandbox entry is parsed, with ~/ expanded in paths and the masked command", () => {
-  const raw = {
-    ...valid,
-    labels: {
-      "review-pr": {
-        skill: "s",
-        allowedTools: ["Read"],
-        sandbox: {
-          allowRead: ["~/state", "{pr-review}"],
-          allowWrite: ["~/state"],
-          allowedDomains: ["api.github.com"],
-          excludedCommands: ["board *"],
-          maskedEnv: [{ name: "GH_TOKEN", command: ["gh", "auth", "token"], injectHosts: ["api.github.com"] }],
-        },
-      },
-    },
-  };
-  const entry = parseConfig(raw).labels["review-pr"];
-  assert.ok(entry?.kind === "skill" && entry.sandbox);
-  assert.ok(entry.sandbox.allowRead[0]?.startsWith("/") && entry.sandbox.allowRead[0].endsWith("/state"));
-  assert.equal(entry.sandbox.allowRead[1], "{pr-review}");
-  assert.deepEqual(entry.sandbox.maskedEnv[0]?.command, ["gh", "auth", "token"]);
-  assert.deepEqual(entry.sandbox.excludedCommands, ["board *"]);
-});
-
 test("intake tasks are normal unless the config says otherwise", () => {
   assert.equal(parseConfig(valid).intakePriority, "normal");
   assert.equal(parseConfig({ ...valid, intakePriority: "high" }).intakePriority, "high");
   assert.throws(() => parseConfig({ ...valid, intakePriority: "asap" }), /intakePriority must be one of urgent, high, normal, low/);
+});
+
+test("lanes keep their order and default to one slot", () => {
+  const config = parseConfig({ ...valid, lanes: { reviews: { labels: ["review-pr"], slots: 2 }, tests: { labels: ["selftest"] } } });
+  assert.deepEqual(config.lanes, [
+    { name: "reviews", labels: ["review-pr"], slots: 2 },
+    { name: "tests", labels: ["selftest"], slots: 1 },
+  ]);
+});
+
+test("an old sandbox entry is ignored, so a config from before still loads", () => {
+  const config = parseConfig({ ...valid, labels: { ...valid.labels, x: { skill: "s", allowedTools: ["Read"], sandbox: { maskedEnv: [] } } } });
+  assert.deepEqual(Object.keys(config.labels["x"] ?? {}).sort(), ["allowedTools", "cwd", "disallowedTools", "kind", "skill"]);
 });

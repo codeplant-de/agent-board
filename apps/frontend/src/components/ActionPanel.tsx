@@ -12,6 +12,7 @@ import {
 } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
+import { liveness } from '../lib/liveness';
 import { ago } from '../lib/time';
 import { useTRPC, type BoardTask, type ThreadNote } from '../lib/trpc';
 import { MarkdownEditor } from './MarkdownEditor';
@@ -80,7 +81,13 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
             <Loader size="xs" />
             <Text size="sm">
               Running on <b>{task.machine ?? 'a worker'}</b>
-              {startedAt ? ` since ${ago(startedAt)}` : ''}. It reports back here when it is done or has a question.
+              {task.lane ? ` in the ${task.lane} lane${task.borrowed ? ' (borrowed)' : ''}` : ''}
+              {startedAt ? ` since ${ago(startedAt)}` : ''}
+              {' · '}
+              <Text span size="sm" fw={500} c={liveness(task.lastActiveAt).color}>
+                {liveness(task.lastActiveAt).text}
+              </Text>
+              . It reports back here when it is done or has a question.
             </Text>
           </Group>
           <CommentOnly actions={actions} hint="Leave a note for later (does not reach the running agent)" />
@@ -105,7 +112,7 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
       <Paper withBorder p="md">
         <Stack>
           <Text size="sm">
-            Queued.{' '}
+            {task.paused ? 'Paused to free its slot.' : 'Queued.'}{' '}
             {task.next === 'resume'
               ? `The next run resumes the agent's session${task.machine ? ` on ${task.machine}` : ''} with your reply.`
               : 'The next free worker starts it.'}

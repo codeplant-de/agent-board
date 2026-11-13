@@ -4,7 +4,7 @@
  * The server URL comes from web.json next to config.json, the machine token (AGENT_BOARD_TOKEN) from the env file.
  *
  *   web-backend version | list-tasks [--all] | get-task <id> | add-task | update-task <id> | claim-task <id> --machine <name>
- *               | add-note <id> [--author agent|system] | ask <id> | read-notes <id> | setup [--dry-run]
+ *               | add-note <id> [--author agent|system] | ask <id> | heartbeat <id> | pause <id> | read-notes <id> | setup [--dry-run]
  *
  * Every subcommand is one POST to <url>/api/machine/<subcommand>; the server does the work in one transaction.
  */
@@ -132,8 +132,15 @@ export async function buildRequest(command: string, args: string[], stdin: () =>
       return { body: parseJson(await stdin(), "draft") };
     case "update-task":
     case "ask":
+    case "heartbeat":
       if (args.length !== 1) usage("<id>");
-      return { id: id(args[0], "<id>"), body: parseJson(await stdin(), command === "ask" ? "questions" : "patch") };
+      return { id: id(args[0], "<id>"), body: parseJson(await stdin(), command) };
+    case "pause": {
+      if (args.length !== 1) usage("<id>");
+      const note = await stdin();
+      if (note.trim() === "") throw new ContractError("pause note on stdin is empty");
+      return { id: id(args[0], "<id>"), body: note };
+    }
     case "claim-task": {
       const [taskId, flag, machine] = args;
       if (args.length !== 3 || flag !== "--machine" || machine === undefined || !isSafeMachineName(machine)) usage("<id> --machine <name>");
@@ -154,7 +161,7 @@ export async function buildRequest(command: string, args: string[], stdin: () =>
   }
 }
 
-const COMMANDS = ["list-tasks", "get-task", "add-task", "update-task", "claim-task", "add-note", "ask", "read-notes", "setup"];
+const COMMANDS = ["list-tasks", "get-task", "add-task", "update-task", "claim-task", "add-note", "ask", "heartbeat", "pause", "read-notes", "setup"];
 
 export async function main(argv: string[], fetcher: Fetch = fetch): Promise<number> {
   const [command, ...args] = argv;
@@ -170,8 +177,8 @@ export async function main(argv: string[], fetcher: Fetch = fetch): Promise<numb
   const config = loadWebConfig(getPaths().configDir);
   try {
     const result = await callServer(config, command, request, fetcher);
-    // add-note prints nothing; everything else prints its result.
-    if (command !== "add-note") console.log(JSON.stringify(result));
+    // add-note, ask and heartbeat print nothing; everything else prints its result.
+    if (!["add-note", "ask", "heartbeat"].includes(command)) console.log(JSON.stringify(result));
     return 0;
   } catch (error) {
     // A lost claim is an answer, not a failure: the core moves on to the next task.

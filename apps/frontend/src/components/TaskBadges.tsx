@@ -1,5 +1,5 @@
 import { Badge, Group } from '@mantine/core';
-import { IconDeviceDesktop, IconMessageQuestion, IconPlayerTrackNext, IconSparkles } from '@tabler/icons-react';
+import { IconArrowsExchange, IconDeviceDesktop, IconMessageQuestion, IconPlayerPause, IconPlayerTrackNext, IconSparkles } from '@tabler/icons-react';
 import type { BoardTask } from '../lib/trpc';
 import { PriorityBadge } from './PriorityPicker';
 
@@ -21,14 +21,24 @@ export function TaskBadges({ task, withLabels = true, withPriority = true }: { t
           Proposed
         </Badge>
       )}
-      {task.status === 'todo' && task.next === 'resume' && (
+      {task.paused && (
+        <Badge size="sm" color="yellow" variant="light" leftSection={<IconPlayerPause size={12} />}>
+          Paused
+        </Badge>
+      )}
+      {task.status === 'todo' && task.next === 'resume' && !task.paused && (
         <Badge size="sm" color="indigo" variant="light" leftSection={<IconPlayerTrackNext size={12} />}>
           Resume
         </Badge>
       )}
       {task.status === 'running' && task.machine && (
-        <Badge size="sm" color="blue" variant="dot" leftSection={<IconDeviceDesktop size={12} />}>
-          {task.machine}
+        <Badge size="sm" color="blue" variant="light" tt="none" leftSection={<IconDeviceDesktop size={12} />}>
+          {task.lane ? `${task.machine} · ${task.lane}` : task.machine}
+        </Badge>
+      )}
+      {task.status === 'running' && task.borrowed && (
+        <Badge size="sm" color="grape" variant="light" tt="none" leftSection={<IconArrowsExchange size={12} />} title="Running in another lane's slot; it may be paused when that lane gets work of its own">
+          borrowed
         </Badge>
       )}
       {withLabels &&

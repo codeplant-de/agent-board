@@ -5,6 +5,7 @@ import {
   type Answer,
   type Note,
   type Priority,
+  type Heartbeat,
   type Question,
   type Status,
   type Task,
@@ -40,8 +41,13 @@ export function toTask(row: TaskRow, publicUrl: string): Task {
     closed: row.closed,
     machine: row.machine,
     sessionId: row.sessionId,
+    workdir: row.workdir,
     next: row.next,
     openQuestion: row.openQuestionNoteId !== null,
+    // Run details describe the current run only.
+    lane: row.status === 'running' ? row.lane : null,
+    borrowed: row.status === 'running' && row.borrowed,
+    lastActiveAt: row.status === 'running' ? row.lastActiveAt : null,
   };
 }
 
@@ -69,13 +75,22 @@ async function edgePosition(db: DbOrTx, status: Status, edge: 'top' | 'bottom'):
   return row?.high == null ? 0 : row.high + 1;
 }
 
-/** Every task, by status, then priority (urgent first), then manual order; closed ones only with `all`. */
+/**
+ * Every task, by status, then priority (urgent first), then manual order; closed ones only with `all`. In Todo,
+ * resumes (answered, replied to, paused) come before everything else: that work is already under way.
+ */
 export async function listTasks(db: DbOrTx, options: { all?: boolean } = {}): Promise<TaskRow[]> {
   return db
     .select()
     .from(tasks)
     .where(options.all ? undefined : eq(tasks.closed, false))
-    .orderBy(asc(tasks.status), asc(tasks.priority), asc(tasks.position), asc(tasks.createdAt));
+    .orderBy(
+      asc(tasks.status),
+      sql`case when ${tasks.status} = 'todo' and ${tasks.next} = 'resume' then 0 else 1 end`,
+      asc(tasks.priority),
+      asc(tasks.position),
+      asc(tasks.createdAt),
+    );
 }
 
 export async function getTask(db: DbOrTx, id: string): Promise<TaskRow> {
@@ -133,6 +148,7 @@ export async function updateTask(db: Db, id: string, patch: TaskPatch): Promise<
     const values: Partial<typeof tasks.$inferInsert> = { updatedAt: new Date() };
     if (patch.input !== undefined) values.input = patch.input;
     if (patch.sessionId !== undefined) values.sessionId = patch.sessionId;
+    if (patch.workdir !== undefined) values.workdir = patch.workdir;
     if (patch.next !== undefined) values.next = patch.next;
     if (patch.priority !== undefined && patch.priority !== current.priority) values.priority = patch.priority;
     const status = patch.status ?? current.status;
@@ -159,7 +175,16 @@ export async function claimTask(db: Db, id: string, machine: string): Promise<Ta
   const bottom = await edgePosition(db, 'running', 'bottom');
   const [row] = await db
     .update(tasks)
-    .set({ status: 'running', machine, position: bottom, updatedAt: new Date() })
+    .set({
+      status: 'running',
+      machine,
+      position: bottom,
+      lane: null,
+      borrowed: false,
+      lastActiveAt: new Date(),
+      pausedAt: null,
+      updatedAt: new Date(),
+    })
     .where(
       and(
         eq(tasks.id, id),
@@ -364,6 +389,7 @@ export async function rerunFresh(db: Db, taskId: string, by: string): Promise<Ta
         position: await edgePosition(tx, 'todo', 'bottom'),
         next: 'fresh',
         sessionId: null,
+        workdir: null,
         openQuestionNoteId: null,
         proposed: false,
         closed: false,
@@ -465,6 +491,39 @@ export async function setPriority(db: Db, taskId: string, priority: Priority, by
     const [row] = await tx
       .update(tasks)
       .set({ priority, position: await edgePosition(tx, task.status, 'bottom'), updatedAt: new Date() })
+      .where(eq(tasks.id, taskId))
+      .returning();
+    return row!;
+  });
+}
+
+/** The agent of a running task made a tool call. A task that stopped running in between is left alone. */
+export async function heartbeat(db: Db, taskId: string, beat: Heartbeat): Promise<void> {
+  await getTask(db, taskId);
+  await db
+    .update(tasks)
+    .set({ lane: beat.lane, borrowed: beat.borrowed, lastActiveAt: new Date() })
+    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running')));
+}
+
+/**
+ * A worker gave up the task's slot for its own lane's work. Back to Todo, ahead of new work (resumes come first),
+ * and resumed in its session on the same machine.
+ */
+export async function pause(db: Db, taskId: string, note: string, by: string): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    if (task.status !== 'running') throw new AppError('CONFLICT', `the task is ${task.status}, not running`);
+    await systemEvent(tx, taskId, note, by);
+    const [row] = await tx
+      .update(tasks)
+      .set({
+        status: 'todo',
+        next: task.sessionId ? 'resume' : 'fresh',
+        position: await edgePosition(tx, 'todo', 'top'),
+        pausedAt: new Date(),
+        updatedAt: new Date(),
+      })
       .where(eq(tasks.id, taskId))
       .returning();
     return row!;

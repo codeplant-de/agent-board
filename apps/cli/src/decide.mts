@@ -1,9 +1,13 @@
-import type { LabelEntry, MaskedEnv } from "./config.mts";
+import type { Lane, LabelEntry } from "./config.mts";
 import { formatAnswers } from "@agent-board/shared";
 import type { Note, Task } from "@agent-board/shared";
-import { buildSandboxSettings, PLUGIN_PLACEHOLDER, usesPlaceholder } from "./sandbox.mts";
+
+// Stands for the root Claude Code gives the pr-review plugin, in allow and deny rules.
+export const PLUGIN_PLACEHOLDER = "{pr-review}";
 
 export const START_MARKER = "agent-board: started";
+// The note of a run that gave up its slot; the next run resumes with "you were paused".
+export const PAUSE_MARKER = "Paused on";
 // The worker enforces the timeout itself; the sweep only catches a worker that cannot.
 const SWEEP_GRACE_MINUTES = 5;
 
@@ -24,9 +28,6 @@ export function resolveLabel(task: Task, labels: Record<string, LabelEntry>): La
   return { known: false, reason: `No worker is configured for this task: ${have}. Known labels: ${Object.keys(labels).join(", ")}.` };
 }
 
-export function freeSlots(runningCount: number, maxParallel: number): number {
-  return Math.max(0, maxParallel - runningCount);
-}
 
 export function startedAt(notes: Note[]): Date | undefined {
   const starts = notes.filter((note) => note.text.startsWith(START_MARKER));
@@ -35,23 +36,125 @@ export function startedAt(notes: Note[]): Date | undefined {
 
 export type StaleDecision = { stale: false } | { stale: true; reason: string; stopUnit: boolean };
 
+export interface RunLimits {
+  inactivityMinutes: number;
+  maxRunHours: number;
+}
+
+// The worker enforces the limits itself; this catches a worker that cannot, a few minutes after it should have.
 export function decideStale(input: {
   unitActive: boolean;
   startedAt: Date | undefined;
+  // The agent's last tool call; undefined before its first one.
+  lastActive: Date | undefined;
   now: Date;
-  timeoutMinutes: number;
+  limits: RunLimits;
 }): StaleDecision {
   if (!input.unitActive) return { stale: true, reason: "The worker is no longer running.", stopUnit: false };
   if (input.startedAt === undefined) return { stale: false };
-  const ageMinutes = (input.now.getTime() - input.startedAt.getTime()) / 60_000;
-  if (ageMinutes > input.timeoutMinutes + SWEEP_GRACE_MINUTES) {
-    return {
-      stale: true,
-      reason: `The worker has been running for ${Math.round(ageMinutes)} minutes, over the timeout of ${input.timeoutMinutes}.`,
-      stopUnit: true,
-    };
+  const minutesSince = (date: Date) => (input.now.getTime() - date.getTime()) / 60_000;
+  const age = minutesSince(input.startedAt);
+  if (age > input.limits.maxRunHours * 60 + SWEEP_GRACE_MINUTES) {
+    return { stale: true, reason: `The run has gone on for ${Math.round(age)} minutes, over the limit of ${input.limits.maxRunHours} hours.`, stopUnit: true };
+  }
+  const quiet = minutesSince(input.lastActive ?? input.startedAt);
+  if (quiet > input.limits.inactivityMinutes + SWEEP_GRACE_MINUTES) {
+    return { stale: true, reason: `The agent has made no tool call for ${Math.round(quiet)} minutes.`, stopUnit: true };
   }
   return { stale: false };
+}
+
+export type Supervision = { kind: "continue" } | { kind: "stop"; why: "inactive" | "ceiling" | "pause-forced"; message: string };
+
+// What the worker does with a run that is still going, checked every half minute.
+export function supervise(input: {
+  now: Date;
+  startedAt: Date;
+  // The agent's last tool call; undefined before its first one. A command label passes `now`.
+  lastActive: Date | undefined;
+  pauseRequestedAt: Date | undefined;
+  limits: RunLimits;
+  // How long a run may take to stop by itself after a pause was asked for.
+  pauseGraceMinutes: number;
+}): Supervision {
+  const minutesSince = (date: Date) => (input.now.getTime() - date.getTime()) / 60_000;
+  if (input.pauseRequestedAt !== undefined && minutesSince(input.pauseRequestedAt) > input.pauseGraceMinutes) {
+    return { kind: "stop", why: "pause-forced", message: `The run did not stop within ${input.pauseGraceMinutes} minutes of the pause request and was stopped.` };
+  }
+  if (minutesSince(input.startedAt) > input.limits.maxRunHours * 60) {
+    return { kind: "stop", why: "ceiling", message: `Stopped after ${input.limits.maxRunHours} hours, the longest a run may take.` };
+  }
+  if (minutesSince(input.lastActive ?? input.startedAt) > input.limits.inactivityMinutes) {
+    return { kind: "stop", why: "inactive", message: `Stopped: the agent made no tool call for ${input.limits.inactivityMinutes} minutes.` };
+  }
+  return { kind: "continue" };
+}
+
+// The lane of this machine whose own work the task is: the lane holding the label that picks its worker.
+export function ownLane(task: Task, lanes: Lane[], labels: Record<string, LabelEntry>): string | undefined {
+  const resolved = resolveLabel(task, labels);
+  if (!resolved.known) return undefined;
+  return lanes.find((lane) => lane.labels.includes(resolved.label))?.name;
+}
+
+export interface LaneRun {
+  taskId: string;
+  lane: string;
+  borrowed: boolean;
+  startedAt: Date | undefined;
+  pauseRequested: boolean;
+}
+
+export interface Start {
+  taskId: string;
+  lane: string;
+  borrowed: boolean;
+}
+
+/**
+ * Which todo tasks start in which lane. First every lane takes its own work, in list order; then lanes with slots
+ * left borrow what is still waiting, in list order, earlier lanes first. `candidates` are the tasks this machine can
+ * serve, in the backend's order (resumes first, then priority).
+ */
+export function planStarts(input: { lanes: Lane[]; running: LaneRun[]; candidates: Task[]; ownLaneOf: (task: Task) => string | undefined }): Start[] {
+  const free = new Map(input.lanes.map((lane) => [lane.name, lane.slots - input.running.filter((run) => run.lane === lane.name).length]));
+  const starts: Start[] = [];
+  const taken = new Set<string>();
+  for (const task of input.candidates) {
+    const lane = input.ownLaneOf(task);
+    if (lane !== undefined && (free.get(lane) ?? 0) > 0) {
+      starts.push({ taskId: task.id, lane, borrowed: false });
+      free.set(lane, (free.get(lane) ?? 0) - 1);
+      taken.add(task.id);
+    }
+  }
+  for (const task of input.candidates) {
+    if (taken.has(task.id)) continue;
+    const lane = input.lanes.find((candidate) => (free.get(candidate.name) ?? 0) > 0);
+    if (lane === undefined) break;
+    starts.push({ taskId: task.id, lane: lane.name, borrowed: true });
+    free.set(lane.name, (free.get(lane.name) ?? 0) - 1);
+  }
+  return starts;
+}
+
+/**
+ * Borrowed runs to pause: one per lane that is full, has its own work waiting and no pause pending, the borrowed run
+ * that started last among those that ran at least `pauseAfterMinutes`. Lane bias beats priority, so the priorities
+ * of the waiting and the running task do not matter.
+ */
+export function planPauses(input: { lanes: Lane[]; running: LaneRun[]; waitingOwn: Map<string, number>; now: Date; pauseAfterMinutes: number }): LaneRun[] {
+  const pauses: LaneRun[] = [];
+  for (const lane of input.lanes) {
+    const inLane = input.running.filter((run) => run.lane === lane.name);
+    if (inLane.length < lane.slots || (input.waitingOwn.get(lane.name) ?? 0) === 0) continue;
+    if (inLane.some((run) => run.pauseRequested)) continue;
+    const pausable = inLane
+      .filter((run) => run.borrowed && run.startedAt !== undefined && input.now.getTime() - run.startedAt.getTime() >= input.pauseAfterMinutes * 60_000)
+      .sort((a, b) => (b.startedAt?.getTime() ?? 0) - (a.startedAt?.getTime() ?? 0));
+    if (pausable[0]) pauses.push(pausable[0]);
+  }
+  return pauses;
 }
 
 export interface ParsedInput {
@@ -79,9 +182,7 @@ export function parsePrUrl(url: string): { repo: string; number: number } | unde
 
 export function usesPluginPlaceholder(entry: LabelEntry): boolean {
   return (
-    entry.kind === "skill" &&
-    ([...entry.allowedTools, ...entry.disallowedTools].some((rule) => rule.includes(PLUGIN_PLACEHOLDER)) ||
-      (entry.sandbox !== undefined && usesPlaceholder(entry.sandbox, PLUGIN_PLACEHOLDER)))
+    entry.kind === "skill" && [...entry.allowedTools, ...entry.disallowedTools].some((rule) => rule.includes(PLUGIN_PLACEHOLDER))
   );
 }
 
@@ -116,9 +217,22 @@ export function userReply(notes: Note[]): Note[] {
   return sorted.slice(lastAgent + 1).filter((note) => note.author === "user" && (note.kind === "answer" || note.kind === "comment"));
 }
 
+// The last run gave up its slot: a pause note the agent has not spoken after. Not "after the last start": the
+// dispatcher adds the new run's start note while its worker is still reading the thread.
+export function wasPaused(notes: Note[]): boolean {
+  const sorted = [...notes].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  const lastAgent = sorted.findLastIndex((note) => note.author === "agent");
+  return sorted.slice(lastAgent + 1).some((note) => note.author === "system" && note.text.startsWith(PAUSE_MARKER));
+}
+
 export function buildResumePrompt(task: Task, notes: Note[]): string | undefined {
   const reply = userReply(notes);
-  if (reply.length === 0) return undefined;
+  const paused = wasPaused(notes);
+  if (reply.length === 0 && !paused) return undefined;
+  const pausedLine = `You were paused on board task ${task.id} to free the slot for other work. Continue where you left off; check the state of anything you were in the middle of before you go on.`;
+  if (reply.length === 0) {
+    return [pausedLine, "", `Same rules as before. End the run with \`board ask ${task.id} --file <questions.json>\` if you need the user, or with \`board move ${task.id} needs-me\` (or done) when you are finished, after posting what you did with \`board comment\`.`].join("\n");
+  }
   const parts = reply.map((note) => {
     if (note.kind !== "answer") return note.text.trim();
     const questions = notes.find((candidate) => candidate.id === note.questionNoteId)?.questions;
@@ -126,6 +240,7 @@ export function buildResumePrompt(task: Task, notes: Note[]): string | undefined
     return note.text.trim() === "" ? `Answers:\n${answers}` : `Answers:\n${answers}\n\n${note.text.trim()}`;
   });
   return [
+    ...(paused ? [pausedLine, ""] : []),
     `The user replied on board task ${task.id}:`,
     "",
     ...parts.flatMap((part) => [part, ""]),
@@ -142,30 +257,35 @@ export function planRun(task: Task, notes: Note[], newSessionId: () => string): 
   return { kind: "fresh", sessionId: newSessionId() };
 }
 
-export type Outcome = { kind: "ok" } | { kind: "failed"; reason: string } | { kind: "unreported" };
+export type Outcome = { kind: "ok" } | { kind: "failed"; reason: string } | { kind: "unreported" } | { kind: "paused" };
 
 export function decideOutcome(input: {
   exitCode: number | null;
   signal: string | null;
-  timedOut: boolean;
-  timeoutMinutes: number;
+  // Why the worker stopped the run itself, if it did.
+  stopped: Exclude<Supervision, { kind: "continue" }> | undefined;
+  // The dispatcher asked the run to give up its slot.
+  pauseRequested: boolean;
   // The worker (or the skill) moved the task to Needs me or Done.
   reported: boolean;
 }): Outcome {
-  if (input.timedOut) return { kind: "failed", reason: `Timed out after ${input.timeoutMinutes} minutes and was stopped.` };
-  if (input.exitCode !== 0) {
-    const how = input.signal ? `was killed by ${input.signal}` : `exited with code ${input.exitCode}`;
-    return { kind: "failed", reason: `The worker ${how}.` };
-  }
-  return input.reported ? { kind: "ok" } : { kind: "unreported" };
+  // A run that reported before it noticed the pause is simply done.
+  if (input.reported) return input.exitCode === 0 || input.pauseRequested ? { kind: "ok" } : failed(input);
+  if (input.pauseRequested) return { kind: "paused" };
+  if (input.stopped) return { kind: "failed", reason: input.stopped.message };
+  if (input.exitCode !== 0) return failed(input);
+  return { kind: "unreported" };
+}
+
+function failed(input: { exitCode: number | null; signal: string | null }): Outcome {
+  const how = input.signal ? `was killed by ${input.signal}` : `exited with code ${input.exitCode}`;
+  return { kind: "failed", reason: `The worker ${how}.` };
 }
 
 export interface Invocation {
   command: string;
   args: string[];
   cwd: string;
-  // Environment variables the worker fills from commands (never logged) and adds to the process's environment.
-  maskedEnv: MaskedEnv[];
 }
 
 export type InvocationPlan = { ok: true; invocation: Invocation } | { ok: false; reason: string };
@@ -178,23 +298,25 @@ export function buildInvocation(input: {
   fallbackCwd: string;
   // Install path of the pr-review plugin; undefined when it could not be resolved.
   prReviewPath: string | undefined;
-  // Names directly inside a directory, for the sandbox's read-only list.
-  listDir: (dir: string) => string[];
   // Ignored by a command label.
   run: RunPlan;
+  // Where the task's last run ended up (a worktree it entered, say). A resume starts there.
+  workdir?: string | null;
+  // The PreToolUse hook command (heartbeat and pause); ignored by a command label.
+  hookCommand?: string;
 }): InvocationPlan {
   const { entry, task, repos, home } = input;
   if (entry.kind === "command") {
     const [command, ...args] = entry.command;
     if (command === undefined) return { ok: false, reason: "The label's command is empty." };
-    return { ok: true, invocation: { command, args, cwd: entry.cwd ?? input.fallbackCwd, maskedEnv: [] } };
-  }
-  if (entry.sandbox === undefined) {
-    return { ok: false, reason: `The label has no "sandbox" entry in config.json. A headless run is not started without one; copy it from config.example.json.` };
+    return { ok: true, invocation: { command, args, cwd: entry.cwd ?? input.fallbackCwd } };
   }
   const prompt = parseInput(task.input).input;
   let cwd = entry.cwd;
-  if (cwd === "pr-repo") {
+  // A resume continues in the directory the session was in, which may be a worktree the agent entered.
+  if (input.run.kind === "resume" && input.workdir) {
+    cwd = input.workdir;
+  } else if (cwd === "pr-repo") {
     const pr = parsePrUrl(prompt);
     if (!pr) return { ok: false, reason: `The first line of the task input is not a GitHub PR URL: ${prompt || "(empty)"}` };
     const dir = repos[pr.repo];
@@ -205,12 +327,7 @@ export function buildInvocation(input: {
     return { ok: false, reason: `The pr-review plugin path is unknown, but the allow rules need ${PLUGIN_PLACEHOLDER}.` };
   }
   const expand = (rule: string): string => expandRule(rule, home, input.prReviewPath);
-  const sandboxSettings = buildSandboxSettings({
-    entry: entry.sandbox,
-    cwd,
-    prReviewPath: input.prReviewPath,
-    checkoutEntries: input.listDir(cwd),
-  });
+  const settings = input.hookCommand === undefined ? {} : { hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: input.hookCommand }] }] } };
   // A PR review gets its PR URL; any other skill reads its task with `board show`.
   const start = entry.cwd === "pr-repo" ? `/${entry.skill} ${task.id} ${prompt}` : `/${entry.skill} ${task.id}`;
   const session = input.run.kind === "fresh" ? ["--session-id", input.run.sessionId] : ["--resume", input.run.sessionId];
@@ -224,12 +341,12 @@ export function buildInvocation(input: {
     // Project and local settings of the checkout carry their own allow rules and tokens; only the user's settings load.
     "--setting-sources",
     "user",
-    // The Bash sandbox. Passed inline: it holds no secret, only the names of the masked variables.
+    // The heartbeat and pause hook, inline.
     "--settings",
-    JSON.stringify(sandboxSettings),
+    JSON.stringify(settings),
     "--allowedTools",
     ...entry.allowedTools.map(expand),
   ];
   if (entry.disallowedTools.length > 0) args.push("--disallowedTools", ...entry.disallowedTools.map(expand));
-  return { ok: true, invocation: { command: "claude", args, cwd, maskedEnv: entry.sandbox.maskedEnv } };
+  return { ok: true, invocation: { command: "claude", args, cwd } };
 }

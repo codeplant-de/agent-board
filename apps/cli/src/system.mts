@@ -78,7 +78,7 @@ export function createSystem(input: { workerScript: string; dryRun: boolean; pri
       const unit = unitName(taskId);
       // A transient unit does not inherit this environment, so pass on what the worker needs.
       const args = ["--user", "--quiet", "--collect", `--unit=${unit}`, "--setenv=PATH", "--setenv=HOME"];
-      for (const name of ["AGENT_BOARD_CONFIG_DIR", "AGENT_BOARD_STATE_DIR", "XDG_STATE_HOME"]) {
+      for (const name of ["AGENT_BOARD_CONFIG_DIR", "AGENT_BOARD_STATE_DIR", "AGENT_BOARD_RUN_DIR", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"]) {
         if (process.env[name]) args.push(`--setenv=${name}`);
       }
       args.push("--", process.execPath, input.workerScript, taskId);

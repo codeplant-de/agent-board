@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ContractError, parseDraft, parseNote, parsePatch, parseTask } from "../src/contract.mts";
+import { ContractError, parseDraft, parseHeartbeat, parseNote, parsePatch, parseTask } from "../src/contract.mts";
 
 const task = {
   id: "Ab3dEf9x",
@@ -13,8 +13,12 @@ const task = {
   closed: false,
   machine: null,
   sessionId: null,
+  workdir: null,
   next: "fresh",
   openQuestion: false,
+  lane: null,
+  borrowed: false,
+  lastActiveAt: null,
 };
 
 test("a v2 task needs every field", () => {
@@ -22,6 +26,14 @@ test("a v2 task needs every field", () => {
   const { next: _next, ...withoutNext } = task;
   assert.throws(() => parseTask(withoutNext), /next must be one of/);
   assert.throws(() => parseTask({ ...task, machine: "bad name" }), /not a safe name/);
+});
+
+test("a running task carries its lane and liveness", () => {
+  const running = parseTask({ ...task, status: "running", lane: "reviews", borrowed: true, lastActiveAt: "2026-11-13T10:00:00Z" });
+  assert.equal(running.lastActiveAt?.toISOString(), "2026-11-13T10:00:00.000Z");
+  assert.throws(() => parseTask({ ...task, lastActiveAt: "soon" }), /lastActiveAt is not a date/);
+  assert.deepEqual(parseHeartbeat({ lane: "reviews", borrowed: false }), { lane: "reviews", borrowed: false });
+  assert.throws(() => parseHeartbeat({ lane: "a b", borrowed: false }), /heartbeat.lane/);
 });
 
 test("a draft takes the dedupe key, parent and creator; unknown keys fail", () => {
@@ -44,6 +56,8 @@ test("a patch takes the session and the next run", () => {
   assert.throws(() => parsePatch({}), /patch needs one of/);
   assert.throws(() => parsePatch({ next: "later" }), /next must be one of/);
   assert.deepEqual(parsePatch({ priority: "urgent" }), { priority: "urgent" });
+  assert.deepEqual(parsePatch({ workdir: "/repo/.claude/worktrees/x" }), { workdir: "/repo/.claude/worktrees/x" });
+  assert.throws(() => parsePatch({ workdir: "relative/dir" }), /absolute path/);
   assert.throws(() => parsePatch({ priority: "asap" }), /priority must be one of urgent, high, normal, low/);
 });
 
