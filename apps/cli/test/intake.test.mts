@@ -23,7 +23,7 @@ function pr(n: number, overrides: Partial<LivePr> = {}): LivePr {
   };
 }
 
-const taskFor = (n: number, status: Status, head = "aaaaaaa1") => task({ id: `c${n}`, status, input: `${url(n)}\nhead: ${head}` });
+const taskFor = (n: number, status: Status, head = "aaaaaaa1") => task({ id: `c${n}`, status, createdBy: "intake", input: `/review-pr ${url(n)} --auto\nhead: ${head}` });
 const plan = (prs: LivePr[], tasks = [] as ReturnType<typeof task>[]) =>
   planIntake({ prs, tasks, repos: Object.keys(CONFIG.repos), now: NOW }).map((a) => a.kind === "skip" ? `skip:${a.reason}` : a.kind);
 
@@ -144,6 +144,6 @@ test("intake creates its tasks with the configured priority", async () => {
     drafts.push(draft);
     return addTask(draft);
   };
-  await runIntake({ backend, config: { ...CONFIG, intakePriority: "high" }, dryRun: false, print: () => undefined, github: { listReviewRequested: async () => [pr(1)] }, now: () => NOW });
+  await runIntake({ backend, config: { ...CONFIG, intake: { ...CONFIG.intake, priority: "high" } }, dryRun: false, print: () => undefined, github: { listReviewRequested: async () => [pr(1)] }, now: () => NOW });
   assert.equal((drafts[0] as { priority: string }).priority, "high");
 });

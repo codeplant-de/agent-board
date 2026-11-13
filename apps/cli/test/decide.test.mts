@@ -1,19 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  boardRules,
   buildInvocation,
+  ownLane,
+  parseHead,
+  prUrlIn,
+  runPrompt,
   decideOutcome,
   decideStale,
   expandRule,
-  formatInput,
   planPauses,
   planStarts,
   supervise,
   notServableHere,
-  parseInput,
   planRun,
-  parsePrUrl,
-  resolveLabel,
   START_MARKER,
   startedAt,
   PAUSE_MARKER,
@@ -23,18 +24,84 @@ import { tail } from "../src/text.mts";
 import { CONFIG, note as makeNote, task } from "./helpers.mts";
 
 const FRESH = { kind: "fresh", sessionId: "s1" } as const;
+const PR = "https://github.com/cosuno/cosuno/pull/17741";
+const invoke = (overrides: Parameters<typeof task>[0], run: Parameters<typeof buildInvocation>[0]["run"] = FRESH, prReviewPath: string | undefined = "/plugins/pr") =>
+  buildInvocation({ run, task: task(overrides), repos: CONFIG.repos, defaultCwd: CONFIG.defaultCwd, intake: CONFIG.intake, home: "/h", prReviewPath, hookCommand: "'/x/agent-hook' '/run/ab' abc" });
 
-test("a known label resolves, the first known label wins", () => {
-  const resolved = resolveLabel(task({ id: "a", labels: ["other", "selftest"] }), CONFIG.labels);
-  assert.equal(resolved.known && resolved.label, "selftest");
+test("a scheduled task runs its prompt as written, in its directory, as the user in auto mode", () => {
+  const plan = invoke({ id: "abc", input: "/review-pr 17741 --fresh", machine: "here", workdir: "/work/cosuno" });
+  assert.ok(plan.ok);
+  const { args, cwd } = plan.invocation;
+  assert.deepEqual(args.slice(0, 4), ["-p", "/review-pr 17741 --fresh", "--session-id", "s1"]);
+  assert.equal(cwd, "/work/cosuno");
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "auto");
+  assert.ok(!args.includes("--setting-sources"), "all of the user's settings load");
+  assert.ok(!args.includes("--allowedTools"));
+  assert.match(args[args.indexOf("--append-system-prompt") + 1] ?? "", /agent-board task abc/);
+  const settings = JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}");
+  assert.deepEqual(settings, { hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: "'/x/agent-hook' '/run/ab' abc" }] }] } });
 });
 
-test("an unknown or missing label explains itself", () => {
-  const unknown = resolveLabel(task({ id: "a", labels: ["nope"] }), CONFIG.labels);
-  assert.equal(unknown.known, false);
-  assert.match(unknown.known ? "" : unknown.reason, /nope.*Known labels: selftest, review-pr/);
-  const none = resolveLabel(task({ id: "a" }), CONFIG.labels);
-  assert.match(none.known ? "" : none.reason, /no label/);
+test("a task without a directory runs in the default one", () => {
+  const plan = invoke({ id: "abc", input: "Find out why the export is slow" });
+  assert.ok(plan.ok);
+  assert.equal(plan.invocation.cwd, "/home/me");
+  assert.ok(!invoke({ id: "abc", input: "  " }).ok, "an empty prompt is refused");
+});
+
+test("an intake review runs in the PR's checkout with intake's narrow rules, without its head line", () => {
+  const plan = invoke({ id: "abc", input: `/review-pr ${PR} --auto\nhead: 56120dc60b`, createdBy: "intake", workdir: "/stale/dir" });
+  assert.ok(plan.ok);
+  const { args, cwd } = plan.invocation;
+  assert.equal(args[1], `/review-pr ${PR} --auto`);
+  assert.equal(cwd, "/work/cosuno", "a fresh intake run goes back to the checkout");
+  assert.deepEqual(args.slice(args.indexOf("--permission-mode"), args.indexOf("--permission-mode") + 4), ["--permission-mode", "dontAsk", "--setting-sources", "user"]);
+  assert.deepEqual(args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")), ["Read", "Bash(board *)"]);
+  const unmapped = invoke({ id: "abc", input: "/review-pr https://github.com/other/repo/pull/2 --auto", createdBy: "intake" });
+  assert.ok(!unmapped.ok && /other\/repo/.test(unmapped.reason));
+});
+
+test("a resume passes the reply and continues where the session stopped", () => {
+  const plan = invoke({ id: "abc", input: "/grill", workdir: "/repo/.claude/worktrees/x" }, { kind: "resume", sessionId: "s-old", prompt: "the reply" });
+  assert.ok(plan.ok);
+  assert.deepEqual(plan.invocation.args.slice(0, 4), ["-p", "the reply", "--resume", "s-old"]);
+  assert.equal(plan.invocation.cwd, "/repo/.claude/worktrees/x");
+});
+
+test("intake rules with {pr-review} need the plugin path", () => {
+  const plan = buildInvocation({ run: FRESH, task: task({ id: "a", input: PR, createdBy: "intake" }), repos: CONFIG.repos, defaultCwd: "/", intake: { ...CONFIG.intake, allowedTools: ["Bash({pr-review}/x.sh *)"] }, home: "/h", prReviewPath: undefined });
+  assert.ok(!plan.ok && /plugin path is unknown/.test(plan.reason));
+});
+
+test("a prompt's skill picks its lane; anything else goes to the lane with *", () => {
+  const lanes = [
+    { name: "reviews", skills: ["review-pr"], slots: 2 },
+    { name: "general", skills: ["*"], slots: 3 },
+  ];
+  assert.equal(ownLane(task({ id: "a", input: "/review-pr 17741" }), lanes), "reviews");
+  assert.equal(ownLane(task({ id: "a", input: "/pr-review:review-pr 17741" }), lanes), "reviews");
+  assert.equal(ownLane(task({ id: "a", input: "/grill this plan" }), lanes), "general");
+  assert.equal(ownLane(task({ id: "a", input: "Find out X" }), lanes), "general");
+  assert.equal(ownLane(task({ id: "a", input: "Find out X" }), [lanes[0]!]), undefined);
+});
+
+test("a machine leaves a task to another when it is pinned there or lacks the PR's checkout", () => {
+  const here = (overrides: Parameters<typeof task>[0]) => notServableHere(task(overrides), "here", CONFIG.repos);
+  assert.equal(here({ id: "a", input: "Find out X" }), undefined);
+  assert.match(here({ id: "a", input: "/grill", machine: "there", workdir: "/x" }) ?? "", /pinned to there/);
+  assert.equal(here({ id: "a", input: "/grill", machine: "here", workdir: "/x" }), undefined);
+  assert.match(here({ id: "a", input: "/grill", next: "resume", sessionId: "s", machine: "there" }) ?? "", /pinned to there/);
+  assert.equal(here({ id: "a", input: `/review-pr ${PR} --auto`, createdBy: "intake", machine: "there", workdir: "/w" }), undefined, "an intake task runs on any machine with the checkout");
+  assert.match(here({ id: "a", input: "/review-pr https://github.com/other/repo/pull/2 --auto", createdBy: "intake" }) ?? "", /no checkout of other\/repo/);
+});
+
+test("intake's head line is kept on the task but not given to the agent", () => {
+  const input = `/review-pr ${PR} --auto\nhead: 56120dc60b`;
+  assert.equal(parseHead(input), "56120dc60b");
+  assert.equal(runPrompt(input), `/review-pr ${PR} --auto`);
+  assert.equal(prUrlIn(input), PR);
+  assert.equal(prUrlIn("Find out X"), undefined);
+  assert.match(boardRules(task({ id: "abc" })), /AskUserQuestion is not available.*board ask abc --file \/tmp\/pr-abc-questions\.json/s);
 });
 
 test("the start time is the latest start note", () => {
@@ -48,93 +115,14 @@ test("the start time is the latest start note", () => {
   assert.equal(startedAt([]), undefined);
 });
 
-test("input round trip and PR URL parsing", () => {
-  const url = "https://github.com/cosuno/cosuno/pull/17711";
-  assert.deepEqual(parseInput(formatInput(url, "79ad544abc")), { input: url, head: "79ad544abc" });
-  assert.deepEqual(parseInput(url), { input: url, head: undefined });
-  assert.deepEqual(parsePrUrl(url), { repo: "cosuno/cosuno", number: 17711 });
-  assert.equal(parsePrUrl("https://example.com/x"), undefined);
-});
-
-test("skill invocation: prompt first, repo cwd, tools expanded, no skip flags", () => {
-  const entry = CONFIG.labels["review-pr"];
-  assert.ok(entry);
-  const plan = buildInvocation({
-    run: FRESH,
-    entry,
-    task: task({ id: "abc", input: "https://github.com/cosuno/cosuno/pull/1" }),
-    repos: CONFIG.repos,
-    home: "/home/u",
-    fallbackCwd: "/",
-    prReviewPath: undefined,
-  });
-  assert.ok(plan.ok);
-  assert.equal(plan.invocation.cwd, "/work/cosuno");
-  assert.deepEqual(plan.invocation.args.slice(0, 6), ["-p", "/board-review-pr abc https://github.com/cosuno/cosuno/pull/1", "--session-id", "s1", "--permission-mode", "dontAsk"]);
-  assert.equal(plan.invocation.args.some((arg) => arg.includes("dangerously") || arg === "auto" || arg === "bypassPermissions"), false);
-});
-
-test("skill invocation refuses an unmapped repo and a non-PR input", () => {
-  const entry = CONFIG.labels["review-pr"];
-  assert.ok(entry);
-  const run = (input: string) => buildInvocation({ run: FRESH, entry, task: task({ id: "a", input }), repos: CONFIG.repos, home: "/h", fallbackCwd: "/", prReviewPath: undefined });
-  const unmapped = run("https://github.com/other/repo/pull/2");
-  assert.ok(!unmapped.ok);
-  assert.match(unmapped.reason, /other\/repo/);
-  assert.ok(!run("not a url").ok);
-});
-
-test("command invocation runs the plain command", () => {
-  const entry = CONFIG.labels["selftest"];
-  assert.ok(entry);
-  const plan = buildInvocation({ run: FRESH, entry, task: task({ id: "a" }), repos: {}, home: "/h", fallbackCwd: "/fallback", prReviewPath: undefined });
-  assert.ok(plan.ok);
-  assert.deepEqual(plan.invocation, { command: "sleep", args: ["300"], cwd: "/fallback" });
-});
-
 test("long text is tailed", () => {
   assert.equal(tail("abcdef", 4), "…def");
-});
-
-test("the skill run loads user settings only, so a checkout's own allow rules never apply", () => {
-  const entry = CONFIG.labels["review-pr"];
-  assert.ok(entry);
-  const plan = buildInvocation({
-    run: FRESH,
-    entry,
-    task: task({ id: "abc", input: "https://github.com/cosuno/cosuno/pull/1" }),
-    repos: CONFIG.repos,
-    home: "/home/u",
-    fallbackCwd: "/",
-    prReviewPath: undefined,
-  });
-  assert.ok(plan.ok);
-  const { args } = plan.invocation;
-  const at = args.indexOf("--setting-sources");
-  assert.equal(args[at + 1], "user");
-  assert.ok(at !== -1 && at < args.indexOf("--allowedTools"), "flag must come before the variadic tool lists");
 });
 
 test("{pr-review} expands to the plugin path in Bash rules; ~/ only in Bash rules", () => {
   assert.equal(expandRule("Bash({pr-review}/skills/x.sh *)", "/h", "/plugins/pr"), "Bash(/plugins/pr/skills/x.sh *)");
   assert.equal(expandRule("Bash(~/bin/tool *)", "/h", undefined), "Bash(/h/bin/tool *)");
   assert.equal(expandRule("Read(~/.config/**)", "/h", "/p"), "Read(~/.config/**)");
-});
-
-test("a rule with {pr-review} fails the plan when the plugin path is unknown", () => {
-  const entry = { kind: "skill" as const, skill: "s", allowedTools: ["Bash({pr-review}/skills/x.sh *)"], disallowedTools: [], cwd: "/tmp" };
-  const input = { entry, task: task({ id: "a", input: "x" }), repos: {}, home: "/h", fallbackCwd: "/" };
-  const missing = buildInvocation({ run: FRESH, ...input, prReviewPath: undefined });
-  assert.ok(!missing.ok);
-  assert.match(missing.reason, /pr-review plugin path/);
-  const found = buildInvocation({ run: FRESH, ...input, prReviewPath: "/plugins/pr" });
-  assert.ok(found.ok);
-  assert.ok(found.invocation.args.includes("Bash(/plugins/pr/skills/x.sh *)"));
-});
-
-test("a label named like an Object.prototype member is unknown", () => {
-  const resolved = resolveLabel(task({ id: "a", labels: ["toString"] }), CONFIG.labels);
-  assert.equal(resolved.known, false);
 });
 
 const at = (minute: number): Date => new Date(Date.UTC(2026, 10, 13, 10, minute));
@@ -159,7 +147,7 @@ test("a resume carries the answers and comments given since the agent last spoke
   assert.match(plan.prompt, /also check the seed/);
   assert.match(plan.prompt, /and keep it short/);
   assert.doesNotMatch(plan.prompt, /earlier user note/);
-  assert.match(plan.prompt, /board ask abc/);
+  assert.match(plan.prompt, /board's rules from the start of this session still hold/);
 });
 
 test("a run starts fresh without a resume request, without a session, or without a reply", () => {
@@ -167,42 +155,6 @@ test("a run starts fresh without a resume request, without a session, or without
   assert.deepEqual(planRun(task({ id: "a", next: "fresh", sessionId: "s" }), reply, () => "n"), { kind: "fresh", sessionId: "n" });
   assert.deepEqual(planRun(task({ id: "a", next: "resume", sessionId: null }), reply, () => "n"), { kind: "fresh", sessionId: "n" });
   assert.deepEqual(planRun(task({ id: "a", next: "resume", sessionId: "s" }), [questionNote], () => "n"), { kind: "fresh", sessionId: "n" });
-});
-
-test("a resumed skill run passes the reply as the prompt and resumes the session", () => {
-  const entry = CONFIG.labels["review-pr"];
-  assert.ok(entry);
-  const plan = buildInvocation({
-    run: { kind: "resume", sessionId: "s-old", prompt: "the reply" },
-    entry,
-    task: task({ id: "abc", input: "https://github.com/cosuno/cosuno/pull/1" }),
-    repos: CONFIG.repos,
-    home: "/h",
-    fallbackCwd: "/",
-    prReviewPath: undefined,
-  });
-  assert.ok(plan.ok);
-  assert.deepEqual(plan.invocation.args.slice(0, 4), ["-p", "the reply", "--resume", "s-old"]);
-});
-
-test("a skill outside a PR checkout gets only its task id", () => {
-  const entry = { kind: "skill" as const, skill: "board-research", allowedTools: ["Read"], disallowedTools: [], cwd: "/work/notes" };
-  const plan = buildInvocation({ run: FRESH, entry, task: task({ id: "abc", input: "Find out X" }), repos: {}, home: "/h", fallbackCwd: "/", prReviewPath: undefined });
-  assert.ok(plan.ok);
-  assert.equal(plan.invocation.args[1], "/board-research abc");
-  assert.equal(plan.invocation.cwd, "/work/notes");
-});
-
-test("a machine leaves a task to another when it lacks the label, the checkout or the session", () => {
-  const pr = "https://github.com/cosuno/cosuno/pull/1";
-  const here = (overrides: Parameters<typeof task>[0]) => notServableHere(task(overrides), "here", CONFIG.labels, CONFIG.repos);
-  assert.equal(here({ id: "a", labels: ["review-pr"], input: pr }), undefined);
-  assert.match(here({ id: "a", labels: ["research"] }) ?? "", /no worker/);
-  assert.match(here({ id: "a", labels: ["review-pr"], input: "https://github.com/other/repo/pull/2" }) ?? "", /no checkout of other\/repo/);
-  assert.match(here({ id: "a", labels: ["review-pr"], input: pr, next: "resume", sessionId: "s", machine: "there" }) ?? "", /pinned to there/);
-  assert.equal(here({ id: "a", labels: ["review-pr"], input: pr, next: "resume", sessionId: "s", machine: "here" }), undefined);
-  // Not a PR URL: claimed here, and the worker reports why it cannot run.
-  assert.equal(here({ id: "a", labels: ["review-pr"], input: "not a url" }), undefined);
 });
 
 const NOW = new Date("2026-01-01T12:00:00Z");
@@ -248,10 +200,10 @@ test("outcomes: a pause wins over the stop it caused, a report wins over a pause
 });
 
 const LANES = [
-  { name: "reviews", labels: ["review-pr"], slots: 2 },
-  { name: "implement", labels: ["implement"], slots: 1 },
+  { name: "reviews", skills: ["review-pr"], slots: 2 },
+  { name: "implement", skills: ["implement"], slots: 1 },
 ];
-const lane = (t: { labels: string[] }) => LANES.find((l) => l.labels.includes(t.labels[0] ?? ""))?.name;
+const lane = (t: { labels: string[] }) => LANES.find((l) => l.skills.includes(t.labels[0] ?? ""))?.name;
 const run = (taskId: string, laneName: string, borrowed: boolean, minutesAgo: number, pauseRequested = false): LaneRun => ({ taskId, lane: laneName, borrowed, startedAt: ago(minutesAgo), pauseRequested });
 
 test("lanes take their own work first, then idle lanes borrow in list order", () => {
@@ -298,12 +250,3 @@ test("a paused run resumes with a note that it was paused, and with any reply si
   assert.equal(planRun(task({ id: "p", next: "resume", sessionId: "s" }), spokenSince, () => "n").kind, "fresh", "a pause the agent has spoken after is history");
 });
 
-test("a skill run gets the hook in its settings; a command label does not", () => {
-  const entry = CONFIG.labels["review-pr"];
-  assert.ok(entry);
-  const plan = buildInvocation({ run: FRESH, hookCommand: "'/x/agent-hook' '/run/ab' abc", entry, task: task({ id: "abc", input: "https://github.com/cosuno/cosuno/pull/1" }), repos: CONFIG.repos, home: "/h", fallbackCwd: "/", prReviewPath: undefined });
-  assert.ok(plan.ok);
-  const settings = JSON.parse(plan.invocation.args[plan.invocation.args.indexOf("--settings") + 1] ?? "{}");
-  assert.deepEqual(settings.hooks, { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: "'/x/agent-hook' '/run/ab' abc" }] }] });
-  assert.equal(settings.sandbox, undefined, "no sandbox any more");
-});

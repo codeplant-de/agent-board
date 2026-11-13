@@ -8,7 +8,6 @@ import { START_MARKER } from "../src/decide.mts";
 import { CONFIG, fakeBackend, fakeRunFiles, note, task } from "./helpers.mts";
 import type { FakeBackend } from "./helpers.mts";
 
-const selftest = "selftest";
 const NOW = new Date("2026-01-01T12:00:00Z");
 
 function setup(tasks: ReturnType<typeof task>[], active: string[] = [], unitStarts: Record<string, Date> = {}) {
@@ -49,8 +48,8 @@ function setup(tasks: ReturnType<typeof task>[], active: string[] = [], unitStar
   return { backend, deps, started, stopped, logs, files };
 }
 
-const running = (id: string) => task({ id, status: "running", labels: [selftest] });
-const todo = (id: string) => task({ id, labels: [selftest] });
+const running = (id: string) => task({ id, status: "running", input: "/selftest go" });
+const todo = (id: string) => task({ id, input: "/selftest go" });
 
 test("starts from the top of Todo up to the cap", async () => {
   const { deps, started, backend } = setup([running("r1"), todo("t1"), todo("t2"), todo("t3")], ["agent-board-r1"]);
@@ -66,23 +65,17 @@ test("with all slots taken nothing starts", async () => {
   assert.deepEqual(started, []);
 });
 
-test("a task without a label goes to Needs me and does not use a slot", async () => {
-  const bare = task({ id: "bare", labels: [] });
-  const { deps, started, backend } = setup([bare, todo("t1"), todo("t2"), todo("t3")]);
-  await runDispatch(deps);
-  assert.deepEqual(started, ["t1", "t2"]);
-  assert.ok(backend.writes.includes("status bare -> needs-me"));
-});
-
 test("a task this machine cannot serve is left in Todo for another machine", async () => {
-  const odd = task({ id: "odd", labels: ["mystery"] });
-  const pinned = task({ id: "pinned", labels: [selftest], next: "resume", sessionId: "s", machine: "there" });
-  const { deps, started, backend, logs } = setup([odd, pinned, todo("t1")]);
+  const odd = task({ id: "odd", input: "/review-pr https://github.com/other/repo/pull/2 --auto", createdBy: "intake" });
+  const pinned = task({ id: "pinned", input: "/selftest go", next: "resume", sessionId: "s", machine: "there" });
+  const elsewhere = task({ id: "elsewhere", input: "Find out X", machine: "there", workdir: "/x" });
+  const { deps, started, backend, logs } = setup([odd, pinned, elsewhere, todo("t1")]);
   await runDispatch(deps);
   assert.deepEqual(started, ["t1"]);
-  assert.ok(!backend.writes.some((w) => w.includes("odd") || w.includes("pinned")));
-  assert.ok(logs.some((line) => line.startsWith("SKIP odd")));
-  assert.ok(logs.some((line) => line.startsWith("SKIP pinned resume pinned to there")));
+  assert.ok(!backend.writes.some((w) => w.includes("odd") || w.includes("pinned") || w.includes("elsewhere")));
+  assert.ok(logs.some((line) => line.startsWith("SKIP odd no checkout of other/repo")));
+  assert.ok(logs.some((line) => line.startsWith("SKIP pinned pinned to there")));
+  assert.ok(logs.some((line) => line.startsWith("SKIP elsewhere pinned to there")));
 });
 
 test("a claim lost to another machine starts nothing and the next task gets the slot", async () => {
@@ -93,7 +86,7 @@ test("a claim lost to another machine starts nothing and the next task gets the 
 });
 
 test("another machine's running task is not swept here", async () => {
-  const theirs = task({ id: "theirs", status: "running", labels: [selftest], machine: "there" });
+  const theirs = task({ id: "theirs", status: "running", input: "/selftest go", machine: "there" });
   const { deps, backend } = setup([theirs]);
   await runDispatch(deps);
   assert.deepEqual(backend.writes, []);
@@ -182,14 +175,13 @@ test("a failed listing starts nothing and changes nothing", async () => {
 
 const LANED = {
   ...CONFIG,
-  labels: { ...CONFIG.labels, implement: { kind: "command" as const, command: ["true"], cwd: undefined } },
   lanes: [
-    { name: "reviews", labels: ["selftest"], slots: 1 },
-    { name: "implement", labels: ["implement"], slots: 1 },
+    { name: "reviews", skills: ["selftest"], slots: 1 },
+    { name: "implement", skills: ["implement"], slots: 1 },
   ],
 };
-const review = (id: string) => task({ id, labels: [selftest] });
-const impl = (id: string) => task({ id, labels: ["implement"] });
+const review = (id: string) => task({ id, input: "/selftest go" });
+const impl = (id: string) => task({ id, input: "/implement it" });
 
 test("each lane takes its own work, an idle lane borrows, and the lane is written before the unit starts", async () => {
   const { deps, started, files, logs, backend } = setup([review("r1"), review("r2"), review("r3")]);
@@ -203,7 +195,7 @@ test("each lane takes its own work, an idle lane borrows, and the lane is writte
 });
 
 test("a lane whose own work waits asks its borrowed run to pause, once, after five minutes", async () => {
-  const borrowed = task({ id: "b1", status: "running", labels: [selftest], machine: "here" });
+  const borrowed = task({ id: "b1", status: "running", input: "/selftest go", machine: "here" });
   const { deps, files, logs } = setup([borrowed, review("r0"), impl("i1")], ["agent-board-b1", "agent-board-r0x"]);
   deps.config = LANED;
   files.runs.set("b1", { lane: "implement", borrowed: true, startedAt: new Date(NOW.getTime() - 6 * 60_000) });
@@ -218,9 +210,9 @@ test("a lane whose own work waits asks its borrowed run to pause, once, after fi
 });
 
 test("a young borrowed run is not paused yet", async () => {
-  const borrowed = task({ id: "b1", status: "running", labels: [selftest], machine: "here" });
+  const borrowed = task({ id: "b1", status: "running", input: "/selftest go", machine: "here" });
   const { deps, files } = setup([borrowed, impl("i1")], ["agent-board-b1"]);
-  deps.config = { ...LANED, lanes: [{ name: "implement", labels: ["implement"], slots: 1 }] };
+  deps.config = { ...LANED, lanes: [{ name: "implement", skills: ["implement"], slots: 1 }] };
   files.runs.set("b1", { lane: "implement", borrowed: true, startedAt: new Date(NOW.getTime() - 2 * 60_000) });
   files.alive.set("b1", NOW);
   await runDispatch(deps);
@@ -228,7 +220,7 @@ test("a young borrowed run is not paused yet", async () => {
 });
 
 test("dry run plans pauses and starts but writes no run files", async () => {
-  const borrowed = task({ id: "b1", status: "running", labels: [selftest], machine: "here" });
+  const borrowed = task({ id: "b1", status: "running", input: "/selftest go", machine: "here" });
   const { deps, files, logs } = setup([borrowed, impl("i1"), review("r1")], ["agent-board-b1"]);
   deps.config = LANED;
   deps.dryRun = true;
@@ -241,7 +233,7 @@ test("dry run plans pauses and starts but writes no run files", async () => {
 });
 
 test("a running task whose agent went quiet is stopped and reported by the sweep", async () => {
-  const quiet = task({ id: "q", status: "running", labels: [selftest], machine: "here" });
+  const quiet = task({ id: "q", status: "running", input: "/selftest go", machine: "here" });
   const { deps, files, stopped, backend } = setup([quiet], ["agent-board-q"], { "agent-board-q": new Date(NOW.getTime() - 60 * 60_000) });
   files.alive.set("q", new Date(NOW.getTime() - 25 * 60_000));
   await runDispatch(deps);

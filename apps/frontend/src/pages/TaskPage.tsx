@@ -8,7 +8,7 @@ import { Markdown } from '../components/Markdown';
 import { PriorityPicker } from '../components/PriorityPicker';
 import { TaskBadges } from '../components/TaskBadges';
 import { ThreadItem } from '../components/ThreadItem';
-import { prUrl, STATUS_COLOR, STATUS_LABEL } from '../lib/status';
+import { promptText, prUrl, STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago, stamp } from '../lib/time';
 import { errorMessage, POLL_MS, useTRPC } from '../lib/trpc';
 
@@ -42,7 +42,7 @@ export function TaskPage() {
 
   const { task, thread, followUps, parent } = query.data;
   const pr = prUrl(task.input);
-  const input = pr ? task.input.split('\n').slice(1).filter((line) => !/^head:\s/.test(line.trim())).join('\n').trim() : task.input.trim();
+  const input = promptText(task.input);
 
   return (
     <Container size="md" px={0}>
@@ -89,10 +89,12 @@ export function TaskPage() {
         {input && (
           <Paper withBorder p="sm">
             <Text size="xs" c="dimmed" fw={600} mb={4} tt="uppercase">
-              Task
+              Prompt
             </Text>
             <Spoiler maxHeight={180} showLabel="Show all" hideLabel="Show less">
-              <Markdown>{input}</Markdown>
+              <Text size="sm" ff="monospace" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                {input}
+              </Text>
             </Spoiler>
           </Paper>
         )}

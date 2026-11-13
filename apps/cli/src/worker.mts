@@ -14,8 +14,8 @@ import { buildContext, print, rejectExtraArgs, runMain, UsageError } from "./cli
 import type { Context } from "./cli.mts";
 import { isSafeTaskId } from "@agent-board/shared";
 import type { Task } from "@agent-board/shared";
-import { buildInvocation, decideOutcome, PAUSE_MARKER, planRun, resolveLabel, supervise, usesPluginPlaceholder } from "./decide.mts";
-import type { Invocation, RunPlan, Supervision } from "./decide.mts";
+import { buildInvocation, decideOutcome, PAUSE_MARKER, planRun, supervise, usesPluginPlaceholder } from "./decide.mts";
+import type { Invocation, Supervision } from "./decide.mts";
 import { createRunFiles } from "./runtime.mts";
 import type { RunFiles } from "./runtime.mts";
 import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from "./logs.mts";
@@ -53,7 +53,6 @@ export interface WorkerDeps extends Context {
   pluginPath: (key: string) => string;
   dirExists: (path: string) => boolean;
   home: string;
-  fallbackCwd: string;
   newSessionId: () => string;
   files: RunFiles;
   // The hook command line for a task, given the run directory.
@@ -75,50 +74,40 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     await report(reason);
   };
 
-  const resolved = resolveLabel(task, config.labels);
-  if (!resolved.known) return fail(resolved.reason);
   let prReviewPath: string | undefined;
-  if (usesPluginPlaceholder(resolved.entry)) {
+  if (task.createdBy === "intake" && usesPluginPlaceholder([...config.intake.allowedTools, ...config.intake.disallowedTools])) {
     try {
       prReviewPath = deps.pluginPath("pr-review@ccc");
     } catch (error) {
       return fail(`Cannot resolve the pr-review plugin: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const isSkillLabel = resolved.entry.kind === "skill";
-  // A skill run starts a Claude session the next run can resume; a command label has none.
-  let run: RunPlan = { kind: "fresh", sessionId: "" };
-  if (resolved.entry.kind === "skill") {
-    run = planRun(task, await backend.readNotes(task.id), deps.newSessionId);
-    deps.appendLog(taskId, run.kind === "resume" ? `resuming session ${run.sessionId}` : `new session ${run.sessionId}`);
-    // Stored before the run: a reply that comes after a failed run still finds the session. The resume is used up either way.
-    await backend.updateTask(task.id, run.kind === "fresh" ? { sessionId: run.sessionId, next: "fresh" } : { next: "fresh" });
-  } else if (task.next === "resume") {
-    await backend.updateTask(task.id, { next: "fresh" });
-  }
+  const run = planRun(task, await backend.readNotes(task.id), deps.newSessionId);
+  deps.appendLog(taskId, run.kind === "resume" ? `resuming session ${run.sessionId}` : `new session ${run.sessionId}`);
+  // Stored before the run: a reply that comes after a failed run still finds the session. The resume is used up either way.
+  await backend.updateTask(task.id, run.kind === "fresh" ? { sessionId: run.sessionId, next: "fresh" } : { next: "fresh" });
   const plan = buildInvocation({
     run,
-    hookCommand: resolved.entry.kind === "skill" ? deps.hookCommand(deps.files.dir, taskId) : undefined,
-    entry: resolved.entry,
+    hookCommand: deps.hookCommand(deps.files.dir, taskId),
     task,
     repos: config.repos,
+    defaultCwd: config.defaultCwd,
+    intake: config.intake,
     home: deps.home,
-    fallbackCwd: deps.fallbackCwd,
     prReviewPath,
-    workdir: task.workdir,
   });
   if (!plan.ok) return fail(plan.reason);
   if (!deps.dirExists(plan.invocation.cwd)) {
-    const resuming = run.kind === "resume" && task.workdir === plan.invocation.cwd;
+    const own = task.workdir === plan.invocation.cwd;
     return fail(
-      resuming
-        ? `The directory this task's session last worked in is gone: ${plan.invocation.cwd}. Recreate it to resume there, or use Re-run fresh to start over.`
+      own
+        ? `This task's directory is gone: ${plan.invocation.cwd}. Recreate it to run there, or use Re-run fresh to start over${task.createdBy === "intake" ? "" : " in the default directory"}.`
         : `The working directory does not exist: ${plan.invocation.cwd}`,
     );
   }
   deps.appendLog(taskId, `working directory ${plan.invocation.cwd}`);
-  // Bound to the task from now on: a resume starts here unless the agent moves on (into a worktree, say).
-  if (isSkillLabel && task.workdir !== plan.invocation.cwd) await backend.updateTask(task.id, { workdir: plan.invocation.cwd });
+  // Bound to the task from now on: it runs here unless the agent moves on (into a worktree, say).
+  if (task.workdir !== plan.invocation.cwd) await backend.updateTask(task.id, { workdir: plan.invocation.cwd });
 
   const env: Record<string, string> = {};
 
@@ -127,12 +116,10 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   // The dispatcher wrote the lane before it started this worker; a run started without one counts as the first lane's own.
   const record = files.readRun(taskId) ?? { lane: config.lanes[0]?.name ?? "default", borrowed: false, startedAt: deps.now() };
   const startedAt = deps.now();
-  const isSkill = resolved.entry.kind === "skill";
   let lastBeat = 0;
   let lastSeen: number | undefined;
   const beat = async (): Promise<void> => {
-    // A command label makes no tool calls: it is alive while its process runs.
-    const seen = isSkill ? files.lastActive(taskId)?.getTime() : deps.now().getTime();
+    const seen = files.lastActive(taskId)?.getTime();
     const due = deps.now().getTime() - lastBeat >= HEARTBEAT_EVERY_MS;
     if (lastBeat !== 0 && (!due || seen === undefined || seen === lastSeen)) return;
     lastBeat = deps.now().getTime();
@@ -148,7 +135,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       return supervise({
         now: deps.now(),
         startedAt,
-        lastActive: isSkill ? files.lastActive(taskId) : deps.now(),
+        lastActive: files.lastActive(taskId),
         pauseRequestedAt: files.pauseRequestedAt(taskId),
         limits: config,
         pauseGraceMinutes: PAUSE_GRACE_MINUTES,
@@ -274,7 +261,6 @@ if (import.meta.main) {
       pluginPath: resolvePluginPath,
       dirExists: (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true,
       home: homedir(),
-      fallbackCwd: homedir(),
       newSessionId: randomUUID,
       files: createRunFiles(),
       hookCommand: (runDir, id) => `${shellQuote(HOOK_BIN)} ${shellQuote(runDir)} ${id}`,

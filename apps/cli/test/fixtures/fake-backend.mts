@@ -95,7 +95,7 @@ function locked(stdin: string): void {
       print({ contract: mode === "other-version" ? 1 : 2 });
       break;
     case "list-tasks":
-      if (mode === "unsafe-id") state.tasks.push({ id: "../etc", title: "x", input: "", labels: [], status: "todo", priority: "normal", url: "u", closed: false, machine: null, sessionId: null, workdir: null, next: "fresh", openQuestion: false, lane: null, borrowed: false, lastActiveAt: null });
+      if (mode === "unsafe-id") state.tasks.push({ id: "../etc", title: "x", input: "", labels: [], status: "todo", priority: "normal", url: "u", closed: false, machine: null, sessionId: null, workdir: null, next: "fresh", openQuestion: false, createdBy: "user", lane: null, borrowed: false, lastActiveAt: null });
       if (mode === "missing-field") state.tasks.push({ id: "m1", title: "x" });
       print(state.tasks.filter((task) => args.includes("--all") || task["closed"] !== true));
       break;
@@ -103,13 +103,13 @@ function locked(stdin: string): void {
       print(find(args[0]));
       break;
     case "add-task": {
-      const { dedupeKey, parentId: _parentId, createdBy: _createdBy, ...draft } = parseDraft(json(stdin));
+      const { dedupeKey, parentId: _parentId, createdBy, machine, workdir, ...draft } = parseDraft(json(stdin));
       const existing = dedupeKey === undefined ? undefined : state.tasks.find((candidate) => candidate["dedupeKey"] === dedupeKey);
       if (existing) {
         print({ task: existing, created: false });
         break;
       }
-      const task = { id: `t${state.nextId++}`, url: "https://tasks.example", closed: false, machine: null, sessionId: null, workdir: null, next: "fresh", openQuestion: false, lane: null, borrowed: false, lastActiveAt: null, ...draft, priority: draft.priority ?? "normal", ...(dedupeKey ? { dedupeKey } : {}) };
+      const task = { id: `t${state.nextId++}`, url: "https://tasks.example", closed: false, sessionId: null, next: "fresh", openQuestion: false, lane: null, borrowed: false, lastActiveAt: null, ...draft, createdBy: createdBy ?? "user", machine: machine ?? null, workdir: workdir ?? null, priority: draft.priority ?? "normal", ...(dedupeKey ? { dedupeKey } : {}) };
       state.tasks.push(task);
       print({ task, created: true });
       break;

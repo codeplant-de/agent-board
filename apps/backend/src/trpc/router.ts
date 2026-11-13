@@ -52,6 +52,12 @@ function boardTask(row: TaskRow, publicUrl: string): BoardTask {
   };
 }
 
+/** The first line of a prompt, shortened. */
+export function defaultTitle(prompt: string): string {
+  const first = prompt.trim().split('\n')[0]?.trim() ?? '';
+  return first.length > 100 ? `${first.slice(0, 99)}…` : first;
+}
+
 const threadNote = (row: NoteRow): ThreadNote => ({ ...toNote(row), by: row.by });
 
 const tasksRouter = router({
@@ -79,21 +85,21 @@ const tasksRouter = router({
     };
   }),
 
+  /** A prompt; it runs in the default directory of whichever machine takes it. */
   create: procedure
     .input(
       z.object({
-        title: z.string().trim().min(1).max(300),
-        input: z.string().max(200_000),
-        label: z.string().min(1),
+        title: z.string().trim().max(300).default(''),
+        input: z.string().trim().min(1, 'Write a prompt first').max(200_000),
         priority: priority.default('normal'),
         start: z.boolean().default(true),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       const { row } = await addTask(ctx.db, {
-        title: input.title,
+        title: input.title || defaultTitle(input.input),
         input: input.input,
-        labels: [input.label],
+        labels: [],
         priority: input.priority,
         status: input.start ? 'todo' : 'needs-me',
         createdBy: 'user',

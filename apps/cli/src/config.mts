@@ -1,27 +1,27 @@
 import { readFileSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_PRIORITY, isPriority, isRecord, isSafeMachineName, PRIORITIES } from "@agent-board/shared";
+import { DEFAULT_PRIORITY, isPriority, isRecord, isSafeMachineName, PRIORITIES, shortSkill } from "@agent-board/shared";
 import type { Priority } from "@agent-board/shared";
 
 export class ConfigError extends Error {}
 
-export type LabelEntry =
-  | {
-      kind: "skill";
-      skill: string;
-      allowedTools: string[];
-      disallowedTools: string[];
-      // "pr-repo" runs in the checkout that `repos` maps the PR's repository to.
-      cwd: string;
-    }
-  | { kind: "command"; command: string[]; cwd: string | undefined };
+// How intake's tasks run: unattended, on PR text nobody chose to read, so with a narrow allow list instead of the user's
+// own settings.
+export interface IntakeConfig {
+  // The task's prompt; {url} is the PR's URL.
+  prompt: string;
+  priority: Priority;
+  allowedTools: string[];
+  disallowedTools: string[];
+}
 
-// Slots of one kind of work on this machine. A lane runs its own labels first and borrows any other work when it has
-// none; it takes its slot back by pausing borrowed work once its own work waits.
+// Slots of one kind of work on this machine. A lane runs its own skills first (a task's skill is the slash command its
+// prompt starts with) and borrows any other work when it has none; it takes its slot back by pausing borrowed work once
+// its own work waits. "*" owns every skill no other lane names, and prompts without one.
 export interface Lane {
   name: string;
-  labels: string[];
+  skills: string[];
   slots: number;
 }
 
@@ -30,8 +30,10 @@ export interface Config {
   backendCommand: string[];
   // This machine's name on the board: it claims tasks under it, and a resume runs only on the machine that ran the session.
   machine: string;
-  // In config order. Every label is in at most one lane; a label in none is only ever borrowed.
+  // In config order. Every skill is in at most one lane, and at most one lane has "*".
   lanes: Lane[];
+  // Where a task without a directory of its own runs (one created in the UI).
+  defaultCwd: string;
   // A borrowed run is paused for its lane's own work only after it has run this long.
   pauseAfterMinutes: number;
   // A run whose agent made no tool call for this long is stopped as stuck.
@@ -39,10 +41,7 @@ export interface Config {
   // A run is stopped after this long however busy it is: a guard against runaways.
   maxRunHours: number;
   slackWebhookFile: string;
-  intakeLabel: string;
-  // Priority of the tasks intake creates.
-  intakePriority: Priority;
-  labels: Record<string, LabelEntry>;
+  intake: IntakeConfig;
   repos: Record<string, string>;
 }
 
@@ -76,14 +75,6 @@ function field(obj: Record<string, unknown>, key: string, where: string): unknow
   return obj[key];
 }
 
-function text(obj: Record<string, unknown>, key: string, where: string): string {
-  const value = field(obj, key, where);
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new ConfigError(`config: ${where}${key} must be a non-empty string`);
-  }
-  return value;
-}
-
 function positiveInt(obj: Record<string, unknown>, key: string, where: string, fallback: number): number {
   if (!(key in obj)) return fallback;
   const value = obj[key];
@@ -91,37 +82,6 @@ function positiveInt(obj: Record<string, unknown>, key: string, where: string, f
     throw new ConfigError(`config: ${where}${key} must be a positive integer`);
   }
   return value;
-}
-
-function parseLabelEntry(name: string, raw: unknown): LabelEntry {
-  const where = `labels.${name}.`;
-  if (!isRecord(raw)) throw new ConfigError(`config: labels.${name} must be an object`);
-  const cwd = raw["cwd"];
-  if (cwd !== undefined && (typeof cwd !== "string" || cwd === "")) {
-    throw new ConfigError(`config: ${where}cwd must be a non-empty string`);
-  }
-  if ("command" in raw) {
-    const command = raw["command"];
-    if (!isStringList(command) || command.length === 0) {
-      throw new ConfigError(`config: ${where}command must be a non-empty list of strings`);
-    }
-    return { kind: "command", command, cwd };
-  }
-  const skill = text(raw, "skill", where);
-  const tools = (key: string): string[] => {
-    const value = raw[key] ?? [];
-    if (!isStringList(value)) throw new ConfigError(`config: ${where}${key} must be a list of strings`);
-    return value;
-  };
-  const allowedTools = tools("allowedTools");
-  if (allowedTools.length === 0) throw new ConfigError(`config: ${where}allowedTools must not be empty`);
-  return {
-    kind: "skill",
-    skill,
-    allowedTools,
-    disallowedTools: tools("disallowedTools"),
-    cwd: cwd ?? "pr-repo",
-  };
 }
 
 // An absolute path or a bare command name. A relative path with a slash would depend on the cwd of whoever runs it.
@@ -141,36 +101,45 @@ function parseBackendCommand(raw: unknown): string[] {
   return parseExecutable(command.map(expandHome), "backend.command");
 }
 
-function parseLanes(raw: unknown, labels: Record<string, LabelEntry>): Lane[] {
-  // Without lanes, one lane runs everything, as before lanes existed.
-  if (raw === undefined) return [{ name: "default", labels: Object.keys(labels), slots: 2 }];
+export const DEFAULT_LANES: Lane[] = [{ name: "general", skills: ["*"], slots: 3 }];
+
+function parseLanes(raw: unknown): Lane[] {
+  if (raw === undefined) return DEFAULT_LANES;
   if (!isRecord(raw) || Object.keys(raw).length === 0) throw new ConfigError("config: lanes must be an object with at least one lane");
   const owner = new Map<string, string>();
   return Object.entries(raw).map(([name, entry]): Lane => {
     const where = `lanes.${name}.`;
     if (!isSafeMachineName(name)) throw new ConfigError(`config: lane name "${name}" must be letters, digits, '.', '-' and '_'`);
     if (!isRecord(entry)) throw new ConfigError(`config: lanes.${name} must be an object`);
-    const laneLabels = entry["labels"];
-    if (!isStringList(laneLabels) || laneLabels.length === 0) throw new ConfigError(`config: ${where}labels must be a non-empty list of labels`);
-    for (const label of laneLabels) {
-      if (!Object.hasOwn(labels, label)) throw new ConfigError(`config: ${where}labels names "${label}", which is not in labels`);
-      const other = owner.get(label);
-      if (other !== undefined) throw new ConfigError(`config: label "${label}" is in lanes ${other} and ${name}; a label belongs to one lane`);
-      owner.set(label, name);
+    const skills = entry["skills"];
+    if (!isStringList(skills) || skills.length === 0) throw new ConfigError(`config: ${where}skills must be a non-empty list of skill names (or "*")`);
+    for (const skill of skills) {
+      const key = skill === "*" ? "*" : shortSkill(skill.replace(/^\//, ""));
+      const other = owner.get(key);
+      if (other !== undefined) throw new ConfigError(`config: ${key === "*" ? '"*"' : `skill "${skill}"`} is in lanes ${other} and ${name}; it belongs to one lane`);
+      owner.set(key, name);
     }
-    return { name, labels: laneLabels, slots: positiveInt(entry, "slots", where, 1) };
+    return { name, skills: skills.map((skill) => (skill === "*" ? "*" : shortSkill(skill.replace(/^\//, "")))), slots: positiveInt(entry, "slots", where, 1) };
   });
+}
+
+function parseIntake(raw: unknown): IntakeConfig {
+  const obj = raw === undefined ? {} : raw;
+  if (!isRecord(obj)) throw new ConfigError("config: intake must be an object");
+  const prompt = obj["prompt"] ?? "/review-pr {url} --auto";
+  if (typeof prompt !== "string" || !prompt.includes("{url}")) throw new ConfigError("config: intake.prompt must be a prompt with {url} in it");
+  const priority = obj["priority"] ?? DEFAULT_PRIORITY;
+  if (!isPriority(priority)) throw new ConfigError(`config: intake.priority must be one of ${PRIORITIES.join(", ")}`);
+  const tools = (key: string): string[] => {
+    const value = obj[key] ?? [];
+    if (!isStringList(value)) throw new ConfigError(`config: intake.${key} must be a list of strings`);
+    return value;
+  };
+  return { prompt, priority, allowedTools: tools("allowedTools"), disallowedTools: tools("disallowedTools") };
 }
 
 export function parseConfig(raw: unknown): Config {
   if (!isRecord(raw)) throw new ConfigError("config: top level must be an object");
-  const rawLabels = field(raw, "labels", "");
-  if (!isRecord(rawLabels) || Object.keys(rawLabels).length === 0) {
-    throw new ConfigError("config: labels must be an object with at least one entry");
-  }
-  const labels: Record<string, LabelEntry> = {};
-  for (const [name, entry] of Object.entries(rawLabels)) labels[name] = parseLabelEntry(name, entry);
-
   const rawRepos = raw["repos"] ?? {};
   if (!isRecord(rawRepos)) throw new ConfigError("config: repos must be an object");
   const repos: Record<string, string> = {};
@@ -180,16 +149,10 @@ export function parseConfig(raw: unknown): Config {
     repos[repo] = expandHome(dir);
   }
 
-  const intakeLabel = typeof raw["intakeLabel"] === "string" ? raw["intakeLabel"] : "review-pr";
-  const intakePriority = raw["intakePriority"] ?? DEFAULT_PRIORITY;
-  if (!isPriority(intakePriority)) throw new ConfigError(`config: intakePriority must be one of ${PRIORITIES.join(", ")}`);
   const webhook = raw["slackWebhookFile"] ?? "~/.config/watch-review-requests/slack-webhook";
   if (typeof webhook !== "string") throw new ConfigError("config: slackWebhookFile must be a path");
-  for (const [name, entry] of Object.entries(labels)) {
-    if (entry.kind === "skill" && entry.cwd === "pr-repo" && Object.keys(repos).length === 0) {
-      throw new ConfigError(`config: labels.${name} runs in the PR's repo, so repos must not be empty`);
-    }
-  }
+  const defaultCwd = raw["defaultCwd"] ?? "~";
+  if (typeof defaultCwd !== "string" || !expandHome(defaultCwd).startsWith("/")) throw new ConfigError("config: defaultCwd must be an absolute path (or ~/...)");
   const machine = raw["machine"] ?? hostname().split(".")[0] ?? "";
   if (typeof machine !== "string" || !isSafeMachineName(machine)) {
     throw new ConfigError("config: machine must be a name of letters, digits, '.', '-' and '_' (defaults to the host name)");
@@ -197,14 +160,13 @@ export function parseConfig(raw: unknown): Config {
   return {
     backendCommand: parseBackendCommand(field(raw, "backend", "")),
     machine,
-    lanes: parseLanes(raw["lanes"], labels),
+    lanes: parseLanes(raw["lanes"]),
+    defaultCwd: expandHome(defaultCwd),
     pauseAfterMinutes: positiveInt(raw, "pauseAfterMinutes", "", 5),
     inactivityMinutes: positiveInt(raw, "inactivityMinutes", "", 15),
     maxRunHours: positiveInt(raw, "maxRunHours", "", 6),
     slackWebhookFile: expandHome(webhook),
-    intakeLabel,
-    intakePriority,
-    labels,
+    intake: parseIntake(raw["intake"]),
     repos,
   };
 }

@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { buildContext, print, rejectExtraArgs, runMain, takeFlag } from "./cli.mts";
 import type { Context } from "./cli.mts";
 import type { Task } from "@agent-board/shared";
-import { decideStale, notServableHere, ownLane, planPauses, planStarts, resolveLabel, startedAt, START_MARKER, unitName } from "./decide.mts";
+import { promptSkill } from "@agent-board/shared";
+import { decideStale, notServableHere, ownLane, planPauses, planStarts, startedAt, START_MARKER, unitName } from "./decide.mts";
 import type { LaneRun } from "./decide.mts";
 import { createRunFiles } from "./runtime.mts";
 import type { RunFiles } from "./runtime.mts";
@@ -73,14 +74,8 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   const candidates: Task[] = [];
   // The backend lists Todo with resumes first, then by priority.
   for (const task of tasks.filter((candidate) => candidate.status === "todo")) {
-    // No label at all: no machine can run it.
-    if (task.labels.length === 0) {
-      log(`NO-LABEL ${task.id}`);
-      await sendToNeedsMe(deps, task, `This task has no label, so no worker can run it. Known labels here: ${Object.keys(config.labels).join(", ")}.`);
-      continue;
-    }
-    // Another machine may know the label, have the checkout or hold the session.
-    const elsewhere = notServableHere(task, config.machine, config.labels, config.repos);
+    // Another machine may have the checkout, the directory or the session.
+    const elsewhere = notServableHere(task, config.machine, config.repos);
     if (elsewhere !== undefined) {
       log(`SKIP ${task.id} ${elsewhere}`);
       continue;
@@ -88,7 +83,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     candidates.push(task);
   }
 
-  const ownLaneOf = (task: Task) => ownLane(task, config.lanes, config.labels);
+  const ownLaneOf = (task: Task) => ownLane(task, config.lanes);
   const started = new Set<string>();
   const tried = new Set<string>();
   // One start at a time, planned again after each: a lost claim hands its slot to the next task.
@@ -98,8 +93,8 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     if (start === undefined) break;
     tried.add(start.taskId);
     const task = open.find((candidate) => candidate.id === start.taskId);
-    const resolved = task ? resolveLabel(task, config.labels) : undefined;
-    if (!task || !resolved?.known) continue;
+    if (!task) continue;
+    const skill = promptSkill(task.input) ?? "prompt";
     if ((await backend.claimTask(task.id, config.machine)) === undefined) {
       log(`LOST ${task.id} claimed elsewhere`);
       continue;
@@ -122,9 +117,9 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     }
     started.add(task.id);
     runs.push({ taskId: task.id, lane: start.lane, borrowed: start.borrowed, startedAt: deps.now(), pauseRequested: false });
-    log(`STARTED ${task.id} ${resolved.label} lane=${start.lane}${start.borrowed ? " borrowed" : ""}`);
+    log(`STARTED ${task.id} ${skill} lane=${start.lane}${start.borrowed ? " borrowed" : ""}`);
     const where = `${start.lane} lane${start.borrowed ? ", borrowed" : ""}, unit ${unitName(task.id)}${pid ? `, pid ${pid}` : ""}`;
-    await backend.addNote(task.id, `${START_MARKER} ${deps.now().toISOString()} (${resolved.label}, ${config.machine}, ${where})`, { author: "system" }).catch((error: unknown) => {
+    await backend.addNote(task.id, `${START_MARKER} ${deps.now().toISOString()} (${skill}, ${config.machine}, ${where})`, { author: "system" }).catch((error: unknown) => {
       log(`WARN start note failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }

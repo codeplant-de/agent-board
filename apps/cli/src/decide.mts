@@ -1,5 +1,5 @@
-import type { Lane, LabelEntry } from "./config.mts";
-import { formatAnswers } from "@agent-board/shared";
+import type { IntakeConfig, Lane } from "./config.mts";
+import { formatAnswers, promptSkill, shortSkill } from "@agent-board/shared";
 import type { Note, Task } from "@agent-board/shared";
 
 // Stands for the root Claude Code gives the pr-review plugin, in allow and deny rules.
@@ -14,20 +14,6 @@ const SWEEP_GRACE_MINUTES = 5;
 export function unitName(taskId: string): string {
   return `agent-board-${taskId}`;
 }
-
-export type LabelResolution =
-  | { known: true; label: string; entry: LabelEntry }
-  | { known: false; reason: string };
-
-export function resolveLabel(task: Task, labels: Record<string, LabelEntry>): LabelResolution {
-  for (const name of task.labels) {
-    const entry = Object.hasOwn(labels, name) ? labels[name] : undefined;
-    if (entry) return { known: true, label: name, entry };
-  }
-  const have = task.labels.length > 0 ? `its labels are ${task.labels.join(", ")}` : "it has no label";
-  return { known: false, reason: `No worker is configured for this task: ${have}. Known labels: ${Object.keys(labels).join(", ")}.` };
-}
-
 
 export function startedAt(notes: Note[]): Date | undefined {
   const starts = notes.filter((note) => note.text.startsWith(START_MARKER));
@@ -90,13 +76,13 @@ export function supervise(input: {
   return { kind: "continue" };
 }
 
-// The lane of this machine whose own work the task is: the lane holding the label that picks its worker.
-export function ownLane(task: Task, lanes: Lane[], labels: Record<string, LabelEntry>): string | undefined {
-  const resolved = resolveLabel(task, labels);
-  if (!resolved.known) return undefined;
-  return lanes.find((lane) => lane.labels.includes(resolved.label))?.name;
+// The lane of this machine whose own work the task is: the lane naming the skill its prompt starts with, else the lane
+// with "*". Undefined when no lane owns it; any lane may still borrow it.
+export function ownLane(task: Task, lanes: Lane[]): string | undefined {
+  const skill = promptSkill(task.input);
+  const short = skill === undefined ? undefined : shortSkill(skill);
+  return (lanes.find((lane) => short !== undefined && lane.skills.includes(short)) ?? lanes.find((lane) => lane.skills.includes("*")))?.name;
 }
-
 export interface LaneRun {
   taskId: string;
   lane: string;
@@ -157,21 +143,25 @@ export function planPauses(input: { lanes: Lane[]; running: LaneRun[]; waitingOw
   return pauses;
 }
 
-export interface ParsedInput {
-  // First line: the PR URL.
-  input: string;
-  head: string | undefined;
+// Intake adds a `head: <sha>` line under the prompt: the PR head the task was made for.
+export function parseHead(input: string): string | undefined {
+  return input
+    .split("\n")
+    .map((line) => /^\s*head:\s*([0-9a-f]{7,40})\s*$/i.exec(line)?.[1])
+    .find((sha) => sha !== undefined);
 }
 
-// First line is the input (the PR URL); intake adds a `head: <sha>` line.
-export function parseInput(input: string): ParsedInput {
-  const lines = input.split("\n").map((line) => line.trim());
-  const head = lines.map((line) => /^head:\s*([0-9a-f]{7,40})$/i.exec(line)?.[1]).find((sha) => sha !== undefined);
-  return { input: lines[0] ?? "", head };
+// What the agent is given: the prompt as written, without the board's own `head:` line.
+export function runPrompt(input: string): string {
+  return input
+    .split("\n")
+    .filter((line) => !/^\s*head:\s*[0-9a-f]{7,40}\s*$/i.test(line))
+    .join("\n")
+    .trim();
 }
 
-export function formatInput(url: string, head: string): string {
-  return `${url}\nhead: ${head}`;
+export function formatIntakeInput(prompt: string, head: string): string {
+  return `${prompt}\nhead: ${head}`;
 }
 
 export function parsePrUrl(url: string): { repo: string; number: number } | undefined {
@@ -180,10 +170,14 @@ export function parsePrUrl(url: string): { repo: string; number: number } | unde
   return { repo: match[1], number: Number(match[2]) };
 }
 
-export function usesPluginPlaceholder(entry: LabelEntry): boolean {
-  return (
-    entry.kind === "skill" && [...entry.allowedTools, ...entry.disallowedTools].some((rule) => rule.includes(PLUGIN_PLACEHOLDER))
-  );
+// The first GitHub PR URL in the prompt's first line: the PR an intake task reviews.
+export function prUrlIn(input: string): string | undefined {
+  const first = input.split("\n")[0] ?? "";
+  return /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/.exec(first)?.[0];
+}
+
+export function usesPluginPlaceholder(rules: string[]): boolean {
+  return rules.some((rule) => rule.includes(PLUGIN_PLACEHOLDER));
 }
 
 // `~/` is expanded inside Bash rules only: Read rules read `~/` themselves, and an absolute path there would mean "from the project root".
@@ -193,15 +187,20 @@ export function expandRule(rule: string, home: string, prReviewPath: string | un
   return prReviewPath === undefined ? expanded : expanded.replaceAll(PLUGIN_PLACEHOLDER, prReviewPath);
 }
 
+// A task with its own directory runs only on the machine it was scheduled on (intake's tasks have none of their own).
+export function pinnedMachine(task: Task): string | undefined {
+  if (task.next === "resume" && task.sessionId !== null && task.machine !== null) return task.machine;
+  if (task.createdBy !== "intake" && task.workdir !== null && task.machine !== null) return task.machine;
+  return undefined;
+}
+
 // Why this machine leaves a todo task to another one, or undefined when it can run it.
-export function notServableHere(task: Task, machine: string, labels: Record<string, LabelEntry>, repos: Record<string, string>): string | undefined {
-  // The Claude session of a resume lives on the machine that ran it.
-  if (task.next === "resume" && task.sessionId !== null && task.machine !== null && task.machine !== machine) return `resume pinned to ${task.machine}`;
-  const resolved = resolveLabel(task, labels);
-  if (!resolved.known) return "no worker for its labels here";
-  if (resolved.entry.kind === "skill" && resolved.entry.cwd === "pr-repo") {
-    const pr = parsePrUrl(parseInput(task.input).input);
-    // A task without a PR URL is claimed and fails with the reason; one for a repo without a checkout here waits for another machine.
+export function notServableHere(task: Task, machine: string, repos: Record<string, string>): string | undefined {
+  const pinned = pinnedMachine(task);
+  if (pinned !== undefined && pinned !== machine) return `pinned to ${pinned}`;
+  if (task.createdBy === "intake") {
+    const pr = parsePrUrl(prUrlIn(task.input) ?? "");
+    // An intake task without a PR URL is claimed and fails with the reason; one for a repo without a checkout here waits.
     if (pr !== undefined && !Object.hasOwn(repos, pr.repo)) return `no checkout of ${pr.repo} here`;
   }
   return undefined;
@@ -225,13 +224,15 @@ export function wasPaused(notes: Note[]): boolean {
   return sorted.slice(lastAgent + 1).some((note) => note.author === "system" && note.text.startsWith(PAUSE_MARKER));
 }
 
+const CONTINUE_LINE = "The board's rules from the start of this session still hold.";
+
 export function buildResumePrompt(task: Task, notes: Note[]): string | undefined {
   const reply = userReply(notes);
   const paused = wasPaused(notes);
   if (reply.length === 0 && !paused) return undefined;
   const pausedLine = `You were paused on board task ${task.id} to free the slot for other work. Continue where you left off; check the state of anything you were in the middle of before you go on.`;
   if (reply.length === 0) {
-    return [pausedLine, "", `Same rules as before. End the run with \`board ask ${task.id} --file <questions.json>\` if you need the user, or with \`board move ${task.id} needs-me\` (or done) when you are finished, after posting what you did with \`board comment\`.`].join("\n");
+    return [pausedLine, "", CONTINUE_LINE].join("\n");
   }
   const parts = reply.map((note) => {
     if (note.kind !== "answer") return note.text.trim();
@@ -244,7 +245,7 @@ export function buildResumePrompt(task: Task, notes: Note[]): string | undefined
     `The user replied on board task ${task.id}:`,
     "",
     ...parts.flatMap((part) => [part, ""]),
-    `Continue the task with this under the same rules as before. End the run with \`board ask ${task.id} --file <questions.json>\` if you need the user again, or with \`board move ${task.id} needs-me\` (or done) when you are finished, after posting what you did with \`board comment\`.`,
+    `Continue the task with this. ${CONTINUE_LINE}`,
   ].join("\n");
 }
 
@@ -290,63 +291,79 @@ export interface Invocation {
 
 export type InvocationPlan = { ok: true; invocation: Invocation } | { ok: false; reason: string };
 
+// What every run is told about the board, on top of its prompt.
+export function boardRules(task: Task): string {
+  return [
+    `You are running headless as agent-board task ${task.id}. Nobody watches this terminal; the user reads the task's thread on the board.`,
+    `- Report progress and results with \`board comment ${task.id} "<text>"\` (markdown; \`--file <path>\` for long text in /tmp, or \`-\` for stdin).`,
+    `- AskUserQuestion is not available in this headless run. Wherever you would use it, also where a skill says to: write the same questions with the Write tool to /tmp/pr-${task.id}-questions.json as {"questions": [{"header": "<at most 16 chars>", "question": "...", "multiSelect": false, "options": [{"label": "...", "description": "...", "recommended": true}, ...]}]} (1 to 4 questions, 2 to 4 options each, at most one recommended), run \`board ask ${task.id} --file /tmp/pr-${task.id}-questions.json\`, then end your turn. The user answers on the board, and you are resumed in this session with the answers.`,
+    `- When the work is done, post a short summary with \`board comment\`, then \`board move ${task.id} needs-me\`.`,
+    `- To suggest follow-up work, write it to a file in /tmp and run \`board add --title "<title>" --file <path> --parent ${task.id}\`; the user starts it.`,
+    '- If a tool call is refused with "Pause requested", post a one-line status with `board comment` and end your turn; you will be resumed here.',
+  ].join("\n");
+}
+
 export function buildInvocation(input: {
-  entry: LabelEntry;
   task: Task;
+  run: RunPlan;
   repos: Record<string, string>;
+  // Where a task without a directory of its own runs.
+  defaultCwd: string;
+  intake: IntakeConfig;
   home: string;
-  fallbackCwd: string;
   // Install path of the pr-review plugin; undefined when it could not be resolved.
   prReviewPath: string | undefined;
-  // Ignored by a command label.
-  run: RunPlan;
-  // Where the task's last run ended up (a worktree it entered, say). A resume starts there.
-  workdir?: string | null;
-  // The PreToolUse hook command (heartbeat and pause); ignored by a command label.
+  // The PreToolUse hook command (heartbeat, pause, questions).
   hookCommand?: string;
 }): InvocationPlan {
-  const { entry, task, repos, home } = input;
-  if (entry.kind === "command") {
-    const [command, ...args] = entry.command;
-    if (command === undefined) return { ok: false, reason: "The label's command is empty." };
-    return { ok: true, invocation: { command, args, cwd: entry.cwd ?? input.fallbackCwd } };
-  }
-  const prompt = parseInput(task.input).input;
-  let cwd = entry.cwd;
-  // A resume continues in the directory the session was in, which may be a worktree the agent entered.
-  if (input.run.kind === "resume" && input.workdir) {
-    cwd = input.workdir;
-  } else if (cwd === "pr-repo") {
-    const pr = parsePrUrl(prompt);
-    if (!pr) return { ok: false, reason: `The first line of the task input is not a GitHub PR URL: ${prompt || "(empty)"}` };
-    const dir = repos[pr.repo];
+  const { task, intake } = input;
+  const fromIntake = task.createdBy === "intake";
+  const prompt = runPrompt(task.input);
+  if (input.run.kind === "fresh" && prompt === "") return { ok: false, reason: "The task has no prompt." };
+
+  // Where it runs: a resume where the session stopped; a scheduled task in its own directory; an intake review in the
+  // PR's checkout; anything else in the default directory.
+  let cwd: string;
+  if (task.workdir !== null && (input.run.kind === "resume" || !fromIntake)) {
+    cwd = task.workdir;
+  } else if (fromIntake) {
+    const url = prUrlIn(task.input);
+    const pr = parsePrUrl(url ?? "");
+    if (!pr) return { ok: false, reason: `The intake task's prompt names no GitHub PR: ${prompt.split("\n")[0] || "(empty)"}` };
+    const dir = input.repos[pr.repo];
     if (!dir) return { ok: false, reason: `No checkout is configured for ${pr.repo}. Add it to "repos" in config.json.` };
     cwd = dir;
+  } else {
+    cwd = input.defaultCwd;
   }
-  if (usesPluginPlaceholder(entry) && input.prReviewPath === undefined) {
-    return { ok: false, reason: `The pr-review plugin path is unknown, but the allow rules need ${PLUGIN_PLACEHOLDER}.` };
-  }
-  const expand = (rule: string): string => expandRule(rule, home, input.prReviewPath);
+
   const settings = input.hookCommand === undefined ? {} : { hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: input.hookCommand }] }] } };
-  // A PR review gets its PR URL; any other skill reads its task with `board show`.
-  const start = entry.cwd === "pr-repo" ? `/${entry.skill} ${task.id} ${prompt}` : `/${entry.skill} ${task.id}`;
   const session = input.run.kind === "fresh" ? ["--session-id", input.run.sessionId] : ["--resume", input.run.sessionId];
   // Prompt first: --allowedTools and --disallowedTools take every following argument.
   const args = [
     "-p",
-    input.run.kind === "fresh" ? start : input.run.prompt,
+    input.run.kind === "fresh" ? prompt : input.run.prompt,
     ...session,
-    "--permission-mode",
-    "dontAsk",
-    // Project and local settings of the checkout carry their own allow rules and tokens; only the user's settings load.
-    "--setting-sources",
-    "user",
-    // The heartbeat and pause hook, inline.
+    "--append-system-prompt",
+    boardRules(task),
+    // The heartbeat, pause and question hook, inline.
     "--settings",
     JSON.stringify(settings),
-    "--allowedTools",
-    ...entry.allowedTools.map(expand),
   ];
-  if (entry.disallowedTools.length > 0) args.push("--disallowedTools", ...entry.disallowedTools.map(expand));
+  if (!fromIntake) {
+    // As if the user ran it: their settings (user, project, local) and auto mode, which lets safe actions through and
+    // refuses risky ones. Headless, a refusal cannot become a prompt; it shows in the log.
+    args.push("--permission-mode", "auto");
+    return { ok: true, invocation: { command: "claude", args, cwd } };
+  }
+  // Intake runs unattended on PR text nobody chose to read: only the user's own settings, and only what intake allows.
+  const rules = [...intake.allowedTools, ...intake.disallowedTools];
+  if (usesPluginPlaceholder(rules) && input.prReviewPath === undefined) {
+    return { ok: false, reason: `The pr-review plugin path is unknown, but intake's rules need ${PLUGIN_PLACEHOLDER}.` };
+  }
+  const expand = (rule: string): string => expandRule(rule, input.home, input.prReviewPath);
+  args.push("--permission-mode", "dontAsk", "--setting-sources", "user");
+  if (intake.allowedTools.length > 0) args.push("--allowedTools", ...intake.allowedTools.map(expand));
+  if (intake.disallowedTools.length > 0) args.push("--disallowedTools", ...intake.disallowedTools.map(expand));
   return { ok: true, invocation: { command: "claude", args, cwd } };
 }

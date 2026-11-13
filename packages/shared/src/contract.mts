@@ -48,6 +48,8 @@ export interface Task {
   next: NextRun;
   // The last question the agent asked has no answer yet.
   openQuestion: boolean;
+  // Who made it. Intake's tasks run with intake's narrow permissions; the others as the user.
+  createdBy: TaskCreator;
   // While it runs: the lane of the machine that runs it, whether that lane borrowed it, and the agent's last tool call.
   lane: string | null;
   borrowed: boolean;
@@ -83,6 +85,9 @@ export interface TaskDraft {
   dedupeKey?: string;
   parentId?: string;
   createdBy?: TaskCreator;
+  // Pins the task to a machine and the directory it runs in there (where it was scheduled from).
+  machine?: string;
+  workdir?: string;
 }
 
 export interface TaskPatch {
@@ -229,6 +234,7 @@ export function parseTask(value: unknown): Task {
     workdir: nullableString(obj, "workdir", "task"),
     next: member(obj, "next", "task", NEXT_RUNS),
     openQuestion: boolean(obj, "openQuestion", "task"),
+    createdBy: member(obj, "createdBy", "task", TASK_CREATORS),
     lane: nullableString(obj, "lane", "task"),
     borrowed: boolean(obj, "borrowed", "task"),
     lastActiveAt: nullableDate(obj, "lastActiveAt", "task"),
@@ -291,7 +297,7 @@ export function parseSetupResult(value: unknown): string[] {
 // Stdin of add-task. Only `title` is required.
 export function parseDraft(value: unknown): TaskDraft {
   const obj = record(value, "draft");
-  rejectUnknownKeys(obj, ["title", "input", "labels", "status", "priority", "dedupeKey", "parentId", "createdBy"], "draft");
+  rejectUnknownKeys(obj, ["title", "input", "labels", "status", "priority", "dedupeKey", "parentId", "createdBy", "machine", "workdir"], "draft");
   const title = string(obj, "title", "draft");
   if (title.trim() === "") throw new ContractError("draft.title must not be empty");
   const draft: TaskDraft = {
@@ -307,6 +313,15 @@ export function parseDraft(value: unknown): TaskDraft {
   }
   if ("parentId" in obj) draft.parentId = safeId(string(obj, "parentId", "draft"), "draft.parentId");
   if ("createdBy" in obj) draft.createdBy = member(obj, "createdBy", "draft", TASK_CREATORS);
+  if ("machine" in obj) {
+    draft.machine = string(obj, "machine", "draft");
+    if (!isSafeMachineName(draft.machine)) throw new ContractError("draft.machine is not a safe name");
+  }
+  if ("workdir" in obj) {
+    draft.workdir = string(obj, "workdir", "draft");
+    if (!draft.workdir.startsWith("/")) throw new ContractError("draft.workdir must be an absolute path");
+  }
+  if ((draft.machine === undefined) !== (draft.workdir === undefined)) throw new ContractError("draft.machine and draft.workdir go together");
   return draft;
 }
 
@@ -346,4 +361,17 @@ export function serializeTask(task: Task): Record<string, unknown> {
 // Stdin of setup.
 export function parseSetupRequest(value: unknown): string[] {
   return labels(record(value, "setup request"), "setup request");
+}
+
+/**
+ * The skill a task's prompt starts with: `/review-pr 17741` → "review-pr", `/pr-review:review-pr x` → "pr-review:review-pr".
+ * Undefined for a prompt that does not start with one.
+ */
+export function promptSkill(input: string): string | undefined {
+  return /^\s*\/([A-Za-z0-9][A-Za-z0-9:_.-]*)(?=\s|$)/.exec(input)?.[1];
+}
+
+// A skill's name without its plugin: `pr-review:review-pr` → "review-pr".
+export function shortSkill(skill: string): string {
+  return skill.includes(":") ? skill.slice(skill.lastIndexOf(":") + 1) : skill;
 }

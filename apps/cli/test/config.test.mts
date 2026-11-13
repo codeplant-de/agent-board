@@ -8,22 +8,16 @@ import { ConfigError, isSafeMode, parseConfig, readSecretFile } from "../src/con
 const valid = {
   backend: { command: ["~/bin/backend", "--flag"] },
   repos: { "cosuno/cosuno": "~/x" },
-  labels: {
-    selftest: { command: ["sleep", "300"] },
-    "review-pr": { skill: "board-review-pr", allowedTools: ["Read"] },
-  },
 };
 
-test("a valid config gets defaults and normalised label entries", () => {
+test("a valid config gets defaults", () => {
   const config = parseConfig(valid);
-  assert.deepEqual(config.lanes, [{ name: "default", labels: ["selftest", "review-pr"], slots: 2 }]);
+  assert.deepEqual(config.lanes, [{ name: "general", skills: ["*"], slots: 3 }]);
+  assert.deepEqual(config.intake, { prompt: "/review-pr {url} --auto", priority: "normal", allowedTools: [], disallowedTools: [] });
+  assert.ok(config.defaultCwd.startsWith("/") && !config.defaultCwd.includes("~"));
   assert.deepEqual([config.pauseAfterMinutes, config.inactivityMinutes, config.maxRunHours], [5, 15, 6]);
   assert.equal(config.backendCommand[1], "--flag");
   assert.ok(!config.backendCommand[0]?.startsWith("~"));
-  assert.equal(config.labels["selftest"]?.kind, "command");
-  const skill = config.labels["review-pr"];
-  assert.ok(skill?.kind === "skill");
-  assert.equal(skill.cwd, "pr-repo");
   assert.ok(!config.repos["cosuno/cosuno"]?.startsWith("~"));
 });
 
@@ -33,17 +27,16 @@ test("invalid configs are refused with a pointed message", () => {
     [{ ...valid, backend: undefined }, /backend.command/],
     [{ ...valid, backend: { command: [] } }, /backend.command/],
     [{ ...valid, backend: { command: ["ok", 3] } }, /backend.command/],
-    [{ ...valid, labels: {} }, /labels/],
     [{ ...valid, inactivityMinutes: 0 }, /inactivityMinutes/],
-    [{ ...valid, lanes: { reviews: { labels: ["nope"] } } }, /not in labels/],
-    [{ ...valid, lanes: { a: { labels: ["selftest"] }, b: { labels: ["selftest"] } } }, /in lanes a and b/],
-    [{ ...valid, lanes: { "a b": { labels: ["selftest"] } } }, /lane name/],
-    [{ ...valid, lanes: { a: { labels: ["selftest"], slots: 0 } } }, /lanes.a.slots/],
-    [{ ...valid, labels: { x: { skill: "s", allowedTools: [] } } }, /allowedTools must not be empty/],
-    [{ ...valid, labels: { x: { command: [] } } }, /command/],
-    [{ ...valid, labels: { x: { skill: "s" } } }, /allowedTools/],
+    [{ ...valid, lanes: { reviews: { skills: [] } } }, /skills must be a non-empty list/],
+    [{ ...valid, lanes: { a: { skills: ["review-pr"] }, b: { skills: ["/pr-review:review-pr"] } } }, /in lanes a and b/],
+    [{ ...valid, lanes: { a: { skills: ["*"] }, b: { skills: ["*"] } } }, /"\*" is in lanes a and b/],
+    [{ ...valid, lanes: { "a b": { skills: ["x"] } } }, /lane name/],
+    [{ ...valid, lanes: { a: { skills: ["x"], slots: 0 } } }, /lanes.a.slots/],
+    [{ ...valid, intake: { prompt: "/review-pr --auto" } }, /intake.prompt must be a prompt with \{url\}/],
+    [{ ...valid, intake: { priority: "asap" } }, /intake.priority must be one of/],
+    [{ ...valid, defaultCwd: "relative" }, /defaultCwd/],
     [{ ...valid, repos: { bad: "/x" } }, /owner\/name/],
-    [{ ...valid, repos: {} }, /repos must not be empty/],
     [{ ...valid, backend: { command: ["bin/backend"] } }, /backend.command\[0\] must be an absolute path/],
     [{ ...valid, backend: { command: ["./backend"] } }, /backend.command\[0\] must be an absolute path/],
     [{ ...valid, backend: { command: ["../backend"] } }, /backend.command\[0\] must be an absolute path/],
@@ -74,21 +67,16 @@ test("a backend command is an absolute path, a ~/ path or a bare command name", 
   assert.ok(parseConfig(valid).backendCommand[0]?.startsWith("/"));
 });
 
-test("intake tasks are normal unless the config says otherwise", () => {
-  assert.equal(parseConfig(valid).intakePriority, "normal");
-  assert.equal(parseConfig({ ...valid, intakePriority: "high" }).intakePriority, "high");
-  assert.throws(() => parseConfig({ ...valid, intakePriority: "asap" }), /intakePriority must be one of urgent, high, normal, low/);
-});
 
-test("lanes keep their order and default to one slot", () => {
-  const config = parseConfig({ ...valid, lanes: { reviews: { labels: ["review-pr"], slots: 2 }, tests: { labels: ["selftest"] } } });
+test("lanes keep their order, name skills without slash or plugin, and default to one slot", () => {
+  const config = parseConfig({ ...valid, lanes: { reviews: { skills: ["/pr-review:review-pr"], slots: 2 }, general: { skills: ["*"] } } });
   assert.deepEqual(config.lanes, [
-    { name: "reviews", labels: ["review-pr"], slots: 2 },
-    { name: "tests", labels: ["selftest"], slots: 1 },
+    { name: "reviews", skills: ["review-pr"], slots: 2 },
+    { name: "general", skills: ["*"], slots: 1 },
   ]);
 });
 
-test("an old sandbox entry is ignored, so a config from before still loads", () => {
-  const config = parseConfig({ ...valid, labels: { ...valid.labels, x: { skill: "s", allowedTools: ["Read"], sandbox: { maskedEnv: [] } } } });
-  assert.deepEqual(Object.keys(config.labels["x"] ?? {}).sort(), ["allowedTools", "cwd", "disallowedTools", "kind", "skill"]);
+test("old keys (labels with their sandbox, intakeLabel) are ignored, so a config from before still loads", () => {
+  const config = parseConfig({ ...valid, intakeLabel: "review-pr", labels: { x: { skill: "s", allowedTools: ["Read"], sandbox: { maskedEnv: [] } } } });
+  assert.equal(config.intake.prompt, "/review-pr {url} --auto");
 });

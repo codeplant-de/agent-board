@@ -5,20 +5,24 @@
  *   board move <task> <status>    move a task to the bottom of a status (todo, running, needs-me, done)
  *   board notify <task> <text>    Slack message with the task link
  *   board tasks                   open tasks per status
- *   board setup                   ask the backend to create what it needs (statuses, labels)
  *   board ask <task> --file <path>      ask the user 1-4 questions (JSON in /tmp) and move the task to needs-me
  *   board show <task>             the task and its thread as markdown
- *   board add --label <l> --title <t> --file <path> [--parent <task>] [--priority urgent|high|normal|low]
- *                                 propose a follow-up task; it waits in needs-me until the user starts it
+ *   board schedule [--priority p] [--title t] [--hold] [--new] <prompt...>
+ *                                 a task from a prompt, run in this directory on this machine; checks for duplicates first
+ *   board add --title <t> --file <path> [--parent <task>] [--priority urgent|high|normal|low]
+ *                                 propose a follow-up task (the file is its prompt); it waits in needs-me until the user starts it
  *
  * <task> is the task id the backend gives. Add --dry-run to print writes.
  */
-import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
 import { buildContext, rejectExtraArgs, runMain, takeFlag, UsageError } from "./cli.mts";
 import type { Context } from "./cli.mts";
 import { formatAnswers, formatQuestions, isPriority, isSafeTaskId, isStatus, parseQuestions, PRIORITIES, QuestionError, STATUSES } from "@agent-board/shared";
 import type { Note, Priority, Status, Task } from "@agent-board/shared";
 import { postSlack, slackText } from "./notify.mts";
+import { haikuDuplicateCheck, parseScheduleArgs, schedule } from "./schedule.mts";
+import type { Choice } from "./schedule.mts";
 
 async function readStdin(): Promise<string> {
   let content = "";
@@ -27,7 +31,7 @@ async function readStdin(): Promise<string> {
 }
 
 const USAGE =
-  "usage: board comment <task> <text|--file path> | move <task> <status> | notify <task> <text> | ask <task> --file <path> | show <task> | add --label <l> --title <t> --file <path> [--parent <task>] [--priority <p>] | tasks | setup";
+  "usage: board comment <task> <text|--file path> | move <task> <status> | notify <task> <text> | ask <task> --file <path> | show <task> | schedule [--priority <p>] [--title <t>] [--hold] [--new] <prompt...> | add --title <t> --file <path> [--parent <task>] [--priority <p>] | tasks";
 
 const NOTE_FILE_DIR = "/tmp/";
 const NOTE_FILE_MAX_BYTES = 1024 * 1024;
@@ -74,12 +78,6 @@ async function tasks(context: Context): Promise<void> {
   }
 }
 
-async function setup(context: Context): Promise<void> {
-  const created = await context.backend.setup(Object.keys(context.config.labels));
-  if (created === undefined) return context.print("this backend has no setup; create its statuses and labels there by hand");
-  for (const what of created) context.print(`created ${what}`);
-}
-
 async function ask(context: Context, id: string, path: string): Promise<void> {
   let questions;
   try {
@@ -114,41 +112,80 @@ async function show(context: Context, id: string): Promise<void> {
   context.print(renderThread(task, notes));
 }
 
-// `add --label <l> --title <t> --file <path> [--parent <task>] [--priority <p>]`, flags in any order.
-export function parseAddArgs(args: string[]): { label: string; title: string; file: string; parent: string | undefined; priority: Priority | undefined } {
+// `add --title <t> --file <path> [--parent <task>] [--priority <p>]`, flags in any order.
+export function parseAddArgs(args: string[]): { title: string; file: string; parent: string | undefined; priority: Priority | undefined } {
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
-    if (!flag || !["--label", "--title", "--file", "--parent", "--priority"].includes(flag) || value === undefined || values.has(flag)) throw new UsageError(USAGE);
+    if (!flag || !["--title", "--file", "--parent", "--priority"].includes(flag) || value === undefined || values.has(flag)) throw new UsageError(USAGE);
     values.set(flag, value);
   }
-  const label = values.get("--label");
   const title = values.get("--title")?.trim();
   const file = values.get("--file");
   const parent = values.get("--parent");
-  if (!label || !title || !file) throw new UsageError(USAGE);
+  if (!title || !file) throw new UsageError(USAGE);
   if (parent !== undefined && !isSafeTaskId(parent)) throw new UsageError(`"${parent.slice(0, 40)}" is not a task id`);
   const priority = values.get("--priority");
   if (priority !== undefined && !isPriority(priority)) throw new UsageError(`unknown priority "${priority.slice(0, 20)}"; use one of ${PRIORITIES.join(", ")}`);
-  return { label, title, file, parent, priority };
+  return { title, file, parent, priority };
 }
 
 async function add(context: Context, args: string[]): Promise<void> {
-  const { label, title, file, parent, priority } = parseAddArgs(args);
-  // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself.
-  const draft = { title, input: readNoteFile(file), labels: [label], status: "needs-me" as const, createdBy: "agent" as const, ...(parent ? { parentId: parent } : {}), ...(priority ? { priority } : {}) };
+  const { title, file, parent, priority } = parseAddArgs(args);
+  // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
+  // proposing agent works, on this machine.
+  const draft = {
+    title,
+    input: readNoteFile(file),
+    labels: [],
+    status: "needs-me" as const,
+    createdBy: "agent" as const,
+    machine: context.config.machine,
+    workdir: realpathSync(process.cwd()),
+    ...(parent ? { parentId: parent } : {}),
+    ...(priority ? { priority } : {}),
+  };
   const { task } = await context.backend.addTask(draft);
   context.print(`proposed ${task.id} ${task.url}`);
+}
+
+async function chooseInTerminal(): Promise<Choice> {
+  const terminal = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    for (;;) {
+      const answer = (await terminal.question("[r]equeue it, [n]ew task anyway, [a]bort? ")).trim().toLowerCase();
+      if (answer === "r" || answer === "requeue") return "requeue";
+      if (answer === "n" || answer === "new") return "new";
+      if (answer === "a" || answer === "abort" || answer === "") return "abort";
+    }
+  } finally {
+    terminal.close();
+  }
+}
+
+async function scheduleCommand(context: Context, args: string[]): Promise<void> {
+  await schedule(
+    {
+      backend: context.backend,
+      machine: context.config.machine,
+      workdir: realpathSync(process.cwd()),
+      print: context.print,
+      check: haikuDuplicateCheck(context.print),
+      choose: process.stdin.isTTY && process.stdout.isTTY ? chooseInTerminal : undefined,
+    },
+    parseScheduleArgs(args),
+  );
 }
 
 export async function main(argv: string[]): Promise<void> {
   const args = [...argv];
   const dryRun = takeFlag(args, "--dry-run");
   if (args[0] === "add") return add(buildContext(dryRun), args.slice(1));
+  if (args[0] === "schedule") return scheduleCommand(buildContext(dryRun), args.slice(1));
   const [command, id, ...rest] = args;
   if (!command || command.startsWith("--") || id?.startsWith("--")) throw new UsageError(USAGE);
-  if ((command === "tasks" || command === "setup") && (id !== undefined || rest.length > 0)) rejectExtraArgs([id ?? "", ...rest], USAGE);
+  if (command === "tasks" && (id !== undefined || rest.length > 0)) rejectExtraArgs([id ?? "", ...rest], USAGE);
   const context = buildContext(dryRun);
   if (command === "show") {
     if (!id || rest.length > 0) throw new UsageError(USAGE);
@@ -174,8 +211,6 @@ export async function main(argv: string[]): Promise<void> {
       return;
     case "tasks":
       return tasks(context);
-    case "setup":
-      return setup(context);
     default:
       throw new UsageError(USAGE);
   }

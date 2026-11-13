@@ -16,6 +16,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     workdir: null,
     next: "fresh",
     openQuestion: false,
+    createdBy: "user",
     lane: null,
     borrowed: false,
     lastActiveAt: null,
@@ -26,24 +27,14 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
 export const CONFIG: Config = {
   backendCommand: ["backend"],
   machine: "here",
-  lanes: [{ name: "default", labels: ["selftest", "review-pr"], slots: 2 }],
+  lanes: [{ name: "general", skills: ["*"], slots: 2 }],
+  defaultCwd: "/home/me",
   pauseAfterMinutes: 5,
   inactivityMinutes: 15,
   maxRunHours: 6,
   slackWebhookFile: "/nonexistent",
-  intakeLabel: "review-pr",
-  intakePriority: "normal",
+  intake: { prompt: "/review-pr {url} --auto", priority: "normal", allowedTools: ["Read", "Bash(board *)"], disallowedTools: ["Bash(git push *)"] },
   repos: { "cosuno/cosuno": "/work/cosuno" },
-  labels: {
-    selftest: { kind: "command", command: ["sleep", "300"], cwd: undefined },
-    "review-pr": {
-      kind: "skill",
-      skill: "board-review-pr",
-      allowedTools: ["Read", "Bash(board *)"],
-      disallowedTools: ["Bash(git push *)"],
-      cwd: "pr-repo",
-    },
-  },
 };
 
 export interface FakeBackend extends Backend {
@@ -83,10 +74,10 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     },
     async addTask(draft) {
       state.writes.push(`create ${draft.title} | ${draft.input} | ${draft.labels.join(",")}${draft.dedupeKey ? ` | key ${draft.dedupeKey}` : ""}`);
-      const existing = state.tasks.find((candidate) => draft.dedupeKey !== undefined && parseFirstLine(candidate.input) === draft.dedupeKey);
+      const existing = state.tasks.find((candidate) => draft.dedupeKey !== undefined && parseFirstLine(candidate.input).includes(draft.dedupeKey));
       if (existing) return { task: { ...existing }, created: false };
-      const { dedupeKey: _key, parentId: _parent, createdBy: _by, ...fields } = draft;
-      return { task: task({ id: "new", ...fields }), created: true };
+      const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, ...fields } = draft;
+      return { task: task({ id: "new", ...fields, createdBy: createdBy ?? "user", machine: machine ?? null, workdir: workdir ?? null }), created: true };
     },
     async updateTask(id, patch) {
       if (patch.status !== undefined) state.writes.push(`status ${id} -> ${patch.status}`);
