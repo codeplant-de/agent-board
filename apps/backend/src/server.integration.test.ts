@@ -95,8 +95,6 @@ describe('machine API', () => {
   it('refuses bad input with the parser reason', async () => {
     const bad = await ctx.call('laptop', 'update-task', { id: 'abcdefgh', body: { title: 'x' } });
     expect(bad).toMatchObject({ status: 400, json: { error: 'patch has an unknown key "title"' } });
-    const unknownLabel = await ctx.call('laptop', 'add-task', { body: { title: 't', labels: ['nope'] } });
-    expect(unknownLabel.json.error).toMatch(/unknown label nope/);
     const missing = await ctx.call('laptop', 'get-task', { id: 'abcdefgh' });
     expect(missing.status).toBe(404);
     const badId = await ctx.call('laptop', 'get-task', { id: '../x' });
@@ -166,8 +164,8 @@ describe('machine API', () => {
 describe('board UI', () => {
   it('a reply with resume goes to the top of Todo; without a session it runs fresh', async () => {
     const ui = caller(db);
-    const first = await ui.tasks.create({ title: 'first', input: '', label: 'research' });
-    const second = await ui.tasks.create({ title: 'second', input: 'Find out X', label: 'research', start: false });
+    const first = await ui.tasks.create({ title: 'first', input: 'do it' });
+    const second = await ui.tasks.create({ title: 'second', input: 'Find out X', start: false });
     expect(second.status).toBe('needs-me');
     await expect(ui.tasks.reply({ id: second.id, message: '  ', resume: true })).rejects.toThrow(/Write something/);
     const replied = await ui.tasks.reply({ id: second.id, message: 'go', resume: true });
@@ -179,7 +177,7 @@ describe('board UI', () => {
 
   it('a running task cannot be answered, moved or closed from the UI', async () => {
     const ui = caller(db);
-    const task = await ui.tasks.create({ title: 't', input: '', label: 'research' });
+    const task = await ui.tasks.create({ title: 't', input: 'do it' });
     await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
     await expect(ui.tasks.reply({ id: task.id, message: 'x', resume: true })).rejects.toThrow(/running/);
     await expect(ui.tasks.move({ id: task.id, status: 'done' })).rejects.toThrow(/running/);
@@ -190,7 +188,7 @@ describe('board UI', () => {
 
   it('agent proposals wait in needs-me until started; moving into Todo starts them', async () => {
     const ui = caller(db);
-    const parent = await ui.tasks.create({ title: 'parent', input: '', label: 'research' });
+    const parent = await ui.tasks.create({ title: 'parent', input: 'do it' });
     const proposed = await ctx.call('laptop', 'add-task', {
       body: { title: 'follow-up', input: 'do Y', labels: ['research'], status: 'needs-me', createdBy: 'agent', parentId: parent.id },
     });
@@ -204,9 +202,9 @@ describe('board UI', () => {
 
   it('drag and drop places a task between its neighbours', async () => {
     const ui = caller(db);
-    const a = await ui.tasks.create({ title: 'a', input: '', label: 'research' });
-    const b = await ui.tasks.create({ title: 'b', input: '', label: 'research' });
-    const c = await ui.tasks.create({ title: 'c', input: '', label: 'research' });
+    const a = await ui.tasks.create({ title: 'a', input: 'do it' });
+    const b = await ui.tasks.create({ title: 'b', input: 'do it' });
+    const c = await ui.tasks.create({ title: 'c', input: 'do it' });
     await ui.tasks.move({ id: c.id, status: 'todo', afterId: a.id, beforeId: b.id });
     expect((await ui.tasks.list()).map((t) => t.title)).toEqual(['a', 'c', 'b']);
     await ui.tasks.move({ id: a.id, status: 'done' });
@@ -215,7 +213,7 @@ describe('board UI', () => {
 
   it('done and re-run clear the open question; re-run forgets the session', async () => {
     const ui = caller(db);
-    const task = await ui.tasks.create({ title: 't', input: '', label: 'research' });
+    const task = await ui.tasks.create({ title: 't', input: 'do it' });
     await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
     await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: 's' } });
     await ctx.call('laptop', 'ask', { id: task.id, body: [question] });
@@ -247,10 +245,10 @@ describe('priority', () => {
 
   it('columns sort by priority, then manual order; list-tasks hands workers the urgent ones first', async () => {
     const ui = caller(db);
-    await ui.tasks.create({ title: 'normal-1', input: '', label: 'research' });
-    await ui.tasks.create({ title: 'low', input: '', label: 'research', priority: 'low' });
-    await ui.tasks.create({ title: 'urgent', input: '', label: 'research', priority: 'urgent' });
-    await ui.tasks.create({ title: 'normal-2', input: '', label: 'research' });
+    await ui.tasks.create({ title: 'normal-1', input: 'do it' });
+    await ui.tasks.create({ title: 'low', input: 'do it', priority: 'low' });
+    await ui.tasks.create({ title: 'urgent', input: 'do it', priority: 'urgent' });
+    await ui.tasks.create({ title: 'normal-2', input: 'do it' });
     expect(titles(await ui.tasks.list())).toEqual(['urgent', 'normal-1', 'normal-2', 'low']);
     const machine = (await ctx.call('laptop', 'list-tasks')).json.result;
     expect(machine.map((t: { title: string; priority: string }) => `${t.title}:${t.priority}`)).toEqual([
@@ -263,9 +261,9 @@ describe('priority', () => {
 
   it('a new priority puts the task at the bottom of its new band and notes it', async () => {
     const ui = caller(db);
-    await ui.tasks.create({ title: 'high-1', input: '', label: 'research', priority: 'high' });
-    const task = await ui.tasks.create({ title: 'normal', input: '', label: 'research' });
-    await ui.tasks.create({ title: 'high-2', input: '', label: 'research', priority: 'high' });
+    await ui.tasks.create({ title: 'high-1', input: 'do it', priority: 'high' });
+    const task = await ui.tasks.create({ title: 'normal', input: 'do it' });
+    await ui.tasks.create({ title: 'high-2', input: 'do it', priority: 'high' });
     await ui.tasks.setPriority({ id: task.id, priority: 'high' });
     expect(titles(await ui.tasks.list())).toEqual(['high-1', 'high-2', 'normal']);
     const { thread } = await ui.tasks.get({ id: task.id });
@@ -274,19 +272,19 @@ describe('priority', () => {
 
   it('a reply jumps to the top of its own band, not above more urgent work', async () => {
     const ui = caller(db);
-    await ui.tasks.create({ title: 'urgent', input: '', label: 'research', priority: 'urgent' });
-    await ui.tasks.create({ title: 'normal-old', input: '', label: 'research' });
-    const waiting = await ui.tasks.create({ title: 'replied', input: '', label: 'research', start: false });
+    await ui.tasks.create({ title: 'urgent', input: 'do it', priority: 'urgent' });
+    await ui.tasks.create({ title: 'normal-old', input: 'do it' });
+    const waiting = await ui.tasks.create({ title: 'replied', input: 'do it', start: false });
     await ui.tasks.reply({ id: waiting.id, message: 'go', resume: true });
     expect(titles(await ui.tasks.list())).toEqual(['urgent', 'replied', 'normal-old']);
   });
 
   it('a dropped card takes the priority of the tasks it lands among', async () => {
     const ui = caller(db);
-    const urgent = await ui.tasks.create({ title: 'urgent', input: '', label: 'research', priority: 'urgent' });
-    const n1 = await ui.tasks.create({ title: 'n1', input: '', label: 'research' });
-    const n2 = await ui.tasks.create({ title: 'n2', input: '', label: 'research' });
-    const low = await ui.tasks.create({ title: 'low', input: '', label: 'research', priority: 'low' });
+    const urgent = await ui.tasks.create({ title: 'urgent', input: 'do it', priority: 'urgent' });
+    const n1 = await ui.tasks.create({ title: 'n1', input: 'do it' });
+    const n2 = await ui.tasks.create({ title: 'n2', input: 'do it' });
+    const low = await ui.tasks.create({ title: 'low', input: 'do it', priority: 'low' });
     // Between two normals: normal.
     const moved = await ui.tasks.move({ id: urgent.id, status: 'todo', afterId: n1.id, beforeId: n2.id });
     expect(moved.priority).toBe('normal');
@@ -299,7 +297,7 @@ describe('priority', () => {
 
   it('follow-ups inherit the parent priority unless the agent sets one', async () => {
     const ui = caller(db);
-    const parent = await ui.tasks.create({ title: 'parent', input: '', label: 'research', priority: 'high' });
+    const parent = await ui.tasks.create({ title: 'parent', input: 'do it', priority: 'high' });
     const inherit = await ctx.call('laptop', 'add-task', { body: { title: 'a', labels: ['research'], parentId: parent.id, createdBy: 'agent', status: 'needs-me' } });
     expect(inherit.json.result.task.priority).toBe('high');
     const chosen = await ctx.call('laptop', 'add-task', { body: { title: 'b', labels: ['research'], parentId: parent.id, createdBy: 'agent', status: 'needs-me', priority: 'low' } });
@@ -311,7 +309,7 @@ describe('priority', () => {
 
 describe('lanes, liveness and pausing', () => {
   async function running(title: string, priority: 'urgent' | 'high' | 'normal' | 'low' = 'normal') {
-    const task = await caller(db).tasks.create({ title, input: '', label: 'research', priority });
+    const task = await caller(db).tasks.create({ title, input: 'do it', priority });
     await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
     await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: `s-${title}` } });
     return task.id;
@@ -334,7 +332,7 @@ describe('lanes, liveness and pausing', () => {
   it('a paused task resumes next, on its machine, ahead of new urgent work', async () => {
     const ui = caller(db);
     const id = await running('paused', 'low');
-    await ui.tasks.create({ title: 'urgent', input: '', label: 'research', priority: 'urgent' });
+    await ui.tasks.create({ title: 'urgent', input: 'do it', priority: 'urgent' });
     const paused = await ctx.call('laptop', 'pause', { id, body: 'Paused on laptop: the reviews lane needed its slot.' });
     expect(paused.json.result).toMatchObject({ status: 'todo', next: 'resume', machine: 'laptop' });
     const list = await ui.tasks.list();
@@ -348,5 +346,18 @@ describe('lanes, liveness and pausing', () => {
     expect((await ui.tasks.get({ id })).task.paused).toBe(false);
     const { thread } = await ui.tasks.get({ id });
     expect(thread.some((n) => n.author === 'system' && n.text.startsWith('Paused on laptop'))).toBe(true);
+  });
+});
+
+describe('prompts', () => {
+  it('a task is labelled with its skill, titled by its first line, and can be pinned', async () => {
+    const ui = caller(db);
+    const review = await ui.tasks.create({ input: '/review-pr 17741\nplease look at the migration' });
+    expect(review).toMatchObject({ title: '/review-pr 17741', labels: ['review-pr'], createdBy: 'user', machine: null, workdir: null });
+    const plain = await ui.tasks.create({ input: 'Find out why the export is slow' });
+    expect(plain.labels).toEqual([]);
+    await expect(ui.tasks.create({ input: '   ' })).rejects.toThrow(/Write a prompt first/);
+    const pinned = await ctx.call('laptop', 'add-task', { body: { title: 't', input: '/grill', machine: 'laptop', workdir: '/home/me/repo' } });
+    expect(pinned.json.result.task).toMatchObject({ machine: 'laptop', workdir: '/home/me/repo', labels: ['grill'] });
   });
 });

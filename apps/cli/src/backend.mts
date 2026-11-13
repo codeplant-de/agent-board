@@ -179,7 +179,8 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     ...inner,
     async addTask(draft) {
       print(`DRY add-task ${oneLine(JSON.stringify(draft), 160)}`);
-      const task: Task = { ...draft, priority: draft.priority ?? "normal", id: "dry", url: "https://dry.invalid", closed: false, machine: null, sessionId: null, workdir: null, next: "fresh", openQuestion: false, lane: null, borrowed: false, lastActiveAt: null };
+      const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, ...fields } = draft;
+      const task: Task = { ...fields, priority: draft.priority ?? "normal", id: "dry", url: "https://dry.invalid", closed: false, machine: machine ?? null, sessionId: null, workdir: workdir ?? null, next: "fresh", openQuestion: false, createdBy: createdBy ?? "user", lane: null, borrowed: false, lastActiveAt: null };
       return { task, created: true };
     },
     async updateTask(id, patch) {

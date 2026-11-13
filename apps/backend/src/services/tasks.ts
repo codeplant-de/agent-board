@@ -2,6 +2,7 @@ import {
   DEFAULT_PRIORITY,
   isSafeTaskId,
   parseAnswers,
+  promptSkill,
   type Answer,
   type Note,
   type Priority,
@@ -44,6 +45,7 @@ export function toTask(row: TaskRow, publicUrl: string): Task {
     workdir: row.workdir,
     next: row.next,
     openQuestion: row.openQuestionNoteId !== null,
+    createdBy: row.createdBy,
     // Run details describe the current run only.
     lane: row.status === 'running' ? row.lane : null,
     borrowed: row.status === 'running' && row.borrowed,
@@ -99,21 +101,12 @@ export async function getTask(db: DbOrTx, id: string): Promise<TaskRow> {
   return row;
 }
 
-async function requireLabels(db: DbOrTx, names: string[]): Promise<void> {
-  if (names.length === 0) return;
-  const known = await db.select({ name: labels.name }).from(labels).where(inArray(labels.name, names));
-  const missing = names.filter((name) => !known.some((row) => row.name === name));
-  if (missing.length > 0)
-    throw new AppError('BAD_REQUEST', `unknown label ${missing.join(', ')} (run: board setup)`);
-}
-
 /** New task at the bottom of its status. A known dedupe key returns the existing task instead. */
 export async function addTask(
   db: Db,
   draft: TaskDraft,
 ): Promise<{ row: TaskRow; created: boolean }> {
   return db.transaction(async (tx) => {
-    await requireLabels(tx, draft.labels);
     // A follow-up is as pressing as the task it came from, unless its creator says otherwise.
     const parent = draft.parentId === undefined ? undefined : await getTask(tx, draft.parentId);
     const proposed = draft.createdBy === 'agent';
@@ -123,7 +116,10 @@ export async function addTask(
         id: newId(),
         title: draft.title.trim(),
         input: draft.input,
-        labels: draft.labels,
+        // A task is labelled with the skill its prompt starts with, unless its creator says otherwise.
+        labels: draft.labels.length > 0 ? draft.labels : [promptSkill(draft.input)].filter((skill) => skill !== undefined),
+        machine: draft.machine ?? null,
+        workdir: draft.workdir ?? null,
         status: draft.status,
         priority: draft.priority ?? parent?.priority ?? DEFAULT_PRIORITY,
         position: await edgePosition(tx, draft.status, 'bottom'),

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ContractError, parseDraft, parseHeartbeat, parseNote, parsePatch, parseTask } from "../src/contract.mts";
+import { ContractError, parseDraft, parseHeartbeat, parseNote, parsePatch, parseTask, promptSkill, shortSkill } from "../src/contract.mts";
 
 const task = {
   id: "Ab3dEf9x",
@@ -16,6 +16,7 @@ const task = {
   workdir: null,
   next: "fresh",
   openQuestion: false,
+  createdBy: "user",
   lane: null,
   borrowed: false,
   lastActiveAt: null,
@@ -74,4 +75,20 @@ test("question and answer notes carry their structure", () => {
   const answer = parseNote({ id: "n2", text: "", createdAt: "2026-11-13T10:01:00Z", author: "user", kind: "answer", questionNoteId: "n1", answers: [{ selected: ["A"] }] });
   assert.deepEqual(answer.answers, [{ selected: ["A"] }]);
   assert.throws(() => parseNote({ id: "n3", text: "", createdAt: "nope", author: "agent", kind: "comment" }), /not a date/);
+});
+
+test("the skill of a prompt is its leading slash command", () => {
+  assert.equal(promptSkill("/review-pr 17741"), "review-pr");
+  assert.equal(promptSkill("  /pr-review:review-pr https://x --auto\nhead: abc"), "pr-review:review-pr");
+  assert.equal(promptSkill("/grill"), "grill");
+  assert.equal(promptSkill("Find out why /tmp fills up"), undefined);
+  assert.equal(promptSkill("/ not a skill"), undefined);
+  assert.equal(shortSkill("pr-review:review-pr"), "review-pr");
+  assert.equal(shortSkill("review-pr"), "review-pr");
+});
+
+test("a draft pins to a machine and directory together", () => {
+  assert.deepEqual(parseDraft({ title: "t", machine: "laptop", workdir: "/repo" }), { title: "t", input: "", labels: [], status: "todo", machine: "laptop", workdir: "/repo" });
+  assert.throws(() => parseDraft({ title: "t", workdir: "/repo" }), /go together/);
+  assert.throws(() => parseDraft({ title: "t", machine: "laptop", workdir: "repo" }), /absolute path/);
 });

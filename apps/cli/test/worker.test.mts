@@ -5,7 +5,8 @@ import type { RunResult, WorkerDeps } from "../src/worker.mts";
 import { CONFIG, fakeBackend, fakeRunFiles, note, task } from "./helpers.mts";
 
 function setup(result: RunResult | Error, moveDuringRun = false) {
-  const running = task({ id: "w1", status: "running", labels: ["selftest"] });
+  // A task scheduled from /tmp on this machine.
+  const running = task({ id: "w1", status: "running", input: "/selftest go", machine: "here", workdir: "/tmp" });
   const backend = fakeBackend([running]);
   const notes: string[] = [];
   const calls: string[] = [];
@@ -26,7 +27,6 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
     pluginPath: () => "/plugins/pr-review",
     dirExists: () => true,
     home: "/h",
-    fallbackCwd: "/",
     newSessionId: () => "s-new",
     files: fakeRunFiles(),
     hookCommand: (dir, id) => `hook ${dir} ${id}`,
@@ -61,7 +61,7 @@ test("exit 0 with the task still in Running is reported as unreported", async ()
 test("exit 0 after the worker moved the task writes nothing", async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null }, true);
   await runWorker(deps, "w1");
-  assert.deepEqual(backend.writes.filter((w) => !w.startsWith("heartbeat ")), []);
+  assert.deepEqual(backend.writes.filter((w) => !/^(heartbeat|session|next) /.test(w)), []);
 });
 
 test("a command that cannot start is reported on the task", async () => {
@@ -90,10 +90,8 @@ test("exit 0 with the task moved back to Todo is unreported, not ok", async () =
 
 test("an unresolvable pr-review plugin sends the task to Needs me with the reason", async () => {
   const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
-  deps.config = {
-    ...CONFIG,
-    labels: { selftest: { kind: "skill", skill: "s", allowedTools: ["Bash({pr-review}/skills/x.sh *)"], disallowedTools: [], cwd: "/tmp" } },
-  };
+  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, allowedTools: ["Bash({pr-review}/skills/x.sh *)"] } };
+  Object.assign(backend.tasks[0]!, { createdBy: "intake", input: "/review-pr https://github.com/cosuno/cosuno/pull/1 --auto" });
   deps.pluginPath = () => {
     throw new Error("plugin pr-review@ccc is not installed");
   };
@@ -106,7 +104,7 @@ test("an unresolvable pr-review plugin sends the task to Needs me with the reaso
 test("a missing working directory is named in the error", async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
   deps.dirExists = () => false;
-  deps.config = { ...CONFIG, labels: { selftest: { kind: "command", command: ["true"], cwd: "/no/such/dir" } } };
+  backend.tasks[0]!.workdir = "/no/such/dir";
   await runWorker(deps, "w1");
   assert.ok(backend.writes.some((w) => w.includes("/no/such/dir")));
 });
@@ -119,16 +117,13 @@ test("a task closed during the run is left alone, whatever the outcome", async (
       return result;
     };
     await runWorker(deps, "w1");
-    assert.deepEqual(backend.writes.filter((w) => !w.startsWith("heartbeat ")), []);
+    assert.deepEqual(backend.writes.filter((w) => !/^(heartbeat|session|next) /.test(w)), []);
     assert.deepEqual(notes, []);
   }
 });
 
-const skillLabel = { kind: "skill" as const, skill: "s", allowedTools: ["Read"], disallowedTools: [], cwd: "/tmp" };
-
 test("a fresh skill run gets a new session, stored on the task before the run", async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null }, true);
-  deps.config = { ...CONFIG, labels: { selftest: skillLabel } };
   const args: string[][] = [];
   deps.run = async (invocation) => {
     args.push(invocation.args);
@@ -137,12 +132,11 @@ test("a fresh skill run gets a new session, stored on the task before the run", 
     return { exitCode: 0, signal: null };
   };
   await runWorker(deps, "w1");
-  assert.deepEqual(args[0]?.slice(0, 4), ["-p", "/s w1", "--session-id", "s-new"]);
+  assert.deepEqual(args[0]?.slice(0, 4), ["-p", "/selftest go", "--session-id", "s-new"]);
 });
 
 test("a resume runs the stored session with the user's reply and uses the resume up", async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, labels: { selftest: skillLabel } };
   Object.assign(backend.tasks[0]!, { next: "resume", sessionId: "s-old", machine: "here" });
   backend.notes.set("w1", [note("Done, one question", new Date("2026-11-13T10:00:00Z")), note("please also check X", new Date("2026-11-13T10:05:00Z"), { author: "user" })]);
   const args: string[][] = [];
@@ -161,7 +155,6 @@ test("a resume runs the stored session with the user's reply and uses the resume
 
 test("a run asked to pause gives its task back to Todo with a note naming the lane", async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, labels: { selftest: skillLabel } };
   Object.assign(backend.tasks[0]!, { sessionId: "s" });
   deps.files.writeRun("w1", { lane: "implement", borrowed: true, startedAt: new Date() });
   deps.run = async () => {
@@ -177,7 +170,6 @@ test("a run asked to pause gives its task back to Todo with a note naming the la
 
 test("the watch passes liveness on with the run's lane and stops a quiet skill run", async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, labels: { selftest: skillLabel } };
   deps.files.writeRun("w1", { lane: "reviews", borrowed: true, startedAt: new Date() });
   let clock = Date.now();
   deps.now = () => new Date(clock);
@@ -195,7 +187,6 @@ test("the watch passes liveness on with the run's lane and stops a quiet skill r
 
 test("the hook goes into a skill run's settings", async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null }, true);
-  deps.config = { ...CONFIG, labels: { selftest: skillLabel } };
   let settings = "";
   deps.run = async (invocation) => {
     settings = invocation.args[invocation.args.indexOf("--settings") + 1] ?? "";
@@ -208,7 +199,7 @@ test("the hook goes into a skill run's settings", async () => {
 
 test("a fresh skill run binds the task to its directory, and to the worktree it ended in", async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, labels: { selftest: skillLabel } };
+  Object.assign(backend.tasks[0]!, { machine: null, workdir: null });
   deps.run = async () => {
     deps.files.writeCwd("w1", "/tmp/.claude/worktrees/feat-x");
     backend.tasks[0]!.status = "needs-me";
@@ -216,13 +207,12 @@ test("a fresh skill run binds the task to its directory, and to the worktree it 
   };
   await runWorker(deps, "w1");
   const workdirs = backend.writes.filter((w) => w.startsWith("workdir w1"));
-  assert.deepEqual(workdirs, ["workdir w1: /tmp", "workdir w1: /tmp/.claude/worktrees/feat-x"]);
+  assert.deepEqual(workdirs, ["workdir w1: /home/me", "workdir w1: /tmp/.claude/worktrees/feat-x"]);
 });
 
 test("a resume starts in the task's directory, and a missing one fails without starting", async () => {
   const resumable = { next: "resume" as const, sessionId: "s-old", machine: "here", workdir: "/repo/.claude/worktrees/feat-x" };
   const { deps, backend } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, labels: { selftest: skillLabel } };
   Object.assign(backend.tasks[0]!, resumable);
   backend.notes.set("w1", [note("asked", new Date("2026-11-13T10:00:00Z")), note("go on", new Date("2026-11-13T10:05:00Z"), { author: "user" })]);
   let cwd = "";
@@ -235,7 +225,6 @@ test("a resume starts in the task's directory, and a missing one fails without s
   assert.equal(cwd, "/repo/.claude/worktrees/feat-x");
 
   const gone = setup({ exitCode: 0, signal: null });
-  gone.deps.config = { ...CONFIG, labels: { selftest: skillLabel } };
   Object.assign(gone.backend.tasks[0]!, resumable);
   gone.backend.notes.set("w1", [note("asked", new Date("2026-11-13T10:00:00Z")), note("go on", new Date("2026-11-13T10:05:00Z"), { author: "user" })]);
   gone.deps.dirExists = (path) => path !== "/repo/.claude/worktrees/feat-x";
@@ -246,5 +235,5 @@ test("a resume starts in the task's directory, and a missing one fails without s
   };
   await runWorker(gone.deps, "w1");
   assert.equal(started, false);
-  assert.ok(gone.backend.writes.some((w) => w.includes("session last worked in is gone: /repo/.claude/worktrees/feat-x")));
+  assert.ok(gone.backend.writes.some((w) => w.includes("task's directory is gone: /repo/.claude/worktrees/feat-x")));
 });

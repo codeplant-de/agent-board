@@ -1,4 +1,4 @@
-import { ActionIcon, Alert, Badge, Button, Code, CopyButton, Group, Paper, Stack, Table, Text, TextInput, Textarea, Title, Tooltip } from '@mantine/core';
+import { ActionIcon, Alert, Badge, Button, Code, CopyButton, Group, Paper, Stack, Table, Text, TextInput, Title, Tooltip } from '@mantine/core';
 import { modals } from '@mantine/modals';
 import { IconCheck, IconCopy, IconKey } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -116,49 +116,11 @@ function Machines() {
   );
 }
 
-function LabelRow({ name, description }: { name: string; description: string }) {
-  const trpc = useTRPC();
-  const update = useMutation(trpc.labels.update.mutationOptions());
-  const [value, setValue] = useState(description);
-  return (
-    <Group align="flex-start" wrap="nowrap">
-      <Badge variant="default" tt="none" mt={6} style={{ flexShrink: 0 }}>
-        {name}
-      </Badge>
-      <Textarea value={value} onChange={(e) => setValue(e.currentTarget.value)} autosize minRows={1} style={{ flex: 1 }} placeholder="What a task of this type is for" />
-      <Button variant="default" disabled={value === description} loading={update.isPending} onClick={() => update.mutate({ name, description: value })}>
-        Save
-      </Button>
-    </Group>
-  );
-}
-
-function Labels() {
-  const trpc = useTRPC();
-  const labels = useQuery(trpc.labels.list.queryOptions());
-  return (
-    <Paper withBorder p="md">
-      <Stack>
-        <div>
-          <Title order={5}>Task types</Title>
-          <Text size="sm" c="dimmed">
-            Labels come from <Code>board setup</Code> on a machine, one per entry in its config. The description shows in the New task form.
-          </Text>
-        </div>
-        {(labels.data ?? []).map((l) => (
-          <LabelRow key={l.name} name={l.name} description={l.description} />
-        ))}
-      </Stack>
-    </Paper>
-  );
-}
-
 export function SettingsPage() {
   return (
     <Stack maw={900} mx="auto">
       <Title order={3}>Settings</Title>
       <Machines />
-      <Labels />
     </Stack>
   );
 }

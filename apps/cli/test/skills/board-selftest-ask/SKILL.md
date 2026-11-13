@@ -1,23 +1,9 @@
 ---
 name: board-selftest-ask
-description: Test skill for agent-board's ask-and-resume loop. Asks one question on its task and stops; on resume, posts the answer back. Started headless as `/board-selftest-ask <task>`; not for interactive use.
+description: Test skill for agent-board's question bridge. Asks one question with AskUserQuestion and reports the answer after the resume. Started headless through the board as `/board-selftest-ask`; not for interactive use.
 ---
 
 # Ask once, then report the answer
 
-Argument: `<task>`. Run every command on its own. Nobody is watching.
-
-## First run
-
-1. Write this file with the Write tool to `/tmp/pr-selftest-<task>.json`:
-
-   ```json
-   {"questions":[{"header":"Color","question":"Which color should the selftest report?","multiSelect":false,"options":[{"label":"Blue","description":"The default","recommended":true},{"label":"Green","description":"The other one"}]}]}
-   ```
-
-2. Run `board ask <task> --file /tmp/pr-selftest-<task>.json`.
-3. Stop. Your last message is `asked`.
-
-## Resumed run
-
-The prompt carries the user's answer. Run `board comment <task> "Selftest got: <the chosen color, and any text the user added>"`, then `board move <task> needs-me`. Your last message is `reported`.
+1. Ask with AskUserQuestion: header "Color", question "Which color should the selftest report?", single choice, options "Blue (Recommended)" (The default) and "Green" (The other one).
+2. When you are resumed with the answer, report it with `board comment <task> "Selftest got: <the chosen color, and any text the user added>"`, then `board move <task> needs-me`. The board's rules name your task id.
