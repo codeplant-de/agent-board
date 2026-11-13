@@ -79,12 +79,12 @@ Without `lanes`, a machine runs one lane, `general`, with `*` and three slots.
 
 ## Liveness and limits
 
-The hook also touches a heartbeat file on every tool call. The worker checks it every 30 seconds:
+The hook also touches a heartbeat file on every tool call. The worker checks it every 15 seconds:
 
 - no tool call for `inactivityMinutes` (default 15): the run is stopped as stuck and the task goes to `needs-me` with the end of the log. Claude Code caps a foreground Bash call at ten minutes, so a long command does not trip it.
 - a run longer than `maxRunHours` (default 6): stopped, however busy. A guard against an agent looping on tool calls.
 
-The worker passes the heartbeat on to the board at most once a minute, with the lane. A running card shows "active 40s ago", amber after 5 quiet minutes, red after 10, and its lane with a "borrowed" badge when it runs in another lane's slot. A command label makes no tool calls; it counts as active while its process runs.
+The worker passes the heartbeat on to the board every 15 seconds while the agent is active, with the lane. A running card counts the seconds since ("active 12s ago", then "active 1m 5s ago"), amber after 5 quiet minutes, red after 10, and its lane with a "borrowed" badge when it runs in another lane's slot. A command label makes no tool calls; it counts as active while its process runs.
 
 The heartbeat, pause flag, lane and working directory of a run live in `$XDG_RUNTIME_DIR/agent-board/` (`AGENT_BOARD_RUN_DIR` overrides it), private to your user.
 
