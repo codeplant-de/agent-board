@@ -17,7 +17,7 @@ index a0090cb..044f2f5 100644
  | hct: Postgres | 16 | `postgres:16-alpine` (floating tag: a new 16.x arrives when the node pulls again) | by hand: a major needs dump and restore |
 -| hct, estimation-bot | `main-<sha8>-<time>` | `ghcr.io/codeplant-de/hct-*`, `ghcr.io/jascha-schiffer/estimation-bot` | Flux image automation |
 +| agent-board: Postgres | 16 | `postgres:16-alpine` (floating tag) | by hand: a major needs dump and restore |
-+| hct, estimation-bot, agent-board | `main-<sha8>-<time>` | `ghcr.io/codeplant-de/hct-*`, `ghcr.io/jascha-schiffer/estimation-bot`, `ghcr.io/jascha-schiffer/agent-board-*` | Flux image automation |
++| hct, estimation-bot, agent-board | `main-<sha8>-<time>` | `ghcr.io/codeplant-de/hct-*`, `ghcr.io/jascha-schiffer/estimation-bot`, `ghcr.io/codeplant-de/agent-board-*` | Flux image automation |
  | SonarQube (off) | 26.10 Community Build, Postgres 17 | `sonarqube` | nobody: LTA steps by hand if it comes back |
  
  ## Routing
@@ -79,7 +79,7 @@ index 0000000..a068226
 +        - name: ghcr-pull
 +      containers:
 +        - name: backend
-+          image: ghcr.io/jascha-schiffer/agent-board-backend:latest # {"$imagepolicy": "flux-system:agent-board-backend"}
++          image: ghcr.io/codeplant-de/agent-board-backend:latest # {"$imagepolicy": "flux-system:agent-board-backend"}
 +          envFrom:
 +            - secretRef:
 +                name: agent-board-env
@@ -335,7 +335,7 @@ index 0000000..d3822b2
 +        - name: ghcr-pull
 +      containers:
 +        - name: web
-+          image: ghcr.io/jascha-schiffer/agent-board-web:latest # {"$imagepolicy": "flux-system:agent-board-web"}
++          image: ghcr.io/codeplant-de/agent-board-web:latest # {"$imagepolicy": "flux-system:agent-board-web"}
 +          ports:
 +            - name: http
 +              containerPort: 80
@@ -400,7 +400,7 @@ index 3c1c4d0..4146b34 100644
 +  name: agent-board-backend
 +  namespace: flux-system
 +spec:
-+  image: ghcr.io/jascha-schiffer/agent-board-backend
++  image: ghcr.io/codeplant-de/agent-board-backend
 +  interval: 5m
 +  secretRef:
 +    name: ghcr-pull
@@ -426,7 +426,7 @@ index 3c1c4d0..4146b34 100644
 +  name: agent-board-web
 +  namespace: flux-system
 +spec:
-+  image: ghcr.io/jascha-schiffer/agent-board-web
++  image: ghcr.io/codeplant-de/agent-board-web
 +  interval: 5m
 +  secretRef:
 +    name: ghcr-pull
