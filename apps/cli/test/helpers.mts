@@ -105,6 +105,9 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     async addNote(id, text, options) {
       state.writes.push(`note ${id}${options?.author === "system" ? " (system)" : ""}: ${text}`);
     },
+    async transcript(id, batch) {
+      state.writes.push(`transcript ${id} ${batch.runId} ${batch.events.map((e) => e.kind).join(",")}`);
+    },
     async heartbeat(id, beat) {
       state.writes.push(`heartbeat ${id} ${beat.lane}${beat.borrowed ? " borrowed" : ""}`);
     },

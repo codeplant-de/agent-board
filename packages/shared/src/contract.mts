@@ -2,6 +2,7 @@
 import { isRecord } from "./guards.mts";
 import { parseQuestions, parseAnswers } from "./questions.mts";
 import type { Answer, Question } from "./questions.mts";
+import type { TranscriptBatch } from "./transcript.mts";
 
 export const CONTRACT_VERSION = 2;
 // A backend exits with this code (EX_USAGE) for a subcommand it does not implement.
@@ -119,6 +120,8 @@ export interface Backend {
   heartbeat(id: string, beat: Heartbeat): Promise<void>;
   // A running task gave up its slot: a note, then back to Todo, resumed next, ahead of new work.
   pause(id: string, note: string): Promise<Task>;
+  // Appends events to a run's transcript; an event already stored (same run and seq) is kept as it is.
+  transcript(id: string, batch: TranscriptBatch): Promise<void>;
   // Oldest first.
   readNotes(id: string): Promise<Note[]>;
   // What it created (with dryRun: what it would create, writing nothing); undefined when the backend has no setup.

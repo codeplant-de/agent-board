@@ -12,7 +12,9 @@ import {
   parsePatch,
   parseQuestions,
   parseSetupRequest,
+  parseTranscriptBatch,
   QuestionError,
+  TranscriptError,
   serializeNote,
 } from '@agent-board/shared';
 import type { FastifyInstance } from 'fastify';
@@ -20,6 +22,7 @@ import type { Config } from './config';
 import type { Db } from './db/client';
 import { AppError } from './services/errors';
 import { machineForToken } from './services/machines';
+import { appendTranscript } from './services/transcripts';
 import {
   addNote,
   addTask,
@@ -47,7 +50,7 @@ function parsed<T>(parse: () => T): T {
   try {
     return parse();
   } catch (error) {
-    if (error instanceof ContractError || error instanceof QuestionError)
+    if (error instanceof ContractError || error instanceof QuestionError || error instanceof TranscriptError)
       throw new AppError('BAD_REQUEST', error.message);
     throw error;
   }
@@ -105,6 +108,9 @@ export async function handleMachineCall(
       if (typeof note !== 'string' || note.trim() === '') throw new AppError('BAD_REQUEST', 'pause note is empty');
       return task(await pause(db, taskId(body), note.trim(), machine));
     }
+    case 'transcript':
+      await appendTranscript(db, taskId(body), machine, parsed(() => parseTranscriptBatch(body['body'])));
+      return null;
     case 'read-notes':
       return (await readNotes(db, taskId(body))).map((row) => serializeNote(toNote(row)));
     case 'setup': {

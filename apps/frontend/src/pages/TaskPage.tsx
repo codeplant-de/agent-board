@@ -1,13 +1,14 @@
 import { Anchor, Badge, Breadcrumbs, Button, Center, Container, Group, Loader, Paper, Spoiler, Stack, Text, Title } from '@mantine/core';
-import { IconBrandGithub, IconCornerDownRight } from '@tabler/icons-react';
+import { IconBrandGithub, IconCornerDownRight, IconTerminal2 } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ActionPanel } from '../components/ActionPanel';
 import { Markdown } from '../components/Markdown';
 import { PriorityPicker } from '../components/PriorityPicker';
 import { TaskBadges } from '../components/TaskBadges';
 import { ThreadItem } from '../components/ThreadItem';
+import { TranscriptDrawer } from '../components/TranscriptDrawer';
 import { promptText, prUrl, STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago, stamp } from '../lib/time';
 import { errorMessage, POLL_MS, useTRPC } from '../lib/trpc';
@@ -18,6 +19,9 @@ export function TaskPage() {
   const query = useQuery({ ...trpc.tasks.get.queryOptions({ id }), refetchInterval: POLL_MS });
   const setPriority = useMutation(trpc.tasks.setPriority.mutationOptions());
   const bottom = useRef<HTMLDivElement>(null);
+  const [search, setSearch] = useSearchParams();
+  const transcriptOpen = search.get('transcript') !== null;
+  const setTranscriptOpen = (open: boolean) => setSearch(open ? { transcript: '1' } : {}, { replace: true });
   const noteCount = query.data?.thread.length ?? 0;
 
   // Land on the newest note and the action panel; follow new notes as they arrive.
@@ -77,6 +81,11 @@ export function TaskPage() {
               {task.workdir}
             </Text>
           )}
+          <Group gap="xs">
+            <Button variant="default" size="xs" leftSection={<IconTerminal2 size={14} />} onClick={() => setTranscriptOpen(true)}>
+              Transcript
+            </Button>
+          </Group>
           {pr && (
             <Group>
               <Button component="a" href={pr} target="_blank" rel="noopener noreferrer" variant="default" size="xs" leftSection={<IconBrandGithub size={14} />}>
@@ -131,6 +140,8 @@ export function TaskPage() {
             <ThreadItem key={note.id} note={note} thread={thread} />
           ))}
         </Stack>
+
+        <TranscriptDrawer taskId={task.id} opened={transcriptOpen} onClose={() => setTranscriptOpen(false)} live={task.status === 'running'} />
 
         <div ref={bottom}>
           <ActionPanel task={task} thread={thread} />

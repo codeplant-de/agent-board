@@ -40,3 +40,23 @@ test("extra environment reaches the process, and the rest of the environment sta
   await runProcess({ command: "sh", args: ["-c", "echo $AGENT_BOARD_TEST_EXTRA $AGENT_BOARD_TEST_KEPT"], cwd: tmpdir() }, "proc4", { AGENT_BOARD_TEST_EXTRA: "extra" }, QUIET);
   assert.match(readFileSync(logPath("proc4"), "utf8"), /extra kept/);
 });
+
+test("stdout goes line by line through onLine into the log; stderr goes straight in", async () => {
+  const seen: string[] = [];
+  await runProcess(
+    { command: "sh", args: ["-c", "printf 'one\\ntwo\\nlast'; echo oops >&2"], cwd: tmpdir() },
+    "proc5",
+    {},
+    QUIET,
+    (line) => {
+      seen.push(line);
+      return line === "two" ? undefined : `[${line}]`;
+    },
+  );
+  assert.deepEqual(seen, ["one", "two", "last"], "a last line without a newline still counts");
+  const log = readFileSync(logPath("proc5"), "utf8");
+  assert.match(log, /\[one\]/);
+  assert.doesNotMatch(log, /two/);
+  assert.match(log, /\[last\]/);
+  assert.match(log, /oops/);
+});

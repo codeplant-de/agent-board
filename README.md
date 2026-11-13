@@ -88,6 +88,14 @@ The worker passes the heartbeat on to the board every 15 seconds while the agent
 
 The heartbeat, pause flag, lane and working directory of a run live in `$XDG_RUNTIME_DIR/agent-board/` (`AGENT_BOARD_RUN_DIR` overrides it), private to your user.
 
+## Transcripts
+
+Every run records what it did. The worker starts `claude -p` with `--output-format stream-json --verbose`, condenses each event (the agent's text, each tool call with its input, each tool result, subagent calls tagged with their Agent call, notes such as the model and directory, and the result with turns, time, cost and refused tool calls), writes a readable line per event to the local log, and sends the events to the board with every 15-second check and once more when the run ends. A batch the board refuses is sent again with the next.
+
+On the board, **Transcript** on a task page (or the terminal icon on a card) opens the runs, newest first, live while one runs. Tool calls are one line each; a click shows the input and loads the output. A tool result over 256 KB is cut with a note; the full one stays in the session file on the machine. Claude Code passes thinking on without its text, so a thinking block shows as a marker with its token estimate.
+
+Transcripts can hold whatever the agent saw: file contents, `gh` output, now and then an environment value. They go 14 days after a task is closed (the server checks hourly).
+
 ## Where a task runs
 
 A task is bound to a directory on the machine that ran it:
@@ -251,6 +259,7 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 | `ask <id>` | `{"questions": [...]}` | nothing |
 | `heartbeat <id>` | `{"lane": string, "borrowed": bool}` | nothing |
 | `pause <id>` | the note | the updated `Task` |
+| `transcript <id>` | `{"runId", "startedAt", "sessionId", "resumed", "events": [...]}` | nothing |
 | `read-notes <id>` | - | `[Note, ...]`, oldest first |
 | `setup [--dry-run]` | `{"labels": [...]}` | `{"created": [...]}` |
 
@@ -260,6 +269,7 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 - `claim-task`: `todo` to `running` for the machine, at the bottom of running, in one atomic step. Lost when the task is not in `todo`, or when it is a resume (`next: resume` with a session) pinned to another machine.
 - `add-note`: author `agent` makes a `comment`, `system` an `event`. An empty text is a failure.
 - `heartbeat`: sets `lastActiveAt` to now with the lane, on a running task only; on any other it changes nothing.
+- `transcript`: appends a run's condensed events (see `packages/shared/src/transcript.mts`); an event already stored (same run and `seq`) stays as it is, so a retried batch is harmless.
 - `pause`: a running task only. Adds the note as a `system` event, then moves the task to Todo with `next: resume` (`fresh` without a session), at the top.
 - `ask`: validates the questions (1 to 4; a header of at most 16 characters; 2 to 4 options with different labels, at most one `recommended`), adds a question note, and moves the task to `needs-me` with `openQuestion: true`.
 - `setup`: creates one label per name. Idempotent; with `--dry-run` it only names what it would create. Optional, and nothing calls it any more: labels need no setup.

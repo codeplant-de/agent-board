@@ -361,3 +361,56 @@ describe('prompts', () => {
     expect(pinned.json.result.task).toMatchObject({ machine: 'laptop', workdir: '/home/me/repo', labels: ['grill'] });
   });
 });
+
+describe('transcripts', () => {
+  const at = (s: number) => new Date(Date.UTC(2026, 10, 13, 12, 0, s)).toISOString();
+  const batch = (runId: string, events: unknown[]) => ({ runId, startedAt: at(0), sessionId: 'sess', resumed: false, events });
+  const events = [
+    { seq: 0, at: at(1), parent: null, kind: 'note', text: 'Claude Code 2.1.325' },
+    { seq: 1, at: at(2), parent: null, kind: 'tool_use', toolUseId: 'tu1', name: 'Bash', input: { command: 'ls' } },
+    { seq: 2, at: at(3), parent: null, kind: 'tool_result', toolUseId: 'tu1', isError: false, output: 'a.txt\nb.txt' },
+  ];
+
+  it('stores batches once, lists runs and events without output, and loads output on demand', async () => {
+    const ui = caller(db);
+    const task = await ui.tasks.create({ input: '/grill' });
+    const body = batch('run-0001-aaaa', events);
+    expect((await ctx.call('laptop', 'transcript', { id: task.id, body })).status).toBe(200);
+    expect((await ctx.call('laptop', 'transcript', { id: task.id, body })).status).toBe(200);
+    await ctx.call('laptop', 'transcript', { id: task.id, body: batch('run-0001-aaaa', [{ seq: 3, at: at(9), parent: null, kind: 'text', text: 'done' }]) });
+    const [run] = await ui.transcript.runs({ id: task.id });
+    expect(run).toMatchObject({ id: 'run-0001-aaaa', machine: 'laptop', eventCount: 4, sessionId: 'sess' });
+    expect(run?.lastEventAt.toISOString()).toBe(at(9));
+    const listed = await ui.transcript.events({ runId: 'run-0001-aaaa' });
+    expect(listed.map((e) => e.kind)).toEqual(['note', 'tool_use', 'tool_result', 'text']);
+    expect(listed[2]).toMatchObject({ outputSize: 11 });
+    expect(listed[2]).not.toHaveProperty('output');
+    expect((await ui.transcript.events({ runId: 'run-0001-aaaa', afterSeq: 2 })).map((e) => e.seq)).toEqual([3]);
+    expect(await ui.transcript.output({ runId: 'run-0001-aaaa', seq: 2 })).toBe('a.txt\nb.txt');
+    const other = await ui.tasks.create({ input: '/other' });
+    expect((await ctx.call('laptop', 'transcript', { id: other.id, body })).status).toBe(400);
+    expect((await ctx.call('laptop', 'transcript', { id: task.id, body: { ...body, runId: '../x' } })).status).toBe(400);
+  });
+
+  it('transcripts of tasks closed more than 14 days ago are deleted, others stay', async () => {
+    const ui = caller(db);
+    const old = await ui.tasks.create({ input: '/old' });
+    const recent = await ui.tasks.create({ input: '/recent' });
+    const open = await ui.tasks.create({ input: '/open' });
+    for (const [task, run] of [[old, 'run-old-0001'], [recent, 'run-recent-01'], [open, 'run-open-0001']] as const) {
+      await ctx.call('laptop', 'transcript', { id: task.id, body: batch(run, events) });
+    }
+    await ui.tasks.setClosed({ id: old.id, closed: true });
+    await ui.tasks.setClosed({ id: recent.id, closed: true });
+    const { deleteOldTranscripts } = await import('./services/transcripts');
+    const { tasks } = await import('./db/schema');
+    const { eq } = await import('drizzle-orm');
+    await db.update(tasks).set({ closedAt: new Date(Date.now() - 15 * 24 * 60 * 60_000) }).where(eq(tasks.id, old.id));
+    expect(await deleteOldTranscripts(db)).toBe(1);
+    expect(await ui.transcript.runs({ id: old.id })).toHaveLength(0);
+    expect(await ui.transcript.runs({ id: recent.id })).toHaveLength(1); // closed today: kept
+    expect(await ui.transcript.runs({ id: open.id })).toHaveLength(1);
+    await ui.tasks.setClosed({ id: recent.id, closed: false });
+    expect((await ui.tasks.get({ id: recent.id })).task.closed).toBe(false);
+  });
+});

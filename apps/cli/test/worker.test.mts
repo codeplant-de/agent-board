@@ -237,3 +237,38 @@ test("a resume starts in the task's directory, and a missing one fails without s
   assert.equal(started, false);
   assert.ok(gone.backend.writes.some((w) => w.includes("task's directory is gone: /repo/.claude/worktrees/feat-x")));
 });
+
+test("the run's stream becomes readable log lines and a transcript sent with each check and at the end", async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  const logged: (string | undefined)[] = [];
+  deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
+    logged.push(onLine(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } })));
+    await watch.tick();
+    logged.push(onLine(JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "a.txt" }] } })));
+    logged.push(onLine(JSON.stringify({ type: "result", result: "All done", is_error: false })));
+    backend.tasks[0]!.status = "needs-me";
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, "w1");
+  assert.deepEqual(logged, ["→ Bash: ls", undefined, "All done"]);
+  assert.deepEqual(backend.writes.filter((w) => w.startsWith("transcript")), ["transcript w1 s-new tool_use", "transcript w1 s-new tool_result,result"]);
+});
+
+test("a transcript batch the board refused is sent again with the next one", async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  let failures = 1;
+  const sent: string[] = [];
+  backend.transcript = async (_id, batch) => {
+    if (failures-- > 0) throw new Error("board down");
+    sent.push(batch.events.map((e) => e.kind).join(","));
+  };
+  deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
+    onLine(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "first" }] } }));
+    await watch.tick();
+    onLine(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "second" }] } }));
+    backend.tasks[0]!.status = "needs-me";
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, "w1");
+  assert.deepEqual(sent, ["text,text"]);
+});

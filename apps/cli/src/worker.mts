@@ -7,13 +7,14 @@
  */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
+import { statSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { buildContext, print, rejectExtraArgs, runMain, UsageError } from "./cli.mts";
 import type { Context } from "./cli.mts";
 import { isSafeTaskId } from "@agent-board/shared";
-import type { Task } from "@agent-board/shared";
+import { logLine, StreamCondenser } from "@agent-board/shared";
+import type { Task, TranscriptEvent } from "@agent-board/shared";
 import { buildInvocation, decideOutcome, PAUSE_MARKER, planRun, supervise, usesPluginPlaceholder } from "./decide.mts";
 import type { Invocation, Supervision } from "./decide.mts";
 import { createRunFiles } from "./runtime.mts";
@@ -41,10 +42,13 @@ export interface Watch {
 const PAUSE_GRACE_MINUTES = 5;
 // The board's liveness is updated at most this often.
 const HEARTBEAT_EVERY_MS = 15_000;
+// Events waiting for the board past this are dropped from the front: the board is down, the run goes on.
+const MAX_PENDING_EVENTS = 20_000;
 
 export interface WorkerDeps extends Context {
   // `env` is added to the process's environment: the secrets of the invocation's masked variables.
-  run: (invocation: Invocation, taskId: string, env: Record<string, string>, watch: Watch) => Promise<RunResult>;
+  // `onLine` gets each line the process prints and returns what goes into the log for it (nothing when undefined).
+  run: (invocation: Invocation, taskId: string, env: Record<string, string>, watch: Watch, onLine: (line: string) => string | undefined) => Promise<RunResult>;
   logTail: (taskId: string) => string;
   notify: (task: Task, text: string) => Promise<void>;
   resetLog: (taskId: string) => void;
@@ -128,10 +132,37 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       deps.appendLog(taskId, `heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   };
+  // The transcript: condensed stream-json events, sent in batches with each check and once more at the end.
+  const condenser = new StreamCondenser(deps.now);
+  const runId = deps.newSessionId();
+  let pending: TranscriptEvent[] = [];
+  let sending = false;
+  const sendTranscript = async (): Promise<void> => {
+    if (sending || pending.length === 0) return;
+    sending = true;
+    const events = pending;
+    pending = [];
+    try {
+      await backend.transcript(task.id, { runId, startedAt: startedAt.toISOString(), sessionId: run.sessionId, resumed: run.kind === "resume", events });
+    } catch (error) {
+      pending = [...events, ...pending].slice(-MAX_PENDING_EVENTS);
+      deps.appendLog(taskId, `transcript upload failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      sending = false;
+    }
+  };
+  const onLine = (line: string): string | undefined => {
+    const events = condenser.line(line);
+    pending.push(...events);
+    if (pending.length > MAX_PENDING_EVENTS) pending = pending.slice(-MAX_PENDING_EVENTS);
+    const text = events.map(logLine).filter((part) => part !== undefined);
+    return text.length > 0 ? text.join("\n") : undefined;
+  };
   const watch: Watch = {
     everyMs: deps.watchEveryMs,
     tick: async () => {
       await beat();
+      await sendTranscript();
       return supervise({
         now: deps.now(),
         startedAt,
@@ -146,11 +177,12 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   let result: RunResult;
   try {
     await beat();
-    result = await deps.run(plan.invocation, taskId, env, watch);
+    result = await deps.run(plan.invocation, taskId, env, watch, onLine);
   } catch (error) {
     files.clear(taskId);
     return fail(error instanceof Error ? error.message : String(error));
   }
+  await sendTranscript();
   if (result.stopped) deps.appendLog(taskId, result.stopped.message);
   const pauseRequested = files.pauseRequestedAt(taskId) !== undefined;
   const endedIn = files.lastCwd(taskId);
@@ -180,15 +212,36 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   await report(`${why}\n\nEnd of the log:\n${fence(deps.logTail(taskId) || "(empty)")}`);
 }
 
-export function runProcess(invocation: Invocation, taskId: string, env: Record<string, string>, watch: Watch): Promise<RunResult> {
+export function runProcess(
+  invocation: Invocation,
+  taskId: string,
+  env: Record<string, string>,
+  watch: Watch,
+  onLine: (line: string) => string | undefined = (line) => line,
+): Promise<RunResult> {
   const fd = openLog(taskId);
   return new Promise((resolve, reject) => {
-    // A new process group, so a stop also ends what the worker started.
+    // A new process group, so a stop also ends what the worker started. stdout comes here, line by line; stderr goes
+    // straight into the log.
     const child = spawn(invocation.command, invocation.args, {
       cwd: invocation.cwd,
-      stdio: ["ignore", fd, fd],
+      stdio: ["ignore", "pipe", fd],
       detached: true,
       env: { ...process.env, ...env },
+    });
+    let buffered = "";
+    const emit = (line: string): void => {
+      const text = onLine(line);
+      if (text !== undefined) writeSync(fd, `${text}\n`);
+    };
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+      buffered += chunk;
+      let newline = buffered.indexOf("\n");
+      while (newline !== -1) {
+        emit(buffered.slice(0, newline));
+        buffered = buffered.slice(newline + 1);
+        newline = buffered.indexOf("\n");
+      }
     });
     let stopped: RunResult["stopped"];
     const killGroup = (signal: NodeJS.Signals): void => {
@@ -221,6 +274,7 @@ export function runProcess(invocation: Invocation, taskId: string, env: Record<s
       if (finished) return false;
       finished = true;
       clearInterval(timer);
+      if (buffered !== "") emit(buffered);
       closeLog(fd);
       return true;
     };
