@@ -10,7 +10,8 @@
       "skills": [
         "review-pr"
       ],
-      "slots": 2
+      "slots": 2,
+      "cwd": "~/workspace/cosuno/cosuno"
     },
     "general": {
       "skills": [
@@ -71,7 +72,11 @@
       "Bash(git rev-parse *)",
       "Bash(git fetch origin *)",
       "mcp__shortcut__get_story",
-      "AskUserQuestion"
+      "AskUserQuestion",
+      "Bash({engineering}/skills/circleci-reference/cci.sh *)",
+      "Bash(bin/replica-psql *)",
+      "mcp__shortcut__get_epic",
+      "mcp__shortcut__list_story_comments"
     ],
     "disallowedTools": [
       "Bash(gh api *)",
@@ -108,6 +113,15 @@
       "Read(~/.local/share/keyrings/**)",
       "Read(**/.env*)",
       "Read(//proc/**)"
+    ],
+    "env": [
+      "CIRCLECI_TOKEN",
+      "SHORTCUT_API_TOKEN",
+      "COSUNO_PROD_REPLICA_ENDPOINT",
+      "COSUNO_STAGING_REPLICA_ENDPOINT"
+    ],
+    "mcpServers": [
+      "shortcut"
     ]
   }
 }

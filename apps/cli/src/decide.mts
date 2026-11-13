@@ -2,8 +2,9 @@ import type { IntakeConfig, Lane } from "./config.mts";
 import { formatAnswers, promptSkill, shortSkill } from "@agent-board/shared";
 import type { Note, Task } from "@agent-board/shared";
 
-// Stands for the root Claude Code gives the pr-review plugin, in allow and deny rules.
-export const PLUGIN_PLACEHOLDER = "{pr-review}";
+// `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives `<plugin>@ccc`, such as {pr-review}.
+const PLUGIN_PLACEHOLDER = /\{([a-z0-9][a-z0-9-]*)\}/g;
+export const PLUGIN_MARKETPLACE = "ccc";
 
 export const START_MARKER = "agent-board: started";
 // The note of a run that gave up its slot; the next run resumes with "you were paused".
@@ -176,15 +177,16 @@ export function prUrlIn(input: string): string | undefined {
   return /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/.exec(first)?.[0];
 }
 
-export function usesPluginPlaceholder(rules: string[]): boolean {
-  return rules.some((rule) => rule.includes(PLUGIN_PLACEHOLDER));
+// The plugins whose roots the rules name, such as ["pr-review", "engineering"].
+export function pluginPlaceholders(rules: string[]): string[] {
+  return [...new Set(rules.flatMap((rule) => [...rule.matchAll(PLUGIN_PLACEHOLDER)].map((match) => match[1] ?? "")))].filter(Boolean);
 }
 
-// `~/` is expanded inside Bash rules only: Read rules read `~/` themselves, and an absolute path there would mean "from the project root".
-export function expandRule(rule: string, home: string, prReviewPath: string | undefined): string {
+// `~/` and `{<plugin>}` are expanded inside Bash rules only: Read rules read `~/` themselves, and an absolute path
+// there would mean "from the project root".
+export function expandRule(rule: string, home: string, pluginRoots: Record<string, string>): string {
   if (!rule.startsWith("Bash(")) return rule;
-  const expanded = rule.replaceAll("~/", `${home}/`);
-  return prReviewPath === undefined ? expanded : expanded.replaceAll(PLUGIN_PLACEHOLDER, prReviewPath);
+  return rule.replaceAll("~/", `${home}/`).replace(PLUGIN_PLACEHOLDER, (match, name: string) => pluginRoots[name] ?? match);
 }
 
 // A task with its own directory runs only on the machine it was scheduled on (intake's tasks have none of their own).
@@ -300,6 +302,11 @@ export function boardRules(task: Task): string {
     `- When the work is done, post a short summary with \`board comment\`, then \`board move ${task.id} needs-me\`.`,
     `- To suggest follow-up work, write it to a file in /tmp and run \`board add --title "<title>" --file <path> --parent ${task.id}\`; the user starts it.`,
     '- If a tool call is refused with "Pause requested", post a one-line status with `board comment` and end your turn; you will be resumed here.',
+    ...(task.createdBy === "intake"
+      ? [
+          "- This run allows only a fixed list of commands, and each matches only when it stands alone: run every Bash command on its own, without pipes, `;`, `&&`, redirects or `cd`, by its full path, and filter output with the command's own options. A refused call is a result; report it instead of working around it, and go on with the other steps.",
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -310,9 +317,11 @@ export function buildInvocation(input: {
   // Where a task without a directory of its own runs.
   defaultCwd: string;
   intake: IntakeConfig;
+  // The directory a task without its own runs in when no PR in its prompt names a checkout (its lane's, if set).
+  laneCwd?: string | undefined;
   home: string;
-  // Install path of the pr-review plugin; undefined when it could not be resolved.
-  prReviewPath: string | undefined;
+  // Roots of the plugins intake's rules name ({pr-review} and the like).
+  pluginRoots: Record<string, string>;
   // The PreToolUse hook command (heartbeat, pause, questions).
   hookCommand?: string;
 }): InvocationPlan {
@@ -321,20 +330,19 @@ export function buildInvocation(input: {
   const prompt = runPrompt(task.input);
   if (input.run.kind === "fresh" && prompt === "") return { ok: false, reason: "The task has no prompt." };
 
-  // Where it runs: a resume where the session stopped; a scheduled task in its own directory; an intake review in the
-  // PR's checkout; anything else in the default directory.
+  // Where it runs: a resume where the session stopped; a scheduled task in its own directory; a task whose prompt
+  // names a PR in that repo's checkout (an intake review always); else its lane's directory, else the default one.
+  const pr = parsePrUrl(prUrlIn(task.input) ?? "");
+  const checkout = pr === undefined ? undefined : input.repos[pr.repo];
   let cwd: string;
   if (task.workdir !== null && (input.run.kind === "resume" || !fromIntake)) {
     cwd = task.workdir;
   } else if (fromIntake) {
-    const url = prUrlIn(task.input);
-    const pr = parsePrUrl(url ?? "");
     if (!pr) return { ok: false, reason: `The intake task's prompt names no GitHub PR: ${prompt.split("\n")[0] || "(empty)"}` };
-    const dir = input.repos[pr.repo];
-    if (!dir) return { ok: false, reason: `No checkout is configured for ${pr.repo}. Add it to "repos" in config.json.` };
-    cwd = dir;
+    if (!checkout) return { ok: false, reason: `No checkout is configured for ${pr.repo}. Add it to "repos" in config.json.` };
+    cwd = checkout;
   } else {
-    cwd = input.defaultCwd;
+    cwd = checkout ?? input.laneCwd ?? input.defaultCwd;
   }
 
   const settings = input.hookCommand === undefined ? {} : { hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: input.hookCommand }] }] } };
@@ -361,11 +369,11 @@ export function buildInvocation(input: {
     return { ok: true, invocation: { command: "claude", args, cwd } };
   }
   // Intake runs unattended on PR text nobody chose to read: only the user's own settings, and only what intake allows.
-  const rules = [...intake.allowedTools, ...intake.disallowedTools];
-  if (usesPluginPlaceholder(rules) && input.prReviewPath === undefined) {
-    return { ok: false, reason: `The pr-review plugin path is unknown, but intake's rules need ${PLUGIN_PLACEHOLDER}.` };
+  const missing = pluginPlaceholders([...intake.allowedTools, ...intake.disallowedTools]).filter((name) => !Object.hasOwn(input.pluginRoots, name));
+  if (missing.length > 0) {
+    return { ok: false, reason: `The path of the plugin ${missing.join(", ")} is unknown, but intake's rules name {${missing[0]}}.` };
   }
-  const expand = (rule: string): string => expandRule(rule, input.home, input.prReviewPath);
+  const expand = (rule: string): string => expandRule(rule, input.home, input.pluginRoots);
   args.push("--permission-mode", "dontAsk", "--setting-sources", "user");
   if (intake.allowedTools.length > 0) args.push("--allowedTools", ...intake.allowedTools.map(expand));
   if (intake.disallowedTools.length > 0) args.push("--disallowedTools", ...intake.disallowedTools.map(expand));

@@ -13,7 +13,7 @@ const valid = {
 test("a valid config gets defaults", () => {
   const config = parseConfig(valid);
   assert.deepEqual(config.lanes, [{ name: "general", skills: ["*"], slots: 3 }]);
-  assert.deepEqual(config.intake, { prompt: "/review-pr {url} --auto", priority: "normal", allowedTools: [], disallowedTools: [] });
+  assert.deepEqual(config.intake, { prompt: "/review-pr {url} --auto", priority: "normal", allowedTools: [], disallowedTools: [], env: [], mcpServers: [] });
   assert.ok(config.defaultCwd.startsWith("/") && !config.defaultCwd.includes("~"));
   assert.deepEqual([config.pauseAfterMinutes, config.inactivityMinutes, config.maxRunHours], [5, 15, 6]);
   assert.equal(config.backendCommand[1], "--flag");
@@ -79,4 +79,12 @@ test("lanes keep their order, name skills without slash or plugin, and default t
 test("old keys (labels with their sandbox, intakeLabel) are ignored, so a config from before still loads", () => {
   const config = parseConfig({ ...valid, intakeLabel: "review-pr", labels: { x: { skill: "s", allowedTools: ["Read"], sandbox: { maskedEnv: [] } } } });
   assert.equal(config.intake.prompt, "/review-pr {url} --auto");
+});
+
+test("a lane may name its directory; intake may name variables to take from the checkout", () => {
+  const config = parseConfig({ ...valid, lanes: { reviews: { skills: ["review-pr"], cwd: "~/x" } }, intake: { env: ["CIRCLECI_TOKEN"] } });
+  assert.ok(config.lanes[0]?.cwd?.endsWith("/x") && !config.lanes[0].cwd.includes("~"));
+  assert.deepEqual(config.intake.env, ["CIRCLECI_TOKEN"]);
+  assert.throws(() => parseConfig({ ...valid, lanes: { reviews: { skills: ["x"], cwd: "rel" } } }), /lanes.reviews.cwd/);
+  assert.throws(() => parseConfig({ ...valid, intake: { env: ["NOT-A-NAME"] } }), /not a variable name/);
 });

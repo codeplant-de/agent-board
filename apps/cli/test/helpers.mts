@@ -33,7 +33,7 @@ export const CONFIG: Config = {
   inactivityMinutes: 15,
   maxRunHours: 6,
   slackWebhookFile: "/nonexistent",
-  intake: { prompt: "/review-pr {url} --auto", priority: "normal", allowedTools: ["Read", "Bash(board *)"], disallowedTools: ["Bash(git push *)"] },
+  intake: { prompt: "/review-pr {url} --auto", priority: "normal", allowedTools: ["Read", "Bash(board *)"], disallowedTools: ["Bash(git push *)"], env: [], mcpServers: [] },
   repos: { "cosuno/cosuno": "/work/cosuno" },
 };
 

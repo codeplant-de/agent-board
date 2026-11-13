@@ -25,10 +25,10 @@ test("git cannot be made to write files, and secrets are denied", () => {
 });
 
 test("the plugin placeholder resolves in every shipped script rule", () => {
-  const plan = buildInvocation({ run: FRESH, task: task({ id: "a", input: "/review-pr https://github.com/cosuno/cosuno/pull/1 --auto", createdBy: "intake" }), repos: config.repos, defaultCwd: "/", intake: entry, home: "/h", prReviewPath: "/p" });
+  const plan = buildInvocation({ run: FRESH, task: task({ id: "a", input: "/review-pr https://github.com/cosuno/cosuno/pull/1 --auto", createdBy: "intake" }), repos: config.repos, defaultCwd: "/", intake: entry, home: "/h", pluginRoots: { "pr-review": "/p", engineering: "/e" } });
   assert.ok(plan.ok);
-  assert.ok(plan.invocation.args.every((arg) => !arg.includes("{pr-review}")));
-  assert.equal(expandRule("Bash({pr-review}/skills/a.sh *)", "/h", "/p"), "Bash(/p/skills/a.sh *)");
+  assert.ok(plan.invocation.args.every((arg) => !/\{[a-z-]+\}/.test(arg)));
+  assert.equal(expandRule("Bash({pr-review}/skills/a.sh *)", "/h", { "pr-review": "/p" }), "Bash(/p/skills/a.sh *)");
 });
 
 test("the reviewer may write its findings file in /tmp, with the rule form Claude Code 2.1.322 honours for the Write tool", () => {

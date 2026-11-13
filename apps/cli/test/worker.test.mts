@@ -26,6 +26,8 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
     appendLog: (shortLink, text) => void calls.push(`append ${shortLink}: ${text}`),
     pluginPath: () => "/plugins/pr-review",
     dirExists: () => true,
+    settingsEnv: () => ({}),
+    mcpServers: () => ({ config: { mcpServers: {} }, missing: [] }),
     home: "/h",
     newSessionId: () => "s-new",
     files: fakeRunFiles(),
@@ -271,4 +273,60 @@ test("a transcript batch the board refused is sent again with the next one", asy
   };
   await runWorker(deps, "w1");
   assert.deepEqual(sent, ["text,text"]);
+});
+
+test("an intake run gets the variables intake names from the checkout's settings, and nothing else", async () => {
+  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
+  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, env: ["CIRCLECI_TOKEN", "SHORTCUT_API_TOKEN"] } };
+  Object.assign(backend.tasks[0]!, { createdBy: "intake", input: "/review-pr https://github.com/cosuno/cosuno/pull/1 --auto", machine: null, workdir: null });
+  const read: string[] = [];
+  deps.settingsEnv = (dir) => {
+    read.push(dir);
+    return { CIRCLECI_TOKEN: "ci-secret", OTHER: "not asked for" };
+  };
+  let env: Record<string, string> = {};
+  deps.run = async (_invocation, _taskId, runEnv) => {
+    env = runEnv;
+    backend.tasks[0]!.status = "needs-me";
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, "w1");
+  assert.deepEqual(read, ["/work/cosuno"]);
+  assert.deepEqual(env, { CIRCLECI_TOKEN: "ci-secret" });
+  assert.ok(calls.some((c) => c.includes("not in the checkout's settings: SHORTCUT_API_TOKEN")));
+  assert.ok(!calls.some((c) => c.includes("ci-secret")), "values never reach the log");
+});
+
+test("a scheduled run loads the checkout's settings itself: no variables are copied", async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, env: ["CIRCLECI_TOKEN"] } };
+  let env: Record<string, string> = { unset: "x" };
+  deps.settingsEnv = () => ({ CIRCLECI_TOKEN: "ci-secret" });
+  deps.run = async (_invocation, _taskId, runEnv) => {
+    env = runEnv;
+    backend.tasks[0]!.status = "needs-me";
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, "w1");
+  assert.deepEqual(env, {});
+});
+
+test("an intake run gets the MCP servers intake names from the checkout's .mcp.json", async () => {
+  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
+  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, mcpServers: ["shortcut", "gone"] } };
+  Object.assign(backend.tasks[0]!, { createdBy: "intake", input: "/review-pr https://github.com/cosuno/cosuno/pull/1 --auto", machine: null, workdir: null });
+  deps.mcpServers = (dir, names) => {
+    assert.equal(dir, "/work/cosuno");
+    assert.deepEqual(names, ["shortcut", "gone"]);
+    return { config: { mcpServers: { shortcut: { type: "http", url: "https://mcp.example" } } }, missing: ["gone"] };
+  };
+  let args: string[] = [];
+  deps.run = async (invocation) => {
+    args = invocation.args;
+    backend.tasks[0]!.status = "needs-me";
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, "w1");
+  assert.equal(args[args.indexOf("--mcp-config") + 1], '{"mcpServers":{"shortcut":{"type":"http","url":"https://mcp.example"}}}');
+  assert.ok(calls.some((c) => c.includes("not in the checkout's .mcp.json: gone")));
 });

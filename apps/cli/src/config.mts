@@ -14,6 +14,11 @@ export interface IntakeConfig {
   priority: Priority;
   allowedTools: string[];
   disallowedTools: string[];
+  // Variables the worker copies from the checkout's .claude/settings.json and settings.local.json into the run:
+  // intake loads only the user's settings, so tokens and endpoints kept in the checkout would be missing.
+  env: string[];
+  // MCP servers of the checkout's .mcp.json that intake runs get (with `--mcp-config`), such as "shortcut".
+  mcpServers: string[];
 }
 
 // Slots of one kind of work on this machine. A lane runs its own skills first (a task's skill is the slash command its
@@ -23,6 +28,8 @@ export interface Lane {
   name: string;
   skills: string[];
   slots: number;
+  // Where its tasks run when they have no directory of their own and their prompt names no PR of a known repo.
+  cwd?: string;
 }
 
 export interface Config {
@@ -119,7 +126,14 @@ function parseLanes(raw: unknown): Lane[] {
       if (other !== undefined) throw new ConfigError(`config: ${key === "*" ? '"*"' : `skill "${skill}"`} is in lanes ${other} and ${name}; it belongs to one lane`);
       owner.set(key, name);
     }
-    return { name, skills: skills.map((skill) => (skill === "*" ? "*" : shortSkill(skill.replace(/^\//, "")))), slots: positiveInt(entry, "slots", where, 1) };
+    const cwd = entry["cwd"];
+    if (cwd !== undefined && (typeof cwd !== "string" || !expandHome(cwd).startsWith("/"))) throw new ConfigError(`config: ${where}cwd must be an absolute path (or ~/...)`);
+    return {
+      name,
+      skills: skills.map((skill) => (skill === "*" ? "*" : shortSkill(skill.replace(/^\//, "")))),
+      slots: positiveInt(entry, "slots", where, 1),
+      ...(cwd === undefined ? {} : { cwd: expandHome(cwd) }),
+    };
   });
 }
 
@@ -135,7 +149,10 @@ function parseIntake(raw: unknown): IntakeConfig {
     if (!isStringList(value)) throw new ConfigError(`config: intake.${key} must be a list of strings`);
     return value;
   };
-  return { prompt, priority, allowedTools: tools("allowedTools"), disallowedTools: tools("disallowedTools") };
+  const env = tools("env");
+  const badName = env.find((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+  if (badName !== undefined) throw new ConfigError(`config: intake.env names "${badName}", which is not a variable name`);
+  return { prompt, priority, allowedTools: tools("allowedTools"), disallowedTools: tools("disallowedTools"), env, mcpServers: tools("mcpServers") };
 }
 
 export function parseConfig(raw: unknown): Config {
