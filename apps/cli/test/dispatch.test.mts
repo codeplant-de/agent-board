@@ -5,7 +5,7 @@ import type { DispatchDeps } from "../src/dispatch.mts";
 import { SystemError } from "../src/system.mts";
 import type { System } from "../src/system.mts";
 import { START_MARKER } from "../src/decide.mts";
-import { CONFIG, fakeBackend, note, task } from "./helpers.mts";
+import { CONFIG, fakeBackend, fakeRunFiles, note, task } from "./helpers.mts";
 import type { FakeBackend } from "./helpers.mts";
 
 const selftest = "selftest";
@@ -13,6 +13,7 @@ const NOW = new Date("2026-01-01T12:00:00Z");
 
 function setup(tasks: ReturnType<typeof task>[], active: string[] = [], unitStarts: Record<string, Date> = {}) {
   const backend: FakeBackend = fakeBackend(tasks);
+  const files = fakeRunFiles(() => NOW);
   const started: string[] = [];
   const stopped: string[] = [];
   const logs: string[] = [];
@@ -40,11 +41,12 @@ function setup(tasks: ReturnType<typeof task>[], active: string[] = [], unitStar
     dryRun: false,
     print: (line) => logs.push(line),
     system,
+    files,
     now: () => NOW,
     logTail: () => "last log line",
     notify: async () => undefined,
   };
-  return { backend, deps, started, stopped, logs };
+  return { backend, deps, started, stopped, logs, files };
 }
 
 const running = (id: string) => task({ id, status: "running", labels: [selftest] });
@@ -176,4 +178,73 @@ test("a failed listing starts nothing and changes nothing", async () => {
   await assert.rejects(runDispatch(deps), /list-tasks failed/);
   assert.deepEqual(started, []);
   assert.deepEqual(backend.writes, []);
+});
+
+const LANED = {
+  ...CONFIG,
+  labels: { ...CONFIG.labels, implement: { kind: "command" as const, command: ["true"], cwd: undefined } },
+  lanes: [
+    { name: "reviews", labels: ["selftest"], slots: 1 },
+    { name: "implement", labels: ["implement"], slots: 1 },
+  ],
+};
+const review = (id: string) => task({ id, labels: [selftest] });
+const impl = (id: string) => task({ id, labels: ["implement"] });
+
+test("each lane takes its own work, an idle lane borrows, and the lane is written before the unit starts", async () => {
+  const { deps, started, files, logs, backend } = setup([review("r1"), review("r2"), review("r3")]);
+  deps.config = LANED;
+  await runDispatch(deps);
+  assert.deepEqual(started, ["r1", "r2"]);
+  assert.deepEqual(files.runs.get("r1"), { lane: "reviews", borrowed: false, startedAt: NOW });
+  assert.deepEqual(files.runs.get("r2"), { lane: "implement", borrowed: true, startedAt: NOW });
+  assert.ok(logs.includes("TICK started=2 reviews=1/1 implement=1/1"));
+  assert.ok(backend.writes.some((w) => w.startsWith("note r2 (system)") && w.includes("implement lane, borrowed")));
+});
+
+test("a lane whose own work waits asks its borrowed run to pause, once, after five minutes", async () => {
+  const borrowed = task({ id: "b1", status: "running", labels: [selftest], machine: "here" });
+  const { deps, files, logs } = setup([borrowed, review("r0"), impl("i1")], ["agent-board-b1", "agent-board-r0x"]);
+  deps.config = LANED;
+  files.runs.set("b1", { lane: "implement", borrowed: true, startedAt: new Date(NOW.getTime() - 6 * 60_000) });
+  files.runs.set("r0x", { lane: "reviews", borrowed: false, startedAt: NOW });
+  files.alive.set("b1", NOW);
+  await runDispatch(deps);
+  assert.ok(files.pauses.has("b1"));
+  assert.ok(logs.some((line) => line.startsWith("PAUSE b1 lane=implement")));
+  logs.length = 0;
+  await runDispatch(deps);
+  assert.ok(!logs.some((line) => line.startsWith("PAUSE")), "a pending pause is not asked again");
+});
+
+test("a young borrowed run is not paused yet", async () => {
+  const borrowed = task({ id: "b1", status: "running", labels: [selftest], machine: "here" });
+  const { deps, files } = setup([borrowed, impl("i1")], ["agent-board-b1"]);
+  deps.config = { ...LANED, lanes: [{ name: "implement", labels: ["implement"], slots: 1 }] };
+  files.runs.set("b1", { lane: "implement", borrowed: true, startedAt: new Date(NOW.getTime() - 2 * 60_000) });
+  files.alive.set("b1", NOW);
+  await runDispatch(deps);
+  assert.equal(files.pauses.size, 0);
+});
+
+test("dry run plans pauses and starts but writes no run files", async () => {
+  const borrowed = task({ id: "b1", status: "running", labels: [selftest], machine: "here" });
+  const { deps, files, logs } = setup([borrowed, impl("i1"), review("r1")], ["agent-board-b1"]);
+  deps.config = LANED;
+  deps.dryRun = true;
+  files.runs.set("b1", { lane: "implement", borrowed: true, startedAt: new Date(NOW.getTime() - 10 * 60_000) });
+  files.alive.set("b1", NOW);
+  await runDispatch(deps);
+  assert.ok(logs.some((line) => line.startsWith("PAUSE b1")));
+  assert.equal(files.pauses.size, 0);
+  assert.ok(!files.runs.has("r1"));
+});
+
+test("a running task whose agent went quiet is stopped and reported by the sweep", async () => {
+  const quiet = task({ id: "q", status: "running", labels: [selftest], machine: "here" });
+  const { deps, files, stopped, backend } = setup([quiet], ["agent-board-q"], { "agent-board-q": new Date(NOW.getTime() - 60 * 60_000) });
+  files.alive.set("q", new Date(NOW.getTime() - 25 * 60_000));
+  await runDispatch(deps);
+  assert.deepEqual(stopped, ["agent-board-q"]);
+  assert.ok(backend.writes.some((w) => w.includes("no tool call for 25 minutes")));
 });

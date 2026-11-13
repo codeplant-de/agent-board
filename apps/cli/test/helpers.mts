@@ -1,4 +1,5 @@
-import type { Config, SandboxEntry } from "../src/config.mts";
+import type { Config } from "../src/config.mts";
+import type { RunFiles, RunRecord } from "../src/runtime.mts";
 import type { Backend, Note, Task } from "@agent-board/shared";
 
 export function task(overrides: Partial<Task> & { id: string }): Task {
@@ -12,19 +13,23 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     closed: false,
     machine: null,
     sessionId: null,
+    workdir: null,
     next: "fresh",
     openQuestion: false,
+    lane: null,
+    borrowed: false,
+    lastActiveAt: null,
     ...overrides,
   };
 }
 
-export const NO_SANDBOX_EXTRAS: SandboxEntry = { allowRead: [], allowWrite: [], allowedDomains: [], excludedCommands: [], maskedEnv: [] };
-
 export const CONFIG: Config = {
   backendCommand: ["backend"],
   machine: "here",
-  maxParallel: 2,
-  timeoutMinutes: 45,
+  lanes: [{ name: "default", labels: ["selftest", "review-pr"], slots: 2 }],
+  pauseAfterMinutes: 5,
+  inactivityMinutes: 15,
+  maxRunHours: 6,
   slackWebhookFile: "/nonexistent",
   intakeLabel: "review-pr",
   intakePriority: "normal",
@@ -36,7 +41,6 @@ export const CONFIG: Config = {
       skill: "board-review-pr",
       allowedTools: ["Read", "Bash(board *)"],
       disallowedTools: ["Bash(git push *)"],
-      sandbox: NO_SANDBOX_EXTRAS,
       cwd: "pr-repo",
     },
   },
@@ -89,6 +93,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       if (patch.input !== undefined) state.writes.push(`input ${id}: ${patch.input}`);
       if (patch.sessionId !== undefined) state.writes.push(`session ${id}: ${patch.sessionId}`);
       if (patch.next !== undefined) state.writes.push(`next ${id}: ${patch.next}`);
+      if (patch.workdir !== undefined) state.writes.push(`workdir ${id}: ${patch.workdir}`);
       const found = state.tasks.find((t) => t.id === id);
       if (!found) throw new Error(`no task ${id}`);
       Object.assign(found, patch);
@@ -109,6 +114,16 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     async addNote(id, text, options) {
       state.writes.push(`note ${id}${options?.author === "system" ? " (system)" : ""}: ${text}`);
     },
+    async heartbeat(id, beat) {
+      state.writes.push(`heartbeat ${id} ${beat.lane}${beat.borrowed ? " borrowed" : ""}`);
+    },
+    async pause(id, note) {
+      state.writes.push(`pause ${id}: ${note}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new Error(`no task ${id}`);
+      Object.assign(found, { status: "todo", next: found.sessionId ? "resume" : "fresh" });
+      return { ...found };
+    },
     async ask(id, questions) {
       state.writes.push(`ask ${id}: ${questions.map((q) => q.header).join(", ")}`);
       const found = state.tasks.find((t) => t.id === id);
@@ -123,4 +138,37 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     },
   };
   return state;
+}
+
+export interface FakeRunFiles extends RunFiles {
+  runs: Map<string, RunRecord>;
+  alive: Map<string, Date>;
+  pauses: Map<string, Date>;
+  cwds: Map<string, string>;
+}
+
+// RunFiles in memory.
+export function fakeRunFiles(now: () => Date = () => new Date()): FakeRunFiles {
+  const files: FakeRunFiles = {
+    dir: "/run/test/agent-board",
+    runs: new Map(),
+    alive: new Map(),
+    pauses: new Map(),
+    cwds: new Map(),
+    writeRun: (id, record) => void files.runs.set(id, record),
+    readRun: (id) => files.runs.get(id),
+    lastActive: (id) => files.alive.get(id),
+    touchAlive: (id, at = now()) => void files.alive.set(id, at),
+    writeCwd: (id, cwd) => void files.cwds.set(id, cwd),
+    lastCwd: (id) => files.cwds.get(id),
+    requestPause: (id) => void files.pauses.set(id, now()),
+    pauseRequestedAt: (id) => files.pauses.get(id),
+    clear(id) {
+      files.runs.delete(id);
+      files.alive.delete(id);
+      files.pauses.delete(id);
+      files.cwds.delete(id);
+    },
+  };
+  return files;
 }

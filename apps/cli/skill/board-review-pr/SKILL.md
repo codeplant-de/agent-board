@@ -15,16 +15,16 @@ Arguments: `<task>` (the task id) and `<pr-url>`. Nobody is watching the termina
 - Never write the review into a brain journal; the headless run has no journal access.
 - `board show <task>` prints the task and its whole thread, including the user's comments. Read it at the start of a fresh run: the user may have left instructions there.
 - The Shortcut story lookup (`mcp__shortcut__get_story`) is best effort: this run loads only user settings, so the Shortcut token may be missing. If the lookup fails, review without the story and list "story not read" under **Check by hand**.
+- A tool call refused with "Pause requested" means this machine needs the slot. Post a one-line status with `board comment <task> "..."` and end your turn; you will be resumed in this session.
 - A denied tool is a result, not an obstacle. Do not look for another way around it. Report it on the task.
-- Run every command on its own, by its full path: no `cd`, no `VAR=... ; $VAR` indirection, and never a `board` call chained with a command that is not `board` (it would run in the sandbox, where `board` is not found). Such calls are refused or fail, and each one costs a turn.
-- Temp files go in `/tmp/pr-<n>-<sha7>-<what>`, never under `$TMPDIR` (inside the sandbox that is `/tmp/claude`, and the script rules only allow `/tmp/pr-*`). Use that path wherever `pr-review:review-pr` says `${TMPDIR:-/tmp}/pr-...`, and create the files with the Write tool.
-- Bash runs in a sandbox that hides your home directory. `board`, `gh` and `git fetch` have what they need; for anything else a "no such file" error means the sandbox said no, so do not try to get around it.
+- Run every command on its own, by its full path: no `cd`, no `VAR=... ; $VAR` indirection, no pipes or chains. The allow rules match whole commands, so anything else is refused, and each refusal costs a turn.
+- Temp files go in `/tmp/pr-<n>-<sha7>-<what>`, never under `$TMPDIR`: the script rules only allow `/tmp/pr-*`. Use that path wherever `pr-review:review-pr` says `${TMPDIR:-/tmp}/pr-...`, and create the files with the Write tool.
 
 ## Steps
 
 1. `board show <task>`, then `board comment <task> "Review started"`.
 2. Run `pr-review:review-pr <pr-url> --auto` with the Skill tool. It reuses cached notes, hands an earlier pass to the reviewer as hints, and stages into the pending draft. After the analysis is in, post `board comment <task> "Analysis done, staging the draft"`, and after staging `board comment <task> "Draft staged"`.
-3. Write the findings to `/tmp/pr-<task>-findings.md` with the Write tool and post them with `board comment <task> --file /tmp/pr-<task>-findings.md`. Never pipe or redirect into `board`: such a call runs inside the sandbox, where `board` cannot reach its credentials. The text has three parts:
+3. Write the findings to `/tmp/pr-<task>-findings.md` with the Write tool and post them with `board comment <task> --file /tmp/pr-<task>-findings.md`. Never pipe or redirect into `board`; the allow rules refuse it. The text has three parts:
    - **Summary:** the verdict and one short paragraph.
    - **Issues:** by severity, highest first, one line each: `severity path:line first sentence`. Say "none" if there are none. Add how many comments were staged, edited and removed.
    - **Check by hand:** what the review could not settle: things that need running the code, a design call, a story requirement it could not read, any step that was denied or skipped.

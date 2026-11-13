@@ -45,9 +45,49 @@ Every worker machine runs its own timers against the same board, under the name 
 
 Tasks only move while a machine with the right setup is on.
 
+## Lanes
+
+A machine splits its parallel runs into lanes, one per kind of work, configured in its config.json:
+
+```json
+"lanes": {
+  "reviews":   { "labels": ["review-pr"], "slots": 2 },
+  "implement": { "labels": ["implement", "research"], "slots": 1 }
+}
+```
+
+- **Own work first.** A lane with a free slot takes the first Todo task of its own labels: resumes first (answered, replied to or paused), then by priority. A label belongs to at most one lane on a machine.
+- **Borrowing.** A lane with nothing of its own borrows the first task any other lane would run, so idle slots do not wait. The run is marked borrowed.
+- **Taking the slot back.** When a full lane has its own work waiting and runs borrowed work that has gone on for `pauseAfterMinutes` (default 5), the dispatcher asks the newest such run to pause, one per lane at a time. Lane bias beats priority: a borrowed urgent run gives way to its lane's own low task. An urgent task only has guaranteed room in the lane that owns its label.
+- **Pausing is cooperative.** The dispatcher drops a pause flag. The agent's `PreToolUse` hook then refuses every tool call but `board comment`, telling the agent to post a one-line status and end its turn. When the run ends, the worker notes "Paused on <machine>: …" and puts the task back in Todo, ahead of new work, to resume in its session on the same machine. A run that has not stopped within five minutes of the request is stopped by force and paused all the same. The resumed run is told it was paused and checks its state before it goes on.
+
+Without `lanes`, a machine runs one lane with all its labels and two slots.
+
+## Liveness and limits
+
+The hook also touches a heartbeat file on every tool call. The worker checks it every 30 seconds:
+
+- no tool call for `inactivityMinutes` (default 15): the run is stopped as stuck and the task goes to `needs-me` with the end of the log. Claude Code caps a foreground Bash call at ten minutes, so a long command does not trip it.
+- a run longer than `maxRunHours` (default 6): stopped, however busy. A guard against an agent looping on tool calls.
+
+The worker passes the heartbeat on to the board at most once a minute, with the lane. A running card shows "active 40s ago", amber after 5 quiet minutes, red after 10, and its lane with a "borrowed" badge when it runs in another lane's slot. A command label makes no tool calls; it counts as active while its process runs.
+
+The heartbeat, pause flag, lane and working directory of a run live in `$XDG_RUNTIME_DIR/agent-board/` (`AGENT_BOARD_RUN_DIR` overrides it), private to your user.
+
+## Where a task runs
+
+A task is bound to a directory on the machine that ran it:
+
+- A fresh run starts in the label's `cwd` (for a review: the checkout of the PR's repository), and the task's `workdir` is set to it.
+- The hook records the agent's working directory on every tool call. When a run ends somewhere else, typically in a worktree the agent entered with `/worktree` (`EnterWorktree`), the worker stores that as the task's `workdir`.
+- A resume (after an answer, a reply or a pause) starts `claude --resume` in the `workdir`, so the session continues in exactly the worktree it left. The resume is pinned to the same machine, where that directory exists. If the directory is gone, the task goes to `needs-me` with the path instead of running somewhere else.
+- **Re-run fresh** forgets the session and the `workdir`; the next run starts in the label's `cwd` again.
+
+Claude Code itself (2.1.323) also restores a session's worktree when it is resumed from the original directory; the `workdir` makes the board independent of that and shows it on the task page.
+
 ## Install a worker machine
 
-Needs Node 24+, pnpm, `flock`, `systemd-run`, `gh`, `claude`, and for the reviewer's sandbox `bubblewrap` and `socat` (`sudo apt install bubblewrap socat`). Without the last two a skill run does not start: Claude Code stops with "sandbox required but unavailable" (see [Reviewer isolation](#reviewer-isolation)). On Ubuntu 24.04 and later, AppArmor may also block unprivileged user namespaces for `bwrap`; Claude Code's sandboxing page describes the fix.
+Needs Node 24+, pnpm, `flock`, `systemd-run`, `gh` (logged in) and `claude` (logged in).
 
 1. `pnpm install` in the repo. The CLI has no runtime dependencies, but it imports `@agent-board/shared` through the workspace link.
 2. On the board's **Settings** page, create a token for this machine. Put it in `~/.config/agent-board/env`, mode 600 (a file with any other mode is refused):
@@ -79,8 +119,10 @@ User timers only run while you are logged in. For runs after logout: `loginctl e
 | --- | --- |
 | `backend.command` | The backend: an executable and fixed arguments, run without a shell. `~/` is expanded in every element. Normally `~/workspace/agent-board/apps/cli/bin/web-backend`. |
 | `machine` | This machine's name on the board. Default: the host name up to the first dot. Must match the name of its token. |
-| `maxParallel` | Tasks this machine runs at once. Default 2. |
-| `timeoutMinutes` | A worker is stopped after this long. Default 45. |
+| `lanes` | Lane name to `{ "labels": [...], "slots": n }`, see [Lanes](#lanes). Default: one lane with every label and 2 slots. |
+| `pauseAfterMinutes` | A borrowed run is paused for its lane's own work only after this long. Default 5. |
+| `inactivityMinutes` | A run with no tool call for this long is stopped. Default 15. |
+| `maxRunHours` | A run is stopped after this long, however busy. Default 6. |
 | `slackWebhookFile` | One-line file with the Slack incoming webhook URL, mode 600. |
 | `intakeLabel` | Label intake puts on new tasks. Default `review-pr`. |
 | `intakePriority` | Priority of the tasks intake creates. Default `normal`. |
@@ -144,12 +186,13 @@ This is the spec between the CLI and the store, version 2. `web-backend` is the 
   "closed": false,
   "machine": "laptop",
   "sessionId": "591d2ec1-d4ab-4e26-ac04-ed303f8fa44a",
+  "workdir": "/home/me/workspace/cosuno/cosuno",
   "next": "fresh",
   "openQuestion": true
 }
 ```
 
-All twelve fields are required.
+All sixteen fields are required.
 
 | Field | Meaning |
 | --- | --- |
@@ -163,10 +206,14 @@ All twelve fields are required.
 | `closed` | `true` for a task out of the workflow. Closed tasks are only listed with `--all`; the core never starts, requeues or writes to one. |
 | `machine` | The machine that claimed it last, or `null`. A resume runs only there. |
 | `sessionId` | The Claude session of the last skill run, or `null`. |
+| `workdir` | The directory that session was in when it last stopped, on `machine`, or `null`. A resume starts there (see [Where a task runs](#where-a-task-runs)). |
 | `next` | `fresh` or `resume`: what the next run does. |
 | `openQuestion` | The agent's last question has no answer yet. |
+| `lane` | While running: the lane that runs it, from the last heartbeat; otherwise `null`. |
+| `borrowed` | While running: the lane borrowed it; otherwise `false`. |
+| `lastActiveAt` | While running: the last heartbeat, ISO 8601; otherwise `null`. |
 
-Pickup order is the order of the array that `list-tasks` returns: within a status, the first task is the top. The store sorts by `priority` first, so the core needs no logic of its own for it.
+Pickup order is the order of the array that `list-tasks` returns: within a status, the first task is the top. In Todo the store lists resumes (`next: resume`) first, then by `priority`, then by manual order; the lanes pick from that order.
 
 ### Note
 
@@ -184,10 +231,12 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 | `list-tasks [--all]` | - | `[Task, ...]` in priority order |
 | `get-task <id>` | - | `Task` |
 | `add-task` | `{"title", "input"?, "labels"?, "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?}` | `{"task": Task, "created": bool}` |
-| `update-task <id>` | `{"status"?, "priority"?, "input"?, "sessionId"?, "next"?}` | the updated `Task` |
+| `update-task <id>` | `{"status"?, "priority"?, "input"?, "sessionId"?, "workdir"?, "next"?}` | the updated `Task` |
 | `claim-task <id> --machine <name>` | - | the claimed `Task`, or exit 75 |
 | `add-note <id> [--author agent\|system]` | the note text, verbatim | nothing |
 | `ask <id>` | `{"questions": [...]}` | nothing |
+| `heartbeat <id>` | `{"lane": string, "borrowed": bool}` | nothing |
+| `pause <id>` | the note | the updated `Task` |
 | `read-notes <id>` | - | `[Note, ...]`, oldest first |
 | `setup [--dry-run]` | `{"labels": [...]}` | `{"created": [...]}` |
 
@@ -196,48 +245,21 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 - `update-task`: at least one key; unknown keys are a failure. A status or priority change puts the task at the bottom of its new place.
 - `claim-task`: `todo` to `running` for the machine, at the bottom of running, in one atomic step. Lost when the task is not in `todo`, or when it is a resume (`next: resume` with a session) pinned to another machine.
 - `add-note`: author `agent` makes a `comment`, `system` an `event`. An empty text is a failure.
+- `heartbeat`: sets `lastActiveAt` to now with the lane, on a running task only; on any other it changes nothing.
+- `pause`: a running task only. Adds the note as a `system` event, then moves the task to Todo with `next: resume` (`fresh` without a session), at the top.
 - `ask`: validates the questions (1 to 4; a header of at most 16 characters; 2 to 4 options with different labels, at most one `recommended`), adds a question note, and moves the task to `needs-me` with `openQuestion: true`.
 - `setup`: creates one label per name. Idempotent; with `--dry-run` it only names what it would create.
 
 A backend can also be tested without the core: `echo '{"next":"fresh"}' | apps/cli/bin/web-backend update-task <id>`.
 
-## Reviewer isolation
+## What a worker may do
 
-The review worker runs `claude -p` with headless permissions. Two layers hold it, and only the second one is a boundary:
+There is no sandbox. A worker runs `claude` as you, with your home directory, your SSH agent and your `gh` login. Two things limit it:
 
-1. **Permissions** (`allowedTools`, `disallowedTools`, `--permission-mode dontAsk`): a list of tool calls Claude Code approves. `Read(~/.config/**)` and the other `Read(...)` deny rules apply to the Read, Grep and Glob tools only. A `Bash(git diff *)` allow rule is a text match on the command line, and Claude Code adds a check of the path arguments of the commands it knows are read-only (`cat`, `git diff`, ...). In Claude Code 2.1.322 that check refused every variant of `git diff /dev/null <file outside the checkout>` I tried (absolute, `~`, `$HOME`, relative with `..`, glob, `--no-index`), so the leak a reviewer reported for git 2.43 does not reproduce here. But the check is a heuristic about command names, and any allowed command that opens a path by itself (a script that takes a file argument, for one) is not covered by it. Rules are a convenience, not a boundary.
-2. **The Bash sandbox** ([Claude Code sandboxing](https://code.claude.com/docs/en/sandboxing), settings reference `sandbox`): bubblewrap on Linux. It confines every Bash command, and every process the command starts, at the OS level. The worker derives it from the label's `sandbox` entry and the checkout and passes it with `--settings <json>`. The settings hold no secret.
+- **Permission rules.** `--permission-mode dontAsk` denies every tool call the label's `allowedTools` does not allow, without asking, and `disallowedTools` denies on top. `--setting-sources user` keeps a checkout's own `.claude/settings*.json` (its allow rules and tokens) out of the run. These rules match the text of a call: they keep an agent on its task, but they are not a security boundary. A `Bash(...)` rule that allows a script allows whatever that script does with its arguments.
+- **What you give the label.** A review label allows reading, `gh` reads, the pr-review scripts and `board`; it cannot push, merge or approve. A label for implementation work needs much more (edit, run tests, commit, push), and gets it.
 
-What a sandboxed command can do:
-
-| | |
-| --- | --- |
-| Read | The checkout, the entries of `allowRead` (the pr-review plugin and `~/.local/state/pr-review`), and everything outside the home directory (`/usr`, `/etc`, `/tmp`, ...). The home directory is denied (`denyRead: ["~/"]`): `~/.config`, `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.kube`, `~/.docker`, `~/.claude` and the rest are not there for it. |
-| Write | The checkout's `.git`, `/tmp` and the entries of `allowWrite` (`~/.local/state/pr-review`, where `review-notes.sh` keeps its notes). Everything already in the checkout but `.git` is read-only; `.git/hooks` and `.git/config` stay protected by the sandbox itself. The sandbox cannot make the checkout read-only as a whole, so a command can still create a new top-level file in it. |
-| Network | Only `api.github.com`, through Claude Code's proxy (`allowedDomains`). No other host, no `ssh`. |
-| Leave the sandbox | No. `allowUnsandboxedCommands` is false, `failIfUnavailable` is true (no `bubblewrap` or `socat`: the run does not start), and `autoAllowBashIfSandboxed` is false. The last one matters: by default a sandboxed Bash command is approved without looking at `allowedTools`, which would turn the allow list off. |
-
-Most of the allowed commands need no credentials the sandbox hides, or get them in a way that leaves the secret out of reach:
-
-- **`gh` and the pr-review scripts** need the GitHub token. The worker runs the `maskedEnv` command (`gh auth token`) and puts the result in `GH_TOKEN` in the environment of `claude`. The sandbox masks it: a sandboxed command sees a placeholder (`fake_value_<uuid>`), and the proxy swaps in the real token on requests to `api.github.com` only (it terminates TLS for this). `~/.config/gh/hosts.yml` is not readable at all.
-- **`board` and `git fetch origin`** run outside the sandbox (`excludedCommands`): the first has to read `~/.config/agent-board/env` in its backend, the second authenticates over `ssh` with your agent. Claude Code runs a command outside the sandbox when every command of the call matches an entry, as text. A call with a pipe, a redirect or a heredoc into `board`, or a `$(...)`, does not match and stays sandboxed, where `board` cannot find its config: a long note goes in as `board comment <task> --file /tmp/pr-<task>-findings.md`, which reads a regular file in `/tmp` (opened without following a link, checked to really live in `/tmp`). Two things are not matched by `Bash(board *)`: an environment prefix such as `AGENT_BOARD_CONFIG_DIR=/tmp/x board tasks` and `PATH=/tmp/x:$PATH board tasks`; both were denied in a headless run (Claude Code 2.1.322), so a reviewer cannot point the unsandboxed `board` at a config it wrote itself.
-
-Setup, once: `sudo apt install bubblewrap socat`.
-
-### What a prompt-injected reviewer can still do
-
-Say a PR's text turns the reviewer against you. With the sandbox it cannot read your files through Bash, and it cannot reach the network except through the channels below. It can still:
-
-1. Use the **Read, Grep and Glob tools**, which are not sandboxed, on any file the deny rules do not name. They name `~/.config`, `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.claude/.credentials.json`, `~/.local/share/keyrings` and `**/.env*`. A secret kept anywhere else under your home directory is readable by that route, and the content then leaves through the channels below.
-2. **Write to GitHub** through the pr-review scripts, which are allowed to create and change your pending draft review (visible to you before anything is submitted), and read what your token can read through `gh pr view`, `gh pr diff`, `gh pr checks` and `gh search`, on any repository, not only the PR's.
-3. **Write to the board and to Slack** through `board comment`, `board move`, `board ask` and `board notify`, on any task id, as text, and propose tasks with `board add`. A proposal never runs until you start it, and an answer to a question it planted only reaches the agent when you press a button.
-4. **Fetch from `origin`** over `ssh` with every key in your agent, to any ref `git fetch origin` accepts (any argument with a `:` and any `--up*` option are denied; the deny rules are `Bash(git fetch *:**)` and `Bash(git fetch *--up*)`, written that way because Claude Code reads a rule that ends in `:*` as a literal prefix, so `Bash(git fetch *:*)` denies nothing. Checked in a scratch repo with headless runs: `git fetch origin <sha>` runs; refspecs, `--upload-pack`, its abbreviation `--upl`, another remote and a refspec after `&&` are refused).
-5. Put text in its own answer, which Claude Code sends to Anthropic as usual.
-6. Create new top-level files in the checkout and anything in `/tmp`.
-
-The real GitHub token is in the environment of the `claude` process, which starts the commands outside the sandbox (`board`, `git fetch`) and any MCP server. The `Read` tool refuses `/proc` and a deny rule says so as well. A command that is allowed and prints its environment would leak it; none is on the list, and a new one must not be added.
-
-Not covered: macOS (masked credential files and `ssh` through the sandbox behave differently there; the settings are not tried on it), and any host the worker's label adds to `allowedDomains`.
+So a worker can do what you can do in a Claude Code session with the same allow rules, without you watching. A PR or story whose text turns the agent against you reaches whatever the label allows and whatever those commands can reach. A dedicated OS user for the workers, with its own checkouts and a narrowly scoped GitHub token, would make that a boundary again; it is not set up yet.
 
 ## Adding a label-to-worker mapping
 
@@ -248,32 +270,13 @@ Add the entry to `labels` in each machine's config.json that should run it, then
   "skill": "board-review-pr",
   "cwd": "pr-repo",
   "allowedTools": ["Read", "Bash(board *)"],
-  "disallowedTools": ["Bash(git push *)"],
-  "sandbox": {
-    "allowRead": ["{pr-review}"],
-    "allowWrite": [],
-    "allowedDomains": ["api.github.com"],
-    "excludedCommands": ["board *"],
-    "maskedEnv": [{ "name": "GH_TOKEN", "command": ["gh", "auth", "token"], "injectHosts": ["api.github.com"] }]
-  }
+  "disallowedTools": ["Bash(git push *)"]
 }
 ```
 
-A fresh run is `claude -p "/<skill> <task> <PR URL>" --session-id <new uuid> --permission-mode dontAsk --setting-sources user --settings <sandbox json>` with these allow and deny rules and the sandbox described under [Reviewer isolation](#reviewer-isolation). A label whose `cwd` is not `pr-repo` gets `/<skill> <task>` and reads its task with `board show`. A resumed run is `claude -p "<the user's reply>" --resume <session>` with the same flags (see [Ask and resume](#ask-and-resume)). `dontAsk` denies everything not allowed, without prompting. `--setting-sources user` keeps the checkout's `.claude/settings*.json` (their allow rules and env tokens) out of the run; only `~/.claude/settings.json` loads. If you ever add `permissions.allow` rules there, they widen the reviewer's sandbox too. Rules starting with `Bash(` expand `~/` to your home directory and `{pr-review}` to the root Claude Code gives the `pr-review@ccc` plugin as `${CLAUDE_PLUGIN_ROOT}`, resolved when the worker starts: for a marketplace added as a directory (`~/.claude/plugins/known_marketplaces.json`) that is the plugin's `source` in the marketplace's `.claude-plugin/marketplace.json` (Claude Code loads it from the checkout, not from the cache copy), otherwise the `installPath` in `~/.claude/plugins/installed_plugins.json`. A rule must not start with `*` before a script path: a leading `*` matches any command that merely contains the path. If the plugin path cannot be resolved the task goes to `needs-me` with the reason. `Read(...)` rules are passed on unchanged (they take `~/` themselves).
+A fresh run is `claude -p "/<skill> <task> <PR URL>" --session-id <new uuid> --permission-mode dontAsk --setting-sources user --settings <hook json>` with these allow and deny rules (see [What a worker may do](#what-a-worker-may-do)); the settings carry only the [heartbeat and pause hook](#liveness-and-limits). A label whose `cwd` is not `pr-repo` gets `/<skill> <task>` and reads its task with `board show`. A resumed run is `claude -p "<the user's reply>" --resume <session>` with the same flags (see [Ask and resume](#ask-and-resume)). `dontAsk` denies everything not allowed, without prompting. `--setting-sources user` keeps the checkout's `.claude/settings*.json` (their allow rules and env tokens) out of the run; only `~/.claude/settings.json` loads. If you ever add `permissions.allow` rules there, they apply to every worker too. Rules starting with `Bash(` expand `~/` to your home directory and `{pr-review}` to the root Claude Code gives the `pr-review@ccc` plugin as `${CLAUDE_PLUGIN_ROOT}`, resolved when the worker starts: for a marketplace added as a directory (`~/.claude/plugins/known_marketplaces.json`) that is the plugin's `source` in the marketplace's `.claude-plugin/marketplace.json` (Claude Code loads it from the checkout, not from the cache copy), otherwise the `installPath` in `~/.claude/plugins/installed_plugins.json`. A rule must not start with `*` before a script path: a leading `*` matches any command that merely contains the path. If the plugin path cannot be resolved the task goes to `needs-me` with the reason. `Read(...)` rules are passed on unchanged (they take `~/` themselves).
 
-`sandbox` is required for a skill label: the worker sends a task whose label has none to `needs-me` and starts nothing. Its keys, all lists except `maskedEnv`:
-
-| Key | Meaning |
-| --- | --- |
-| `allowRead` | Paths the sandboxed commands may read in the home directory, besides the checkout. `~/` and `{pr-review}` are expanded. |
-| `allowWrite` | Paths they may write, besides the checkout's `.git` and `/tmp`. |
-| `allowedDomains` | Hosts they may reach through the proxy. |
-| `excludedCommands` | Commands (Bash rule syntax, matched as text) that run outside the sandbox. Each one must also be in `allowedTools`. Never put a script, a shell or any command that takes a file or a command as its argument here. |
-| `maskedEnv` | Per entry: `name`, `command` (run by the worker without a shell; its stdout is the value) and `injectHosts` (the only hosts the real value is sent to). The value goes into the environment of `claude`, where the sandbox masks it. A failing command sends the task to `needs-me` without its output. |
-
-The worker adds the rest: the home directory is denied, the checkout is readable, its `.git` and `/tmp` are writable, and its other entries are read-only.
-
-`cwd` is `pr-repo` (the checkout `repos` maps the PR's repository to) or a directory. The skill must exist in `~/.claude/skills`, and it should end by moving the task to `needs-me` or by asking with `board ask`.
+`cwd` is `pr-repo` (the checkout `repos` maps the PR's repository to) or a directory: where a fresh run starts. A `sandbox` entry from an older config is ignored. The skill must exist in `~/.claude/skills`, and it should end by moving the task to `needs-me` or by asking with `board ask`.
 
 ```json
 "selftest": { "command": ["sleep", "300"] }
@@ -311,10 +314,11 @@ intake                          review requests to tasks
 
 Dispatcher, per tick:
 
-1. For each task in `running` claimed by this machine, ask `systemctl --user is-active agent-board-<task>`. A task whose unit is gone, or whose unit started more than the timeout plus five minutes ago (the start note is the fallback), moves to `needs-me` with the log tail. If `systemctl` gives no known state, or the backend fails, the tick stops before starting anything and exits non-zero.
-2. While fewer than `maxParallel` run here, walk Todo from the top (urgent first). A task without a label goes to `needs-me`. A task this machine cannot serve is skipped (see [Two machines](#two-machines)). Otherwise claim it; a lost claim is skipped. Then start `systemd-run --user --collect --unit agent-board-<task>` and add a start note with the machine and PID. The first failed start ends the tick's starting.
+1. For each task in `running` claimed by this machine, ask `systemctl --user is-active agent-board-<task>`. A task whose unit is gone moves to `needs-me` with the log tail. So does one whose worker failed to enforce the [limits](#liveness-and-limits) for five minutes past them; its unit is stopped. If `systemctl` gives no known state, or the backend fails, the tick stops before starting anything and exits non-zero.
+2. A task without a label goes to `needs-me`; one this machine cannot serve is skipped (see [Two machines](#two-machines)). The rest are planned into [lanes](#lanes): own work first, then borrowing. Each start is claimed, its lane written to the run directory, then `systemd-run --user --collect --unit agent-board-<task>` starts the worker and a start note names the machine, lane and PID. A lost claim hands its slot to the next task; the first failed start ends the tick's starting.
+3. Lanes whose own work still waits ask one borrowed run each to pause.
 
-Worker, per task: a skill label with `next: resume`, a session and a user reply since the agent last spoke resumes that session with the reply as the prompt. Anything else starts a new session, whose id is stored on the task before the run. Either way `next` goes back to `fresh`.
+Worker, per task: a skill label with `next: resume`, a session, and a user reply or a pause since the agent last spoke resumes that session with the reply (and "you were paused") as the prompt. Anything else starts a new session, whose id is stored on the task before the run. Either way `next` goes back to `fresh`.
 
 Intake, per run: search each repo in `repos` for open, non-draft PRs that request your review, then create one task per PR URL (the dedupe key), checked against every task, closed ones included. A PR that `gh pr view` cannot read is logged and skipped. A PR whose head moved and whose last commit is at least ten minutes old sends its task from `needs-me` or `done` back to `todo` with `next: fresh`. A failed task stays in `needs-me` until the head moves. A failed GitHub search or backend listing changes nothing and exits non-zero.
 
@@ -331,4 +335,4 @@ pnpm db:generate --name <change>     after editing apps/backend/src/db/schema.ts
 
 To point a worker at the local board: a token from http://localhost:5173/settings, `web.json` with `"url": "http://localhost:4000"`, and `AGENT_BOARD_CONFIG_DIR` / `AGENT_BOARD_STATE_DIR` at scratch directories so the real config and logs stay untouched.
 
-CLI decision logic is in `apps/cli/src/decide.mts`, `planIntake` and the `run*` functions, which take a backend, GitHub and system interface as arguments; tests inject fakes (`apps/cli/test/helpers.mts`). Backend tests are integration tests against `board_test` (reset on every run), through `app.inject` for the machine API and tRPC callers for the UI. `apps/cli/test/skills/board-selftest-ask` is a skill that asks one question and reports the answer after the resume: link it into `~/.claude/skills`, give it a skill label with `"cwd": "/tmp"`, `Edit(//tmp/pr-selftest-*)` and `Bash(board *)`, and run a task through a real ask and resume.
+CLI decision logic is in `apps/cli/src/decide.mts`, `planIntake` and the `run*` functions, which take a backend, GitHub and system interface as arguments; tests inject fakes (`apps/cli/test/helpers.mts`). Backend tests are integration tests against `board_test` (reset on every run), through `app.inject` for the machine API and tRPC callers for the UI. `apps/cli/test/skills/board-selftest-ask` is a skill that asks one question and reports the answer after the resume: link it into `~/.claude/skills`, give it a skill label with `"cwd": "/tmp"`, `Edit(//tmp/pr-selftest-*)` and `Bash(board *)`, and run a task through a real ask and resume. `apps/cli/test/skills/board-selftest-slow` works through eight 15-second steps: give two lanes of one slot each its label and a `"command": ["sleep", "20"]` label, start two slow tasks so one lane borrows, add the command task, and the next tick after `pauseAfterMinutes` pauses the borrowed run and resumes it later in its session.

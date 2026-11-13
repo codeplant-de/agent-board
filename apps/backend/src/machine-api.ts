@@ -8,6 +8,7 @@ import {
   isSafeMachineName,
   isSafeTaskId,
   parseDraft,
+  parseHeartbeat,
   parsePatch,
   parseQuestions,
   parseSetupRequest,
@@ -25,7 +26,9 @@ import {
   ask,
   claimTask,
   getTask,
+  heartbeat,
   listTasks,
+  pause,
   readNotes,
   setupLabels,
   toNote,
@@ -93,6 +96,14 @@ export async function handleMachineCall(
       const questions = parsed(() => parseQuestions(body['body']));
       await ask(db, taskId(body), questions, machine);
       return null;
+    }
+    case 'heartbeat':
+      await heartbeat(db, taskId(body), parsed(() => parseHeartbeat(body['body'])));
+      return null;
+    case 'pause': {
+      const note = body['body'];
+      if (typeof note !== 'string' || note.trim() === '') throw new AppError('BAD_REQUEST', 'pause note is empty');
+      return task(await pause(db, taskId(body), note.trim(), machine));
     }
     case 'read-notes':
       return (await readNotes(db, taskId(body))).map((row) => serializeNote(toNote(row)));

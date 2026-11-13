@@ -6,48 +6,38 @@ import type { Priority } from "@agent-board/shared";
 
 export class ConfigError extends Error {}
 
-// An environment variable the worker fills from a command's output and hands to claude, where the sandbox
-// masks it: sandboxed commands see a placeholder, and the sandbox proxy swaps in the real value on requests
-// to `injectHosts` only.
-export interface MaskedEnv {
-  name: string;
-  // Executable and arguments, run without a shell by the worker; stdout is the value.
-  command: string[];
-  injectHosts: string[];
-}
-
-// What the Bash commands of a skill run may reach. See "Reviewer isolation" in the README.
-export interface SandboxEntry {
-  // Besides the checkout and the pr-review plugin, which are always readable.
-  allowRead: string[];
-  // Besides the checkout's `.git` and the temp directory.
-  allowWrite: string[];
-  allowedDomains: string[];
-  // Commands that run outside the sandbox (Bash rule syntax); they need credentials the sandbox hides.
-  excludedCommands: string[];
-  maskedEnv: MaskedEnv[];
-}
-
 export type LabelEntry =
   | {
       kind: "skill";
       skill: string;
       allowedTools: string[];
       disallowedTools: string[];
-      // Required to run: a skill label without it is refused by the worker, not by the parser, so `board` keeps working.
-      sandbox: SandboxEntry | undefined;
       // "pr-repo" runs in the checkout that `repos` maps the PR's repository to.
       cwd: string;
     }
   | { kind: "command"; command: string[]; cwd: string | undefined };
+
+// Slots of one kind of work on this machine. A lane runs its own labels first and borrows any other work when it has
+// none; it takes its slot back by pausing borrowed work once its own work waits.
+export interface Lane {
+  name: string;
+  labels: string[];
+  slots: number;
+}
 
 export interface Config {
   // Executable and fixed arguments of the task backend; the core appends the contract's subcommand.
   backendCommand: string[];
   // This machine's name on the board: it claims tasks under it, and a resume runs only on the machine that ran the session.
   machine: string;
-  maxParallel: number;
-  timeoutMinutes: number;
+  // In config order. Every label is in at most one lane; a label in none is only ever borrowed.
+  lanes: Lane[];
+  // A borrowed run is paused for its lane's own work only after it has run this long.
+  pauseAfterMinutes: number;
+  // A run whose agent made no tool call for this long is stopped as stuck.
+  inactivityMinutes: number;
+  // A run is stopped after this long however busy it is: a guard against runaways.
+  maxRunHours: number;
   slackWebhookFile: string;
   intakeLabel: string;
   // Priority of the tasks intake creates.
@@ -130,43 +120,7 @@ function parseLabelEntry(name: string, raw: unknown): LabelEntry {
     skill,
     allowedTools,
     disallowedTools: tools("disallowedTools"),
-    sandbox: raw["sandbox"] === undefined ? undefined : parseSandbox(raw["sandbox"], `${where}sandbox.`),
     cwd: cwd ?? "pr-repo",
-  };
-}
-
-function parseSandbox(raw: unknown, where: string): SandboxEntry {
-  if (!isRecord(raw)) throw new ConfigError(`config: ${where.slice(0, -1)} must be an object`);
-  const extra = Object.keys(raw).find((key) => !["allowRead", "allowWrite", "allowedDomains", "excludedCommands", "maskedEnv"].includes(key));
-  if (extra !== undefined) throw new ConfigError(`config: ${where}${extra} is not a sandbox key`);
-  const list = (key: string): string[] => {
-    const value = raw[key] ?? [];
-    if (!isStringList(value)) throw new ConfigError(`config: ${where}${key} must be a list of strings`);
-    return value;
-  };
-  const rawEnv = raw["maskedEnv"] ?? [];
-  if (!Array.isArray(rawEnv)) throw new ConfigError(`config: ${where}maskedEnv must be a list`);
-  const maskedEnv = rawEnv.map((item, index): MaskedEnv => {
-    const at = `${where}maskedEnv[${index}].`;
-    if (!isRecord(item)) throw new ConfigError(`config: ${at.slice(0, -1)} must be an object`);
-    const name = text(item, "name", at);
-    if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) throw new ConfigError(`config: ${at}name must be an environment variable name`);
-    const command = item["command"];
-    if (!isStringList(command) || command.length === 0 || command.some((part) => part === "")) {
-      throw new ConfigError(`config: ${at}command must be a non-empty list of strings`);
-    }
-    const injectHosts = item["injectHosts"];
-    if (!isStringList(injectHosts) || injectHosts.length === 0) {
-      throw new ConfigError(`config: ${at}injectHosts must be a non-empty list of hosts (the value reaches only these)`);
-    }
-    return { name, command: parseExecutable(command.map(expandHome), `${at}command`), injectHosts };
-  });
-  return {
-    allowRead: list("allowRead").map(expandHome),
-    allowWrite: list("allowWrite").map(expandHome),
-    allowedDomains: list("allowedDomains"),
-    excludedCommands: list("excludedCommands"),
-    maskedEnv,
   };
 }
 
@@ -185,6 +139,27 @@ function parseBackendCommand(raw: unknown): string[] {
     throw new ConfigError("config: backend.command must be a non-empty list of strings");
   }
   return parseExecutable(command.map(expandHome), "backend.command");
+}
+
+function parseLanes(raw: unknown, labels: Record<string, LabelEntry>): Lane[] {
+  // Without lanes, one lane runs everything, as before lanes existed.
+  if (raw === undefined) return [{ name: "default", labels: Object.keys(labels), slots: 2 }];
+  if (!isRecord(raw) || Object.keys(raw).length === 0) throw new ConfigError("config: lanes must be an object with at least one lane");
+  const owner = new Map<string, string>();
+  return Object.entries(raw).map(([name, entry]): Lane => {
+    const where = `lanes.${name}.`;
+    if (!isSafeMachineName(name)) throw new ConfigError(`config: lane name "${name}" must be letters, digits, '.', '-' and '_'`);
+    if (!isRecord(entry)) throw new ConfigError(`config: lanes.${name} must be an object`);
+    const laneLabels = entry["labels"];
+    if (!isStringList(laneLabels) || laneLabels.length === 0) throw new ConfigError(`config: ${where}labels must be a non-empty list of labels`);
+    for (const label of laneLabels) {
+      if (!Object.hasOwn(labels, label)) throw new ConfigError(`config: ${where}labels names "${label}", which is not in labels`);
+      const other = owner.get(label);
+      if (other !== undefined) throw new ConfigError(`config: label "${label}" is in lanes ${other} and ${name}; a label belongs to one lane`);
+      owner.set(label, name);
+    }
+    return { name, labels: laneLabels, slots: positiveInt(entry, "slots", where, 1) };
+  });
 }
 
 export function parseConfig(raw: unknown): Config {
@@ -222,8 +197,10 @@ export function parseConfig(raw: unknown): Config {
   return {
     backendCommand: parseBackendCommand(field(raw, "backend", "")),
     machine,
-    maxParallel: positiveInt(raw, "maxParallel", "", 2),
-    timeoutMinutes: positiveInt(raw, "timeoutMinutes", "", 45),
+    lanes: parseLanes(raw["lanes"], labels),
+    pauseAfterMinutes: positiveInt(raw, "pauseAfterMinutes", "", 5),
+    inactivityMinutes: positiveInt(raw, "inactivityMinutes", "", 15),
+    maxRunHours: positiveInt(raw, "maxRunHours", "", 6),
     slackWebhookFile: expandHome(webhook),
     intakeLabel,
     intakePriority,

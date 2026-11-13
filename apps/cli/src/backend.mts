@@ -154,6 +154,12 @@ export function createCliBackend(options: { command: string[]; timeoutMs?: numbe
       await verify();
       await invoke("ask", [safeId], JSON.stringify({ questions }));
     },
+    heartbeat: async (id, beat) => {
+      const safeId = taskId(id);
+      await verify();
+      await invoke("heartbeat", [safeId], JSON.stringify(beat));
+    },
+    pause: async (id, note) => call("pause", parseTask, [taskId(id)], note),
     readNotes: async (id) => call("read-notes", parseNotes, [taskId(id)]),
     async setup(labels, { dryRun = false } = {}) {
       await verify();
@@ -173,7 +179,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     ...inner,
     async addTask(draft) {
       print(`DRY add-task ${oneLine(JSON.stringify(draft), 160)}`);
-      const task: Task = { ...draft, priority: draft.priority ?? "normal", id: "dry", url: "https://dry.invalid", closed: false, machine: null, sessionId: null, next: "fresh", openQuestion: false };
+      const task: Task = { ...draft, priority: draft.priority ?? "normal", id: "dry", url: "https://dry.invalid", closed: false, machine: null, sessionId: null, workdir: null, next: "fresh", openQuestion: false, lane: null, borrowed: false, lastActiveAt: null };
       return { task, created: true };
     },
     async updateTask(id, patch) {
@@ -187,6 +193,13 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     },
     async addNote(id, text, options) {
       print(`DRY add-note ${id}${options?.author === "system" ? " --author system" : ""} ${oneLine(text, 160)}`);
+    },
+    async heartbeat(id, beat) {
+      print(`DRY heartbeat ${id} ${JSON.stringify(beat)}`);
+    },
+    async pause(id, note) {
+      print(`DRY pause ${id} ${oneLine(note, 160)}`);
+      return { ...(await inner.getTask(id)), status: "todo", next: "resume" };
     },
     async ask(id, questions) {
       print(`DRY ask ${id} ${oneLine(JSON.stringify(questions), 160)}`);

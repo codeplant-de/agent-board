@@ -2,8 +2,14 @@
   "backend": {
     "command": ["~/workspace/agent-board/apps/cli/bin/web-backend"]
   },
-  "maxParallel": 2,
-  "timeoutMinutes": 45,
+  "machine": "laptop",
+  "lanes": {
+    "reviews": { "labels": ["review-pr"], "slots": 2 },
+    "tests": { "labels": ["selftest", "selftest-fail"], "slots": 1 }
+  },
+  "pauseAfterMinutes": 5,
+  "inactivityMinutes": 15,
+  "maxRunHours": 6,
   "slackWebhookFile": "~/.config/watch-review-requests/slack-webhook",
   "intakeLabel": "review-pr",
   "repos": {
@@ -90,16 +96,7 @@
         "Read(~/.local/share/keyrings/**)",
         "Read(**/.env*)",
         "Read(//proc/**)"
-      ],
-      "sandbox": {
-        "allowRead": ["{pr-review}", "~/.local/state/pr-review"],
-        "allowWrite": ["~/.local/state/pr-review"],
-        "allowedDomains": ["api.github.com"],
-        "excludedCommands": ["board *", "git fetch origin *"],
-        "maskedEnv": [
-          { "name": "GH_TOKEN", "command": ["gh", "auth", "token"], "injectHosts": ["api.github.com"] }
-        ]
-      }
+      ]
     },
     "selftest": {
       "command": ["sleep", "300"]

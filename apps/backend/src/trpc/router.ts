@@ -28,6 +28,8 @@ const priority = z.enum(PRIORITIES);
 /** What the board needs of a task beyond the contract's fields. */
 export interface BoardTask extends Task {
   proposed: boolean;
+  /** In Todo after a worker gave up its slot; until the next claim. */
+  paused: boolean;
   createdBy: TaskRow['createdBy'];
   parentId: string | null;
   createdAt: Date;
@@ -42,6 +44,7 @@ function boardTask(row: TaskRow, publicUrl: string): BoardTask {
   return {
     ...toTask(row, publicUrl),
     proposed: row.proposed,
+    paused: row.status === 'todo' && row.pausedAt !== null,
     createdBy: row.createdBy,
     parentId: row.parentId,
     createdAt: row.createdAt,

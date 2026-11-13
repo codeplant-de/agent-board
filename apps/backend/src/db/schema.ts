@@ -37,7 +37,15 @@ export const tasks = pgTable(
     /** The machine that claimed the task last. */
     machine: text('machine'),
     sessionId: text('session_id'),
+    /** Where the session was when it last stopped, on `machine`. */
+    workdir: text('workdir'),
     next: nextRun('next').notNull().default('fresh'),
+    /** Reported by the worker while the task runs; stale once it stops running. */
+    lane: text('lane'),
+    borrowed: boolean('borrowed').notNull().default(false),
+    lastActiveAt: timestamp('last_active_at', { withTimezone: true }),
+    /** When a worker last gave up the task's slot; cleared by the next claim. */
+    pausedAt: timestamp('paused_at', { withTimezone: true }),
     /** The question note waiting for an answer, if any. */
     openQuestionNoteId: text('open_question_note_id'),
     dedupeKey: text('dedupe_key').unique(),

@@ -43,9 +43,20 @@ export interface Task {
   machine: string | null;
   // The Claude session of the last skill run.
   sessionId: string | null;
+  // The directory that session was in when it last stopped, on `machine`: a worktree it entered, say. A resume starts there.
+  workdir: string | null;
   next: NextRun;
   // The last question the agent asked has no answer yet.
   openQuestion: boolean;
+  // While it runs: the lane of the machine that runs it, whether that lane borrowed it, and the agent's last tool call.
+  lane: string | null;
+  borrowed: boolean;
+  lastActiveAt: Date | null;
+}
+
+export interface Heartbeat {
+  lane: string;
+  borrowed: boolean;
 }
 
 export interface Note {
@@ -79,6 +90,7 @@ export interface TaskPatch {
   priority?: Priority;
   input?: string;
   sessionId?: string | null;
+  workdir?: string | null;
   next?: NextRun;
 }
 
@@ -98,6 +110,10 @@ export interface Backend {
   addNote(id: string, text: string, options?: { author?: "agent" | "system" }): Promise<void>;
   // Adds a question note and moves the task to needs-me.
   ask(id: string, questions: Question[]): Promise<void>;
+  // The agent of a running task is alive: sets lastActiveAt to now, with the lane it runs in.
+  heartbeat(id: string, beat: Heartbeat): Promise<void>;
+  // A running task gave up its slot: a note, then back to Todo, resumed next, ahead of new work.
+  pause(id: string, note: string): Promise<Task>;
   // Oldest first.
   readNotes(id: string): Promise<Note[]>;
   // What it created (with dryRun: what it would create, writing nothing); undefined when the backend has no setup.
@@ -156,6 +172,14 @@ function nullableString(obj: Record<string, unknown>, key: string, what: string)
   return value;
 }
 
+function nullableDate(obj: Record<string, unknown>, key: string, what: string): Date | null {
+  const value = nullableString(obj, key, what);
+  if (value === null) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new ContractError(`${what}.${key} is not a date`);
+  return date;
+}
+
 function boolean(obj: Record<string, unknown>, key: string, what: string): boolean {
   const value = obj[key];
   if (typeof value !== "boolean") throw new ContractError(`${what}.${key} must be a boolean`);
@@ -202,8 +226,12 @@ export function parseTask(value: unknown): Task {
     closed: boolean(obj, "closed", "task"),
     machine,
     sessionId: nullableString(obj, "sessionId", "task"),
+    workdir: nullableString(obj, "workdir", "task"),
     next: member(obj, "next", "task", NEXT_RUNS),
     openQuestion: boolean(obj, "openQuestion", "task"),
+    lane: nullableString(obj, "lane", "task"),
+    borrowed: boolean(obj, "borrowed", "task"),
+    lastActiveAt: nullableDate(obj, "lastActiveAt", "task"),
   };
 }
 
@@ -285,7 +313,7 @@ export function parseDraft(value: unknown): TaskDraft {
 // Stdin of update-task. At least one key.
 export function parsePatch(value: unknown): TaskPatch {
   const obj = record(value, "patch");
-  const keys = ["status", "priority", "input", "sessionId", "next"];
+  const keys = ["status", "priority", "input", "sessionId", "workdir", "next"];
   rejectUnknownKeys(obj, keys, "patch");
   if (!keys.some((key) => key in obj)) throw new ContractError(`patch needs one of ${keys.join(", ")}`);
   const patch: TaskPatch = {};
@@ -294,7 +322,25 @@ export function parsePatch(value: unknown): TaskPatch {
   if ("input" in obj) patch.input = string(obj, "input", "patch");
   if ("sessionId" in obj) patch.sessionId = nullableString(obj, "sessionId", "patch");
   if ("next" in obj) patch.next = member(obj, "next", "patch", NEXT_RUNS);
+  if ("workdir" in obj) {
+    patch.workdir = nullableString(obj, "workdir", "patch");
+    if (patch.workdir !== null && !patch.workdir.startsWith("/")) throw new ContractError("patch.workdir must be an absolute path");
+  }
   return patch;
+}
+
+// Stdin of heartbeat.
+export function parseHeartbeat(value: unknown): Heartbeat {
+  const obj = record(value, "heartbeat");
+  rejectUnknownKeys(obj, ["lane", "borrowed"], "heartbeat");
+  const lane = string(obj, "lane", "heartbeat");
+  if (!isSafeMachineName(lane)) throw new ContractError("heartbeat.lane must be a name of letters, digits, '.', '-' and '_'");
+  return { lane, borrowed: boolean(obj, "borrowed", "heartbeat") };
+}
+
+// The JSON form of a task, as the backend prints it.
+export function serializeTask(task: Task): Record<string, unknown> {
+  return { ...task, lastActiveAt: task.lastActiveAt?.toISOString() ?? null };
 }
 
 // Stdin of setup.

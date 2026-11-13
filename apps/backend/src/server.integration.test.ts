@@ -308,3 +308,45 @@ describe('priority', () => {
     expect(plain.json.result.task.priority).toBe('normal');
   });
 });
+
+describe('lanes, liveness and pausing', () => {
+  async function running(title: string, priority: 'urgent' | 'high' | 'normal' | 'low' = 'normal') {
+    const task = await caller(db).tasks.create({ title, input: '', label: 'research', priority });
+    await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
+    await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: `s-${title}` } });
+    return task.id;
+  }
+
+  it('a heartbeat shows the lane and liveness while the task runs, and nothing after', async () => {
+    const id = await running('t');
+    expect((await ctx.call('laptop', 'heartbeat', { id, body: { lane: 'a b', borrowed: false } })).status).toBe(400);
+    await ctx.call('laptop', 'heartbeat', { id, body: { lane: 'implement', borrowed: true } });
+    const task = (await ctx.call('laptop', 'get-task', { id })).json.result;
+    expect(task).toMatchObject({ lane: 'implement', borrowed: true });
+    expect(Date.now() - new Date(task.lastActiveAt).getTime()).toBeLessThan(5_000);
+    await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me' } });
+    expect((await ctx.call('laptop', 'get-task', { id })).json.result).toMatchObject({ lane: null, borrowed: false, lastActiveAt: null });
+    // A late heartbeat from a stopping worker does not bring the run back.
+    await ctx.call('laptop', 'heartbeat', { id, body: { lane: 'implement', borrowed: true } });
+    expect((await ctx.call('laptop', 'get-task', { id })).json.result.lane).toBeNull();
+  });
+
+  it('a paused task resumes next, on its machine, ahead of new urgent work', async () => {
+    const ui = caller(db);
+    const id = await running('paused', 'low');
+    await ui.tasks.create({ title: 'urgent', input: '', label: 'research', priority: 'urgent' });
+    const paused = await ctx.call('laptop', 'pause', { id, body: 'Paused on laptop: the reviews lane needed its slot.' });
+    expect(paused.json.result).toMatchObject({ status: 'todo', next: 'resume', machine: 'laptop' });
+    const list = await ui.tasks.list();
+    expect(list.filter((t) => t.status === 'todo').map((t) => [t.title, t.paused])).toEqual([
+      ['paused', true],
+      ['urgent', false],
+    ]);
+    expect((await ctx.call('laptop', 'pause', { id, body: 'again' })).status).toBe(409);
+    expect((await ctx.call('workstation', 'claim-task', { id, machine: 'workstation' })).status).toBe(409);
+    await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' });
+    expect((await ui.tasks.get({ id })).task.paused).toBe(false);
+    const { thread } = await ui.tasks.get({ id });
+    expect(thread.some((n) => n.author === 'system' && n.text.startsWith('Paused on laptop'))).toBe(true);
+  });
+});
