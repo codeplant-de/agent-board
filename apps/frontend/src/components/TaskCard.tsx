@@ -3,9 +3,9 @@ import { IconBrandGithub } from '@tabler/icons-react';
 import type { DragEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { prUrl } from '../lib/status';
-import { liveness } from '../lib/liveness';
 import { ago } from '../lib/time';
 import type { BoardTask, RouterOutputs } from '../lib/trpc';
+import { LivenessText } from './LivenessText';
 import { TaskBadges } from './TaskBadges';
 
 type Activity = RouterOutputs['tasks']['activity'][string];
@@ -60,9 +60,7 @@ export function TaskCard({ task, activity, draggable, dragging, onDragStart, onD
         </Group>
         <TaskBadges task={task} />
         {task.status === 'running' && (
-          <Text size="xs" fw={500} c={liveness(task.lastActiveAt).color}>
-            {liveness(task.lastActiveAt).text}
-          </Text>
+          <LivenessText size="xs" lastActiveAt={task.lastActiveAt} />
         )}
         <Text size="xs" c="dimmed" lineClamp={1}>
           {activityLine(activity, task)}

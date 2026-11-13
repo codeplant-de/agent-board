@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * One task: resolve its label, run the worker command, log, and report failures on the task.
- * Started by the dispatcher as the transient unit agent-board-<id>. While the run goes on it checks every half
- * minute: no tool call for inactivityMinutes, or a run longer than maxRunHours, stops it; a pause request that the
+ * Started by the dispatcher as the transient unit agent-board-<id>. While the run goes on it checks every 15 seconds:
+ * no tool call for inactivityMinutes, or a run longer than maxRunHours, stops it; a pause request that the
  * agent does not follow within a few minutes stops it too. It passes the agent's liveness on to the board.
  */
 import { spawn } from "node:child_process";
@@ -40,7 +40,7 @@ export interface Watch {
 // How long a run may take to stop by itself after a pause was asked for.
 const PAUSE_GRACE_MINUTES = 5;
 // The board's liveness is updated at most this often.
-const HEARTBEAT_EVERY_MS = 60_000;
+const HEARTBEAT_EVERY_MS = 15_000;
 
 export interface WorkerDeps extends Context {
   // `env` is added to the process's environment: the secrets of the invocation's masked variables.
@@ -265,7 +265,7 @@ if (import.meta.main) {
       files: createRunFiles(),
       hookCommand: (runDir, id) => `${shellQuote(HOOK_BIN)} ${shellQuote(runDir)} ${id}`,
       now: () => new Date(),
-      watchEveryMs: 30_000,
+      watchEveryMs: 15_000,
     };
     try {
       await runWorker(deps, taskId);

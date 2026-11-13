@@ -12,9 +12,9 @@ import {
 } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
-import { liveness } from '../lib/liveness';
 import { ago } from '../lib/time';
 import { useTRPC, type BoardTask, type ThreadNote } from '../lib/trpc';
+import { LivenessText } from './LivenessText';
 import { MarkdownEditor } from './MarkdownEditor';
 import { QuestionPanel } from './QuestionPanel';
 
@@ -84,9 +84,7 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
               {task.lane ? ` in the ${task.lane} lane${task.borrowed ? ' (borrowed)' : ''}` : ''}
               {startedAt ? ` since ${ago(startedAt)}` : ''}
               {' · '}
-              <Text span size="sm" fw={500} c={liveness(task.lastActiveAt).color}>
-                {liveness(task.lastActiveAt).text}
-              </Text>
+              <LivenessText span size="sm" lastActiveAt={task.lastActiveAt} />
               . It reports back here when it is done or has a question.
             </Text>
           </Group>
