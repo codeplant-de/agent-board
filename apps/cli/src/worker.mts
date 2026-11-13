@@ -15,7 +15,8 @@ import type { Context } from "./cli.mts";
 import { isSafeTaskId } from "@agent-board/shared";
 import { logLine, StreamCondenser } from "@agent-board/shared";
 import type { Task, TranscriptEvent } from "@agent-board/shared";
-import { buildInvocation, decideOutcome, PAUSE_MARKER, planRun, supervise, usesPluginPlaceholder } from "./decide.mts";
+import { buildInvocation, decideOutcome, ownLane, PAUSE_MARKER, PLUGIN_MARKETPLACE, planRun, pluginPlaceholders, supervise } from "./decide.mts";
+import { pickEnv, readMcpServers, readSettingsEnv } from "./settings-env.mts";
 import type { Invocation, Supervision } from "./decide.mts";
 import { createRunFiles } from "./runtime.mts";
 import type { RunFiles } from "./runtime.mts";
@@ -56,6 +57,10 @@ export interface WorkerDeps extends Context {
   // Root of a plugin such as "pr-review@ccc"; throws with the reason when it cannot be resolved.
   pluginPath: (key: string) => string;
   dirExists: (path: string) => boolean;
+  // The `env` blocks of a checkout's .claude/settings*.json.
+  settingsEnv: (dir: string) => Record<string, string>;
+  // The named servers of a checkout's .mcp.json.
+  mcpServers: (dir: string, names: string[]) => { config: { mcpServers: Record<string, unknown> }; missing: string[] };
   home: string;
   newSessionId: () => string;
   files: RunFiles;
@@ -78,12 +83,13 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     await report(reason);
   };
 
-  let prReviewPath: string | undefined;
-  if (task.createdBy === "intake" && usesPluginPlaceholder([...config.intake.allowedTools, ...config.intake.disallowedTools])) {
+  const fromIntake = task.createdBy === "intake";
+  const pluginRoots: Record<string, string> = {};
+  for (const name of fromIntake ? pluginPlaceholders([...config.intake.allowedTools, ...config.intake.disallowedTools]) : []) {
     try {
-      prReviewPath = deps.pluginPath("pr-review@ccc");
+      pluginRoots[name] = deps.pluginPath(`${name}@${PLUGIN_MARKETPLACE}`);
     } catch (error) {
-      return fail(`Cannot resolve the pr-review plugin: ${error instanceof Error ? error.message : String(error)}`);
+      return fail(`Cannot resolve the ${name} plugin: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   const run = planRun(task, await backend.readNotes(task.id), deps.newSessionId);
@@ -97,10 +103,17 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     repos: config.repos,
     defaultCwd: config.defaultCwd,
     intake: config.intake,
+    laneCwd: config.lanes.find((lane) => lane.name === ownLane(task, config.lanes))?.cwd,
     home: deps.home,
-    prReviewPath,
+    pluginRoots,
   });
   if (!plan.ok) return fail(plan.reason);
+  // Intake's MCP servers come from the checkout's .mcp.json: intake does not load the settings that switch them on.
+  if (fromIntake && config.intake.mcpServers.length > 0) {
+    const servers = deps.mcpServers(plan.invocation.cwd, config.intake.mcpServers);
+    if (servers.missing.length > 0) deps.appendLog(taskId, `not in the checkout's .mcp.json: ${servers.missing.join(", ")}`);
+    if (Object.keys(servers.config.mcpServers).length > 0) plan.invocation.args.push("--mcp-config", JSON.stringify(servers.config));
+  }
   if (!deps.dirExists(plan.invocation.cwd)) {
     const own = task.workdir === plan.invocation.cwd;
     return fail(
@@ -113,7 +126,13 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   // Bound to the task from now on: it runs here unless the agent moves on (into a worktree, say).
   if (task.workdir !== plan.invocation.cwd) await backend.updateTask(task.id, { workdir: plan.invocation.cwd });
 
-  const env: Record<string, string> = {};
+  // Intake loads only the user's settings; the tokens and endpoints it is allowed come from the checkout's.
+  let env: Record<string, string> = {};
+  if (fromIntake && config.intake.env.length > 0) {
+    const picked = pickEnv(deps.settingsEnv(plan.invocation.cwd), config.intake.env);
+    env = picked.env;
+    if (picked.missing.length > 0) deps.appendLog(taskId, `not in the checkout's settings: ${picked.missing.join(", ")}`);
+  }
 
 
   const files = deps.files;
@@ -314,6 +333,8 @@ if (import.meta.main) {
       appendLog,
       pluginPath: resolvePluginPath,
       dirExists: (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true,
+      settingsEnv: readSettingsEnv,
+      mcpServers: readMcpServers,
       home: homedir(),
       newSessionId: randomUUID,
       files: createRunFiles(),

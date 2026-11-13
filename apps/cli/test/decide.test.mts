@@ -10,6 +10,7 @@ import {
   decideOutcome,
   decideStale,
   expandRule,
+  pluginPlaceholders,
   planPauses,
   planStarts,
   supervise,
@@ -25,8 +26,8 @@ import { CONFIG, note as makeNote, task } from "./helpers.mts";
 
 const FRESH = { kind: "fresh", sessionId: "s1" } as const;
 const PR = "https://github.com/cosuno/cosuno/pull/17741";
-const invoke = (overrides: Parameters<typeof task>[0], run: Parameters<typeof buildInvocation>[0]["run"] = FRESH, prReviewPath: string | undefined = "/plugins/pr") =>
-  buildInvocation({ run, task: task(overrides), repos: CONFIG.repos, defaultCwd: CONFIG.defaultCwd, intake: CONFIG.intake, home: "/h", prReviewPath, hookCommand: "'/x/agent-hook' '/run/ab' abc" });
+const invoke = (overrides: Parameters<typeof task>[0], run: Parameters<typeof buildInvocation>[0]["run"] = FRESH, laneCwd?: string) =>
+  buildInvocation({ run, task: task(overrides), repos: CONFIG.repos, defaultCwd: CONFIG.defaultCwd, intake: CONFIG.intake, laneCwd, home: "/h", pluginRoots: { "pr-review": "/plugins/pr" }, hookCommand: "'/x/agent-hook' '/run/ab' abc" });
 
 test("a scheduled task runs its prompt as written, in its directory, as the user in auto mode", () => {
   const plan = invoke({ id: "abc", input: "/review-pr 17741 --fresh", machine: "here", workdir: "/work/cosuno" });
@@ -69,9 +70,18 @@ test("a resume passes the reply and continues where the session stopped", () => 
   assert.equal(plan.invocation.cwd, "/repo/.claude/worktrees/x");
 });
 
-test("intake rules with {pr-review} need the plugin path", () => {
-  const plan = buildInvocation({ run: FRESH, task: task({ id: "a", input: PR, createdBy: "intake" }), repos: CONFIG.repos, defaultCwd: "/", intake: { ...CONFIG.intake, allowedTools: ["Bash({pr-review}/x.sh *)"] }, home: "/h", prReviewPath: undefined });
-  assert.ok(!plan.ok && /plugin path is unknown/.test(plan.reason));
+test("intake rules naming a plugin need its path", () => {
+  const plan = buildInvocation({ run: FRESH, task: task({ id: "a", input: PR, createdBy: "intake" }), repos: CONFIG.repos, defaultCwd: "/", intake: { ...CONFIG.intake, allowedTools: ["Bash({pr-review}/x.sh *)", "Bash({engineering}/y.sh *)"] }, home: "/h", pluginRoots: { "pr-review": "/p" } });
+  assert.ok(!plan.ok && /plugin engineering is unknown/.test(plan.reason));
+});
+
+test("a task without a directory runs in the checkout of the PR its prompt names, else in its lane's directory", () => {
+  const byPr = invoke({ id: "a", input: `/review-pr ${PR}` }, FRESH, "/lane/dir");
+  assert.ok(byPr.ok && byPr.invocation.cwd === "/work/cosuno");
+  const byLane = invoke({ id: "a", input: "/review-pr 17741" }, FRESH, "/lane/dir");
+  assert.ok(byLane.ok && byLane.invocation.cwd === "/lane/dir");
+  const pinned = invoke({ id: "a", input: `/review-pr ${PR}`, workdir: "/own/dir", machine: "here" }, FRESH, "/lane/dir");
+  assert.ok(pinned.ok && pinned.invocation.cwd === "/own/dir", "a task's own directory wins");
 });
 
 test("a prompt's skill picks its lane; anything else goes to the lane with *", () => {
@@ -103,6 +113,8 @@ test("intake's head line is kept on the task but not given to the agent", () => 
   assert.equal(prUrlIn(input), PR);
   assert.equal(prUrlIn("Find out X"), undefined);
   assert.match(boardRules(task({ id: "abc" })), /AskUserQuestion is not available.*board ask abc --file \/tmp\/pr-abc-questions\.json/s);
+  assert.doesNotMatch(boardRules(task({ id: "abc" })), /stands alone/);
+  assert.match(boardRules(task({ id: "abc", createdBy: "intake" })), /run every Bash command on its own, without pipes/);
 });
 
 test("the start time is the latest start note", () => {
@@ -120,10 +132,13 @@ test("long text is tailed", () => {
   assert.equal(tail("abcdef", 4), "…def");
 });
 
-test("{pr-review} expands to the plugin path in Bash rules; ~/ only in Bash rules", () => {
-  assert.equal(expandRule("Bash({pr-review}/skills/x.sh *)", "/h", "/plugins/pr"), "Bash(/plugins/pr/skills/x.sh *)");
-  assert.equal(expandRule("Bash(~/bin/tool *)", "/h", undefined), "Bash(/h/bin/tool *)");
-  assert.equal(expandRule("Read(~/.config/**)", "/h", "/p"), "Read(~/.config/**)");
+test("{<plugin>} expands to the plugin's root in Bash rules; ~/ only in Bash rules", () => {
+  const roots = { "pr-review": "/plugins/pr", engineering: "/plugins/eng" };
+  assert.equal(expandRule("Bash({pr-review}/skills/x.sh *)", "/h", roots), "Bash(/plugins/pr/skills/x.sh *)");
+  assert.equal(expandRule("Bash({engineering}/skills/circleci-reference/cci.sh *)", "/h", roots), "Bash(/plugins/eng/skills/circleci-reference/cci.sh *)");
+  assert.equal(expandRule("Bash(~/bin/tool *)", "/h", {}), "Bash(/h/bin/tool *)");
+  assert.equal(expandRule("Read(~/.config/**)", "/h", roots), "Read(~/.config/**)");
+  assert.deepEqual(pluginPlaceholders(["Bash({pr-review}/a *)", "Bash({engineering}/b *)", "Bash({pr-review}/c *)", "Read(x)"]), ["pr-review", "engineering"]);
 });
 
 const at = (minute: number): Date => new Date(Date.UTC(2026, 10, 13, 10, minute));
