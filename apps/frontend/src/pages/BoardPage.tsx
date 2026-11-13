@@ -7,7 +7,7 @@ import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { POLL_MS, useTRPC, type BoardTask } from '../lib/trpc';
 
 const HINT: Record<Status, string> = {
-  todo: 'Top runs first',
+  todo: 'By priority; top runs first',
   running: 'On a worker machine',
   'needs-me': 'Waiting for you',
   done: '',

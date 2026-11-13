@@ -240,3 +240,71 @@ describe('board UI', () => {
     expect(JSON.stringify(listed)).not.toContain('token');
   });
 });
+
+describe('priority', () => {
+  const titles = (rows: { title: string; status: string }[], status = 'todo') =>
+    rows.filter((t) => t.status === status).map((t) => t.title);
+
+  it('columns sort by priority, then manual order; list-tasks hands workers the urgent ones first', async () => {
+    const ui = caller(db);
+    await ui.tasks.create({ title: 'normal-1', input: '', label: 'research' });
+    await ui.tasks.create({ title: 'low', input: '', label: 'research', priority: 'low' });
+    await ui.tasks.create({ title: 'urgent', input: '', label: 'research', priority: 'urgent' });
+    await ui.tasks.create({ title: 'normal-2', input: '', label: 'research' });
+    expect(titles(await ui.tasks.list())).toEqual(['urgent', 'normal-1', 'normal-2', 'low']);
+    const machine = (await ctx.call('laptop', 'list-tasks')).json.result;
+    expect(machine.map((t: { title: string; priority: string }) => `${t.title}:${t.priority}`)).toEqual([
+      'urgent:urgent',
+      'normal-1:normal',
+      'normal-2:normal',
+      'low:low',
+    ]);
+  });
+
+  it('a new priority puts the task at the bottom of its new band and notes it', async () => {
+    const ui = caller(db);
+    await ui.tasks.create({ title: 'high-1', input: '', label: 'research', priority: 'high' });
+    const task = await ui.tasks.create({ title: 'normal', input: '', label: 'research' });
+    await ui.tasks.create({ title: 'high-2', input: '', label: 'research', priority: 'high' });
+    await ui.tasks.setPriority({ id: task.id, priority: 'high' });
+    expect(titles(await ui.tasks.list())).toEqual(['high-1', 'high-2', 'normal']);
+    const { thread } = await ui.tasks.get({ id: task.id });
+    expect(thread.at(-1)?.text).toBe('Priority normal → high.');
+  });
+
+  it('a reply jumps to the top of its own band, not above more urgent work', async () => {
+    const ui = caller(db);
+    await ui.tasks.create({ title: 'urgent', input: '', label: 'research', priority: 'urgent' });
+    await ui.tasks.create({ title: 'normal-old', input: '', label: 'research' });
+    const waiting = await ui.tasks.create({ title: 'replied', input: '', label: 'research', start: false });
+    await ui.tasks.reply({ id: waiting.id, message: 'go', resume: true });
+    expect(titles(await ui.tasks.list())).toEqual(['urgent', 'replied', 'normal-old']);
+  });
+
+  it('a dropped card takes the priority of the tasks it lands among', async () => {
+    const ui = caller(db);
+    const urgent = await ui.tasks.create({ title: 'urgent', input: '', label: 'research', priority: 'urgent' });
+    const n1 = await ui.tasks.create({ title: 'n1', input: '', label: 'research' });
+    const n2 = await ui.tasks.create({ title: 'n2', input: '', label: 'research' });
+    const low = await ui.tasks.create({ title: 'low', input: '', label: 'research', priority: 'low' });
+    // Between two normals: normal.
+    const moved = await ui.tasks.move({ id: urgent.id, status: 'todo', afterId: n1.id, beforeId: n2.id });
+    expect(moved.priority).toBe('normal');
+    expect(titles(await ui.tasks.list())).toEqual(['n1', 'urgent', 'n2', 'low']);
+    // Above everything, below nothing: the one below it.
+    expect((await ui.tasks.move({ id: low.id, status: 'todo', beforeId: n1.id })).priority).toBe('normal');
+    // Within its own band it keeps its priority.
+    expect((await ui.tasks.move({ id: n2.id, status: 'todo', beforeId: n1.id })).priority).toBe('normal');
+  });
+
+  it('follow-ups inherit the parent priority unless the agent sets one', async () => {
+    const ui = caller(db);
+    const parent = await ui.tasks.create({ title: 'parent', input: '', label: 'research', priority: 'high' });
+    const inherit = await ctx.call('laptop', 'add-task', { body: { title: 'a', labels: ['research'], parentId: parent.id, createdBy: 'agent', status: 'needs-me' } });
+    expect(inherit.json.result.task.priority).toBe('high');
+    const chosen = await ctx.call('laptop', 'add-task', { body: { title: 'b', labels: ['research'], parentId: parent.id, createdBy: 'agent', status: 'needs-me', priority: 'low' } });
+    expect(chosen.json.result.task.priority).toBe('low');
+    const plain = await ctx.call('laptop', 'add-task', { body: { title: 'c', labels: ['research'] } });
+    expect(plain.json.result.task.priority).toBe('normal');
+  });
+});

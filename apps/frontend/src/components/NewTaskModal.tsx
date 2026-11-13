@@ -1,7 +1,9 @@
-import { Button, Checkbox, Group, Modal, Select, Stack, Text, TextInput } from '@mantine/core';
+import { PRIORITIES, type Priority } from '@agent-board/shared';
+import { Button, Checkbox, Group, Modal, SegmentedControl, Select, Stack, Text, TextInput } from '@mantine/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { PRIORITY_LABEL } from '../lib/priority';
 import { useTRPC } from '../lib/trpc';
 import { MarkdownEditor } from './MarkdownEditor';
 
@@ -13,6 +15,7 @@ export function NewTaskModal({ opened, onClose }: { opened: boolean; onClose: ()
   const [title, setTitle] = useState('');
   const [input, setInput] = useState('');
   const [start, setStart] = useState(true);
+  const [priority, setPriority] = useState<Priority>('normal');
   const create = useMutation(trpc.tasks.create.mutationOptions());
 
   useEffect(() => {
@@ -24,11 +27,12 @@ export function NewTaskModal({ opened, onClose }: { opened: boolean; onClose: ()
   const submit = () => {
     if (!ready || create.isPending) return;
     create.mutate(
-      { label, title, input, start },
+      { label, title, input, start, priority },
       {
         onSuccess: (task) => {
           setTitle('');
           setInput('');
+          setPriority('normal');
           onClose();
           navigate(`/t/${task.id}`);
         },
@@ -53,6 +57,17 @@ export function NewTaskModal({ opened, onClose }: { opened: boolean; onClose: ()
             {description}
           </Text>
         )}
+        <div>
+          <Text size="sm" fw={500} mb={4}>
+            Priority
+          </Text>
+          <SegmentedControl
+            fullWidth
+            value={priority}
+            onChange={(value) => setPriority(value as Priority)}
+            data={PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABEL[p] }))}
+          />
+        </div>
         <TextInput label="Title" value={title} onChange={(e) => setTitle(e.currentTarget.value)} data-autofocus />
         <MarkdownEditor
           label="What to do"

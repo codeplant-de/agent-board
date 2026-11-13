@@ -22,6 +22,11 @@ export type NoteAuthor = (typeof NOTE_AUTHORS)[number];
 export const NOTE_KINDS = ["comment", "question", "answer", "event"] as const;
 export type NoteKind = (typeof NOTE_KINDS)[number];
 
+// Highest first: a column lists its tasks by priority, then by their manual order, and workers pick up from the top.
+export const PRIORITIES = ["urgent", "high", "normal", "low"] as const;
+export type Priority = (typeof PRIORITIES)[number];
+export const DEFAULT_PRIORITY: Priority = "normal";
+
 export const TASK_CREATORS = ["intake", "user", "agent"] as const;
 export type TaskCreator = (typeof TASK_CREATORS)[number];
 
@@ -31,6 +36,7 @@ export interface Task {
   input: string;
   labels: string[];
   status: Status;
+  priority: Priority;
   url: string;
   closed: boolean;
   // The machine that claimed the task last; a resume runs only there, because the Claude session lives on it.
@@ -60,6 +66,8 @@ export interface TaskDraft {
   input: string;
   labels: string[];
   status: Status;
+  // Default: the parent's priority for a follow-up, otherwise normal.
+  priority?: Priority;
   // Unique per board: a second add-task with the same key returns the first task instead of a new one.
   dedupeKey?: string;
   parentId?: string;
@@ -68,6 +76,7 @@ export interface TaskDraft {
 
 export interface TaskPatch {
   status?: Status;
+  priority?: Priority;
   input?: string;
   sessionId?: string | null;
   next?: NextRun;
@@ -124,6 +133,7 @@ export const isNextRun = oneOf(NEXT_RUNS);
 export const isNoteAuthor = oneOf(NOTE_AUTHORS);
 export const isNoteKind = oneOf(NOTE_KINDS);
 export const isTaskCreator = oneOf(TASK_CREATORS);
+export const isPriority = oneOf(PRIORITIES);
 
 function isStringList(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
@@ -187,6 +197,7 @@ export function parseTask(value: unknown): Task {
     input: string(obj, "input", "task"),
     labels: labels(obj, "task"),
     status: member(obj, "status", "task", STATUSES),
+    priority: member(obj, "priority", "task", PRIORITIES),
     url,
     closed: boolean(obj, "closed", "task"),
     machine,
@@ -252,7 +263,7 @@ export function parseSetupResult(value: unknown): string[] {
 // Stdin of add-task. Only `title` is required.
 export function parseDraft(value: unknown): TaskDraft {
   const obj = record(value, "draft");
-  rejectUnknownKeys(obj, ["title", "input", "labels", "status", "dedupeKey", "parentId", "createdBy"], "draft");
+  rejectUnknownKeys(obj, ["title", "input", "labels", "status", "priority", "dedupeKey", "parentId", "createdBy"], "draft");
   const title = string(obj, "title", "draft");
   if (title.trim() === "") throw new ContractError("draft.title must not be empty");
   const draft: TaskDraft = {
@@ -261,6 +272,7 @@ export function parseDraft(value: unknown): TaskDraft {
     labels: "labels" in obj ? labels(obj, "draft") : [],
     status: "status" in obj ? member(obj, "status", "draft", STATUSES) : "todo",
   };
+  if ("priority" in obj) draft.priority = member(obj, "priority", "draft", PRIORITIES);
   if ("dedupeKey" in obj) {
     draft.dedupeKey = string(obj, "dedupeKey", "draft");
     if (draft.dedupeKey === "") throw new ContractError("draft.dedupeKey must not be empty");
@@ -273,11 +285,12 @@ export function parseDraft(value: unknown): TaskDraft {
 // Stdin of update-task. At least one key.
 export function parsePatch(value: unknown): TaskPatch {
   const obj = record(value, "patch");
-  const keys = ["status", "input", "sessionId", "next"];
+  const keys = ["status", "priority", "input", "sessionId", "next"];
   rejectUnknownKeys(obj, keys, "patch");
   if (!keys.some((key) => key in obj)) throw new ContractError(`patch needs one of ${keys.join(", ")}`);
   const patch: TaskPatch = {};
   if ("status" in obj) patch.status = member(obj, "status", "patch", STATUSES);
+  if ("priority" in obj) patch.priority = member(obj, "priority", "patch", PRIORITIES);
   if ("input" in obj) patch.input = string(obj, "input", "patch");
   if ("sessionId" in obj) patch.sessionId = nullableString(obj, "sessionId", "patch");
   if ("next" in obj) patch.next = member(obj, "next", "patch", NEXT_RUNS);

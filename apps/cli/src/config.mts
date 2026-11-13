@@ -1,7 +1,8 @@
 import { readFileSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import { isRecord, isSafeMachineName } from "@agent-board/shared";
+import { DEFAULT_PRIORITY, isPriority, isRecord, isSafeMachineName, PRIORITIES } from "@agent-board/shared";
+import type { Priority } from "@agent-board/shared";
 
 export class ConfigError extends Error {}
 
@@ -49,6 +50,8 @@ export interface Config {
   timeoutMinutes: number;
   slackWebhookFile: string;
   intakeLabel: string;
+  // Priority of the tasks intake creates.
+  intakePriority: Priority;
   labels: Record<string, LabelEntry>;
   repos: Record<string, string>;
 }
@@ -203,6 +206,8 @@ export function parseConfig(raw: unknown): Config {
   }
 
   const intakeLabel = typeof raw["intakeLabel"] === "string" ? raw["intakeLabel"] : "review-pr";
+  const intakePriority = raw["intakePriority"] ?? DEFAULT_PRIORITY;
+  if (!isPriority(intakePriority)) throw new ConfigError(`config: intakePriority must be one of ${PRIORITIES.join(", ")}`);
   const webhook = raw["slackWebhookFile"] ?? "~/.config/watch-review-requests/slack-webhook";
   if (typeof webhook !== "string") throw new ConfigError("config: slackWebhookFile must be a path");
   for (const [name, entry] of Object.entries(labels)) {
@@ -221,6 +226,7 @@ export function parseConfig(raw: unknown): Config {
     timeoutMinutes: positiveInt(raw, "timeoutMinutes", "", 45),
     slackWebhookFile: expandHome(webhook),
     intakeLabel,
+    intakePriority,
     labels,
     repos,
   };

@@ -7,6 +7,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     input: "",
     labels: [],
     status: "todo",
+    priority: "normal",
     url: `https://tasks.example/${overrides.id}`,
     closed: false,
     machine: null,
@@ -26,6 +27,7 @@ export const CONFIG: Config = {
   timeoutMinutes: 45,
   slackWebhookFile: "/nonexistent",
   intakeLabel: "review-pr",
+  intakePriority: "normal",
   repos: { "cosuno/cosuno": "/work/cosuno" },
   labels: {
     selftest: { kind: "command", command: ["sleep", "300"], cwd: undefined },

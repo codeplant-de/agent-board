@@ -135,3 +135,15 @@ test("a failed backend listing creates nothing and fails the run", async () => {
   await assert.rejects(runIntake({ backend, config: CONFIG, dryRun: false, print: () => undefined, github: { listReviewRequested: async () => [pr(1)] }, now: () => NOW }), /list-tasks failed/);
   assert.deepEqual(backend.writes, []);
 });
+
+test("intake creates its tasks with the configured priority", async () => {
+  const backend = fakeBackend([]);
+  const drafts: unknown[] = [];
+  const addTask = backend.addTask.bind(backend);
+  backend.addTask = async (draft) => {
+    drafts.push(draft);
+    return addTask(draft);
+  };
+  await runIntake({ backend, config: { ...CONFIG, intakePriority: "high" }, dryRun: false, print: () => undefined, github: { listReviewRequested: async () => [pr(1)] }, now: () => NOW });
+  assert.equal((drafts[0] as { priority: string }).priority, "high");
+});
