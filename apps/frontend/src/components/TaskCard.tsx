@@ -1,7 +1,7 @@
-import { Card, Group, Stack, Text } from '@mantine/core';
-import { IconBrandGithub } from '@tabler/icons-react';
+import { ActionIcon, Card, Group, Stack, Text, Tooltip } from '@mantine/core';
+import { IconBrandGithub, IconTerminal2 } from '@tabler/icons-react';
 import type { DragEvent } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { prUrl } from '../lib/status';
 import { ago } from '../lib/time';
 import type { BoardTask, RouterOutputs } from '../lib/trpc';
@@ -34,6 +34,7 @@ interface Props {
 
 export function TaskCard({ task, activity, draggable, dragging, onDragStart, onDragEnd, onDragOver }: Props) {
   const pr = prUrl(task.input);
+  const navigate = useNavigate();
   return (
     <Card
       component={Link}
@@ -54,9 +55,27 @@ export function TaskCard({ task, activity, draggable, dragging, onDragStart, onD
       <Stack gap={6}>
         <Group gap={6} wrap="nowrap" align="flex-start">
           {pr && <IconBrandGithub size={16} style={{ flexShrink: 0, marginTop: 2 }} />}
-          <Text size="sm" fw={500} lineClamp={2}>
+          <Text size="sm" fw={500} lineClamp={2} style={{ flex: 1 }}>
             {task.title}
           </Text>
+          {(task.status === 'running' || task.sessionId !== null) && (
+            <Tooltip label="Transcript">
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                color="gray"
+                aria-label="Transcript"
+                onClick={(event) => {
+                  // The card is a link to the task; this opens its transcript instead.
+                  event.preventDefault();
+                  event.stopPropagation();
+                  navigate(`/t/${task.id}?transcript=1`);
+                }}
+              >
+                <IconTerminal2 size={14} />
+              </ActionIcon>
+            </Tooltip>
+          )}
         </Group>
         <TaskBadges task={task} />
         {task.status === 'running' && (

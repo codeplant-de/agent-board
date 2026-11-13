@@ -37,6 +37,7 @@ test("a scheduled task runs its prompt as written, in its directory, as the user
   assert.equal(args[args.indexOf("--permission-mode") + 1], "auto");
   assert.ok(!args.includes("--setting-sources"), "all of the user's settings load");
   assert.ok(!args.includes("--allowedTools"));
+  assert.deepEqual(args.slice(args.indexOf("--output-format"), args.indexOf("--output-format") + 3), ["--output-format", "stream-json", "--verbose"]);
   assert.match(args[args.indexOf("--append-system-prompt") + 1] ?? "", /agent-board task abc/);
   const settings = JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}");
   assert.deepEqual(settings, { hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: "'/x/agent-hook' '/run/ab' abc" }] }] } });

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { labels, notes, tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { AppError } from '../services/errors';
 import { issueToken, listMachines, revokeMachine } from '../services/machines';
+import { eventOutput, listEvents, listRuns } from '../services/transcripts';
 import {
   addTask,
   answer,
@@ -205,7 +206,21 @@ const machinesRouter = router({
     .mutation(async ({ ctx, input }) => revokeMachine(ctx.db, input.name)),
 });
 
+const transcriptRouter = router({
+  /** A task's runs, newest first. */
+  runs: procedure.input(z.object({ id })).query(({ ctx, input }) => listRuns(ctx.db, input.id)),
+  /** A run's events after `afterSeq`, without tool output; poll with the last seq seen. */
+  events: procedure
+    .input(z.object({ runId: z.string().min(1), afterSeq: z.number().int().default(-1) }))
+    .query(({ ctx, input }) => listEvents(ctx.db, input.runId, input.afterSeq)),
+  /** One tool result's output, when someone opens it. */
+  output: procedure
+    .input(z.object({ runId: z.string().min(1), seq: z.number().int() }))
+    .query(({ ctx, input }) => eventOutput(ctx.db, input.runId, input.seq)),
+});
+
 export const appRouter = router({
+  transcript: transcriptRouter,
   me: procedure.query(({ ctx }) => ({ username: ctx.username })),
   tasks: tasksRouter,
   labels: labelsRouter,

@@ -41,7 +41,8 @@ const STATUS: Record<AppErrorCode, number> = {
 export async function buildServer(config: Config, db: Db) {
   const app = Fastify({
     logger: config.nodeEnv === 'test' ? false : { level: 'info' },
-    bodyLimit: 2 * 1024 * 1024,
+    // A transcript batch can carry a few large tool results.
+    bodyLimit: 16 * 1024 * 1024,
     trustProxy: true,
   });
 

@@ -405,7 +405,7 @@ export async function setClosed(db: Db, taskId: string, closed: boolean, by: str
     await systemEvent(tx, taskId, closed ? 'Closed.' : 'Reopened.', by);
     const [row] = await tx
       .update(tasks)
-      .set({ closed, proposed: closed ? task.proposed : false, updatedAt: new Date() })
+      .set({ closed, closedAt: closed ? new Date() : null, proposed: closed ? task.proposed : false, updatedAt: new Date() })
       .where(eq(tasks.id, taskId))
       .returning();
     return row!;

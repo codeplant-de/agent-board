@@ -133,6 +133,7 @@ export async function buildRequest(command: string, args: string[], stdin: () =>
     case "update-task":
     case "ask":
     case "heartbeat":
+    case "transcript":
       if (args.length !== 1) usage("<id>");
       return { id: id(args[0], "<id>"), body: parseJson(await stdin(), command) };
     case "pause": {
@@ -161,7 +162,7 @@ export async function buildRequest(command: string, args: string[], stdin: () =>
   }
 }
 
-const COMMANDS = ["list-tasks", "get-task", "add-task", "update-task", "claim-task", "add-note", "ask", "heartbeat", "pause", "read-notes", "setup"];
+const COMMANDS = ["list-tasks", "get-task", "add-task", "update-task", "claim-task", "add-note", "ask", "heartbeat", "pause", "transcript", "read-notes", "setup"];
 
 export async function main(argv: string[], fetcher: Fetch = fetch): Promise<number> {
   const [command, ...args] = argv;
@@ -178,7 +179,7 @@ export async function main(argv: string[], fetcher: Fetch = fetch): Promise<numb
   try {
     const result = await callServer(config, command, request, fetcher);
     // add-note, ask and heartbeat print nothing; everything else prints its result.
-    if (!["add-note", "ask", "heartbeat"].includes(command)) console.log(JSON.stringify(result));
+    if (!["add-note", "ask", "heartbeat", "transcript"].includes(command)) console.log(JSON.stringify(result));
     return 0;
   } catch (error) {
     // A lost claim is an answer, not a failure: the core moves on to the next task.

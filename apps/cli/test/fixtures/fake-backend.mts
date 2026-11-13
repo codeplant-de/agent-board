@@ -151,6 +151,10 @@ function locked(stdin: string): void {
       state.notes[args[0] ?? ""] = [...notes, { id: `n${notes.length + 1}`, text: stdin, createdAt: new Date().toISOString(), author, kind: "comment" }];
       break;
     }
+    case "transcript":
+      find(args[0]);
+      json(stdin);
+      break;
     case "heartbeat": {
       const task = find(args[0]);
       const beat = json(stdin);

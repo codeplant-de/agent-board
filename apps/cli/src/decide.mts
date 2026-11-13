@@ -344,6 +344,10 @@ export function buildInvocation(input: {
     "-p",
     input.run.kind === "fresh" ? prompt : input.run.prompt,
     ...session,
+    // Every event as a JSON line: the worker keeps a readable log and sends the transcript to the board.
+    "--output-format",
+    "stream-json",
+    "--verbose",
     "--append-system-prompt",
     boardRules(task),
     // The heartbeat, pause and question hook, inline.

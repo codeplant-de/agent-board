@@ -4,6 +4,8 @@ import {
   boolean,
   doublePrecision,
   index,
+  integer,
+  primaryKey,
   jsonb,
   pgEnum,
   pgTable,
@@ -34,6 +36,8 @@ export const tasks = pgTable(
     /** Order within a status and priority: lower is higher up. */
     position: doublePrecision('position').notNull(),
     closed: boolean('closed').notNull().default(false),
+    /** When it was closed; its transcripts go 14 days later. */
+    closedAt: timestamp('closed_at', { withTimezone: true }),
     /** The machine that claimed the task last. */
     machine: text('machine'),
     sessionId: text('session_id'),
@@ -96,3 +100,40 @@ export const machines = pgTable('machine', {
 
 export type TaskRow = typeof tasks.$inferSelect;
 export type NoteRow = typeof notes.$inferSelect;
+
+/** One worker run of a task: a fresh start, a resume or a re-run. */
+export const transcriptRuns = pgTable(
+  'transcript_run',
+  {
+    id: text('id').primaryKey(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    machine: text('machine').notNull(),
+    sessionId: text('session_id'),
+    resumed: boolean('resumed').notNull().default(false),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+    lastEventAt: timestamp('last_event_at', { withTimezone: true }).notNull(),
+    eventCount: integer('event_count').notNull().default(0),
+  },
+  (t) => [index('transcript_run_task_idx').on(t.taskId, t.startedAt)],
+);
+
+/** A condensed stream-json event. A tool result's output lives in its own column and is loaded only on demand. */
+export const transcriptEvents = pgTable(
+  'transcript_event',
+  {
+    runId: text('run_id')
+      .notNull()
+      .references(() => transcriptRuns.id, { onDelete: 'cascade' }),
+    seq: integer('seq').notNull(),
+    at: timestamp('at', { withTimezone: true }).notNull(),
+    kind: text('kind').notNull(),
+    parent: text('parent'),
+    /** The event without `output`. */
+    data: jsonb('data').notNull(),
+    output: text('output'),
+    outputSize: integer('output_size'),
+  },
+  (t) => [primaryKey({ columns: [t.runId, t.seq] })],
+);

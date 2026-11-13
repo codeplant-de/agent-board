@@ -160,6 +160,11 @@ export function createCliBackend(options: { command: string[]; timeoutMs?: numbe
       await invoke("heartbeat", [safeId], JSON.stringify(beat));
     },
     pause: async (id, note) => call("pause", parseTask, [taskId(id)], note),
+    transcript: async (id, batch) => {
+      const safeId = taskId(id);
+      await verify();
+      await invoke("transcript", [safeId], JSON.stringify(batch));
+    },
     readNotes: async (id) => call("read-notes", parseNotes, [taskId(id)]),
     async setup(labels, { dryRun = false } = {}) {
       await verify();
@@ -201,6 +206,9 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     async pause(id, note) {
       print(`DRY pause ${id} ${oneLine(note, 160)}`);
       return { ...(await inner.getTask(id)), status: "todo", next: "resume" };
+    },
+    async transcript(id, batch) {
+      print(`DRY transcript ${id} run ${batch.runId}: ${batch.events.length} events`);
     },
     async ask(id, questions) {
       print(`DRY ask ${id} ${oneLine(JSON.stringify(questions), 160)}`);
