@@ -95,7 +95,7 @@ function locked(stdin: string): void {
       print({ contract: mode === "other-version" ? 1 : 2 });
       break;
     case "list-tasks":
-      if (mode === "unsafe-id") state.tasks.push({ id: "../etc", title: "x", input: "", labels: [], status: "todo", url: "u", closed: false, machine: null, sessionId: null, next: "fresh", openQuestion: false });
+      if (mode === "unsafe-id") state.tasks.push({ id: "../etc", title: "x", input: "", labels: [], status: "todo", priority: "normal", url: "u", closed: false, machine: null, sessionId: null, next: "fresh", openQuestion: false });
       if (mode === "missing-field") state.tasks.push({ id: "m1", title: "x" });
       print(state.tasks.filter((task) => args.includes("--all") || task["closed"] !== true));
       break;
@@ -109,7 +109,7 @@ function locked(stdin: string): void {
         print({ task: existing, created: false });
         break;
       }
-      const task = { id: `t${state.nextId++}`, url: "https://tasks.example", closed: false, machine: null, sessionId: null, next: "fresh", openQuestion: false, ...draft, ...(dedupeKey ? { dedupeKey } : {}) };
+      const task = { id: `t${state.nextId++}`, url: "https://tasks.example", closed: false, machine: null, sessionId: null, next: "fresh", openQuestion: false, ...draft, priority: draft.priority ?? "normal", ...(dedupeKey ? { dedupeKey } : {}) };
       state.tasks.push(task);
       print({ task, created: true });
       break;
@@ -120,6 +120,7 @@ function locked(stdin: string): void {
       if (patch.input !== undefined) task["input"] = patch.input;
       if (patch.sessionId !== undefined) task["sessionId"] = patch.sessionId;
       if (patch.next !== undefined) task["next"] = patch.next;
+      if (patch.priority !== undefined) task["priority"] = patch.priority;
       if (patch.status !== undefined) {
         // A status change puts the task at the bottom of its new status.
         task["status"] = patch.status;

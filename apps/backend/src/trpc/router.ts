@@ -1,4 +1,4 @@
-import { isSafeTaskId, STATUSES, type Note, type Task } from '@agent-board/shared';
+import { isSafeTaskId, PRIORITIES, STATUSES, type Note, type Task } from '@agent-board/shared';
 import { asc, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { labels, notes, tasks, type NoteRow, type TaskRow } from '../db/schema';
@@ -15,6 +15,7 @@ import {
   rerunFresh,
   reply,
   setClosed,
+  setPriority,
   toNote,
   toTask,
 } from '../services/tasks';
@@ -22,6 +23,7 @@ import { procedure, router } from './trpc';
 
 const id = z.string().refine(isSafeTaskId, 'not a task id');
 const status = z.enum(STATUSES);
+const priority = z.enum(PRIORITIES);
 
 /** What the board needs of a task beyond the contract's fields. */
 export interface BoardTask extends Task {
@@ -80,6 +82,7 @@ const tasksRouter = router({
         title: z.string().trim().min(1).max(300),
         input: z.string().max(200_000),
         label: z.string().min(1),
+        priority: priority.default('normal'),
         start: z.boolean().default(true),
       }),
     )
@@ -88,6 +91,7 @@ const tasksRouter = router({
         title: input.title,
         input: input.input,
         labels: [input.label],
+        priority: input.priority,
         status: input.start ? 'todo' : 'needs-me',
         createdBy: 'user',
       });
@@ -126,6 +130,12 @@ const tasksRouter = router({
   rerun: procedure
     .input(z.object({ id }))
     .mutation(async ({ ctx, input }) => boardTask(await rerunFresh(ctx.db, input.id, ctx.username), ctx.config.publicUrl)),
+
+  setPriority: procedure
+    .input(z.object({ id, priority }))
+    .mutation(async ({ ctx, input }) =>
+      boardTask(await setPriority(ctx.db, input.id, input.priority, ctx.username), ctx.config.publicUrl),
+    ),
 
   setClosed: procedure
     .input(z.object({ id, closed: z.boolean() }))

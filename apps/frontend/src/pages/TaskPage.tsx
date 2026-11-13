@@ -1,10 +1,11 @@
 import { Anchor, Badge, Breadcrumbs, Button, Center, Container, Group, Loader, Paper, Spoiler, Stack, Text, Title } from '@mantine/core';
 import { IconBrandGithub, IconCornerDownRight } from '@tabler/icons-react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ActionPanel } from '../components/ActionPanel';
 import { Markdown } from '../components/Markdown';
+import { PriorityPicker } from '../components/PriorityPicker';
 import { TaskBadges } from '../components/TaskBadges';
 import { ThreadItem } from '../components/ThreadItem';
 import { prUrl, STATUS_COLOR, STATUS_LABEL } from '../lib/status';
@@ -15,6 +16,7 @@ export function TaskPage() {
   const { id = '' } = useParams();
   const trpc = useTRPC();
   const query = useQuery({ ...trpc.tasks.get.queryOptions({ id }), refetchInterval: POLL_MS });
+  const setPriority = useMutation(trpc.tasks.setPriority.mutationOptions());
   const bottom = useRef<HTMLDivElement>(null);
   const noteCount = query.data?.thread.length ?? 0;
 
@@ -63,7 +65,8 @@ export function TaskPage() {
           <Title order={3}>{task.title}</Title>
           <Group gap="xs">
             <Badge color={STATUS_COLOR[task.status]}>{task.closed ? 'Closed' : STATUS_LABEL[task.status]}</Badge>
-            <TaskBadges task={task} />
+            <PriorityPicker value={task.priority} onChange={(priority) => setPriority.mutate({ id: task.id, priority })} />
+            <TaskBadges task={task} withPriority={false} />
             <Text size="xs" c="dimmed" title={stamp(task.createdAt)}>
               created by {task.createdBy} {ago(task.createdAt)}
             </Text>

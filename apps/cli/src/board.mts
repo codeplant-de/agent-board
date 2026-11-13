@@ -8,7 +8,7 @@
  *   board setup                   ask the backend to create what it needs (statuses, labels)
  *   board ask <task> --file <path>      ask the user 1-4 questions (JSON in /tmp) and move the task to needs-me
  *   board show <task>             the task and its thread as markdown
- *   board add --label <l> --title <t> --file <path> [--parent <task>]
+ *   board add --label <l> --title <t> --file <path> [--parent <task>] [--priority urgent|high|normal|low]
  *                                 propose a follow-up task; it waits in needs-me until the user starts it
  *
  * <task> is the task id the backend gives. Add --dry-run to print writes.
@@ -16,8 +16,8 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync } from "node:fs";
 import { buildContext, rejectExtraArgs, runMain, takeFlag, UsageError } from "./cli.mts";
 import type { Context } from "./cli.mts";
-import { formatAnswers, formatQuestions, isSafeTaskId, isStatus, parseQuestions, QuestionError, STATUSES } from "@agent-board/shared";
-import type { Note, Status, Task } from "@agent-board/shared";
+import { formatAnswers, formatQuestions, isPriority, isSafeTaskId, isStatus, parseQuestions, PRIORITIES, QuestionError, STATUSES } from "@agent-board/shared";
+import type { Note, Priority, Status, Task } from "@agent-board/shared";
 import { postSlack, slackText } from "./notify.mts";
 
 async function readStdin(): Promise<string> {
@@ -27,7 +27,7 @@ async function readStdin(): Promise<string> {
 }
 
 const USAGE =
-  "usage: board comment <task> <text|--file path> | move <task> <status> | notify <task> <text> | ask <task> --file <path> | show <task> | add --label <l> --title <t> --file <path> [--parent <task>] | tasks | setup";
+  "usage: board comment <task> <text|--file path> | move <task> <status> | notify <task> <text> | ask <task> --file <path> | show <task> | add --label <l> --title <t> --file <path> [--parent <task>] [--priority <p>] | tasks | setup";
 
 const NOTE_FILE_DIR = "/tmp/";
 const NOTE_FILE_MAX_BYTES = 1024 * 1024;
@@ -70,7 +70,7 @@ async function tasks(context: Context): Promise<void> {
   for (const status of STATUSES) {
     const inStatus = open.filter((task) => task.status === status);
     context.print(`${status} (${inStatus.length})`);
-    for (const task of inStatus) context.print(`  ${task.id}  [${task.labels.join(",") || "-"}]  ${task.title}`);
+    for (const task of inStatus) context.print(`  ${task.id}  ${task.priority.padEnd(6)}  [${task.labels.join(",") || "-"}]  ${task.title}`);
   }
 }
 
@@ -99,7 +99,7 @@ async function ask(context: Context, id: string, path: string): Promise<void> {
 
 export function renderThread(task: Task, notes: Note[]): string {
   const byId = new Map(notes.map((note) => [note.id, note]));
-  const lines = [`# ${task.title}`, "", `status: ${task.status} · labels: ${task.labels.join(", ") || "-"} · ${task.url}`, "", "## Input", "", task.input.trim() || "(empty)", "", "## Thread"];
+  const lines = [`# ${task.title}`, "", `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(", ") || "-"} · ${task.url}`, "", "## Input", "", task.input.trim() || "(empty)", "", "## Thread"];
   for (const note of [...notes].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())) {
     lines.push("", `### ${note.author} ${note.kind} · ${note.createdAt.toISOString()}`, "");
     if (note.kind === "question" && note.questions) lines.push(formatQuestions(note.questions));
@@ -114,13 +114,13 @@ async function show(context: Context, id: string): Promise<void> {
   context.print(renderThread(task, notes));
 }
 
-// `add --label <l> --title <t> --file <path> [--parent <task>]`, flags in any order.
-export function parseAddArgs(args: string[]): { label: string; title: string; file: string; parent: string | undefined } {
+// `add --label <l> --title <t> --file <path> [--parent <task>] [--priority <p>]`, flags in any order.
+export function parseAddArgs(args: string[]): { label: string; title: string; file: string; parent: string | undefined; priority: Priority | undefined } {
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const value = args[index + 1];
-    if (!flag || !["--label", "--title", "--file", "--parent"].includes(flag) || value === undefined || values.has(flag)) throw new UsageError(USAGE);
+    if (!flag || !["--label", "--title", "--file", "--parent", "--priority"].includes(flag) || value === undefined || values.has(flag)) throw new UsageError(USAGE);
     values.set(flag, value);
   }
   const label = values.get("--label");
@@ -129,13 +129,15 @@ export function parseAddArgs(args: string[]): { label: string; title: string; fi
   const parent = values.get("--parent");
   if (!label || !title || !file) throw new UsageError(USAGE);
   if (parent !== undefined && !isSafeTaskId(parent)) throw new UsageError(`"${parent.slice(0, 40)}" is not a task id`);
-  return { label, title, file, parent };
+  const priority = values.get("--priority");
+  if (priority !== undefined && !isPriority(priority)) throw new UsageError(`unknown priority "${priority.slice(0, 20)}"; use one of ${PRIORITIES.join(", ")}`);
+  return { label, title, file, parent, priority };
 }
 
 async function add(context: Context, args: string[]): Promise<void> {
-  const { label, title, file, parent } = parseAddArgs(args);
+  const { label, title, file, parent, priority } = parseAddArgs(args);
   // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself.
-  const draft = { title, input: readNoteFile(file), labels: [label], status: "needs-me" as const, createdBy: "agent" as const, ...(parent ? { parentId: parent } : {}) };
+  const draft = { title, input: readNoteFile(file), labels: [label], status: "needs-me" as const, createdBy: "agent" as const, ...(parent ? { parentId: parent } : {}), ...(priority ? { priority } : {}) };
   const { task } = await context.backend.addTask(draft);
   context.print(`proposed ${task.id} ${task.url}`);
 }

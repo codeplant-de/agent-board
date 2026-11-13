@@ -99,3 +99,9 @@ test("a skill label's sandbox entry is parsed, with ~/ expanded in paths and the
   assert.deepEqual(entry.sandbox.maskedEnv[0]?.command, ["gh", "auth", "token"]);
   assert.deepEqual(entry.sandbox.excludedCommands, ["board *"]);
 });
+
+test("intake tasks are normal unless the config says otherwise", () => {
+  assert.equal(parseConfig(valid).intakePriority, "normal");
+  assert.equal(parseConfig({ ...valid, intakePriority: "high" }).intakePriority, "high");
+  assert.throws(() => parseConfig({ ...valid, intakePriority: "asap" }), /intakePriority must be one of urgent, high, normal, low/);
+});

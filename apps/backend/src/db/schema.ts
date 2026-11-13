@@ -13,6 +13,8 @@ import {
 } from 'drizzle-orm/pg-core';
 
 export const taskStatus = pgEnum('task_status', ['todo', 'running', 'needs-me', 'done']);
+/** Declared highest first, so ordering by the enum puts urgent on top. */
+export const taskPriority = pgEnum('task_priority', ['urgent', 'high', 'normal', 'low']);
 export const nextRun = pgEnum('next_run', ['fresh', 'resume']);
 export const taskCreator = pgEnum('task_creator', ['intake', 'user', 'agent']);
 export const noteAuthor = pgEnum('note_author', ['agent', 'user', 'system']);
@@ -28,7 +30,8 @@ export const tasks = pgTable(
     input: text('input').notNull().default(''),
     labels: text('labels').array().notNull().default(sql`'{}'::text[]`),
     status: taskStatus('status').notNull().default('todo'),
-    /** Order within a status: lower is higher up. */
+    priority: taskPriority('priority').notNull().default('normal'),
+    /** Order within a status and priority: lower is higher up. */
     position: doublePrecision('position').notNull(),
     closed: boolean('closed').notNull().default(false),
     /** The machine that claimed the task last. */
@@ -45,7 +48,7 @@ export const tasks = pgTable(
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('task_status_position_idx').on(t.status, t.position)],
+  (t) => [index('task_status_priority_position_idx').on(t.status, t.priority, t.position)],
 );
 
 export const notes = pgTable(

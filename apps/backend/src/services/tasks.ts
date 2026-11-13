@@ -1,8 +1,10 @@
 import {
+  DEFAULT_PRIORITY,
   isSafeTaskId,
   parseAnswers,
   type Answer,
   type Note,
+  type Priority,
   type Question,
   type Status,
   type Task,
@@ -33,6 +35,7 @@ export function toTask(row: TaskRow, publicUrl: string): Task {
     input: row.input,
     labels: row.labels,
     status: row.status,
+    priority: row.priority,
     url: `${publicUrl}/t/${row.id}`,
     closed: row.closed,
     machine: row.machine,
@@ -66,13 +69,13 @@ async function edgePosition(db: DbOrTx, status: Status, edge: 'top' | 'bottom'):
   return row?.high == null ? 0 : row.high + 1;
 }
 
-/** Every task, in priority order within its status; closed ones only with `all`. */
+/** Every task, by status, then priority (urgent first), then manual order; closed ones only with `all`. */
 export async function listTasks(db: DbOrTx, options: { all?: boolean } = {}): Promise<TaskRow[]> {
   return db
     .select()
     .from(tasks)
     .where(options.all ? undefined : eq(tasks.closed, false))
-    .orderBy(asc(tasks.status), asc(tasks.position), asc(tasks.createdAt));
+    .orderBy(asc(tasks.status), asc(tasks.priority), asc(tasks.position), asc(tasks.createdAt));
 }
 
 export async function getTask(db: DbOrTx, id: string): Promise<TaskRow> {
@@ -96,7 +99,8 @@ export async function addTask(
 ): Promise<{ row: TaskRow; created: boolean }> {
   return db.transaction(async (tx) => {
     await requireLabels(tx, draft.labels);
-    if (draft.parentId !== undefined) await getTask(tx, draft.parentId);
+    // A follow-up is as pressing as the task it came from, unless its creator says otherwise.
+    const parent = draft.parentId === undefined ? undefined : await getTask(tx, draft.parentId);
     const proposed = draft.createdBy === 'agent';
     const [row] = await tx
       .insert(tasks)
@@ -106,6 +110,7 @@ export async function addTask(
         input: draft.input,
         labels: draft.labels,
         status: draft.status,
+        priority: draft.priority ?? parent?.priority ?? DEFAULT_PRIORITY,
         position: await edgePosition(tx, draft.status, 'bottom'),
         dedupeKey: draft.dedupeKey ?? null,
         parentId: draft.parentId ?? null,
@@ -121,7 +126,7 @@ export async function addTask(
   });
 }
 
-/** A status change puts the task at the bottom of its new status. */
+/** A status or priority change puts the task at the bottom of its new place. */
 export async function updateTask(db: Db, id: string, patch: TaskPatch): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const current = await lockTask(tx, id);
@@ -129,9 +134,11 @@ export async function updateTask(db: Db, id: string, patch: TaskPatch): Promise<
     if (patch.input !== undefined) values.input = patch.input;
     if (patch.sessionId !== undefined) values.sessionId = patch.sessionId;
     if (patch.next !== undefined) values.next = patch.next;
-    if (patch.status !== undefined && patch.status !== current.status) {
-      values.status = patch.status;
-      values.position = await edgePosition(tx, patch.status, 'bottom');
+    if (patch.priority !== undefined && patch.priority !== current.priority) values.priority = patch.priority;
+    const status = patch.status ?? current.status;
+    if (status !== current.status || values.priority !== undefined) {
+      values.status = status;
+      values.position = await edgePosition(tx, status, 'bottom');
     }
     const [row] = await tx.update(tasks).set(values).where(eq(tasks.id, id)).returning();
     return row!;
@@ -397,32 +404,69 @@ export async function moveTask(
       throw new AppError('CONFLICT', 'The task is running. Wait until it reports back.');
     if (task.status !== 'running' && input.status === 'running')
       throw new AppError('BAD_REQUEST', 'Only a worker moves a task to Running.');
-    const neighbour = async (id: string | undefined): Promise<number | undefined> => {
+    const neighbour = async (id: string | undefined) => {
       if (id === undefined) return undefined;
       const [row] = await tx
-        .select({ position: tasks.position })
+        .select({ position: tasks.position, priority: tasks.priority })
         .from(tasks)
         .where(and(eq(tasks.id, id), eq(tasks.status, input.status), ne(tasks.id, task.id)));
-      return row?.position;
+      return row;
     };
     const above = await neighbour(input.afterId);
     const below = await neighbour(input.beforeId);
+    // Columns sort by priority first, so a card dropped among tasks of another priority takes theirs.
+    const priority = droppedPriority(task.priority, above?.priority, below?.priority);
+    const upper = above?.priority === priority ? above.position : undefined;
+    const lower = below?.priority === priority ? below.position : undefined;
     let position: number;
-    if (above !== undefined && below !== undefined) position = (above + below) / 2;
-    else if (below !== undefined) position = below - 1;
-    else if (above !== undefined) position = above + 1;
+    if (upper !== undefined && lower !== undefined) position = (upper + lower) / 2;
+    else if (lower !== undefined) position = lower - 1;
+    else if (upper !== undefined) position = upper + 1;
     else position = await edgePosition(tx, input.status, 'bottom');
     if (task.status !== input.status) {
       await systemEvent(tx, task.id, `Moved from ${task.status} to ${input.status}.`, input.by);
     }
+    if (task.priority !== priority) {
+      await systemEvent(tx, task.id, `Priority ${task.priority} → ${priority}.`, input.by);
+    }
     const values: Partial<typeof tasks.$inferInsert> = {
       status: input.status,
+      priority,
       position,
       updatedAt: new Date(),
     };
     // Dragging a proposal into Todo starts it.
     if (input.status === 'todo') values.proposed = false;
     const [row] = await tx.update(tasks).set(values).where(eq(tasks.id, task.id)).returning();
+    return row!;
+  });
+}
+
+/**
+ * The priority of a card dropped between `above` and `below`: its own when it fits there (equal to a
+ * neighbour, or between theirs), else the neighbour's above it, else the one below. Without neighbours it keeps its own.
+ */
+export function droppedPriority(own: Priority, above: Priority | undefined, below: Priority | undefined): Priority {
+  const rank = (p: Priority) => PRIORITY_RANK[p];
+  const fitsAbove = above === undefined || rank(above) <= rank(own);
+  const fitsBelow = below === undefined || rank(own) <= rank(below);
+  if (fitsAbove && fitsBelow) return own;
+  return above ?? below ?? own;
+}
+
+const PRIORITY_RANK: Record<Priority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+
+/** A new priority from the UI: the task goes to the bottom of its new band. */
+export async function setPriority(db: Db, taskId: string, priority: Priority, by: string): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    if (task.priority === priority) return task;
+    await systemEvent(tx, taskId, `Priority ${task.priority} → ${priority}.`, by);
+    const [row] = await tx
+      .update(tasks)
+      .set({ priority, position: await edgePosition(tx, task.status, 'bottom'), updatedAt: new Date() })
+      .where(eq(tasks.id, taskId))
+      .returning();
     return row!;
   });
 }

@@ -14,7 +14,7 @@ The CLI talks to the board through one configured executable, `apps/cli/bin/web-
 
 ## Tasks
 
-Four statuses: `todo`, `running`, `needs-me`, `done`. Order within `todo` is priority. A task's label picks the worker. For a PR review, the first line of `input` is the PR URL and intake adds a `head: <sha>` line; any other task's input is free markdown.
+Four statuses: `todo`, `running`, `needs-me`, `done`. Four priorities: `urgent`, `high`, `normal` (the default), `low`. Every column lists its tasks by priority, then in the order you dragged them into, and workers take Todo from the top, so an urgent task runs before anything else that waits. Dropping a card among tasks of another priority gives it their priority; the task page has a picker for it. A task's label picks the worker. For a PR review, the first line of `input` is the PR URL and intake adds a `head: <sha>` line; any other task's input is free markdown.
 
 A run ends in `needs-me`: with a report, with a question, or, when it fails, times out or its worker disappears, with the reason and the end of the log. Nothing moves on until you press a button.
 
@@ -22,7 +22,7 @@ A run ends in `needs-me`: with a report, with a question, or, when it fails, tim
 
 The agent asks with `board ask <task> --file /tmp/<file>.json`: one to four questions, each with two to four options, one of them marked recommended, single or multiple choice (the shape of Claude Code's AskUserQuestion). The task moves to `needs-me` with a **Question** badge, and Slack gets a message.
 
-On the task page you pick options (number keys work), add text where none fits, and press **Answer & continue**. On a task without a question, write a reply and press **Send & continue**. Both put the task at the top of Todo with `next: resume`. The next dispatch tick on the machine that ran the session starts `claude -p "<your reply>" --resume <session>`, so the agent keeps its context. The other buttons:
+On the task page you pick options (number keys work), add text where none fits, and press **Answer & continue**. On a task without a question, write a reply and press **Send & continue**. Both put the task at the top of its priority in Todo with `next: resume`. The next dispatch tick on the machine that ran the session starts `claude -p "<your reply>" --resume <session>`, so the agent keeps its context. The other buttons:
 
 | Button | Effect |
 | --- | --- |
@@ -32,7 +32,7 @@ On the task page you pick options (number keys work), add text where none fits, 
 | Close / Reopen | Out of the workflow; workers ignore it, intake never makes a second task for its PR. |
 | Start / Discard | On a task an agent proposed. |
 
-An agent can propose follow-up work with `board add --label <l> --title <t> --file <path> --parent <task>`. A proposal lands in `needs-me` with a **Proposed** badge and runs only after you press **Start**, so a run that a PR's text turned against you cannot queue work by itself.
+An agent can propose follow-up work with `board add --label <l> --title <t> --file <path> --parent <task> [--priority <p>]`; without `--priority` a proposal takes its parent's priority. A proposal lands in `needs-me` with a **Proposed** badge and runs only after you press **Start**, so a run that a PR's text turned against you cannot queue work by itself.
 
 ## Two machines
 
@@ -83,6 +83,7 @@ User timers only run while you are logged in. For runs after logout: `loginctl e
 | `timeoutMinutes` | A worker is stopped after this long. Default 45. |
 | `slackWebhookFile` | One-line file with the Slack incoming webhook URL, mode 600. |
 | `intakeLabel` | Label intake puts on new tasks. Default `review-pr`. |
+| `intakePriority` | Priority of the tasks intake creates. Default `normal`. |
 | `repos` | `owner/name` to local checkout. Intake ignores a PR in another repo, and dispatch leaves its task to a machine that has the checkout. |
 | `labels` | Label name to worker, below. |
 
@@ -138,6 +139,7 @@ This is the spec between the CLI and the store, version 2. `web-backend` is the 
   "input": "https://github.com/cosuno/cosuno/pull/17741\nhead: 56120dc60b",
   "labels": ["review-pr"],
   "status": "needs-me",
+  "priority": "normal",
   "url": "https://board.codeplant.de/t/Ab3dEf9x",
   "closed": false,
   "machine": "laptop",
@@ -147,7 +149,7 @@ This is the spec between the CLI and the store, version 2. `web-backend` is the 
 }
 ```
 
-All eleven fields are required.
+All twelve fields are required.
 
 | Field | Meaning |
 | --- | --- |
@@ -156,6 +158,7 @@ All eleven fields are required.
 | `input` | What to work on. |
 | `labels` | Label names. The first one with a configured worker picks it. |
 | `status` | One of `todo`, `running`, `needs-me`, `done`. |
+| `priority` | One of `urgent`, `high`, `normal`, `low`. |
 | `url` | Link to the task for a human. It must match `^https?://` and hold no whitespace, `<`, `>` or `|` (it goes into a Slack link). |
 | `closed` | `true` for a task out of the workflow. Closed tasks are only listed with `--all`; the core never starts, requeues or writes to one. |
 | `machine` | The machine that claimed it last, or `null`. A resume runs only there. |
@@ -163,7 +166,7 @@ All eleven fields are required.
 | `next` | `fresh` or `resume`: what the next run does. |
 | `openQuestion` | The agent's last question has no answer yet. |
 
-Priority is the order of the array that `list-tasks` returns: within a status, the first task is the top.
+Pickup order is the order of the array that `list-tasks` returns: within a status, the first task is the top. The store sorts by `priority` first, so the core needs no logic of its own for it.
 
 ### Note
 
@@ -180,8 +183,8 @@ Priority is the order of the array that `list-tasks` returns: within a status, t
 | `version` | - | `{"contract": 2}` |
 | `list-tasks [--all]` | - | `[Task, ...]` in priority order |
 | `get-task <id>` | - | `Task` |
-| `add-task` | `{"title", "input"?, "labels"?, "status"?, "dedupeKey"?, "parentId"?, "createdBy"?}` | `{"task": Task, "created": bool}` |
-| `update-task <id>` | `{"status"?, "input"?, "sessionId"?, "next"?}` | the updated `Task` |
+| `add-task` | `{"title", "input"?, "labels"?, "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?}` | `{"task": Task, "created": bool}` |
+| `update-task <id>` | `{"status"?, "priority"?, "input"?, "sessionId"?, "next"?}` | the updated `Task` |
 | `claim-task <id> --machine <name>` | - | the claimed `Task`, or exit 75 |
 | `add-note <id> [--author agent\|system]` | the note text, verbatim | nothing |
 | `ask <id>` | `{"questions": [...]}` | nothing |
@@ -189,8 +192,8 @@ Priority is the order of the array that `list-tasks` returns: within a status, t
 | `setup [--dry-run]` | `{"labels": [...]}` | `{"created": [...]}` |
 
 - `version`: the core calls it once per process, before its first real call, and refuses to go on when `contract` is not 2.
-- `add-task`: `input` defaults to `""`, `labels` to `[]`, `status` to `todo`, `createdBy` (`intake`, `user`, `agent`) to `user`. The new task goes to the bottom of its status. A label the store does not know is a failure. With a `dedupeKey` that a task already has, nothing is created: the answer is that task with `created: false`. `createdBy: agent` marks the task as a proposal.
-- `update-task`: at least one key; unknown keys are a failure. A status change puts the task at the bottom of the new status.
+- `add-task`: `input` defaults to `""`, `labels` to `[]`, `status` to `todo`, `priority` to the parent's with a `parentId` and to `normal` without, `createdBy` (`intake`, `user`, `agent`) to `user`. The new task goes to the bottom of its status. A label the store does not know is a failure. With a `dedupeKey` that a task already has, nothing is created: the answer is that task with `created: false`. `createdBy: agent` marks the task as a proposal.
+- `update-task`: at least one key; unknown keys are a failure. A status or priority change puts the task at the bottom of its new place.
 - `claim-task`: `todo` to `running` for the machine, at the bottom of running, in one atomic step. Lost when the task is not in `todo`, or when it is a resume (`next: resume` with a session) pinned to another machine.
 - `add-note`: author `agent` makes a `comment`, `system` an `event`. An empty text is a failure.
 - `ask`: validates the questions (1 to 4; a header of at most 16 characters; 2 to 4 options with different labels, at most one `recommended`), adds a question note, and moves the task to `needs-me` with `openQuestion: true`.
@@ -291,7 +294,7 @@ board show <task>               the task and its thread as markdown (what a skil
 board comment <task> <text>     add a note; `-` reads the text from stdin
 board comment <task> --file <p> add a note from a file in /tmp (what the reviewer uses)
 board ask <task> --file <p>     ask the user 1-4 questions (JSON in /tmp); moves the task to needs-me and notifies Slack
-board add --label <l> --title <t> --file <p> [--parent <task>]
+board add --label <l> --title <t> --file <p> [--parent <task>] [--priority <p>]
                                 propose a follow-up task; it waits in needs-me until the user starts it
 board move <task> <status>      move to the bottom of a status
 board notify <task> <text>      Slack message with the task link
@@ -309,7 +312,7 @@ intake                          review requests to tasks
 Dispatcher, per tick:
 
 1. For each task in `running` claimed by this machine, ask `systemctl --user is-active agent-board-<task>`. A task whose unit is gone, or whose unit started more than the timeout plus five minutes ago (the start note is the fallback), moves to `needs-me` with the log tail. If `systemctl` gives no known state, or the backend fails, the tick stops before starting anything and exits non-zero.
-2. While fewer than `maxParallel` run here, walk Todo from the top. A task without a label goes to `needs-me`. A task this machine cannot serve is skipped (see [Two machines](#two-machines)). Otherwise claim it; a lost claim is skipped. Then start `systemd-run --user --collect --unit agent-board-<task>` and add a start note with the machine and PID. The first failed start ends the tick's starting.
+2. While fewer than `maxParallel` run here, walk Todo from the top (urgent first). A task without a label goes to `needs-me`. A task this machine cannot serve is skipped (see [Two machines](#two-machines)). Otherwise claim it; a lost claim is skipped. Then start `systemd-run --user --collect --unit agent-board-<task>` and add a start note with the machine and PID. The first failed start ends the tick's starting.
 
 Worker, per task: a skill label with `next: resume`, a session and a user reply since the agent last spoke resumes that session with the reply as the prompt. Anything else starts a new session, whose id is stored on the task before the run. Either way `next` goes back to `fresh`.
 

@@ -67,6 +67,7 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
         input: formatInput(pr.url, pr.headSha),
         labels: [config.intakeLabel],
         status: "todo",
+        priority: config.intakePriority,
         dedupeKey: pr.url,
         createdBy: "intake",
       });

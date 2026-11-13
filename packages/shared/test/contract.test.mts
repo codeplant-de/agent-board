@@ -8,6 +8,7 @@ const task = {
   input: "https://github.com/o/r/pull/1",
   labels: ["review-pr"],
   status: "todo",
+  priority: "normal",
   url: "https://board.example/t/Ab3dEf9x",
   closed: false,
   machine: null,
@@ -34,12 +35,16 @@ test("a draft takes the dedupe key, parent and creator; unknown keys fail", () =
     createdBy: "agent",
   });
   assert.throws(() => parseDraft({ title: "t", rank: 1 }), ContractError);
+  assert.equal(parseDraft({ title: "t", priority: "high" }).priority, "high");
+  assert.equal(parseDraft({ title: "t" }).priority, undefined, "the store picks the default, so a follow-up can inherit");
 });
 
 test("a patch takes the session and the next run", () => {
   assert.deepEqual(parsePatch({ sessionId: null, next: "resume" }), { sessionId: null, next: "resume" });
   assert.throws(() => parsePatch({}), /patch needs one of/);
   assert.throws(() => parsePatch({ next: "later" }), /next must be one of/);
+  assert.deepEqual(parsePatch({ priority: "urgent" }), { priority: "urgent" });
+  assert.throws(() => parsePatch({ priority: "asap" }), /priority must be one of urgent, high, normal, low/);
 });
 
 test("question and answer notes carry their structure", () => {

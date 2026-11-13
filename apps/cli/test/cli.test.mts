@@ -47,7 +47,9 @@ test("a note file is read only from /tmp, without following links", () => {
 });
 
 test("board add takes its flags in any order and refuses a missing one", () => {
-  assert.deepEqual(parseAddArgs(["--title", "Fix it", "--label", "research", "--file", "/tmp/x.md", "--parent", "abc"]), { label: "research", title: "Fix it", file: "/tmp/x.md", parent: "abc" });
+  assert.deepEqual(parseAddArgs(["--title", "Fix it", "--label", "research", "--file", "/tmp/x.md", "--parent", "abc"]), { label: "research", title: "Fix it", file: "/tmp/x.md", parent: "abc", priority: undefined });
+  assert.equal(parseAddArgs(["--label", "l", "--title", "t", "--file", "/tmp/x", "--priority", "high"]).priority, "high");
+  assert.throws(() => parseAddArgs(["--label", "l", "--title", "t", "--file", "/tmp/x", "--priority", "asap"]), /unknown priority "asap"/);
   assert.equal(parseAddArgs(["--label", "l", "--title", "t", "--file", "/tmp/x"]).parent, undefined);
   assert.throws(() => parseAddArgs(["--label", "l", "--title", "t"]), UsageError);
   assert.throws(() => parseAddArgs(["--label", "l", "--title", "t", "--file", "/tmp/x", "--parent", "../x"]), UsageError);

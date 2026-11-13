@@ -1,11 +1,16 @@
 import { Badge, Group } from '@mantine/core';
 import { IconDeviceDesktop, IconMessageQuestion, IconPlayerTrackNext, IconSparkles } from '@tabler/icons-react';
 import type { BoardTask } from '../lib/trpc';
+import { PriorityBadge } from './PriorityPicker';
 
-/** What sets a task apart at a glance: an open question, a proposal, a pending resume, where it runs. */
-export function TaskBadges({ task, withLabels = true }: { task: BoardTask; withLabels?: boolean }) {
+/**
+ * What sets a task apart at a glance: its priority (unless normal), an open question, a proposal, a pending
+ * resume, where it runs.
+ */
+export function TaskBadges({ task, withLabels = true, withPriority = true }: { task: BoardTask; withLabels?: boolean; withPriority?: boolean }) {
   return (
     <Group gap={4}>
+      {withPriority && task.priority !== 'normal' && <PriorityBadge priority={task.priority} />}
       {task.openQuestion && (
         <Badge size="sm" color="orange" variant="filled" leftSection={<IconMessageQuestion size={12} />}>
           Question
