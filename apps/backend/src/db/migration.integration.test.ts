@@ -35,12 +35,15 @@ const migrateToCurrent = async (db: Db): Promise<void> => {
 
 describe('the tenancy migration on a database that already has rows', () => {
   const admin = createDb(testDatabaseUrl());
+  // Not `with (force)`: every pool on the scratch database is closed by now, and Postgres waits for a session that is
+  // still on its way out. Forcing would kill that session, and its last message surfaces as an unhandled error.
+  const dropScratch = () => admin.db.execute(sql.raw(`drop database if exists ${SCRATCH}`));
   let old: ReturnType<typeof createDb>;
   let folder: string;
 
   beforeEach(async () => {
     if (old) await old.pool.end();
-    await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH} with (force)`));
+    await dropScratch();
     await admin.db.execute(sql.raw(`create database ${SCRATCH}`));
     folder ??= migrationsBefore('_tenancy');
     old = scratchDb();
@@ -58,7 +61,7 @@ describe('the tenancy migration on a database that already has rows', () => {
 
   afterAll(async () => {
     await old.pool.end();
-    await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH} with (force)`));
+    await dropScratch();
     await admin.pool.end();
     removeFolder(folder);
   });
@@ -103,7 +106,7 @@ describe('the encrypted content migration on a database that already has rows', 
 
   beforeEach(async () => {
     if (old) await old.pool.end();
-    await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH} with (force)`));
+    await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH}`));
     await admin.db.execute(sql.raw(`create database ${SCRATCH}`));
     folder ??= migrationsBefore('_encrypted_content');
     old = scratchDb();
@@ -127,7 +130,7 @@ describe('the encrypted content migration on a database that already has rows', 
 
   afterAll(async () => {
     await old.pool.end();
-    await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH} with (force)`));
+    await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH}`));
     await admin.pool.end();
     removeFolder(folder);
   });
