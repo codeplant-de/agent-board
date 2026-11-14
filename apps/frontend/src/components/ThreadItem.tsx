@@ -1,6 +1,7 @@
-import { formatAnswers, type Question } from '@agent-board/shared';
+import { formatAnswers, UNREADABLE_TEXT, type Question } from '@agent-board/shared';
 import { Badge, Group, Paper, Spoiler, Stack, Text, ThemeIcon } from '@mantine/core';
-import { IconCircleDot, IconMessageQuestion, IconRobot, IconUser } from '@tabler/icons-react';
+import { IconCircleDot, IconLockOff, IconMessageQuestion, IconRobot, IconUser } from '@tabler/icons-react';
+import { answerTo, questionsAnswered } from '../lib/answers';
 import { ago, stamp } from '../lib/time';
 import type { ThreadNote } from '../lib/trpc';
 import { Markdown } from './Markdown';
@@ -20,6 +21,24 @@ function Meta({ who, by, at }: { who: string; by: string | null; at: Date }) {
         · {ago(at)}
       </Text>
     </Group>
+  );
+}
+
+/** A note this browser could not open: never shown as what anyone wrote. */
+function UnreadableNote({ note }: { note: ThreadNote }) {
+  const who = note.author === 'user' ? 'You' : note.author === 'agent' ? 'Agent' : 'System';
+  return (
+    <Paper withBorder p="sm" style={{ borderStyle: 'dashed' }}>
+      <Group gap="xs" mb={6}>
+        <ThemeIcon size="sm" variant="light" color="gray">
+          <IconLockOff size={14} />
+        </ThemeIcon>
+        <Meta who={who} by={note.by} at={new Date(note.createdAt)} />
+      </Group>
+      <Text size="sm" c="dimmed" fs="italic">
+        {UNREADABLE_TEXT}
+      </Text>
+    </Paper>
   );
 }
 
@@ -82,6 +101,7 @@ interface Props {
 
 export function ThreadItem({ note, thread }: Props) {
   const at = new Date(note.createdAt);
+  if (note.unreadable) return <UnreadableNote note={note} />;
   if (note.author === 'system') {
     const [raw = '', ...rest] = note.text.trim().split('\n');
     const more = rest.join('\n').trim();
@@ -112,7 +132,7 @@ export function ThreadItem({ note, thread }: Props) {
   }
 
   if (note.kind === 'question' && note.questions) {
-    const answered = thread.find((n) => n.kind === 'answer' && n.questionNoteId === note.id);
+    const answered = answerTo(thread, note);
     return (
       <Paper withBorder p="sm" style={{ borderLeft: '3px solid var(--mantine-color-orange-6)' }}>
         <Group gap="xs" mb="xs">
@@ -143,7 +163,7 @@ export function ThreadItem({ note, thread }: Props) {
   }
 
   const fromUser = note.author === 'user';
-  const questions = note.kind === 'answer' ? thread.find((n) => n.id === note.questionNoteId)?.questions : undefined;
+  const questions = note.kind === 'answer' ? questionsAnswered(thread, note) : undefined;
   return (
     <Paper
       withBorder
