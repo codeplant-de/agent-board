@@ -55,16 +55,6 @@ export function parseStatus(name: string): Status {
   return normalised;
 }
 
-// The task's link for a confirmation line, built from the board's URL without asking the server; empty when unknown.
-function link(context: Context, id: string): string {
-  try {
-    const url = context.boardUrl?.();
-    return url ? `  ${url.replace(/\/+$/, '')}/t/${id}` : '';
-  } catch {
-    return '';
-  }
-}
-
 // Nothing is confirmed in a dry run: the DRY lines already say what would happen.
 function confirm(context: Context, line: string): void {
   if (!context.dryRun) context.print(line);
@@ -72,7 +62,7 @@ function confirm(context: Context, line: string): void {
 
 export async function comment(context: Context, id: string, text: string): Promise<void> {
   await context.backend.addNote(id, text);
-  confirm(context, `commented on ${id}${link(context, id)}`);
+  confirm(context, `commented on ${id}`);
 }
 
 // Sends the Slack message; returns the task, which the command read to write it.
@@ -111,20 +101,15 @@ export function formatTasks(found: Task[], flags: TasksFlags, style: Style): str
     return [
       style.bold(`${status} (${inStatus.length})`),
       ...inStatus.map((task) => {
+        const labels = task.labels.length > 0 ? `  [${task.labels.join(',')}]` : '';
         const hints = [
           task.notBefore ? `starts ${localTime(task.notBefore)}` : undefined,
           task.closed ? 'closed' : undefined,
         ].filter((hint) => hint !== undefined);
-        return `  ${task.id.padEnd(idWidth)}  ${task.priority.padEnd(priorityWidth)}  ${task.title}${hints.length > 0 ? style.dim(`  (${hints.join(', ')})`) : ''}`;
+        return `  ${task.id.padEnd(idWidth)}  ${task.priority.padEnd(priorityWidth)}  ${task.title}${labels}${hints.length > 0 ? style.dim(`  (${hints.join(', ')})`) : ''}`;
       }),
     ];
   });
-}
-
-// A task as JSON for scripts: what the lists show, without the dead labels field.
-export function taskJson(task: Task): Omit<Task, 'labels'> {
-  const { labels: _labels, ...rest } = task;
-  return rest;
 }
 
 export async function tasks(context: Context, flags: TasksFlags = {}): Promise<void> {
@@ -153,7 +138,7 @@ export async function ask(context: Context, id: string, path: string): Promise<v
     return undefined;
   });
   const count = `${questions.length} question${questions.length > 1 ? 's' : ''}`;
-  confirm(context, `asked ${count} on ${id}, now in needs-me${task ? `  ${task.url}` : link(context, id)}`);
+  confirm(context, `asked ${count} on ${id}, now in needs-me${task ? `  ${task.url}` : ''}`);
 }
 
 export function renderThread(task: Task, notes: Note[]): string {
@@ -161,7 +146,7 @@ export function renderThread(task: Task, notes: Note[]): string {
   const lines = [
     `# ${task.title}`,
     '',
-    `status: ${task.status} · priority: ${task.priority} · ${task.url}`,
+    `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(', ') || '-'} · ${task.url}`,
     '',
     '## Input',
     '',
@@ -228,7 +213,7 @@ export async function add(context: Context, flags: AddFlags): Promise<Task> {
     ...(priority ? { priority } : {}),
   };
   const { task } = await context.backend.addTask(draft);
-  context.print(`proposed ${task.id} ${task.url}`);
+  confirm(context, `proposed ${task.id} ${task.url}`);
   return task;
 }
 
@@ -264,7 +249,7 @@ export function parseDelayFlags(flags: DelayFlags, now: Date = new Date()): Date
 export async function delay(context: Context, id: string, flags: DelayFlags): Promise<void> {
   const notBefore = parseDelayFlags(flags);
   await context.backend.updateTask(id, { notBefore, expect: 'todo' });
-  context.print(notBefore === null ? `${id} is due now` : `${id} starts ${localTime(notBefore)}`);
+  confirm(context, notBefore === null ? `${id} is due now` : `${id} starts ${localTime(notBefore)}`);
 }
 
 // A pending card with no start time is due now.
@@ -299,14 +284,11 @@ export async function schedules(context: Context, args: string[]): Promise<void>
     throw new UsageError('schedules takes nothing, or pause, resume or rm and a schedule id');
   if (action === 'rm') {
     await context.backend.removeSchedule(id);
-    return context.print(`removed ${id}`);
+    return confirm(context, `removed ${id}`);
   }
   const schedule = await context.backend.updateSchedule(id, { paused: action === 'pause' });
-  context.print(
-    action === 'pause'
-      ? `paused ${id}`
-      : `resumed ${id}${schedule.nextRunAt ? `, next run ${localTime(schedule.nextRunAt)}` : ''}`,
-  );
+  if (action === 'pause') return confirm(context, `paused ${id}`);
+  confirm(context, `resumed ${id}${schedule.nextRunAt ? `, next run ${localTime(schedule.nextRunAt)}` : ''}`);
 }
 
 // The question goes to stderr, so a JSON document on stdout stays alone.
@@ -337,11 +319,12 @@ export async function scheduleCommand(
       workdir: realpathSync(process.cwd()),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       print: context.print,
+      confirm: (line) => confirm(context, line),
       check: haikuDuplicateCheck(
         context.print,
         process.stderr.isTTY ? (line) => void process.stderr.write(`${line}\n`) : undefined,
       ),
-      choose: process.stdin.isTTY && process.stdout.isTTY ? chooseInTerminal : undefined,
+      choose: process.stdin.isTTY && process.stderr.isTTY ? chooseInTerminal : undefined,
     },
     args,
   );

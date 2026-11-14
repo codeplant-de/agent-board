@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import tty from 'node:tty';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -40,7 +41,6 @@ function setup(overrides: Partial<Context> = {}) {
         backend,
         dryRun,
         print: contextOptions.print ?? ((line) => printed.push(line)),
-        boardUrl: () => 'https://board.example',
         ...overrides,
       }),
       writeOut: (text) => out.push(text),
@@ -50,7 +50,7 @@ function setup(overrides: Partial<Context> = {}) {
   return { backend, printed, out, err, calls, go };
 }
 
-test('tasks aligns its columns, has no labels column and marks delayed and closed tasks', async () => {
+test('tasks aligns its columns, shows labels only where a task has some, and marks delayed and closed tasks', async () => {
   const { printed, go, backend } = setup();
   backend.tasks[1]!.notBefore = new Date('2027-01-01T12:00:00');
   await go(['tasks', '--all']);
@@ -58,7 +58,14 @@ test('tasks aligns its columns, has no labels column and marks delayed and close
   assert.match(printed[2] ?? '', /^ {2}Ab3dEf9x {2}normal {2}Another {2}\(starts 2027-01-01 12:00\)$/);
   assert.ok(printed.includes('  Zt0Test1  high    Fix the thing'));
   assert.ok(printed.includes('  Cl0sedXx  normal  Old  (closed)'));
-  assert.ok(printed.every((line) => !line.includes('[')));
+  assert.ok(
+    printed.every((line) => !line.includes('[')),
+    'no filler for a task without labels',
+  );
+  backend.tasks[0]!.labels = ['review-pr', 'x'];
+  printed.length = 0;
+  await go(['tasks']);
+  assert.ok(printed.includes('  Zt0Test1  high    Fix the thing  [review-pr,x]'));
 });
 
 test('tasks hides closed tasks without --all and takes --status in any spelling', async () => {
@@ -78,10 +85,15 @@ test('colour is bold headers and dim hints, and only when asked for', () => {
   const coloured = formatTasks(found, {}, createStyle(true)).join('\n');
   assert.ok(coloured.includes('\x1b[1mtodo (1)\x1b[22m'));
   assert.ok(coloured.includes('\x1b[2m  (closed)\x1b[22m'));
-  assert.equal(wantsColor({ isTTY: true }, {}), true);
-  assert.equal(wantsColor({ isTTY: true }, { NO_COLOR: '1' }), false);
-  assert.equal(wantsColor({ isTTY: false }, {}), false);
-  assert.equal(wantsColor({}, {}), false);
+  // A terminal stream as node builds it: its own colour detection reads the environment.
+  const terminal = {
+    hasColors: tty.WriteStream.prototype.hasColors,
+    getColorDepth: tty.WriteStream.prototype.getColorDepth,
+  };
+  assert.equal(wantsColor(terminal, { TERM: 'xterm-256color' }), true);
+  for (const env of [{ NO_COLOR: '1' }, { TERM: 'dumb' }, { FORCE_COLOR: '0' }, { NODE_DISABLE_COLORS: '1' }])
+    assert.equal(wantsColor(terminal, { TERM: 'xterm-256color', ...env }), false, JSON.stringify(env));
+  assert.equal(wantsColor({}, { FORCE_COLOR: '1' }), false, 'a pipe has no colour method');
 });
 
 test('board tasks in a context without colour prints no escape codes', async () => {
@@ -101,7 +113,7 @@ test('--json puts only the document on stdout', async () => {
     list.map((item) => item.id),
     [ID, 'Ab3dEf9x'],
   );
-  assert.ok(!('labels' in list[0]!));
+  assert.deepEqual(list[0], JSON.parse(JSON.stringify(backend.tasks[0])), 'tasks as the API returns them');
 
   out.length = 0;
   await go(['show', ID, '--json']);
@@ -136,25 +148,56 @@ test('add --json prints {id, url} and keeps the human line off stdout', async ()
   assert.match(err.join(''), /proposed p1234567/);
 });
 
-test('comment, move and notify confirm in one line with the task link', async () => {
+test('comment and move confirm in one line; move names the task link', async () => {
   const { printed, calls, go } = setup();
   await go(['comment', ID, 'some', 'text']);
   await go(['move', ID, 'Needs', 'me']);
-  assert.deepEqual(printed, [
-    `commented on ${ID}  https://board.example/t/${ID}`,
-    `moved ${ID} to needs-me  https://tasks.example/${ID}`,
-  ]);
+  assert.deepEqual(printed, [`commented on ${ID}`, `moved ${ID} to needs-me  https://tasks.example/${ID}`]);
   assert.deepEqual(calls, [], 'a full id and a confirmation cost no extra request');
 });
 
-test('comment without a known board URL confirms without a link, and a dry run confirms nothing', async () => {
-  const { printed, go } = setup({ boardUrl: () => '' });
-  await go(['comment', ID, 'x']);
-  assert.deepEqual(printed, [`commented on ${ID}`]);
-  printed.length = 0;
-  await go(['comment', ID, 'x'], {}, true);
-  await go(['move', ID, 'todo'], {}, true);
+test('a dry run confirms nothing, whichever command', async () => {
+  const { printed, backend, go } = setup();
+  backend.schedules = [schedule({ id: 'Sc1aBcDe' })];
+  const dir = mkdtempSync('/tmp/board-output-test-');
+  try {
+    writeFileSync(join(dir, 'p.md'), 'x');
+    await go(['comment', ID, 'x'], {}, true);
+    await go(['move', ID, 'todo'], {}, true);
+    await go(['delay', ID, '--now'], {}, true);
+    await go(['schedules', 'pause', 'Sc1aBcDe'], {}, true);
+    await go(['schedules', 'resume', 'Sc1aBcDe'], {}, true);
+    await go(['schedules', 'rm', 'Sc1aBcDe'], {}, true);
+    await go(['add', '--title', 't', '--file', join(dir, 'p.md')], {}, true);
+    await go(['schedule', '--new', 'Do', 'it'], {}, true);
+    await go(['schedule', '--new', '--every', '2h', 'Do', 'it'], {}, true);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
   assert.deepEqual(printed, []);
+});
+
+test('--json with --dry-run keeps the document alone on stdout and the DRY lines on stderr', async () => {
+  const { out, err, go } = setup();
+  const dir = mkdtempSync('/tmp/board-output-test-');
+  try {
+    writeFileSync(join(dir, 'p.md'), 'x');
+    await go(['add', '--json', '--title', 't', '--file', join(dir, 'p.md')], {}, true);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+  assert.equal(JSON.parse(out.join('')).id.length > 0, true);
+  assert.deepEqual(err, [], 'the fake context prints DRY lines nowhere; the real one sends them to stderr');
+});
+
+test('schedule --json prints scheduleId for a repeat', async () => {
+  const { out, go } = setup();
+  await go(['schedule', '--json', '--every', '2h', 'Do', 'it']);
+  assert.deepEqual(JSON.parse(out.join('')), {
+    id: 'pending',
+    url: 'https://tasks.example/pending',
+    scheduleId: 'sched',
+  });
 });
 
 test('notify and ask confirm after the Slack post', async () => {

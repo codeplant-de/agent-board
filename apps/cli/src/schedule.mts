@@ -246,6 +246,8 @@ export interface ScheduleDeps {
   // The IANA zone a cron expression is read in.
   timezone: string;
   print: (line: string) => void;
+  // Where the line that confirms a write goes; unset means print. A dry run confirms nothing.
+  confirm?: (line: string) => void;
   check: DuplicateCheck;
   // Asks in the terminal; undefined when there is none (a script), which creates the task with a warning.
   choose: ((duplicate: Duplicate, task: Task) => Promise<Choice>) | undefined;
@@ -265,7 +267,7 @@ async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<T
     ...(args.until ? { until: args.until } : {}),
   });
   const end = args.times ? `, ${args.times} runs` : args.until ? `, until ${localTime(args.until)}` : '';
-  deps.print(
+  (deps.confirm ?? deps.print)(
     `scheduled repeat ${schedule.id}: ${describeRule(schedule)}${end}; first run ${localTime(task.notBefore ?? new Date())} ${task.url}`,
   );
   return task;
@@ -289,12 +291,14 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
       if (choice === 'requeue') {
         if (existing.status === 'todo' && args.notBefore) {
           const delayed = await backend.updateTask(existing.id, { notBefore: args.notBefore, expect: 'todo' });
-          deps.print(`${existing.id} is already queued, now starts ${localTime(args.notBefore)}: ${delayed.url}`);
+          (deps.confirm ?? deps.print)(
+            `${existing.id} is already queued, now starts ${localTime(args.notBefore)}: ${delayed.url}`,
+          );
           return delayed;
         }
         if (existing.status === 'todo' || existing.status === 'running') {
           const note = args.notBefore ? '; the start time was not applied' : '';
-          deps.print(
+          (deps.confirm ?? deps.print)(
             `${existing.id} is already ${existing.status === 'todo' ? 'queued' : 'running'}${note}: ${existing.url}`,
           );
           return existing;
@@ -307,7 +311,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
         await backend.addNote(existing.id, `Scheduled again from ${deps.machine}:${deps.workdir}.`, {
           author: 'system',
         });
-        deps.print(
+        (deps.confirm ?? deps.print)(
           `requeued ${requeued.id} ${requeued.url}${requeued.notBefore ? `, starts ${localTime(requeued.notBefore)}` : ''}`,
         );
         return requeued;
@@ -327,6 +331,8 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     ...(args.priority ? { priority: args.priority } : {}),
   });
   if (warning) await backend.addNote(task.id, warning, { author: 'system' });
-  deps.print(`scheduled ${task.id} ${task.url}${task.notBefore ? `, starts ${localTime(task.notBefore)}` : ''}`);
+  (deps.confirm ?? deps.print)(
+    `scheduled ${task.id} ${task.url}${task.notBefore ? `, starts ${localTime(task.notBefore)}` : ''}`,
+  );
   return task;
 }
