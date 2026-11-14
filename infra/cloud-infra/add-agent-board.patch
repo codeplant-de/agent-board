@@ -108,7 +108,7 @@ new file mode 100644
 index 0000000..d47c3d2
 --- /dev/null
 +++ b/cluster/apps/agent-board/env.sops.yaml.example
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,20 @@
 +# Encrypt as env.sops.yaml (see cluster/README.md). DATABASE_URL uses the host "postgres" (the
 +# Service name). The UI login is Authelia's; worker machines use tokens made on the board's Settings
 +# page, stored hashed in Postgres. No app secrets here.
@@ -124,6 +124,9 @@ index 0000000..d47c3d2
 +  NODE_ENV: production
 +  PORT: "4000"
 +  DATABASE_URL: postgresql://board:<fill-in>@postgres:5432/board
++  APP_DATABASE_URL: postgresql://board_app:<fill-in>@postgres:5432/board
++  # One-time: the username that owns the existing tasks. Remove after the first start.
++  BACKFILL_OWNER: <fill-in>
 +  PUBLIC_URL: https://board.codeplant.de
 +  ALLOWED_GROUPS: admins
 diff --git a/cluster/apps/agent-board/ingress.yaml b/cluster/apps/agent-board/ingress.yaml

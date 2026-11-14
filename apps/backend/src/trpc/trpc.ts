@@ -1,11 +1,14 @@
 import { initTRPC, TRPCError } from '@trpc/server';
 import { ZodError } from 'zod';
 import type { Config } from '../config';
-import type { Db } from '../db/client';
+import type { Db, Tx } from '../db/client';
+import { appUsers } from '../db/schema';
+import { withOwner } from '../db/scope';
 import { AppError } from '../services/errors';
 
 export interface Context {
-  db: Db;
+  /** The pool handle; procedures use `ctx.db`, the request's transaction. */
+  root: Db;
   config: Config;
   username: string;
 }
@@ -30,4 +33,28 @@ const mapErrors = t.middleware(async ({ next }) => {
   return result;
 });
 
-export const procedure = t.procedure.use(mapErrors);
+/** Carries a failed procedure's result out of the transaction, which only rolls back on a throw. */
+class Rollback<R> extends Error {
+  constructor(readonly result: R) {
+    super('procedure failed');
+  }
+}
+
+/** Runs the rest of the procedure in one transaction scoped to the user, exposed as `ctx.db`. */
+const scoped = t.middleware(async ({ ctx, next }) => {
+  const run = (db: Tx) => next({ ctx: { db, root: undefined } });
+  try {
+    return await withOwner(ctx.root, ctx.username, async (db) => {
+      // Every board belongs to a row in app_user; the first request of a user creates it.
+      await db.insert(appUsers).values({ username: ctx.username }).onConflictDoNothing();
+      const result = await run(db);
+      if (!result.ok) throw new Rollback(result);
+      return result;
+    });
+  } catch (error) {
+    if (error instanceof Rollback) return error.result as Awaited<ReturnType<typeof run>>;
+    throw error;
+  }
+});
+
+export const procedure = t.procedure.use(mapErrors).use(scoped);

@@ -23,11 +23,11 @@ const header = (req: FastifyRequest, name: string): string | null => {
  * a client sends); locally DEV_AUTH_USER stands in. Null when the user is not in an allowed group.
  */
 export function userFrom(req: FastifyRequest, config: Config): string | null {
-  if (config.devAuthUser) return config.devAuthUser;
+  if (config.devAuthUser) return config.devAuthUser.toLowerCase();
   const username = header(req, 'remote-user');
   if (!username) return null;
   const groups = (header(req, 'remote-groups') ?? '').split(',').map((g) => g.trim());
-  return groups.some((group) => config.allowedGroups.includes(group)) ? username : null;
+  return groups.some((group) => config.allowedGroups.includes(group)) ? username.toLowerCase() : null;
 }
 
 const STATUS: Record<AppErrorCode, number> = {
@@ -38,7 +38,7 @@ const STATUS: Record<AppErrorCode, number> = {
   CONFLICT: 409,
 };
 
-export async function buildServer(config: Config, db: Db) {
+export async function buildServer(config: Config, root: Db) {
   const app = Fastify({
     logger: config.nodeEnv === 'test' ? false : { level: 'info' },
     // A transcript batch can carry a few large tool results.
@@ -63,13 +63,13 @@ export async function buildServer(config: Config, db: Db) {
     if (!req.username) return reply.status(403).send({ error: 'not allowed on this board' });
   });
 
-  registerMachineApi(app, db, config);
+  registerMachineApi(app, root, config);
 
   await app.register(fastifyTRPCPlugin, {
     prefix: '/trpc',
     trpcOptions: {
       router: appRouter,
-      createContext: ({ req }) => ({ db, config, username: req.username! }),
+      createContext: ({ req }) => ({ root, config, username: req.username! }),
       onError: ({ error, path }) => {
         if (error.code === 'INTERNAL_SERVER_ERROR') app.log.error({ err: error, path }, 'tRPC error');
       },

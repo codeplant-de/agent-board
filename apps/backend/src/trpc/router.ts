@@ -1,7 +1,18 @@
-import { defaultTitle, isSafeTaskId, PRIORITIES, STATUSES, type Note, type Task } from '@agent-board/shared';
+import {
+  ContractError,
+  defaultTitle,
+  isSafeTaskId,
+  parseKeyId,
+  parseKeySlots,
+  PRIORITIES,
+  STATUSES,
+  type Note,
+  type Task,
+} from '@agent-board/shared';
 import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { tasks, type NoteRow, type TaskRow } from '../db/schema';
+import { getKeys, replaceSlots, setupKeys } from '../services/keys';
 import { issueToken, listMachines, revokeMachine } from '../services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from '../services/schedules';
 import { eventOutput, listEvents, listRuns } from '../services/transcripts';
@@ -42,6 +53,19 @@ const repeat = z
     (when) => when.times === undefined || when.until === undefined,
     'Give a number of runs or an end time, not both',
   );
+/** Runs a shared parser as a zod check, so a bad value is a BAD_REQUEST with the parser's reason. */
+const parsedBy = <T>(parse: (value: unknown) => T) =>
+  z.unknown().transform((value, ctx) => {
+    try {
+      return parse(value);
+    } catch (error) {
+      if (!(error instanceof ContractError)) throw error;
+      ctx.addIssue({ code: 'custom', message: error.message });
+      return z.NEVER;
+    }
+  });
+const keyId = parsedBy(parseKeyId);
+const keySlots = parsedBy(parseKeySlots);
 const createStatus = { now: 'todo', backlog: 'backlog', hold: 'needs-me' } as const;
 
 /** What the board needs of a task beyond the contract's fields. */
@@ -248,9 +272,19 @@ const transcriptRouter = router({
     .query(({ ctx, input }) => eventOutput(ctx.db, input.runId, input.seq)),
 });
 
+const keysRouter = router({
+  /** The key id and the wrapped copies of the data key, or null before setup. The server cannot open them. */
+  get: procedure.query(({ ctx }) => getKeys(ctx.db)),
+  setup: procedure.input(z.object({ keyId, slots: keySlots })).mutation(({ ctx, input }) => setupKeys(ctx.db, input)),
+  replaceSlots: procedure
+    .input(z.object({ keyId, slots: keySlots }))
+    .mutation(({ ctx, input }) => replaceSlots(ctx.db, input)),
+});
+
 export const appRouter = router({
   transcript: transcriptRouter,
-  me: procedure.query(({ ctx }) => ({ username: ctx.username })),
+  me: procedure.query(async ({ ctx }) => ({ username: ctx.username, keyId: (await getKeys(ctx.db))?.keyId ?? null })),
+  keys: keysRouter,
   tasks: tasksRouter,
   schedules: schedulesRouter,
   machines: machinesRouter,
