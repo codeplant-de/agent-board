@@ -104,6 +104,9 @@ function QuestionForm({ questions, submitting, onSubmit }: FormProps) {
         ? draft.selected.filter((l) => l !== label)
         : [...draft.selected, label];
       update(index, { selected });
+    } else if (draft.selected.includes(label)) {
+      // Picking the chosen option again drops it, so the answer can be none of the options.
+      update(index, { selected: [] });
     } else {
       update(index, { selected: [label] });
       // A single choice is made: go on to the next question.
@@ -216,14 +219,27 @@ function QuestionForm({ questions, submitting, onSubmit }: FormProps) {
                   );
                 })}
               </SimpleGrid>
-              <TextInput
-                size="xs"
-                placeholder={
-                  question.multiSelect || draft.selected.length === 0 ? 'Other…' : 'Other… (added to your choice)'
-                }
-                value={draft.other}
-                onChange={(event) => update(index, { other: event.currentTarget.value })}
-              />
+              <Group gap="xs" wrap="nowrap">
+                <TextInput
+                  size="xs"
+                  style={{ flex: 1 }}
+                  placeholder={
+                    question.multiSelect || draft.selected.length === 0 ? 'Other…' : 'Other… (added to your choice)'
+                  }
+                  value={draft.other}
+                  onChange={(event) => update(index, { other: event.currentTarget.value })}
+                />
+                {!question.multiSelect && draft.selected.length > 0 && (
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    color="gray"
+                    onClick={() => update(index, { selected: [] })}
+                  >
+                    None of these
+                  </Button>
+                )}
+              </Group>
             </Stack>
           );
         })}
