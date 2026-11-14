@@ -11,6 +11,8 @@ export interface Config {
   databaseUrl: string;
   /** The unprivileged `board_app` connection that serves every request. */
   appDatabaseUrl: string;
+  /** Owner for rows that predate tenancy; read only by the migration that adds owners. */
+  backfillOwner: string | null;
   /** Where people open the board; task URLs are <publicUrl>/t/<id>. */
   publicUrl: string;
   /** Authelia groups that may use the board. */
@@ -27,11 +29,13 @@ export function loadConfig(): Config {
   }
   const publicUrl = requireEnv('PUBLIC_URL').replace(/\/+$/, '');
   if (!/^https?:\/\/[^\s<>|]+$/.test(publicUrl)) throw new Error('PUBLIC_URL must be an http(s) URL');
+  const backfillOwner = process.env.BACKFILL_OWNER?.trim().toLowerCase() || null;
   return {
     nodeEnv,
     port: Number(process.env.PORT ?? 4000),
     databaseUrl: requireEnv('DATABASE_URL'),
     appDatabaseUrl: requireEnv('APP_DATABASE_URL'),
+    backfillOwner,
     publicUrl,
     allowedGroups: (process.env.ALLOWED_GROUPS ?? 'admins')
       .split(',')

@@ -67,7 +67,7 @@ export async function insertTask(
       createdBy: draft.createdBy ?? 'user',
       proposed,
     })
-    .onConflictDoNothing({ target: tasks.dedupeKey })
+    .onConflictDoNothing({ target: [tasks.owner, tasks.dedupeKey] })
     .returning();
   if (row) return { row, created: true };
   const [existing] = await tx
