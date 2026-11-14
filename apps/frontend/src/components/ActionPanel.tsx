@@ -256,9 +256,9 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
     );
   }
 
-  const suggestion = isProposal ? undefined : currentSuggestion(thread);
+  const suggestion = isProposal || task.status !== 'needs-me' ? undefined : currentSuggestion(thread);
   const sendMessage = (text: string) => {
-    if (!text.trim() || isProposal) return;
+    if (!text.trim() || isProposal || actions.reply.isPending) return;
     actions.reply.mutate({ id: task.id, message: text, resume: true }, { onSuccess: () => setMessage('') });
   };
   const send = () => sendMessage(message);
@@ -301,7 +301,7 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
             <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
               Suggested reply
             </Text>
-            <Text size="sm" lineClamp={2} title={suggestion} style={{ flex: 1, minWidth: 0 }}>
+            <Text size="sm" style={{ flex: 1, minWidth: 0, whiteSpace: 'pre-wrap' }}>
               {suggestion}
             </Text>
             <Button size="compact-sm" variant="default" onClick={() => setMessage(suggestion)}>
