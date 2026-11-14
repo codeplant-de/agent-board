@@ -14,6 +14,7 @@ import { isSafeTaskId } from '@agent-board/shared';
 import { logLine, StreamCondenser } from '@agent-board/shared';
 import type { Task, TranscriptEvent } from '@agent-board/shared';
 import {
+  boundBacklog,
   buildInvocation,
   decideOutcome,
   isPermanentRefusal,
@@ -53,16 +54,16 @@ export interface RunResult {
 export interface Watch {
   everyMs: number;
   tick: () => Promise<Supervision>;
-  // Resolves when the calls to the board that earlier ticks started are done.
-  settled: () => Promise<void>;
 }
 
 // How long a run may take to stop by itself after a pause was asked for.
 const PAUSE_GRACE_MINUTES = 5;
 // The board's liveness is updated at most this often.
 const HEARTBEAT_EVERY_MS = 15_000;
-// Events waiting for the board past this are dropped from the front: the board is down, the run goes on.
+// Events waiting for the board past this many, or past this many bytes of JSON, lose their oldest tool outputs first and then their
+// oldest events, with a note in the transcript: the board is down, the run goes on.
 const MAX_PENDING_EVENTS = 20_000;
+const MAX_PENDING_BYTES = 32 * 1024 * 1024;
 // What one upload pass may spend on the board: calls, counting the halving of a refused batch, and time. What is left goes
 // with the next pass.
 const MAX_UPLOAD_CALLS = 24;
@@ -97,6 +98,8 @@ export interface WorkerDeps extends Context {
   // The hook command line for a task, given the run directory.
   hookCommand: (runDir: string, taskId: string) => string;
   now: () => Date;
+  // The transcript backlog's byte budget; the default is `MAX_PENDING_BYTES`.
+  maxPendingBytes?: number;
   watchEveryMs: number;
 }
 
@@ -208,6 +211,33 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   const condenser = new StreamCondenser(deps.now);
   const runId = deps.newSessionId();
   let pending: TranscriptEvent[] = [];
+  let pendingBytes = 0;
+  const bytesOf = (events: TranscriptEvent[]): number =>
+    events.reduce((sum, event) => sum + Buffer.byteLength(JSON.stringify(event)), 0);
+  // Holds the backlog to its count and byte budget, and says in the transcript what it had to drop.
+  const keepBounded = (): void => {
+    const maxBytes = deps.maxPendingBytes ?? MAX_PENDING_BYTES;
+    if (pending.length <= MAX_PENDING_EVENTS && pendingBytes <= maxBytes) return;
+    // Trimmed to 90% so that the next lines do not trim again, and note again, at once.
+    const bounded = boundBacklog(pending, {
+      maxEvents: Math.floor(MAX_PENDING_EVENTS * 0.9),
+      maxBytes: Math.floor(maxBytes * 0.9),
+    });
+    pending = bounded.events;
+    if (bounded.droppedOutputs > 0 || bounded.droppedEvents > 0) {
+      const parts = [
+        ...(bounded.droppedOutputs > 0 ? [`${bounded.droppedOutputs} tool outputs`] : []),
+        ...(bounded.droppedEvents > 0 ? [`${bounded.droppedEvents} events`] : []),
+      ];
+      pending.push(
+        condenser.note(
+          `${parts.join(' and ')} of this run were dropped from the transcript: the board could not take them in time.`,
+        ),
+      );
+      deps.appendLog(taskId, `transcript backlog over its budget: dropped ${parts.join(' and ')}`);
+    }
+    pendingBytes = bytesOf(pending);
+  };
   const post = (events: TranscriptEvent[]): Promise<void> =>
     backend.transcript(task.id, {
       runId,
@@ -243,6 +273,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   const upload = async (): Promise<void> => {
     const batches = splitBatches(pending);
     pending = [];
+    pendingBytes = 0;
     const passStarted = deps.now().getTime();
     let calls = 0;
     const spend = (): boolean => {
@@ -254,7 +285,9 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       const back = await sendEvents(events, spend);
       if (back.length > 0) {
         // What could not go out, and the batches after it, go again with the next pass.
-        pending = [...back, ...batches.slice(index + 1).flat(), ...pending].slice(-MAX_PENDING_EVENTS);
+        pending = [...back, ...batches.slice(index + 1).flat(), ...pending];
+        pendingBytes = bytesOf(pending);
+        keepBounded();
         return;
       }
     }
@@ -271,10 +304,11 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       });
     return uploading;
   };
-  // The end of the run: what is in flight, then what is left, each pass bounded like any other.
+  // The end of the run: what is in flight, then what is left, then once more what a pass left over, each bounded like any other.
   const flushTranscript = async (): Promise<void> => {
     await uploading;
     await startUpload();
+    if (pending.length > 0) await startUpload();
   };
   let beating: Promise<void> | undefined;
   const startBeat = (): Promise<void> => {
@@ -286,7 +320,8 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   const onLine = (line: string): string | undefined => {
     const events = condenser.line(line);
     pending.push(...events);
-    if (pending.length > MAX_PENDING_EVENTS) pending = pending.slice(-MAX_PENDING_EVENTS);
+    pendingBytes += bytesOf(events);
+    keepBounded();
     const text = events.map(logLine).filter((part) => part !== undefined);
     return text.length > 0 ? text.join('\n') : undefined;
   };
@@ -303,9 +338,6 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
         limits: config,
         pauseGraceMinutes: PAUSE_GRACE_MINUTES,
       });
-    },
-    settled: async () => {
-      await Promise.all([beating, uploading]);
     },
   };
 

@@ -50,7 +50,7 @@ export interface WireTranscriptEvent {
   at: string;
   kind: TranscriptEvent['kind'];
   parent: string | null;
-  // Sealed ("tr.data", context `runId:seq`): the JSON of the whole event but its output.
+  // Sealed ("tr.data", context `<taskId>:<runId>:<seq>`): the JSON of the whole event but its output.
   data: string;
   // A tool result's output, sealed ("tr.output", same context); absent on every other event.
   output?: string | null;
@@ -161,6 +161,11 @@ export class StreamCondenser {
 
   constructor(now: () => Date = () => new Date()) {
     this.now = now;
+  }
+
+  /** A note of the worker's own, at the next position: for something that happened to the transcript itself. */
+  note(text: string): TranscriptEvent {
+    return this.make(null, { kind: 'note', text });
   }
 
   line(raw: string): TranscriptEvent[] {

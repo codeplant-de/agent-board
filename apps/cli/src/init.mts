@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { decodeDataKey, isSafeMachineName } from '@agent-board/shared';
+import { decodeDataKey, isSafeMachineName, MACHINE_NAME_RULE } from '@agent-board/shared';
 import { checkBoardUrl, looksLikeMachineToken } from './backend.mts';
 import { ConfigError, readSecretFile } from './config.mts';
 import { parseEnv } from './env-file.mts';
@@ -92,9 +92,7 @@ export function dataKeyProblem(key: string): string | undefined {
 }
 
 export function machineProblem(name: string): string | undefined {
-  return isSafeMachineName(name.trim())
-    ? undefined
-    : "use letters, digits, '.', '-' and '_', at most 32 characters, starting with a letter or digit";
+  return isSafeMachineName(name.trim()) ? undefined : `use ${MACHINE_NAME_RULE}`;
 }
 
 // A token or key file is a secret like env: refused unless mode 600 or 400, which a pipe (`--token-file /dev/stdin`) is.

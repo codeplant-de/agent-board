@@ -288,9 +288,7 @@ const checkConfig: Check = ({ configDir, readText }) => {
         'config.json',
         'fail',
         `${path}: ${message}`,
-        /machine must be/.test(message)
-          ? 'shorten "machine" to at most 32 characters, create a new token for the new name on the Settings page (a token is tied to its machine name) and run "board init --force" to store it'
-          : 'fix the file; "board init --force" does not replace it, config.example.json shows the shape',
+        'fix the file; "board init --force" does not replace it, config.example.json shows the shape',
       ),
     ];
   }

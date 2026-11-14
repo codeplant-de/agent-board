@@ -344,12 +344,3 @@ test('a board with no key yet says so even when env has no key either, and the h
     /board init --force": it keeps the URL and the token/,
   );
 });
-
-test('a config.json with a machine name past 32 characters gets the way out as its hint', async () => {
-  const results = await runChecks(
-    machine({ ...GOOD, [`${CONFIG_DIR}/config.json`]: { text: JSON.stringify({ machine: 'm'.repeat(40) }) } }),
-  );
-  const config = results.find((result) => result.name === 'config.json');
-  assert.equal(config?.level, 'fail');
-  assert.match(config?.hint ?? '', /at most 32 characters.*new token for the new name.*tied to its machine name/);
-});

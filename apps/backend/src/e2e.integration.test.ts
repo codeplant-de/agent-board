@@ -24,7 +24,6 @@ import { createBrowserHarness } from '../../frontend/src/test/browserHarness';
 import { openerFor } from '../../frontend/src/lib/opening';
 import { notes, tasks } from './db/schema';
 import { buildServer } from './server';
-import { appRouter } from './trpc/router';
 import { caller, question, SESSION, testConfig, useTestDb } from './test/helpers';
 import { MARKERS, sealed, useDataKey } from './test/sealed';
 
@@ -68,15 +67,26 @@ async function setup() {
     },
   });
 
-  const server = appRouter.createCaller({ root: db, config: testConfig, username: OWNER });
+  // The browser's requests go through the server's HTTP adapter and sign-in check, with the headers Authelia would set.
   const { trpc, fetchQuery, mutate } = createBrowserHarness({
     keys: made.keys,
-    call: async (path, input) => {
-      const procedure = path.split('.').reduce<any>((node, key) => node[key], server);
-      return procedure(input);
+    fetch: async (url, init) => {
+      const { pathname, search } = new URL(url);
+      received.push(init.body ?? decodeURIComponent(search));
+      const answer = await app.inject({
+        method: init.method as 'GET' | 'POST',
+        url: `${pathname}${search}`,
+        headers: { ...init.headers, 'remote-user': OWNER, 'remote-groups': 'work,admins' },
+        ...(init.body === undefined ? {} : { payload: init.body }),
+      });
+      const json = answer.json() as { result?: { data?: unknown } };
+      if (json.result !== undefined)
+        json.result.data = meddleUi(pathname.replace('/trpc/', ''), json.result.data) ?? json.result.data;
+      return new Response(JSON.stringify(json), {
+        status: answer.statusCode,
+        headers: { 'content-type': 'application/json' },
+      });
     },
-    seeing: (path, data) => meddleUi(path, data),
-    sent: (_path, input) => received.push(JSON.stringify(input ?? null)),
   });
 
   return { app, cli, trpc, fetchQuery, mutate, keys: made.keys, dataKey, rawUi, token };
@@ -431,6 +441,35 @@ describe('the answer the user gives', () => {
     // And the agent is told exactly that.
     const told = (await ctx.cli.readNotes(id)).find((n) => n.kind === 'answer');
     expect(told?.questions).toEqual(current);
+  });
+});
+
+describe('the browser’s requests over HTTP', () => {
+  it('are refused by the server’s sign-in check without the Authelia headers, and answered with them', async () => {
+    const { app, keys } = ctx;
+    const through = (headers: Record<string, string>) =>
+      createBrowserHarness({
+        keys,
+        fetch: async (url, init) => {
+          const { pathname, search } = new URL(url);
+          const answer = await app.inject({
+            method: init.method as 'GET' | 'POST',
+            url: `${pathname}${search}`,
+            headers: { ...init.headers, ...headers },
+            ...(init.body === undefined ? {} : { payload: init.body }),
+          });
+          return new Response(answer.body, { status: answer.statusCode });
+        },
+      });
+    const anonymous = through({});
+    await expect(anonymous.fetchQuery(anonymous.trpc.me.queryOptions())).rejects.toThrow();
+    const outsider = through({ 'remote-user': OWNER, 'remote-groups': 'family' });
+    await expect(outsider.fetchQuery(outsider.trpc.me.queryOptions())).rejects.toThrow();
+    const signedIn = through({ 'remote-user': 'Jascha', 'remote-groups': 'work,admins' });
+    expect(await signedIn.fetchQuery(signedIn.trpc.me.queryOptions())).toEqual({
+      username: OWNER,
+      keyId: keys.keyId,
+    });
   });
 });
 

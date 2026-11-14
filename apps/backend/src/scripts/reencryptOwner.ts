@@ -62,7 +62,29 @@ export interface ReencryptSummary {
   notices: Record<string, number>;
   /** Things the operator should read; none of them stopped the run. */
   warnings: string[];
+  /** Every legacy proposal whose `proposed = false` was read: made the user's with evidence of a start, or kept as the agent's. */
+  proposals: ProposalDecision[];
+  /** What the owner's rows were when the run read them, for the operator to compare with the dump taken before the cutover. */
+  inventory: Inventory;
   dryRun: boolean;
+}
+
+export interface ProposalDecision {
+  id: string;
+  /** The creator the task had. */
+  createdBy: TaskCreator;
+  status: string;
+  createdAt: string;
+  outcome: 'started' | 'kept';
+  /** What showed that the user started it; empty when it was kept. */
+  evidence: string[];
+}
+
+export interface Inventory {
+  /** Every task of the owner, oldest first. */
+  tasks: { id: string; createdBy: TaskCreator; status: string; createdAt: string }[];
+  /** Rows of the owner per table. */
+  counts: Record<string, number>;
 }
 
 export interface ReencryptOptions {
@@ -90,6 +112,8 @@ interface Context {
   tables: ReencryptSummary['tables'];
   notices: Map<string, number>;
   warnings: string[];
+  proposals: ProposalDecision[];
+  inventoryTasks: Inventory['tasks'];
   // Legacy values the wire parsers at HEAD refuse; any of them aborts the run, because one such row fails every listing.
   problems: string[];
   warnedOversize: Set<string>;
@@ -271,10 +295,76 @@ interface TaskRecord extends Record<string, unknown> {
   head: string | null;
   created_by: TaskCreator;
   proposed: boolean;
+  status: string;
+  created_at: Date;
+  /** For a task that is an agent's and not `proposed`: what shows that the user started it; null for any other task. */
+  start_evidence: string[] | null;
   schedule_id: string | null;
   machine: string | null;
   lane: string | null;
   session_id: string | null;
+}
+
+/**
+ * Before this change a started proposal stayed `created_by = 'agent'` with `proposed = false`, but so did one that was only
+ * reopened after a discard (reopening cleared `proposed` too), so the flag alone proves nothing. A start leaves one of these
+ * behind: it moves the task into Todo (or a reply, an answer or a re-run does, which also queue it), which only a claim can
+ * follow with a machine, a session, a run timestamp, a transcript run or the status Running. The user's own answer, and the note
+ * "Moved from <status> to todo." of the drag, are the other traces. A proposal discarded, reopened or marked done without any of
+ * them was never started.
+ */
+const START_EVIDENCE = `
+  case when t.created_by = 'agent' and not t.proposed then array_remove(array[
+    case when t.session_id is not null then 'a session id' end,
+    case when t.machine is not null then 'a machine claimed it' end,
+    case when t.run_started_at is not null or t.last_active_at is not null then 'a run timestamp' end,
+    case when t.status::text in ('todo', 'running') then 'status ' || t.status::text end,
+    case when t.next::text = 'resume' then 'next is resume' end,
+    case when exists (select 1 from transcript_run r where r.owner = t.owner and r.task_id = t.id) then 'a transcript run' end,
+    case when exists (
+      select 1 from note n where n.owner = t.owner and n.task_id = t.id
+        and ((n.author::text = 'user' and n.kind::text = 'answer') or n.body ~ '^Moved from [a-z-]+ to todo[.]$')
+    ) then 'an answer of the user or the move into Todo' end
+  ], null) end`;
+
+/**
+ * A pull request the first release's intake made a second task for, while the legacy task still had the plain URL as its key:
+ * hashed, the legacy key would be the new task's, and the database would refuse it with a raw error.
+ */
+async function checkDedupeCollisions(ctx: Context): Promise<void> {
+  const legacy = (
+    await query<{ id: string; dedupe_key: string; created_at: Date }>(
+      ctx,
+      'select id, dedupe_key, created_at from task where owner = $1 and dedupe_key is not null',
+      [ctx.owner],
+    )
+  ).filter((task) => !isBlindIndex(task.dedupe_key));
+  if (legacy.length === 0) return;
+  const indexed = await Promise.all(
+    legacy.map(async (task) => ({ ...task, index: await dedupeKeyIndex(ctx.keys, task.dedupe_key) })),
+  );
+  const holders = await query<{ id: string; dedupe_key: string; created_by: string; created_at: Date }>(
+    ctx,
+    'select id, dedupe_key, created_by::text as created_by, created_at from task where owner = $1 and dedupe_key = any($2::text[])',
+    [ctx.owner, indexed.map((task) => task.index)],
+  );
+  const collisions = indexed.flatMap((task) =>
+    holders
+      .filter((holder) => holder.dedupe_key === task.index && holder.id !== task.id)
+      .map((holder) => ({ legacy: task, holder })),
+  );
+  if (collisions.length === 0) return;
+  const lines = collisions.map(
+    ({ legacy: old, holder }) =>
+      `  task ${old.id} (legacy, created ${old.created_at.toISOString()}) and task ${holder.id} (created by ${holder.created_by} ${holder.created_at.toISOString()}) are for the same pull request`,
+  );
+  throw new ReencryptError(
+    `Intake ran after the first release was deployed and made a second task for a pull request that a legacy task already covers:\n${lines.join('\n')}\n` +
+      'Only one task can hold a pull request. Look at the newer one: if nothing on it is worth keeping, delete it ' +
+      `(delete from task where owner = '${ctx.owner}' and id = '<the newer id>'; its notes and transcripts go with it); if it is, ` +
+      `free the older one's key instead (update task set dedupe_key = null where owner = '${ctx.owner}' and id = '<the older id>'). ` +
+      'Then run again. Nothing was changed.',
+  );
 }
 
 async function convertTasks(ctx: Context, scheduleIds: Set<string>): Promise<void> {
@@ -284,8 +374,9 @@ async function convertTasks(ctx: Context, scheduleIds: Set<string>): Promise<voi
     (after) =>
       query(
         ctx,
-        `select id, title, input, workdir, dedupe_key, head, created_by, proposed, schedule_id, machine, lane, session_id
-         from task where owner = $1 and ($2::text is null or id > $2) order by id limit $3`,
+        `select t.id, t.title, t.input, t.workdir, t.dedupe_key, t.head, t.created_by, t.proposed, t.status::text as status,
+           t.created_at, t.schedule_id, t.machine, t.lane, t.session_id, ${START_EVIDENCE} as start_evidence
+         from task t where t.owner = $1 and ($2::text is null or t.id > $2) order by t.id limit $3`,
         [ctx.owner, after?.id ?? null, ctx.batchSize],
       ),
     async (task) => {
@@ -307,13 +398,34 @@ async function convertTasks(ctx: Context, scheduleIds: Set<string>): Promise<voi
           'tasks that are occurrences of a schedule that no longer exists (sealed for the schedule id they name)',
         );
 
-      // Before this change a started proposal stayed `created_by = 'agent'`; the only thing that told it from one still waiting
-      // was `proposed = false`. The board is still trusted at cutover, so that is the user starting it: the task is the user's
-      // from now on, as a proposal started afterwards becomes one.
-      const startedProposal = task.created_by === 'agent' && !task.proposed;
-      if (startedProposal)
-        notice(ctx, 'proposals the user had started (now created by the user, as a started proposal is)');
-      const createdBy: TaskCreator = startedProposal ? 'user' : task.created_by;
+      let createdBy: TaskCreator = task.created_by;
+      let proposed = task.proposed;
+      if (task.start_evidence !== null) {
+        // The board is trusted at cutover: the task is the user's from now on, as a proposal started afterwards becomes one,
+        // only with evidence that the user started it. Otherwise it stays the agent's, waiting, as an unstarted proposal does.
+        const started = task.start_evidence.length > 0;
+        if (started) {
+          createdBy = 'user';
+          notice(ctx, 'proposals the user had started (now created by the user, as a started proposal is)');
+        } else {
+          proposed = true;
+          notice(ctx, 'proposals with no sign of a start (kept as the agent’s, waiting for you to start them)');
+        }
+        ctx.proposals.push({
+          id: task.id,
+          createdBy: task.created_by,
+          status: task.status,
+          createdAt: task.created_at.toISOString(),
+          outcome: started ? 'started' : 'kept',
+          evidence: task.start_evidence,
+        });
+      }
+      ctx.inventoryTasks.push({
+        id: task.id,
+        createdBy: task.created_by,
+        status: task.status,
+        createdAt: task.created_at.toISOString(),
+      });
       // An occurrence is bound to its schedule's id, whether or not that schedule still exists: the clients decide from the
       // row alone, and `schedule_id` is a plain reference that stays when the schedule goes.
       const row: RowRef = { kind: 'task', id: task.id, createdBy, scheduleId: task.schedule_id };
@@ -331,20 +443,30 @@ async function convertTasks(ctx: Context, scheduleIds: Set<string>): Promise<voi
         task.head === null
           ? null
           : await indexColumn(ctx, 'task.head', task.head, (plain) => headIndex(ctx.keys, plain));
-      const values = [title, input, workdir, dedupeKey, head, createdBy];
-      if (same(values, [task.title, task.input, task.workdir, task.dedupe_key, task.head, task.created_by]))
+      const values = [title, input, workdir, dedupeKey, head, createdBy, String(proposed)];
+      if (
+        same(values, [
+          task.title,
+          task.input,
+          task.workdir,
+          task.dedupe_key,
+          task.head,
+          task.created_by,
+          String(task.proposed),
+        ])
+      )
         return undefined;
       return { key: [task.id], values };
     },
     async (rows) => {
       const { rows: stored } = await ctx.client.query<{ id: string; v: Value[] }>(
         `update task t set title = v.title, input = v.input, workdir = v.workdir, dedupe_key = v.dedupe_key, head = v.head,
-           created_by = v.created_by::task_creator
-         from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[])
-           as v(id, title, input, workdir, dedupe_key, head, created_by)
+           created_by = v.created_by::task_creator, proposed = v.proposed::boolean
+         from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[])
+           as v(id, title, input, workdir, dedupe_key, head, created_by, proposed)
          where t.owner = $1 and t.id = v.id
-         returning t.id, array[t.title, t.input, t.workdir, t.dedupe_key, t.head, t.created_by::text] as v`,
-        [ctx.owner, ...columnsOf(rows, 7)],
+         returning t.id, array[t.title, t.input, t.workdir, t.dedupe_key, t.head, t.created_by::text, t.proposed::text] as v`,
+        [ctx.owner, ...columnsOf(rows, 8)],
       );
       return stored.map(({ id, v }) => [id, ...v]);
     },
@@ -742,6 +864,20 @@ async function checkOwner(ctx: Context): Promise<void> {
     );
 }
 
+const COUNTED_TABLES = ['task', 'schedule', 'note', 'transcript_run', 'transcript_event'] as const;
+
+/** The owner's rows per table, as the run found them. */
+async function rowCounts(ctx: Context): Promise<Record<string, number>> {
+  const found: Record<string, number> = {};
+  for (const table of COUNTED_TABLES) {
+    const [row] = await query<{ n: number }>(ctx, `select count(*)::int as n from "${table}" where owner = $1`, [
+      ctx.owner,
+    ]);
+    found[table] = row?.n ?? 0;
+  }
+  return found;
+}
+
 async function lockBoard(ctx: Context): Promise<void> {
   try {
     await ctx.client.query(`lock table ${LOCKED_TABLES.join(', ')} in share row exclusive mode nowait`);
@@ -788,10 +924,13 @@ export async function reencryptOwner(options: ReencryptOptions): Promise<Reencry
     tables: {},
     notices: new Map(),
     warnings: [],
+    proposals: [],
+    inventoryTasks: [],
     problems: [],
     warnedOversize: new Set(),
   };
   if (!keys.index) throw new ReencryptError('The keys need the blind-index key: derive them with { index: true }.');
+  let tableCounts: Record<string, number>;
   await client.query('begin');
   try {
     await client.query('set local statement_timeout = 0');
@@ -802,6 +941,8 @@ export async function reencryptOwner(options: ReencryptOptions): Promise<Reencry
     const scheduleIds = new Set(
       (await query<{ id: string }>(ctx, 'select id from schedule where owner = $1', [owner])).map(({ id }) => id),
     );
+    tableCounts = await rowCounts(ctx);
+    await checkDedupeCollisions(ctx);
     ctx.log('tasks');
     await convertTasks(ctx, scheduleIds);
     ctx.log('schedules');
@@ -825,6 +966,11 @@ export async function reencryptOwner(options: ReencryptOptions): Promise<Reencry
     tables: ctx.tables,
     notices: Object.fromEntries(ctx.notices),
     warnings: ctx.warnings,
+    proposals: ctx.proposals.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
+    inventory: {
+      tasks: ctx.inventoryTasks.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
+      counts: tableCounts,
+    },
     dryRun,
   };
 }

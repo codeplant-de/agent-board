@@ -8,6 +8,7 @@ import {
   deriveKeys,
   isRecord,
   isSafeMachineName,
+  MACHINE_NAME_RULE,
   isSafeTaskId,
   parseVersion,
   parseVersionIdentity,
@@ -301,7 +302,8 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     addTask: async (draft) => call('add-task', { body: draft }, parseWireAddTaskResult),
     updateTask: async (id, patch) => call('update-task', { id: taskId(id), body: patch }, parseWireTask),
     async claimTask(id, machine) {
-      if (!isSafeMachineName(machine)) throw new BackendError(`"${machine.slice(0, 40)}" is not a valid machine name`);
+      if (!isSafeMachineName(machine))
+        throw new BackendError(`"${machine.slice(0, 40)}" is not a valid machine name: use ${MACHINE_NAME_RULE}`);
       try {
         return await call('claim-task', { id: taskId(id), machine }, parseWireTask);
       } catch (error) {
