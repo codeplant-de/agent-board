@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MAX_BATCH_EVENTS } from '@agent-board/shared';
+import type { Task } from '@agent-board/shared';
+import { BackendError } from '../src/backend.mts';
+import { START_MARKER } from '../src/decide.mts';
 import { runWorker } from '../src/worker.mts';
 import type { RunResult, WorkerDeps } from '../src/worker.mts';
-import { CONFIG, fakeBackend, fakeRunFiles, note, task } from './helpers.mts';
+import { CONFIG, fakeBackend, fakeRunFiles, fakeSessions, note, OTHER_SESSION, SESSION, task } from './helpers.mts';
 
 function setup(result: RunResult | Error, moveDuringRun = false) {
   // A task scheduled from /tmp on this machine.
@@ -30,7 +33,8 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
     settingsEnv: () => ({}),
     mcpServers: () => ({ config: { mcpServers: {} }, missing: [] }),
     home: '/h',
-    newSessionId: () => 's-new',
+    newSessionId: () => SESSION,
+    sessions: fakeSessions(),
     files: fakeRunFiles(),
     hookCommand: (dir, id) => `hook ${dir} ${id}`,
     now: () => new Date(),
@@ -172,17 +176,18 @@ test('a fresh skill run gets a new session, stored on the task before the run', 
   const args: string[][] = [];
   deps.run = async (invocation) => {
     args.push(invocation.args);
-    assert.ok(backend.writes.includes('session w1: s-new'), 'stored before the run');
+    assert.ok(backend.writes.includes(`session w1: ${SESSION}`), 'stored before the run');
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
   };
   await runWorker(deps, 'w1');
-  assert.deepEqual(args[0]?.slice(0, 4), ['-p', '/selftest go', '--session-id', 's-new']);
+  assert.deepEqual(args[0]?.slice(0, 3), ['-p', '/selftest go', `--session-id=${SESSION}`]);
 });
 
 test("a resume runs the stored session with the user's reply and uses the resume up", async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
-  Object.assign(backend.tasks[0]!, { next: 'resume', sessionId: 's-old', machine: 'here' });
+  Object.assign(backend.tasks[0]!, { next: 'resume', sessionId: SESSION, machine: 'here' });
+  deps.sessions.record('w1', SESSION);
   backend.notes.set('w1', [
     note('Done, one question', new Date('2026-11-13T10:00:00Z')),
     note('please also check X', new Date('2026-11-13T10:05:00Z'), { author: 'user' }),
@@ -194,8 +199,7 @@ test("a resume runs the stored session with the user's reply and uses the resume
     return { exitCode: 0, signal: null };
   };
   await runWorker(deps, 'w1');
-  assert.equal(args[0]?.[2], '--resume');
-  assert.equal(args[0]?.[3], 's-old');
+  assert.equal(args[0]?.[2], `--resume=${SESSION}`);
   assert.match(args[0]?.[1] ?? '', /please also check X/);
   assert.ok(backend.writes.includes('next w1: fresh'));
   assert.ok(!backend.writes.some((w) => w.startsWith('session w1')));
@@ -269,11 +273,12 @@ test('a fresh skill run binds the task to its directory, and to the worktree it 
 test("a resume starts in the task's directory, and a missing one fails without starting", async () => {
   const resumable = {
     next: 'resume' as const,
-    sessionId: 's-old',
+    sessionId: SESSION,
     machine: 'here',
     workdir: '/repo/.claude/worktrees/feat-x',
   };
   const { deps, backend } = setup({ exitCode: 0, signal: null });
+  deps.sessions.record('w1', SESSION);
   Object.assign(backend.tasks[0]!, resumable);
   backend.notes.set('w1', [
     note('asked', new Date('2026-11-13T10:00:00Z')),
@@ -289,6 +294,7 @@ test("a resume starts in the task's directory, and a missing one fails without s
   assert.equal(cwd, '/repo/.claude/worktrees/feat-x');
 
   const gone = setup({ exitCode: 0, signal: null });
+  gone.deps.sessions.record('w1', SESSION);
   Object.assign(gone.backend.tasks[0]!, resumable);
   gone.backend.notes.set('w1', [
     note('asked', new Date('2026-11-13T10:00:00Z')),
@@ -334,7 +340,7 @@ test("the run's stream becomes readable log lines and a transcript sent with eac
   assert.deepEqual(logged, ['→ Bash: ls', undefined, 'All done']);
   assert.deepEqual(
     backend.writes.filter((w) => w.startsWith('transcript')),
-    ['transcript w1 s-new tool_use', 'transcript w1 s-new tool_result,result'],
+    [`transcript w1 ${SESSION} tool_use`, `transcript w1 ${SESSION} tool_result,result`],
   );
 });
 
@@ -441,7 +447,7 @@ test('a run that failed before it started leaves no session behind, and one that
   await runWorker(unspawned.deps, 'w1');
   assert.deepEqual(
     unspawned.backend.writes.filter((w) => w.startsWith('session w1')),
-    ['session w1: s-new', 'session w1: null'],
+    [`session w1: ${SESSION}`, 'session w1: null'],
   );
 });
 
@@ -479,7 +485,8 @@ test("a fresh run's prompt carries the user's message and points at the thread",
 
 test("a worker that finds the task paused tells the agent, from the task's flag", async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
-  Object.assign(backend.tasks[0]!, { next: 'resume', sessionId: 's-old', paused: true });
+  Object.assign(backend.tasks[0]!, { next: 'resume', sessionId: SESSION, paused: true });
+  deps.sessions.record('w1', SESSION);
   let prompt = '';
   deps.run = async (invocation) => {
     prompt = invocation.args[1] ?? '';
@@ -577,4 +584,141 @@ test('an unreadable comment of the user stops the run; an unreadable title or ag
   fine.backend.notes.set('w1', [note('', new Date('2026-01-01T10:00:00Z'), { author: 'agent', unreadable: true })]);
   await runWorker(fine.deps, 'w1');
   assert.ok(!fine.backend.writes.some((w) => w.startsWith('fail w1:')));
+});
+
+const HOSTILE_SESSION = '--dangerously-skip-permissions';
+
+async function resumeOf(sessionId: string, known: string[] = []) {
+  const run = setup({ exitCode: 0, signal: null });
+  Object.assign(run.backend.tasks[0]!, { next: 'resume', sessionId, machine: 'here' });
+  for (const session of known) run.deps.sessions.record('w1', session);
+  run.backend.notes.set('w1', [
+    note('asked', new Date('2026-11-13T10:00:00Z')),
+    note('go on', new Date('2026-11-13T10:05:00Z'), { author: 'user' }),
+  ]);
+  const invocations: string[][] = [];
+  run.deps.run = async (invocation) => {
+    invocations.push(invocation.args);
+    run.backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(run.deps, 'w1');
+  return { ...run, invocations };
+}
+
+test('a session id the board names that this machine did not start is never resumed (flag injection)', async () => {
+  for (const hostile of [HOSTILE_SESSION, '-p', `${SESSION} --dangerously-skip-permissions`, OTHER_SESSION]) {
+    const { invocations, backend } = await resumeOf(hostile, [SESSION]);
+    assert.deepEqual(invocations, [], `${hostile} must not start claude`);
+    const failure = backend.writes.find((w) => w.startsWith('fail w1:')) ?? '';
+    assert.match(failure, /did not start for this task, so the run was not started/);
+    assert.match(failure, /Re-run fresh/);
+    assert.ok(!backend.writes.some((w) => w.startsWith('next w1')), 'the resume is not used up');
+  }
+});
+
+test('a session this machine started for the task resumes, as one argument', async () => {
+  const { invocations } = await resumeOf(SESSION.toUpperCase(), [SESSION]);
+  assert.equal(invocations.length, 1);
+  assert.ok(invocations[0]!.includes(`--resume=${SESSION}`));
+  assert.ok(!invocations[0]!.includes('--resume'));
+});
+
+test('a session recorded for another task is not this task’s', async () => {
+  const run = setup({ exitCode: 0, signal: null });
+  run.deps.sessions.record('other', SESSION);
+  Object.assign(run.backend.tasks[0]!, { next: 'resume', sessionId: SESSION, machine: 'here' });
+  run.backend.notes.set('w1', [
+    note('asked', new Date('2026-11-13T10:00:00Z')),
+    note('go on', new Date('2026-11-13T10:05:00Z'), { author: 'user' }),
+  ]);
+  let ran = false;
+  run.deps.run = async () => ((ran = true), { exitCode: 0, signal: null });
+  await runWorker(run.deps, 'w1');
+  assert.equal(ran, false);
+});
+
+test('a fresh run records its session before it starts, so a later resume is allowed', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null }, true);
+  deps.run = async () => {
+    assert.ok(deps.sessions.has('w1', SESSION), 'recorded before the process starts');
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.ok(deps.sessions.has('w1', SESSION));
+});
+
+test('only the notes the run would hand the agent can stop it: an old unreadable note does not (unrunnable forever)', async () => {
+  const at = (minute: number) => new Date(Date.UTC(2026, 10, 13, 10, minute));
+  const unreadable = (minute: number) => note('', at(minute), { author: 'user', unreadable: true });
+  const started = (minute: number) =>
+    note(`${START_MARKER} ${at(minute).toISOString()} (x, here)`, at(minute), { author: 'system', kind: 'event' });
+  const attempt = async (notes: ReturnType<typeof note>[], overrides: Partial<Task> = {}) => {
+    const run = setup({ exitCode: 0, signal: null }, true);
+    Object.assign(run.backend.tasks[0]!, { runStartedAt: at(30), ...overrides });
+    run.deps.sessions.record('w1', SESSION);
+    run.backend.notes.set('w1', notes);
+    let ran = false;
+    run.deps.run = async () => ((ran = true), { exitCode: 0, signal: null });
+    await runWorker(run.deps, 'w1');
+    return { ran, failure: run.backend.writes.find((w) => w.startsWith('fail w1:')) ?? '' };
+  };
+  // Fresh: an unreadable note written since the last run started would be handed over, so the run is refused, with advice.
+  const refused = await attempt([started(1), unreadable(10)]);
+  assert.equal(refused.ran, false);
+  assert.match(refused.failure, /Re-run fresh: a fresh run starts after this attempt/);
+  // Re-run fresh keeps the note, but the refused attempt left a start note behind it: the note is no longer handed over.
+  assert.equal((await attempt([unreadable(10), started(20)])).ran, true);
+  // Resume: the user's reply is what is handed over.
+  const resume = { next: 'resume' as const, sessionId: SESSION, machine: 'here' };
+  assert.equal((await attempt([note('Findings', at(5)), unreadable(10)], resume)).ran, false);
+  assert.equal(
+    (await attempt([unreadable(1), note('Findings', at(5)), note('go on', at(10), { author: 'user' })], resume)).ran,
+    true,
+  );
+});
+
+const textEvent = (text: string) =>
+  JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
+
+test('an event the board refuses for good is dropped alone, and never holds the transcript back (transcript stall)', async () => {
+  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
+  const stored: string[] = [];
+  backend.transcript = async (_id, batch) => {
+    if (batch.events.some((event) => event.kind === 'text' && event.text === 'too big for the board'))
+      throw new BackendError('transcript: event 2 is too long', 400);
+    stored.push(...batch.events.map((event) => (event.kind === 'text' ? event.text : event.kind)));
+  };
+  deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
+    for (const text of ['a', 'b', 'too big for the board', 'c']) onLine(textEvent(text));
+    await watch.tick();
+    onLine(textEvent('d'));
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.deepEqual(stored, ['a', 'b', 'c', 'd']);
+  assert.ok(calls.some((c) => c.includes('transcript event 2 was refused and dropped')));
+});
+
+test('an event the board refused for a passing reason waits, in order, with everything after it', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  const stored: string[] = [];
+  let down = true;
+  backend.transcript = async (_id, batch) => {
+    if (down) throw new BackendError('transcript: error from the board server (HTTP 503)', 503);
+    stored.push(...batch.events.map((event) => (event.kind === 'text' ? event.text : event.kind)));
+  };
+  deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
+    onLine(textEvent('a'));
+    await watch.tick();
+    onLine(textEvent('b'));
+    down = false;
+    await watch.tick();
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.deepEqual(stored, ['a', 'b']);
 });

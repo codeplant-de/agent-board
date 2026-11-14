@@ -30,6 +30,8 @@ export function planIntake(input: {
   tasks: Task[];
   repos: string[];
   now: Date;
+  // A task's `head` is the blind index of its PR's head sha (`Backend.indexHead`); this gives the one to compare with.
+  headIndex: (sha: string) => string;
 }): IntakeAction[] {
   const listed = new Set([...input.prs.map((pr) => pr.url), ...(input.unreadable ?? [])]);
   // Only for a complete listing: the caller throws before planning when the search failed.
@@ -53,7 +55,8 @@ export function planIntake(input: {
     if (task.status === 'done' && task.head === null && task.createdBy === 'intake') {
       return settled ? { kind: 'requeue', pr, task } : { kind: 'skip', pr, reason: 'listed again, not settled' };
     }
-    if (task.head === null || task.head === pr.headSha) return { kind: 'skip', pr, reason: 'task exists' };
+    if (task.head === null || task.head === input.headIndex(pr.headSha))
+      return { kind: 'skip', pr, reason: 'task exists' };
     if (task.status !== 'needs-me' && task.status !== 'done')
       return { kind: 'skip', pr, reason: `head moved, task is ${task.status}` };
     return settled ? { kind: 'requeue', pr, task } : { kind: 'skip', pr, reason: 'head moved, not settled' };
@@ -90,7 +93,17 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
   for (const url of unreadable) log(`WARN skipped ${url}`);
   // Closed tasks count too, or a closed task would get a second one.
   const tasks = await backend.listTasks({ all: true });
-  const actions = planIntake({ prs, unreadable, tasks, repos: Object.keys(config.repos), now: deps.now() });
+  const heads = new Map(
+    await Promise.all(prs.map(async (pr) => [pr.headSha, await backend.indexHead(pr.headSha)] as const)),
+  );
+  const actions = planIntake({
+    prs,
+    unreadable,
+    tasks,
+    repos: Object.keys(config.repos),
+    now: deps.now(),
+    headIndex: (sha) => heads.get(sha) ?? sha,
+  });
 
   let created = 0;
   let requeued = 0;
@@ -132,7 +145,14 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
         !(await updateIfUnchanged(
           backend,
           action.task,
-          { status: 'todo', input: prompt, head: pr.headSha, next: 'fresh' },
+          {
+            status: 'todo',
+            input: prompt,
+            head: pr.headSha,
+            next: 'fresh',
+            // Intake states itself who made the task, so the new prompt is sealed as intake's.
+            seal: { createdBy: 'intake', scheduleId: null },
+          },
           log,
         ))
       )

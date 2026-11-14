@@ -1,3 +1,4 @@
+import { sealFields } from '@agent-board/shared';
 import { createHash } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -7,7 +8,8 @@ import { appUsers, machines, notes, schedules, tasks, transcriptEvents, transcri
 import { withOwner } from './db/scope';
 import { buildServer } from './server';
 import { plainMachine, plainUi } from './test/client';
-import { asOwner, question, testConfig, useTestDb } from './test/helpers';
+import { asOwner, question, SESSION, testConfig, useTestDb } from './test/helpers';
+import { sealed } from './test/sealed';
 
 const { db, admin } = useTestDb();
 
@@ -53,14 +55,20 @@ async function setup() {
   const idle = await ui.bob.tasks.create({ input: 'idle' });
   const asked = await ui.bob.tasks.create({ input: 'asked' });
   await call('bob', 'claim-task', { id: asked.id, machine: 'laptop' });
-  await call('bob', 'update-task', { id: asked.id, body: { sessionId: 's' } });
+  await call('bob', 'update-task', { id: asked.id, body: { sessionId: SESSION } });
   await call('bob', 'ask', { id: asked.id, body: { questions: [question] } });
   const questionId = (await ui.bob.tasks.get({ id: asked.id })).thread.find((n) => n.kind === 'question')!.id;
   const running = await ui.bob.tasks.create({ input: 'running' });
   await call('bob', 'claim-task', { id: running.id, machine: 'laptop' });
   const scheduled = await ui.bob.tasks.create({ input: 'sweep', when: { every: HOUR } });
   await call('bob', 'transcript', { id: idle.id, body: transcript('run-bob-0001') });
-  return { app, ui, call, bob: { idle, asked, running, scheduled, questionId, scheduleId: scheduled.scheduleId! } };
+  return {
+    app,
+    ui,
+    call,
+    raw,
+    bob: { idle, asked, running, scheduled, questionId, scheduleId: scheduled.scheduleId! },
+  };
 }
 
 let ctx: Awaited<ReturnType<typeof setup>>;
@@ -128,7 +136,7 @@ describe('one user cannot reach another user’s board', () => {
     const foreign = { id: bob.idle.id };
     const commands: [string, Record<string, unknown>][] = [
       ['get-task', foreign],
-      ['update-task', { ...foreign, body: { sessionId: 'x' } }],
+      ['update-task', { ...foreign, body: { sessionId: SESSION } }],
       ['claim-task', { ...foreign, machine: 'laptop' }],
       ['add-note', { ...foreign, body: 'hello' }],
       ['ask', { ...foreign, body: { questions: [question] } }],
@@ -290,11 +298,6 @@ describe('one user cannot reach another user’s board', () => {
         const cases: [string, (id: string) => Promise<unknown>, string][] = [
           ['task_parent_fk', (id) => tx.update(tasks).set({ parentId: id }).where(eq(tasks.id, own!.id)), bob.idle.id],
           [
-            'task_schedule_fk',
-            (id) => tx.update(tasks).set({ scheduleId: id }).where(eq(tasks.id, own!.id)),
-            bob.scheduleId,
-          ],
-          [
             'schedule_occurrence_task_fk',
             (id) => tx.update(schedules).set({ occurrenceTaskId: id }).where(eq(schedules.id, ownSchedule!.id)),
             bob.idle.id,
@@ -346,11 +349,49 @@ describe('one user cannot reach another user’s board', () => {
         expect(child).toMatchObject({ owner: 'alice', parentId: null, scheduleId: 'sched-1' });
         const [schedule] = await tx.select().from(schedules);
         expect(schedule).toMatchObject({ owner: 'alice', occurrenceTaskId: null });
+        // A task keeps naming its schedule after it is gone: its sealed fields are bound to that id.
         await tx.delete(schedules).where(eq(schedules.id, 'sched-1'));
         const [after] = await tx.select().from(tasks).where(eq(tasks.id, 'child-1'));
-        expect(after).toMatchObject({ owner: 'alice', scheduleId: null });
+        expect(after).toMatchObject({ owner: 'alice', scheduleId: 'sched-1' });
       });
     });
+  });
+
+  it('reads a task or schedule id that another user holds as the same conflict as an own duplicate, and writes nothing', async () => {
+    const { ui, bob } = ctx;
+    const before = await bobsRows();
+    const task = async (id: string) => ({
+      id,
+      ...(await sealFields(
+        sealed.seal,
+        { kind: 'task', id, createdBy: 'user', scheduleId: null },
+        { title: 't', input: 'i' },
+      )),
+    });
+    const schedule = async (id: string) => ({
+      id,
+      ...(await sealFields(sealed.seal, { kind: 'schedule', id }, { title: 't', input: 'i' })),
+    });
+    const foreignTask = await ctx.raw('alice', 'add-task', { body: await task(bob.idle.id) });
+    const foreignSchedule = await ctx.raw('alice', 'add-schedule', {
+      body: { ...(await schedule(bob.scheduleId)), everyMs: HOUR },
+    });
+    expect(foreignTask).toMatchObject({ status: 409, json: { error: 'that task id is already taken' } });
+    expect(foreignSchedule).toMatchObject({ status: 409, json: { error: 'that schedule id is already taken' } });
+    await expect(ui.alice.raw.tasks.create({ ...(await task(bob.idle.id)) })).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
+    await expect(
+      ui.alice.raw.tasks.create({ ...(await schedule(bob.scheduleId)), when: { every: HOUR } }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+    // An own duplicate says the same, so the answer does not tell whose the id is.
+    const own = await task('alice-own-id');
+    expect((await ctx.raw('alice', 'add-task', { body: own })).status).toBe(200);
+    expect(await ctx.raw('alice', 'add-task', { body: own })).toMatchObject({
+      status: 409,
+      json: { error: foreignTask.json.error },
+    });
+    expect(await bobsRows()).toBe(before);
   });
 
   it('closes stale Done tasks of every board, with the event under the right owner', async () => {

@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { randomBytes } from 'node:crypto';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -7,13 +8,21 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { testDatabaseUrl } from '../test/global-setup';
 import { createDb, migrationsFolder, runMigrations, type Db } from './client';
 
-const SCRATCH = 'board_migration_scratch';
+// Named after the test database and unique per run, so two suites at once never drop each other's scratch database.
+const SCRATCH = `${new URL(testDatabaseUrl()).pathname.slice(1).replace(/[^A-Za-z0-9_]/g, '_')}_migration_${randomBytes(4).toString('hex')}`;
 
 const scratchUrl = (): string => {
   const url = new URL(testDatabaseUrl());
   url.pathname = `/${SCRATCH}`;
   return url.toString();
 };
+
+/** The pool of a scratch database that the test later drops by force: a connection it kills is no failure. */
+function scratchDb(options: { backfillOwner?: string } = {}): ReturnType<typeof createDb> {
+  const scratch = createDb(scratchUrl(), options);
+  scratch.pool.on('error', () => undefined);
+  return scratch;
+}
 
 /** A copy of the migrations folder that stops before the migration whose tag ends with `suffix`. */
 function foldersBefore(suffix: string): string {
@@ -39,7 +48,7 @@ describe('the tenancy migration on a database that already has rows', () => {
     await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH} with (force)`));
     await admin.db.execute(sql.raw(`create database ${SCRATCH}`));
     folder ??= foldersBefore('_tenancy');
-    old = createDb(scratchUrl());
+    old = scratchDb();
     await migrate(old.db, { migrationsFolder: folder });
     await old.db.execute(sql`insert into task (id, title, input, position) values ('t1', 'old', 'x', 0)`);
     await old.db.execute(sql`insert into note (id, task_id, author, kind) values ('n1', 't1', 'user', 'comment')`);
@@ -63,7 +72,7 @@ describe('the tenancy migration on a database that already has rows', () => {
     (await db.execute<{ owner: string }>(sql`select owner from ${sql.identifier(table)}`)).rows.map((r) => r.owner);
 
   it('fails and changes nothing without BACKFILL_OWNER', async () => {
-    const run = createDb(scratchUrl());
+    const run = scratchDb();
     try {
       await expect(runMigrations(run.db)).rejects.toThrow(/BACKFILL_OWNER/);
       const { rows } = await run.db.execute(
@@ -76,7 +85,7 @@ describe('the tenancy migration on a database that already has rows', () => {
   });
 
   it.each(['alice', 'corp\\jane', 'jane doe'])('gives every existing row to BACKFILL_OWNER %j', async (owner) => {
-    const run = createDb(scratchUrl(), { backfillOwner: owner });
+    const run = scratchDb({ backfillOwner: owner });
     try {
       await runMigrations(run.db);
       for (const table of ['task', 'note', 'machine', 'transcript_run', 'transcript_event'])
@@ -102,7 +111,7 @@ describe('the encrypted content migration on a database that already has rows', 
     await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH} with (force)`));
     await admin.db.execute(sql.raw(`create database ${SCRATCH}`));
     folder ??= foldersBefore('_encrypted_content');
-    old = createDb(scratchUrl());
+    old = scratchDb();
     await migrate(old.db, { migrationsFolder: folder });
     await old.db.execute(sql`insert into app_user (username) values ('alice')`);
     await old.db.execute(

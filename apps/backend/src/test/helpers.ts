@@ -50,3 +50,7 @@ export const question = {
     { label: 'No', description: 'Skip it' },
   ],
 };
+
+/** Claude session ids, which the board only takes as UUIDs. */
+export const SESSION = '11111111-1111-4111-8111-111111111111';
+export const sessionNamed = (n: number): string => `22222222-2222-4222-8222-${String(n).padStart(12, '0')}`;

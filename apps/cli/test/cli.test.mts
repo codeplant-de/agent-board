@@ -103,6 +103,7 @@ test('board show renders questions and answers in the thread', () => {
     author: 'user',
     kind: 'answer',
     questionNoteId: question.id,
+    questions: question.questions,
     answers: [{ selected: ['Yes'] }],
   });
   const text = renderThread(task({ id: 'a', title: 'T', input: 'do it' }), [answer, question]);

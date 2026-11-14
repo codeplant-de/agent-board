@@ -1,5 +1,5 @@
 {
-  "id": "0e0e960f-da8f-4263-985d-6ed60a8496b9",
+  "id": "95a9fbf9-c4da-4955-81d2-6d24549f97ee",
   "prevId": "7818a6dd-fe64-4c5e-9e28-8d6225b2f0e3",
   "version": "7",
   "dialect": "postgresql",
@@ -724,21 +724,6 @@
           "columnsFrom": [
             "owner",
             "parent_id"
-          ],
-          "columnsTo": [
-            "owner",
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "task_schedule_fk": {
-          "name": "task_schedule_fk",
-          "tableFrom": "task",
-          "tableTo": "schedule",
-          "columnsFrom": [
-            "owner",
-            "schedule_id"
           ],
           "columnsTo": [
             "owner",
