@@ -1,15 +1,20 @@
 import { GitHubError } from './github.mts';
 import { SystemError } from './system.mts';
-import { BackendError, createWebBackend, dryRunBackend, loadWebConfig } from './backend.mts';
+import { BackendError, createWebBackend, dryRunBackend, loadBoardUrl, loadWebConfig } from './backend.mts';
 import { ConfigError, getPaths, loadConfig } from './config.mts';
 import type { Config } from './config.mts';
 import type { Backend } from '@agent-board/shared';
+import { wantsColor } from './style.mts';
 
 export interface Context {
   config: Config;
   backend: Backend;
   dryRun: boolean;
   print: (line: string) => void;
+  // The board's URL, when the context can read it, to name a task's link without asking the server.
+  boardUrl?: () => string;
+  // Whether output may carry colour.
+  color?: boolean;
 }
 
 export function print(line: string): void {
@@ -19,6 +24,8 @@ export function print(line: string): void {
 export interface ContextOptions {
   // A missing config.json means the defaults: for the commands that never bind work to this machine's name (not schedule, add, dispatch, intake, worker).
   optionalConfig?: boolean;
+  // Where human lines go, including the DRY lines of a dry run; stderr while stdout carries a JSON document.
+  print?: (line: string) => void;
 }
 
 // The config is read on first use, so a command that never needs it works without a config.json.
@@ -26,14 +33,17 @@ export function buildContext(dryRun: boolean, options: ContextOptions = {}): Con
   const paths = getPaths();
   const backend = createWebBackend({ loadConfig: () => loadWebConfig(paths.configDir) });
   let config: Config | undefined;
+  const out = options.print ?? print;
   return {
     get config() {
       config ??= loadConfig(paths.configFile, options);
       return config;
     },
-    backend: dryRun ? dryRunBackend(backend, print) : backend,
+    backend: dryRun ? dryRunBackend(backend, out) : backend,
     dryRun,
-    print,
+    print: out,
+    boardUrl: () => loadBoardUrl(paths.configDir),
+    color: wantsColor(process.stdout, process.env),
   };
 }
 

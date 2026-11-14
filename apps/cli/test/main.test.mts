@@ -177,7 +177,8 @@ test('tasks works with only web.json and env', async () => {
     writeFileSync(join(dir, 'env'), 'AGENT_BOARD_TOKEN=secret\n', { mode: 0o600 });
     const result = await run('board', ['tasks'], dir);
     assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stdout, /todo \(1\)\n {2}Ab3dEf9x {2}normal {2}\[-\] {2}Fix the thing\n/);
+    assert.match(result.stdout, /todo \(1\)\n {2}Ab3dEf9x {2}normal {2}Fix the thing\n/);
+    assert.ok(!result.stdout.includes('\x1b'));
   } finally {
     server.close();
     rmSync(dir, { recursive: true });
