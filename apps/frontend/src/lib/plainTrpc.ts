@@ -1,5 +1,12 @@
 import type { AppRouter } from '@agent-board/backend/router';
-import { parseKeySetup, type Answer, type Keys, type Question, type TranscriptEventView } from '@agent-board/shared';
+import {
+  parseKeySetup,
+  type Answer,
+  type Keys,
+  type Question,
+  type Polish,
+  type TranscriptEventView,
+} from '@agent-board/shared';
 import { mutationOptions, queryOptions, type QueryKey } from '@tanstack/react-query';
 import type { TRPCClient } from '@trpc/client';
 import {
@@ -14,7 +21,17 @@ import {
   openTaskDetail,
 } from './opening';
 import type { useRawTRPC } from './rawTrpc';
-import { sealAnswer, sealNewTask, sealReply, sealStart, startsProposal, type NewTask, type Proposal } from './sealing';
+import {
+  sealAnswer,
+  sealApply,
+  sealNewTask,
+  sealReply,
+  sealStart,
+  startsProposal,
+  type NewTask,
+  type PolishTarget,
+  type Proposal,
+} from './sealing';
 import { parseMe } from './shapes';
 
 export type RawTRPC = ReturnType<typeof useRawTRPC>;
@@ -43,6 +60,14 @@ export interface MoveVariables {
   afterId?: string | undefined;
   // The task as the page shows it. An agent's proposal moved into Todo is started, which seals its prompt again as the user's.
   task?: Proposal | undefined;
+}
+
+export interface ApplyVariables {
+  // The task that made the polish note: marked done once it is applied.
+  polishId: string;
+  // The task the polished prompt is for, as the page shows it; what it says now is kept in a note.
+  target: PolishTarget;
+  rewrite: Pick<Polish, 'title' | 'prompt'>;
 }
 
 export type { NewTask };
@@ -134,6 +159,14 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
             mutationKey: raw.tasks.create.mutationKey(),
             mutationFn: async (task: NewTask) =>
               openBoardTask(need(), await client.tasks.create.mutate(await sealNewTask(need(), task))),
+          }),
+      },
+      applyPolish: {
+        mutationOptions: () =>
+          mutationOptions({
+            mutationKey: raw.tasks.applyPolish.mutationKey(),
+            mutationFn: async (variables: ApplyVariables) =>
+              openBoardTask(need(), await client.tasks.applyPolish.mutate(await sealApply(need(), variables))),
           }),
       },
       reply: {

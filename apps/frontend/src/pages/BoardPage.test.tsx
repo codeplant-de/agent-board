@@ -9,6 +9,7 @@ import type { ListedTask } from '../lib/trpc';
 import { BoardPage } from './BoardPage';
 
 const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
+const create = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const listed = vi.hoisted(() => ({ tasks: [] as unknown[] }));
 
 vi.mock('../lib/trpc', () => ({
@@ -17,6 +18,7 @@ vi.mock('../lib/trpc', () => ({
     tasks: {
       list: { queryOptions: () => ({ queryKey: ['tasks.list'], queryFn: async () => listed.tasks }) },
       move: { mutationOptions: () => ({ mutationFn: move }) },
+      create: { mutationOptions: () => ({ mutationFn: create }) },
     },
   }),
 }));
@@ -77,7 +79,10 @@ async function drag(title: string, to: string) {
   fireEvent.drop(column(to), { dataTransfer });
 }
 
-beforeEach(() => move.mockClear());
+beforeEach(() => {
+  move.mockClear();
+  create.mockClear();
+});
 
 describe('BoardPage drag and drop', () => {
   it('shows the whole prompt before a drag into Todo starts an agent’s proposal, and moves nothing until confirmed', async () => {
@@ -107,5 +112,48 @@ describe('BoardPage drag and drop', () => {
     await drag('proposal', 'Todo');
     await waitFor(() => expect(move).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});
+
+describe('BoardPage polish action', () => {
+  const backlog = (overrides: Partial<ListedTask>) =>
+    task({ id: 'b1', title: 'rough idea', createdBy: 'user', proposed: false, status: 'backlog', ...overrides });
+
+  it('queues a polish task from a backlog card without opening the card', async () => {
+    listed.tasks = [backlog({ priority: 'urgent' })];
+    renderBoard();
+    await userEvent.click(await screen.findByRole('button', { name: 'Polish prompt' }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create.mock.calls[0]?.[0]).toMatchObject({
+      title: 'Polish prompt: rough idea',
+      priority: 'urgent',
+      parentId: 'b1',
+    });
+  });
+
+  it('disables it while a polish task of the card is open', async () => {
+    listed.tasks = [
+      backlog({}),
+      task({
+        id: 'c1',
+        title: 'Polish prompt: rough idea',
+        parentId: 'b1',
+        createdBy: 'user',
+        proposed: false,
+        status: 'todo',
+      }),
+    ];
+    renderBoard();
+    expect(await screen.findByRole('button', { name: 'Polish prompt' })).toBeDisabled();
+  });
+
+  it('is only on the cards of a task of the user’s in the backlog', async () => {
+    listed.tasks = [
+      backlog({ id: 'b2', title: 'agent’s', createdBy: 'agent' }),
+      task({ id: 'n1', title: 'waiting', createdBy: 'user' }),
+    ];
+    renderBoard();
+    await screen.findByText('waiting');
+    expect(screen.queryByRole('button', { name: 'Polish prompt' })).not.toBeInTheDocument();
   });
 });

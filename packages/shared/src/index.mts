@@ -8,3 +8,4 @@ export * from './crypto.mts';
 export * from './keys.mts';
 export * from './events.mts';
 export * from './sealing.mts';
+export * from './polish.mts';

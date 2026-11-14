@@ -85,9 +85,9 @@ export function noteBinding(
 
 /** The (author, kind) pairs a client writes; a sealed note of any other pair is unreadable. */
 const NOTE_PAIRS: Record<Exclude<WireNoteAuthor, 'server'>, readonly NoteKind[]> = {
-  agent: ['comment', 'question'],
+  agent: ['comment', 'question', 'polish'],
   system: ['event'],
-  user: ['comment', 'answer'],
+  user: ['comment', 'answer', 'event'],
 };
 
 /** A transcript event is bound to its task as well as its run, so the server cannot show one task's run under another. */
@@ -149,11 +149,12 @@ export async function sealNote(
   seal: Sealer,
   note: { taskId: string; author: Exclude<WireNoteAuthor, 'server'>; kind: NoteKind },
   text: string,
-  options: { suggestion?: string } = {},
+  // `previewSource` is what the preview is cut from, when that is not the note's text itself.
+  options: { suggestion?: string; previewSource?: string } = {},
 ): Promise<WireNoteInput> {
   const { taskId, author, kind } = note;
-  const preview = notePreview(text);
-  const { suggestion } = options;
+  const { suggestion, previewSource = text } = options;
+  const preview = notePreview(previewSource);
   if (suggestion !== undefined) {
     if (author !== 'agent' || kind !== 'comment')
       throw new ContractError('only a comment by the agent can carry a suggestion');

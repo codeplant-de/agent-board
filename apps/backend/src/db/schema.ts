@@ -28,7 +28,7 @@ export const nextRun = pgEnum('next_run', ['fresh', 'resume']);
 export const taskCreator = pgEnum('task_creator', ['intake', 'user', 'agent']);
 /** "server" is the only author whose body is plain text: the events the server writes itself. Every other note body is sealed. */
 export const noteAuthor = pgEnum('note_author', ['agent', 'user', 'system', 'server']);
-export const noteKind = pgEnum('note_kind', ['comment', 'question', 'answer', 'event']);
+export const noteKind = pgEnum('note_kind', ['comment', 'question', 'answer', 'event', 'polish']);
 
 /** A signed-in user; every row below belongs to one, and a request sees only its own (`app.owner`, see db/scope.ts). */
 export const appUsers = pgTable(

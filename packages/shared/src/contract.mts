@@ -6,7 +6,7 @@ import { isKeyId } from './keys.mts';
 import type { Answer, Question } from './questions.mts';
 import type { TranscriptBatch, WireTranscriptBatch } from './transcript.mts';
 
-export const CONTRACT_VERSION = 7;
+export const CONTRACT_VERSION = 8;
 
 export const STATUSES = ['backlog', 'todo', 'running', 'needs-me', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
@@ -24,7 +24,7 @@ export type NoteAuthor = (typeof NOTE_AUTHORS)[number];
 export const WIRE_NOTE_AUTHORS = [...NOTE_AUTHORS, 'server'] as const;
 export type WireNoteAuthor = (typeof WIRE_NOTE_AUTHORS)[number];
 
-export const NOTE_KINDS = ['comment', 'question', 'answer', 'event'] as const;
+export const NOTE_KINDS = ['comment', 'question', 'answer', 'event', 'polish'] as const;
 export type NoteKind = (typeof NOTE_KINDS)[number];
 
 // Highest first: a column lists its tasks by priority, then by their manual order, and workers pick up from the top.
@@ -247,8 +247,12 @@ export interface Backend {
   updateTask(id: string, patch: TaskPatch): Promise<Task>;
   // Moves a todo task to running for `machine`; undefined when another caller got it first or it is pinned elsewhere.
   claimTask(id: string, machine: string): Promise<Task | undefined>;
-  // A `suggestion` (agent comments only) is the reply the user will most likely send next.
-  addNote(id: string, text: string, options?: { author?: 'agent' | 'system'; suggestion?: string }): Promise<void>;
+  // A `suggestion` (agent comments only) is the reply the user will most likely send next; a `polish` note is a rewritten prompt.
+  addNote(
+    id: string,
+    text: string,
+    options?: { author?: 'agent' | 'system'; kind?: 'comment' | 'polish'; suggestion?: string },
+  ): Promise<void>;
   // Adds a question note and moves the task to needs-me.
   ask(id: string, questions: Question[]): Promise<void>;
   // The agent of a running task is alive: sets lastActiveAt to now, with the lane it runs in.
@@ -348,7 +352,11 @@ export interface WireBackend {
   addTask(draft: WireTaskDraft): Promise<WireAddTaskResult>;
   updateTask(id: string, patch: WireTaskPatch): Promise<WireTask>;
   claimTask(id: string, machine: string): Promise<WireTask | undefined>;
-  addNote(id: string, note: WireNoteInput, options?: { author?: 'agent' | 'system' }): Promise<void>;
+  addNote(
+    id: string,
+    note: WireNoteInput,
+    options?: { author?: 'agent' | 'system'; kind?: 'comment' | 'polish' },
+  ): Promise<void>;
   ask(id: string, ask: WireAsk): Promise<void>;
   heartbeat(id: string, beat: Heartbeat): Promise<void>;
   pause(id: string, note: WireNoteInput): Promise<WireTask>;
