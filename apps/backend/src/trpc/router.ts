@@ -3,6 +3,7 @@ import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { issueToken, listMachines, revokeMachine } from '../services/machines';
+import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from '../services/schedules';
 import { eventOutput, listEvents, listRuns } from '../services/transcripts';
 import {
   addTask,
@@ -26,6 +27,21 @@ import { procedure, router } from './trpc';
 const id = z.string().refine(isSafeTaskId, 'not a task id');
 const status = z.enum(STATUSES);
 const priority = z.enum(PRIORITIES);
+const repeatEnd = {
+  at: z.coerce.date().optional(),
+  times: z.number().int().positive().optional(),
+  until: z.coerce.date().optional(),
+};
+/** A repeat: an interval in ms, or a cron expression with its time zone; `at` is the first run. */
+const repeat = z
+  .union([
+    z.object({ every: z.number().int().min(60_000), ...repeatEnd }),
+    z.object({ cron: z.string().trim().min(1), timezone: z.string().trim().min(1), ...repeatEnd }),
+  ])
+  .refine(
+    (when) => when.times === undefined || when.until === undefined,
+    'Give a number of runs or an end time, not both',
+  );
 const createStatus = { now: 'todo', backlog: 'backlog', hold: 'needs-me' } as const;
 
 /** What the board needs of a task beyond the contract's fields. */
@@ -85,17 +101,31 @@ const tasksRouter = router({
         title: z.string().trim().max(300).default(''),
         input: z.string().trim().min(1, 'Write a prompt first').max(200_000),
         priority: priority.default('normal'),
-        when: z.union([z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
+        when: z.union([repeat, z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      const title = input.title || defaultTitle(input.input);
+      const { when } = input;
+      if (typeof when === 'object' && ('every' in when || 'cron' in when)) {
+        const { task } = await addSchedule(ctx.db, {
+          title,
+          input: input.input,
+          priority: input.priority,
+          ...('every' in when ? { everyMs: when.every } : { cron: when.cron, timezone: when.timezone }),
+          ...(when.at ? { startAt: when.at } : {}),
+          ...(when.times ? { times: when.times } : {}),
+          ...(when.until ? { until: when.until } : {}),
+        });
+        return boardTask(task, ctx.config.publicUrl);
+      }
       const { row } = await addTask(ctx.db, {
-        title: input.title || defaultTitle(input.input),
+        title,
         input: input.input,
         labels: [],
         priority: input.priority,
-        status: typeof input.when === 'string' ? createStatus[input.when] : 'todo',
-        notBefore: typeof input.when === 'string' ? undefined : input.when.at,
+        status: typeof when === 'string' ? createStatus[when] : 'todo',
+        notBefore: typeof when === 'string' ? undefined : when.at,
         createdBy: 'user',
       });
       return boardTask(row, ctx.config.publicUrl);
@@ -186,6 +216,14 @@ const tasksRouter = router({
     ),
 });
 
+const schedulesRouter = router({
+  list: procedure.query(async ({ ctx }) => (await listSchedules(ctx.db)).map(toSchedule)),
+  setPaused: procedure
+    .input(z.object({ id, paused: z.boolean() }))
+    .mutation(async ({ ctx, input }) => toSchedule(await setPaused(ctx.db, input.id, input.paused))),
+  remove: procedure.input(z.object({ id })).mutation(({ ctx, input }) => removeSchedule(ctx.db, input.id)),
+});
+
 const machinesRouter = router({
   list: procedure.query(({ ctx }) => listMachines(ctx.db)),
   /** Returns the token once; only its hash is stored. */
@@ -214,6 +252,7 @@ export const appRouter = router({
   transcript: transcriptRouter,
   me: procedure.query(({ ctx }) => ({ username: ctx.username })),
   tasks: tasksRouter,
+  schedules: schedulesRouter,
   machines: machinesRouter,
 });
 

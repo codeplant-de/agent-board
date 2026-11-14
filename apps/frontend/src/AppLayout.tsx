@@ -1,12 +1,21 @@
 import { ActionIcon, AppShell, Button, Group, Text, Tooltip, useMantineColorScheme } from '@mantine/core';
 import { useHotkeys } from '@mantine/hooks';
-import { IconArchive, IconLayoutKanban, IconMoon, IconPlus, IconSettings, IconSun } from '@tabler/icons-react';
+import {
+  IconArchive,
+  IconLayoutKanban,
+  IconMoon,
+  IconPlus,
+  IconRepeat,
+  IconSettings,
+  IconSun,
+} from '@tabler/icons-react';
 import { useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { NewTaskModal } from './components/NewTaskModal';
 
 const NAV = [
   { to: '/', label: 'Board', icon: IconLayoutKanban },
+  { to: '/schedules', label: 'Schedules', icon: IconRepeat },
   { to: '/closed', label: 'Closed', icon: IconArchive },
   { to: '/settings', label: 'Settings', icon: IconSettings },
 ];

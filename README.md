@@ -27,18 +27,32 @@ board schedule "Find out why the bidder export is slow and propose a fix"
 board schedule --in 2h /review-pr 17741
 board schedule --at 09:00 /grill the plan in docs/x.md
 board delay Ab3dEf9x --in 1d
+board schedule --every 2h --times 5 /sweep the stale branches
+board schedule --cron "0 9 * * 1-5" /review-pr --auto
+board schedules
 ```
 
-`board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...>` makes a task of the prompt, bound to this machine and the directory you run it in, and prints its URL. The board's flags come first; everything from the first other word on is the prompt, flags included (`--auto` above goes to the skill). The title defaults to the prompt's first line; `--hold` lands it in `needs-me` instead of Todo, `--backlog` in `backlog` (the two cannot be combined). When the duplicate check offers to requeue an existing task, the same flags pick where it goes, and a delay is set on it.
+`board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>"] [--times <n> | --until <time>] [--new] <prompt...>` makes a task of the prompt, bound to this machine and the directory you run it in, and prints its URL. The board's flags come first; everything from the first other word on is the prompt, flags included (`--auto` above goes to the skill). The title defaults to the prompt's first line; `--hold` lands it in `needs-me` instead of Todo, `--backlog` in `backlog` (the two cannot be combined). When the duplicate check offers to requeue an existing task, the same flags pick where it goes, and a delay is set on it; if that task is already in Todo, `--in` or `--at` delays it, and if it is running the start time is not applied (the line says so).
 
 **Delays.** `--in <dur>` or `--at <time>` keeps the task in Todo until then: it sits last in the column with a "Starts in 4h" badge, and no worker takes it before. They exclude each other and cannot be combined with `--hold` or `--backlog` (a delay only exists in Todo); the confirmation line names the start time. `board delay <task> (--in <dur> | --at <time> | --now)` sets or moves the delay of a task in Todo, or with `--now` clears it so the task is due at once; the task page has a **Run now** button for the same. The New task form has the same under **When: Later**. A delay is cleared when the task leaves Todo, so a task that is moved back later is not delayed again.
 
 - `<dur>` is a number and a unit, largest unit first: `m` minutes, `h` hours, `d` days, `w` weeks, alone or combined: `30m`, `2h`, `1d`, `1h30m`, `1w2d`. Zero, negative and unknown units are refused.
 - `<time>` is an ISO date and time with an offset or `Z` (`2027-01-01T12:00:00Z`), without one for your local time (`2027-01-01T12:00`, `2027-01-01T12:00:00`), a date for local midnight (`2027-01-01`), or `HH:MM` for the next time of day (`09:30`: today if it is still ahead, else tomorrow). A time in the past is refused.
 
+**Repeating schedules.** `--every <dur>` or `--cron "<expr>"` (not both) makes a schedule instead of one task: a rule that keeps producing delayed Todo cards. `--in` or `--at` is the first run; without one it starts now.
+
+- `--every 2h` runs on a fixed grid from the first run: first run, then every 2 hours after it, whatever time the cards are started at. `--cron "0 9 * * 1-5"` is a 5-field expression (minute, hour, day of month, month, weekday), read in the time zone of the machine that made the schedule and stored with it, so `0 9 * * *` stays at 9:00 local across a change to summer time. Its first run is the first match at or after `--in`/`--at` (or now). A 6-field expression with seconds is refused, as is anything that does not parse.
+- The end is `--times <n>`, the number of runs including the first (a positive whole number), or `--until <time>`, after which nothing starts (a run exactly at that time still does); without either it repeats forever. They exclude each other. `--times` and `--until` without a repeat, and a repeat with `--hold` or `--backlog`, are usage errors.
+- A schedule has exactly one **pending occurrence**: an ordinary Todo card with a start time, the schedule's title and priority, pinned to the machine and directory it was made in (a schedule from the New task form is not pinned). The next card is made when the pending one leaves Todo: when a worker claims it, when you move it, or when you close it. So a worker that was off for a day finds one card, not a pile; the next run is the first one on the rule after the previous run's time that is not in the past, and the missed ones are skipped. Closing or moving the waiting card skips that run. A card that ran and comes back to Todo later (a reply, a re-run) makes no further card. There is no timer on the server.
+- A schedule that has no run left, because `--times` is used up or the next run would lie after `--until`, ends: it stays in the list, dimmed, and creates nothing.
+- The repeat skips the duplicate check, since a recurring prompt resembles its own earlier runs. The confirmation names the schedule id, its rule, the first run and the card's URL.
+- `board schedules` lists them (id, rule, next run, runs left including the waiting one, paused or ended, title). `board schedules pause <id>` takes the waiting card off the board and stops the schedule; `resume <id>` makes the next card, at the first run on the rule from now. `board schedules rm <id>` deletes the schedule and its waiting card; cards that already ran stay with their history. Like `board schedule`, these three are refused inside a board run.
+
 Before it creates the task, a Haiku call (a few seconds, under a cent) checks whether an open task already covers the same work. On a likely match it asks in the terminal: requeue that task (a fresh run), create a new one anyway, or abort. Without a terminal it creates the task with a note naming the likely duplicate. `--new` skips the check.
 
-The board's **New task** form takes a prompt the same way; such a task runs in `defaultCwd` of whichever machine takes it.
+The board's **New task** form takes a prompt the same way; such a task runs in `defaultCwd` of whichever machine takes it. Its **When** menu offers Now, Later, Repeating, Backlog and Needs me. Repeating takes an interval (`2h`) or a cron expression (read in your browser's time zone, and the server's error is shown if it cannot read it), an optional first run and an optional number of runs, and opens the first waiting card.
+
+The **Schedules** page of the web board lists the schedules: title and prompt, rule, next run, runs left (`forever` without an end), machine, a link to the waiting card, and pause or resume and delete. An ended schedule is dimmed and can only be deleted. A waiting card carries a **Repeat** badge, and its page says it is the next run of a schedule.
 
 ## Ask and resume
 
@@ -239,11 +253,12 @@ The spec between the CLI and the board, contract version 5. The CLI calls the bo
   "lastActiveAt": null,
   "runStartedAt": null,
   "paused": false,
-  "notBefore": null
+  "notBefore": null,
+  "scheduleId": null
 }
 ```
 
-All twenty-one fields are required.
+All twenty-two fields are required.
 
 | Field | Meaning |
 | --- | --- |
@@ -268,8 +283,37 @@ All twenty-one fields are required.
 | `runStartedAt` | While running: when the worker claimed it, ISO 8601; otherwise `null`. |
 | `paused` | The last run gave up its slot (`pause`) and the task has not run since. Unlike the board's "Paused" badge, which shows it only in Todo, it stays `true` through the claim, so the worker that resumes the task can tell the agent; the worker's first `update-task` of the run clears it, as does the task leaving Running another way. |
 | `notBefore` | Todo only: no machine may claim the task before this time, ISO 8601; otherwise `null`. The server clears it whenever the task leaves Todo, the claim included. |
+| `scheduleId` | The schedule the task is an occurrence of, or `null`. Set by the server when a schedule makes the task; no draft or patch can set it. It becomes `null` when the schedule is removed. |
 
 Pickup order is the order of the array that `list-tasks` returns: within a status, the first task is the top. In Todo the store lists resumes (`next: resume`) first, then by `priority`, then by manual order; the lanes pick from that order. Waiting tasks (`notBefore` in the future) come last in Todo, by `notBefore`; once due they sort like any other. The dispatcher does not try to claim a waiting task.
+
+### Schedule
+
+```json
+{
+  "id": "Sc3dEf9x",
+  "title": "Sweep stale branches",
+  "input": "/sweep the stale branches",
+  "priority": "normal",
+  "machine": "laptop",
+  "workdir": "/home/me/workspace/cosuno/cosuno",
+  "everyMs": 7200000,
+  "cron": null,
+  "timezone": null,
+  "anchorAt": "2027-01-01T08:00:00.000Z",
+  "nextRunAt": "2027-01-01T10:00:00.000Z",
+  "remaining": 3,
+  "until": null,
+  "paused": false,
+  "ended": false,
+  "occurrenceTaskId": "Ab3dEf9x",
+  "createdAt": "2026-11-14T10:00:00.000Z"
+}
+```
+
+All sixteen fields are required. Exactly one of `everyMs` (an interval in ms, at least one minute, on the grid `anchorAt + k * everyMs`) and `cron` (5 fields, read in the IANA zone `timezone`, which a cron rule needs) is set. `anchorAt` is the first run of an interval, or the time a cron rule matches from. `nextRunAt` is the start time of the pending occurrence, `occurrenceTaskId` its task; both are `null` while the schedule is paused with nothing waiting, and once it has ended. `remaining` is the number of occurrences still to be made after the pending one (`null`: forever), `until` the last time an occurrence may start. `machine` and `workdir` pin the occurrences, or are both `null`.
+
+A schedule always has at most one pending occurrence, a task in Todo with `notBefore` at `nextRunAt` and `scheduleId` set; its `createdBy` is `user`. When that task leaves Todo (a claim, `update-task`, a move, a close), in the same transaction the server makes the next one: the first match of the rule after the previous occurrence's time that is not in the past, so missed runs are skipped. With nothing left (`remaining` used up, or the next match after `until`) the schedule ends (`ended: true`) and makes no more. A task that was an occurrence and returns to Todo later does not trigger another; only the pending one does.
 
 ### Note
 
@@ -296,11 +340,18 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 | `fail` | `id`, `body`: the note | `{"applied": bool, "task": Task}` |
 | `transcript` | `id`, `body`: `{"runId", "startedAt", "sessionId", "resumed", "events": [...]}` | `null` |
 | `read-notes` | `id` | `[Note, ...]`, oldest first |
+| `add-schedule` | `body`: `{"title", "input", "everyMs"? \| "cron"? + "timezone", "priority"?, "machine"?, "workdir"?, "startAt"?, "times"?, "until"?}` | `{"schedule": Schedule, "task": Task}` (the pending occurrence) |
+| `list-schedules` | - | `[Schedule, ...]`: running ones first, then paused, then ended |
+| `update-schedule` | `id`, `body`: `{"paused": bool}` | the updated `Schedule` |
+| `remove-schedule` | `id` | `null` |
 
 - `version`: see the rules above.
 - `add-task`: `input` defaults to `""`, `labels` to the skill the prompt starts with, `status` to `todo`, `priority` to the parent's with a `parentId` and to `normal` without, `createdBy` (`intake`, `user`, `agent`) to `user`. `machine` and `workdir` come together and pin the task there. The new task goes to the bottom of its status. With a `dedupeKey` that a task already has, nothing is created: the answer is that task with `created: false`. `createdBy: agent` makes the task a proposal: it lands in `needs-me` whatever `status` the draft names. `head` is 7 to 40 hex characters. `notBefore` (ISO 8601) is accepted only with status `todo` (else 400).
 - `update-task`: at least one key; unknown keys are a failure. A status or priority change puts the task at the bottom of its new place. A status change of a proposal is refused with 403. Leaving `needs-me` for `todo` or `done` clears `openQuestion`. `head` is 7 to 40 hex characters, or `null` to clear it. `expect` is a status and not a change: when the task's status differs under the update's lock, nothing is written and the answer is 409 (intake uses it, so a close or requeue planned from an earlier listing cannot hit a task a dispatcher claimed since). It does not count as a key. `notBefore` is an ISO 8601 time, or `null` to clear it; a time is refused with 409 unless the task ends up in `todo`.
 - `claim-task`: `todo` to `running` for the machine, at the bottom of running, in one atomic step. Lost when the task is not in `todo` (a `backlog` task is never claimed), or when it is a resume (`next: resume` with a session) pinned to another machine. A token claims for its own machine only. Lost for a proposal. Sets `runStartedAt`; `paused` stays as it is. Lost while `notBefore` is in the future.
+- `add-schedule`: exactly one of `everyMs` and `cron`; `cron` needs its `timezone`, and `timezone` goes only with `cron`. `title` and `input` must not be empty. `machine` and `workdir` come together. `startAt` (ISO 8601; default now) is the first run of an interval and the earliest match of a cron rule. `times` (a positive integer, the number of occurrences in all) and `until` (ISO 8601) exclude each other; neither means forever. The answer is 400 for a cron expression the server cannot read (6-field patterns included), an unknown time zone, an interval under a minute, or a rule with no run before `until`, and nothing is written. The schedule and its first card are made in one transaction.
+- `update-schedule`: `paused: true` takes the pending occurrence off the board when it never ran (still in Todo, no session, no run) and gives its run back to `remaining`; `paused: false` makes the next occurrence at the first match from now. 409 for an ended schedule. Pausing a paused schedule, or resuming a running one, changes nothing.
+- `remove-schedule`: deletes the schedule and a pending occurrence that never ran; tasks that ran stay, with `scheduleId` `null`. 404 for an unknown schedule.
 - `add-note`: author `agent` makes a `comment`, `system` an `event`. An empty text is a failure.
 - `heartbeat`: sets `lastActiveAt` to now with the lane, on a running task only; on any other it changes nothing.
 - `transcript`: appends a run's condensed events (see `packages/shared/src/transcript.mts`; at most 5000 per call, each with an integer `seq` from 0 and a parseable `at`, or the call fails with 400); an event already stored (same run and `seq`) stays as it is, so a retried batch is harmless.
@@ -315,7 +366,7 @@ There is no sandbox. A worker runs `claude` as you, with your home directory, yo
 - **Tasks you made** (`board schedule`, the New task form, and agent proposals once you start them) run as if you ran the prompt in your terminal: all your settings (user, project, local) and `--permission-mode auto`, Claude Code's classifier mode that lets safe actions through and refuses risky ones. Headless, a refusal cannot become a prompt; it shows in the log and usually in the agent's report.
 - **Intake's reviews** run unattended on PR text nobody chose to read, so they get less: `--permission-mode dontAsk` with only `intake.allowedTools` allowed and `intake.disallowedTools` denied on top, and `--setting-sources user`, which keeps a checkout's own `.claude/settings*.json` (its allow rules and tokens) out of the run. The shipped list allows reading, `gh` reads, the pr-review scripts, `board comment`, `ask`, `add`, `show` and `move <task> needs-me` (it cannot `board schedule` or start work), CircleCI through the engineering plugin's `cci.sh`, a few Shortcut reads and `bin/replica-psql` (the production and staging read replicas); it cannot push, merge or approve. `intake.env` hands it `CIRCLECI_TOKEN`, `SHORTCUT_API_TOKEN` and the replica endpoints from the checkout's settings, and nothing else from there. A review that a PR's text turns against you can read production data through the replica, and could put it into the pending draft (which you see before submitting) or onto the board.
 
-Every run gets `AGENT_BOARD_TASK=<id>` in its environment, and `board schedule` refuses to run while it is set: an agent proposes follow-up work with `board add`, which waits in Needs me until you start it. A config that allows `Bash(board *)` covers `board schedule` and `board move <task> todo`; narrow it to the rules in `config.example.json` (`board comment *`, `board ask *`, `board add *`, `board show *`, `board move * needs-me`), and deny `Bash(board schedule *)`.
+Every run gets `AGENT_BOARD_TASK=<id>` in its environment, and `board schedule` and the changes of `board schedules` refuse to run while it is set: an agent proposes follow-up work with `board add`, which waits in Needs me until you start it. A config that allows `Bash(board *)` covers `board schedule` and `board move <task> todo`; narrow it to the rules in `config.example.json` (`board comment *`, `board ask *`, `board add *`, `board show *`, `board move * needs-me`), and deny `Bash(board schedule *)` and `Bash(board schedules *)`.
 
 Permission rules match the text of a call: they keep an agent on its task, but they are not a security boundary. A PR or story whose text turns the agent against you reaches whatever the run allows and whatever those commands can reach. A dedicated OS user for the workers, with its own checkouts and a narrowly scoped GitHub token, would make that a boundary again; it is not set up yet.
 
@@ -342,6 +393,11 @@ board comment <task> <text>     add a note; `-` reads the text from stdin
 board comment <task> --file <p> add a note from a file in /tmp (what the reviewer uses)
 board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...>
                                 a task from a prompt, run here on this machine; checks for duplicates first; refused inside a run
+board schedule --every <dur> | --cron "<expr>" [--times <n> | --until <time>] ... <prompt...>
+                                repeat the prompt (the flags above still apply; --in/--at is the first run)
+board schedules                 list the repeating schedules
+board schedules pause|resume|rm <id>
+                                pause, resume or delete a schedule; refused inside a run
 board delay <task> (--in <dur> | --at <time> | --now)
                                 delay a task in Todo until then; --now makes it due at once
 board ask <task> --file <p>     ask the user 1-4 questions (JSON in /tmp); moves the task to needs-me and notifies Slack

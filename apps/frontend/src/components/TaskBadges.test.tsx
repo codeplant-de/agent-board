@@ -19,6 +19,7 @@ const task = (overrides: Partial<BoardTask>) =>
     machine: null,
     lane: null,
     notBefore: null,
+    scheduleId: null,
     ...overrides,
   }) as BoardTask;
 
@@ -45,6 +46,16 @@ describe('TaskBadges', () => {
     renderBadges({ notBefore });
     const badge = screen.getByText('Starts in 4h');
     expect(badge.closest('[title]')).toHaveAttribute('title', stamp(notBefore));
+  });
+
+  it('marks a task made by a schedule as a repeat', () => {
+    renderBadges({ scheduleId: 'sch1' });
+    expect(screen.getByText('Repeat')).toBeInTheDocument();
+  });
+
+  it('shows no repeat badge on an ordinary task', () => {
+    renderBadges({});
+    expect(screen.queryByText('Repeat')).not.toBeInTheDocument();
   });
 
   it('shows no start time once it is due, or off Todo', () => {

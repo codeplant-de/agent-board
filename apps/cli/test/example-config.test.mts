@@ -105,6 +105,8 @@ test('an intake run may report and propose through board, but never schedule or 
   for (const command of [
     'board schedule /review-pr 1 --auto',
     'board schedule',
+    'board schedules rm abc',
+    'board schedules pause abc',
     'board',
     'board move abc todo',
     'board move abc running',
@@ -125,4 +127,5 @@ test('an intake run may report and propose through board, but never schedule or 
   }
   assert.ok(!entry.allowedTools.includes('Bash(board *)'));
   assert.ok(entry.disallowedTools.includes('Bash(board schedule *)'));
+  assert.ok(entry.disallowedTools.includes('Bash(board schedules *)'));
 });

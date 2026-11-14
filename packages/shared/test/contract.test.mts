@@ -7,11 +7,17 @@ import {
   parseHeartbeat,
   parseNote,
   parsePatch,
+  parseAddScheduleResult,
+  parseSchedule,
+  parseScheduleDraft,
+  parseSchedulePatch,
   parseTask,
   promptSkill,
+  serializeSchedule,
   serializeTask,
   shortSkill,
 } from '../src/contract.mts';
+import { describeRule, runsLeft } from '../src/time.mts';
 
 const task = {
   id: 'Ab3dEf9x',
@@ -35,6 +41,7 @@ const task = {
   runStartedAt: null,
   paused: false,
   notBefore: null,
+  scheduleId: null,
 };
 
 test('a task needs every field', () => {
@@ -189,4 +196,107 @@ test('notBefore is a date on a task, a draft and a patch', () => {
 
   assert.equal(parsePatch({ notBefore: '2027-01-01T12:00:00Z' }).notBefore?.toISOString(), '2027-01-01T12:00:00.000Z');
   assert.deepEqual(parsePatch({ notBefore: null }), { notBefore: null });
+});
+
+const schedule = {
+  id: 'Sc3dEf9x',
+  title: 'Nightly sweep',
+  input: '/sweep',
+  priority: 'normal',
+  machine: null,
+  workdir: null,
+  everyMs: 7_200_000,
+  cron: null,
+  timezone: null,
+  anchorAt: '2027-01-01T08:00:00.000Z',
+  nextRunAt: '2027-01-01T08:00:00.000Z',
+  remaining: null,
+  until: null,
+  paused: false,
+  ended: false,
+  occurrenceTaskId: 'Ab3dEf9x',
+  createdAt: '2026-11-14T10:00:00.000Z',
+};
+
+test('a task carries the schedule it is an occurrence of; a draft cannot set it', () => {
+  assert.equal(parseTask({ ...task, scheduleId: 'Sc3dEf9x' }).scheduleId, 'Sc3dEf9x');
+  assert.throws(() => parseTask({ ...task, scheduleId: 'bad id' }), /not safe/);
+  assert.throws(() => parseDraft({ title: 't', scheduleId: 'Sc3dEf9x' }), /unknown key "scheduleId"/);
+  assert.throws(() => parsePatch({ scheduleId: null }), /unknown key "scheduleId"/);
+  assert.equal(serializeTask(parseTask({ ...task, scheduleId: 'Sc3dEf9x' }))['scheduleId'], 'Sc3dEf9x');
+});
+
+test('a schedule round-trips through parse and serialize, for both kinds of rule', () => {
+  assert.deepEqual(serializeSchedule(parseSchedule(schedule)), schedule);
+  const cron = {
+    ...schedule,
+    everyMs: null,
+    cron: '0 9 * * 1-5',
+    timezone: 'Europe/Berlin',
+    remaining: 0,
+    until: '2027-06-01T00:00:00.000Z',
+    nextRunAt: null,
+    paused: true,
+    occurrenceTaskId: null,
+  };
+  assert.deepEqual(serializeSchedule(parseSchedule(cron)), cron);
+});
+
+test('a schedule has exactly one rule, and a cron rule a time zone', () => {
+  assert.throws(() => parseSchedule({ ...schedule, cron: '0 9 * * *', timezone: 'UTC' }), /exactly one/);
+  assert.throws(() => parseSchedule({ ...schedule, everyMs: null }), /exactly one/);
+  assert.throws(() => parseSchedule({ ...schedule, everyMs: null, cron: '0 9 * * *' }), /timezone is required/);
+  assert.throws(() => parseSchedule({ ...schedule, everyMs: 0 }), /positive integer/);
+});
+
+test('add-schedule results carry the schedule and its pending task', () => {
+  const result = parseAddScheduleResult({ schedule, task: { ...task, scheduleId: 'Sc3dEf9x' } });
+  assert.equal(result.schedule.id, 'Sc3dEf9x');
+  assert.equal(result.task.scheduleId, 'Sc3dEf9x');
+});
+
+test('describeRule names an interval or a cron rule with its time zone', () => {
+  assert.equal(describeRule(parseSchedule(schedule)), 'every 2h');
+  assert.equal(
+    describeRule({ everyMs: null, cron: '0 9 * * 1-5', timezone: 'Europe/Berlin' }),
+    'cron 0 9 * * 1-5 (Europe/Berlin)',
+  );
+});
+
+test('runsLeft counts the pending run and is null for a schedule that repeats forever', () => {
+  assert.equal(runsLeft({ remaining: null, occurrenceTaskId: 'a' }), null);
+  assert.equal(runsLeft({ remaining: 2, occurrenceTaskId: 'a' }), 3);
+  assert.equal(runsLeft({ remaining: 2, occurrenceTaskId: null }), 2);
+  assert.equal(runsLeft({ remaining: 0, occurrenceTaskId: null }), 0);
+});
+
+test('a schedule draft needs a prompt and one rule', () => {
+  const draft = { title: 't', input: 'do it', everyMs: 3_600_000 };
+  assert.deepEqual(parseScheduleDraft(draft), draft);
+  assert.deepEqual(
+    parseScheduleDraft({
+      title: 't',
+      input: 'x',
+      cron: '0 9 * * *',
+      timezone: 'UTC',
+      times: 3,
+      startAt: '2027-01-01T00:00:00Z',
+    }),
+    { title: 't', input: 'x', cron: '0 9 * * *', timezone: 'UTC', times: 3, startAt: new Date('2027-01-01T00:00:00Z') },
+  );
+  assert.throws(() => parseScheduleDraft({ title: 't', input: 'x' }), /exactly one of everyMs and cron/);
+  assert.throws(() => parseScheduleDraft({ ...draft, cron: '* * * * *', timezone: 'UTC' }), /exactly one/);
+  assert.throws(() => parseScheduleDraft({ title: 't', input: 'x', cron: '0 9 * * *' }), /timezone must be a string/);
+  assert.throws(() => parseScheduleDraft({ ...draft, timezone: 'UTC' }), /only goes with cron/);
+  assert.throws(() => parseScheduleDraft({ ...draft, times: 0 }), /positive integer/);
+  assert.throws(() => parseScheduleDraft({ ...draft, times: 2, until: '2027-01-01T00:00:00Z' }), /exclude each other/);
+  assert.throws(() => parseScheduleDraft({ ...draft, machine: 'laptop' }), /go together/);
+  assert.throws(() => parseScheduleDraft({ ...draft, id: 'x' }), /unknown key "id"/);
+  assert.throws(() => parseScheduleDraft({ ...draft, input: ' ' }), /must not be empty/);
+});
+
+test('a schedule patch is a paused flag', () => {
+  assert.deepEqual(parseSchedulePatch({ paused: true }), { paused: true });
+  assert.throws(() => parseSchedulePatch({}), /paused must be a boolean/);
+  assert.throws(() => parseSchedulePatch({ paused: true, title: 'x' }), /unknown key/);
 });

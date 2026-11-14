@@ -7,15 +7,18 @@ import {
   isRecord,
   isSafeMachineName,
   isSafeTaskId,
+  parseAddScheduleResult,
   parseAddTaskResult,
   parseFailResult,
   parseNotes,
+  parseSchedule,
+  parseSchedules,
   parseTask,
   parseTasks,
   parseVersion,
   QuestionError,
 } from '@agent-board/shared';
-import type { Backend, Task } from '@agent-board/shared';
+import type { Backend, Schedule, Task, TaskDraft } from '@agent-board/shared';
 import { ConfigError } from './config.mts';
 import { loadEnvFile } from './env-file.mts';
 import { oneLine } from './text.mts';
@@ -70,7 +73,7 @@ export interface MachineRequest {
   all?: boolean;
   machine?: string;
   author?: string;
-  // The command's payload: JSON for add-task, update-task, ask, heartbeat and transcript; the text for add-note, pause and fail.
+  // The command's payload: JSON for add-task, update-task, add-schedule, update-schedule, ask, heartbeat and transcript; the text for add-note, pause and fail.
   body?: unknown;
 }
 
@@ -171,6 +174,11 @@ export function createWebBackend(options: WebBackendOptions): Backend {
     return id;
   };
 
+  const scheduleId = (id: string): string => {
+    if (!isSafeTaskId(id)) throw new BackendError(`"${id.slice(0, 40)}" is not a valid schedule id`);
+    return id;
+  };
+
   return {
     listTasks: async ({ all = false } = {}) => {
       const tasks = await call('list-tasks', { all }, parseTasks);
@@ -196,6 +204,10 @@ export function createWebBackend(options: WebBackendOptions): Backend {
     fail: async (id, text) => call('fail', { id: taskId(id), body: text }, parseFailResult),
     transcript: async (id, batch) => send('transcript', { id: taskId(id), body: batch }),
     readNotes: async (id) => call('read-notes', { id: taskId(id) }, parseNotes),
+    addSchedule: async (draft) => call('add-schedule', { body: draft }, parseAddScheduleResult),
+    listSchedules: async () => call('list-schedules', {}, parseSchedules),
+    updateSchedule: async (id, patch) => call('update-schedule', { id: scheduleId(id), body: patch }, parseSchedule),
+    removeSchedule: async (id) => send('remove-schedule', { id: scheduleId(id) }),
   };
 }
 
@@ -205,35 +217,83 @@ function asBackendError(command: string, error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+// The task an add-task would have made.
+function dryTask(draft: TaskDraft): Task {
+  const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, ...fields } = draft;
+  return {
+    ...fields,
+    status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
+    priority: draft.priority ?? 'normal',
+    id: 'dry',
+    url: 'https://dry.invalid',
+    closed: false,
+    machine: machine ?? null,
+    sessionId: null,
+    workdir: workdir ?? null,
+    next: 'fresh',
+    head: head ?? null,
+    openQuestion: false,
+    createdBy: createdBy ?? 'user',
+    lane: null,
+    borrowed: false,
+    lastActiveAt: null,
+    runStartedAt: null,
+    paused: false,
+    notBefore: notBefore ?? null,
+    scheduleId: null,
+  };
+}
+
 // Reads go through; every write is printed instead of run.
 export function dryRunBackend(inner: Backend, print: (line: string) => void): Backend {
   return {
     ...inner,
     async addTask(draft) {
       print(`DRY add-task ${oneLine(JSON.stringify(draft), 160)}`);
-      const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, ...fields } = draft;
-      const task: Task = {
-        ...fields,
-        status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
-        priority: draft.priority ?? 'normal',
+      return { task: dryTask(draft), created: true };
+    },
+    async addSchedule(draft) {
+      print(`DRY add-schedule ${oneLine(JSON.stringify(draft), 160)}`);
+      const task = dryTask({
+        title: draft.title,
+        input: draft.input,
+        labels: [],
+        ...(draft.priority ? { priority: draft.priority } : {}),
+        ...(draft.machine !== undefined && draft.workdir !== undefined
+          ? { machine: draft.machine, workdir: draft.workdir }
+          : {}),
+        notBefore: draft.startAt ?? new Date(),
+      });
+      task.scheduleId = 'dry';
+      const schedule: Schedule = {
         id: 'dry',
-        url: 'https://dry.invalid',
-        closed: false,
-        machine: machine ?? null,
-        sessionId: null,
-        workdir: workdir ?? null,
-        next: 'fresh',
-        head: head ?? null,
-        openQuestion: false,
-        createdBy: createdBy ?? 'user',
-        lane: null,
-        borrowed: false,
-        lastActiveAt: null,
-        runStartedAt: null,
+        title: draft.title,
+        input: draft.input,
+        priority: draft.priority ?? 'normal',
+        machine: draft.machine ?? null,
+        workdir: draft.workdir ?? null,
+        everyMs: draft.everyMs ?? null,
+        cron: draft.cron ?? null,
+        timezone: draft.timezone ?? null,
+        anchorAt: draft.startAt ?? new Date(),
+        nextRunAt: draft.startAt ?? new Date(),
+        remaining: draft.times === undefined ? null : draft.times - 1,
+        until: draft.until ?? null,
         paused: false,
-        notBefore: notBefore ?? null,
+        ended: false,
+        occurrenceTaskId: task.id,
+        createdAt: new Date(),
       };
-      return { task, created: true };
+      return { schedule, task };
+    },
+    async updateSchedule(id, patch) {
+      print(`DRY update-schedule ${id} ${JSON.stringify(patch)}`);
+      const found = (await inner.listSchedules()).find((schedule) => schedule.id === id);
+      if (!found) throw new BackendError(`update-schedule: no schedule ${id.slice(0, 40)}`, 404);
+      return { ...found, ...patch };
+    },
+    async removeSchedule(id) {
+      print(`DRY remove-schedule ${id}`);
     },
     async updateTask(id, patch) {
       print(`DRY update-task ${id} ${oneLine(JSON.stringify(patch), 160)}`);

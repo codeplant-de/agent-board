@@ -1,9 +1,6 @@
 import {
-  DEFAULT_PRIORITY,
-  isSafeTaskId,
   parseAnswers,
   PRIORITIES,
-  promptSkill,
   TAKE_BACK_AFTER_MS,
   type Answer,
   type Note,
@@ -15,23 +12,15 @@ import {
   type TaskDraft,
   type TaskPatch,
 } from '@agent-board/shared';
-import { and, asc, desc, eq, lt, max, min, ne, sql } from 'drizzle-orm';
-import { randomBytes } from 'node:crypto';
+import { and, asc, desc, eq, lt, ne, sql } from 'drizzle-orm';
 import type { Db, DbOrTx } from '../db/client';
 import { notes, tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
 import { DONE_ARCHIVE_DAYS, daysBefore } from './retention';
+import { completeOccurrence } from './schedules';
+import { edgePosition, getTask, insertTask, lockTask, newId } from './taskRows';
 
-const ID_ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-/** 8 characters, safe for a systemd unit name; never "dispatch" or "intake". */
-export function newId(length = 8): string {
-  for (;;) {
-    const bytes = randomBytes(length);
-    const id = Array.from(bytes, (b) => ID_ALPHABET[b % ID_ALPHABET.length]).join('');
-    if (isSafeTaskId(id)) return id;
-  }
-}
+export { getTask, newId };
 
 export function toTask(row: TaskRow, publicUrl: string): Task {
   return {
@@ -57,6 +46,7 @@ export function toTask(row: TaskRow, publicUrl: string): Task {
     runStartedAt: row.status === 'running' ? row.runStartedAt : null,
     paused: row.pausedAt !== null,
     notBefore: row.notBefore,
+    scheduleId: row.scheduleId,
   };
 }
 
@@ -72,16 +62,6 @@ export function toNote(row: NoteRow): Note {
   if (row.answers) note.answers = row.answers;
   if (row.questionNoteId) note.questionNoteId = row.questionNoteId;
   return note;
-}
-
-/** A position below every task of the status (`bottom`) or above all of them (`top`). */
-async function edgePosition(db: DbOrTx, status: Status, edge: 'top' | 'bottom'): Promise<number> {
-  const [row] = await db
-    .select({ low: min(tasks.position), high: max(tasks.position) })
-    .from(tasks)
-    .where(eq(tasks.status, status));
-  if (edge === 'top') return row?.low == null ? 0 : row.low - 1;
-  return row?.high == null ? 0 : row.high + 1;
 }
 
 /**
@@ -145,59 +125,9 @@ export async function listTasksWithLastNote(
   return rows.map(({ row, lastNote }) => ({ row, lastNote: lastNote?.kind ? lastNote : null }));
 }
 
-export async function getTask(db: DbOrTx, id: string): Promise<TaskRow> {
-  const [row] = await db.select().from(tasks).where(eq(tasks.id, id));
-  if (!row) throw new AppError('NOT_FOUND', `no task ${id.slice(0, 64)}`);
-  return row;
-}
-
 /** New task at the bottom of its status. A known dedupe key returns the existing task instead. */
 export async function addTask(db: Db, draft: TaskDraft): Promise<{ row: TaskRow; created: boolean }> {
-  return db.transaction(async (tx) => {
-    // A follow-up is as pressing as the task it came from, unless its creator says otherwise.
-    const parent = draft.parentId === undefined ? undefined : await getTask(tx, draft.parentId);
-    const proposed = draft.createdBy === 'agent';
-    // A proposal waits for the user whatever status the agent named.
-    const status = proposed ? 'needs-me' : (draft.status ?? 'todo');
-    if (draft.notBefore !== undefined && status !== 'todo')
-      throw new AppError('BAD_REQUEST', 'Only a task in Todo can have a start time.');
-    const [row] = await tx
-      .insert(tasks)
-      .values({
-        id: newId(),
-        title: draft.title.trim(),
-        input: draft.input,
-        // A task is labelled with the skill its prompt starts with, unless its creator says otherwise.
-        labels:
-          draft.labels.length > 0 ? draft.labels : [promptSkill(draft.input)].filter((skill) => skill !== undefined),
-        machine: draft.machine ?? null,
-        workdir: draft.workdir ?? null,
-        head: draft.head ?? null,
-        notBefore: draft.notBefore ?? null,
-        status,
-        priority: draft.priority ?? parent?.priority ?? DEFAULT_PRIORITY,
-        position: await edgePosition(tx, status, 'bottom'),
-        dedupeKey: draft.dedupeKey ?? null,
-        parentId: draft.parentId ?? null,
-        createdBy: draft.createdBy ?? 'user',
-        proposed,
-      })
-      .onConflictDoNothing({ target: tasks.dedupeKey })
-      .returning();
-    if (row) return { row, created: true };
-    const [existing] = await tx
-      .select()
-      .from(tasks)
-      .where(eq(tasks.dedupeKey, draft.dedupeKey ?? ''));
-    if (!existing) throw new AppError('CONFLICT', 'the task was created and removed at once; try again');
-    return { row: existing, created: false };
-  });
-}
-
-async function lockTask(tx: DbOrTx, id: string): Promise<TaskRow> {
-  const [row] = await tx.select().from(tasks).where(eq(tasks.id, id)).for('update');
-  if (!row) throw new AppError('NOT_FOUND', `no task ${id.slice(0, 64)}`);
-  return row;
+  return db.transaction((tx) => insertTask(tx, draft));
 }
 
 type TaskValues = Partial<typeof tasks.$inferInsert>;
@@ -249,6 +179,9 @@ async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promis
     .set({ ...values, ...change.set })
     .where(eq(tasks.id, task.id))
     .returning();
+  // A schedule's pending occurrence that leaves Todo, or is closed there, makes room for the next one.
+  const leftTodo = task.status === 'todo' && (to !== 'todo' || (row!.closed && !task.closed));
+  if (leftTodo && task.scheduleId !== null) await completeOccurrence(tx, task.id, task.scheduleId, now);
   return row!;
 }
 

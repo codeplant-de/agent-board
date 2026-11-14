@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CONTRACT_VERSION, serializeTask } from '@agent-board/shared';
+import { CONTRACT_VERSION, serializeSchedule, serializeTask } from '@agent-board/shared';
 import { BackendError, callServer, createWebBackend, dryRunBackend, parseWebConfig } from '../src/backend.mts';
 import type { Fetch } from '../src/backend.mts';
-import { task } from './helpers.mts';
+import { schedule, task } from './helpers.mts';
 
 const config = { url: 'https://board.example', token: 'TOKEN-123' };
 
@@ -90,6 +90,31 @@ test('every command sends the body the server expects', async () => {
       ['fail', { id: 'a', body: 'it broke' }],
     ],
   );
+});
+
+test('the schedule commands send the body the server expects and parse its answers', async () => {
+  const scheduleJson = serializeSchedule(schedule({ id: 'sch1' }));
+  const { seen, backend } = board({
+    'add-schedule': { body: { result: { schedule: scheduleJson, task: taskJson('a') } } },
+    'list-schedules': { body: { result: [scheduleJson] } },
+    'update-schedule': { body: { result: scheduleJson } },
+    'remove-schedule': { body: { result: null } },
+  });
+  const draft = { title: 't', input: 'i', everyMs: 7_200_000, startAt: new Date('2027-01-01T08:00:00Z') };
+  assert.equal((await backend.addSchedule(draft)).schedule.id, 'sch1');
+  assert.equal((await backend.listSchedules())[0]?.everyMs, 7_200_000);
+  assert.equal((await backend.updateSchedule('sch1', { paused: true })).id, 'sch1');
+  await backend.removeSchedule('sch1');
+  assert.deepEqual(
+    seen.slice(1).map(({ command, body }) => [command, body]),
+    [
+      ['add-schedule', { body: { title: 't', input: 'i', everyMs: 7_200_000, startAt: '2027-01-01T08:00:00.000Z' } }],
+      ['list-schedules', {}],
+      ['update-schedule', { id: 'sch1', body: { paused: true } }],
+      ['remove-schedule', { id: 'sch1' }],
+    ],
+  );
+  await assert.rejects(backend.removeSchedule('bad id'), /not a valid schedule id/);
 });
 
 test('server errors carry the status and reason, never the token', async () => {
@@ -198,9 +223,12 @@ test('a dry run reads through and prints every write instead of sending it', asy
   await dry.updateTask('a', { next: 'fresh' });
   await dry.addNote('a', 'hi', { author: 'system' });
   assert.equal((await dry.claimTask('a', 'laptop'))?.status, 'running');
+  const added = await dry.addSchedule({ title: 't', input: 'i', cron: '0 9 * * *', timezone: 'UTC', times: 3 });
+  assert.deepEqual([added.schedule.cron, added.schedule.remaining, added.task.scheduleId], ['0 9 * * *', 2, 'dry']);
+  await dry.removeSchedule('sch1');
   assert.deepEqual(
     lines.map((line) => line.split(' ').slice(0, 2).join(' ')),
-    ['DRY update-task', 'DRY add-note', 'DRY claim-task'],
+    ['DRY update-task', 'DRY add-note', 'DRY claim-task', 'DRY add-schedule', 'DRY remove-schedule'],
   );
   assert.deepEqual([...new Set(seen.map((request) => request.command))], ['version', 'get-task']);
 });

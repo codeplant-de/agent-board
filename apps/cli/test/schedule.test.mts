@@ -12,6 +12,10 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     hold: false,
     backlog: false,
     notBefore: undefined,
+    every: undefined,
+    cron: undefined,
+    times: undefined,
+    until: undefined,
     forceNew: false,
   });
   assert.deepEqual(parseScheduleArgs(['--hold', '--new', '--title', 'Export', 'Find', 'out', 'why']), {
@@ -21,6 +25,10 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     hold: true,
     backlog: false,
     notBefore: undefined,
+    every: undefined,
+    cron: undefined,
+    times: undefined,
+    until: undefined,
     forceNew: true,
   });
   assert.equal(parseScheduleArgs(['--', '--weird', 'prompt']).prompt, '--weird prompt');
@@ -39,6 +47,7 @@ function setup(duplicate: Duplicate | undefined, choice?: 'requeue' | 'new' | 'a
     backend,
     machine: 'here',
     workdir: '/work/cosuno',
+    timezone: 'Europe/Berlin',
     print: (line) => printed.push(line),
     check: async (_prompt, _workdir, open) => {
       asked.push(open.map((t) => t.id).join(','));
@@ -107,7 +116,7 @@ test('without a terminal a duplicate is created with a warning; --new skips the 
   assert.deepEqual(forced.asked, [], 'no check');
 });
 
-test('requeueing a task that is already queued or running changes nothing', async () => {
+test('requeueing a task that is already queued or running changes nothing without a start time', async () => {
   const { deps, backend, printed } = setup({ taskId: 'old', reason: 'same' }, 'requeue');
   backend.tasks[0]!.status = 'running';
   await schedule(deps, parseScheduleArgs(['/review-pr', '17741']));
@@ -177,4 +186,84 @@ test('a requeue with a delay gives the requeued task the delay', async () => {
   assert.ok(requeue.backend.writes.some((w) => w.startsWith('notBefore old: ')));
   assert.ok(requeued?.notBefore);
   assert.ok(requeue.printed.some((line) => line.startsWith('requeued old') && line.includes(', starts ')));
+});
+
+test('--in or --at on a requeue of a task already in Todo delays that task', async () => {
+  const requeue = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
+  requeue.backend.tasks[0]!.status = 'todo';
+  const delayed = await schedule(requeue.deps, parseScheduleArgs(['--in', '1h', '/review-pr', '17741']));
+  assert.deepEqual(requeue.backend.writes, [`notBefore old: ${delayed?.notBefore?.toISOString()}`]);
+  assert.ok(delayed?.notBefore && delayed.notBefore.getTime() > Date.now() + 50 * 60_000);
+  assert.ok(requeue.printed.some((line) => line.startsWith('old is already queued, now starts ')));
+});
+
+test('a requeue of a running task with --in leaves it alone and says the start time was not applied', async () => {
+  const { deps, backend, printed } = setup({ taskId: 'old', reason: 'same' }, 'requeue');
+  backend.tasks[0]!.status = 'running';
+  await schedule(deps, parseScheduleArgs(['--in', '1h', '/review-pr', '17741']));
+  assert.deepEqual(backend.writes, []);
+  assert.ok(printed.some((line) => line.startsWith('old is already running; the start time was not applied')));
+});
+
+test('--every and --cron repeat; --times or --until end the repeat; --in and --at set the first run', () => {
+  const every = parseScheduleArgs(['--every', '2h', '--times', '5', 'x'], NOW);
+  assert.deepEqual([every.every, every.times, every.cron, every.until], [2 * 3_600_000, 5, undefined, undefined]);
+  const cron = parseScheduleArgs(['--cron', '0 9 * * 1-5', '--until', '2027-06-01', 'x'], NOW);
+  assert.deepEqual(
+    [cron.cron, cron.every, cron.until?.getTime()],
+    ['0 9 * * 1-5', undefined, new Date(2027, 5, 1).getTime()],
+  );
+  const first = parseScheduleArgs(['--in', '2h', '--every', '2h', 'x'], NOW);
+  assert.equal(first.notBefore?.getTime(), NOW.getTime() + 2 * 3_600_000);
+  assert.equal(parseScheduleArgs(['--every', '1h', 'x'], NOW).notBefore, undefined);
+});
+
+test('repeat flags that cannot go together, or are malformed, are usage errors', () => {
+  const bad = (flags: string[], message: RegExp) =>
+    assert.throws(() => parseScheduleArgs([...flags, 'x'], NOW), message, flags.join(' '));
+  bad(['--every', '1h', '--cron', '0 9 * * *'], /--every and --cron cannot be combined/);
+  bad(['--times', '3'], /end a repeat; add --every or --cron/);
+  bad(['--until', '2027-01-01'], /end a repeat/);
+  bad(['--every', '1h', '--times', '2', '--until', '2027-01-01'], /--times and --until cannot be combined/);
+  bad(['--every', '1h', '--hold'], /cannot be combined with --hold or --backlog/);
+  bad(['--cron', '0 9 * * *', '--backlog'], /cannot be combined with --hold or --backlog/);
+  bad(['--every', '1h', '--times', '0'], /positive whole number/);
+  bad(['--every', '1h', '--times', '2.5'], /positive whole number/);
+  bad(['--every', '1h', '--times', 'two'], /positive whole number/);
+  bad(['--every', 'often'], /not a duration/);
+  bad(['--cron', '0 9 * *'], /5 fields/);
+  bad(['--cron', '0 0 9 * * *'], /5 fields/);
+  bad(['--every', '1h', '--until', '2020-01-01'], /in the past/);
+  bad(['--every', '1h', '--in', '3h', '--until', '11:00'], /--until is before the first run/);
+  assert.throws(() => parseScheduleArgs(['--every'], NOW), /usage: board schedule/);
+  bad(['--every', '1h', '--in', '1h', '--at', '14:30'], /--in and --at cannot be combined/);
+});
+
+test('a repeat creates a schedule bound to this machine, skips the duplicate check and names the first run', async () => {
+  const { deps, backend, printed, asked } = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
+  const created = await schedule(
+    deps,
+    parseScheduleArgs(
+      ['--priority', 'high', '--in', '1h', '--every', '2h', '--times', '3', '/review-pr', '17741'],
+      NOW,
+    ),
+  );
+  assert.deepEqual(asked, [], 'no duplicate check');
+  assert.equal(created?.scheduleId, 'sched');
+  assert.equal(backend.writes.length, 1);
+  assert.ok(backend.writes[0]?.startsWith('add-schedule /review-pr 17741 | /review-pr 17741 | 7200000 | start '));
+  assert.ok(backend.writes[0]?.endsWith('| times 3 | here:/work/cosuno'));
+  assert.equal(printed.length, 1);
+  assert.match(
+    printed[0] ?? '',
+    /^scheduled repeat sched: every 2h, 3 runs; first run \d{4}-\d{2}-\d{2} \d{2}:\d{2} https:\/\/tasks\.example\/pending$/,
+  );
+});
+
+test('a cron repeat sends the machine time zone and says nothing about duplicates', async () => {
+  const { deps, backend, printed } = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
+  await schedule(deps, parseScheduleArgs(['--cron', '0 9 * * 1-5', 'daily', 'sweep'], NOW));
+  assert.ok(backend.writes[0]?.includes('| 0 9 * * 1-5 Europe/Berlin'));
+  assert.match(printed[0] ?? '', /^scheduled repeat sched: cron 0 9 \* \* 1-5 \(Europe\/Berlin\);/);
+  assert.ok(!printed.some((line) => line.includes('Looks like')));
 });

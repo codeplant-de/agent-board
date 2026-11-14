@@ -14,10 +14,11 @@ import {
   parseStatus,
   readNoteFile,
   renderThread,
+  schedules,
 } from '../src/board.mts';
 import { BackendError } from '../src/backend.mts';
 import type { Context } from '../src/cli.mts';
-import { CONFIG, fakeBackend, note, task } from './helpers.mts';
+import { CONFIG, fakeBackend, note, schedule, task } from './helpers.mts';
 import { rejectExtraArgs, takeFlag, UsageError } from '../src/cli.mts';
 
 test('leftover arguments are a usage error, so a typo never becomes a real run', () => {
@@ -189,4 +190,59 @@ test('board tasks shows when a delayed task starts', async () => {
   await tasks(context);
   assert.ok(printed.some((line) => line.includes('task w1') && /\(starts \d{4}-\d{2}-\d{2} \d{2}:\d{2}\)$/.test(line)));
   assert.ok(printed.some((line) => line.endsWith('task p1')));
+});
+
+function schedulesContext(items: ReturnType<typeof schedule>[]) {
+  const backend = fakeBackend([]);
+  backend.schedules = items;
+  const printed: string[] = [];
+  const context: Context = { config: CONFIG, backend, dryRun: false, print: (line) => printed.push(line) };
+  return { backend, printed, context };
+}
+
+test('board schedules lists id, rule, next run, runs left, state and title', async () => {
+  const { context, printed } = schedulesContext([
+    schedule({ id: 's1', title: 'Sweep', remaining: 2 }),
+    schedule({
+      id: 's2',
+      title: 'Mornings',
+      everyMs: null,
+      cron: '0 9 * * 1-5',
+      timezone: 'Europe/Berlin',
+      paused: true,
+      nextRunAt: null,
+      occurrenceTaskId: null,
+    }),
+    schedule({ id: 's3', title: 'Done', remaining: 0, ended: true, nextRunAt: null, occurrenceTaskId: null }),
+  ]);
+  await schedules(context, []);
+  assert.equal(printed[0], 'schedules (3)');
+  assert.match(printed[1] ?? '', /^ {2}s1 {2}every 2h {2}next \d{4}-\d{2}-\d{2} \d{2}:\d{2} {2}3 left {2}- {2}Sweep$/);
+  assert.equal(printed[2], '  s2  cron 0 9 * * 1-5 (Europe/Berlin)  next -  forever  paused  Mornings');
+  assert.match(printed[3] ?? '', /^ {2}s3 {2}every 2h {2}next - {2}0 left {2}ended {2}Done$/);
+});
+
+test('board schedules pause, resume and rm act on one schedule', async () => {
+  const { backend, printed, context } = schedulesContext([schedule({ id: 's1' })]);
+  await schedules(context, ['pause', 's1']);
+  assert.equal(backend.schedules[0]?.paused, true);
+  await schedules(context, ['resume', 's1']);
+  assert.equal(backend.schedules[0]?.paused, false);
+  await schedules(context, ['rm', 's1']);
+  assert.deepEqual(backend.schedules, []);
+  assert.deepEqual(backend.writes, ['pause-schedule s1', 'resume-schedule s1', 'remove-schedule s1']);
+  assert.equal(printed[0], 'paused s1');
+  assert.match(printed[1] ?? '', /^resumed s1, next run /);
+  assert.equal(printed[2], 'removed s1');
+  for (const bad of [['pause'], ['rm', 's1', 'extra'], ['stop', 's1']])
+    await assert.rejects(schedules(context, bad), UsageError, bad.join(' '));
+});
+
+test('board schedules changes are refused inside a board run, listing is not', async () => {
+  for (const args of [
+    ['pause', 's1'],
+    ['resume', 's1'],
+    ['rm', 's1'],
+  ])
+    await assert.rejects(main(['schedules', ...args], { AGENT_BOARD_TASK: 'abc' }), /not available inside a board run/);
 });

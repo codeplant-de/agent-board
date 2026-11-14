@@ -1,4 +1,4 @@
-import { Alert, Button, Group, Kbd, Loader, Menu, Paper, Stack, Text } from '@mantine/core';
+import { Alert, Anchor, Button, Group, Kbd, Loader, Menu, Paper, Stack, Text } from '@mantine/core';
 import { modals } from '@mantine/modals';
 import {
   IconArchive,
@@ -13,6 +13,7 @@ import {
 } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { canTakeBack } from '../lib/liveness';
 import { startsIn } from '../lib/startsIn';
 import { ago, stamp } from '../lib/time';
@@ -186,7 +187,19 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
         <Stack>
           {waiting && task.notBefore !== null && (
             <Group justify="space-between" wrap="nowrap">
-              <Text size="sm">Waiting until {stamp(task.notBefore)}.</Text>
+              <Text size="sm">
+                Waiting until {stamp(task.notBefore)}.
+                {task.scheduleId !== null && (
+                  <>
+                    {' '}
+                    This is the next run of a repeating schedule (
+                    <Anchor component={Link} to="/schedules" size="sm">
+                      Schedules
+                    </Anchor>
+                    ).
+                  </>
+                )}
+              </Text>
               <Button
                 size="xs"
                 leftSection={<IconPlayerPlay size={14} />}

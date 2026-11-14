@@ -1,6 +1,7 @@
 import type { Answer, Question } from '@agent-board/shared';
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
   doublePrecision,
   index,
@@ -64,6 +65,8 @@ export const tasks = pgTable(
     dedupeKey: text('dedupe_key').unique(),
     parentId: text('parent_id').references((): AnyPgColumn => tasks.id, { onDelete: 'set null' }),
     createdBy: taskCreator('created_by').notNull().default('user'),
+    /** The schedule this task is an occurrence of. */
+    scheduleId: text('schedule_id').references(() => schedules.id, { onDelete: 'set null' }),
     /** Proposed by an agent and not started by the user yet. */
     proposed: boolean('proposed').notNull().default(false),
     createdAt: createdAt(),
@@ -71,6 +74,31 @@ export const tasks = pgTable(
   },
   (t) => [index('task_status_priority_position_idx').on(t.status, t.priority, t.position)],
 );
+
+/** A rule that keeps exactly one pending occurrence, a Todo task with a start time; see services/schedules.ts. */
+export const schedules = pgTable('schedule', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  input: text('input').notNull(),
+  priority: taskPriority('priority').notNull().default('normal'),
+  machine: text('machine'),
+  workdir: text('workdir'),
+  /** An interval on the grid `anchor_at + k * every_ms`, or a 5-field cron expression in `timezone`. */
+  everyMs: bigint('every_ms', { mode: 'number' }),
+  cron: text('cron'),
+  timezone: text('timezone'),
+  anchorAt: timestamp('anchor_at', { withTimezone: true }).notNull(),
+  /** The start time of the newest occurrence; the next one lies after it. */
+  lastOccurrenceAt: timestamp('last_occurrence_at', { withTimezone: true }),
+  /** Occurrences still to create; null: forever. */
+  remaining: integer('remaining'),
+  until: timestamp('until', { withTimezone: true }),
+  pausedAt: timestamp('paused_at', { withTimezone: true }),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+  /** The pending occurrence. */
+  occurrenceTaskId: text('occurrence_task_id').references((): AnyPgColumn => tasks.id, { onDelete: 'set null' }),
+  createdAt: createdAt(),
+});
 
 export const notes = pgTable(
   'note',
@@ -103,6 +131,7 @@ export const machines = pgTable('machine', {
 
 export type TaskRow = typeof tasks.$inferSelect;
 export type NoteRow = typeof notes.$inferSelect;
+export type ScheduleRow = typeof schedules.$inferSelect;
 
 /** One worker run of a task: a fresh start, a resume or a re-run. */
 export const transcriptRuns = pgTable(
