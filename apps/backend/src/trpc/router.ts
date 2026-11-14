@@ -1,13 +1,14 @@
 import {
   ContractError,
-  defaultTitle,
   isSafeTaskId,
   parseKeyId,
   parseKeySlots,
+  parseSealed,
   PRIORITIES,
   STATUSES,
-  type Note,
-  type Task,
+  type Field,
+  type WireNote,
+  type WireTask,
 } from '@agent-board/shared';
 import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -21,6 +22,7 @@ import {
   answer,
   getTask,
   listTasksWithLastNote,
+  type LastNote,
   markDone,
   moveTask,
   readNotes,
@@ -54,8 +56,8 @@ const repeat = z
     'Give a number of runs or an end time, not both',
   );
 /** Runs a shared parser as a zod check, so a bad value is a BAD_REQUEST with the parser's reason. */
-const parsedBy = <T>(parse: (value: unknown) => T) =>
-  z.unknown().transform((value, ctx) => {
+const parsedBy = <S extends z.ZodType, T>(source: S, parse: (value: z.output<S>) => T) =>
+  source.transform((value, ctx) => {
     try {
       return parse(value);
     } catch (error) {
@@ -64,35 +66,43 @@ const parsedBy = <T>(parse: (value: unknown) => T) =>
       return z.NEVER;
     }
   });
-const keyId = parsedBy(parseKeyId);
-const keySlots = parsedBy(parseKeySlots);
+const keyId = parsedBy(z.unknown(), parseKeyId);
+const keySlots = parsedBy(z.unknown(), parseKeySlots);
+/** A sealed value (an envelope within the field's size limit): the server checks nothing else about it. */
+const sealed = (field: Field, what: string) => parsedBy(z.string(), (value) => parseSealed(value, field, what));
+/** A note's sealed text and, optionally, the sealed start of it for the board card. */
+const noteInput = z.object({
+  body: sealed('note.body', 'message'),
+  preview: sealed('note.preview', 'preview').nullish(),
+});
 const createStatus = { now: 'todo', backlog: 'backlog', hold: 'needs-me' } as const;
 
-/** What the board needs of a task beyond the contract's fields. */
-export interface BoardTask extends Task {
+/** What the board needs of a task beyond the contract's fields. `title`, `input` and `workdir` are still sealed. */
+export interface WireBoardTask extends WireTask {
   proposed: boolean;
-  createdBy: TaskRow['createdBy'];
   parentId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
-export interface ThreadNote extends Note {
+/** A note of a thread; `body`, `preview`, `questions` and `answers` are sealed, except the body of a note by the server. */
+export interface WireThreadNote extends WireNote {
   by: string | null;
 }
 
-function boardTask(row: TaskRow, publicUrl: string): BoardTask {
+export type { LastNote };
+
+function boardTask(row: TaskRow, publicUrl: string): WireBoardTask {
   return {
     ...toTask(row, publicUrl),
     proposed: row.proposed,
-    createdBy: row.createdBy,
     parentId: row.parentId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
 
-const threadNote = (row: NoteRow): ThreadNote => ({ ...toNote(row), by: row.by });
+const threadNote = (row: NoteRow): WireThreadNote => ({ ...toNote(row), by: row.by });
 
 const tasksRouter = router({
   /** Each task with its newest note, for the board cards. */
@@ -118,19 +128,18 @@ const tasksRouter = router({
     };
   }),
 
-  /** A prompt; it runs in the default directory of whichever machine takes it. */
+  /** A sealed prompt with its sealed title; it runs in the default directory of whichever machine takes it. */
   create: procedure
     .input(
       z.object({
-        title: z.string().trim().max(300).default(''),
-        input: z.string().trim().min(1, 'Write a prompt first').max(200_000),
+        title: sealed('title', 'title'),
+        input: sealed('input', 'input'),
         priority: priority.default('normal'),
         when: z.union([repeat, z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const title = input.title || defaultTitle(input.input);
-      const { when } = input;
+      const { title, when } = input;
       if (typeof when === 'object' && ('every' in when || 'cron' in when)) {
         const { task } = await addSchedule(ctx.db, {
           title,
@@ -146,7 +155,6 @@ const tasksRouter = router({
       const { row } = await addTask(ctx.db, {
         title,
         input: input.input,
-        labels: [],
         priority: input.priority,
         status: typeof when === 'string' ? createStatus[when] : 'todo',
         notBefore: typeof when === 'string' ? undefined : when.at,
@@ -160,8 +168,8 @@ const tasksRouter = router({
       z.object({
         id,
         questionNoteId: z.string().min(1),
-        answers: z.array(z.object({ selected: z.array(z.string()), other: z.string().optional() })),
-        message: z.string().max(100_000).default(''),
+        answers: sealed('note.answers', 'answers'),
+        message: noteInput,
       }),
     )
     .mutation(async ({ ctx, input }) =>
@@ -178,7 +186,7 @@ const tasksRouter = router({
     ),
 
   reply: procedure
-    .input(z.object({ id, message: z.string().max(100_000), resume: z.boolean() }))
+    .input(z.object({ id, message: noteInput, resume: z.boolean() }))
     .mutation(async ({ ctx, input }) =>
       boardTask(
         await reply(ctx.db, { taskId: input.id, message: input.message, resume: input.resume, by: ctx.username }),

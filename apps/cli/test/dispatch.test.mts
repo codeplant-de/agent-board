@@ -295,3 +295,16 @@ test('a task that is not due yet is left alone: no claim, no log line', async ()
   assert.ok(!backend.writes.some((w) => w.includes('w1')));
   assert.ok(!logs.some((line) => line.includes('w1') || line.includes('w2')));
 });
+
+test('a task whose prompt or directory cannot be decrypted is never claimed or started; an unreadable title alone is fine', async () => {
+  const { deps, started, backend, logs } = setup([
+    task({ id: 'u1', input: '', unreadable: ['input'] }),
+    task({ id: 'u2', input: '/selftest go', unreadable: ['workdir'] }),
+    task({ id: 'u3', input: '/selftest go', unreadable: ['title'] }),
+  ]);
+  await runDispatch(deps);
+  assert.deepEqual(started, ['u3']);
+  assert.ok(!backend.writes.some((w) => w.startsWith('claim u1') || w.startsWith('claim u2')));
+  assert.ok(logs.includes('SKIP u1 cannot decrypt its input'));
+  assert.ok(logs.includes('SKIP u2 cannot decrypt its workdir'));
+});

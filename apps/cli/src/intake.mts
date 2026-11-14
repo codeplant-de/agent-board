@@ -9,7 +9,7 @@
 import { buildContext, print, rejectExtraArgs, runMain, takeFlag } from './cli.mts';
 import type { Context } from './cli.mts';
 import type { Backend, Task, TaskPatch } from '@agent-board/shared';
-import { parsePrUrl, prUrlIn, promptSkill } from '@agent-board/shared';
+import { parsePrUrl, prUrlIn } from '@agent-board/shared';
 import { BackendError } from './backend.mts';
 import { createGitHub } from './github.mts';
 import type { GitHub, LivePr } from './github.mts';
@@ -113,7 +113,6 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
         title: `#${pr.number} ${pr.title} (${pr.author})`,
         input: prompt,
         head: pr.headSha,
-        labels: [promptSkill(prompt) ?? 'review'],
         status: 'todo',
         priority: config.intake.priority,
         dedupeKey: pr.url,

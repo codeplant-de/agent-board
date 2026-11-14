@@ -6,7 +6,8 @@ import type { Tx } from './db/client';
 import { appUsers, machines, notes, schedules, tasks, transcriptEvents, transcriptRuns } from './db/schema';
 import { withOwner } from './db/scope';
 import { buildServer } from './server';
-import { asOwner, caller, question, testConfig, useTestDb } from './test/helpers';
+import { plainMachine, plainUi } from './test/client';
+import { asOwner, question, testConfig, useTestDb } from './test/helpers';
 
 const { db, admin } = useTestDb();
 
@@ -29,12 +30,12 @@ type Who = 'alice' | 'bob';
 /** Two users with a board each, both with a machine called "laptop". Bob's board has one of everything. */
 async function setup() {
   const app = await buildServer(testConfig, db);
-  const ui = { alice: caller(db, 'alice'), bob: caller(db, 'bob') };
+  const ui = { alice: plainUi(db, 'alice'), bob: plainUi(db, 'bob') };
   const tokens = {
     alice: (await ui.alice.machines.issue({ name: 'laptop' })).token,
     bob: (await ui.bob.machines.issue({ name: 'laptop' })).token,
   };
-  const call = async (who: Who, command: string, body: Record<string, unknown> = {}) => {
+  const raw = async (who: Who, command: string, body: Record<string, unknown> = {}) => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/machine/${command}`,
@@ -43,6 +44,11 @@ async function setup() {
     });
     return { status: res.statusCode, json: res.json() as { result?: any; error?: string } };
   };
+  const plain = {
+    alice: plainMachine((command, body) => raw('alice', command, body), 'alice'),
+    bob: plainMachine((command, body) => raw('bob', command, body), 'bob'),
+  };
+  const call = (who: Who, command: string, body: Record<string, unknown> = {}) => plain[who](command, body);
 
   const idle = await ui.bob.tasks.create({ input: 'idle' });
   const asked = await ui.bob.tasks.create({ input: 'asked' });
@@ -116,7 +122,7 @@ describe('one user cannot reach another user’s board', () => {
   it('reads every foreign id on the machine API as not found, and changes nothing', async () => {
     const { call, bob } = ctx;
     const before = await bobsRows();
-    const alice = caller(db, 'alice');
+    const alice = ctx.ui.alice;
     const own = await alice.tasks.create({ input: 'mine' });
     const ownSchedule = (await alice.tasks.create({ input: 'sweep', when: { every: HOUR } })).scheduleId!;
     const foreign = { id: bob.idle.id };
@@ -250,7 +256,9 @@ describe('one user cannot reach another user’s board', () => {
       ).rejects.toThrow();
       await expect(
         attempt(() =>
-          tx.insert(transcriptEvents).values({ runId: 'run-bob-0001', seq: 9, at: new Date(), kind: 'text', data: {} }),
+          tx
+            .insert(transcriptEvents)
+            .values({ runId: 'run-bob-0001', seq: 9, at: new Date(), kind: 'text', data: '{}' }),
         ),
       ).rejects.toThrow();
     });
@@ -311,7 +319,7 @@ describe('one user cannot reach another user’s board', () => {
           ],
           [
             'transcript_event_run_fk',
-            (id) => tx.insert(transcriptEvents).values({ runId: id, seq: 0, at: new Date(), kind: 'text', data: {} }),
+            (id) => tx.insert(transcriptEvents).values({ runId: id, seq: 0, at: new Date(), kind: 'text', data: '{}' }),
             'run-bob-0001',
           ],
         ];

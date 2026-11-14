@@ -2,28 +2,49 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   ContractError,
-  parseDraft,
-  parseFailResult,
+  notePreview,
+  parseBlindIndex,
   parseHeartbeat,
-  parseNote,
-  parsePatch,
-  parseAddScheduleResult,
-  parseSchedule,
-  parseScheduleDraft,
   parseSchedulePatch,
-  parseTask,
+  parseVersionIdentity,
+  parseWireAddScheduleResult,
+  parseWireAsk,
+  parseWireFailResult,
+  parseWireNote,
+  parseWireNoteInput,
+  parseWireSchedule,
+  parseWireScheduleDraft,
+  parseWireTask,
+  parseWireTaskDraft,
+  parseWireTaskPatch,
   promptSkill,
+  SEALED_LIMITS,
   serializeSchedule,
   serializeTask,
+  serializeWireNote,
   shortSkill,
+  taskLabels,
 } from '../src/contract.mts';
+import { blindIndex, deriveKeys, envelopeLength, generateDataKey, seal } from '../src/crypto.mts';
+import type { Field } from '../src/crypto.mts';
 import { describeRule, runsLeft } from '../src/time.mts';
+
+const keys = await deriveKeys(generateDataKey(), 'alice', { index: true });
+const sealed = (field: Field, text = 'x', context = ''): Promise<string> => seal(keys, field, context, text);
+const [TITLE, INPUT, WORKDIR, BODY, PREVIEW, QUESTIONS] = await Promise.all([
+  sealed('title'),
+  sealed('input'),
+  sealed('workdir'),
+  sealed('note.body'),
+  sealed('note.preview'),
+  sealed('note.questions'),
+]);
+const KEY = await blindIndex(keys, 'https://github.com/o/r/pull/1');
 
 const task = {
   id: 'Ab3dEf9x',
-  title: '#1 t',
-  input: 'https://github.com/o/r/pull/1',
-  labels: ['review-pr'],
+  title: TITLE,
+  input: INPUT,
   status: 'todo',
   priority: 'normal',
   url: 'https://board.example/t/Ab3dEf9x',
@@ -45,14 +66,14 @@ const task = {
 };
 
 test('a task needs every field', () => {
-  assert.deepEqual(parseTask(task), task);
+  assert.deepEqual(parseWireTask(task), task);
   const { next: _next, ...withoutNext } = task;
-  assert.throws(() => parseTask(withoutNext), /next must be one of/);
-  assert.throws(() => parseTask({ ...task, machine: 'bad name' }), /not a safe name/);
+  assert.throws(() => parseWireTask(withoutNext), /next must be one of/);
+  assert.throws(() => parseWireTask({ ...task, machine: 'bad name' }), /not a safe name/);
 });
 
 test('a running task carries its lane, liveness and start', () => {
-  const running = parseTask({
+  const running = parseWireTask({
     ...task,
     status: 'running',
     lane: 'reviews',
@@ -64,77 +85,91 @@ test('a running task carries its lane, liveness and start', () => {
   assert.equal(running.lastActiveAt?.toISOString(), '2026-11-13T10:00:00.000Z');
   assert.equal(running.runStartedAt?.toISOString(), '2026-11-13T09:00:00.000Z');
   assert.equal(running.paused, true);
-  assert.throws(() => parseTask({ ...task, lastActiveAt: 'soon' }), /lastActiveAt is not a date/);
+  assert.throws(() => parseWireTask({ ...task, lastActiveAt: 'soon' }), /lastActiveAt is not a date/);
   assert.deepEqual(parseHeartbeat({ lane: 'reviews', borrowed: false }), { lane: 'reviews', borrowed: false });
   assert.throws(() => parseHeartbeat({ lane: 'a b', borrowed: false }), /heartbeat.lane/);
 });
 
 test('a draft takes the dedupe key, parent and creator; unknown keys fail', () => {
-  assert.deepEqual(parseDraft({ title: 't', dedupeKey: 'k', parentId: 'abc', createdBy: 'agent' }), {
-    title: 't',
-    input: '',
-    labels: [],
-    status: 'todo',
-    dedupeKey: 'k',
-    parentId: 'abc',
-    createdBy: 'agent',
-  });
-  assert.equal(parseDraft({ title: 't', status: 'backlog' }).status, 'backlog');
-  assert.deepEqual(parsePatch({ status: 'backlog' }), { status: 'backlog' });
-  assert.throws(() => parseDraft({ title: 't', rank: 1 }), ContractError);
-  assert.equal(parseDraft({ title: 't', priority: 'high' }).priority, 'high');
+  assert.deepEqual(
+    parseWireTaskDraft({ title: TITLE, input: INPUT, dedupeKey: KEY, parentId: 'abc', createdBy: 'agent' }),
+    { title: TITLE, input: INPUT, status: 'todo', dedupeKey: KEY, parentId: 'abc', createdBy: 'agent' },
+  );
+  assert.equal(parseWireTaskDraft({ title: TITLE, input: INPUT, status: 'backlog' }).status, 'backlog');
+  assert.deepEqual(parseWireTaskPatch({ status: 'backlog' }), { status: 'backlog' });
+  assert.throws(() => parseWireTaskDraft({ title: TITLE, input: INPUT, rank: 1 }), ContractError);
+  assert.throws(() => parseWireTaskDraft({ title: TITLE, input: INPUT, labels: [] }), /unknown key "labels"/);
+  assert.equal(parseWireTaskDraft({ title: TITLE, input: INPUT, priority: 'high' }).priority, 'high');
   assert.equal(
-    parseDraft({ title: 't' }).priority,
+    parseWireTaskDraft({ title: TITLE, input: INPUT }).priority,
     undefined,
     'the store picks the default, so a follow-up can inherit',
   );
 });
 
 test('a patch takes the session and the next run', () => {
-  assert.deepEqual(parsePatch({ sessionId: null, next: 'resume' }), { sessionId: null, next: 'resume' });
-  assert.throws(() => parsePatch({}), /patch needs one of/);
-  assert.throws(() => parsePatch({ next: 'later' }), /next must be one of/);
-  assert.deepEqual(parsePatch({ priority: 'urgent' }), { priority: 'urgent' });
-  assert.deepEqual(parsePatch({ status: 'done', expect: 'todo' }), { status: 'done', expect: 'todo' });
-  assert.throws(() => parsePatch({ expect: 'todo' }), /patch needs one of/);
-  assert.throws(() => parsePatch({ next: 'fresh', expect: 'later' }), /expect must be one of/);
-  assert.deepEqual(parsePatch({ workdir: '/repo/.claude/worktrees/x' }), { workdir: '/repo/.claude/worktrees/x' });
-  assert.throws(() => parsePatch({ workdir: 'relative/dir' }), /absolute path/);
-  assert.throws(() => parsePatch({ priority: 'asap' }), /priority must be one of urgent, high, normal, low/);
+  assert.deepEqual(parseWireTaskPatch({ sessionId: null, next: 'resume' }), { sessionId: null, next: 'resume' });
+  assert.throws(() => parseWireTaskPatch({}), /patch needs one of/);
+  assert.throws(() => parseWireTaskPatch({ next: 'later' }), /next must be one of/);
+  assert.deepEqual(parseWireTaskPatch({ priority: 'urgent' }), { priority: 'urgent' });
+  assert.deepEqual(parseWireTaskPatch({ status: 'done', expect: 'todo' }), { status: 'done', expect: 'todo' });
+  assert.throws(() => parseWireTaskPatch({ expect: 'todo' }), /patch needs one of/);
+  assert.throws(() => parseWireTaskPatch({ next: 'fresh', expect: 'later' }), /expect must be one of/);
+  assert.deepEqual(parseWireTaskPatch({ workdir: WORKDIR, input: INPUT }), { workdir: WORKDIR, input: INPUT });
+  assert.deepEqual(parseWireTaskPatch({ workdir: null }), { workdir: null });
+  assert.throws(() => parseWireTaskPatch({ priority: 'asap' }), /priority must be one of urgent, high, normal, low/);
 });
 
-test('question and answer notes carry their structure', () => {
-  const question = parseNote({
+test('a note carries its text, preview, questions and answers as received', () => {
+  const question = parseWireNote({
     id: 'n1',
-    text: '',
+    body: BODY,
+    preview: null,
     createdAt: '2026-11-13T10:00:00Z',
     author: 'agent',
     kind: 'question',
-    questions: [
-      {
-        header: 'Scope',
-        question: 'Q?',
-        options: [
-          { label: 'A', description: '' },
-          { label: 'B', description: '' },
-        ],
-      },
-    ],
+    questions: QUESTIONS,
   });
-  assert.equal(question.questions?.[0]?.header, 'Scope');
-  const answer = parseNote({
+  assert.equal(question.questions, QUESTIONS);
+  const answer = parseWireNote({
     id: 'n2',
-    text: '',
+    body: BODY,
+    preview: PREVIEW,
     createdAt: '2026-11-13T10:01:00Z',
     author: 'user',
     kind: 'answer',
     questionNoteId: 'n1',
-    answers: [{ selected: ['A'] }],
+    answers: QUESTIONS,
   });
-  assert.deepEqual(answer.answers, [{ selected: ['A'] }]);
+  assert.equal(answer.answers, QUESTIONS);
+  assert.equal(answer.preview, PREVIEW);
+  assert.deepEqual(parseWireNote(serializeWireNote(answer)), answer);
+  assert.equal(
+    parseWireNote({
+      id: 'n4',
+      body: 'Marked done.',
+      preview: null,
+      createdAt: '2026-11-13T10:01:00Z',
+      author: 'server',
+      kind: 'event',
+    }).author,
+    'server',
+  );
   assert.throws(
-    () => parseNote({ id: 'n3', text: '', createdAt: 'nope', author: 'agent', kind: 'comment' }),
+    () => parseWireNote({ id: 'n3', body: '', preview: null, createdAt: 'nope', author: 'agent', kind: 'comment' }),
     /not a date/,
+  );
+  assert.throws(
+    () =>
+      parseWireNote({
+        id: 'n3',
+        body: '',
+        preview: null,
+        createdAt: '2026-11-13T10:01:00Z',
+        author: 'robot',
+        kind: 'comment',
+      }),
+    /author must be one of/,
   );
 });
 
@@ -149,59 +184,61 @@ test('the skill of a prompt is its leading slash command', () => {
 });
 
 test('a draft pins to a machine and directory together', () => {
-  assert.deepEqual(parseDraft({ title: 't', machine: 'laptop', workdir: '/repo' }), {
-    title: 't',
-    input: '',
-    labels: [],
+  assert.deepEqual(parseWireTaskDraft({ title: TITLE, input: INPUT, machine: 'laptop', workdir: WORKDIR }), {
+    title: TITLE,
+    input: INPUT,
     status: 'todo',
     machine: 'laptop',
-    workdir: '/repo',
+    workdir: WORKDIR,
   });
-  assert.throws(() => parseDraft({ title: 't', workdir: '/repo' }), /go together/);
-  assert.throws(() => parseDraft({ title: 't', machine: 'laptop', workdir: 'repo' }), /absolute path/);
+  assert.throws(() => parseWireTaskDraft({ title: TITLE, input: INPUT, workdir: WORKDIR }), /go together/);
 });
 
 test('the PR head is 7 to 40 hex characters, on a task, a draft and a patch', () => {
-  assert.equal(parseTask({ ...task, head: '56120dc' }).head, '56120dc');
-  assert.throws(() => parseTask({ ...task, head: 'xyz' }), /head must be 7 to 40 hex/);
-  assert.throws(() => parseTask({ ...task, head: undefined }), /head must be 7 to 40 hex/);
-  assert.equal(parseDraft({ title: 't', head: '56120dc60b' }).head, '56120dc60b');
-  assert.throws(() => parseDraft({ title: 't', head: null }), /head must be/);
-  assert.deepEqual(parsePatch({ head: '56120dc60b' }), { head: '56120dc60b' });
-  assert.deepEqual(parsePatch({ head: null }), { head: null });
-  assert.throws(() => parsePatch({ head: 'abc' }), /head must be/);
+  assert.equal(parseWireTask({ ...task, head: '56120dc' }).head, '56120dc');
+  assert.throws(() => parseWireTask({ ...task, head: 'xyz' }), /head must be 7 to 40 hex/);
+  assert.throws(() => parseWireTask({ ...task, head: undefined }), /head must be 7 to 40 hex/);
+  assert.equal(parseWireTaskDraft({ title: TITLE, input: INPUT, head: '56120dc60b' }).head, '56120dc60b');
+  assert.throws(() => parseWireTaskDraft({ title: TITLE, input: INPUT, head: null }), /head must be/);
+  assert.deepEqual(parseWireTaskPatch({ head: '56120dc60b' }), { head: '56120dc60b' });
+  assert.deepEqual(parseWireTaskPatch({ head: null }), { head: null });
+  assert.throws(() => parseWireTaskPatch({ head: 'abc' }), /head must be/);
 });
 
 test('a fail result says whether it applied', () => {
-  assert.deepEqual(parseFailResult({ applied: false, task }), { applied: false, task });
-  assert.throws(() => parseFailResult({ task }), /applied must be a boolean/);
+  assert.deepEqual(parseWireFailResult({ applied: false, task }), { applied: false, task });
+  assert.throws(() => parseWireFailResult({ task }), /applied must be a boolean/);
 });
 
 test('notBefore is a date on a task, a draft and a patch', () => {
-  const waiting = parseTask({ ...task, notBefore: '2027-01-01T12:00:00Z' });
+  const waiting = parseWireTask({ ...task, notBefore: '2027-01-01T12:00:00Z' });
   assert.equal(waiting.notBefore?.toISOString(), '2027-01-01T12:00:00.000Z');
-  assert.deepEqual(parseTask(serializeTask(waiting)), waiting);
-  assert.throws(() => parseTask({ ...task, notBefore: 'later' }), /notBefore is not a date/);
-  assert.throws(() => parseTask({ ...task, notBefore: undefined }), /notBefore must be a string or null/);
+  assert.deepEqual(parseWireTask(serializeTask(waiting)), waiting);
+  assert.throws(() => parseWireTask({ ...task, notBefore: 'later' }), /notBefore is not a date/);
+  assert.throws(() => parseWireTask({ ...task, notBefore: undefined }), /notBefore must be a string or null/);
 
+  const draft = { title: TITLE, input: INPUT };
   assert.equal(
-    parseDraft({ title: 't', notBefore: '2027-01-01T12:00:00Z' }).notBefore?.toISOString(),
+    parseWireTaskDraft({ ...draft, notBefore: '2027-01-01T12:00:00Z' }).notBefore?.toISOString(),
     '2027-01-01T12:00:00.000Z',
   );
-  assert.throws(() => parseDraft({ title: 't', notBefore: null }), /must be a date/);
+  assert.throws(() => parseWireTaskDraft({ ...draft, notBefore: null }), /must be a date/);
   assert.throws(
-    () => parseDraft({ title: 't', status: 'backlog', notBefore: '2027-01-01T12:00:00Z' }),
+    () => parseWireTaskDraft({ ...draft, status: 'backlog', notBefore: '2027-01-01T12:00:00Z' }),
     /needs status todo/,
   );
 
-  assert.equal(parsePatch({ notBefore: '2027-01-01T12:00:00Z' }).notBefore?.toISOString(), '2027-01-01T12:00:00.000Z');
-  assert.deepEqual(parsePatch({ notBefore: null }), { notBefore: null });
+  assert.equal(
+    parseWireTaskPatch({ notBefore: '2027-01-01T12:00:00Z' }).notBefore?.toISOString(),
+    '2027-01-01T12:00:00.000Z',
+  );
+  assert.deepEqual(parseWireTaskPatch({ notBefore: null }), { notBefore: null });
 });
 
 const schedule = {
   id: 'Sc3dEf9x',
-  title: 'Nightly sweep',
-  input: '/sweep',
+  title: TITLE,
+  input: INPUT,
   priority: 'normal',
   machine: null,
   workdir: null,
@@ -219,15 +256,18 @@ const schedule = {
 };
 
 test('a task carries the schedule it is an occurrence of; a draft cannot set it', () => {
-  assert.equal(parseTask({ ...task, scheduleId: 'Sc3dEf9x' }).scheduleId, 'Sc3dEf9x');
-  assert.throws(() => parseTask({ ...task, scheduleId: 'bad id' }), /not safe/);
-  assert.throws(() => parseDraft({ title: 't', scheduleId: 'Sc3dEf9x' }), /unknown key "scheduleId"/);
-  assert.throws(() => parsePatch({ scheduleId: null }), /unknown key "scheduleId"/);
-  assert.equal(serializeTask(parseTask({ ...task, scheduleId: 'Sc3dEf9x' }))['scheduleId'], 'Sc3dEf9x');
+  assert.equal(parseWireTask({ ...task, scheduleId: 'Sc3dEf9x' }).scheduleId, 'Sc3dEf9x');
+  assert.throws(() => parseWireTask({ ...task, scheduleId: 'bad id' }), /not safe/);
+  assert.throws(
+    () => parseWireTaskDraft({ title: TITLE, input: INPUT, scheduleId: 'Sc3dEf9x' }),
+    /unknown key "scheduleId"/,
+  );
+  assert.throws(() => parseWireTaskPatch({ scheduleId: null }), /unknown key "scheduleId"/);
+  assert.equal(serializeTask(parseWireTask({ ...task, scheduleId: 'Sc3dEf9x' }))['scheduleId'], 'Sc3dEf9x');
 });
 
 test('a schedule round-trips through parse and serialize, for both kinds of rule', () => {
-  assert.deepEqual(serializeSchedule(parseSchedule(schedule)), schedule);
+  assert.deepEqual(serializeSchedule(parseWireSchedule(schedule)), schedule);
   const cron = {
     ...schedule,
     everyMs: null,
@@ -239,24 +279,24 @@ test('a schedule round-trips through parse and serialize, for both kinds of rule
     paused: true,
     occurrenceTaskId: null,
   };
-  assert.deepEqual(serializeSchedule(parseSchedule(cron)), cron);
+  assert.deepEqual(serializeSchedule(parseWireSchedule(cron)), cron);
 });
 
 test('a schedule has exactly one rule, and a cron rule a time zone', () => {
-  assert.throws(() => parseSchedule({ ...schedule, cron: '0 9 * * *', timezone: 'UTC' }), /exactly one/);
-  assert.throws(() => parseSchedule({ ...schedule, everyMs: null }), /exactly one/);
-  assert.throws(() => parseSchedule({ ...schedule, everyMs: null, cron: '0 9 * * *' }), /timezone is required/);
-  assert.throws(() => parseSchedule({ ...schedule, everyMs: 0 }), /positive integer/);
+  assert.throws(() => parseWireSchedule({ ...schedule, cron: '0 9 * * *', timezone: 'UTC' }), /exactly one/);
+  assert.throws(() => parseWireSchedule({ ...schedule, everyMs: null }), /exactly one/);
+  assert.throws(() => parseWireSchedule({ ...schedule, everyMs: null, cron: '0 9 * * *' }), /timezone is required/);
+  assert.throws(() => parseWireSchedule({ ...schedule, everyMs: 0 }), /positive integer/);
 });
 
 test('add-schedule results carry the schedule and its pending task', () => {
-  const result = parseAddScheduleResult({ schedule, task: { ...task, scheduleId: 'Sc3dEf9x' } });
+  const result = parseWireAddScheduleResult({ schedule, task: { ...task, scheduleId: 'Sc3dEf9x' } });
   assert.equal(result.schedule.id, 'Sc3dEf9x');
   assert.equal(result.task.scheduleId, 'Sc3dEf9x');
 });
 
 test('describeRule names an interval or a cron rule with its time zone', () => {
-  assert.equal(describeRule(parseSchedule(schedule)), 'every 2h');
+  assert.equal(describeRule(parseWireSchedule(schedule)), 'every 2h');
   assert.equal(
     describeRule({ everyMs: null, cron: '0 9 * * 1-5', timezone: 'Europe/Berlin' }),
     'cron 0 9 * * 1-5 (Europe/Berlin)',
@@ -270,33 +310,129 @@ test('runsLeft counts the pending run and is null for a schedule that repeats fo
   assert.equal(runsLeft({ remaining: 0, occurrenceTaskId: null }), 0);
 });
 
-test('a schedule draft needs a prompt and one rule', () => {
-  const draft = { title: 't', input: 'do it', everyMs: 3_600_000 };
-  assert.deepEqual(parseScheduleDraft(draft), draft);
+test('a schedule draft needs sealed title and input and one rule', () => {
+  const draft = { title: TITLE, input: INPUT, everyMs: 3_600_000 };
+  assert.deepEqual(parseWireScheduleDraft(draft), draft);
   assert.deepEqual(
-    parseScheduleDraft({
-      title: 't',
-      input: 'x',
+    parseWireScheduleDraft({
+      title: TITLE,
+      input: INPUT,
       cron: '0 9 * * *',
       timezone: 'UTC',
       times: 3,
       startAt: '2027-01-01T00:00:00Z',
     }),
-    { title: 't', input: 'x', cron: '0 9 * * *', timezone: 'UTC', times: 3, startAt: new Date('2027-01-01T00:00:00Z') },
+    {
+      title: TITLE,
+      input: INPUT,
+      cron: '0 9 * * *',
+      timezone: 'UTC',
+      times: 3,
+      startAt: new Date('2027-01-01T00:00:00Z'),
+    },
   );
-  assert.throws(() => parseScheduleDraft({ title: 't', input: 'x' }), /exactly one of everyMs and cron/);
-  assert.throws(() => parseScheduleDraft({ ...draft, cron: '* * * * *', timezone: 'UTC' }), /exactly one/);
-  assert.throws(() => parseScheduleDraft({ title: 't', input: 'x', cron: '0 9 * * *' }), /timezone must be a string/);
-  assert.throws(() => parseScheduleDraft({ ...draft, timezone: 'UTC' }), /only goes with cron/);
-  assert.throws(() => parseScheduleDraft({ ...draft, times: 0 }), /positive integer/);
-  assert.throws(() => parseScheduleDraft({ ...draft, times: 2, until: '2027-01-01T00:00:00Z' }), /exclude each other/);
-  assert.throws(() => parseScheduleDraft({ ...draft, machine: 'laptop' }), /go together/);
-  assert.throws(() => parseScheduleDraft({ ...draft, id: 'x' }), /unknown key "id"/);
-  assert.throws(() => parseScheduleDraft({ ...draft, input: ' ' }), /must not be empty/);
+  assert.throws(() => parseWireScheduleDraft({ title: TITLE, input: INPUT }), /exactly one of everyMs and cron/);
+  assert.throws(() => parseWireScheduleDraft({ ...draft, cron: '* * * * *', timezone: 'UTC' }), /exactly one/);
+  assert.throws(
+    () => parseWireScheduleDraft({ title: TITLE, input: INPUT, cron: '0 9 * * *' }),
+    /timezone must be a string/,
+  );
+  assert.throws(() => parseWireScheduleDraft({ ...draft, timezone: 'UTC' }), /only goes with cron/);
+  assert.throws(() => parseWireScheduleDraft({ ...draft, times: 0 }), /positive integer/);
+  assert.throws(
+    () => parseWireScheduleDraft({ ...draft, times: 2, until: '2027-01-01T00:00:00Z' }),
+    /exclude each other/,
+  );
+  assert.throws(() => parseWireScheduleDraft({ ...draft, machine: 'laptop' }), /go together/);
+  assert.throws(() => parseWireScheduleDraft({ ...draft, id: 'x' }), /unknown key "id"/);
 });
 
 test('a schedule patch is a paused flag', () => {
   assert.deepEqual(parseSchedulePatch({ paused: true }), { paused: true });
   assert.throws(() => parseSchedulePatch({}), /paused must be a boolean/);
   assert.throws(() => parseSchedulePatch({ paused: true, title: 'x' }), /unknown key/);
+});
+
+const PLAINTEXT = 'plain text, not an envelope';
+
+test('the server refuses plaintext in every sealed field of a draft, a patch, a schedule draft, a note and an ask', () => {
+  const draft = { title: TITLE, input: INPUT, machine: 'laptop', workdir: WORKDIR };
+  for (const key of ['title', 'input', 'workdir'] as const) {
+    assert.throws(() => parseWireTaskDraft({ ...draft, [key]: PLAINTEXT }), /must be encrypted/, `draft.${key}`);
+    assert.throws(() => parseWireTaskDraft({ ...draft, [key]: 5 }), /must be a string/, `draft.${key}`);
+  }
+  for (const key of ['input', 'workdir'] as const)
+    assert.throws(() => parseWireTaskPatch({ [key]: PLAINTEXT }), /must be encrypted/, `patch.${key}`);
+  const schedule = { title: TITLE, input: INPUT, machine: 'laptop', workdir: WORKDIR, everyMs: 3_600_000 };
+  for (const key of ['title', 'input', 'workdir'] as const)
+    assert.throws(
+      () => parseWireScheduleDraft({ ...schedule, [key]: PLAINTEXT }),
+      /must be encrypted/,
+      `schedule.${key}`,
+    );
+  assert.throws(() => parseWireNoteInput({ body: PLAINTEXT }, 'note'), /note.body must be encrypted/);
+  assert.throws(() => parseWireNoteInput({ body: BODY, preview: PLAINTEXT }, 'note'), /note.preview must be encrypted/);
+  assert.throws(() => parseWireAsk({ body: PLAINTEXT, questions: QUESTIONS }), /ask.body must be encrypted/);
+  assert.throws(() => parseWireAsk({ body: BODY, questions: PLAINTEXT }), /ask.questions must be encrypted/);
+  assert.throws(() => parseWireAsk({ body: BODY, questions: '[{"header":"x"}]' }), /must be encrypted/);
+});
+
+test('the server accepts envelopes in every sealed field, and a note without a preview', () => {
+  assert.deepEqual(parseWireNoteInput({ body: BODY, preview: PREVIEW }, 'note'), { body: BODY, preview: PREVIEW });
+  assert.deepEqual(parseWireNoteInput({ body: BODY }, 'note'), { body: BODY });
+  assert.deepEqual(parseWireNoteInput({ body: BODY, preview: null }, 'note'), { body: BODY, preview: null });
+  assert.deepEqual(parseWireAsk({ body: BODY, questions: QUESTIONS }), { body: BODY, questions: QUESTIONS });
+  assert.throws(() => parseWireNoteInput({ body: BODY, text: 'x' }, 'note'), /unknown key "text"/);
+});
+
+test('an envelope is bounded by its field size plus the envelope overhead', () => {
+  const limit = envelopeLength(SEALED_LIMITS['title']);
+  const atLimit = 'abe1.' + 'A'.repeat(limit - 'abe1.'.length);
+  assert.equal(parseWireTaskDraft({ title: atLimit, input: INPUT }).title, atLimit);
+  assert.throws(() => parseWireTaskDraft({ title: `${atLimit}A`, input: INPUT }), /title is too long/);
+  assert.ok(limit > Math.ceil((SEALED_LIMITS['title'] * 4) / 3), 'the overhead is counted');
+});
+
+test('a dedupe key must be the blind index, never the key itself', () => {
+  assert.equal(parseBlindIndex(KEY, 'key'), KEY);
+  assert.throws(() => parseBlindIndex('https://github.com/o/r/pull/1', 'key'), /blind index/);
+  assert.throws(() => parseBlindIndex(`${KEY}A`, 'key'), /blind index/);
+  assert.throws(() => parseWireTaskDraft({ title: TITLE, input: INPUT, dedupeKey: 'k' }), /draft.dedupeKey/);
+});
+
+test('the answer to a task, a schedule and a failure parses sealed values as plain strings, legacy text included', () => {
+  assert.equal(parseWireTask({ ...task, title: 'legacy plain title' }).title, 'legacy plain title');
+  assert.equal(parseWireSchedule({ ...schedule, workdir: '/legacy' }).workdir, '/legacy');
+  assert.equal(parseWireTask(task).input, INPUT);
+  assert.equal('labels' in parseWireTask(task), false);
+});
+
+test('the version answer names the owner and the key the board expects', () => {
+  assert.deepEqual(parseVersionIdentity({ contract: 6, owner: 'alice', keyId: '0123456789abcdef' }), {
+    owner: 'alice',
+    keyId: '0123456789abcdef',
+  });
+  assert.deepEqual(parseVersionIdentity({ contract: 6, owner: 'alice', keyId: null }), {
+    owner: 'alice',
+    keyId: null,
+  });
+  assert.throws(() => parseVersionIdentity({ contract: 6 }), /owner must be a string/);
+});
+
+test('labels derive from the prompt and the creator', () => {
+  assert.deepEqual(taskLabels({ input: '/review-pr 17741', createdBy: 'user' }), ['review-pr']);
+  assert.deepEqual(taskLabels({ input: '/pr-review:review-pr https://x --auto', createdBy: 'intake' }), [
+    'pr-review:review-pr',
+  ]);
+  assert.deepEqual(taskLabels({ input: 'find out why', createdBy: 'user' }), []);
+  assert.deepEqual(taskLabels({ input: '', createdBy: 'agent' }), []);
+  assert.deepEqual(taskLabels({ input: 'review https://github.com/o/r/pull/1', createdBy: 'intake' }), ['review']);
+});
+
+test('a preview is the start of the text, and absent for a note without text', () => {
+  assert.equal(notePreview('short'), 'short');
+  assert.equal(notePreview('x'.repeat(500)), 'x'.repeat(300));
+  assert.equal(notePreview('😀'.repeat(400)), '😀'.repeat(300));
+  assert.equal(notePreview(''), null);
+  assert.equal(notePreview('  \n '), null);
 });

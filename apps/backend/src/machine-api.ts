@@ -8,17 +8,17 @@ import {
   isRecord,
   isSafeMachineName,
   isSafeTaskId,
-  parseDraft,
   parseHeartbeat,
-  parsePatch,
-  parseQuestions,
-  parseScheduleDraft,
   parseSchedulePatch,
-  parseTranscriptBatch,
-  QuestionError,
+  parseWireAsk,
+  parseWireNoteInput,
+  parseWireScheduleDraft,
+  parseWireTaskDraft,
+  parseWireTaskPatch,
+  parseWireTranscriptBatch,
   TranscriptError,
-  serializeNote,
   serializeSchedule,
+  serializeWireNote,
 } from '@agent-board/shared';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config';
@@ -57,12 +57,12 @@ function taskId(body: Record<string, unknown>): string {
   return id;
 }
 
-/** Contract and question errors are the caller's fault: 400 with the parser's reason. */
+/** Contract and transcript errors are the caller's fault: 400 with the parser's reason. */
 function parsed<T>(parse: () => T): T {
   try {
     return parse();
   } catch (error) {
-    if (error instanceof ContractError || error instanceof QuestionError || error instanceof TranscriptError)
+    if (error instanceof ContractError || error instanceof TranscriptError)
       throw new AppError('BAD_REQUEST', error.message);
     throw error;
   }
@@ -87,7 +87,7 @@ export async function handleMachineCall(
     case 'get-task':
       return task(await getTask(db, taskId(body)));
     case 'add-task': {
-      const draft = parsed(() => parseDraft(body['body']));
+      const draft = parsed(() => parseWireTaskDraft(body['body']));
       const { row, created } = await addTask(db, draft);
       return { task: task(row), created };
     }
@@ -96,7 +96,7 @@ export async function handleMachineCall(
         await updateTask(
           db,
           taskId(body),
-          parsed(() => parsePatch(body['body'])),
+          parsed(() => parseWireTaskPatch(body['body'])),
         ),
       );
     case 'claim-task': {
@@ -111,20 +111,20 @@ export async function handleMachineCall(
       return task(row);
     }
     case 'add-note': {
-      const text = body['body'];
-      if (typeof text !== 'string' || text.trim() === '') throw new AppError('BAD_REQUEST', 'note text is empty');
+      const note = parsed(() => parseWireNoteInput(body['body'], 'note'));
       const author = body['author'] === 'system' ? 'system' : 'agent';
       await addNote(db, taskId(body), {
         author,
         kind: author === 'system' ? 'event' : 'comment',
-        body: text,
+        body: note.body,
+        preview: note.preview ?? null,
         by: machine,
       });
       return null;
     }
     case 'ask': {
-      const questions = parsed(() => parseQuestions(body['body']));
-      await ask(db, taskId(body), questions, machine);
+      const asked = parsed(() => parseWireAsk(body['body']));
+      await ask(db, taskId(body), asked, machine);
       return null;
     }
     case 'heartbeat':
@@ -135,14 +135,12 @@ export async function handleMachineCall(
       );
       return null;
     case 'pause': {
-      const note = body['body'];
-      if (typeof note !== 'string' || note.trim() === '') throw new AppError('BAD_REQUEST', 'pause note is empty');
-      return task(await pause(db, taskId(body), note.trim(), machine));
+      const note = parsed(() => parseWireNoteInput(body['body'], 'pause note'));
+      return task(await pause(db, taskId(body), note, machine));
     }
     case 'fail': {
-      const text = body['body'];
-      if (typeof text !== 'string' || text.trim() === '') throw new AppError('BAD_REQUEST', 'fail text is empty');
-      const { applied, row } = await failTask(db, taskId(body), text.trim(), machine);
+      const note = parsed(() => parseWireNoteInput(body['body'], 'fail note'));
+      const { applied, row } = await failTask(db, taskId(body), note, machine);
       return { applied, task: task(row) };
     }
     case 'transcript':
@@ -150,13 +148,13 @@ export async function handleMachineCall(
         db,
         taskId(body),
         machine,
-        parsed(() => parseTranscriptBatch(body['body'])),
+        parsed(() => parseWireTranscriptBatch(body['body'])),
       );
       return null;
     case 'read-notes':
-      return (await readNotes(db, taskId(body))).map((row) => serializeNote(toNote(row)));
+      return (await readNotes(db, taskId(body))).map((row) => serializeWireNote(toNote(row)));
     case 'add-schedule': {
-      const draft = parsed(() => parseScheduleDraft(body['body']));
+      const draft = parsed(() => parseWireScheduleDraft(body['body']));
       const { schedule, task: pending } = await addSchedule(db, draft);
       return { schedule: serializeSchedule(toSchedule(schedule)), task: task(pending) };
     }

@@ -531,3 +531,50 @@ test("a backlog is sent in batches of at most the board's limit, and a refused o
   await runWorker(deps, 'w1');
   assert.deepEqual(sizes, [MAX_BATCH_EVENTS, 10]);
 });
+
+test('a task whose prompt cannot be decrypted is reported, never run', async () => {
+  const { deps, backend, notes } = setup({ exitCode: 0, signal: null });
+  const [running] = backend.tasks;
+  Object.assign(running!, { input: '', unreadable: ['input'] });
+  let ran = false;
+  deps.run = async () => {
+    ran = true;
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.equal(ran, false);
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('input could not be decrypted')));
+  assert.equal(notes.length, 1);
+});
+
+test('a task whose directory cannot be decrypted is not run in the default directory', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  Object.assign(backend.tasks[0]!, { workdir: null, unreadable: ['workdir'] });
+  let ran = false;
+  deps.run = async () => {
+    ran = true;
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.equal(ran, false);
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('workdir could not be decrypted')));
+});
+
+test('an unreadable comment of the user stops the run; an unreadable title or agent note does not', async () => {
+  const stopped = setup({ exitCode: 0, signal: null }, true);
+  stopped.backend.notes.set('w1', [note('', new Date('2026-01-01T10:00:00Z'), { author: 'user', unreadable: true })]);
+  let ran = false;
+  stopped.deps.run = async () => {
+    ran = true;
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(stopped.deps, 'w1');
+  assert.equal(ran, false);
+  assert.ok(stopped.backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('could not be decrypted')));
+
+  const fine = setup({ exitCode: 0, signal: null }, true);
+  Object.assign(fine.backend.tasks[0]!, { unreadable: ['title'] });
+  fine.backend.notes.set('w1', [note('', new Date('2026-01-01T10:00:00Z'), { author: 'agent', unreadable: true })]);
+  await runWorker(fine.deps, 'w1');
+  assert.ok(!fine.backend.writes.some((w) => w.startsWith('fail w1:')));
+});

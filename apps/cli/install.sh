@@ -16,4 +16,4 @@ node_bin=${NODE:-$(node -e 'console.log(process.execPath)' 2>/dev/null || true)}
   || { echo "no Node 24+ found; run NODE=/path/to/node ./install.sh" >&2; exit 1; }
 ln -sfn "$node_bin" "$root/bin/.node"
 systemctl --user daemon-reload
-echo "installed. Next: ~/.config/agent-board/config.json, web.json and env (AGENT_BOARD_TOKEN), then enable the timers (see README)."
+echo "installed. Next: ~/.config/agent-board/config.json, web.json and env (AGENT_BOARD_TOKEN and AGENT_BOARD_DATA_KEY: set up encryption in the browser first, then copy the key from the Settings page), then enable the timers (see README)."

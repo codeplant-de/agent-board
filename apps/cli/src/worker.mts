@@ -25,6 +25,7 @@ import {
   pluginPlaceholders,
   splitBatches,
   supervise,
+  unreadableForRun,
 } from './decide.mts';
 import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
 import type { Invocation, Supervision } from './decide.mts';
@@ -99,6 +100,13 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     await report(reason);
   };
 
+  // Never run what could not be opened: an empty prompt or a missing directory would run something else.
+  const unreadable = unreadableForRun(task);
+  if (unreadable.length > 0)
+    return fail(
+      `The task's ${unreadable.join(' and ')} could not be decrypted with this machine's data key, so it was not run. Check AGENT_BOARD_DATA_KEY against the board's Settings page.`,
+    );
+
   const fromIntake = task.createdBy === 'intake';
   const pluginRoots: Record<string, string> = {};
   for (const name of fromIntake
@@ -110,7 +118,13 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       return fail(`Cannot resolve the ${name} plugin: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const run = planRun(task, await backend.readNotes(task.id), deps.newSessionId);
+  const notes = await backend.readNotes(task.id);
+  // What the user wrote reaches the agent as their words, so a comment or answer that cannot be read stops the run.
+  if (notes.some((note) => note.author === 'user' && note.unreadable))
+    return fail(
+      "A comment or answer in this task's thread could not be decrypted with this machine's data key, so it was not run. Check AGENT_BOARD_DATA_KEY, or use Re-run fresh to start over.",
+    );
+  const run = planRun(task, notes, deps.newSessionId);
   deps.appendLog(taskId, run.kind === 'resume' ? `resuming session ${run.sessionId}` : `new session ${run.sessionId}`);
   // The resume is used up whether or not the run gets going. This is also the update that clears the task's `paused`.
   await backend.updateTask(task.id, { next: 'fresh' });

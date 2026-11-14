@@ -1,6 +1,6 @@
 import type { IntakeConfig, Lane } from './config.mts';
 import { formatAnswers, MAX_BATCH_EVENTS, parsePrUrl, prUrlIn, promptSkill, shortSkill } from '@agent-board/shared';
-import type { Note, Task, TranscriptEvent } from '@agent-board/shared';
+import type { Note, Task, TranscriptEvent, UnreadableField } from '@agent-board/shared';
 
 // `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives `<plugin>@ccc`, such as {pr-review}.
 const PLUGIN_PLACEHOLDER = /\{([a-z0-9][a-z0-9-]*)\}/g;
@@ -191,6 +191,12 @@ export function expandRule(rule: string, home: string, pluginRoots: Record<strin
   return rule
     .replaceAll('~/', `${home}/`)
     .replace(PLUGIN_PLACEHOLDER, (match, name: string) => pluginRoots[name] ?? match);
+}
+
+// The fields this machine could not open that a run needs: its prompt and the directory it works in. A task listed here must
+// not be started, since an empty prompt or a missing directory would run something else than the user wrote.
+export function unreadableForRun(task: Task): UnreadableField[] {
+  return task.unreadable.filter((field) => field !== 'title');
 }
 
 // A task with its own directory runs only on the machine it was scheduled on (intake's tasks have none of their own).

@@ -1,4 +1,4 @@
-import { DEFAULT_PRIORITY, isSafeTaskId, promptSkill, type Status, type TaskDraft } from '@agent-board/shared';
+import { DEFAULT_PRIORITY, isSafeTaskId, type Status, type WireTaskDraft } from '@agent-board/shared';
 import { eq, max, min } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import type { DbOrTx } from '../db/client';
@@ -35,7 +35,7 @@ export async function getTask(db: DbOrTx, id: string): Promise<TaskRow> {
 /** New task at the bottom of its status. A known dedupe key returns the existing task instead. */
 export async function insertTask(
   tx: DbOrTx,
-  draft: TaskDraft,
+  draft: WireTaskDraft,
   extra: { scheduleId?: string } = {},
 ): Promise<{ row: TaskRow; created: boolean }> {
   // A follow-up is as pressing as the task it came from, unless its creator says otherwise.
@@ -49,11 +49,8 @@ export async function insertTask(
     .insert(tasks)
     .values({
       id: newId(),
-      title: draft.title.trim(),
+      title: draft.title,
       input: draft.input,
-      // A task is labelled with the skill its prompt starts with, unless its creator says otherwise.
-      labels:
-        draft.labels.length > 0 ? draft.labels : [promptSkill(draft.input)].filter((skill) => skill !== undefined),
       machine: draft.machine ?? null,
       workdir: draft.workdir ?? null,
       head: draft.head ?? null,

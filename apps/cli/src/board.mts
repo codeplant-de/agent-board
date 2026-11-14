@@ -41,6 +41,7 @@ import {
   QuestionError,
   runsLeft,
   STATUSES,
+  UNREADABLE_TEXT,
 } from '@agent-board/shared';
 import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
 import { postSlack, slackText } from './notify.mts';
@@ -95,7 +96,7 @@ export async function tasks(context: Context): Promise<void> {
     context.print(`${status} (${inStatus.length})`);
     for (const task of inStatus)
       context.print(
-        `  ${task.id}  ${task.priority.padEnd(6)}  [${task.labels.join(',') || '-'}]  ${task.title}${task.notBefore ? `  (starts ${localTime(task.notBefore)})` : ''}`,
+        `  ${task.id}  ${task.priority.padEnd(6)}  [${task.labels.join(',') || '-'}]  ${task.title}${task.notBefore ? `  (starts ${localTime(task.notBefore)})` : ''}${task.unreadable.length > 0 ? `  (cannot decrypt: ${task.unreadable.join(', ')})` : ''}`,
       );
   }
 }
@@ -130,7 +131,7 @@ export function renderThread(task: Task, notes: Note[]): string {
     '',
     '## Input',
     '',
-    task.input.trim() || '(empty)',
+    task.unreadable.includes('input') ? UNREADABLE_TEXT : task.input.trim() || '(empty)',
     '',
     '## Thread',
   ];
@@ -139,7 +140,8 @@ export function renderThread(task: Task, notes: Note[]): string {
     if (note.kind === 'question' && note.questions) lines.push(formatQuestions(note.questions));
     if (note.kind === 'answer')
       lines.push(formatAnswers(byId.get(note.questionNoteId ?? '')?.questions, note.answers ?? []));
-    if (note.text.trim() !== '') lines.push(note.text.trim());
+    if (note.unreadable) lines.push(UNREADABLE_TEXT);
+    else if (note.text.trim() !== '') lines.push(note.text.trim());
   }
   return lines.join('\n');
 }
@@ -188,7 +190,6 @@ export async function add(context: Context, args: string[]): Promise<void> {
   const draft = {
     title,
     input: readNoteFile(file),
-    labels: [],
     createdBy: 'agent' as const,
     machine: context.config.machine,
     workdir: realpathSync(process.cwd()),

@@ -80,7 +80,7 @@ Every worker machine runs its own timers against the same board, under the name 
 - A claim is atomic on the server: of two machines claiming a task at once, one wins, and the other moves on to the next task.
 - A machine skips a todo task it cannot serve, so the other one can take it: a task scheduled on the other machine (its directory is there), a resume whose session lives on the other machine, or an intake review of a repository it has no checkout of.
 - A machine sweeps only its own running tasks: the worker unit lives where the task was claimed. When that machine is off, you can take the task back from the task page once its agent has been quiet for 20 minutes.
-- Intake runs on both. The PR URL is the task's dedupe key, so both create the same task once.
+- Intake runs on both. The PR URL is the task's dedupe key (sent as its blind index), so both create the same task once.
 
 Tasks only move while a machine with the right setup is on.
 
@@ -121,7 +121,7 @@ Every run records what it did. The worker starts `claude -p` with `--output-form
 
 On the board, **Transcript** on a task page (or the terminal icon on a card) opens the runs, newest first, live while one runs. Tool calls are one line each; a click shows the input and loads the output. A tool result over 256 KB is cut with a note; the full one stays in the session file on the machine. Claude Code passes thinking on without its text, so a thinking block shows as a marker with its token estimate.
 
-Transcripts can hold whatever the agent saw: file contents, `gh` output, now and then an environment value. They go 14 days after a task is closed, and 28 days after the last change of an open task in Done, which covers intake's tasks (the server checks hourly). A task of yours untouched in Done is closed after 14 days.
+Transcripts can hold whatever the agent saw: file contents, `gh` output, now and then an environment value. The worker seals each event (and each tool output apart) before it sends it, so the server stores only ciphertext. They go 14 days after a task is closed, and 28 days after the last change of an open task in Done, which covers intake's tasks (the server checks hourly). A task of yours untouched in Done is closed after 14 days.
 
 The board loads a run's events in pages of 2000 and afterwards only those after the last one it has, so long runs show in full and a live run costs one small request per poll.
 
@@ -141,11 +141,14 @@ Claude Code itself (2.1.323) also restores a session's worktree when it is resum
 Needs Node 24+, pnpm, `flock`, `systemd-run`, `gh` (logged in) and `claude` (logged in).
 
 1. `pnpm install` in the repo. The CLI has no runtime dependencies, but it imports `@agent-board/shared` through the workspace link.
-2. On the board's **Settings** page, create a token for this machine. Put it in `~/.config/agent-board/env`, mode 600 (a file with any other mode is refused):
+2. In the browser, set up encryption once (see [Encryption](#encryption)). On the board's **Settings** page, create a token for this machine and copy your data key. Put both in `~/.config/agent-board/env`, mode 600 (a file with any other mode is refused):
 
    ```
    AGENT_BOARD_TOKEN=abm_...
+   AGENT_BOARD_DATA_KEY=abk1_...
    ```
+
+   The data key is the same on every machine and never leaves your machines and browser. The CLI refuses to start without it, with a different key than the board's, or before the board has a key.
 
 3. Write `~/.config/agent-board/web.json`: `{ "url": "https://board.codeplant.de" }`.
 4. Copy `apps/cli/config.example.json` to `~/.config/agent-board/config.json`. Set `machine` to the name you gave the token and `repos` to this machine's checkouts.
@@ -167,9 +170,11 @@ The CLI checks the server's contract version once per process and refuses to run
 
 1. Stop the dispatch and intake timers on every worker machine.
 2. Deploy or restart the server; migrations run on start.
-3. On each machine: pull the repo and run `apps/cli/install.sh`.
-4. In an existing `config.json`, narrow `Bash(board *)` in `intake.allowedTools` to the forms in `config.example.json`. The old `backend` key is ignored; remove it if you like.
-5. Start the timers again.
+3. Set up encryption in the browser (a new passphrase and recovery key), then copy the data key from the Settings page.
+4. On each machine: add `AGENT_BOARD_DATA_KEY=abk1_...` to `~/.config/agent-board/env`, pull the repo and run `apps/cli/install.sh`.
+5. Re-encrypt the content that was stored before contract 6 (a one-off script, run once the key exists). Until then the old tasks, notes and transcripts are plain text on the server: the CLI shows them as unreadable and never runs one, and intake would create a second task for a PR whose old task it cannot read.
+6. In an existing `config.json`, narrow `Bash(board *)` in `intake.allowedTools` to the forms in `config.example.json`. The old `backend` key is ignored; remove it if you like.
+7. Start the timers again.
 
 ## Config
 
@@ -216,11 +221,25 @@ Two ways in:
 
 The cluster side (namespace, Postgres, Deployments, IngressRoutes, Authelia rule, image policies, DNS, nightly `pg_dump` into the restic backup) is `infra/cloud-infra/add-agent-board.patch`, written against codeplant-de/cloud-infra: `git apply` it there, fill in and encrypt `cluster/apps/agent-board/env.sops.yaml` and the new `ghcr-pull` entry, and apply the DNS with tofu. The images come from `codeplant-de/agent-board` on GitHub (`ghcr.io/codeplant-de/agent-board-*`).
 
+## Encryption
+
+Board content is end to end encrypted: the server stores and returns ciphertext it cannot read, and the clients (the CLI, the browser) seal what they send and open what they receive, with a data key of the user's own. The operator of the server and database can see ids, statuses, priorities, positions, machine and lane names, PR head shas, timestamps, schedule rules, usernames, field lengths and activity timing, but not what a task, note or transcript says.
+
+What is sealed (`abe1.<base64url>` envelopes: AES-256-GCM, bound to the user, the field and a context by its additional data): `title`, `input` and `workdir` of tasks and schedules (context empty, because the server copies a schedule's ciphertext into each occurrence task), `note.body`, `note.preview`, `note.questions` and `note.answers` (context: the task id), and a transcript event's `data` and `output` (context `<runId>:<seq>`). `questions`, `answers` and `data` are sealed JSON. A task's `dedupeKey` is the blind index (`abh1.…`, an HMAC) of the PR URL, so the server can still keep it unique per board. Labels are not stored: `taskLabels` in `packages/shared` derives them from the opened prompt and the creator.
+
+The server refuses a sealed field that is not an envelope (400), and checks nothing about what is inside. So all content validation (a non-empty title, an absolute `workdir`, the shape of questions and answers, whether an answer fits its question) happens in the client, before sealing and after opening. Existing rows stay plain text until the one-off re-encryption; the server hands them back untouched, and the CLI treats them as unreadable (see below).
+
+Server-written events ("Marked done.", "Moved from todo to done.", "Closed after 14 days in Done.") are the only plain-text note bodies. They have `author: "server"` and `kind: "event"`, never repeat anything sealed, and a client shows them as system events. Every other note, the dispatcher's start marker and the text of `pause` and `fail` included, is sealed by its client and has `author` `agent`, `user` or `system`. A client treats a non-envelope body on any other note as unreadable, never as text.
+
+**Previews.** A client that writes a note with text also sends `preview`: the first 300 characters of the text, sealed apart, for the board cards, which list every task's newest note without opening threads. A note without text (a question note, an answer without a message) has none. The board card shows a server event's own text.
+
+**Unreadable values.** The CLI never crashes a listing on a value it cannot open (legacy plain text, another key, damage) and never treats one as a prompt. A task or schedule gets `unreadable`: the names of the fields that failed (`title`, `input`, `workdir`; a workdir that opens to a relative path counts). An unreadable title shows as a placeholder, an unreadable input is empty, an unreadable workdir is `null`. Dispatch skips a task whose input or workdir is unreadable and the worker refuses to run it, reporting why on the task; an unreadable title alone does not stop a run. A note that cannot be opened (or whose questions or answers do not parse) is `unreadable` with no text; a worker refuses a run while an unreadable comment or answer of the user is in the thread. `board show` and `board tasks` print `(cannot decrypt …)` instead of text. The data key is read from `AGENT_BOARD_DATA_KEY` and is never printed or put into an error.
+
 ## Backend contract
 
-The spec between the CLI and the board, contract version 5. The CLI calls the board's machine API from its own process (`apps/cli/src/backend.mts`); `apps/backend/src/machine-api.ts` serves it. Nothing else implements it.
+The spec between the CLI and the board, contract version 6. The CLI calls the board's machine API from its own process (`apps/cli/src/backend.mts` over HTTP, `apps/cli/src/sealing.mts` for the encryption); `apps/backend/src/machine-api.ts` serves it. Nothing else implements it. Everything below describes the wire, where sealed fields hold envelopes; the CLI's own `Backend` interface (`packages/shared/src/contract.mts`) is the plaintext view of it.
 
-`POST <url>/api/machine/<command>` with `Authorization: Bearer <machine token>` and a JSON body `{"id"?, "all"?, "machine"?, "author"?, "body"?}`: `id` is the task, `body` is the command's payload (JSON, or the text of a note). The answer is `{"result": ...}` with status 200, or `{"error": "one line"}` with a non-200 status. The token names the machine; it never appears in an error message. A call times out after 45 seconds.
+`POST <url>/api/machine/<command>` with `Authorization: Bearer <machine token>` and a JSON body `{"id"?, "all"?, "machine"?, "author"?, "body"?}`: `id` is the task, `body` is the command's payload (JSON, with the sealed values). The answer is `{"result": ...}` with status 200, or `{"error": "one line"}` with a non-200 status. The token names the machine; it never appears in an error message. A call times out after 45 seconds.
 
 ### Rules
 
@@ -228,8 +247,8 @@ The spec between the CLI and the board, contract version 5. The CLI calls the bo
 - A write is visible to the next read.
 - The server refuses an unsafe id or machine name with 400 and writes nothing; the CLI refuses it before it sends anything.
 - `claim-task` answers 409 when the task is not free for this machine ("lost"). The CLI treats that as an answer and moves on to the next task; every other non-200 answer is a failure.
-- The CLI sends `version` once per process, before its first other call, and stops when the server's `contract` differs from its own (5), saying which side is older.
-- `input` comes back verbatim, and a note with its text intact. The core parses `agent-board: started <iso>` notes (the start marker) and the first line of a review task's `input` (the PR URL); the PR head is the `head` field.
+- The CLI sends `version` once per process, before its first other call, and stops when the server's `contract` differs from its own (6), saying which side is older. It then derives its keys for the `owner` the server names, and stops when the board has no data key yet (`keyId: null`: set up encryption in the browser first) or its key's id differs from `keyId`.
+- A sealed value comes back verbatim. The core parses `agent-board: started <iso>` notes (the start marker) and the first line of a review task's `input` (the PR URL) after opening them; the PR head is the `head` field.
 - A task an agent proposed (`createdBy: agent`) is the user's to start: the server refuses `update-task` with a new status and loses `claim-task` for it, whoever asks.
 - The core never writes to a task that is `closed`. A worker that finds its task closed after the run, or running again with another `runStartedAt` than it started with (taken back and run on another machine), drops its result. Any other outcome is judged on the task's `status` after the run: anything but `running` counts as reported (the agent reported, you answered while it was still ending its turn, or the task was taken back). A todo task whose worker unit is still active is not started again until the unit is gone.
 
@@ -238,9 +257,8 @@ The spec between the CLI and the board, contract version 5. The CLI calls the bo
 ```json
 {
   "id": "Ab3dEf9x",
-  "title": "#17741 Show postal code (dev)",
-  "input": "https://github.com/cosuno/cosuno/pull/17741",
-  "labels": ["review-pr"],
+  "title": "abe1.…",
+  "input": "abe1.…",
   "status": "needs-me",
   "createdBy": "intake",
   "priority": "normal",
@@ -248,7 +266,7 @@ The spec between the CLI and the board, contract version 5. The CLI calls the bo
   "closed": false,
   "machine": "laptop",
   "sessionId": "591d2ec1-d4ab-4e26-ac04-ed303f8fa44a",
-  "workdir": "/home/me/workspace/cosuno/cosuno",
+  "workdir": "abe1.…",
   "next": "fresh",
   "head": "56120dc60b",
   "openQuestion": true,
@@ -262,14 +280,13 @@ The spec between the CLI and the board, contract version 5. The CLI calls the bo
 }
 ```
 
-All twenty-two fields are required.
+All twenty-one fields are required. The CLI's plaintext `Task` adds `labels` and `unreadable`.
 
 | Field | Meaning |
 | --- | --- |
 | `id` | Opaque string, stable for the life of the task. It ends up in a systemd unit name, a log file name and argv, so the core refuses any id that does not match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, and the ids `dispatch` and `intake`. |
-| `title` | One line, shown in lists and Slack. |
-| `input` | What to work on. |
-| `labels` | For display: the skill the prompt starts with, unless the creator gave others. |
+| `title` | Sealed. One line, shown in lists and Slack. |
+| `input` | Sealed. What to work on. |
 | `createdBy` | `intake`, `user` or `agent`. Intake's tasks run with intake's narrow permissions and in the PR's checkout. |
 | `status` | One of `backlog`, `todo`, `running`, `needs-me`, `done`. |
 | `priority` | One of `urgent`, `high`, `normal`, `low`. |
@@ -277,7 +294,7 @@ All twenty-two fields are required.
 | `closed` | `true` for a task out of the workflow. Closed tasks are only listed with `all`; the core never starts, requeues or writes to one. |
 | `machine` | The machine that claimed it last, or `null`. A resume runs only there. |
 | `sessionId` | The Claude session of the last skill run, or `null`. |
-| `workdir` | The directory that session was in when it last stopped, on `machine`, or `null`. A resume starts there (see [Where a task runs](#where-a-task-runs)). |
+| `workdir` | Sealed, or `null`. The directory that session was in when it last stopped, on `machine`, or `null`. A resume starts there (see [Where a task runs](#where-a-task-runs)). |
 | `next` | `fresh` or `resume`: what the next run does. |
 | `head` | The PR head sha (7 to 40 hex characters) an intake review was made for, or `null`. Intake compares it with the PR's head to see that it moved. |
 | `openQuestion` | The agent's last question has no answer yet. |
@@ -296,11 +313,11 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 ```json
 {
   "id": "Sc3dEf9x",
-  "title": "Sweep stale branches",
-  "input": "/sweep the stale branches",
+  "title": "abe1.…",
+  "input": "abe1.…",
   "priority": "normal",
   "machine": "laptop",
-  "workdir": "/home/me/workspace/cosuno/cosuno",
+  "workdir": "abe1.…",
   "everyMs": 7200000,
   "cron": null,
   "timezone": null,
@@ -315,34 +332,34 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 }
 ```
 
-All seventeen fields are required. Exactly one of `everyMs` (an interval in ms, at least one minute, on the grid `anchorAt + k * everyMs`) and `cron` (5 fields, read in the IANA zone `timezone`, which a cron rule needs) is set. `anchorAt` is the first run of an interval, or the time a cron rule matches from. `nextRunAt` is the start time of the pending occurrence (read from its task, so a changed delay shows), `occurrenceTaskId` its task; both are `null` while the schedule is paused with nothing waiting, and once it has ended. `nextRunAt` is also `null` while `occurrenceTaskId` is set when the pending task has no start time any more (it was told to run now): it is due now. `remaining` is the number of occurrences still to be made after the pending one (`null`: forever), `until` the last time an occurrence may start. `machine` and `workdir` pin the occurrences, or are both `null`.
+All seventeen fields are required (`title`, `input` and `workdir` sealed). Exactly one of `everyMs` (an interval in ms, at least one minute, on the grid `anchorAt + k * everyMs`) and `cron` (5 fields, read in the IANA zone `timezone`, which a cron rule needs) is set. `anchorAt` is the first run of an interval, or the time a cron rule matches from. `nextRunAt` is the start time of the pending occurrence (read from its task, so a changed delay shows), `occurrenceTaskId` its task; both are `null` while the schedule is paused with nothing waiting, and once it has ended. `nextRunAt` is also `null` while `occurrenceTaskId` is set when the pending task has no start time any more (it was told to run now): it is due now. `remaining` is the number of occurrences still to be made after the pending one (`null`: forever), `until` the last time an occurrence may start. `machine` and `workdir` pin the occurrences, or are both `null`.
 
-A schedule always has at most one pending occurrence, a task in Todo with `scheduleId` set and `notBefore` at `nextRunAt` (until someone changes it); its `createdBy` is `user`. When that task leaves Todo (a claim, `update-task`, a move, a close), in the same transaction the server makes the next one: the first match of the rule after the previous occurrence's time that is not in the past, so missed runs are skipped. With nothing left (`remaining` used up, or the next match after `until`) the schedule ends (`ended: true`) and makes no more. A task that was an occurrence and returns to Todo later does not trigger another; only the pending one does.
+A schedule always has at most one pending occurrence, a task in Todo with `scheduleId` set and `notBefore` at `nextRunAt` (until someone changes it); its `createdBy` is `user`, and its `title`, `input` and `workdir` are the schedule's ciphertext, copied unchanged. When that task leaves Todo (a claim, `update-task`, a move, a close), in the same transaction the server makes the next one: the first match of the rule after the previous occurrence's time that is not in the past, so missed runs are skipped. With nothing left (`remaining` used up, or the next match after `until`) the schedule ends (`ended: true`) and makes no more. A task that was an occurrence and returns to Todo later does not trigger another; only the pending one does.
 
 ### Note
 
 ```json
-{ "id": "n1", "text": "…", "createdAt": "2026-11-13T10:00:00Z", "author": "agent", "kind": "comment" }
+{ "id": "n1", "body": "abe1.…", "preview": "abe1.…", "createdAt": "2026-11-13T10:00:00Z", "author": "agent", "kind": "comment" }
 ```
 
-`author` is `agent`, `user` or `system`; `kind` is `comment`, `question`, `answer` or `event`. A question note adds `questions` (the list `ask` took); an answer note adds `questionNoteId` and `answers`, one `{"selected": [labels], "other"?: text}` per question. A resume prompt is built from the `user` notes after the last `agent` note.
+`author` is `agent`, `user`, `system` or `server`; `kind` is `comment`, `question`, `answer` or `event`. `body` is sealed, except on an `author: "server"` note, whose body is plain text (see [Encryption](#encryption)); `preview` is a sealed preview or `null`. A question note adds `questions` and an answer note `answers` (both sealed JSON: the list `ask` took, and one `{"selected": [labels], "other"?: text}` per question) and `questionNoteId`. The CLI's plaintext `Note` has `text` instead of `body`, shows a server event as `author: "system"`, and adds `unreadable`. A resume prompt is built from the `user` notes after the last `agent` note.
 
 ### Commands
 
 | Command | Request | `result` |
 | --- | --- | --- |
-| `version` | - | `{"contract": 5, "owner": "<username>", "keyId": "<16 hex>" or null}` (the user whose board the token works on, and the fingerprint of that user's data key; null before they set up encryption. An older CLI ignores the extra fields) |
+| `version` | - | `{"contract": 6, "owner": "<username>", "keyId": "<16 hex>" or null}` (the user whose board the token works on, which the keys are derived for, and the fingerprint of that user's data key; null before they set up encryption) |
 | `list-tasks` | `all?` | `[Task, ...]` in priority order |
 | `get-task` | `id` | `Task` |
-| `add-task` | `body`: `{"title", "input"?, "labels"?, "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "head"?, "notBefore"?}` | `{"task": Task, "created": bool}` |
+| `add-task` | `body`: `{"title", "input", "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "head"?, "notBefore"?}` | `{"task": Task, "created": bool}` |
 | `update-task` | `id`, `body`: `{"status"?, "priority"?, "input"?, "sessionId"?, "workdir"?, "next"?, "head"?, "notBefore"?, "expect"?}` | the updated `Task`, or status 409 |
 | `claim-task` | `id`, `machine` | the claimed `Task`, or status 409 |
-| `add-note` | `id`, `author?` (`agent` or `system`), `body`: the note text, verbatim | `null` |
-| `ask` | `id`, `body`: `{"questions": [...]}` | `null` |
+| `add-note` | `id`, `author?` (`agent` or `system`), `body`: `{"body", "preview"?}` | `null` |
+| `ask` | `id`, `body`: `{"body", "questions"}` (a sealed empty body, sealed questions JSON) | `null` |
 | `heartbeat` | `id`, `body`: `{"lane": string, "borrowed": bool}` | `null` |
-| `pause` | `id`, `body`: the note | the updated `Task` |
-| `fail` | `id`, `body`: the note | `{"applied": bool, "task": Task}` |
-| `transcript` | `id`, `body`: `{"runId", "startedAt", "sessionId", "resumed", "events": [...]}` | `null` |
+| `pause` | `id`, `body`: `{"body", "preview"?}` | the updated `Task` |
+| `fail` | `id`, `body`: `{"body", "preview"?}` | `{"applied": bool, "task": Task}` |
+| `transcript` | `id`, `body`: `{"runId", "startedAt", "sessionId", "resumed", "events": [...]}`, each event `{"seq", "at", "kind", "parent", "data", "output"?, "outputSize"?}` | `null` |
 | `read-notes` | `id` | `[Note, ...]`, oldest first |
 | `add-schedule` | `body`: `{"title", "input", "everyMs"? \| "cron"? + "timezone", "priority"?, "machine"?, "workdir"?, "startAt"?, "times"?, "until"?}` | `{"schedule": Schedule, "task": Task}` (the pending occurrence) |
 | `list-schedules` | - | `[Schedule, ...]`: running ones first, then paused, then ended |
@@ -350,18 +367,18 @@ A schedule always has at most one pending occurrence, a task in Todo with `sched
 | `remove-schedule` | `id` | `null` |
 
 - `version`: see the rules above.
-- `add-task`: `input` defaults to `""`, `labels` to the skill the prompt starts with, `status` to `todo`, `priority` to the parent's with a `parentId` and to `normal` without, `createdBy` (`intake`, `user`, `agent`) to `user`. `machine` and `workdir` come together and pin the task there. The new task goes to the bottom of its status. With a `dedupeKey` that a task already has, nothing is created: the answer is that task with `created: false`. `createdBy: agent` makes the task a proposal: it lands in `needs-me` whatever `status` the draft names. `head` is 7 to 40 hex characters. `notBefore` (ISO 8601) is accepted only with status `todo` (else 400).
-- `update-task`: at least one key; unknown keys are a failure. A status or priority change puts the task at the bottom of its new place. A status change of a proposal is refused with 403. Leaving `needs-me` for `todo` or `done` clears `openQuestion`. `head` is 7 to 40 hex characters, or `null` to clear it. `expect` is a status and not a change: when the task's status differs under the update's lock, nothing is written and the answer is 409 (intake uses it, so a close or requeue planned from an earlier listing cannot hit a task a dispatcher claimed since). It does not count as a key. `notBefore` is an ISO 8601 time, or `null` to clear it; a time is refused with 409 unless the task ends up in `todo`.
+- `add-task`: `title` and `input` are sealed (an empty input is sealed too), `workdir` sealed, `dedupeKey` the blind index of the key (`abh1.…`, else 400), `status` defaults to `todo`, `priority` to the parent's with a `parentId` and to `normal` without, `createdBy` (`intake`, `user`, `agent`) to `user`. `machine` and `workdir` come together and pin the task there. The new task goes to the bottom of its status. A plain-text `title`, `input` or `workdir` is refused with 400. With a `dedupeKey` that a task already has, nothing is created: the answer is that task with `created: false`. `createdBy: agent` makes the task a proposal: it lands in `needs-me` whatever `status` the draft names. `head` is 7 to 40 hex characters. `notBefore` (ISO 8601) is accepted only with status `todo` (else 400).
+- `update-task`: at least one key; unknown keys are a failure. `input` and `workdir` are sealed. A status or priority change puts the task at the bottom of its new place. A status change of a proposal is refused with 403. Leaving `needs-me` for `todo` or `done` clears `openQuestion`. `head` is 7 to 40 hex characters, or `null` to clear it. `expect` is a status and not a change: when the task's status differs under the update's lock, nothing is written and the answer is 409 (intake uses it, so a close or requeue planned from an earlier listing cannot hit a task a dispatcher claimed since). It does not count as a key. `notBefore` is an ISO 8601 time, or `null` to clear it; a time is refused with 409 unless the task ends up in `todo`.
 - `claim-task`: `todo` to `running` for the machine, at the bottom of running, in one atomic step. Lost when the task is not in `todo` (a `backlog` task is never claimed), or when it is a resume (`next: resume` with a session) pinned to another machine. A token claims for its own machine only. Lost for a proposal. Sets `runStartedAt`; `paused` stays as it is. Lost while `notBefore` is in the future.
-- `add-schedule`: exactly one of `everyMs` and `cron`; `cron` needs its `timezone`, and `timezone` goes only with `cron`. `title` and `input` must not be empty. `machine` and `workdir` come together. `startAt` (ISO 8601; default now) is the first run of an interval and the earliest match of a cron rule. `times` (a positive integer, the number of occurrences in all) and `until` (ISO 8601) exclude each other; neither means forever. The answer is 400 for a cron expression the server cannot read (6-field patterns included), an unknown time zone, an interval under a minute, or a rule with no run before `until`, and nothing is written. The schedule and its first card are made in one transaction.
+- `add-schedule`: exactly one of `everyMs` and `cron`; `cron` needs its `timezone`, and `timezone` goes only with `cron`. `title`, `input` and `workdir` are sealed. `machine` and `workdir` come together. `startAt` (ISO 8601; default now) is the first run of an interval and the earliest match of a cron rule. `times` (a positive integer, the number of occurrences in all) and `until` (ISO 8601) exclude each other; neither means forever. The answer is 400 for a cron expression the server cannot read (6-field patterns included), an unknown time zone, an interval under a minute, or a rule with no run before `until`, and nothing is written. The schedule and its first card are made in one transaction.
 - `update-schedule`: `paused: true` takes the pending occurrence off the board when it never ran (still in Todo, no session, no run) and gives its run back to `remaining`; `paused: false` makes the next occurrence at the first match from now. 409 for an ended schedule. Pausing a paused schedule, or resuming a running one, changes nothing.
 - `remove-schedule`: deletes the schedule and a pending occurrence that never ran; tasks that ran stay, with `scheduleId` `null`. 404 for an unknown schedule.
-- `add-note`: author `agent` makes a `comment`, `system` an `event`. An empty text is a failure.
+- `add-note`: author `agent` makes a `comment`, `system` an `event`; both bodies are sealed (else 400), and the CLI refuses an empty text before sealing. `preview` is the sealed start of the text, or absent.
 - `heartbeat`: sets `lastActiveAt` to now with the lane, on a running task only; on any other it changes nothing.
-- `transcript`: appends a run's condensed events (see `packages/shared/src/transcript.mts`; at most 5000 per call, each with an integer `seq` from 0 and a parseable `at`, or the call fails with 400); an event already stored (same run and `seq`) stays as it is, so a retried batch is harmless.
-- `pause`: a running task only. Adds the note as a `system` event, then moves the task to Todo with `next: resume` (`fresh` without a session), at the top, and sets `paused`.
-- `fail`: in one step, if the task is still `running` and not closed, adds the text as a `system` event and moves the task to `needs-me`, and answers `applied: true`; otherwise it changes nothing and answers `applied: false` with the task as it is.
-- `ask`: validates the questions (1 to 4; a header of at most 16 characters; 2 to 4 options with different labels, at most one `recommended`), adds a question note, and moves the task to `needs-me` with `openQuestion: true`. Refused with 403 for a proposal.
+- `transcript`: appends a run's condensed events (see `packages/shared/src/transcript.mts`; at most 5000 per call, each with an integer `seq` from 0 and a parseable `at`, or the call fails with 400). `data` is the sealed JSON of the event without its output. A `tool_result` also carries the sealed `output` and `outputSize`, its length in characters counted by the client (the server cannot read it; it is bounded, nothing more); any other event carries neither. an event already stored (same run and `seq`) stays as it is, so a retried batch is harmless.
+- `pause`: a running task only. Adds the sealed note as a `system` event, then moves the task to Todo with `next: resume` (`fresh` without a session), at the top, and sets `paused`.
+- `fail`: in one step, if the task is still `running` and not closed, adds the sealed note as a `system` event and moves the task to `needs-me`, and answers `applied: true`; otherwise it changes nothing and answers `applied: false` with the task as it is.
+- `ask`: adds a question note with the sealed questions, and moves the task to `needs-me` with `openQuestion: true`. Refused with 403 for a proposal. The CLI validates the questions before sealing (1 to 4; a header of at most 16 characters; 2 to 4 options with different labels, at most one `recommended`); the server cannot.
 
 ## What a worker may do
 
@@ -445,6 +462,6 @@ pnpm format                          Prettier over the repo (`pnpm format:check`
 pnpm db:generate --name <change>     after editing apps/backend/src/db/schema.ts
 ```
 
-To point a worker at the local board: a token from http://localhost:5173/settings, `web.json` with `"url": "http://localhost:4000"`, and `AGENT_BOARD_CONFIG_DIR` / `AGENT_BOARD_STATE_DIR` at scratch directories so the real config and logs stay untouched.
+To point a worker at the local board: a token and the data key from http://localhost:5173/settings, `web.json` with `"url": "http://localhost:4000"`, and `AGENT_BOARD_CONFIG_DIR` / `AGENT_BOARD_STATE_DIR` at scratch directories so the real config and logs stay untouched.
 
 CLI decision logic is in `apps/cli/src/decide.mts`, `planIntake` and the `run*` functions, which take a backend, GitHub and system interface as arguments; tests inject fakes (`apps/cli/test/helpers.mts`). Backend tests are integration tests against `board_test` (reset on every run), through `app.inject` for the machine API and tRPC callers for the UI. Three test skills in `apps/cli/test/skills` run real headless checks; link one into `~/.claude/skills` and schedule it with `board schedule /<name>`. `board-selftest-ask` asks one question through AskUserQuestion and reports the answer after you answer on the board. `board-selftest-slow` works through eight 15-second steps: with two lanes of one slot each (one owning it), schedule two so one lane borrows, then schedule own work for that lane, and the next tick after `pauseAfterMinutes` pauses the borrowed run, which later resumes in its session. `board-selftest-worktree` enters a worktree first, so a pause and resume show that the session continues in it.
