@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -61,6 +62,8 @@ for (const dir of path.split(':'))
 
 type Mode = 'normal' | 'redirect';
 let mode: Mode = 'normal';
+// How long list-tasks takes to answer: long enough to replace the binary while a tick waits for it.
+let listDelayMs = 0;
 const requests: { command: string; body: string }[] = [];
 const todo = task({ id: 'Ab3dEf9x', title: 'Fix the thing', status: 'todo' });
 const server = createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -80,7 +83,9 @@ const server = createServer((request: IncomingMessage, response: ServerResponse)
       'update-task': todo,
       'claim-task': { ...todo, status: 'running', machine: 'smoke' },
     };
-    response.end(JSON.stringify({ result: results[command] ?? null }));
+    const reply = (): void => void response.end(JSON.stringify({ result: results[command] ?? null }));
+    if (command === 'list-tasks' && listDelayMs > 0) setTimeout(reply, listDelayMs);
+    else reply();
   });
 });
 await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -225,16 +230,95 @@ await check('setup --print points ExecStart at this binary', async () => {
     new RegExp(`ExecStart=\\S*flock -n -E 75 %t/agent-board-dispatch.lock ${binary} internal dispatch\\n`),
   );
 });
-await check('setup --print points at the installed binary when there is one, symlink resolved', async () => {
+await check('setup writes the binary that runs, not whatever ~/.local/bin/board resolves to', async () => {
   const installDir = join(root, 'installed');
   mkdirSync(installDir);
-  const real = join(root, 'board-real');
-  copyFileSync(binary, real);
-  chmodSync(real, 0o755);
-  symlinkSync(real, join(installDir, 'board'));
+  const other = join(root, 'board-other');
+  copyFileSync(binary, other);
+  chmodSync(other, 0o755);
+  symlinkSync(other, join(installDir, 'board'));
   const result = await board(['setup', '--print'], empty, { BOARD_INSTALL_DIR: installDir });
   assert.equal(result.code, 0, result.stderr);
-  assert.ok(result.stdout.includes(` ${real} internal dispatch\n`), result.stdout);
+  assert.ok(result.stdout.includes(` ${binary} internal dispatch\n`), result.stdout);
+  assert.ok(!result.stdout.includes(other), 'the units must not run another binary');
+});
+await check('setup refuses a binary in the temp directory without --force', async () => {
+  const refused = await board(['setup'], empty);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /in the temp directory/);
+  const forced = await board(['setup', '--force'], empty);
+  assert.equal(forced.code, 0, forced.stderr);
+  assert.match(
+    readFileSync(join(root, 'xdg', 'systemd', 'user', 'agent-board-dispatch.service'), 'utf8'),
+    new RegExp(`${binary} internal dispatch`),
+  );
+});
+await check('a closed pipe keeps the exit code: doctor | head is 1, help | head is 0, nothing on stderr', async () => {
+  const through = (args: string): Promise<string> =>
+    new Promise((resolve) => {
+      execFile(
+        'bash',
+        ['-c', `"$BOARD" ${args} 2>"$ERR" | head -c0; echo "\${PIPESTATUS[0]}:$(cat "$ERR")"`],
+        {
+          env: { PATH: path, HOME: root, AGENT_BOARD_CONFIG_DIR: empty, BOARD: binary, ERR: join(root, 'pipe-stderr') },
+        },
+        (_error, stdout) => resolve(stdout.trim()),
+      );
+    });
+  assert.equal(await through('doctor'), '1:');
+  assert.equal(await through('help'), '0:');
+});
+await check('a loopback board is never sent through HTTP_PROXY', async () => {
+  const proxied: string[] = [];
+  const proxy = createServer((request, response) => {
+    proxied.push(`${request.method} ${request.url} ${request.headers.authorization ?? ''}`);
+    response.writeHead(502).end();
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  try {
+    const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+    const result = await board(['tasks'], config(), {
+      HTTP_PROXY: proxyUrl,
+      http_proxy: proxyUrl,
+      ALL_PROXY: proxyUrl,
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Fix the thing/);
+    assert.deepEqual(proxied, []);
+  } finally {
+    proxy.close();
+  }
+});
+await check('a tick that waits while the binary is replaced still plans a worker with the real path', async () => {
+  // Bun reads process.execPath lazily, and after the rename it would say "<path> (deleted)".
+  listDelayMs = 1500;
+  try {
+    const running = new Promise<Result>((resolve) => {
+      const child = execFile(
+        binary,
+        ['internal', 'dispatch', '--dry-run'],
+        {
+          cwd: root,
+          env: { PATH: path, HOME: root, AGENT_BOARD_CONFIG_DIR: config({ config: true }), XDG_RUNTIME_DIR: root },
+          timeout: 30_000,
+        },
+        (error, stdout, stderr) =>
+          resolve({ code: error === null ? 0 : typeof error.code === 'number' ? error.code : -1, stdout, stderr }),
+      );
+      child.stdin?.end();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const replacement = `${binary}.new`;
+    copyFileSync(binary, replacement);
+    chmodSync(replacement, 0o755);
+    renameSync(replacement, binary);
+    const result = await running;
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(!result.stdout.includes('(deleted)'), result.stdout);
+    assert.match(result.stdout, new RegExp(`-- ${binary} internal worker Ab3dEf9x`));
+  } finally {
+    listDelayMs = 0;
+  }
 });
 await check('init reads the token from a pipe (--token-file /dev/stdin) and writes env with mode 600', async () => {
   const dir = join(root, 'init-cfg');

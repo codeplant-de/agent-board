@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { installedCommand, isCompiledBinary } from './self.mts';
+import { EXEC_PATH, isCompiledBinary, selfCommand } from './self.mts';
 import { SystemError } from './system.mts';
 
 const exec = promisify(execFile);
@@ -146,8 +146,23 @@ export interface SetupDeps {
 }
 
 // The checkout that runs setup against the one `~/.local/bin/board` resolves to: a worktree or scratch copy must not take over the live timers.
-export function treeProblem(env: Record<string, string | undefined>): string | undefined {
-  if (isCompiledBinary()) return undefined;
+export function treeProblem(
+  env: Record<string, string | undefined>,
+  running: { compiled: boolean; execPath: string } = { compiled: isCompiledBinary(), execPath: EXEC_PATH },
+): string | undefined {
+  if (running.compiled) {
+    // A binary run from the temp directory (a download being tried out) must not become what the timers run.
+    const tmp = realpathSync(tmpdir());
+    let real = running.execPath;
+    try {
+      real = realpathSync(running.execPath);
+    } catch {
+      // A binary that was replaced under us keeps the path it had.
+    }
+    return real.startsWith(`${tmp}${sep}`)
+      ? `this board runs from ${real}, in the temp directory; install it (scripts/install.sh) and run board setup from there`
+      : undefined;
+  }
   const installed = join(env['BOARD_INSTALL_DIR'] || join(homedir(), '.local', 'bin'), 'board');
   if (!existsSync(installed)) return undefined;
   const installedTree = dirname(dirname(realpathSync(installed)));
@@ -170,7 +185,7 @@ export function realSetupDeps(env: Record<string, string | undefined>, print: (l
     unitDir: unitDirectory(env),
     platform: process.platform,
     which: (program) => whichOnPath(program, env['PATH']),
-    command: (name) => installedCommand(env, 'internal', name),
+    command: (name) => selfCommand('internal', name),
     treeProblem: () => treeProblem(env),
     run: async (program, args) => {
       try {

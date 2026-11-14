@@ -92,3 +92,16 @@ export async function readStdin(): Promise<string> {
   for await (const chunk of process.stdin) content += String(chunk);
   return content;
 }
+
+// The binary honours HTTP_PROXY and Node can (NODE_USE_ENV_PROXY): a board on this machine must never be sent through one,
+// or the token reaches the proxy in clear. Both runtimes read NO_PROXY, so loopback goes on it before the first request.
+export function keepLoopbackOffProxy(env: Record<string, string | undefined>): void {
+  const loopback = ['localhost', '127.0.0.1', '[::1]', '::1'];
+  for (const name of ['NO_PROXY', 'no_proxy']) {
+    const current = (env[name] ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== '');
+    env[name] = [...current, ...loopback.filter((entry) => !current.includes(entry))].join(',');
+  }
+}

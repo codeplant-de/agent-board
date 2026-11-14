@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, mkdtempSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { chmodSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { isRecord } from '@agent-board/shared';
@@ -8,6 +8,8 @@ import { SystemError } from './system.mts';
 
 export const RELEASE_REPO = 'codeplant-de/agent-board';
 const TAG_PREFIX = 'cli-v';
+// Releases are x.y.z only: a pre-release tag would rank above its release by number alone.
+const RELEASE_TAG = /^cli-v\d+\.\d+\.\d+$/;
 
 export interface SelfUpdateDeps {
   // Whether this is a released binary; a checkout is updated with git.
@@ -26,12 +28,12 @@ export interface SelfUpdateFlags {
   check?: boolean;
 }
 
+const RELEASED_ASSETS = ['board-linux-x64', 'board-linux-arm64', 'board-darwin-arm64'];
+
 export function assetName(platform: string, arch: string): string {
-  const os = platform === 'linux' || platform === 'darwin' ? platform : undefined;
-  const cpu = arch === 'x64' || arch === 'arm64' ? arch : undefined;
-  if (os === undefined || cpu === undefined)
-    throw new SystemError(`there is no released binary for ${platform}-${arch}`);
-  return `board-${os}-${cpu}`;
+  const name = `board-${platform}-${arch}`;
+  if (!RELEASED_ASSETS.includes(name)) throw new SystemError(`there is no released binary for ${platform}-${arch}`);
+  return name;
 }
 
 function versionParts(version: string): number[] {
@@ -61,7 +63,7 @@ export function newestRelease(listing: string): { tag: string; version: string }
     .flatMap((item: unknown) =>
       isRecord(item) &&
       typeof item['tagName'] === 'string' &&
-      item['tagName'].startsWith(TAG_PREFIX) &&
+      RELEASE_TAG.test(item['tagName']) &&
       item['isDraft'] !== true &&
       item['isPrerelease'] !== true
         ? [{ tag: item['tagName'], version: item['tagName'].slice(TAG_PREFIX.length) }]
@@ -145,9 +147,10 @@ export async function selfUpdate(deps: SelfUpdateDeps, flags: SelfUpdateFlags): 
     if (actual !== expected)
       throw new SystemError(`the downloaded ${asset} does not match SHA256SUMS; nothing was replaced`);
     // Written beside the running binary, so the rename stays on one file system; a running process keeps its old file.
-    const staged = join(dirname(deps.execPath), `.board-update-${process.pid}`);
+    // An unpredictable name, created exclusively, so nobody who can write that directory can plant it first.
+    const staged = join(dirname(deps.execPath), `.board-update-${randomBytes(8).toString('hex')}`);
     try {
-      copyFileSync(join(dir, asset), staged);
+      writeFileSync(staged, readFileSync(join(dir, asset)), { mode: 0o755, flag: 'wx' });
       chmodSync(staged, 0o755);
       renameSync(staged, deps.execPath);
     } catch (error) {

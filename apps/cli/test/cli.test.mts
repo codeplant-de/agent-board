@@ -247,6 +247,6 @@ test('board schedules changes are refused inside a board run, listing is not', a
 test('a note file needs Linux: elsewhere the command says how to give the text instead', () => {
   assert.throws(
     () => readNoteFile('/tmp/x', 'darwin'),
-    /needs Linux; on darwin give the text as arguments, or - to read it from stdin/,
+    /needs Linux: on darwin "board ask" and "board add" are not available, and "board comment" takes its text as arguments, or - to read it from stdin/,
   );
 });

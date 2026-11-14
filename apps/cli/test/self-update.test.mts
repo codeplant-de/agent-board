@@ -43,6 +43,8 @@ test('versions compare numerically, and the newest published cli release wins', 
     { tagName: 'cli-v0.10.0', isDraft: false, isPrerelease: false },
     { tagName: 'cli-v0.11.0', isDraft: true, isPrerelease: false },
     { tagName: 'cli-v0.12.0-rc1', isDraft: false, isPrerelease: true },
+    { tagName: 'cli-v0.13.0-rc.1', isDraft: false, isPrerelease: false },
+    { tagName: 'cli-v1.0', isDraft: false, isPrerelease: false },
     { tagName: 'server-v9.0.0', isDraft: false, isPrerelease: false },
   ]);
   assert.deepEqual(newestRelease(listing), { tag: 'cli-v0.10.0', version: '0.10.0' });
@@ -51,6 +53,7 @@ test('versions compare numerically, and the newest published cli release wins', 
   assert.equal(assetName('linux', 'arm64'), 'board-linux-arm64');
   assert.equal(assetName('darwin', 'arm64'), 'board-darwin-arm64');
   assert.throws(() => assetName('win32', 'x64'), /no released binary/);
+  assert.throws(() => assetName('darwin', 'x64'), /no released binary for darwin-x64/);
   assert.equal(
     checksumOf(`${'a'.repeat(64)}  board-linux-x64\n${'b'.repeat(64)} *board-darwin-arm64\n`, 'board-darwin-arm64'),
     'b'.repeat(64),
@@ -132,4 +135,20 @@ test('board self-update is refused inside a run, and in a checkout says to pull'
     /not available inside a board run/,
   );
   await assert.rejects(runBoard(['self-update', '--check'], { env: {} }), /git pull/);
+});
+
+test('the staging file beside the binary has an unpredictable name and is gone afterwards', async () => {
+  const { deps, dir, clean } = fixture([
+    { tag: 'cli-v0.3.0', assets: { [ASSET]: 'v3' } },
+    { tag: 'cli-v0.4.0', assets: { [ASSET]: 'the new binary' } },
+  ]);
+  try {
+    // A planted file of the old predictable name must not matter.
+    writeFileSync(join(dir, `.board-update-${process.pid}`), 'planted');
+    await selfUpdate(deps, {});
+    assert.deepEqual(readdirSync(dir).sort(), ['.board-update-' + process.pid, 'board']);
+    assert.equal(readFileSync(join(dir, `.board-update-${process.pid}`), 'utf8'), 'planted');
+  } finally {
+    clean();
+  }
 });

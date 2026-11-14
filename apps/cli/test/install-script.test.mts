@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import {
+  mkdirSync,
+  writeFileSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -13,7 +22,13 @@ const asset = `board-${process.platform === 'darwin' ? 'darwin' : 'linux'}-${pro
 
 function install(
   releases: FakeRelease[],
-  options: { loggedOut?: boolean; withoutGh?: boolean; onPath?: boolean } = {},
+  options: {
+    loggedOut?: boolean;
+    withoutGh?: boolean;
+    onPath?: boolean;
+    uname?: [string, string];
+    script?: string;
+  } = {},
 ) {
   const gh = fakeGh(releases);
   const dir = mkdtempSync(join(tmpdir(), 'board-install-test-'));
@@ -45,9 +60,20 @@ function install(
     }
     path = tools;
   }
+  if (options.uname) {
+    // A machine of another kind: `uname -s` and `uname -m` answer what the test says.
+    const fake = join(dir, 'fake-uname');
+    mkdirSync(fake);
+    writeFileSync(
+      join(fake, 'uname'),
+      `#!/bin/sh\ncase "$1" in -s) echo ${options.uname[0]} ;; -m) echo ${options.uname[1]} ;; esac\n`,
+      { mode: 0o755 },
+    );
+    path = `${fake}:${path}`;
+  }
   if (options.onPath) path = `${installDir}:${path}`;
   if (options.loggedOut) gh.loggedOut();
-  const result = spawnSync('/bin/sh', [script], {
+  const result = spawnSync('/bin/sh', [options.script ?? script], {
     encoding: 'utf8',
     env: { PATH: path, HOME: dir, BOARD_INSTALL_DIR: installDir, FAKE_GH: gh.dir, FAKE_GH_JQ: 'tags' },
   });
@@ -105,7 +131,7 @@ test('a missing entry in SHA256SUMS, no release, a missing gh and a gh that is n
   const loggedOut = install([{ tag: 'cli-v0.3.0', assets: { [asset]: 'x' } }], { loggedOut: true });
   try {
     assert.match(unlisted.result.stderr, /does not list/);
-    assert.match(none.result.stderr, /no cli-v\* release/);
+    assert.match(none.result.stderr, /no cli-v<x>\.<y>\.<z> release/);
     assert.match(noGh.result.stderr, /gh is not installed/);
     assert.match(loggedOut.result.stderr, /gh is not logged in/);
     for (const { result } of [unlisted, none, noGh, loggedOut]) assert.equal(result.status, 1);
@@ -120,4 +146,41 @@ test('the scripts pass shellcheck when it is installed', (context) => {
   const root = fileURLToPath(new URL('../../../', import.meta.url));
   const result = spawnSync('shellcheck', ['scripts/install.sh', 'apps/cli/build.sh'], { cwd: root, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stdout);
+});
+
+test('a pre-release tag is ignored even when it ranks higher, and an Intel Mac is refused before any download', () => {
+  const rc = install([
+    { tag: 'cli-v0.3.0', assets: { [asset]: 'stable' } },
+    { tag: 'cli-v0.4.0-rc.1', assets: { [asset]: 'candidate' } },
+  ]);
+  const intel = install([{ tag: 'cli-v0.3.0', assets: { 'board-darwin-x64': 'x' } }], { uname: ['Darwin', 'x86_64'] });
+  try {
+    assert.equal(rc.result.status, 0, rc.result.stderr);
+    assert.equal(readFileSync(join(rc.installDir, 'board'), 'utf8'), 'stable');
+    assert.equal(intel.result.status, 1);
+    assert.match(intel.result.stderr, /no release binary for darwin-x64/);
+    assert.throws(() => readdirSync(intel.installDir));
+  } finally {
+    rc.clean();
+    intel.clean();
+  }
+});
+
+test('a download cut short runs nothing: the whole body is inside main', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-install-cut-'));
+  try {
+    const whole = readFileSync(script, 'utf8');
+    const cut = join(dir, 'cut.sh');
+    writeFileSync(cut, whole.slice(0, Math.floor(whole.length * 0.7)));
+    const truncated = install([{ tag: 'cli-v0.3.0', assets: { [asset]: 'x' } }], { script: cut });
+    try {
+      assert.notEqual(truncated.result.status, 0);
+      assert.equal(truncated.result.stdout, '');
+      assert.throws(() => readdirSync(truncated.installDir), 'nothing was installed');
+    } finally {
+      truncated.clean();
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });
