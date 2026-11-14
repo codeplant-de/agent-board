@@ -15,7 +15,7 @@ import {
 } from './board.mts';
 import type { AddFlags, DelayFlags } from './board.mts';
 import { buildContext, readStdin, UsageError } from './cli.mts';
-import type { Context } from './cli.mts';
+import type { Context, ContextOptions } from './cli.mts';
 import { dispatchMain } from './dispatch.mts';
 import { runHook } from './hook.mts';
 import { intakeMain } from './intake.mts';
@@ -27,7 +27,7 @@ import { workerMain } from './worker.mts';
 export interface ProgramOptions {
   env?: Record<string, string | undefined>;
   // The context of a command; tests hand over a fake backend.
-  context?: (dryRun: boolean) => Context;
+  context?: (dryRun: boolean, options: ContextOptions) => Context;
   readStdin?: () => Promise<string>;
   writeOut?: (text: string) => void;
   writeErr?: (text: string) => void;
@@ -61,7 +61,7 @@ function examples(...lines: string[]): string {
 export function buildProgram(options: ProgramOptions = {}): Command {
   const env = options.env ?? process.env;
   const stdin = options.readStdin ?? readStdin;
-  const makeContext = options.context ?? ((dryRun: boolean) => buildContext(dryRun, { optionalConfig: true }));
+  const makeContext = options.context ?? buildContext;
   const writeOut = options.writeOut ?? ((text: string) => void process.stdout.write(text));
   const writeErr = options.writeErr ?? ((text: string) => void process.stderr.write(text));
 
@@ -82,10 +82,15 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     )
     .addHelpText('after', '\nRun "board help <command>" for the details and examples of one command.\n');
 
-  const contextOf = (command: Command): Context => {
+  // `strictConfig`: the command binds work to this machine's name, which needs a config.json to mean anything.
+  const contextOf = (command: Command, { strictConfig = false } = {}): Context => {
     const dryRun =
       program.opts<{ dryRun?: boolean }>().dryRun === true || command.opts<{ dryRun?: boolean }>().dryRun === true;
-    return makeContext(dryRun);
+    return makeContext(dryRun, { optionalConfig: !strictConfig });
+  };
+  // On the old parser a trailing --dry-run meant a dry run; doing the real thing silently would be the wrong direction.
+  const refuseTrailingDryRun = (words: string[], usage: string): void => {
+    if (words.at(-1) === '--dry-run') throw new UsageError(`--dry-run goes before the text: ${usage}`);
   };
   // A run's agent works on untrusted text; a task it schedules would run with the user's full permissions.
   const notInRun = (message: string): void => {
@@ -151,6 +156,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         ),
       ),
   ).action(async (task: string, words: string[], _options, command: Command) => {
+    refuseTrailingDryRun(words, 'board comment --dry-run <task> <text...>');
     const text = await textOf(words, { allowFile: true });
     await contextOf(command).backend.addNote(task, text);
   });
@@ -186,6 +192,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       .passThroughOptions()
       .addHelpText('after', examples('board notify Ab3dEf9x "needs your decision"')),
   ).action(async (task: string, words: string[], _options, command: Command) => {
+    refuseTrailingDryRun(words, 'board notify --dry-run <task> <text...>');
     const text = await textOf(words, { allowFile: false });
     await notify(contextOf(command), task, text);
   });
@@ -219,7 +226,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       .option('--parent <task>', 'the task this follows from')
       .option('--priority <priority>', 'urgent, high, normal or low (default normal)')
       .addHelpText('after', examples('board add --title "Fix the flaky test" --file /tmp/prompt.md --parent Ab3dEf9x')),
-  ).action((flags: AddFlags, command: Command) => add(contextOf(command), flags));
+  ).action((flags: AddFlags, command: Command) => add(contextOf(command, { strictConfig: true }), flags));
 
   const schedule = program
     .command('schedule')
@@ -253,7 +260,8 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     )
     .action(async (words: string[], flags: ScheduleFlags, command: Command) => {
       notInRun('board schedule is not available inside a board run; use `board add` to propose follow-up work');
-      await scheduleCommand(contextOf(command), flags, words);
+      refuseTrailingDryRun(words, 'board schedule --dry-run <prompt...>');
+      await scheduleCommand(contextOf(command, { strictConfig: true }), flags, words);
     });
 
   dryRunOption(
@@ -328,7 +336,12 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .argument('[args...]')
     .allowUnknownOption()
     .passThroughOptions()
-    .action((args: string[]) => runHook(args));
+    .action((args: string[]) => {
+      // `Bash(board *)` reaches this: a run may only touch its own task's files.
+      const run = env['AGENT_BOARD_TASK'];
+      if (run && args[1] !== run) return;
+      return runHook(args);
+    });
 
   program.commandsGroup(SETUP).helpCommand('help [command]', 'show the help of a command');
   return program;
@@ -365,6 +378,7 @@ function asUsageError(program: Command, args: string[], error: unknown): unknown
   const command = findCommand(program, args);
   if (error instanceof CommanderError) {
     if (error.exitCode === 0) return undefined;
+    if (error.code === 'commander.help') return new UsageError('a command is required', usageDetails(command));
     const details = usageDetails(command);
     if (error.code === 'commander.unknownOption' && command.name() === 'schedule')
       details.unshift('To start the prompt with dashes, put -- before it: board schedule -- --weird prompt');
@@ -375,10 +389,18 @@ function asUsageError(program: Command, args: string[], error: unknown): unknown
   return error;
 }
 
+// A bare `board` shows the overview, and `board help nosuch` is an unknown command like `board nosuch`.
+function commandLine(program: Command, argv: string[]): string[] {
+  if (argv.every((arg) => arg === '--dry-run')) return [...argv, 'help'];
+  const [first, topic] = argv;
+  const known = (name: string): boolean => program.commands.some((command) => command.name() === name);
+  return first === 'help' && topic !== undefined && !known(topic) ? [topic] : argv;
+}
+
 // Runs the command line; throws what `runMain` reports. Help and version output end normally.
 export async function runBoard(argv: string[], options: ProgramOptions = {}): Promise<void> {
   const program = buildProgram(options);
-  const args = argv.length === 0 ? ['help'] : argv;
+  const args = commandLine(program, argv);
   try {
     await program.parseAsync(args, { from: 'user' });
   } catch (error) {

@@ -173,14 +173,47 @@ test('tasks, show, comment and move need no config file', async () => {
     await runBoard(argv, { env: {}, context });
 });
 
-test('internal commands are refused inside a run', async () => {
-  const env = { AGENT_BOARD_TASK: ID };
-  for (const argv of [
-    ['internal', 'dispatch'],
-    ['internal', 'intake'],
-    ['internal', 'worker', ID],
-  ])
-    await assert.rejects(runBoard(argv, { env }), /not available inside a board run/, argv.join(' '));
+test('a trailing --dry-run in the text is a usage error; one in the middle is text', async () => {
+  const { backend, go } = setup();
+  await assert.rejects(
+    go(['comment', ID, 'done', '--dry-run']),
+    /--dry-run goes before the text: board comment --dry-run/,
+  );
+  await assert.rejects(go(['notify', ID, 'done', '--dry-run']), /board notify --dry-run <task> <text...>/);
+  await assert.rejects(
+    go(['schedule', '/review-pr', '17', '--dry-run']),
+    /--dry-run goes before the text: board schedule --dry-run <prompt...>/,
+  );
+  assert.deepEqual(backend.writes, []);
+  await go(['comment', ID, 'a', '--dry-run', 'b']);
+  assert.deepEqual(backend.writes, [`note ${ID}: a --dry-run b`]);
+});
+
+test('schedule and add need a config.json; the other commands fall back to the defaults', async () => {
+  const seen: boolean[] = [];
+  const backend = fakeBackend([task({ id: ID })]);
+  const dir = mkdtempSync('/tmp/board-commands-test-');
+  try {
+    writeFileSync(join(dir, 'p.md'), 'follow up');
+    const context = (_dryRun: boolean, { optionalConfig = false } = {}): Context => {
+      seen.push(optionalConfig);
+      return { config: CONFIG, backend, dryRun: false, print: () => undefined };
+    };
+    await runBoard(['tasks'], { env: {}, context });
+    await runBoard(['schedule', '--new', 'x'], { env: {}, context });
+    await runBoard(['add', '--title', 't', '--file', join(dir, 'p.md')], { env: {}, context });
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+  assert.deepEqual(seen, [true, false, false]);
+});
+
+test('help for an unknown command and a bare --dry-run are plain', async () => {
+  const { out, err, go } = setup();
+  await assert.rejects(go(['help', 'nosuch']), /unknown command 'nosuch'/);
+  await go(['--dry-run']);
+  assert.match(out.join(''), /^Usage: board/);
+  assert.deepEqual(err, []);
 });
 
 // The invocations agents use today: the run rules and the hook's messages in the source, and the selftest skills.
@@ -240,13 +273,19 @@ test('every board command in the run rules, the hook messages and the selftest s
     for (const command of commands) {
       const { backend, go } = setup();
       const argv = words(command, { questions, prompt });
+      const inRun = { env: { AGENT_BOARD_TASK: ID } };
       verbs.add(argv[0] ?? '');
-      await go(argv).catch((error: unknown) => {
+      await go(argv, inRun).catch((error: unknown) => {
         throw new Error(`"${command}" does not parse: ${error instanceof Error ? error.message : String(error)}`);
       });
       const action = backend.writes[0] ?? '';
       const expected: Record<string, RegExp> = {
-        comment: /^note Zt0Test1: /,
+        comment: new RegExp(
+          `^note ${ID}: ${argv
+            .slice(2)
+            .join(' ')
+            .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+        ),
         move: /^status Zt0Test1 -> needs-me$/,
         ask: /^ask Zt0Test1: Color$/,
         add: /^create .* \| do the thing \| $/,

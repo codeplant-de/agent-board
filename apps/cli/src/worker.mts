@@ -353,6 +353,10 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+export function hookCommand(runDir: string, id: string): string {
+  return `${selfCommand('internal', 'hook').map(shellQuote).join(' ')} ${shellQuote(runDir)} ${id}`;
+}
+
 export async function workerMain(taskId: string): Promise<void> {
   if (!isSafeTaskId(taskId)) throw new UsageError(`"${taskId.slice(0, 40)}" is not a task id`);
   const context = buildContext(false);
@@ -371,8 +375,7 @@ export async function workerMain(taskId: string): Promise<void> {
     home: homedir(),
     newSessionId: randomUUID,
     files: createRunFiles(),
-    hookCommand: (runDir, id) =>
-      `${selfCommand('internal', 'hook').map(shellQuote).join(' ')} ${shellQuote(runDir)} ${id}`,
+    hookCommand,
     now: () => new Date(),
     watchEveryMs: 15_000,
   };

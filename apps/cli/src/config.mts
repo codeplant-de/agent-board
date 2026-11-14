@@ -192,8 +192,9 @@ export function loadConfig(path: string, options: { optionalConfig?: boolean } =
   try {
     content = readFileSync(path, 'utf8');
   } catch (error) {
-    if (options.optionalConfig && error instanceof Error && 'code' in error && error.code === 'ENOENT')
-      return parseConfig({});
+    const missing = error instanceof Error && 'code' in error && error.code === 'ENOENT';
+    if (!missing) throw new ConfigError(`cannot read the config file ${path}`);
+    if (options.optionalConfig) return parseConfig({});
     throw new ConfigError(`config file missing: ${path} (run "board init")`);
   }
   try {
