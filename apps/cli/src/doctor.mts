@@ -316,7 +316,7 @@ function checkCommand(deps: DoctorDeps, service: string): CheckResult[] {
   ];
 }
 
-const TOOLS = ['claude', 'gh', 'flock', 'systemd-run', 'systemctl'];
+const TOOLS = ['claude', 'gh', 'flock', 'timeout', 'systemd-run', 'systemctl'];
 
 function installedUnits(deps: DoctorDeps): string[] {
   return [

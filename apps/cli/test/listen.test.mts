@@ -3,7 +3,14 @@ import { test } from 'node:test';
 import { CONTRACT_VERSION } from '@agent-board/shared';
 import { verifyContract } from '../src/backend.mts';
 import type { Fetch } from '../src/backend.mts';
-import { backoffMs, createSseParser, createTicker, LISTENER_OPTIONS, runListener } from '../src/listen.mts';
+import {
+  backoffMs,
+  createSseParser,
+  createTicker,
+  LISTENER_OPTIONS,
+  runListener,
+  tickCommand,
+} from '../src/listen.mts';
 import type { SseEvent, Timers } from '../src/listen.mts';
 
 // A clock that only moves when the test says so.
@@ -353,4 +360,60 @@ test('SIGTERM stops the reconnecting and the pending tick, and exits 0', async (
   assert.equal(await done, 0);
   await clock.advance(10_000);
   assert.deepEqual(ticks, [0], 'the debounced tick never ran');
+});
+
+test("a tick runs the dispatch command under the unit's lock and its time limit", () => {
+  const dispatch = ['/opt/node/bin/node', '/opt/board/main.mts', 'internal', 'dispatch'];
+  assert.deepEqual(tickCommand({ XDG_RUNTIME_DIR: '/run/user/1000' }, dispatch), [
+    'timeout',
+    '-k',
+    '10',
+    '110',
+    'flock',
+    '-n',
+    '-E',
+    '75',
+    '/run/user/1000/agent-board-dispatch.lock',
+    ...dispatch,
+  ]);
+  assert.equal(tickCommand({}, dispatch)[8], '/tmp/agent-board-dispatch.lock');
+});
+
+test('a tick that timeout stopped is logged as a failure and not retried like a held lock', async () => {
+  const { clock, log, started, release, t } = ticker([124, 137]);
+  t.now();
+  await clock.advance(0);
+  release[0]?.();
+  await clock.advance(10_000);
+  assert.equal(started.length, 1);
+  assert.match(log.join('\n'), /tick: stopped after 110 s \(exit 124\)/);
+});
+
+test('SIGTERM waits for the running tick before the listener exits', async () => {
+  const stream = openStream();
+  const clock = new FakeClock();
+  const stop = new AbortController();
+  let finish: () => void = () => undefined;
+  const done = runListener({
+    timers: clock,
+    random: () => 1,
+    log: () => undefined,
+    signal: stop.signal,
+    verify: async () => ({ url: 'https://board.example', token: 'abm_x' }),
+    fetch: async () => stream.response,
+    runTick: () =>
+      new Promise<number>((resolve) => {
+        finish = () => resolve(0);
+      }),
+  });
+  let exited = false;
+  void done.then(() => {
+    exited = true;
+  });
+  await clock.advance(0);
+  stop.abort();
+  await clock.advance(5000);
+  assert.equal(exited, false, 'the tick is still running');
+  finish();
+  assert.equal(await done, 0);
 });

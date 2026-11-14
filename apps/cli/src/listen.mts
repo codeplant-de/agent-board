@@ -26,6 +26,12 @@ export const realTimers: Timers = {
 
 // Exit code of `flock -E 75`: the timer's tick holds the lock.
 const LOCKED = 75;
+// What `timeout` answers when it stopped the tick, with TERM and, after the grace period, with KILL.
+const TIMED_OUT = 124;
+const KILLED = 137;
+// The dispatch unit's TimeoutStartSec is 110 s: a tick that hangs must not hold the lock for the timer's ticks either.
+const TICK_LIMIT_S = 110;
+const TICK_GRACE_S = 10;
 
 export interface SseEvent {
   event: string;
@@ -78,7 +84,8 @@ export interface Ticker {
   now: () => void;
   // A tick after the debounce (after an event); events inside the window share it.
   soon: () => void;
-  stop: () => void;
+  // Starts no more ticks; resolves when the one that is running has finished.
+  stop: () => Promise<void>;
 }
 
 // Ticks never overlap: what arrives during one is a single dirty flag, and one more tick follows.
@@ -87,6 +94,7 @@ export function createTicker({ run, timers, log, debounceMs, retryMs }: TickerOp
   let running = false;
   let dirty = false;
   let stopped = false;
+  let current: Promise<void> | undefined;
 
   const clearPending = (): void => {
     cancelPending?.();
@@ -96,9 +104,13 @@ export function createTicker({ run, timers, log, debounceMs, retryMs }: TickerOp
     clearPending();
     cancelPending = timers.after(ms, () => {
       cancelPending = undefined;
-      void tick();
+      void start();
     });
   };
+  function start(): Promise<void> {
+    current = tick();
+    return current;
+  }
   async function tick(): Promise<void> {
     if (stopped) return;
     running = true;
@@ -116,15 +128,17 @@ export function createTicker({ run, timers, log, debounceMs, retryMs }: TickerOp
       schedule(retryMs);
       return;
     }
-    if (code !== undefined) log(`tick: exit ${code} after ${((timers.now() - started) / 1000).toFixed(1)} s`);
-    if (dirty) void tick();
+    if (code === TIMED_OUT || code === KILLED)
+      log(`tick: stopped after ${TICK_LIMIT_S} s (exit ${code}), the dispatch hung; the next one starts clean`);
+    else if (code !== undefined) log(`tick: exit ${code} after ${((timers.now() - started) / 1000).toFixed(1)} s`);
+    if (dirty) void start();
   }
   return {
     now() {
       if (running) dirty = true;
       else {
         clearPending();
-        void tick();
+        void start();
       }
     },
     soon() {
@@ -134,6 +148,7 @@ export function createTicker({ run, timers, log, debounceMs, retryMs }: TickerOp
     stop() {
       stopped = true;
       clearPending();
+      return current ?? Promise.resolve();
     },
   };
 }
@@ -291,23 +306,32 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
       await sleep(delay, timers, signal);
     }
   } finally {
-    ticker.stop();
+    // A tick between claiming a task and starting its worker must not be cut off: systemd kills what is left once this exits.
+    await ticker.stop();
   }
   log('stopped');
   return 0;
 }
 
-// One dispatch tick as the timer's unit runs it, under the same lock; a separate process, so the dispatch code is the code on disk.
-function spawnTick(env: Record<string, string | undefined>): Promise<number> {
+// One dispatch tick as the timer's unit runs it, under the same lock and with a time limit; a separate process, so the dispatch code is the code on disk.
+export function tickCommand(env: Record<string, string | undefined>, dispatch: string[]): string[] {
   const lock = `${env['XDG_RUNTIME_DIR'] || '/tmp'}/agent-board-dispatch.lock`;
-  const [program = 'flock', ...args] = [
+  return [
+    'timeout',
+    '-k',
+    String(TICK_GRACE_S),
+    String(TICK_LIMIT_S),
     'flock',
     '-n',
     '-E',
     String(LOCKED),
     lock,
-    ...selfCommand('internal', 'dispatch'),
+    ...dispatch,
   ];
+}
+
+function spawnTick(env: Record<string, string | undefined>): Promise<number> {
+  const [program = 'timeout', ...args] = tickCommand(env, selfCommand('internal', 'dispatch'));
   return new Promise((resolve, reject) => {
     const child = spawn(program, args, { stdio: 'inherit' });
     child.once('error', reject);
