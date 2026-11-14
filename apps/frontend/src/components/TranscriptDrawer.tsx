@@ -1,4 +1,4 @@
-import { toolSummary } from '@agent-board/shared';
+import { toolSummary, type TranscriptEventView } from '@agent-board/shared';
 import {
   Alert,
   Badge,
@@ -27,10 +27,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ago, stamp } from '../lib/time';
 import { loadEventsAfter } from '../lib/transcript';
-import { useTRPC, useTRPCClient, type RouterOutputs } from '../lib/trpc';
+import { useTRPC, useTRPCClient } from '../lib/trpc';
 import { Markdown } from './Markdown';
 
-type Event = RouterOutputs['transcript']['events'][number];
+type Event = TranscriptEventView;
 type ToolUse = Extract<Event, { kind: 'tool_use' }>;
 type ToolResult = Extract<Event, { kind: 'tool_result' }>;
 
@@ -226,7 +226,7 @@ export function TranscriptDrawer({
   const events = useQuery({
     queryKey: eventsKey,
     queryFn: () =>
-      loadEventsAfter(queryClient.getQueryData(eventsKey) ?? [], (afterSeq) =>
+      loadEventsAfter(queryClient.getQueryData<Event[]>(eventsKey) ?? [], (afterSeq) =>
         client.transcript.events.query({ runId: selected ?? '', afterSeq }),
       ),
     structuralSharing: false,

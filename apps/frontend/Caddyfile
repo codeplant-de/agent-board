@@ -4,6 +4,15 @@
 :80 {
 	encode gzip zstd
 
+	# The app is a static SPA with no inline scripts. 'wasm-unsafe-eval' is for Argon2 (WebAssembly, compiled from bytes in
+	# the bundle); 'unsafe-inline' for styles is Mantine's <style> tags for its theme variables. Images from other origins
+	# are refused on purpose: a markdown image in an agent's note would otherwise send a request to a stranger's server.
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+	}
+
 	handle /trpc* {
 		reverse_proxy backend:4000
 	}

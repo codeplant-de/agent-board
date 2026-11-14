@@ -1,4 +1,8 @@
+import { webcrypto } from 'node:crypto';
 import '@testing-library/jest-dom/vitest';
+
+// The board's encryption runs on Web Crypto, which jsdom lacks.
+if (!globalThis.crypto?.subtle) Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
 
 // jsdom lacks these; Mantine components query them on mount.
 window.matchMedia ??= (query: string) =>
