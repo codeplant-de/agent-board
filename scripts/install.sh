@@ -73,7 +73,7 @@ main() {
 
 Next:
   board init               write web.json, the token and config.json
-  board setup --enable     on a worker machine: install and start the timers (Linux)
+  board setup --enable     on a worker machine: install and start the timers and the listener (Linux)
   board doctor             check everything
 NEXT
 }

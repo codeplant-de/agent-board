@@ -20,10 +20,11 @@ import {
   serializeSchedule,
   serializeWireNote,
 } from '@agent-board/shared';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Config } from './config';
 import type { Db, DbOrTx } from './db/client';
 import { withOwner } from './db/scope';
+import type { Changes } from './services/changes';
 import { AppError } from './services/errors';
 import { getKeys } from './services/keys';
 import { machineForToken } from './services/machines';
@@ -175,17 +176,92 @@ export async function handleMachineCall(
   }
 }
 
-export function registerMachineApi(app: FastifyInstance, db: Db, config: Config): void {
+/** The commands that change what dispatch decides; heartbeats and transcripts arrive every 15 s per running task and do not. */
+const DISPATCH_WRITES = new Set([
+  'add-task',
+  'update-task',
+  'claim-task',
+  'add-note',
+  'ask',
+  'pause',
+  'fail',
+  'add-schedule',
+  'update-schedule',
+  'remove-schedule',
+]);
+
+export interface MachineApiOptions {
+  /** How often an open event stream gets a ping and has its token checked again. */
+  pingMs: number;
+}
+
+function bearerToken(req: FastifyRequest): string {
+  const header = req.headers.authorization ?? '';
+  return header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : '';
+}
+
+async function authenticate(db: Db, req: FastifyRequest): Promise<{ identity: MachineIdentity; token: string }> {
+  const token = bearerToken(req);
+  const identity = token ? await machineForToken(db, token) : null;
+  if (!identity) throw new AppError('UNAUTHORIZED', 'unknown or revoked machine token');
+  return { identity, token };
+}
+
+export function registerMachineApi(
+  app: FastifyInstance,
+  db: Db,
+  config: Config,
+  changes: Changes,
+  { pingMs }: MachineApiOptions,
+): void {
+  const streams = new Set<() => void>();
+  // The server waits for open connections to end before it closes; these never would.
+  app.addHook('preClose', async () => {
+    streams.forEach((end) => end());
+  });
+
+  /** Server-sent events: a bare `tasks` event means "look at the board again"; it carries no data. */
+  app.get('/api/machine/events', async (req, reply) => {
+    const { identity, token } = await authenticate(db, req);
+    reply.hijack();
+    // The client may have left while the token was being looked up; its `close` event is gone by now.
+    if (req.raw.destroyed) return;
+    const res = reply.raw;
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      'x-accel-buffering': 'no',
+    });
+    res.write(': connected\n\n');
+
+    const stop = changes.subscribe(identity.owner, () => res.write('event: tasks\ndata:\n\n'));
+    const ping = setInterval(() => {
+      res.write(': ping\n\n');
+      // A revoked token must not keep a stream.
+      machineForToken(db, token).then(
+        (current) => {
+          if (!current) end();
+        },
+        (err: unknown) => app.log.error({ err }, 'machine stream token check failed'),
+      );
+    }, pingMs);
+    function end(): void {
+      clearInterval(ping);
+      stop();
+      streams.delete(end);
+      res.end();
+    }
+    streams.add(end);
+    req.raw.on('close', end);
+  });
+
   app.post<{ Params: { command: string } }>('/api/machine/:command', async (req) => {
-    const header = req.headers.authorization ?? '';
-    const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : '';
-    const machine = token ? await machineForToken(db, token) : null;
-    if (!machine) throw new AppError('UNAUTHORIZED', 'unknown or revoked machine token');
+    const { identity: machine } = await authenticate(db, req);
     const body = isRecord(req.body) ? req.body : {};
-    return {
-      result: await withOwner(db, machine.owner, (tx) =>
-        handleMachineCall(tx, config, machine, req.params.command, body),
-      ),
-    };
+    const result = await withOwner(db, machine.owner, (tx) =>
+      handleMachineCall(tx, config, machine, req.params.command, body),
+    );
+    if (DISPATCH_WRITES.has(req.params.command)) changes.notify(machine.owner);
+    return { result };
   });
 }

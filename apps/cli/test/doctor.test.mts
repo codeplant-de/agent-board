@@ -122,13 +122,13 @@ test('the server check tells unreachable, unauthorised and a contract mismatch a
   const unauthorised = await run(new BackendError('version: bad token', 401, true));
   assert.match(unauthorised?.message ?? '', /refused the token/);
   const serverOlder = await run(
-    Object.assign(new BackendError('the board server is older than this CLI: it speaks contract 4, the CLI needs 6'), {
+    Object.assign(new BackendError('the board server is older than this CLI: it speaks contract 4, the CLI needs 7'), {
       contractMismatch: 'server-older' as const,
     }),
   );
   assert.match(serverOlder?.hint ?? '', /update the board server/);
   const cliOlder = await run(
-    Object.assign(new BackendError('this CLI is older than the board server: it speaks contract 6, the server has 7'), {
+    Object.assign(new BackendError('this CLI is older than the board server: it speaks contract 7, the server has 8'), {
       contractMismatch: 'cli-older' as const,
     }),
   );
@@ -194,6 +194,35 @@ test('a missing unit file of an installed pair is a failure', async () => {
   const results = await runChecks(machine({ ...GOOD, ...units }));
   const missing = results.find((result) => result.name === 'unit agent-board-intake.timer');
   assert.equal(missing?.level, 'fail');
+});
+
+test('the listener unit is checked like the timers, but a missing or stopped one only warns', async () => {
+  const units = unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch']);
+  const listen = `${UNIT_DIR}/agent-board-listen.service`;
+  const listener = (results: CheckResult[]) => results.filter((result) => result.name.includes('agent-board-listen'));
+
+  const missing = listener(await runChecks(machine({ ...GOOD, ...units }, { exists: (path) => path !== listen })));
+  assert.deepEqual(levels(missing), { 'unit agent-board-listen.service': 'warn' });
+  assert.match(missing[0]?.hint ?? '', /board setup/);
+
+  const running = await runChecks(machine({ ...GOOD, ...units }, { exists: () => true }));
+  assert.deepEqual(levels(listener(running)), {
+    'unit agent-board-listen.service': 'ok',
+    'agent-board-listen.service command': 'ok',
+    'agent-board-listen.service state': 'ok',
+  });
+
+  const stopped = await runChecks(
+    machine(
+      { ...GOOD, ...units },
+      { exists: () => true, systemctl: async (args) => (args.at(-1) === 'agent-board-listen.service' ? 1 : 0) },
+    ),
+  );
+  assert.equal(levels(stopped)['agent-board-listen.service state'], 'warn');
+  assert.equal(hasFailure(stopped), false);
+
+  const vanished = await runChecks(machine({ ...GOOD, ...units }, { exists: (path) => path !== '/usr/bin/node' }));
+  assert.equal(levels(vanished)['agent-board-listen.service command'], 'fail');
 });
 
 test('a result prints as one line with its hint under it', () => {

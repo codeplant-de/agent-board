@@ -8,7 +8,9 @@
 # Access-Control-*) would act on the app's origin too. So nothing the backend sends as a header reaches the browser: `header_down -*`
 # drops every one of them (an allow-list, so a header nobody has thought of is dropped as well; the status code and the body
 # are all that pass), and the answer leaves with the headers below, which `>` writes at the last moment. Everything under
-# these paths is JSON (tRPC, the machine API, /healthz), so the type is fixed to it, and `sandbox` with `default-src 'none'`
+# these paths is JSON (tRPC, the machine API, /healthz), so the type is fixed to it. The one stream, GET /api/machine/events
+# (server-sent events), therefore leaves as application/json without its own headers; its chunks still pass unbuffered,
+# and its clients do not read those headers. `sandbox` with `default-src 'none'`
 # leaves a browser that opened one as a page with no origin, no scripts and nothing to load. A script of a service worker
 # must have a JavaScript type and a worker is scoped by its path, so one cannot be registered from here either.
 # Every proxy to the backend is in this snippet, and every handle that proxies imports it.

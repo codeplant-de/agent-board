@@ -426,15 +426,15 @@ test('the answer to a task, a schedule and a failure parses sealed values as pla
 });
 
 test('the version answer names the owner and the key the board expects', () => {
-  assert.deepEqual(parseVersionIdentity({ contract: 6, owner: 'alice', keyId: '0123456789abcdef' }), {
+  assert.deepEqual(parseVersionIdentity({ contract: 7, owner: 'alice', keyId: '0123456789abcdef' }), {
     owner: 'alice',
     keyId: '0123456789abcdef',
   });
-  assert.deepEqual(parseVersionIdentity({ contract: 6, owner: 'alice', keyId: null }), {
+  assert.deepEqual(parseVersionIdentity({ contract: 7, owner: 'alice', keyId: null }), {
     owner: 'alice',
     keyId: null,
   });
-  assert.throws(() => parseVersionIdentity({ contract: 6 }), /owner must be a string/);
+  assert.throws(() => parseVersionIdentity({ contract: 7 }), /owner must be a string/);
 });
 
 test('labels derive from the prompt and the creator', () => {
