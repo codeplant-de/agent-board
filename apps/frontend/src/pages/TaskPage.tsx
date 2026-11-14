@@ -22,6 +22,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ActionPanel } from '../components/ActionPanel';
 import { Markdown } from '../components/Markdown';
 import { PriorityPicker } from '../components/PriorityPicker';
+import { PolishItem } from '../components/PolishItem';
 import { TaskBadges } from '../components/TaskBadges';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
@@ -201,9 +202,13 @@ export function TaskPage() {
               No activity yet.
             </Text>
           )}
-          {thread.map((note, index) => (
-            <ThreadItem key={index} note={note} thread={thread} />
-          ))}
+          {thread.map((note, index) =>
+            note.kind === 'polish' && !note.unreadable ? (
+              <PolishItem key={index} note={note} task={task} parent={parent} />
+            ) : (
+              <ThreadItem key={index} note={note} thread={thread} />
+            ),
+          )}
         </Stack>
 
         <TranscriptDrawer
@@ -214,7 +219,7 @@ export function TaskPage() {
         />
 
         <div ref={bottom}>
-          <ActionPanel task={task} thread={thread} />
+          <ActionPanel task={task} thread={thread} followUps={followUps} />
         </div>
       </Stack>
     </Container>

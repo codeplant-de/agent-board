@@ -4,6 +4,8 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState, type DragEvent } from 'react';
 import { moveConfirmed } from '../components/confirmStart';
 import { TaskCard } from '../components/TaskCard';
+import { usePolish } from '../components/usePolish';
+import { canPolish, isOpenPolishOf } from '../lib/polish';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { POLL_MS, useTRPC, type ListedTask } from '../lib/trpc';
 
@@ -32,6 +34,7 @@ export function BoardPage() {
   const trpc = useTRPC();
   const tasks = useQuery({ ...trpc.tasks.list.queryOptions(), refetchInterval: POLL_MS });
   const move = useMutation(trpc.tasks.move.mutationOptions());
+  const polish = usePolish();
   const [dragId, setDragId] = useState<string | null>(null);
   const [over, setOver] = useState<DropTarget | null>(null);
 
@@ -104,6 +107,10 @@ export function BoardPage() {
                         task={task}
                         draggable={canDrag(task)}
                         dragging={dragId === task.id}
+                        {...(canPolish(task) ? { onPolish: () => polish.polish(task) } : {})}
+                        polishDisabled={
+                          polish.isPending || (tasks.data ?? []).some((child) => isOpenPolishOf(child, task.id))
+                        }
                         onDragStart={(event) => {
                           event.dataTransfer.effectAllowed = 'move';
                           setDragId(task.id);

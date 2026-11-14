@@ -14,6 +14,7 @@ const setNotBefore = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const answer = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const reply = vi.hoisted(() => vi.fn(async (_: unknown) => null));
+const create = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 
 vi.mock('../lib/trpc', () => {
   const procedure = (mutationFn: (variables: unknown) => Promise<unknown>) => ({
@@ -29,6 +30,7 @@ vi.mock('../lib/trpc', () => {
         rerun: idle,
         setClosed: idle,
         move: procedure(move),
+        create: procedure(create),
         takeBack: procedure(takeBack),
         setNotBefore: procedure(setNotBefore),
       },
@@ -72,13 +74,13 @@ function running(overrides: Partial<BoardTask>): BoardTask {
   } as BoardTask;
 }
 
-function renderPanel(task: BoardTask, thread: ThreadNote[] = []) {
+function renderPanel(task: BoardTask, thread: ThreadNote[] = [], followUps: BoardTask[] = []) {
   return render(
     <MemoryRouter>
       <MantineProvider>
         <ModalsProvider>
           <QueryClientProvider client={new QueryClient()}>
-            <ActionPanel task={task} thread={thread} />
+            <ActionPanel task={task} thread={thread} followUps={followUps} />
           </QueryClientProvider>
         </ModalsProvider>
       </MantineProvider>
@@ -278,7 +280,7 @@ describe('ActionPanel of an open question', () => {
         <MantineProvider>
           <ModalsProvider>
             <QueryClientProvider client={new QueryClient()}>
-              <ActionPanel task={task} thread={[asking({ questions: swapped })]} />
+              <ActionPanel task={task} thread={[asking({ questions: swapped })]} followUps={[]} />
             </QueryClientProvider>
           </ModalsProvider>
         </MantineProvider>
@@ -308,7 +310,7 @@ describe('ActionPanel of an open question', () => {
         <MantineProvider>
           <ModalsProvider>
             <QueryClientProvider client={new QueryClient()}>
-              <ActionPanel task={task} thread={[asking({ questions: structuredClone(questions) })]} />
+              <ActionPanel task={task} thread={[asking({ questions: structuredClone(questions) })]} followUps={[]} />
             </QueryClientProvider>
           </ModalsProvider>
         </MantineProvider>
@@ -431,6 +433,43 @@ describe('ActionPanel of a backlog task', () => {
     expect(screen.getByText(/Parked/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Move to Todo' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Comment' })).toBeInTheDocument();
+  });
+
+  it('queues a polish task under the backlog task, with its priority and a prompt that forbids doing the work', async () => {
+    create.mockClear();
+    renderPanel(running({ status: 'backlog', title: 'rough idea', priority: 'high', sessionId: null }), []);
+    await userEvent.click(screen.getByRole('button', { name: 'Polish prompt' }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const sent = create.mock.calls[0]?.[0] as { title: string; input: string; priority: string; parentId: string };
+    expect(sent).toMatchObject({ title: 'Polish prompt: rough idea', priority: 'high', parentId: 'abc12345' });
+    expect(sent.input).toContain('`board show abc12345`');
+    expect(sent.input).toContain('board polish abc12345 --title');
+    expect(sent.input).toMatch(/Do not start the work/);
+  });
+
+  it('disables the polish button while a polish task of it is still open, and not once it is done', () => {
+    const polishing = (overrides: Partial<BoardTask>) =>
+      running({ id: 'child1', title: 'Polish prompt: t', parentId: 'abc12345', status: 'todo', ...overrides });
+    const backlog = running({ status: 'backlog', sessionId: null });
+    const open = renderPanel(backlog, [], [polishing({})]);
+    expect(screen.getByRole('button', { name: 'Polish prompt' })).toBeDisabled();
+    open.unmount();
+    renderPanel(backlog, [], [polishing({ status: 'done' })]);
+    expect(screen.getByRole('button', { name: 'Polish prompt' })).toBeEnabled();
+  });
+
+  it.each([
+    ['one an agent proposed', { createdBy: 'agent' }],
+    ['an occurrence of a schedule', { scheduleId: 'sch1' }],
+    ['one that cannot be read', { unreadable: ['input'] }],
+  ] satisfies [string, Partial<BoardTask>][])('offers no polish for %s', (_name, overrides) => {
+    renderPanel(running({ status: 'backlog', sessionId: null, ...overrides }), []);
+    expect(screen.queryByRole('button', { name: 'Polish prompt' })).not.toBeInTheDocument();
+  });
+
+  it('offers no polish outside the backlog', () => {
+    renderPanel(running({ status: 'needs-me', sessionId: null }), []);
+    expect(screen.queryByRole('button', { name: 'Polish prompt' })).not.toBeInTheDocument();
   });
 });
 

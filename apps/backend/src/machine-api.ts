@@ -117,9 +117,13 @@ export async function handleMachineCall(
     case 'add-note': {
       const note = parsed(() => parseWireNoteInput(body['body'], 'note', { allowSuggestion: true }));
       const author = body['author'] === 'system' ? 'system' : 'agent';
+      const kind = body['kind'] ?? 'comment';
+      if (kind !== 'comment' && kind !== 'polish') throw new AppError('BAD_REQUEST', 'kind must be comment or polish');
+      if (kind === 'polish' && author !== 'agent')
+        throw new AppError('BAD_REQUEST', 'only an agent writes a polish note');
       await addNote(db, taskId(body), {
         author,
-        kind: author === 'system' ? 'event' : 'comment',
+        kind: author === 'system' ? 'event' : kind,
         body: note.body,
         preview: note.preview ?? null,
         ...(note.suggestion === undefined ? {} : { suggestion: note.suggestion }),

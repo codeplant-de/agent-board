@@ -7,12 +7,14 @@ import {
   sealFields,
   sealInput,
   sealNote,
+  sealTitle,
   type Answer,
   type Keys,
   type Priority,
   type Question,
   type RowRef,
   type Status,
+  type Polish,
   type TaskCreator,
   type UnreadableField,
 } from '@agent-board/shared';
@@ -29,6 +31,7 @@ export interface NewTask {
   input: string;
   priority?: Priority;
   when?: CreateInput['when'];
+  parentId?: string;
 }
 
 /** What the shared sealing refuses (a text past the board's limit, answers that do not fit) is something to tell the user. */
@@ -60,6 +63,7 @@ export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInpu
     input: sealed.input,
     ...(task.priority === undefined ? {} : { priority: task.priority }),
     ...(task.when === undefined ? {} : { when: task.when }),
+    ...(task.parentId === undefined ? {} : { parentId: task.parentId }),
   };
 }
 
@@ -121,4 +125,50 @@ export async function sealStart(keys: Keys, proposal: Proposal): Promise<string>
     throw new InputError('This proposal’s prompt cannot be read, so it cannot be started here.');
   const row: RowRef = { kind: 'task', id: proposal.id, createdBy: 'user', scheduleId: proposal.scheduleId };
   return checked(() => sealInput(sealerFor(keys), row, proposal.input));
+}
+
+/** What applying a polished prompt needs of the task it is for, as the page shows it. */
+export interface PolishTarget {
+  id: string;
+  title: string;
+  input: string;
+  createdBy: TaskCreator;
+  unreadable: UnreadableField[];
+}
+
+/** `text` in a code fence long enough that nothing inside it closes the fence. */
+function fenced(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}\n${text}\n${fence}`;
+}
+
+/** The note that keeps what a polished prompt replaces, so applying it loses nothing. */
+export function previousText(target: Pick<PolishTarget, 'title' | 'input'>): string {
+  return `Prompt before polishing\n\nTitle: ${target.title}\n\n${fenced(target.input)}`;
+}
+
+/**
+ * Applying a polished prompt is the user's sealed act: the polished title and prompt, sealed as the task's own and the user's, and
+ * the old ones, sealed as a note of the user's. Throws when the old text could not be read, since it could not be kept.
+ */
+export async function sealApply(
+  keys: Keys,
+  options: { polishId: string; target: PolishTarget; rewrite: Pick<Polish, 'title' | 'prompt'> },
+): Promise<RouterInputs['tasks']['applyPolish']> {
+  const { polishId, target, rewrite } = options;
+  if (target.createdBy !== 'user') throw new InputError('Only a task you created takes a polished prompt.');
+  if (target.unreadable.length > 0)
+    throw new InputError('This task cannot be read, so what it says now could not be kept.');
+  const row: RowRef = { kind: 'task', id: target.id, createdBy: 'user', scheduleId: null };
+  const seal = sealerFor(keys);
+  return {
+    id: target.id,
+    polishId,
+    title: await checked(() => sealTitle(seal, row, rewrite.title)),
+    input: await checked(() => sealInput(seal, row, rewrite.prompt)),
+    previous: await checked(() =>
+      sealNote(seal, { taskId: target.id, author: 'user', kind: 'event' }, previousText(target)),
+    ),
+  };
 }

@@ -22,6 +22,7 @@ const VISIBLE = [
   'notify',
   'ask',
   'add',
+  'polish',
   'schedule',
   'schedules',
   'delay',

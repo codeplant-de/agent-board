@@ -194,8 +194,9 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       return { ...found };
     },
     async addNote(id, text, options) {
+      const tag = options?.author === 'system' ? ' (system)' : options?.kind === 'polish' ? ' (polish)' : '';
       const suggested = options?.suggestion === undefined ? '' : ` [suggest: ${options.suggestion}]`;
-      state.writes.push(`note ${id}${options?.author === 'system' ? ' (system)' : ''}: ${text}${suggested}`);
+      state.writes.push(`note ${id}${tag}: ${text}${suggested}`);
     },
     async transcript(id, batch) {
       state.writes.push(`transcript ${id} ${batch.runId} ${batch.events.map((e) => e.kind).join(',')}`);

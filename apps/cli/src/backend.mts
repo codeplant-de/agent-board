@@ -314,7 +314,8 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
         throw error;
       }
     },
-    addNote: async (id, note, { author = 'agent' } = {}) => send('add-note', { id: taskId(id), author, body: note }),
+    addNote: async (id, note, { author = 'agent', kind = 'comment' } = {}) =>
+      send('add-note', { id: taskId(id), author, ...(kind === 'comment' ? {} : { kind }), body: note }),
     ask: async (id, asked) => send('ask', { id: taskId(id), body: asked }),
     heartbeat: async (id, beat) => send('heartbeat', { id: taskId(id), body: beat }),
     pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
@@ -429,9 +430,10 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
       return { ...task, status: 'running', machine };
     },
     async addNote(id, text, options) {
+      const kind = options?.kind === 'polish' ? ' --kind polish' : '';
       const suggested = options?.suggestion === undefined ? '' : ` --suggest ${oneLine(options.suggestion, 160)}`;
       print(
-        `DRY add-note ${id}${options?.author === 'system' ? ' --author system' : ''}${suggested} ${oneLine(text, 160)}`,
+        `DRY add-note ${id}${options?.author === 'system' ? ' --author system' : ''}${kind}${suggested} ${oneLine(text, 160)}`,
       );
     },
     async heartbeat(id, beat) {

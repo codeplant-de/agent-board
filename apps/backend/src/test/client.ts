@@ -128,7 +128,7 @@ async function sealRequest(command: string, request: Json, sealing: Sealing, raw
             body:
               request['author'] === 'system'
                 ? await note('system', 'event', body)
-                : await note('agent', 'comment', body),
+                : await note('agent', request['kind'] === 'polish' ? 'polish' : 'comment', body),
           }
         : request;
     case 'pause':
@@ -283,6 +283,19 @@ export function plainUi(db: Db, owner = 'jascha') {
             resume: input.resume,
           }),
         ),
+      // As the browser does: the polished title and prompt sealed as the task's own and the user's, the old text as a note.
+      applyPolish: async (input: { id: string; polishId: string; title: string; input: string; previous: string }) => {
+        const row: RowRef = { kind: 'task', id: input.id, createdBy: 'user', scheduleId: null };
+        const fields = await sealFields(sealing.seal, row, { title: input.title, input: input.input });
+        return openTask(
+          await raw.tasks.applyPolish({
+            id: input.id,
+            polishId: input.polishId,
+            ...fields,
+            previous: await sealNote(sealing.seal, { taskId: input.id, author: 'user', kind: 'event' }, input.previous),
+          }),
+        );
+      },
       done: mutation(raw.tasks.done),
       rerun: mutation(raw.tasks.rerun),
       setPriority: mutation(raw.tasks.setPriority),

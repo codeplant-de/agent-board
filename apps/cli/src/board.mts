@@ -12,10 +12,12 @@ import {
   isPriority,
   isSafeTaskId,
   isStatus,
+  ContractError,
   parseQuestions,
   PRIORITIES,
   QuestionError,
   runsLeft,
+  serializePolish,
   STATUSES,
   UNREADABLE_TEXT,
 } from '@agent-board/shared';
@@ -329,6 +331,31 @@ export async function add(context: LinkingContext, flags: AddFlags): Promise<Tas
   const { task } = await context.backend.addTask(draft);
   confirm(context, `proposed ${task.id} ${context.taskLink(task.id)}`);
   return task;
+}
+
+export interface PolishFlags {
+  title?: string;
+  file?: string;
+}
+
+/**
+ * An agent's polished title and prompt for a backlog task, posted on the task this run is for. It changes nothing: the
+ * user applies it in the browser, which seals the text as theirs.
+ */
+export async function polish(context: LinkingContext, run: string, target: string, flags: PolishFlags): Promise<void> {
+  if (!isSafeTaskId(run)) throw new UsageError('AGENT_BOARD_TASK is not a task id');
+  if (target === run) throw new UsageError('a task cannot post a polished prompt for itself; name the task to polish');
+  if (!flags.title?.trim()) throw new UsageError('--title needs a title');
+  if (!flags.file) throw new UsageError('--file is required');
+  let text: string;
+  try {
+    text = serializePolish({ target, title: flags.title, prompt: readNoteFile(flags.file) });
+  } catch (error) {
+    if (error instanceof ContractError) throw new UsageError(error.message);
+    throw error;
+  }
+  await context.backend.addNote(run, text, { kind: 'polish' });
+  confirm(context, `posted a polished prompt for ${target} on ${run}  ${context.taskLink(run)}`);
 }
 
 export async function move(context: LinkingContext, id: string, status: Status): Promise<void> {
