@@ -25,6 +25,7 @@ import type { Config } from './config';
 import type { Db, DbOrTx } from './db/client';
 import { withOwner } from './db/scope';
 import { AppError } from './services/errors';
+import { getKeys } from './services/keys';
 import { machineForToken } from './services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
 import { appendTranscript } from './services/transcripts';
@@ -80,7 +81,7 @@ export async function handleMachineCall(
   const task = (row: Parameters<typeof toTask>[0]) => toTask(row, config.publicUrl);
   switch (command) {
     case 'version':
-      return { contract: CONTRACT_VERSION, owner: identity.owner };
+      return { contract: CONTRACT_VERSION, owner: identity.owner, keyId: (await getKeys(db))?.keyId ?? null };
     case 'list-tasks':
       return (await listTasks(db, { all: body['all'] === true })).map(task);
     case 'get-task':
