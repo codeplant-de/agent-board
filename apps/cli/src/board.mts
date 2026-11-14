@@ -7,9 +7,12 @@
  *   board tasks                   open tasks per status
  *   board ask <task> --file <path>      ask the user 1-4 questions (JSON in /tmp) and move the task to needs-me
  *   board show <task>             the task and its thread as markdown
- *   board schedule [--priority p] [--title t] [--hold | --backlog] [--new] <prompt...>
- *                                 a task from a prompt, run in this directory on this machine; checks for duplicates first
+ *   board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...>
+ *                                 a task from a prompt, run in this directory on this machine; checks for duplicates first;
+ *                                 --in (30m, 2h, 1d, 1h30m) or --at (2027-01-01T12:00, 2027-01-01, 09:30) keeps it in Todo until then
  *                                 (not inside a board run: there, propose follow-up work with `board add`)
+ *   board delay <task> (--in <dur> | --at <time> | --now)
+ *                                 delay a task in Todo until then, or with --now make it due at once
  *   board add --title <t> --file <path> [--parent <task>] [--priority urgent|high|normal|low]
  *                                 propose a follow-up task (the file is its prompt); it waits in needs-me until the user starts it
  *
@@ -33,11 +36,11 @@ import {
 } from '@agent-board/shared';
 import type { Note, Priority, Status, Task } from '@agent-board/shared';
 import { postSlack, slackText } from './notify.mts';
-import { haikuDuplicateCheck, parseScheduleArgs, schedule } from './schedule.mts';
+import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
 import type { Choice } from './schedule.mts';
 
 const USAGE =
-  'usage: board comment <task> <text|--file path> | move <task> <status> | notify <task> <text> | ask <task> --file <path> | show <task> | schedule [--priority <p>] [--title <t>] [--hold | --backlog] [--new] <prompt...> | add --title <t> --file <path> [--parent <task>] [--priority <p>] | tasks';
+  'usage: board comment <task> <text|--file path> | move <task> <status> | notify <task> <text> | ask <task> --file <path> | show <task> | schedule [--priority <p>] [--title <t>] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...> | delay <task> (--in <dur> | --at <time> | --now) | add --title <t> --file <path> [--parent <task>] [--priority <p>] | tasks';
 
 const NOTE_FILE_DIR = '/tmp/';
 const NOTE_FILE_MAX_BYTES = 1024 * 1024;
@@ -77,13 +80,15 @@ async function notify(context: Context, id: string, text: string): Promise<void>
   await postSlack(context.config.slackWebhookFile, message);
 }
 
-async function tasks(context: Context): Promise<void> {
+export async function tasks(context: Context): Promise<void> {
   const open = await context.backend.listTasks();
   for (const status of STATUSES) {
     const inStatus = open.filter((task) => task.status === status);
     context.print(`${status} (${inStatus.length})`);
     for (const task of inStatus)
-      context.print(`  ${task.id}  ${task.priority.padEnd(6)}  [${task.labels.join(',') || '-'}]  ${task.title}`);
+      context.print(
+        `  ${task.id}  ${task.priority.padEnd(6)}  [${task.labels.join(',') || '-'}]  ${task.title}${task.notBefore ? `  (starts ${localTime(task.notBefore)})` : ''}`,
+      );
   }
 }
 
@@ -196,6 +201,22 @@ export async function move(context: Context, id: string, status: Status): Promis
   }
 }
 
+// `delay <task> (--in <dur> | --at <time> | --now)`: the start time to set, or null to clear it.
+export function parseDelayArgs(args: string[], now: Date = new Date()): Date | null {
+  const [flag, value, ...extra] = args;
+  if (flag === '--now' && value === undefined) return null;
+  if ((flag !== '--in' && flag !== '--at') || value === undefined || extra.length > 0) throw new UsageError(USAGE);
+  const start = parseStart(flag === '--in' ? { delay: value } : { at: value }, now);
+  if (start === undefined) throw new UsageError(USAGE);
+  return start;
+}
+
+export async function delay(context: Context, id: string, args: string[]): Promise<void> {
+  const notBefore = parseDelayArgs(args);
+  await context.backend.updateTask(id, { notBefore, expect: 'todo' });
+  context.print(notBefore === null ? `${id} is due now` : `${id} starts ${localTime(notBefore)}`);
+}
+
 async function chooseInTerminal(): Promise<Choice> {
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -243,6 +264,10 @@ export async function main(argv: string[], env: Record<string, string | undefine
   if (command === 'show') {
     if (!id || rest.length > 0) throw new UsageError(USAGE);
     return show(context, id);
+  }
+  if (command === 'delay') {
+    if (!id) throw new UsageError(USAGE);
+    return delay(context, id, rest);
   }
   if (command === 'ask') {
     if (!id || rest.length !== 2 || rest[0] !== '--file') throw new UsageError(USAGE);

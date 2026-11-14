@@ -5,9 +5,10 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { PRIORITY_LABEL } from '../lib/priority';
 import { useTRPC } from '../lib/trpc';
+import { useNow } from '../lib/useNow';
 import { MarkdownEditor } from './MarkdownEditor';
 
-const WHEN_LABEL = { now: 'Now', backlog: 'Backlog', hold: 'Needs me' } as const;
+const WHEN_LABEL = { now: 'Now', later: 'Later', backlog: 'Backlog', hold: 'Needs me' } as const;
 type When = keyof typeof WHEN_LABEL;
 
 /** A prompt, as you would type it into Claude Code. `board schedule` does the same from a terminal, in its directory. */
@@ -17,19 +18,24 @@ export function NewTaskModal({ opened, onClose }: { opened: boolean; onClose: ()
   const [title, setTitle] = useState('');
   const [input, setInput] = useState('');
   const [when, setWhen] = useState<When>('now');
+  const [at, setAt] = useState('');
   const [priority, setPriority] = useState<Priority>('normal');
   const create = useMutation(trpc.tasks.create.mutationOptions());
 
-  const ready = input.trim() !== '';
+  const now = useNow(30_000);
+  const start = new Date(at);
+  const atError = when === 'later' && at !== '' && !(start.getTime() > now) ? 'Pick a time in the future' : undefined;
+  const ready = input.trim() !== '' && (when !== 'later' || (at !== '' && atError === undefined));
   const submit = () => {
     if (!ready || create.isPending) return;
     create.mutate(
-      { title, input, when, priority },
+      { title, input, when: when === 'later' ? { at: start } : when, priority },
       {
         onSuccess: (task) => {
           setTitle('');
           setInput('');
           setPriority('normal');
+          setAt('');
           onClose();
           navigate(`/t/${task.id}`);
         },
@@ -80,6 +86,18 @@ export function NewTaskModal({ opened, onClose }: { opened: boolean; onClose: ()
             onChange={(value) => setWhen(value as When)}
             data={Object.entries(WHEN_LABEL).map(([value, label]) => ({ value, label }))}
           />
+          {when === 'later' && (
+            <TextInput
+              mt="xs"
+              type="datetime-local"
+              aria-label="Start time"
+              required
+              value={at}
+              onChange={(e) => setAt(e.currentTarget.value)}
+              error={atError}
+              description="It waits in Todo and no worker takes it before then"
+            />
+          )}
         </div>
         <Group justify="flex-end">
           <Button onClick={submit} disabled={!ready} loading={create.isPending}>

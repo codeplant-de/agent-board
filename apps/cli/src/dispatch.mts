@@ -84,6 +84,8 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
       log(`SKIP ${task.id} ${elsewhere}`);
       continue;
     }
+    // Not due yet; the board refuses the claim too, this only saves the attempt every tick.
+    if (task.notBefore !== null && task.notBefore > deps.now()) continue;
     candidates.push(task);
   }
 

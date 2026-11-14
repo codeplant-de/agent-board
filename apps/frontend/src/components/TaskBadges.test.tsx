@@ -1,6 +1,7 @@
 import { MantineProvider } from '@mantine/core';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
+import { stamp } from '../lib/time';
 import type { BoardTask } from '../lib/trpc';
 import { TaskBadges } from './TaskBadges';
 
@@ -17,6 +18,7 @@ const task = (overrides: Partial<BoardTask>) =>
     borrowed: false,
     machine: null,
     lane: null,
+    notBefore: null,
     ...overrides,
   }) as BoardTask;
 
@@ -36,5 +38,19 @@ describe('TaskBadges', () => {
   it('does not show Paused on a running task: the flag stays true through the claim', () => {
     renderBadges({ status: 'running', paused: true, machine: 'laptop' });
     expect(screen.queryByText('Paused')).not.toBeInTheDocument();
+  });
+
+  it('shows when a waiting task starts, with the exact time as its title', () => {
+    const notBefore = new Date(Date.now() + 4 * 3_600_000 + 30_000).toISOString();
+    renderBadges({ notBefore });
+    const badge = screen.getByText('Starts in 4h');
+    expect(badge.closest('[title]')).toHaveAttribute('title', stamp(notBefore));
+  });
+
+  it('shows no start time once it is due, or off Todo', () => {
+    renderBadges({ notBefore: new Date(Date.now() - 1000).toISOString() });
+    expect(screen.queryByText(/Starts in/)).not.toBeInTheDocument();
+    renderBadges({ status: 'backlog', notBefore: new Date(Date.now() + 3_600_000).toISOString() });
+    expect(screen.queryByText(/Starts in/)).not.toBeInTheDocument();
   });
 });

@@ -9,6 +9,7 @@ import {
   parsePatch,
   parseTask,
   promptSkill,
+  serializeTask,
   shortSkill,
 } from '../src/contract.mts';
 
@@ -33,6 +34,7 @@ const task = {
   lastActiveAt: null,
   runStartedAt: null,
   paused: false,
+  notBefore: null,
 };
 
 test('a task needs every field', () => {
@@ -166,4 +168,25 @@ test('the PR head is 7 to 40 hex characters, on a task, a draft and a patch', ()
 test('a fail result says whether it applied', () => {
   assert.deepEqual(parseFailResult({ applied: false, task }), { applied: false, task });
   assert.throws(() => parseFailResult({ task }), /applied must be a boolean/);
+});
+
+test('notBefore is a date on a task, a draft and a patch', () => {
+  const waiting = parseTask({ ...task, notBefore: '2027-01-01T12:00:00Z' });
+  assert.equal(waiting.notBefore?.toISOString(), '2027-01-01T12:00:00.000Z');
+  assert.deepEqual(parseTask(serializeTask(waiting)), waiting);
+  assert.throws(() => parseTask({ ...task, notBefore: 'later' }), /notBefore is not a date/);
+  assert.throws(() => parseTask({ ...task, notBefore: undefined }), /notBefore must be a string or null/);
+
+  assert.equal(
+    parseDraft({ title: 't', notBefore: '2027-01-01T12:00:00Z' }).notBefore?.toISOString(),
+    '2027-01-01T12:00:00.000Z',
+  );
+  assert.throws(() => parseDraft({ title: 't', notBefore: null }), /must be a date/);
+  assert.throws(
+    () => parseDraft({ title: 't', status: 'backlog', notBefore: '2027-01-01T12:00:00Z' }),
+    /needs status todo/,
+  );
+
+  assert.equal(parsePatch({ notBefore: '2027-01-01T12:00:00Z' }).notBefore?.toISOString(), '2027-01-01T12:00:00.000Z');
+  assert.deepEqual(parsePatch({ notBefore: null }), { notBefore: null });
 });

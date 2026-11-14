@@ -838,3 +838,114 @@ describe('Done archival', () => {
     expect((await caller(db).tasks.get({ id })).task.closed).toBe(false);
   });
 });
+
+describe('delayed tasks', () => {
+  const soon = () => new Date(Date.now() + 3_600_000);
+  const claim = (id: string) => ctx.call('laptop', 'claim-task', { id, machine: 'laptop' });
+
+  it('a delayed task is 409 on claim until due, then claimable; the claim clears the delay', async () => {
+    const ui = caller(db);
+    const { id } = await ui.tasks.create({ input: 'later', when: { at: soon() } });
+    expect((await claim(id)).status).toBe(409);
+    await db
+      .update(tasks)
+      .set({ notBefore: new Date(Date.now() - 1000) })
+      .where(eq(tasks.id, id));
+    const claimed = await claim(id);
+    expect(claimed.status).toBe(200);
+    expect(claimed.json.result).toMatchObject({ status: 'running', notBefore: null });
+  });
+
+  it('tasks.create takes {at} and the machine API takes notBefore in a draft', async () => {
+    const ui = caller(db);
+    const at = soon();
+    expect(await ui.tasks.create({ input: 'a', when: { at } })).toMatchObject({ status: 'todo', notBefore: at });
+    const added = await ctx.call('laptop', 'add-task', { body: { title: 't', notBefore: at.toISOString() } });
+    expect(added.json.result.task.notBefore).toBe(at.toISOString());
+    const parked = await ctx.call('laptop', 'add-task', {
+      body: { title: 't', status: 'backlog', notBefore: at.toISOString() },
+    });
+    expect(parked.status).toBe(400);
+    const proposed = await ctx.call('laptop', 'add-task', {
+      body: { title: 't', createdBy: 'agent', notBefore: at.toISOString() },
+    });
+    expect(proposed.status).toBe(400);
+  });
+
+  it('tasks.setNotBefore sets, moves and clears the delay of a Todo task', async () => {
+    const ui = caller(db);
+    const { id } = await ui.tasks.create({ input: 'a' });
+    const at = soon();
+    expect(await ui.tasks.setNotBefore({ id, notBefore: at })).toMatchObject({ notBefore: at });
+    expect((await claim(id)).status).toBe(409);
+    expect(await ui.tasks.setNotBefore({ id, notBefore: null })).toMatchObject({ notBefore: null });
+    expect((await claim(id)).status).toBe(200);
+  });
+
+  it('a delay cannot be set on a task that is not in Todo', async () => {
+    const ui = caller(db);
+    const { id } = await ui.tasks.create({ input: 'a', when: 'backlog' });
+    await expect(ui.tasks.setNotBefore({ id, notBefore: soon() })).rejects.toThrow(/not in Todo/);
+    const patched = await ctx.call('laptop', 'update-task', { id, body: { notBefore: soon().toISOString() } });
+    expect(patched.status).toBe(409);
+    const requeued = await ctx.call('laptop', 'update-task', {
+      id,
+      body: { status: 'todo', notBefore: soon().toISOString() },
+    });
+    expect(requeued.json.result).toMatchObject({ status: 'todo' });
+    expect(requeued.json.result.notBefore).not.toBeNull();
+    const todo = await ui.tasks.create({ input: 'b' });
+    const moving = await ctx.call('laptop', 'update-task', {
+      id: todo.id,
+      body: { status: 'done', notBefore: soon().toISOString() },
+    });
+    expect(moving.status).toBe(409);
+  });
+
+  it('update-task sets and clears notBefore', async () => {
+    const { id } = await caller(db).tasks.create({ input: 'a' });
+    const at = soon();
+    const set = await ctx.call('laptop', 'update-task', { id, body: { notBefore: at.toISOString() } });
+    expect(set.json.result.notBefore).toBe(at.toISOString());
+    const cleared = await ctx.call('laptop', 'update-task', { id, body: { notBefore: null } });
+    expect(cleared.json.result.notBefore).toBeNull();
+  });
+
+  it('leaving Todo clears the delay', async () => {
+    const ui = caller(db);
+    const { id } = await ui.tasks.create({ input: 'a', when: { at: soon() } });
+    await ui.tasks.move({ id, status: 'backlog' });
+    expect((await db.select().from(tasks).where(eq(tasks.id, id)))[0]?.notBefore).toBeNull();
+    await ui.tasks.move({ id, status: 'todo' });
+    expect((await ui.tasks.get({ id })).task.notBefore).toBeNull();
+    const second = await ui.tasks.create({ input: 'b', when: { at: soon() } });
+    const done = await ctx.call('laptop', 'update-task', { id: second.id, body: { status: 'done' } });
+    expect(done.json.result).toMatchObject({ status: 'done', notBefore: null });
+  });
+
+  it('waiting cards sort last in Todo, by start; once due they sort like any other', async () => {
+    const ui = caller(db);
+    const hour = 3_600_000;
+    await ui.tasks.create({
+      title: 'late',
+      input: 'a',
+      priority: 'urgent',
+      when: { at: new Date(Date.now() + 2 * hour) },
+    });
+    await ui.tasks.create({
+      title: 'early',
+      input: 'a',
+      priority: 'urgent',
+      when: { at: new Date(Date.now() + hour) },
+    });
+    await ui.tasks.create({ title: 'low', input: 'a', priority: 'low' });
+    await ui.tasks.create({ title: 'normal', input: 'a' });
+    const titles = async () => (await ui.tasks.list()).map((t) => t.title);
+    expect(await titles()).toEqual(['normal', 'low', 'early', 'late']);
+    await db
+      .update(tasks)
+      .set({ notBefore: new Date(Date.now() - 1000) })
+      .where(eq(tasks.title, 'early'));
+    expect(await titles()).toEqual(['early', 'normal', 'low', 'late']);
+  });
+});

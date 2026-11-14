@@ -15,6 +15,7 @@ import {
   rerunFresh,
   reply,
   setClosed,
+  setNotBefore,
   setPriority,
   takeBack,
   toNote,
@@ -84,7 +85,7 @@ const tasksRouter = router({
         title: z.string().trim().max(300).default(''),
         input: z.string().trim().min(1, 'Write a prompt first').max(200_000),
         priority: priority.default('normal'),
-        when: z.enum(['now', 'backlog', 'hold']).default('now'),
+        when: z.union([z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -93,7 +94,8 @@ const tasksRouter = router({
         input: input.input,
         labels: [],
         priority: input.priority,
-        status: createStatus[input.when],
+        status: typeof input.when === 'string' ? createStatus[input.when] : 'todo',
+        notBefore: typeof input.when === 'string' ? undefined : input.when.at,
         createdBy: 'user',
       });
       return boardTask(row, ctx.config.publicUrl);
@@ -146,6 +148,13 @@ const tasksRouter = router({
     .input(z.object({ id, priority }))
     .mutation(async ({ ctx, input }) =>
       boardTask(await setPriority(ctx.db, input.id, input.priority, ctx.username), ctx.config.publicUrl),
+    ),
+
+  /** Delays a Todo task until `notBefore`; null makes it claimable now. */
+  setNotBefore: procedure
+    .input(z.object({ id, notBefore: z.coerce.date().nullable() }))
+    .mutation(async ({ ctx, input }) =>
+      boardTask(await setNotBefore(ctx.db, input.id, input.notBefore, ctx.username), ctx.config.publicUrl),
     ),
 
   /** A running task whose agent has been quiet too long: its worker is gone, so the task goes to Needs me. */

@@ -55,6 +55,8 @@ export const tasks = pgTable(
     runStartedAt: timestamp('run_started_at', { withTimezone: true }),
     /** When a worker gave up the task's slot; kept through the claim until the run's first update or its end. */
     pausedAt: timestamp('paused_at', { withTimezone: true }),
+    /** Todo only: no worker claims the task before this time. Cleared when the task leaves Todo. */
+    notBefore: timestamp('not_before', { withTimezone: true }),
     /** The PR head sha an intake review was made for. */
     head: text('head'),
     /** The question note waiting for an answer, if any. */

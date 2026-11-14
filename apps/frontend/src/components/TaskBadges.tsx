@@ -1,18 +1,22 @@
 import { Badge, Group } from '@mantine/core';
 import {
   IconArrowsExchange,
+  IconClock,
   IconDeviceDesktop,
   IconMessageQuestion,
   IconPlayerPause,
   IconPlayerTrackNext,
   IconSparkles,
 } from '@tabler/icons-react';
+import { startsIn } from '../lib/startsIn';
+import { stamp } from '../lib/time';
 import type { BoardTask } from '../lib/trpc';
+import { useNow } from '../lib/useNow';
 import { PriorityBadge } from './PriorityPicker';
 
 /**
  * What sets a task apart at a glance: its priority (unless normal), an open question, a proposal, a pending
- * resume, where it runs.
+ * resume, a start time still ahead, where it runs.
  */
 export function TaskBadges({
   task,
@@ -23,6 +27,8 @@ export function TaskBadges({
   withLabels?: boolean;
   withPriority?: boolean;
 }) {
+  const now = useNow(30_000);
+  const waiting = task.status === 'todo' && task.notBefore !== null ? startsIn(task.notBefore, now) : undefined;
   return (
     <Group gap={4}>
       {withPriority && task.priority !== 'normal' && <PriorityBadge priority={task.priority} />}
@@ -34,6 +40,18 @@ export function TaskBadges({
       {task.proposed && (
         <Badge size="sm" color="grape" variant="light" leftSection={<IconSparkles size={12} />}>
           Proposed
+        </Badge>
+      )}
+      {waiting !== undefined && task.notBefore !== null && (
+        <Badge
+          size="sm"
+          color="teal"
+          variant="light"
+          tt="none"
+          leftSection={<IconClock size={12} />}
+          title={stamp(task.notBefore)}
+        >
+          {waiting}
         </Badge>
       )}
       {task.status === 'todo' && task.paused && (

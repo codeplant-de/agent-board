@@ -211,7 +211,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     ...inner,
     async addTask(draft) {
       print(`DRY add-task ${oneLine(JSON.stringify(draft), 160)}`);
-      const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, ...fields } = draft;
+      const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, ...fields } = draft;
       const task: Task = {
         ...fields,
         status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
@@ -231,6 +231,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         lastActiveAt: null,
         runStartedAt: null,
         paused: false,
+        notBefore: notBefore ?? null,
       };
       return { task, created: true };
     },
