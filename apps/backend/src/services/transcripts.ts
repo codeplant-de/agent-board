@@ -35,6 +35,10 @@ export async function appendTranscript(
         lastEventAt: last ? new Date(last) : new Date(batch.startedAt),
       })
       .onConflictDoNothing();
+    // Read after the insert: a resent batch can wait here for the first one's commit and then find its own run.
+    const [run] = await tx.select().from(transcriptRuns).where(eq(transcriptRuns.id, batch.runId));
+    if (!run) throw new AppError('CONFLICT', 'the run id is already taken');
+    if (run.taskId !== taskId) throw new AppError('BAD_REQUEST', 'the run belongs to another task');
     if (batch.events.length === 0) return;
     const inserted = await tx
       .insert(transcriptEvents)

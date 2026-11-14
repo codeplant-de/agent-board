@@ -22,7 +22,8 @@ import {
 } from '@agent-board/shared';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config';
-import type { Db, DbOrTx, Tx } from './db/client';
+import type { Db, DbOrTx } from './db/client';
+import { withOwner } from './db/scope';
 import { AppError } from './services/errors';
 import { machineForToken } from './services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
@@ -66,17 +67,20 @@ function parsed<T>(parse: () => T): T {
   }
 }
 
+type MachineIdentity = NonNullable<Awaited<ReturnType<typeof machineForToken>>>;
+
 export async function handleMachineCall(
   db: DbOrTx,
   config: Config,
-  machine: string,
+  identity: MachineIdentity,
   command: string,
   body: Record<string, unknown>,
 ): Promise<unknown> {
+  const machine = identity.name;
   const task = (row: Parameters<typeof toTask>[0]) => toTask(row, config.publicUrl);
   switch (command) {
     case 'version':
-      return { contract: CONTRACT_VERSION };
+      return { contract: CONTRACT_VERSION, owner: identity.owner };
     case 'list-tasks':
       return (await listTasks(db, { all: body['all'] === true })).map(task);
     case 'get-task':
@@ -169,11 +173,6 @@ export async function handleMachineCall(
   }
 }
 
-/** One transaction per machine call, so it commits or rolls back as a whole. */
-function inMachineTransaction<T>(db: Db, fn: (tx: Tx) => Promise<T>): Promise<T> {
-  return db.transaction(fn);
-}
-
 export function registerMachineApi(app: FastifyInstance, db: Db, config: Config): void {
   app.post<{ Params: { command: string } }>('/api/machine/:command', async (req) => {
     const header = req.headers.authorization ?? '';
@@ -182,7 +181,9 @@ export function registerMachineApi(app: FastifyInstance, db: Db, config: Config)
     if (!machine) throw new AppError('UNAUTHORIZED', 'unknown or revoked machine token');
     const body = isRecord(req.body) ? req.body : {};
     return {
-      result: await inMachineTransaction(db, (tx) => handleMachineCall(tx, config, machine, req.params.command, body)),
+      result: await withOwner(db, machine.owner, (tx) =>
+        handleMachineCall(tx, config, machine, req.params.command, body),
+      ),
     };
   });
 }

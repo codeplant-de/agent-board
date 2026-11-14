@@ -11,8 +11,19 @@ export type Db = NodePgDatabase<typeof schema>;
 export type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 export type DbOrTx = Db | Tx;
 
-export function createDb(databaseUrl: string): { db: Db; pool: pg.Pool } {
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 10 });
+/** Backslash and whitespace are special in the libpq `options` string. */
+const escapeOption = (value: string): string => value.replace(/[\\\s]/g, '\\$&');
+
+/** `backfillOwner` becomes the session setting `app.backfill_owner` that the tenancy migration reads. */
+export function createDb(
+  databaseUrl: string,
+  options: { backfillOwner?: string | null } = {},
+): { db: Db; pool: pg.Pool } {
+  const pool = new pg.Pool({
+    connectionString: databaseUrl,
+    max: 10,
+    ...(options.backfillOwner ? { options: `-c app.backfill_owner=${escapeOption(options.backfillOwner)}` } : {}),
+  });
   return { db: drizzle({ client: pool, schema }), pool };
 }
 
