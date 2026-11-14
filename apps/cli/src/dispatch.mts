@@ -8,16 +8,7 @@ import { buildContext, print, rejectExtraArgs, runMain, takeFlag } from './cli.m
 import type { Context } from './cli.mts';
 import type { Task } from '@agent-board/shared';
 import { promptSkill } from '@agent-board/shared';
-import {
-  decideStale,
-  notServableHere,
-  ownLane,
-  planPauses,
-  planStarts,
-  startedAt,
-  START_MARKER,
-  unitName,
-} from './decide.mts';
+import { decideStale, notServableHere, ownLane, planPauses, planStarts, START_MARKER, unitName } from './decide.mts';
 import type { LaneRun } from './decide.mts';
 import { createRunFiles } from './runtime.mts';
 import type { RunFiles } from './runtime.mts';
@@ -47,18 +38,16 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   for (const task of running) {
     const unit = unitName(task.id);
     const unitActive = await system.isActive(unit);
-    // The unit knows when this run began; a note would also count an earlier run of a requeued task.
+    // The unit knows when this run began, to the second; the claim is the board's record of it.
     const unitStart = unitActive ? await system.startedAt(unit) : undefined;
     const decision = decideStale({
       unitActive,
-      startedAt: unitStart ?? startedAt(await backend.readNotes(task.id)),
+      startedAt: unitStart ?? task.runStartedAt ?? undefined,
       lastActive: files.lastActive(task.id),
       now: deps.now(),
       limits: config,
     });
     if (!decision.stale) continue;
-    // The worker may have reported and moved the task since the listing.
-    if ((await backend.getTask(task.id)).status !== 'running') continue;
     if (decision.stopUnit) await system.stop(unit);
     if (!deps.dryRun) files.clear(task.id);
     log(`STALE ${task.id} ${decision.reason}`);
@@ -67,24 +56,28 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   }
 
   // What runs here, per lane: every active worker unit, whatever the board says, with the lane its run file names.
-  const lanesRunning = async (): Promise<LaneRun[]> =>
-    Promise.all(
-      (await system.activeWorkers()).map(async (taskId): Promise<LaneRun> => {
-        const record = files.readRun(taskId);
-        return {
-          taskId,
-          lane: record?.lane ?? config.lanes[0]?.name ?? 'default',
-          borrowed: record?.borrowed ?? false,
-          startedAt: record?.startedAt ?? (await system.startedAt(unitName(taskId))),
-          pauseRequested: files.pauseRequestedAt(taskId) !== undefined,
-        };
-      }),
-    );
-  const runs = await lanesRunning();
+  const activeWorkers = await system.activeWorkers();
+  const runs = await Promise.all(
+    activeWorkers.map(async (taskId): Promise<LaneRun> => {
+      const record = files.readRun(taskId);
+      return {
+        taskId,
+        lane: record?.lane ?? config.lanes[0]?.name ?? 'default',
+        borrowed: record?.borrowed ?? false,
+        startedAt: record?.startedAt ?? (await system.startedAt(unitName(taskId))),
+        pauseRequested: files.pauseRequestedAt(taskId) !== undefined,
+      };
+    }),
+  );
 
   const candidates: Task[] = [];
   // The backend lists Todo with resumes first, then by priority.
   for (const task of tasks.filter((candidate) => candidate.status === 'todo')) {
+    // A task put back in Todo (an answer came while the agent was still ending its turn) must not start twice.
+    if (activeWorkers.includes(task.id)) {
+      log(`SKIP ${task.id} its last worker is still stopping`);
+      continue;
+    }
     // Another machine may have the checkout, the directory or the session.
     const elsewhere = notServableHere(task, config.machine, config.repos);
     if (elsewhere !== undefined) {

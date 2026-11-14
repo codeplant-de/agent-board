@@ -1,8 +1,9 @@
 /**
- * The backend contract over HTTP, for bin/web-backend on the worker machines: POST /api/machine/<subcommand>
- * with a bearer token. The body carries the subcommand's arguments and stdin; the answer is {result} or {error}.
+ * The machine API, for the CLI on the worker machines: POST /api/machine/<command> with a bearer token.
+ * The body carries the command's arguments; the answer is {result} or {error}.
  */
 import {
+  CONTRACT_VERSION,
   ContractError,
   isRecord,
   isSafeMachineName,
@@ -11,7 +12,6 @@ import {
   parseHeartbeat,
   parsePatch,
   parseQuestions,
-  parseSetupRequest,
   parseTranscriptBatch,
   QuestionError,
   TranscriptError,
@@ -28,12 +28,12 @@ import {
   addTask,
   ask,
   claimTask,
+  failTask,
   getTask,
   heartbeat,
   listTasks,
   pause,
   readNotes,
-  setupLabels,
   toNote,
   toTask,
   updateTask,
@@ -65,6 +65,8 @@ export async function handleMachineCall(
 ): Promise<unknown> {
   const task = (row: Parameters<typeof toTask>[0]) => toTask(row, config.publicUrl);
   switch (command) {
+    case 'version':
+      return { contract: CONTRACT_VERSION };
     case 'list-tasks':
       return (await listTasks(db, { all: body['all'] === true })).map(task);
     case 'get-task':
@@ -122,6 +124,12 @@ export async function handleMachineCall(
       if (typeof note !== 'string' || note.trim() === '') throw new AppError('BAD_REQUEST', 'pause note is empty');
       return task(await pause(db, taskId(body), note.trim(), machine));
     }
+    case 'fail': {
+      const text = body['body'];
+      if (typeof text !== 'string' || text.trim() === '') throw new AppError('BAD_REQUEST', 'fail text is empty');
+      const { applied, row } = await failTask(db, taskId(body), text.trim(), machine);
+      return { applied, task: task(row) };
+    }
     case 'transcript':
       await appendTranscript(
         db,
@@ -132,10 +140,6 @@ export async function handleMachineCall(
       return null;
     case 'read-notes':
       return (await readNotes(db, taskId(body))).map((row) => serializeNote(toNote(row)));
-    case 'setup': {
-      const names = parsed(() => parseSetupRequest(body['body']));
-      return { created: await setupLabels(db, names, body['dryRun'] === true) };
-    }
     default:
       throw new AppError('NOT_FOUND', `unknown command ${command.slice(0, 40)}`);
   }

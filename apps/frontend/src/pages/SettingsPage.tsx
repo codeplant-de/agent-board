@@ -39,6 +39,21 @@ function Machines() {
         },
       },
     );
+  // A new token for a machine that has one stops the old one at once.
+  const issueFor = (target: string) =>
+    machines.data?.some((m) => m.name === target)
+      ? modals.openConfirmModal({
+          title: `New token for ${target}?`,
+          children: (
+            <Text size="sm">
+              The old token stops working at once; put the new one on {target} or its dispatcher and intake fail.
+            </Text>
+          ),
+          labels: { confirm: 'New token', cancel: 'Cancel' },
+          confirmProps: { color: 'red' },
+          onConfirm: () => create(target),
+        })
+      : create(target);
 
   return (
     <Paper withBorder p="md">
@@ -107,7 +122,7 @@ function Machines() {
                 </Table.Td>
                 <Table.Td>
                   <Group gap="xs" justify="flex-end">
-                    <Button size="xs" variant="default" onClick={() => create(m.name)}>
+                    <Button size="xs" variant="default" onClick={() => issueFor(m.name)}>
                       New token
                     </Button>
                     {!m.revokedAt && (
@@ -144,7 +159,7 @@ function Machines() {
             onChange={(e) => setName(e.currentTarget.value)}
             style={{ flex: 1 }}
           />
-          <Button onClick={() => create(name.trim())} disabled={!name.trim()} loading={issue.isPending}>
+          <Button onClick={() => issueFor(name.trim())} disabled={!name.trim()} loading={issue.isPending}>
             Create token
           </Button>
         </Group>

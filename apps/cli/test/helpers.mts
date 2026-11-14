@@ -1,5 +1,6 @@
 import type { Config } from '../src/config.mts';
 import type { RunFiles, RunRecord } from '../src/runtime.mts';
+import { BackendError } from '../src/backend.mts';
 import type { Backend, Note, Task } from '@agent-board/shared';
 
 export function task(overrides: Partial<Task> & { id: string }): Task {
@@ -15,17 +16,19 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     sessionId: null,
     workdir: null,
     next: 'fresh',
+    head: null,
     openQuestion: false,
     createdBy: 'user',
     lane: null,
     borrowed: false,
     lastActiveAt: null,
+    runStartedAt: null,
+    paused: false,
     ...overrides,
   };
 }
 
 export const CONFIG: Config = {
-  backendCommand: ['backend'],
   machine: 'here',
   lanes: [{ name: 'general', skills: ['*'], slots: 2 }],
   defaultCwd: '/home/me',
@@ -36,7 +39,7 @@ export const CONFIG: Config = {
   intake: {
     prompt: '/review-pr {url} --auto',
     priority: 'normal',
-    allowedTools: ['Read', 'Bash(board *)'],
+    allowedTools: ['Read', 'Bash(board comment *)'],
     disallowedTools: ['Bash(git push *)'],
     env: [],
     mcpServers: [],
@@ -87,7 +90,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         (candidate) => draft.dedupeKey !== undefined && parseFirstLine(candidate.input).includes(draft.dedupeKey),
       );
       if (existing) return { task: { ...existing }, created: false };
-      const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, ...fields } = draft;
+      const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, ...fields } = draft;
       return {
         task: task({
           id: 'new',
@@ -95,19 +98,25 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
           createdBy: createdBy ?? 'user',
           machine: machine ?? null,
           workdir: workdir ?? null,
+          head: head ?? null,
         }),
         created: true,
       };
     },
     async updateTask(id, patch) {
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new Error(`no task ${id}`);
+      if (patch.expect !== undefined && patch.expect !== found.status) {
+        state.writes.push(`update ${id} refused: ${found.status}, not ${patch.expect}`);
+        throw new BackendError(`the task is ${found.status}, not ${patch.expect}`, 409);
+      }
       if (patch.status !== undefined) state.writes.push(`status ${id} -> ${patch.status}`);
       if (patch.input !== undefined) state.writes.push(`input ${id}: ${patch.input}`);
       if (patch.sessionId !== undefined) state.writes.push(`session ${id}: ${patch.sessionId}`);
       if (patch.next !== undefined) state.writes.push(`next ${id}: ${patch.next}`);
       if (patch.workdir !== undefined) state.writes.push(`workdir ${id}: ${patch.workdir}`);
-      const found = state.tasks.find((t) => t.id === id);
-      if (!found) throw new Error(`no task ${id}`);
-      Object.assign(found, patch);
+      const { expect: _expect, ...fields } = patch;
+      Object.assign(found, fields);
       return { ...found };
     },
     async claimTask(id, machine) {
@@ -138,6 +147,14 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       Object.assign(found, { status: 'todo', next: found.sessionId ? 'resume' : 'fresh' });
       return { ...found };
     },
+    async fail(id, text) {
+      state.writes.push(`fail ${id}: ${text}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new Error(`no task ${id}`);
+      const applied = found.status === 'running' && !found.closed;
+      if (applied) Object.assign(found, { status: 'needs-me' });
+      return { applied, task: { ...found } };
+    },
     async ask(id, questions) {
       state.writes.push(`ask ${id}: ${questions.map((q) => q.header).join(', ')}`);
       const found = state.tasks.find((t) => t.id === id);
@@ -145,10 +162,6 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     },
     async readNotes(id) {
       return state.notes.get(id) ?? [];
-    },
-    async setup(labels) {
-      state.writes.push(`setup ${labels.join(',')}`);
-      return [];
     },
   };
   return state;

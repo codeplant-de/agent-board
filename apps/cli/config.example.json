@@ -1,7 +1,4 @@
 {
-  "backend": {
-    "command": ["~/workspace/agent-board/apps/cli/bin/web-backend"]
-  },
   "machine": "laptop",
   "lanes": {
     "reviews": {
@@ -32,7 +29,11 @@
       "Skill",
       "Agent",
       "Edit(//tmp/pr-*)",
-      "Bash(board *)",
+      "Bash(board comment *)",
+      "Bash(board ask *)",
+      "Bash(board add *)",
+      "Bash(board show *)",
+      "Bash(board move * needs-me)",
       "Bash({pr-review}/skills/review-pr/review-notes.sh path *)",
       "Bash({pr-review}/skills/review-pr/review-notes.sh status *)",
       "Bash({pr-review}/skills/review-pr/review-notes.sh read *)",
@@ -73,6 +74,7 @@
       "mcp__shortcut__list_story_comments"
     ],
     "disallowedTools": [
+      "Bash(board schedule *)",
       "Bash(gh api *)",
       "Bash(gh pr review *)",
       "Bash(gh pr comment *)",

@@ -5,7 +5,7 @@ import type { DispatchDeps } from '../src/dispatch.mts';
 import { SystemError } from '../src/system.mts';
 import type { System } from '../src/system.mts';
 import { START_MARKER } from '../src/decide.mts';
-import { CONFIG, fakeBackend, fakeRunFiles, note, task } from './helpers.mts';
+import { CONFIG, fakeBackend, fakeRunFiles, task } from './helpers.mts';
 import type { FakeBackend } from './helpers.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
@@ -97,17 +97,22 @@ test("another machine's running task is not swept here", async () => {
 test('a stale Running task goes to Needs me with the log tail and frees its slot', async () => {
   const { deps, started, backend } = setup([running('dead'), todo('t1')]);
   await runDispatch(deps);
-  assert.ok(backend.writes.some((w) => w.includes('note dead') && w.includes('last log line')));
-  assert.ok(backend.writes.some((w) => w === 'status dead -> needs-me'));
+  assert.ok(backend.writes.some((w) => w.startsWith('fail dead:') && w.includes('last log line')));
+  assert.ok(backend.writes.some((w) => w.startsWith('fail dead:')));
   assert.deepEqual(started, ['t1']);
 });
 
 test('a timed-out active worker is stopped, then reported', async () => {
-  const { deps, backend, stopped } = setup([running('slow')], ['agent-board-slow']);
-  backend.notes.set('slow', [note(`${START_MARKER} x`, new Date(NOW.getTime() - 60 * 60_000), { author: 'system' })]);
+  const slow = task({
+    id: 'slow',
+    status: 'running',
+    input: '/selftest go',
+    runStartedAt: new Date(NOW.getTime() - 7 * 60 * 60_000),
+  });
+  const { deps, backend, stopped } = setup([slow], ['agent-board-slow']);
   await runDispatch(deps);
   assert.deepEqual(stopped, ['agent-board-slow']);
-  assert.ok(backend.writes.some((w) => w === 'status slow -> needs-me'));
+  assert.ok(backend.writes.some((w) => w.startsWith('fail slow:')));
 });
 
 test('a failed start sends the task to Needs me and stops filling slots', async () => {
@@ -151,13 +156,16 @@ test('unknown systemd state starts nothing and changes nothing', async () => {
   assert.deepEqual(backend.writes, []);
 });
 
-test('the run is timed from its unit, not from a comment of an earlier run', async () => {
-  const { deps, backend, stopped } = setup([running('again')], ['agent-board-again'], {
+test("the run is timed from its unit first, and from the task's claim without one", async () => {
+  const again = task({
+    id: 'again',
+    status: 'running',
+    input: '/selftest go',
+    runStartedAt: new Date(NOW.getTime() - 7 * 60 * 60_000),
+  });
+  const { deps, backend, stopped } = setup([again], ['agent-board-again'], {
     'agent-board-again': new Date(NOW.getTime() - 5 * 60_000),
   });
-  backend.notes.set('again', [
-    note(`${START_MARKER} old`, new Date(NOW.getTime() - 5 * 60 * 60_000), { author: 'system' }),
-  ]);
   await runDispatch(deps);
   assert.deepEqual(stopped, []);
   assert.deepEqual(backend.writes, []);
@@ -247,4 +255,26 @@ test('a running task whose agent went quiet is stopped and reported by the sweep
   await runDispatch(deps);
   assert.deepEqual(stopped, ['agent-board-q']);
   assert.ok(backend.writes.some((w) => w.includes('no tool call for 25 minutes')));
+});
+
+test('a todo task whose last worker is still stopping is not started again', async () => {
+  const { deps, started, backend, logs } = setup([todo('t1'), todo('t2')], ['agent-board-t1']);
+  await runDispatch(deps);
+  assert.deepEqual(started, ['t2']);
+  assert.ok(logs.includes('SKIP t1 its last worker is still stopping'));
+  assert.ok(!backend.writes.some((w) => w.includes('t1')));
+});
+
+test('a task that moved on since the listing is not reported or notified', async () => {
+  const notified: string[] = [];
+  const { deps, backend } = setup([running('dead')]);
+  deps.notify = async (_task, text) => void notified.push(text);
+  const list = backend.listTasks.bind(backend);
+  backend.listTasks = async (options) => {
+    const listed = await list(options);
+    backend.tasks[0]!.status = 'needs-me';
+    return listed;
+  };
+  await runDispatch(deps);
+  assert.deepEqual(notified, []);
 });

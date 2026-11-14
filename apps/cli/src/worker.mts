@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * One task: resolve its label, run the worker command, log, and report failures on the task.
+ * One task: run `claude -p` for it, keep its log and transcript, and report failures on the task.
  * Started by the dispatcher as the transient unit agent-board-<id>. While the run goes on it checks every 15 seconds:
  * no tool call for inactivityMinutes, or a run longer than maxRunHours, stops it; a pause request that the
  * agent does not follow within a few minutes stops it too. It passes the agent's liveness on to the board.
@@ -18,11 +18,12 @@ import type { Task, TranscriptEvent } from '@agent-board/shared';
 import {
   buildInvocation,
   decideOutcome,
+  isRunOver,
   ownLane,
-  PAUSE_MARKER,
   PLUGIN_MARKETPLACE,
   planRun,
   pluginPlaceholders,
+  splitBatches,
   supervise,
 } from './decide.mts';
 import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
@@ -111,11 +112,8 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   }
   const run = planRun(task, await backend.readNotes(task.id), deps.newSessionId);
   deps.appendLog(taskId, run.kind === 'resume' ? `resuming session ${run.sessionId}` : `new session ${run.sessionId}`);
-  // Stored before the run: a reply that comes after a failed run still finds the session. The resume is used up either way.
-  await backend.updateTask(
-    task.id,
-    run.kind === 'fresh' ? { sessionId: run.sessionId, next: 'fresh' } : { next: 'fresh' },
-  );
+  // The resume is used up whether or not the run gets going. This is also the update that clears the task's `paused`.
+  await backend.updateTask(task.id, { next: 'fresh' });
   const plan = buildInvocation({
     run,
     hookCommand: deps.hookCommand(deps.files.dir, taskId),
@@ -149,10 +147,10 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   if (task.workdir !== plan.invocation.cwd) await backend.updateTask(task.id, { workdir: plan.invocation.cwd });
 
   // Intake loads only the user's settings; the tokens and endpoints it is allowed come from the checkout's.
-  let env: Record<string, string> = {};
+  let env: Record<string, string> = { AGENT_BOARD_TASK: taskId };
   if (fromIntake && config.intake.env.length > 0) {
     const picked = pickEnv(deps.settingsEnv(plan.invocation.cwd), config.intake.env);
-    env = picked.env;
+    env = { ...picked.env, ...env };
     if (picked.missing.length > 0)
       deps.appendLog(taskId, `not in the checkout's settings: ${picked.missing.join(', ')}`);
   }
@@ -181,26 +179,31 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   const condenser = new StreamCondenser(deps.now);
   const runId = deps.newSessionId();
   let pending: TranscriptEvent[] = [];
-  let sending = false;
-  const sendTranscript = async (): Promise<void> => {
-    if (sending || pending.length === 0) return;
-    sending = true;
-    const events = pending;
+  const upload = async (): Promise<void> => {
+    const batches = splitBatches(pending);
     pending = [];
-    try {
-      await backend.transcript(task.id, {
-        runId,
-        startedAt: startedAt.toISOString(),
-        sessionId: run.sessionId,
-        resumed: run.kind === 'resume',
-        events,
-      });
-    } catch (error) {
-      pending = [...events, ...pending].slice(-MAX_PENDING_EVENTS);
-      deps.appendLog(taskId, `transcript upload failed: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      sending = false;
+    for (const [index, events] of batches.entries()) {
+      try {
+        await backend.transcript(task.id, {
+          runId,
+          startedAt: startedAt.toISOString(),
+          sessionId: run.sessionId,
+          resumed: run.kind === 'resume',
+          events,
+        });
+      } catch (error) {
+        // The refused batch and the ones after it go out again with the next check.
+        pending = [...batches.slice(index).flat(), ...pending].slice(-MAX_PENDING_EVENTS);
+        deps.appendLog(taskId, `transcript upload failed: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
     }
+  };
+  // One upload at a time, in order: a call that finds one in flight waits for it, then sends what has come in since.
+  let uploading: Promise<void> = Promise.resolve();
+  const sendTranscript = (): Promise<void> => {
+    uploading = uploading.then(upload);
+    return uploading;
   };
   const onLine = (line: string): string | undefined => {
     const events = condenser.line(line);
@@ -225,12 +228,15 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     },
   };
 
+  // Stored only now that the run is about to start: a reply to a run that never began must not resume its session.
+  if (run.kind === 'fresh') await backend.updateTask(task.id, { sessionId: run.sessionId });
   let result: RunResult;
   try {
     await beat();
     result = await deps.run(plan.invocation, taskId, env, watch, onLine);
   } catch (error) {
     files.clear(taskId);
+    if (run.kind === 'fresh') await backend.updateTask(task.id, { sessionId: null });
     return fail(error instanceof Error ? error.message : String(error));
   }
   await sendTranscript();
@@ -239,27 +245,26 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   const endedIn = files.lastCwd(taskId);
   files.clear(taskId);
   const after = await backend.getTask(task.id);
+  // The core never writes to a task that left the workflow or runs again elsewhere, whatever this run's outcome.
+  if (isRunOver(task, after)) return;
   // The session's directory as it stopped: a later resume must start in the same place, worktree included.
-  if (!after.closed && endedIn !== undefined && endedIn !== plan.invocation.cwd) {
+  if (endedIn !== undefined && endedIn !== plan.invocation.cwd) {
     await backend.updateTask(task.id, { workdir: endedIn });
     deps.appendLog(taskId, `the session ended in ${endedIn}`);
   }
-  // Closed during the run (archived, or parked by hand): the task left the workflow, so nobody is waiting for a report.
-  // The core never writes to a closed task, whatever the run's outcome.
-  if (after.closed) return;
   const outcome = decideOutcome({
     exitCode: result.exitCode,
     signal: result.signal,
     stopped: result.stopped,
     pauseRequested,
-    reported: after.status === 'needs-me' || after.status === 'done',
+    reported: after.status !== 'running',
   });
   if (outcome.kind === 'ok') return;
   if (outcome.kind === 'paused') {
     if (after.status === 'running')
       await backend.pause(
         task.id,
-        `${PAUSE_MARKER} ${config.machine}: its ${record.lane} lane needed the slot for its own work. Resumes next, on ${config.machine}.`,
+        `Paused on ${config.machine}: its ${record.lane} lane needed the slot for its own work. Resumes next, on ${config.machine}.`,
       );
     return;
   }

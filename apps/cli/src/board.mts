@@ -9,6 +9,7 @@
  *   board show <task>             the task and its thread as markdown
  *   board schedule [--priority p] [--title t] [--hold] [--new] <prompt...>
  *                                 a task from a prompt, run in this directory on this machine; checks for duplicates first
+ *                                 (not inside a board run: there, propose follow-up work with `board add`)
  *   board add --title <t> --file <path> [--parent <task>] [--priority urgent|high|normal|low]
  *                                 propose a follow-up task (the file is its prompt); it waits in needs-me until the user starts it
  *
@@ -16,8 +17,9 @@
  */
 import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { buildContext, rejectExtraArgs, runMain, takeFlag, UsageError } from './cli.mts';
+import { buildContext, readStdin, rejectExtraArgs, runMain, takeFlag, UsageError } from './cli.mts';
 import type { Context } from './cli.mts';
+import { BackendError } from './backend.mts';
 import {
   formatAnswers,
   formatQuestions,
@@ -34,21 +36,15 @@ import { postSlack, slackText } from './notify.mts';
 import { haikuDuplicateCheck, parseScheduleArgs, schedule } from './schedule.mts';
 import type { Choice } from './schedule.mts';
 
-async function readStdin(): Promise<string> {
-  let content = '';
-  for await (const chunk of process.stdin) content += String(chunk);
-  return content.trim();
-}
-
 const USAGE =
   'usage: board comment <task> <text|--file path> | move <task> <status> | notify <task> <text> | ask <task> --file <path> | show <task> | schedule [--priority <p>] [--title <t>] [--hold] [--new] <prompt...> | add --title <t> --file <path> [--parent <task>] [--priority <p>] | tasks';
 
 const NOTE_FILE_DIR = '/tmp/';
 const NOTE_FILE_MAX_BYTES = 1024 * 1024;
 
-// A reviewer's sandbox cannot feed `board` a heredoc or a pipe (the call would stay sandboxed, and `board` runs
-// outside it), so long notes come from a file. The reviewer can write /tmp, so the file is opened without
-// following a link and its real location is checked on the open descriptor: a link to a secret is refused.
+// Long notes come from a file, so a run's allow list can keep every command simple (no heredoc, no pipe). The agent
+// can write /tmp, so the file is opened without following a link and its real location is checked on the open
+// descriptor: a link to a secret is refused.
 export function readNoteFile(path: string): string {
   let fd: number;
   try {
@@ -171,7 +167,8 @@ export function parseAddArgs(args: string[]): {
   return { title, file, parent, priority };
 }
 
-async function add(context: Context, args: string[]): Promise<void> {
+// The board puts a proposal in Needs me itself, so no status is sent.
+export async function add(context: Context, args: string[]): Promise<void> {
   const { title, file, parent, priority } = parseAddArgs(args);
   // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
   // proposing agent works, on this machine.
@@ -179,7 +176,6 @@ async function add(context: Context, args: string[]): Promise<void> {
     title,
     input: readNoteFile(file),
     labels: [],
-    status: 'needs-me' as const,
     createdBy: 'agent' as const,
     machine: context.config.machine,
     workdir: realpathSync(process.cwd()),
@@ -188,6 +184,16 @@ async function add(context: Context, args: string[]): Promise<void> {
   };
   const { task } = await context.backend.addTask(draft);
   context.print(`proposed ${task.id} ${task.url}`);
+}
+
+export async function move(context: Context, id: string, status: Status): Promise<void> {
+  try {
+    await context.backend.updateTask(id, { status });
+  } catch (error) {
+    if (error instanceof BackendError && error.status === 403)
+      throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Needs me.`);
+    throw error;
+  }
 }
 
 async function chooseInTerminal(): Promise<Choice> {
@@ -218,11 +224,18 @@ async function scheduleCommand(context: Context, args: string[]): Promise<void> 
   );
 }
 
-export async function main(argv: string[]): Promise<void> {
+export async function main(argv: string[], env: Record<string, string | undefined> = process.env): Promise<void> {
   const args = [...argv];
   const dryRun = takeFlag(args, '--dry-run');
   if (args[0] === 'add') return add(buildContext(dryRun), args.slice(1));
-  if (args[0] === 'schedule') return scheduleCommand(buildContext(dryRun), args.slice(1));
+  if (args[0] === 'schedule') {
+    // A run's agent works on untrusted text; a task it schedules would run with the user's full permissions.
+    if (env['AGENT_BOARD_TASK'])
+      throw new UsageError(
+        'board schedule is not available inside a board run; use `board add` to propose follow-up work',
+      );
+    return scheduleCommand(buildContext(dryRun), args.slice(1));
+  }
   const [command, id, ...rest] = args;
   if (!command || command.startsWith('--') || id?.startsWith('--')) throw new UsageError(USAGE);
   if (command === 'tasks' && (id !== undefined || rest.length > 0)) rejectExtraArgs([id ?? '', ...rest], USAGE);
@@ -237,7 +250,11 @@ export async function main(argv: string[]): Promise<void> {
   }
   const fromFile = command === 'comment' && rest[0] === '--file';
   if (fromFile && rest.length !== 2) throw new UsageError(USAGE);
-  const text = fromFile ? readNoteFile(rest[1] ?? '') : rest.join(' ') === '-' ? await readStdin() : rest.join(' ');
+  const text = fromFile
+    ? readNoteFile(rest[1] ?? '')
+    : rest.join(' ') === '-'
+      ? (await readStdin()).trim()
+      : rest.join(' ');
   switch (command) {
     case 'comment':
       if (!id || !text) throw new UsageError(USAGE);
@@ -247,8 +264,7 @@ export async function main(argv: string[]): Promise<void> {
       return notify(context, id, text);
     case 'move':
       if (!id || !text) throw new UsageError(USAGE);
-      await context.backend.updateTask(id, { status: parseStatus(text) });
-      return;
+      return move(context, id, parseStatus(text));
     case 'tasks':
       return tasks(context);
     default:

@@ -1,7 +1,15 @@
 import { readFileSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_PRIORITY, isPriority, isRecord, isSafeMachineName, PRIORITIES, shortSkill } from '@agent-board/shared';
+import {
+  DEFAULT_PRIORITY,
+  isPriority,
+  isRecord,
+  isSafeMachineName,
+  isStringList,
+  PRIORITIES,
+  shortSkill,
+} from '@agent-board/shared';
 import type { Priority } from '@agent-board/shared';
 
 export class ConfigError extends Error {}
@@ -33,8 +41,6 @@ export interface Lane {
 }
 
 export interface Config {
-  // Executable and fixed arguments of the task backend; the core appends the contract's subcommand.
-  backendCommand: string[];
   // This machine's name on the board: it claims tasks under it, and a resume runs only on the machine that ran the session.
   machine: string;
   // In config order. Every skill is in at most one lane, and at most one lane has "*".
@@ -73,15 +79,6 @@ export function expandHome(path: string): string {
   return path === '~' || path.startsWith('~/') ? homedir() + path.slice(1) : path;
 }
 
-function isStringList(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
-function field(obj: Record<string, unknown>, key: string, where: string): unknown {
-  if (!(key in obj)) throw new ConfigError(`config: ${where}${key} is missing`);
-  return obj[key];
-}
-
 function positiveInt(obj: Record<string, unknown>, key: string, where: string, fallback: number): number {
   if (!(key in obj)) return fallback;
   const value = obj[key];
@@ -89,25 +86,6 @@ function positiveInt(obj: Record<string, unknown>, key: string, where: string, f
     throw new ConfigError(`config: ${where}${key} must be a positive integer`);
   }
   return value;
-}
-
-// An absolute path or a bare command name. A relative path with a slash would depend on the cwd of whoever runs it.
-function parseExecutable(command: string[], where: string): string[] {
-  const [file] = command;
-  if (file !== undefined && file.includes('/') && !file.startsWith('/')) {
-    throw new ConfigError(
-      `config: ${where}[0] must be an absolute path (or ~/...) or a bare command name, not "${file}"`,
-    );
-  }
-  return command;
-}
-
-function parseBackendCommand(raw: unknown): string[] {
-  const command = isRecord(raw) ? raw['command'] : undefined;
-  if (!isStringList(command) || command.length === 0 || command.some((part) => part === '')) {
-    throw new ConfigError('config: backend.command must be a non-empty list of strings');
-  }
-  return parseExecutable(command.map(expandHome), 'backend.command');
 }
 
 export const DEFAULT_LANES: Lane[] = [{ name: 'general', skills: ['*'], slots: 3 }];
@@ -197,7 +175,6 @@ export function parseConfig(raw: unknown): Config {
     );
   }
   return {
-    backendCommand: parseBackendCommand(field(raw, 'backend', '')),
     machine,
     lanes: parseLanes(raw['lanes']),
     defaultCwd: expandHome(defaultCwd),

@@ -2,7 +2,7 @@
   "name": "@agent-board/shared",
   "version": "0.1.0",
   "private": true,
-  "description": "The backend contract (v2) and the question schema, shared by the CLI, the server and the UI. No dependencies: the CLI runs it straight from source.",
+  "description": "The backend contract and the question schema, shared by the CLI, the server and the UI. No dependencies: the CLI runs it straight from source.",
   "type": "module",
   "exports": {
     ".": "./src/index.mts"
@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/node": "^26.6.6",
-    "typescript": "^7.0.2"
+    "@types/node": "^24.19.2",
+    "typescript": "^6.0.3"
   }
 }

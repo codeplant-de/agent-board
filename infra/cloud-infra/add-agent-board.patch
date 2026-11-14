@@ -144,7 +144,7 @@ index 0000000..6815d4c
 +    name: letsencrypt-prod
 +---
 +# Browsers go through Authelia (access_control: group admins), which hands the backend the user in
-+# Remote-* headers. The worker machines' CLI (bin/web-backend) cannot do a browser login: it sends a
++# Remote-* headers. The worker machines' CLI cannot do a browser login: it sends a
 +# machine token in the Authorization header to /api/machine/*, which skips Authelia, and the backend
 +# checks the token. That route matches nothing else, so a token never opens the UI. Both routes strip
 +# the Remote-* headers first: the backend trusts them, so a client must never be able to send its own.

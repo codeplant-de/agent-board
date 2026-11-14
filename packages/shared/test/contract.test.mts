@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   ContractError,
   parseDraft,
+  parseFailResult,
   parseHeartbeat,
   parseNote,
   parsePatch,
@@ -24,29 +25,36 @@ const task = {
   sessionId: null,
   workdir: null,
   next: 'fresh',
+  head: null,
   openQuestion: false,
   createdBy: 'user',
   lane: null,
   borrowed: false,
   lastActiveAt: null,
+  runStartedAt: null,
+  paused: false,
 };
 
-test('a v2 task needs every field', () => {
+test('a task needs every field', () => {
   assert.deepEqual(parseTask(task), task);
   const { next: _next, ...withoutNext } = task;
   assert.throws(() => parseTask(withoutNext), /next must be one of/);
   assert.throws(() => parseTask({ ...task, machine: 'bad name' }), /not a safe name/);
 });
 
-test('a running task carries its lane and liveness', () => {
+test('a running task carries its lane, liveness and start', () => {
   const running = parseTask({
     ...task,
     status: 'running',
     lane: 'reviews',
     borrowed: true,
     lastActiveAt: '2026-11-13T10:00:00Z',
+    runStartedAt: '2026-11-13T09:00:00Z',
+    paused: true,
   });
   assert.equal(running.lastActiveAt?.toISOString(), '2026-11-13T10:00:00.000Z');
+  assert.equal(running.runStartedAt?.toISOString(), '2026-11-13T09:00:00.000Z');
+  assert.equal(running.paused, true);
   assert.throws(() => parseTask({ ...task, lastActiveAt: 'soon' }), /lastActiveAt is not a date/);
   assert.deepEqual(parseHeartbeat({ lane: 'reviews', borrowed: false }), { lane: 'reviews', borrowed: false });
   assert.throws(() => parseHeartbeat({ lane: 'a b', borrowed: false }), /heartbeat.lane/);
@@ -76,6 +84,9 @@ test('a patch takes the session and the next run', () => {
   assert.throws(() => parsePatch({}), /patch needs one of/);
   assert.throws(() => parsePatch({ next: 'later' }), /next must be one of/);
   assert.deepEqual(parsePatch({ priority: 'urgent' }), { priority: 'urgent' });
+  assert.deepEqual(parsePatch({ status: 'done', expect: 'todo' }), { status: 'done', expect: 'todo' });
+  assert.throws(() => parsePatch({ expect: 'todo' }), /patch needs one of/);
+  assert.throws(() => parsePatch({ next: 'fresh', expect: 'later' }), /expect must be one of/);
   assert.deepEqual(parsePatch({ workdir: '/repo/.claude/worktrees/x' }), { workdir: '/repo/.claude/worktrees/x' });
   assert.throws(() => parsePatch({ workdir: 'relative/dir' }), /absolute path/);
   assert.throws(() => parsePatch({ priority: 'asap' }), /priority must be one of urgent, high, normal, low/);
@@ -137,4 +148,20 @@ test('a draft pins to a machine and directory together', () => {
   });
   assert.throws(() => parseDraft({ title: 't', workdir: '/repo' }), /go together/);
   assert.throws(() => parseDraft({ title: 't', machine: 'laptop', workdir: 'repo' }), /absolute path/);
+});
+
+test('the PR head is 7 to 40 hex characters, on a task, a draft and a patch', () => {
+  assert.equal(parseTask({ ...task, head: '56120dc' }).head, '56120dc');
+  assert.throws(() => parseTask({ ...task, head: 'xyz' }), /head must be 7 to 40 hex/);
+  assert.throws(() => parseTask({ ...task, head: undefined }), /head must be 7 to 40 hex/);
+  assert.equal(parseDraft({ title: 't', head: '56120dc60b' }).head, '56120dc60b');
+  assert.throws(() => parseDraft({ title: 't', head: null }), /head must be/);
+  assert.deepEqual(parsePatch({ head: '56120dc60b' }), { head: '56120dc60b' });
+  assert.deepEqual(parsePatch({ head: null }), { head: null });
+  assert.throws(() => parsePatch({ head: 'abc' }), /head must be/);
+});
+
+test('a fail result says whether it applied', () => {
+  assert.deepEqual(parseFailResult({ applied: false, task }), { applied: false, task });
+  assert.throws(() => parseFailResult({ task }), /applied must be a boolean/);
 });

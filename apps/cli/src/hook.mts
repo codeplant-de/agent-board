@@ -9,7 +9,7 @@
  */
 import { isRecord, isSafeTaskId, parseQuestions, QuestionError } from '@agent-board/shared';
 import type { Question } from '@agent-board/shared';
-import { buildContext } from './cli.mts';
+import { buildContext, readStdin } from './cli.mts';
 import { postSlack, slackText } from './notify.mts';
 import { createRunFiles } from './runtime.mts';
 
@@ -72,12 +72,6 @@ export function askedDecision(taskId: string, failure: string | undefined): stri
 export function hookDecision(input: unknown, pauseRequested: boolean, taskId: string): string {
   if (!pauseRequested || allowedDuringPause(input)) return '';
   return deny(PAUSE_REASON.replace('<task>', taskId));
-}
-
-async function readStdin(): Promise<string> {
-  let content = '';
-  for await (const chunk of process.stdin) content += String(chunk);
-  return content;
 }
 
 if (import.meta.main) {

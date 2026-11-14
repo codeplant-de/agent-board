@@ -36,7 +36,7 @@ export function TaskBadges({
           Proposed
         </Badge>
       )}
-      {task.paused && (
+      {task.status === 'todo' && task.paused && (
         <Badge size="sm" color="yellow" variant="light" leftSection={<IconPlayerPause size={12} />}>
           Paused
         </Badge>

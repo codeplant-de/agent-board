@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
   logLine,
+  MAX_BATCH_EVENTS,
   MAX_OUTPUT_CHARS,
   parseTranscriptBatch,
   StreamCondenser,
@@ -95,4 +96,33 @@ test('a batch is checked for shape', () => {
   assert.equal(parseTranscriptBatch(batch).events.length, 1);
   assert.throws(() => parseTranscriptBatch({ ...batch, runId: '../x' }), TranscriptError);
   assert.throws(() => parseTranscriptBatch({ ...batch, events: [{ seq: 0, at: 'x', kind: 'weird' }] }), /known kind/);
+});
+
+test('a batch needs an integer seq from 0, a date and at most the batch limit', () => {
+  const event = { seq: 0, at: at.toISOString(), parent: null, kind: 'note', text: 'x' };
+  const batch = {
+    runId: '1b9a7c6e-aaaa',
+    startedAt: at.toISOString(),
+    sessionId: null,
+    resumed: false,
+    events: [event],
+  };
+  for (const bad of [{ seq: -1 }, { seq: 1.5 }, { seq: '1' }, { at: 'soon' }, { at: 5 }]) {
+    assert.throws(() => parseTranscriptBatch({ ...batch, events: [{ ...event, ...bad }] }), TranscriptError);
+  }
+  assert.equal(
+    parseTranscriptBatch({
+      ...batch,
+      events: Array.from({ length: MAX_BATCH_EVENTS }, (_, seq) => ({ ...event, seq })),
+    }).events.length,
+    MAX_BATCH_EVENTS,
+  );
+  assert.throws(
+    () =>
+      parseTranscriptBatch({
+        ...batch,
+        events: Array.from({ length: MAX_BATCH_EVENTS + 1 }, (_, seq) => ({ ...event, seq })),
+      }),
+    /at most 5000/,
+  );
 });

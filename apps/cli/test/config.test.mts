@@ -6,7 +6,6 @@ import { test } from 'node:test';
 import { ConfigError, isSafeMode, parseConfig, readSecretFile } from '../src/config.mts';
 
 const valid = {
-  backend: { command: ['~/bin/backend', '--flag'] },
   repos: { 'cosuno/cosuno': '~/x' },
 };
 
@@ -23,17 +22,12 @@ test('a valid config gets defaults', () => {
   });
   assert.ok(config.defaultCwd.startsWith('/') && !config.defaultCwd.includes('~'));
   assert.deepEqual([config.pauseAfterMinutes, config.inactivityMinutes, config.maxRunHours], [5, 15, 6]);
-  assert.equal(config.backendCommand[1], '--flag');
-  assert.ok(!config.backendCommand[0]?.startsWith('~'));
   assert.ok(!config.repos['cosuno/cosuno']?.startsWith('~'));
 });
 
 test('invalid configs are refused with a pointed message', () => {
   const cases: [unknown, RegExp][] = [
     ['nope', /top level/],
-    [{ ...valid, backend: undefined }, /backend.command/],
-    [{ ...valid, backend: { command: [] } }, /backend.command/],
-    [{ ...valid, backend: { command: ['ok', 3] } }, /backend.command/],
     [{ ...valid, inactivityMinutes: 0 }, /inactivityMinutes/],
     [{ ...valid, lanes: { reviews: { skills: [] } } }, /skills must be a non-empty list/],
     [
@@ -47,9 +41,6 @@ test('invalid configs are refused with a pointed message', () => {
     [{ ...valid, intake: { priority: 'asap' } }, /intake.priority must be one of/],
     [{ ...valid, defaultCwd: 'relative' }, /defaultCwd/],
     [{ ...valid, repos: { bad: '/x' } }, /owner\/name/],
-    [{ ...valid, backend: { command: ['bin/backend'] } }, /backend.command\[0\] must be an absolute path/],
-    [{ ...valid, backend: { command: ['./backend'] } }, /backend.command\[0\] must be an absolute path/],
-    [{ ...valid, backend: { command: ['../backend'] } }, /backend.command\[0\] must be an absolute path/],
   ];
   for (const [input, message] of cases)
     assert.throws(
@@ -75,46 +66,14 @@ test('a secret file is refused unless owner-only', () => {
   assert.throws(() => readSecretFile(join(dir, 'missing'), 'secret file'), /secret file missing/);
 });
 
-test('a backend command is an absolute path, a ~/ path or a bare command name', () => {
-  assert.deepEqual(parseConfig({ ...valid, backend: { command: ['trello-backend', '--x'] } }).backendCommand, [
-    'trello-backend',
-    '--x',
-  ]);
-  assert.equal(parseConfig({ ...valid, backend: { command: ['/opt/backend'] } }).backendCommand[0], '/opt/backend');
-  assert.ok(parseConfig(valid).backendCommand[0]?.startsWith('/'));
-});
-
-test('lanes keep their order, name skills without slash or plugin, and default to one slot', () => {
+test('old keys of earlier versions are ignored', () => {
   const config = parseConfig({
     ...valid,
-    lanes: { reviews: { skills: ['/pr-review:review-pr'], slots: 2 }, general: { skills: ['*'] } },
+    backend: { command: ['~/bin/web-backend'] },
+    labels: ['x'],
+    intakeLabel: 'y',
+    sandbox: {},
   });
-  assert.deepEqual(config.lanes, [
-    { name: 'reviews', skills: ['review-pr'], slots: 2 },
-    { name: 'general', skills: ['*'], slots: 1 },
-  ]);
-});
-
-test('old keys (labels with their sandbox, intakeLabel) are ignored, so a config from before still loads', () => {
-  const config = parseConfig({
-    ...valid,
-    intakeLabel: 'review-pr',
-    labels: { x: { skill: 's', allowedTools: ['Read'], sandbox: { maskedEnv: [] } } },
-  });
-  assert.equal(config.intake.prompt, '/review-pr {url} --auto');
-});
-
-test('a lane may name its directory; intake may name variables to take from the checkout', () => {
-  const config = parseConfig({
-    ...valid,
-    lanes: { reviews: { skills: ['review-pr'], cwd: '~/x' } },
-    intake: { env: ['CIRCLECI_TOKEN'] },
-  });
-  assert.ok(config.lanes[0]?.cwd?.endsWith('/x') && !config.lanes[0].cwd.includes('~'));
-  assert.deepEqual(config.intake.env, ['CIRCLECI_TOKEN']);
-  assert.throws(
-    () => parseConfig({ ...valid, lanes: { reviews: { skills: ['x'], cwd: 'rel' } } }),
-    /lanes.reviews.cwd/,
-  );
-  assert.throws(() => parseConfig({ ...valid, intake: { env: ['NOT-A-NAME'] } }), /not a variable name/);
+  assert.equal(config.machine, parseConfig(valid).machine);
+  assert.ok(!('backendCommand' in config));
 });

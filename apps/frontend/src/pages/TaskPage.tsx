@@ -1,3 +1,4 @@
+import { prUrlIn } from '@agent-board/shared';
 import {
   Anchor,
   Badge,
@@ -18,12 +19,11 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ActionPanel } from '../components/ActionPanel';
-import { Markdown } from '../components/Markdown';
 import { PriorityPicker } from '../components/PriorityPicker';
 import { TaskBadges } from '../components/TaskBadges';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
-import { promptText, prUrl, STATUS_COLOR, STATUS_LABEL } from '../lib/status';
+import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago, stamp } from '../lib/time';
 import { errorMessage, POLL_MS, useTRPC } from '../lib/trpc';
 
@@ -59,8 +59,7 @@ export function TaskPage() {
   }
 
   const { task, thread, followUps, parent } = query.data;
-  const pr = prUrl(task.input);
-  const input = promptText(task.input);
+  const pr = prUrlIn(task.input);
 
   return (
     <Container size="md" px={0}>
@@ -130,14 +129,14 @@ export function TaskPage() {
           )}
         </Stack>
 
-        {input && (
+        {task.input && (
           <Paper withBorder p="sm">
             <Text size="xs" c="dimmed" fw={600} mb={4} tt="uppercase">
               Prompt
             </Text>
             <Spoiler maxHeight={180} showLabel="Show all" hideLabel="Show less">
               <Text size="sm" ff="monospace" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-                {input}
+                {task.input}
               </Text>
             </Spoiler>
           </Paper>

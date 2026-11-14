@@ -1,14 +1,10 @@
-// The vocabulary shared by the core, the server, the UI and every backend. The README documents it as the backend spec.
-import { isRecord } from './guards.mts';
+// The vocabulary shared by the CLI, the server and the UI. The README documents it as the backend contract.
+import { isRecord, isStringList } from './guards.mts';
 import { parseQuestions, parseAnswers } from './questions.mts';
 import type { Answer, Question } from './questions.mts';
 import type { TranscriptBatch } from './transcript.mts';
 
-export const CONTRACT_VERSION = 2;
-// A backend exits with this code (EX_USAGE) for a subcommand it does not implement.
-export const UNKNOWN_COMMAND_EXIT = 64;
-// A backend exits with this code (EX_TEMPFAIL) when `claim-task` loses: the task is no longer free for this machine.
-export const CLAIM_LOST_EXIT = 75;
+export const CONTRACT_VERSION = 4;
 
 export const STATUSES = ['todo', 'running', 'needs-me', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
@@ -27,6 +23,13 @@ export type NoteKind = (typeof NOTE_KINDS)[number];
 export const PRIORITIES = ['urgent', 'high', 'normal', 'low'] as const;
 export type Priority = (typeof PRIORITIES)[number];
 export const DEFAULT_PRIORITY: Priority = 'normal';
+
+// A running task whose agent has been quiet this long looks stuck: the board shows it red.
+export const QUIET_LIMIT_MS = 10 * 60_000;
+
+// The server lets you take a running task back after this much quiet. Longer than the red text: one long tool call is
+// quiet for minutes, and a live worker gives up at `inactivityMinutes` (15 by default) plus the sweep's grace.
+export const TAKE_BACK_AFTER_MS = 20 * 60_000;
 
 export const TASK_CREATORS = ['intake', 'user', 'agent'] as const;
 export type TaskCreator = (typeof TASK_CREATORS)[number];
@@ -47,6 +50,8 @@ export interface Task {
   // The directory that session was in when it last stopped, on `machine`: a worktree it entered, say. A resume starts there.
   workdir: string | null;
   next: NextRun;
+  // The PR head sha (7 to 40 hex characters) the task was made for; intake's review tasks only.
+  head: string | null;
   // The last question the agent asked has no answer yet.
   openQuestion: boolean;
   // Who made it. Intake's tasks run with intake's narrow permissions; the others as the user.
@@ -55,6 +60,12 @@ export interface Task {
   lane: string | null;
   borrowed: boolean;
   lastActiveAt: Date | null;
+  // While it runs: when the worker claimed it; otherwise null.
+  runStartedAt: Date | null;
+  // The last run gave up its slot (`pause`) and the task has not run since. Set by `pause`, kept through the claim so the
+  // worker that resumes it can see it, and cleared by that worker's first `update-task` of the run or by the task leaving
+  // Running another way. A worker that reads `paused: true` on its claimed task tells the agent it was paused.
+  paused: boolean;
 }
 
 export interface Heartbeat {
@@ -79,7 +90,8 @@ export interface TaskDraft {
   title: string;
   input: string;
   labels: string[];
-  status: Status;
+  // Default: todo. A task an agent proposes is always created in needs-me, whatever it names.
+  status?: Status;
   // Default: the parent's priority for a follow-up, otherwise normal.
   priority?: Priority;
   // Unique per board: a second add-task with the same key returns the first task instead of a new one.
@@ -89,6 +101,7 @@ export interface TaskDraft {
   // Pins the task to a machine and the directory it runs in there (where it was scheduled from).
   machine?: string;
   workdir?: string;
+  head?: string;
 }
 
 export interface TaskPatch {
@@ -98,6 +111,9 @@ export interface TaskPatch {
   sessionId?: string | null;
   workdir?: string | null;
   next?: NextRun;
+  head?: string | null;
+  // Applies the patch only while the task has this status; otherwise the server answers 409 and writes nothing.
+  expect?: Status;
 }
 
 export interface AddTaskResult {
@@ -105,11 +121,18 @@ export interface AddTaskResult {
   created: boolean;
 }
 
+export interface FailResult {
+  // False when the task was no longer running (or was closed): nothing changed.
+  applied: boolean;
+  task: Task;
+}
+
 export interface Backend {
   // Open tasks in priority order (first is the top); `all` adds closed ones.
   listTasks(options?: { all?: boolean }): Promise<Task[]>;
   getTask(id: string): Promise<Task>;
   addTask(draft: TaskDraft): Promise<AddTaskResult>;
+  // With `patch.expect`, a task of another status is left alone and the call throws an error with status 409.
   updateTask(id: string, patch: TaskPatch): Promise<Task>;
   // Moves a todo task to running for `machine`; undefined when another caller got it first or it is pinned elsewhere.
   claimTask(id: string, machine: string): Promise<Task | undefined>;
@@ -120,12 +143,12 @@ export interface Backend {
   heartbeat(id: string, beat: Heartbeat): Promise<void>;
   // A running task gave up its slot: a note, then back to Todo, resumed next, ahead of new work.
   pause(id: string, note: string): Promise<Task>;
+  // A run failed: if the task is still running (and not closed), adds the text as a system event and moves it to needs-me, in one step.
+  fail(id: string, text: string): Promise<FailResult>;
   // Appends events to a run's transcript; an event already stored (same run and seq) is kept as it is.
   transcript(id: string, batch: TranscriptBatch): Promise<void>;
   // Oldest first.
   readNotes(id: string): Promise<Note[]>;
-  // What it created (with dryRun: what it would create, writing nothing); undefined when the backend has no setup.
-  setup(labels: string[], options?: { dryRun?: boolean }): Promise<string[] | undefined>;
 }
 
 export class ContractError extends Error {}
@@ -133,7 +156,7 @@ export class ContractError extends Error {}
 // "dispatch" and "intake" would make the worker unit agent-board-<id> collide with the tool's own units.
 const RESERVED_TASK_IDS = ['dispatch', 'intake'];
 
-// The id ends up in a systemd unit name, a log file name and argv, so the core never trusts a backend's.
+// The id ends up in a systemd unit name, a log file name and argv, so the CLI checks every id it reads from the board or its arguments.
 export function isSafeTaskId(id: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id) && !RESERVED_TASK_IDS.includes(id);
 }
@@ -158,10 +181,6 @@ export const isNoteAuthor = oneOf(NOTE_AUTHORS);
 export const isNoteKind = oneOf(NOTE_KINDS);
 export const isTaskCreator = oneOf(TASK_CREATORS);
 export const isPriority = oneOf(PRIORITIES);
-
-function isStringList(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
 
 function record(value: unknown, what: string): Record<string, unknown> {
   if (!isRecord(value)) throw new ContractError(`${what} must be a JSON object`);
@@ -197,6 +216,12 @@ function boolean(obj: Record<string, unknown>, key: string, what: string): boole
 function member<T extends string>(obj: Record<string, unknown>, key: string, what: string, values: readonly T[]): T {
   const value = obj[key];
   if (!oneOf(values)(value)) throw new ContractError(`${what}.${key} must be one of ${values.join(', ')}`);
+  return value;
+}
+
+function head(value: unknown, what: string): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{7,40}$/i.test(value))
+    throw new ContractError(`${what}.head must be 7 to 40 hex characters`);
   return value;
 }
 
@@ -241,11 +266,14 @@ export function parseTask(value: unknown): Task {
     sessionId: nullableString(obj, 'sessionId', 'task'),
     workdir: nullableString(obj, 'workdir', 'task'),
     next: member(obj, 'next', 'task', NEXT_RUNS),
+    head: obj['head'] === null ? null : head(obj['head'], 'task'),
     openQuestion: boolean(obj, 'openQuestion', 'task'),
     createdBy: member(obj, 'createdBy', 'task', TASK_CREATORS),
     lane: nullableString(obj, 'lane', 'task'),
     borrowed: boolean(obj, 'borrowed', 'task'),
     lastActiveAt: nullableDate(obj, 'lastActiveAt', 'task'),
+    runStartedAt: nullableDate(obj, 'runStartedAt', 'task'),
+    paused: boolean(obj, 'paused', 'task'),
   };
 }
 
@@ -257,6 +285,11 @@ export function parseTasks(value: unknown): Task[] {
 export function parseAddTaskResult(value: unknown): AddTaskResult {
   const obj = record(value, 'add-task result');
   return { task: parseTask(obj['task']), created: boolean(obj, 'created', 'add-task result') };
+}
+
+export function parseFailResult(value: unknown): FailResult {
+  const obj = record(value, 'fail result');
+  return { applied: boolean(obj, 'applied', 'fail result'), task: parseTask(obj['task']) };
 }
 
 export function parseNote(value: unknown): Note {
@@ -285,7 +318,7 @@ export function parseNotes(value: unknown): Note[] {
   return value.map(parseNote);
 }
 
-// The JSON form of a note, as `read-notes` prints it.
+// The JSON form of a note, as `read-notes` sends it.
 export function serializeNote(note: Note): Record<string, unknown> {
   return { ...note, createdAt: note.createdAt.toISOString() };
 }
@@ -296,18 +329,24 @@ export function parseVersion(value: unknown): number {
   return contract;
 }
 
-export function parseSetupResult(value: unknown): string[] {
-  const created = record(value, 'setup result')['created'];
-  if (!isStringList(created)) throw new ContractError('setup result.created must be a list of strings');
-  return created;
-}
-
-// Stdin of add-task. Only `title` is required.
+// Body of add-task. Only `title` is required.
 export function parseDraft(value: unknown): TaskDraft {
   const obj = record(value, 'draft');
   rejectUnknownKeys(
     obj,
-    ['title', 'input', 'labels', 'status', 'priority', 'dedupeKey', 'parentId', 'createdBy', 'machine', 'workdir'],
+    [
+      'title',
+      'input',
+      'labels',
+      'status',
+      'priority',
+      'dedupeKey',
+      'parentId',
+      'createdBy',
+      'machine',
+      'workdir',
+      'head',
+    ],
     'draft',
   );
   const title = string(obj, 'title', 'draft');
@@ -333,23 +372,26 @@ export function parseDraft(value: unknown): TaskDraft {
     draft.workdir = string(obj, 'workdir', 'draft');
     if (!draft.workdir.startsWith('/')) throw new ContractError('draft.workdir must be an absolute path');
   }
+  if ('head' in obj) draft.head = head(obj['head'], 'draft');
   if ((draft.machine === undefined) !== (draft.workdir === undefined))
     throw new ContractError('draft.machine and draft.workdir go together');
   return draft;
 }
 
-// Stdin of update-task. At least one key.
+// Body of update-task. At least one key.
 export function parsePatch(value: unknown): TaskPatch {
   const obj = record(value, 'patch');
-  const keys = ['status', 'priority', 'input', 'sessionId', 'workdir', 'next'];
-  rejectUnknownKeys(obj, keys, 'patch');
+  const keys = ['status', 'priority', 'input', 'sessionId', 'workdir', 'next', 'head'];
+  rejectUnknownKeys(obj, [...keys, 'expect'], 'patch');
   if (!keys.some((key) => key in obj)) throw new ContractError(`patch needs one of ${keys.join(', ')}`);
   const patch: TaskPatch = {};
   if ('status' in obj) patch.status = member(obj, 'status', 'patch', STATUSES);
   if ('priority' in obj) patch.priority = member(obj, 'priority', 'patch', PRIORITIES);
+  if ('expect' in obj) patch.expect = member(obj, 'expect', 'patch', STATUSES);
   if ('input' in obj) patch.input = string(obj, 'input', 'patch');
   if ('sessionId' in obj) patch.sessionId = nullableString(obj, 'sessionId', 'patch');
   if ('next' in obj) patch.next = member(obj, 'next', 'patch', NEXT_RUNS);
+  if ('head' in obj) patch.head = obj['head'] === null ? null : head(obj['head'], 'patch');
   if ('workdir' in obj) {
     patch.workdir = nullableString(obj, 'workdir', 'patch');
     if (patch.workdir !== null && !patch.workdir.startsWith('/'))
@@ -358,7 +400,7 @@ export function parsePatch(value: unknown): TaskPatch {
   return patch;
 }
 
-// Stdin of heartbeat.
+// Body of heartbeat.
 export function parseHeartbeat(value: unknown): Heartbeat {
   const obj = record(value, 'heartbeat');
   rejectUnknownKeys(obj, ['lane', 'borrowed'], 'heartbeat');
@@ -368,14 +410,13 @@ export function parseHeartbeat(value: unknown): Heartbeat {
   return { lane, borrowed: boolean(obj, 'borrowed', 'heartbeat') };
 }
 
-// The JSON form of a task, as the backend prints it.
+// The JSON form of a task, as the machine API sends it.
 export function serializeTask(task: Task): Record<string, unknown> {
-  return { ...task, lastActiveAt: task.lastActiveAt?.toISOString() ?? null };
-}
-
-// Stdin of setup.
-export function parseSetupRequest(value: unknown): string[] {
-  return labels(record(value, 'setup request'), 'setup request');
+  return {
+    ...task,
+    lastActiveAt: task.lastActiveAt?.toISOString() ?? null,
+    runStartedAt: task.runStartedAt?.toISOString() ?? null,
+  };
 }
 
 /**

@@ -1,6 +1,6 @@
 import { GitHubError } from './github.mts';
 import { SystemError } from './system.mts';
-import { BackendError, createCliBackend, dryRunBackend } from './backend.mts';
+import { BackendError, createWebBackend, dryRunBackend, loadWebConfig } from './backend.mts';
 import { ConfigError, getPaths, loadConfig } from './config.mts';
 import type { Config } from './config.mts';
 import type { Backend } from '@agent-board/shared';
@@ -19,7 +19,7 @@ export function print(line: string): void {
 export function buildContext(dryRun: boolean): Context {
   const paths = getPaths();
   const config = loadConfig(paths.configFile);
-  const backend = createCliBackend({ command: config.backendCommand });
+  const backend = createWebBackend({ loadConfig: () => loadWebConfig(paths.configDir) });
   return { config, backend: dryRun ? dryRunBackend(backend, print) : backend, dryRun, print };
 }
 
@@ -44,6 +44,12 @@ export async function runMain(main: () => Promise<void>): Promise<void> {
 }
 
 export class UsageError extends Error {}
+
+export async function readStdin(): Promise<string> {
+  let content = '';
+  for await (const chunk of process.stdin) content += String(chunk);
+  return content;
+}
 
 export function takeFlag(args: string[], flag: string): boolean {
   const index = args.indexOf(flag);
