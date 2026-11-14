@@ -182,7 +182,7 @@ test("a machine leaves a task to another when it is pinned there or lacks the PR
 test("the board's rules tell the agent to attach the user's likely next reply to its final comment", () => {
   assert.match(
     boardRules(task({ id: 'abc' })),
-    /board comment --suggest "<reply>" abc "<summary>".*Skip it when no single reply is obvious/s,
+    /board comment --suggest "<reply>" abc "<summary>".*Skip it when no single reply is obvious.*refuses `--suggest`.*without it/s,
   );
 });
 

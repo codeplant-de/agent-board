@@ -392,6 +392,11 @@ describe('ActionPanel with a suggested reply', () => {
     expect(screen.queryByTestId('suggested-reply')).not.toBeInTheDocument();
   });
 
+  it('is not offered on a done task, whose last agent comment is stale', () => {
+    renderPanel(running({ status: 'done' }), [suggested]);
+    expect(screen.queryByTestId('suggested-reply')).not.toBeInTheDocument();
+  });
+
   it('is not offered on a proposal', () => {
     renderPanel(running({ status: 'needs-me', createdBy: 'agent', proposed: true }), [suggested]);
     expect(screen.queryByTestId('suggested-reply')).not.toBeInTheDocument();
