@@ -82,7 +82,7 @@ const SETUP = 'Setup:';
 const STATUS_LIST = STATUSES.join(', ');
 const TASK_ARGUMENT = 'the task: its id, a board task link or the start of its id';
 const ID_NOTE =
-  '<task> can be the full id, a link to the task on this board, or the start of the id (3+ characters; an exact-case match wins, else case does not matter; it must be unique). Inside a board run only the full id is accepted.';
+  '<task> can be the full id, a link to the task on this board, or the start of the id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an exact-case match wins, else case does not matter; it must be unique). Inside a board run only the full id is accepted.';
 
 // `comment <task> [text...]` in the overview, without commander's `[options]` and without the long usage of `comment`.
 function overviewTerm(command: Command): string {

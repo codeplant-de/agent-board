@@ -285,7 +285,7 @@ test('help lists the new flags and the id shortcuts', async () => {
   assert.match(out.join(''), /--all[\s\S]*--status <status>[\s\S]*--json/);
   out.length = 0;
   await go(['help', 'comment']);
-  assert.match(out.join(''), /start of the\s+id \(3\+ characters/);
+  assert.match(out.join(''), /start of the\s+id \(3 to 11 characters/);
   out.length = 0;
   await go(['help', 'schedule']);
   assert.match(out.join(''), /--json/);
