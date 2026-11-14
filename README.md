@@ -69,6 +69,8 @@ On the task page you pick options (number keys work), add text where none fits, 
 | Start / Discard | On a task an agent proposed. Dragging it into Todo, or Move to Todo from Backlog, starts it too. Every way of starting shows the proposal's whole prompt, as plain text, and asks you to confirm before it is sealed as yours (a worker then runs it with your permissions). A move counts as a start only from another column into Todo: a proposal the board itself shows in Todo is never run, is not re-sealed by reordering it, and its panel says so. Send & continue and Re-run fresh wait until it is started. |
 | Take back | On a running task whose agent has been quiet for 20 minutes (the text turns red after 10, but one long command is quiet that long): its worker is gone, say because the machine is off. The task goes to `needs-me` with a note; a worker that is still alive finds it no longer running and drops its result. |
 
+To work in a session yourself, run `board attach <task> [--fork]`: it opens the task's Claude session interactively, in the task's directory, on the machine that ran it. The board hands the session only to the machine whose token ran the task, and refuses while the task runs (watch the Transcript on the task page instead) and on a task without a session. Without `--fork`, the next resume of the task continues the session including what you did in it; `--fork` starts a forked session, so the board's session stays as it was.
+
 An agent can propose follow-up work with `board add --title <t> --file <path> --parent <task> [--priority <p>]`; the file is the new task's prompt. Without `--priority` a proposal takes its parent's priority; it runs where the proposing agent worked, on that machine. A proposal lands in `needs-me` with a **Proposed** badge and runs only after you press **Start**, so a run that a PR's text turned against you cannot queue work by itself. **Starting is a sealed act.** A proposal's prompt is sealed for the creator `agent`, and nothing runs a task whose creator is still `agent`: the dispatcher skips it and the worker refuses it, whatever status the board shows. Pressing Start, or dragging the card into Todo, makes the browser seal the prompt it shows again for the creator `user`, and the board stores that prompt and takes the task to be yours from then on (`createdBy` becomes `user`, the Proposed badge goes). The title and directory stay as they were: their bindings (`task:<id>`) do not name a creator. A proposal's parent is only a link for the breadcrumb and the follow-up list; it is not part of any binding, starting does not touch it, and the board can attach a proposal to any parent without changing what runs. The server also keeps the order for an honest board: whatever status an agent names, its `add-task` lands in `needs-me`; the machine API cannot move a proposal out of `needs-me`, `claim-task` loses on one, and `ask` refuses one (answering a question would start it); a move into Todo without the prompt sealed again is a 400, and Send & continue, Re-run fresh and Reopen leave a proposal a proposal. A board that skips all of that gains nothing: it can serve a proposal as Todo, but the prompt only opens as an agent's, and a prompt it starts with the sealed value it already holds opens as nobody's. There is no CLI command that starts a proposal (`board move <task> todo` is refused for it, and an agent in a run cannot do what only you can).
 
 Dragging a card moves it the way the matching button would, minus the reply. Into Todo or Done it drops the open question (the question note stays in the thread); into Todo a task with a session keeps its `next`, and a resume with nothing to answer starts a fresh run. Done tasks nobody touched for 14 days are closed, with a note in the thread; they stay readable under Closed. Intake's tasks are left open: intake treats a closed task as "never again", so closing one would block the PR's next review request.
@@ -449,6 +451,7 @@ A schedule always has at most one pending occurrence, a task in Todo with `sched
 | `version` | - | `{"contract": 6, "owner": "<username>", "keyId": "<16 hex>" or null}` (the user whose board the token works on, which the keys are derived for, and the fingerprint of that user's data key; null before they set up encryption) |
 | `list-tasks` | `all?` | `[Task, ...]` in priority order |
 | `get-task` | `id` | `Task` |
+| `attach-session` | `id` | the `Task` whose session the token's machine may attach to; 404 for no task, 409 while it runs or without a session, 403 when another machine ran it |
 | `add-task` | `body`: `{"id", "title", "input", "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "head"?, "notBefore"?}` | `{"task": Task, "created": bool}` |
 | `update-task` | `id`, `body`: `{"status"?, "priority"?, "input"?, "sessionId"?, "workdir"?, "next"?, "head"?, "notBefore"?, "expect"?}` | the updated `Task`, or status 409 |
 | `claim-task` | `id`, `machine` | the claimed `Task`, or status 409 |
@@ -528,6 +531,7 @@ Options:
 Tasks:
   tasks                     open tasks per status
   show <task>               a task and its thread as markdown
+  attach <task>             open a task's Claude session in the terminal
   comment <task> [text...]  add a note to a task
   move <task> <status...>   move a task to the bottom of a status
   notify <task> <text...>   Slack message with the task link
@@ -607,6 +611,40 @@ Options:
 Examples:
   board show Ab3dEf9x
   board show Ab3 --json
+```
+
+#### board attach
+
+```
+Usage: board attach [options] <task>
+
+Run `claude --resume` on the task's session, interactively, in the directory the
+session ended in. The board hands the session only to the machine whose token
+ran the task, and not while the task runs: the headless run owns the session, so
+watch its Transcript on the task page.
+
+Without --fork, the next resume of the task continues the session with what you
+did in it. --fork starts a forked session, so the session of the board stays as
+it was. The exit status is that of claude. Not available inside a board run.
+
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
+
+Arguments:
+  task        the task: its id, a board task link or the start of its id
+
+Options:
+  --fork      fork the session (claude --fork-session) so the board's session
+              stays as it was
+  --dry-run   read everything, print every write instead of doing it
+  -h, --help  display help for command
+
+Examples:
+  board attach 7sPf438z
+  board attach 7sPf --fork
 ```
 
 #### board comment

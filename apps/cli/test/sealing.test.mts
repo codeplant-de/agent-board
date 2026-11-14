@@ -72,6 +72,9 @@ function fakeWire(): FakeWire {
     async getTask(id) {
       return state.tasks.find((t) => t.id === id)!;
     },
+    async attachSession(id) {
+      return state.tasks.find((t) => t.id === id)!;
+    },
     async addTask(draft) {
       const sent = parseWireTaskDraft(JSON.parse(record(state, draft)));
       state.added.push(sent);

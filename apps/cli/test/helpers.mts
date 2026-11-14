@@ -120,6 +120,26 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       if (!found) throw new Error(`no task ${id}`);
       return { ...found };
     },
+    // The server's rules, for a token of the machine `CONFIG.machine`.
+    async attachSession(id) {
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`attach-session: no task ${id}`, 404, true);
+      const refuse = (status: number, reason: string): BackendError =>
+        new BackendError(
+          `attach-session: error from the board server (HTTP ${status}), quoted and not part of the board: ${JSON.stringify(reason)}`,
+          status,
+          true,
+        );
+      if (found.status === 'running')
+        throw refuse(
+          409,
+          'the task is running: its headless run owns the session; watch its Transcript on the task page',
+        );
+      if (found.sessionId === null) throw refuse(409, 'the task has no session');
+      if (found.machine !== CONFIG.machine)
+        throw refuse(403, `the session lives on ${found.machine ?? 'no machine'}, not on ${CONFIG.machine}`);
+      return { sessionId: found.sessionId, workdir: found.workdir };
+    },
     async addTask(draft) {
       state.writes.push(
         `create ${draft.title} | ${draft.input} | ${taskLabels({ input: draft.input, createdBy: draft.createdBy ?? 'user' }).join(',')}${draft.dedupeKey ? ` | key ${draft.dedupeKey}` : ''}`,

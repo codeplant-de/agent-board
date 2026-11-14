@@ -227,6 +227,20 @@ export async function updateTask(db: DbOrTx, id: string, patch: WireTaskPatch): 
   });
 }
 
+/** The task a machine may attach to: its session lives on that machine and no run owns it. */
+export async function attachSession(db: DbOrTx, id: string, machine: string): Promise<TaskRow> {
+  const task = await getTask(db, id);
+  if (task.status === 'running')
+    throw new AppError(
+      'CONFLICT',
+      'the task is running: its headless run owns the session; watch its Transcript on the task page',
+    );
+  if (task.sessionId === null) throw new AppError('CONFLICT', 'the task has no session');
+  if (task.machine !== machine)
+    throw new AppError('FORBIDDEN', `the session lives on ${task.machine ?? 'no machine'}, not on ${machine}`);
+  return task;
+}
+
 /**
  * Todo to running for `machine`; the lock lets two machines claim at once and only one win.
  * A resume is pinned to the machine that holds its session, a proposal (a task that still names an agent as its creator) is
