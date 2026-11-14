@@ -8,7 +8,15 @@ import {
   serializeSchedule,
   serializeTask,
 } from '@agent-board/shared';
-import { BackendError, callServer, createWebBackend, dryRunBackend, parseWebConfig } from '../src/backend.mts';
+import {
+  BackendError,
+  callServer,
+  checkBoardUrl,
+  createWebBackend,
+  dryRunBackend,
+  parseWebConfig,
+  verifyContract,
+} from '../src/backend.mts';
 import type { Fetch } from '../src/backend.mts';
 import { createSealedBackend } from '../src/sealing.mts';
 import { DATA_KEY, KEYS, OWNER, wireSchedule, wireTask } from './helpers.mts';
@@ -67,7 +75,7 @@ test('a missing or malformed data key is refused with a pointer to Settings, nev
   const url = { url: 'https://board.example' };
   assert.throws(
     () => parseWebConfig(url, { AGENT_BOARD_TOKEN: 't' }),
-    /AGENT_BOARD_DATA_KEY \(copy it from the board's Settings page\)/,
+    /AGENT_BOARD_DATA_KEY \(copy it from the board's Settings page, then run "board init"\)/,
   );
   const secret = `${encodeDataKey(generateDataKey())}-damaged`;
   assert.throws(
@@ -321,4 +329,43 @@ test('an old server answer without owner and key id is a one-line failure', asyn
   const fetcher: Fetch = async () => new Response(JSON.stringify({ result: { contract: CONTRACT_VERSION } }));
   const backend = createWebBackend({ loadConfig: () => config, fetch: fetcher });
   await assert.rejects(backend.listTasks(), /version: version.owner must be a string/);
+});
+
+test('only a JSON answer of the API counts as the API speaking: a login page does not make the server old', async () => {
+  const html =
+    (status: number): Fetch =>
+    async () =>
+      new Response('<html>log in</html>', { status });
+  const api =
+    (status: number): Fetch =>
+    async () =>
+      new Response(JSON.stringify({ error: 'nope' }), { status });
+  await assert.rejects(
+    callServer(config, 'get-task', {}, html(401)),
+    (error: unknown) => error instanceof BackendError && error.status === 401 && !error.fromApi,
+  );
+  await assert.rejects(
+    callServer(config, 'get-task', {}, api(401)),
+    (error: unknown) => error instanceof BackendError && error.status === 401 && error.fromApi,
+  );
+  await assert.rejects(
+    verifyContract(config, html(404)),
+    (error: unknown) =>
+      error instanceof BackendError && /without JSON/.test(error.message) && !/older than/.test(error.message),
+  );
+  await assert.rejects(
+    verifyContract(config, api(404)),
+    /the board server is older than this CLI: it does not know the version command/,
+  );
+});
+
+test('a board URL with whitespace anywhere is refused', () => {
+  assert.equal(checkBoardUrl('https://board.example.com/'), 'https://board.example.com');
+  for (const url of [
+    'https://board.example.com ',
+    ' https://board.example.com',
+    'https://board example.com',
+    'https://board.example.com/a b',
+  ])
+    assert.throws(() => checkBoardUrl(url), /http\(s\) URL/, JSON.stringify(url));
 });

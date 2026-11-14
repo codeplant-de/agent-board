@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Review requests to tasks: one task per PR URL, checked against every task, closed ones included.
  * A task in Needs me or Done goes back to Todo when the PR's head moved and has settled. A task still waiting in Todo
@@ -6,7 +5,7 @@
  * A PR whose data cannot be read is skipped and its task left alone.
  * Add --dry-run to read everything and print every write instead.
  */
-import { buildContext, print, rejectExtraArgs, runMain, takeFlag } from './cli.mts';
+import { buildContext, print } from './cli.mts';
 import type { Context } from './cli.mts';
 import type { Backend, Task, TaskPatch } from '@agent-board/shared';
 import { parsePrUrl, prUrlIn } from '@agent-board/shared';
@@ -150,11 +149,6 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
   log(`INTAKE prs=${prs.length} created=${created} requeued=${requeued} done=${done}`);
 }
 
-if (import.meta.main) {
-  await runMain(async () => {
-    const args = process.argv.slice(2);
-    const dryRun = takeFlag(args, '--dry-run');
-    rejectExtraArgs(args, 'usage: intake [--dry-run]');
-    await runIntake({ ...buildContext(dryRun), print, github: createGitHub(), now: () => new Date() });
-  });
+export async function intakeMain({ dryRun }: { dryRun: boolean }): Promise<void> {
+  await runIntake({ ...buildContext(dryRun), print, github: createGitHub(), now: () => new Date() });
 }

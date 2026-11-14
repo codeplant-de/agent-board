@@ -1,6 +1,5 @@
-#!/usr/bin/env node
 /**
- * The PreToolUse hook of every run: `agent-hook <run dir> <task>`, with the hook input on stdin.
+ * The PreToolUse hook of every run: `board internal hook <run dir> <task>`, with the hook input on stdin.
  * It touches the task's heartbeat, records the agent's working directory (a worktree it entered shows up here), turns
  * AskUserQuestion into a question on the board (dormant: Claude Code 2.1.323 offers no AskUserQuestion to a headless run,
  * so the board's rules have the agent use `board ask` instead), and while a pause is requested it refuses every tool call but
@@ -74,10 +73,10 @@ export function hookDecision(input: unknown, pauseRequested: boolean, taskId: st
   return deny(PAUSE_REASON.replace('<task>', taskId));
 }
 
-if (import.meta.main) {
-  const [dir, taskId] = process.argv.slice(2);
+export async function runHook(args: string[]): Promise<void> {
+  const [dir, taskId] = args;
   try {
-    if (!dir || !taskId || !isSafeTaskId(taskId)) throw new Error('usage: agent-hook <run dir> <task>');
+    if (!dir || !taskId || !isSafeTaskId(taskId)) throw new Error('usage: board internal hook <run dir> <task>');
     const files = createRunFiles(dir);
     files.touchAlive(taskId);
     let input: unknown;

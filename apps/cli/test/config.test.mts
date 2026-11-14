@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { ConfigError, isSafeMode, parseConfig, readSecretFile } from '../src/config.mts';
+import { ConfigError, isSafeMode, loadConfig, parseConfig, readSecretFile } from '../src/config.mts';
 
 const valid = {
   repos: { 'cosuno/cosuno': '~/x' },
@@ -76,4 +76,22 @@ test('old keys of earlier versions are ignored', () => {
   });
   assert.equal(config.machine, parseConfig(valid).machine);
   assert.ok(!('backendCommand' in config));
+});
+
+test('a missing config.json is the defaults only when the command allows it; any other problem is an error', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-board-'));
+  try {
+    const path = join(dir, 'config.json');
+    assert.throws(() => loadConfig(path), /config file missing: .*run "board init"/);
+    assert.deepEqual(loadConfig(path, { optionalConfig: true }).lanes, [{ name: 'general', skills: ['*'], slots: 3 }]);
+    writeFileSync(path, '{ nope');
+    assert.throws(() => loadConfig(path, { optionalConfig: true }), /not valid JSON/);
+    writeFileSync(path, '{"lanes": 3}');
+    assert.throws(() => loadConfig(path, { optionalConfig: true }), ConfigError);
+    rmSync(path);
+    mkdirSync(path);
+    assert.throws(() => loadConfig(path, { optionalConfig: true }), /cannot read the config file .* \(EISDIR\)/);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });

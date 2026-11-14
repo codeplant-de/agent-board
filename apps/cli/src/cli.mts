@@ -5,31 +5,61 @@ import { ConfigError, getPaths, loadConfig } from './config.mts';
 import type { Config } from './config.mts';
 import { createSealedBackend } from './sealing.mts';
 import type { Backend } from '@agent-board/shared';
+import { wantsColor } from './style.mts';
 
 export interface Context {
   config: Config;
   backend: Backend;
   dryRun: boolean;
   print: (line: string) => void;
+  // Whether output may carry colour.
+  color?: boolean;
 }
 
 export function print(line: string): void {
   console.log(line);
 }
 
-export function buildContext(dryRun: boolean): Context {
-  const paths = getPaths();
-  const config = loadConfig(paths.configFile);
-  // The dry-run wrapper goes outside the sealing one, so it prints plaintext and reads what the sealing backend opens.
-  const backend = createSealedBackend({ loadConfig: () => loadWebConfig(paths.configDir) });
-  return { config, backend: dryRun ? dryRunBackend(backend, print) : backend, dryRun, print };
+export interface ContextOptions {
+  // A missing config.json means the defaults: for the commands that never bind work to this machine's name (not schedule, add, dispatch, intake, worker).
+  optionalConfig?: boolean;
+  // Where human lines go, including the DRY lines of a dry run; stderr while stdout carries a JSON document.
+  print?: (line: string) => void;
+  // Per request to the board, for commands that must answer quickly.
+  timeoutMs?: number;
 }
 
-// Expected failures end as one line on stderr, not a stack trace.
-export async function runMain(main: () => Promise<void>): Promise<void> {
+// The config is read on first use, so a command that never needs it works without a config.json.
+export function buildContext(dryRun: boolean, options: ContextOptions = {}): Context {
+  const paths = getPaths();
+  // The dry-run wrapper goes outside the sealing one, so it prints plaintext and reads what the sealing backend opens.
+  const backend = createSealedBackend({
+    loadConfig: () => loadWebConfig(paths.configDir),
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+  });
+  let config: Config | undefined;
+  const out = options.print ?? print;
+  return {
+    get config() {
+      config ??= loadConfig(paths.configFile, options);
+      return config;
+    },
+    backend: dryRun ? dryRunBackend(backend, out) : backend,
+    dryRun,
+    print: out,
+    color: wantsColor(process.stdout, process.env),
+  };
+}
+
+// Expected failures end as a line on stderr, not a stack trace; a usage error exits 2, the rest 1.
+export async function runMain(main: () => Promise<void>, prefix = 'agent-board'): Promise<void> {
   try {
     await main();
   } catch (error) {
+    if (error instanceof ReportedFailure) {
+      process.exitCode = 1;
+      return;
+    }
     if (
       error instanceof ConfigError ||
       error instanceof BackendError ||
@@ -37,15 +67,27 @@ export async function runMain(main: () => Promise<void>): Promise<void> {
       error instanceof GitHubError ||
       error instanceof SystemError
     ) {
-      console.error(`agent-board: ${error.message}`);
+      console.error(`${prefix}: ${error.message}`);
+      if (error instanceof UsageError) for (const line of error.details) console.error(line);
     } else {
-      console.error(`agent-board: unexpected error: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`${prefix}: unexpected error: ${error instanceof Error ? error.message : String(error)}`);
     }
-    process.exitCode = 1;
+    process.exitCode = error instanceof UsageError ? 2 : 1;
   }
 }
 
-export class UsageError extends Error {}
+// A failure whose reason was already printed: it only sets the exit code.
+export class ReportedFailure extends Error {}
+
+export class UsageError extends Error {
+  // Printed under the message: the command's usage and where to read more.
+  details: string[];
+
+  constructor(message: string, details: string[] = []) {
+    super(message);
+    this.details = details;
+  }
+}
 
 export async function readStdin(): Promise<string> {
   let content = '';
@@ -53,14 +95,15 @@ export async function readStdin(): Promise<string> {
   return content;
 }
 
-export function takeFlag(args: string[], flag: string): boolean {
-  const index = args.indexOf(flag);
-  if (index === -1) return false;
-  args.splice(index, 1);
-  return true;
-}
-
-// Anything left after the known flags is a typo, and a typo must never turn into a real run.
-export function rejectExtraArgs(args: string[], usage: string): void {
-  if (args.length > 0) throw new UsageError(`unexpected argument "${args[0]}"; ${usage}`);
+// The binary honours HTTP_PROXY and Node can (NODE_USE_ENV_PROXY): a board on this machine must never be sent through one,
+// or the token reaches the proxy in clear. Both runtimes read NO_PROXY, so loopback goes on it before the first request.
+export function keepLoopbackOffProxy(env: Record<string, string | undefined>): void {
+  const loopback = ['localhost', '127.0.0.1', '[::1]', '::1'];
+  for (const name of ['NO_PROXY', 'no_proxy']) {
+    const current = (env[name] ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== '');
+    env[name] = [...current, ...loopback.filter((entry) => !current.includes(entry))].join(',');
+  }
 }

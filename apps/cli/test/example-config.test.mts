@@ -107,6 +107,8 @@ test('an intake run may report and propose through board, but never schedule or 
     'board schedule',
     'board schedules rm abc',
     'board schedules pause abc',
+    'board internal worker abc',
+    'board internal hook /run abc',
     'board',
     'board move abc todo',
     'board move abc running',
@@ -128,4 +130,5 @@ test('an intake run may report and propose through board, but never schedule or 
   assert.ok(!entry.allowedTools.includes('Bash(board *)'));
   assert.ok(entry.disallowedTools.includes('Bash(board schedule *)'));
   assert.ok(entry.disallowedTools.includes('Bash(board schedules *)'));
+  assert.ok(entry.disallowedTools.includes('Bash(board internal *)'));
 });

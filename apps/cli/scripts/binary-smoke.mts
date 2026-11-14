@@ -1,0 +1,396 @@
+// Builds the binary for this host and runs it the way a worker machine would: outside the checkout, with no node on PATH,
+// a temporary home and config dir, and a local fake of the machine API. These are the paths where Bun and Node could differ.
+// Usage: node scripts/binary-smoke.mts   (needs bun on PATH)
+import assert from 'node:assert/strict';
+import { execFile, execFileSync } from 'node:child_process';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { createServer } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { CONTRACT_VERSION, open } from '@agent-board/shared';
+import { ENV_FILE, KEYS, VERSION_ANSWER, wireTask } from '../test/helpers.mts';
+
+const cliDir = fileURLToPath(new URL('..', import.meta.url));
+const version = (JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')) as { version: string }).version;
+const target = `${process.platform}-${process.arch}`;
+
+if (!['linux-x64', 'linux-arm64', 'darwin-arm64'].includes(target)) throw new Error(`no binary is built for ${target}`);
+const dist = mkdtempSync(join(tmpdir(), 'board-binary-dist-'));
+execFileSync('sh', [join(cliDir, 'build.sh'), target], {
+  cwd: cliDir,
+  env: { ...process.env, DIST_DIR: dist },
+  stdio: ['ignore', 'ignore', 'inherit'],
+});
+
+const root = mkdtempSync(join(tmpdir(), 'board-binary-smoke-'));
+const outside = mkdtempSync('/var/tmp/board-binary-smoke-');
+const binary = join(root, 'board');
+copyFileSync(join(dist, `board-${target}`), binary);
+chmodSync(binary, 0o755);
+
+const toolBin = join(root, 'bin');
+mkdirSync(toolBin);
+const systemdRuns = join(root, 'systemd-run.log');
+// Read-only systemctl and a systemd-run that would start something: the dry run must never call the latter.
+writeFileSync(
+  join(toolBin, 'systemctl'),
+  '#!/bin/sh\ncase "$*" in *is-active*) echo inactive; exit 3 ;; esac\nexit 0\n',
+  { mode: 0o755 },
+);
+writeFileSync(join(toolBin, 'systemd-run'), `#!/bin/sh\necho "$*" >> '${systemdRuns}'\n`, { mode: 0o755 });
+const path = `${toolBin}:/usr/bin:/bin`;
+for (const dir of path.split(':'))
+  assert.ok(
+    !existsSync(join(dir, 'node')) && !existsSync(join(dir, 'bun')),
+    `node or bun is on the smoke test PATH (${dir})`,
+  );
+
+type Mode = 'normal' | 'redirect';
+let mode: Mode = 'normal';
+// How long list-tasks takes to answer: long enough to replace the binary while a tick waits for it.
+let listDelayMs = 0;
+const requests: { command: string; body: string }[] = [];
+const todo = await wireTask({ id: 'Ab3dEf9x', title: 'Fix the thing', status: 'todo' });
+const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+  let body = '';
+  request.on('data', (chunk: Buffer) => (body += String(chunk)));
+  request.on('end', () => {
+    const command = request.url?.split('/').pop() ?? '';
+    requests.push({ command, body });
+    if (mode === 'redirect') {
+      response.writeHead(302, { location: '/elsewhere' });
+      return response.end();
+    }
+    const results: Record<string, unknown> = {
+      version: VERSION_ANSWER,
+      'list-tasks': [todo],
+      'get-task': todo,
+      'update-task': todo,
+      'claim-task': { ...todo, status: 'running', machine: 'smoke' },
+    };
+    const reply = (): void => void response.end(JSON.stringify({ result: results[command] ?? null }));
+    if (command === 'list-tasks' && listDelayMs > 0) setTimeout(reply, listDelayMs);
+    else reply();
+  });
+});
+await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+// The note bodies the fake server holds: sealed envelopes that only the test key opens.
+async function storedNotes(): Promise<string[]> {
+  const notes: string[] = [];
+  for (const request of requests.filter((entry) => entry.command === 'add-note')) {
+    const { id, body } = JSON.parse(request.body) as { id: string; body: { body: string } };
+    assert.ok(body.body.startsWith('abe1.'), 'a note must reach the server sealed');
+    notes.push(await open(KEYS, 'note.body', id, body.body));
+  }
+  return notes;
+}
+
+interface Result {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+function board(args: string[], configDir: string, env: Record<string, string> = {}): Promise<Result> {
+  return new Promise((resolve) => {
+    const child = execFile(
+      binary,
+      args,
+      {
+        cwd: root,
+        env: {
+          PATH: path,
+          HOME: root,
+          XDG_CONFIG_HOME: join(root, 'xdg'),
+          AGENT_BOARD_CONFIG_DIR: configDir,
+          XDG_RUNTIME_DIR: root,
+          ...env,
+        },
+        timeout: 30_000,
+      },
+      (error, stdout, stderr) =>
+        resolve({ code: error === null ? 0 : typeof error.code === 'number' ? error.code : -1, stdout, stderr }),
+    );
+    child.stdin?.end();
+  });
+}
+
+let configCount = 0;
+function config(options: { webUrl?: string; envMode?: number; config?: boolean } = {}): string {
+  const dir = join(root, `cfg${(configCount += 1)}`);
+  mkdirSync(dir);
+  writeFileSync(join(dir, 'web.json'), JSON.stringify({ url: options.webUrl ?? url }));
+  writeFileSync(join(dir, 'env'), ENV_FILE, { mode: options.envMode ?? 0o600 });
+  chmodSync(join(dir, 'env'), options.envMode ?? 0o600);
+  if (options.config) writeFileSync(join(dir, 'config.json'), JSON.stringify({ machine: 'smoke' }));
+  return dir;
+}
+
+let failures = 0;
+async function check(name: string, run: () => Promise<void>): Promise<void> {
+  try {
+    await run();
+    console.log(`ok   ${name}`);
+  } catch (error) {
+    failures += 1;
+    console.log(
+      `FAIL ${name}\n     ${error instanceof Error ? error.message.replaceAll('\n', '\n     ') : String(error)}`,
+    );
+  }
+}
+
+const empty = join(root, 'empty');
+mkdirSync(empty);
+
+await check('--version shows the injected version', async () => {
+  const result = await board(['--version'], empty);
+  assert.deepEqual([result.code, result.stdout], [0, `board ${version} (contract ${CONTRACT_VERSION})\n`]);
+});
+await check('help and help schedule', async () => {
+  const help = await board(['help'], empty);
+  assert.equal(help.code, 0);
+  assert.match(help.stdout, /Tasks:[\s\S]*Scheduling:[\s\S]*Setup:/);
+  const schedule = await board(['help', 'schedule'], empty);
+  assert.match(schedule.stdout, /Usage: board schedule[\s\S]*Examples:/);
+});
+await check('completion bash', async () => {
+  const result = await board(['completion', 'bash'], empty);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /^# bash completion for board/);
+});
+await check('tasks works with only web.json and env', async () => {
+  const result = await board(['tasks'], config());
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /todo \(1\)\n {2}Ab3dEf9x {2}normal {2}Fix the thing/);
+});
+await check('--dry-run comment writes nothing', async () => {
+  requests.length = 0;
+  const result = await board(['--dry-run', 'comment', 'Ab3dEf9x', 'hello'], config());
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /DRY add-note Ab3dEf9x hello/);
+  assert.ok(!requests.some((request) => request.command === 'add-note'));
+});
+await check('comment --file reads a file in /tmp, and refuses a link to a file outside it', async () => {
+  const dir = mkdtempSync('/tmp/board-binary-smoke-note-');
+  try {
+    const note = join(dir, 'note.md');
+    writeFileSync(note, 'from a file\n');
+    requests.length = 0;
+    const ok = await board(['comment', 'Ab3dEf9x', '--file', note], config());
+    assert.equal(ok.code, 0, ok.stderr);
+    assert.deepEqual(await storedNotes(), ['from a file']);
+    const secret = join(outside, 'secret');
+    writeFileSync(secret, 'TOKEN=1');
+    const link = join(dir, 'link.md');
+    symlinkSync(secret, link);
+    requests.length = 0;
+    const refused = await board(['comment', 'Ab3dEf9x', '--file', link], config());
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.stderr, /cannot read the note file/);
+    const viaDir = join(dir, 'linkdir');
+    symlinkSync(outside, viaDir);
+    const refusedDir = await board(['comment', 'Ab3dEf9x', '--file', join(viaDir, 'secret')], config());
+    assert.match(refusedDir.stderr, /must be inside \/tmp\//);
+    assert.ok(!requests.some((request) => request.command === 'add-note'));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+await check('an env file with mode 644 is refused', async () => {
+  const result = await board(['tasks'], config({ envMode: 0o644 }));
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /must be mode 600 or 400, is 644/);
+});
+await check('an http URL that is not localhost is refused', async () => {
+  const result = await board(['tasks'], config({ webUrl: 'http://board.example.com' }));
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /https unless it is localhost/);
+});
+await check('a server that answers with a redirect fails the call', async () => {
+  mode = 'redirect';
+  try {
+    const result = await board(['tasks'], config());
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /cannot reach/);
+  } finally {
+    mode = 'normal';
+  }
+});
+await check('setup --print points ExecStart at this binary', async () => {
+  const result = await board(['setup', '--print'], empty);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    new RegExp(`ExecStart=\\S*flock -n -E 75 %t/agent-board-dispatch.lock ${binary} internal dispatch\\n`),
+  );
+});
+await check('setup writes the binary that runs, not whatever ~/.local/bin/board resolves to', async () => {
+  const installDir = join(root, 'installed');
+  mkdirSync(installDir);
+  const other = join(root, 'board-other');
+  copyFileSync(binary, other);
+  chmodSync(other, 0o755);
+  symlinkSync(other, join(installDir, 'board'));
+  const result = await board(['setup', '--print'], empty, { BOARD_INSTALL_DIR: installDir });
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(result.stdout.includes(` ${binary} internal dispatch\n`), result.stdout);
+  assert.ok(!result.stdout.includes(other), 'the units must not run another binary');
+});
+await check('setup refuses a binary in the temp directory without --force', async () => {
+  const refused = await board(['setup'], empty);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /in the temp directory/);
+  const forced = await board(['setup', '--force'], empty);
+  assert.equal(forced.code, 0, forced.stderr);
+  assert.match(
+    readFileSync(join(root, 'xdg', 'systemd', 'user', 'agent-board-dispatch.service'), 'utf8'),
+    new RegExp(`${binary} internal dispatch`),
+  );
+});
+await check('a closed pipe keeps the exit code: doctor | head is 1, help | head is 0, nothing on stderr', async () => {
+  const through = (args: string): Promise<string> =>
+    new Promise((resolve) => {
+      execFile(
+        'bash',
+        ['-c', `"$BOARD" ${args} 2>"$ERR" | head -c0; echo "\${PIPESTATUS[0]}:$(cat "$ERR")"`],
+        {
+          env: { PATH: path, HOME: root, AGENT_BOARD_CONFIG_DIR: empty, BOARD: binary, ERR: join(root, 'pipe-stderr') },
+        },
+        (_error, stdout) => resolve(stdout.trim()),
+      );
+    });
+  assert.equal(await through('doctor'), '1:');
+  assert.equal(await through('help'), '0:');
+});
+await check('a loopback board is never sent through HTTP_PROXY', async () => {
+  const proxied: string[] = [];
+  const proxy = createServer((request, response) => {
+    proxied.push(`${request.method} ${request.url} ${request.headers.authorization ?? ''}`);
+    response.writeHead(502).end();
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  try {
+    const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+    const result = await board(['tasks'], config(), {
+      HTTP_PROXY: proxyUrl,
+      http_proxy: proxyUrl,
+      ALL_PROXY: proxyUrl,
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Fix the thing/);
+    assert.deepEqual(proxied, []);
+  } finally {
+    proxy.close();
+  }
+});
+await check('a tick that waits while the binary is replaced still plans a worker with the real path', async () => {
+  // Bun reads process.execPath lazily, and after the rename it would say "<path> (deleted)".
+  listDelayMs = 1500;
+  try {
+    const running = new Promise<Result>((resolve) => {
+      const child = execFile(
+        binary,
+        ['internal', 'dispatch', '--dry-run'],
+        {
+          cwd: root,
+          env: { PATH: path, HOME: root, AGENT_BOARD_CONFIG_DIR: config({ config: true }), XDG_RUNTIME_DIR: root },
+          timeout: 30_000,
+        },
+        (error, stdout, stderr) =>
+          resolve({ code: error === null ? 0 : typeof error.code === 'number' ? error.code : -1, stdout, stderr }),
+      );
+      child.stdin?.end();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const replacement = `${binary}.new`;
+    copyFileSync(binary, replacement);
+    chmodSync(replacement, 0o755);
+    renameSync(replacement, binary);
+    const result = await running;
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(!result.stdout.includes('(deleted)'), result.stdout);
+    assert.match(result.stdout, new RegExp(`-- ${binary} internal worker Ab3dEf9x`));
+  } finally {
+    listDelayMs = 0;
+  }
+});
+await check('init reads the token from a pipe (--token-file /dev/stdin) and writes env with mode 600', async () => {
+  const dir = join(root, 'init-cfg');
+  const result = await new Promise<Result>((resolve) => {
+    execFile(
+      'sh',
+      ['-c', `printf %s "$TOKEN" | "$BOARD" init --url ${url} --token-file /dev/stdin --machine smoke`],
+      {
+        cwd: root,
+        env: { PATH: path, HOME: root, AGENT_BOARD_CONFIG_DIR: dir, TOKEN: 'abm_piped', BOARD: binary },
+        timeout: 30_000,
+      },
+      (error, stdout, stderr) =>
+        resolve({ code: error === null ? 0 : typeof error.code === 'number' ? error.code : -1, stdout, stderr }),
+    );
+  });
+  assert.equal(readFileSync(join(dir, 'env'), 'utf8'), 'AGENT_BOARD_TOKEN=abm_piped\n');
+  assert.equal(statSync(join(dir, 'env')).mode & 0o777, 0o600);
+  assert.match(result.stdout, /✓ server: .* answers, contract matches/);
+  assert.ok(!result.stdout.includes('abm_piped'));
+});
+await check('a world-readable token file is refused by init', async () => {
+  const file = join(root, 'wide-token');
+  writeFileSync(file, 'abm_wide\n', { mode: 0o644 });
+  chmodSync(file, 0o644);
+  const result = await board(['init', '--url', url, '--token-file', file], join(root, 'init-cfg2'));
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /token file must be mode 600 or 400, is 644/);
+});
+await check('the prompts library is bundled although it is loaded only when init asks', async () => {
+  // Loaded by a dynamic import, which has to end up inside the executable; a string that only clack carries.
+  assert.ok(readFileSync(binary).includes('Press Ctrl+C to cancel') || readFileSync(binary).includes('withGuide'));
+});
+await check('internal hook creates the heartbeat file', async () => {
+  const runDir = mkdtempSync(join(root, 'run-'));
+  const result = await board(['internal', 'hook', runDir, 'Ab3dEf9x'], empty);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(readdirSync(runDir), ['Ab3dEf9x.alive']);
+});
+await check('internal dispatch --dry-run plans a start with this binary and starts nothing', async () => {
+  requests.length = 0;
+  const result = await board(['internal', 'dispatch', '--dry-run'], config({ config: true }));
+  assert.equal(result.code, 0, result.stderr);
+  console.log(result.stdout.trimEnd().replace(/^/gm, '       | '));
+  assert.match(result.stdout, /DRY claim-task Ab3dEf9x --machine smoke/);
+  assert.match(result.stdout, new RegExp(`DRY systemd-run .* -- ${binary} internal worker Ab3dEf9x`));
+  assert.match(result.stdout, /STARTED Ab3dEf9x/);
+  assert.ok(!existsSync(systemdRuns), 'systemd-run was called');
+  assert.ok(
+    !requests.some((request) => ['claim-task', 'add-note', 'update-task'].includes(request.command)),
+    'a write reached the server',
+  );
+});
+
+server.close();
+rmSync(root, { recursive: true });
+rmSync(outside, { recursive: true });
+rmSync(dist, { recursive: true });
+if (failures > 0) {
+  console.log(`${failures} check(s) failed`);
+  process.exit(1);
+}
+console.log('binary smoke test passed');

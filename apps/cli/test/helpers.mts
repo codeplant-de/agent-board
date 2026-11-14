@@ -1,7 +1,7 @@
 import type { Config } from '../src/config.mts';
 import type { RunFiles, RunRecord } from '../src/runtime.mts';
 import { BackendError } from '../src/backend.mts';
-import { deriveKeys, generateDataKey, seal, taskLabels } from '@agent-board/shared';
+import { CONTRACT_VERSION, deriveKeys, encodeDataKey, generateDataKey, seal, taskLabels } from '@agent-board/shared';
 import type { Backend, Note, Schedule, Task, WireSchedule, WireTask } from '@agent-board/shared';
 
 export function task(overrides: Partial<Task> & { id: string }): Task {
@@ -300,3 +300,9 @@ export async function wireSchedule(overrides: Partial<Schedule> & { id: string }
     workdir: workdir === null ? null : await seal(KEYS, 'workdir', '', workdir),
   };
 }
+
+// The credentials file of a machine that holds the test board's data key.
+export const ENV_FILE = `AGENT_BOARD_TOKEN=abm_secret\nAGENT_BOARD_DATA_KEY=${encodeDataKey(DATA_KEY)}\n`;
+
+// What the test board's `version` answers.
+export const VERSION_ANSWER = { contract: CONTRACT_VERSION, owner: OWNER, keyId: KEYS.keyId };
