@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -190,6 +190,59 @@ test('tasks works with only web.json and env', async () => {
     assert.ok(!result.stdout.includes('\x1b'));
   } finally {
     server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('__complete is gone after about two seconds of wall time, whatever is in flight', async () => {
+  const dir = emptyConfigDir();
+  const sockets = new Set<Socket>();
+  // A board that takes the connection and never answers: the version check and the list would each wait for their own timeout.
+  const server = createServer(() => undefined);
+  server.on('connection', (socket) => sockets.add(socket));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { port } = server.address() as AddressInfo;
+    writeFileSync(join(dir, 'web.json'), JSON.stringify({ url: `http://127.0.0.1:${port}` }));
+    writeFileSync(join(dir, 'env'), 'AGENT_BOARD_TOKEN=abm_secret\n', { mode: 0o600 });
+    const started = Date.now();
+    const result = await run('board', ['__complete', 'tasks'], dir);
+    const took = Date.now() - started;
+    assert.deepEqual([result.code, result.stdout], [0, '']);
+    assert.ok(took >= 1800 && took < 3500, `took ${took} ms`);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('init reads the token from a pipe with --token-file /dev/stdin, and writes env with mode 600', async () => {
+  const dir = emptyConfigDir();
+  try {
+    const result = await new Promise<Result>((resolve) => {
+      execFile(
+        'sh',
+        ['-c', 'printf %s "$TOKEN" | "$BOARD" init --url http://127.0.0.1:1 --token-file /dev/stdin --machine box'],
+        {
+          env: {
+            ...process.env,
+            AGENT_BOARD_CONFIG_DIR: dir,
+            TOKEN: 'abm_piped',
+            BOARD: join(BIN, 'board'),
+            AGENT_BOARD_TASK: '',
+          },
+        },
+        (error, stdout, stderr) =>
+          resolve({ code: error === null ? 0 : typeof error.code === 'number' ? error.code : -1, stdout, stderr }),
+      );
+    });
+    // The doctor at the end cannot reach the board on port 1, so the command exits 1; the files are written.
+    assert.equal(result.code, 1, result.stderr);
+    assert.equal(readFileSync(join(dir, 'env'), 'utf8'), 'AGENT_BOARD_TOKEN=abm_piped\n');
+    assert.equal(statSync(join(dir, 'env')).mode & 0o777, 0o600);
+    assert.ok(!result.stdout.includes('abm_piped'));
+  } finally {
     rmSync(dir, { recursive: true });
   }
 });

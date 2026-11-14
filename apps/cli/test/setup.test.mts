@@ -11,9 +11,18 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { runBoard } from '../src/commands.mts';
-import { parseExecStart, quoteExecArg, renderUnits, setup, ENABLE_COMMAND } from '../src/setup.mts';
+import {
+  parseExecStart,
+  quoteExecArg,
+  renderUnits,
+  setup,
+  treeProblem,
+  ENABLE_COMMAND,
+  UNIT_PATH,
+} from '../src/setup.mts';
 import type { SetupDeps } from '../src/setup.mts';
 
 const command = (name: string): string[] => [
@@ -192,11 +201,16 @@ test('board setup goes through the command line into a temp unit dir and is refu
   const dir = mkdtempSync(join(tmpdir(), 'board-setup-test-'));
   const calls: string[] = [];
   const options = {
-    env: { XDG_CONFIG_HOME: join(dir, 'xdg'), AGENT_BOARD_CONFIG_DIR: join(dir, 'cfg') },
+    env: {
+      XDG_CONFIG_HOME: join(dir, 'xdg'),
+      AGENT_BOARD_CONFIG_DIR: join(dir, 'cfg'),
+      BOARD_INSTALL_DIR: join(dir, 'bin'),
+    },
     writeOut: () => undefined,
     platform: 'linux',
     which: (program: string) => `/usr/bin/${program}`,
     runSystem: async (program: string, args: string[]) => void calls.push([program, ...args].join(' ')),
+    systemctlCode: async () => 1,
   };
   try {
     await runBoard(['setup'], options);
@@ -206,6 +220,67 @@ test('board setup goes through the command line into a temp unit dir and is refu
       runBoard(['setup'], { ...options, env: { ...options.env, AGENT_BOARD_TASK: 'Zt0Test1' } }),
       /not available inside a board run/,
     );
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('the units run with the PATH setup exports, and doctor looks tools up on it', () => {
+  const [service] = renderUnits({ flock: '/usr/bin/flock', command });
+  assert.ok(service?.text.includes(`Environment=PATH=${UNIT_PATH}\n`));
+  assert.equal(UNIT_PATH, '%h/.local/bin:/usr/local/bin:/usr/bin:/bin');
+});
+
+test('with both timers enabled already, setup does not tell you to enable them', async () => {
+  const { dir, printed, deps } = fixture({ timerEnabled: async () => true });
+  const partly = fixture({ timerEnabled: async (timer) => timer.includes('dispatch') });
+  try {
+    await setup(deps, {});
+    assert.ok(!printed.some((line) => line.includes('Enable the timers')));
+    assert.ok(printed.some((line) => line.includes('enabled already')));
+    await setup(partly.deps, {});
+    assert.ok(partly.printed.some((line) => line.includes('Enable the timers')));
+  } finally {
+    rmSync(dir, { recursive: true });
+    rmSync(partly.dir, { recursive: true });
+  }
+});
+
+test('setup from a tree that is not the installed one refuses without --force, and warns with it', async () => {
+  const problem = 'this checkout (/scratch/apps/cli) is not the one /home/me/.local/bin/board runs (/live/apps/cli)';
+  const { dir, unitDir, printed, calls, deps } = fixture({ treeProblem: () => problem });
+  try {
+    await assert.rejects(setup(deps, {}), /not the one .* runs .*add --force/);
+    assert.throws(() => readdirSync(unitDir), 'nothing was written');
+    assert.deepEqual(calls, []);
+    await setup(deps, { print: true });
+    assert.equal(calls.length, 0, '--print changes nothing and needs no --force');
+    await setup(deps, { force: true });
+    assert.ok(printed.includes(`warning: ${problem}`));
+    assert.equal(readdirSync(unitDir).length, 4);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('the tree check compares this checkout with where the installed board resolves to', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-tree-test-'));
+  try {
+    assert.equal(
+      treeProblem({ BOARD_INSTALL_DIR: join(dir, 'none') }),
+      undefined,
+      'nothing installed: nothing to take over',
+    );
+    const elsewhere = join(dir, 'elsewhere', 'apps', 'cli', 'bin');
+    mkdirSync(elsewhere, { recursive: true });
+    writeFileSync(join(elsewhere, 'board'), '#!/bin/sh\n');
+    const installDir = join(dir, 'bin');
+    mkdirSync(installDir);
+    symlinkSync(join(elsewhere, 'board'), join(installDir, 'board'));
+    assert.match(treeProblem({ BOARD_INSTALL_DIR: installDir }) ?? '', /is not the one .*runs/);
+    rmSync(join(installDir, 'board'));
+    symlinkSync(fileURLToPath(new URL('../bin/board', import.meta.url)), join(installDir, 'board'));
+    assert.equal(treeProblem({ BOARD_INSTALL_DIR: installDir }), undefined);
   } finally {
     rmSync(dir, { recursive: true });
   }

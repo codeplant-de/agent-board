@@ -1,12 +1,16 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { installedCommand } from './self.mts';
+import { installedCommand, isCompiledBinary } from './self.mts';
 import { SystemError } from './system.mts';
 
 const exec = promisify(execFile);
+
+// The PATH of the units: what the worker finds `claude`, `gh` and `systemd-run` on, whatever the shell's PATH is. %h is the home directory.
+export const UNIT_PATH = '%h/.local/bin:/usr/local/bin:/usr/bin:/bin';
 
 export const UNIT_NAMES = ['dispatch', 'intake'] as const;
 export type UnitName = (typeof UNIT_NAMES)[number];
@@ -89,7 +93,7 @@ Description=${unit.description}
 [Service]
 Type=oneshot
 # PATH is for gh, claude and systemd-run.
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=${UNIT_PATH}
 # The lock keeps one run at a time, whoever starts it; exit 75 means another run holds it, which is not a failure.
 ExecStart=${execStart}
 SuccessExitStatus=75
@@ -123,6 +127,8 @@ export const ENABLE_COMMAND = 'systemctl --user enable --now agent-board-dispatc
 export interface SetupFlags {
   enable?: boolean;
   print?: boolean;
+  // Install although the tree that runs setup is not the one `board` is installed from.
+  force?: boolean;
 }
 
 export interface SetupDeps {
@@ -131,8 +137,24 @@ export interface SetupDeps {
   // The absolute path of a program on PATH.
   which: (program: string) => string | undefined;
   command: RenderInput['command'];
+  // A sentence when this tree is not the one the installed `board` runs from, else undefined.
+  treeProblem?: () => string | undefined;
+  // Whether a timer is already enabled (a read-only systemctl call), to leave out the hint to enable it.
+  timerEnabled?: (timer: string) => Promise<boolean>;
   run: (program: string, args: string[]) => Promise<void>;
   print: (line: string) => void;
+}
+
+// The checkout that runs setup against the one `~/.local/bin/board` resolves to: a worktree or scratch copy must not take over the live timers.
+export function treeProblem(env: Record<string, string | undefined>): string | undefined {
+  if (isCompiledBinary()) return undefined;
+  const installed = join(env['BOARD_INSTALL_DIR'] || join(homedir(), '.local', 'bin'), 'board');
+  if (!existsSync(installed)) return undefined;
+  const installedTree = dirname(dirname(realpathSync(installed)));
+  const thisTree = realpathSync(fileURLToPath(new URL('..', import.meta.url)));
+  return installedTree === thisTree
+    ? undefined
+    : `this checkout (${thisTree}) is not the one ${installed} runs (${installedTree})`;
 }
 
 export function whichOnPath(program: string, path: string | undefined = process.env['PATH']): string | undefined {
@@ -149,6 +171,7 @@ export function realSetupDeps(env: Record<string, string | undefined>, print: (l
     platform: process.platform,
     which: (program) => whichOnPath(program, env['PATH']),
     command: (name) => installedCommand(env, 'internal', name),
+    treeProblem: () => treeProblem(env),
     run: async (program, args) => {
       try {
         await exec(program, args);
@@ -183,6 +206,14 @@ export async function setup(deps: SetupDeps, flags: SetupFlags): Promise<void> {
     for (const unit of units) deps.print(`# ${join(deps.unitDir, unit.file)}\n${unit.text}`);
     return;
   }
+  const mismatch = deps.treeProblem?.();
+  if (mismatch !== undefined) {
+    if (!flags.force)
+      throw new SystemError(
+        `${mismatch}; run board setup from the installed one, or add --force to install these units anyway`,
+      );
+    deps.print(`warning: ${mismatch}`);
+  }
   mkdirSync(deps.unitDir, { recursive: true });
   for (const unit of units) {
     const path = join(deps.unitDir, unit.file);
@@ -213,6 +244,10 @@ export async function setup(deps: SetupDeps, flags: SetupFlags): Promise<void> {
     ]);
     deps.print('enabled and started the dispatch and intake timers');
   } else {
-    deps.print(`Enable the timers when you are ready:\n  ${ENABLE_COMMAND}`);
+    const enabled = await Promise.all(
+      UNIT_NAMES.map((name) => deps.timerEnabled?.(`agent-board-${name}.timer`) ?? Promise.resolve(false)),
+    );
+    if (enabled.every(Boolean)) deps.print('the timers are enabled already; the next tick runs the new units');
+    else deps.print(`Enable the timers when you are ready:\n  ${ENABLE_COMMAND}`);
   }
 }

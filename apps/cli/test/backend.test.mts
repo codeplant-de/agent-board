@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CONTRACT_VERSION, serializeSchedule, serializeTask } from '@agent-board/shared';
-import { BackendError, callServer, createWebBackend, dryRunBackend, parseWebConfig } from '../src/backend.mts';
+import {
+  BackendError,
+  callServer,
+  checkBoardUrl,
+  createWebBackend,
+  dryRunBackend,
+  parseWebConfig,
+  verifyContract,
+} from '../src/backend.mts';
 import type { Fetch } from '../src/backend.mts';
 import { schedule, task } from './helpers.mts';
 
@@ -233,4 +241,43 @@ test('a dry run reads through and prints every write instead of sending it', asy
     ['DRY update-task', 'DRY add-note', 'DRY claim-task', 'DRY add-schedule', 'DRY remove-schedule'],
   );
   assert.deepEqual([...new Set(seen.map((request) => request.command))], ['version', 'get-task']);
+});
+
+test('only a JSON answer of the API counts as the API speaking: a login page does not make the server old', async () => {
+  const html =
+    (status: number): Fetch =>
+    async () =>
+      new Response('<html>log in</html>', { status });
+  const api =
+    (status: number): Fetch =>
+    async () =>
+      new Response(JSON.stringify({ error: 'nope' }), { status });
+  await assert.rejects(
+    callServer(config, 'get-task', {}, html(401)),
+    (error: unknown) => error instanceof BackendError && error.status === 401 && !error.fromApi,
+  );
+  await assert.rejects(
+    callServer(config, 'get-task', {}, api(401)),
+    (error: unknown) => error instanceof BackendError && error.status === 401 && error.fromApi,
+  );
+  await assert.rejects(
+    verifyContract(config, html(404)),
+    (error: unknown) =>
+      error instanceof BackendError && /without JSON/.test(error.message) && !/older than/.test(error.message),
+  );
+  await assert.rejects(
+    verifyContract(config, api(404)),
+    /the board server is older than this CLI: it does not know the version command/,
+  );
+});
+
+test('a board URL with whitespace anywhere is refused', () => {
+  assert.equal(checkBoardUrl('https://board.example.com/'), 'https://board.example.com');
+  for (const url of [
+    'https://board.example.com ',
+    ' https://board.example.com',
+    'https://board example.com',
+    'https://board.example.com/a b',
+  ])
+    assert.throws(() => checkBoardUrl(url), /http\(s\) URL/, JSON.stringify(url));
 });

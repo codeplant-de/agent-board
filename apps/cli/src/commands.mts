@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { hostname } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { Argument, Command, CommanderError } from 'commander';
 import { CONTRACT_VERSION, STATUSES } from '@agent-board/shared';
 import {
@@ -441,25 +441,27 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   });
 
   const out = (line: string): void => writeOut(`${line}\n`);
+  const systemctlCode: DoctorDeps['systemctl'] =
+    options.systemctlCode ??
+    ((args) =>
+      new Promise<number>((resolve) => {
+        execFile('systemctl', args, (error) =>
+          resolve(error === null ? 0 : typeof error.code === 'number' ? error.code : 1),
+        );
+      }));
   const setupDeps = (): SetupDeps => ({
     ...realSetupDeps(env, out),
     ...(options.which ? { which: options.which } : {}),
     ...(options.platform ? { platform: options.platform } : {}),
     ...(options.runSystem ? { run: options.runSystem } : {}),
+    timerEnabled: async (timer) => (await systemctlCode(['--user', 'is-enabled', timer])) === 0,
   });
   const doctorDeps = (): DoctorDeps => {
     const { configDir } = getPaths(env);
-    const systemctl =
-      options.systemctlCode ??
-      ((args: string[]) =>
-        new Promise<number>((resolve) => {
-          execFile('systemctl', args, (error) =>
-            resolve(error === null ? 0 : typeof error.code === 'number' ? error.code : 1),
-          );
-        }));
+    const systemctl = systemctlCode;
     const which = options.which ?? ((program: string) => whichOnPath(program, env['PATH']));
     return {
-      ...realDoctorDeps(configDir, unitDirectory(env), systemctl, which),
+      ...realDoctorDeps(configDir, unitDirectory(env), systemctl, which, homedir(), options.which),
       verifyServer: options.verifyServer ?? ((config) => verifyContract(config)),
     };
   };
@@ -476,7 +478,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .description(
       paragraphs(
         "Set this machine up for the board: write web.json (the board's URL), env (the machine token, mode 600) and, if it is missing, config.json (from the example, with this machine's name). Then run the checks of `board doctor`.",
-        'Without flags it asks. For a script give --url and --token-file (a token on the command line would land in the shell history); --machine defaults to the host name. A file that exists is kept unless --force, which copies it to <name>.bak-<timestamp> first; config.json is never replaced.',
+        'Without flags it asks. For a script give --url and --token-file: the token never goes on the command line, where it would land in the shell history. The file must be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board init --url … --token-file /dev/stdin`. --machine defaults to the host name. A file that exists is kept unless --force, which copies it to <name>.bak-<timestamp> first; config.json is never replaced.',
         'Not available inside a board run.',
       ),
     )
@@ -486,7 +488,10 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .option('--force', 'replace web.json and env after backing them up')
     .addHelpText(
       'after',
-      examples('board init', 'board init --url https://board.example.com --token-file ~/token --machine laptop'),
+      examples(
+        'board init',
+        'printf %s "$TOKEN" | board init --url https://board.example.com --token-file /dev/stdin --machine laptop',
+      ),
     )
     .action(async (flags: InitFlags) => {
       notInRun('board init is not available inside a board run');
@@ -532,10 +537,11 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .description(
       paragraphs(
         'Install this machine as a worker: write the dispatch and intake services and timers into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies, run `systemctl --user daemon-reload` and print the line that enables the timers. Run it again after moving the checkout or upgrading Node. It needs Linux with systemd and flock.',
-        'The services run this CLI with the node that ran `board setup`. --print shows the units and changes nothing; --enable also enables and starts the timers. When an installed unit differs from what it writes, the differing lines are shown. Not available inside a board run.',
+        'The services run this CLI with the node that ran `board setup`. --print shows the units and changes nothing; --enable also enables and starts the timers. When an installed unit differs from what it writes, the differing lines are shown. When this checkout is not the one the installed ~/.local/bin/board runs from (a worktree, a scratch copy), it refuses unless --force, so it cannot take over the live timers. Not available inside a board run.',
       ),
     )
     .option('--enable', 'also enable and start the timers')
+    .option('--force', 'install although this checkout is not the one the installed board runs from')
     .option('--print', 'print the units and change nothing')
     .addHelpText('after', examples('board setup', 'board setup --print', 'board setup --enable'))
     .action(async (flags: SetupFlags) => {

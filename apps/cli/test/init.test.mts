@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -145,7 +155,7 @@ test('init refuses a bad URL, a token that is not a machine token and an unsafe 
     );
     await assert.rejects(
       init(deps(join(dir, 'd')), { ...good, tokenFile: join(dir, 'missing') }),
-      /cannot read the token file/,
+      /token file missing/,
     );
     await assert.rejects(init(deps(join(dir, 'e')), { ...good, machine: 'bad name' }), /machine name/);
     await init(deps(join(dir, 'f')), { ...good, url: 'http://localhost:3000' });
@@ -227,6 +237,157 @@ test('a failing check after init fails the command', async () => {
       }),
       /a check failed/,
     );
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+// A prompt that behaves like clack: validate sees the raw input before any default is applied, and the raw value comes back.
+function clackLike(answers: { text: string[]; secret: string[] }): Prompts & { asked: string[] } {
+  const asked: string[] = [];
+  const take = (
+    queue: string[],
+    message: string,
+    validate: (value: string) => string | undefined,
+    defaultValue?: string,
+  ): string => {
+    asked.push(message);
+    const raw = queue.shift() ?? '';
+    const problem = validate(raw);
+    if (problem !== undefined) throw new Error(`prompt validation: ${problem}`);
+    return raw === '' ? (defaultValue ?? '') : raw;
+  };
+  return {
+    asked,
+    text: async (message, { defaultValue, validate }) => take(answers.text, message, validate, defaultValue),
+    secret: async (message, { validate }) => take(answers.secret, message, validate),
+  };
+}
+
+test('prompt answers are trimmed, and Enter accepts the machine name default', async () => {
+  const dir = tempDir();
+  try {
+    const prompts = clackLike({ text: ['  https://board.example.com  ', ''], secret: [`  ${TOKEN}\n`] });
+    await init(deps(join(dir, 'cfg'), { interactive: true, prompts, hostName: 'laptop' }), {});
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, 'cfg', 'web.json'), 'utf8')), {
+      url: 'https://board.example.com',
+    });
+    assert.equal(readFileSync(join(dir, 'cfg', 'env'), 'utf8'), `AGENT_BOARD_TOKEN=${TOKEN}\n`);
+    assert.equal(
+      (JSON.parse(readFileSync(join(dir, 'cfg', 'config.json'), 'utf8')) as { machine: string }).machine,
+      'laptop',
+    );
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a URL with embedded whitespace is refused by the prompt, and by the URL rule itself', async () => {
+  assert.match(urlProblem('https://board.example.com/ x') ?? '', /http\(s\) URL/);
+  assert.match(urlProblem('https://board example.com') ?? '', /http\(s\) URL/);
+  assert.equal(urlProblem(' https://board.example.com '), undefined, 'surrounding spaces are trimmed, not refused');
+  const dir = tempDir();
+  try {
+    const prompts = clackLike({ text: ['https://board.example.com/ x'], secret: [TOKEN] });
+    await assert.rejects(init(deps(join(dir, 'cfg'), { interactive: true, prompts }), {}), /prompt validation/);
+    assert.throws(() => readdirSync(join(dir, 'cfg')), 'nothing was created');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('init --force with a bad answer changes nothing: no backup, no temp file, web.json stays', async () => {
+  const dir = tempDir();
+  const configDir = join(dir, 'cfg');
+  try {
+    await init(deps(configDir), { url: 'https://old.example.com', tokenFile: tokenFile(dir, 'abm_old'), machine: 'm' });
+    const before = readdirSync(configDir).sort();
+    const prompts = clackLike({ text: [' not a url'], secret: [TOKEN] });
+    await assert.rejects(init(deps(configDir, { interactive: true, prompts }), { force: true }), /prompt validation/);
+    assert.deepEqual(readdirSync(configDir).sort(), before);
+    assert.deepEqual(JSON.parse(readFileSync(join(configDir, 'web.json'), 'utf8')), { url: 'https://old.example.com' });
+    await assert.rejects(init(deps(configDir), { force: true, url: ' not a url', tokenFile: tokenFile(dir) }), /--url/);
+    assert.deepEqual(readdirSync(configDir).sort(), before);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a failure while writing leaves every file in place and no temp file behind', async () => {
+  const dir = tempDir();
+  const configDir = join(dir, 'cfg');
+  try {
+    await init(deps(configDir), { url: 'https://old.example.com', tokenFile: tokenFile(dir, 'abm_old'), machine: 'm' });
+    rmSync(join(configDir, 'env'));
+    mkdirSync(join(configDir, 'env'));
+    writeFileSync(join(configDir, 'env', 'inside'), 'x');
+    await assert.rejects(
+      init(deps(configDir), { force: true, url: 'https://new.example.com', tokenFile: tokenFile(dir) }),
+    );
+    assert.deepEqual(JSON.parse(readFileSync(join(configDir, 'web.json'), 'utf8')), { url: 'https://old.example.com' });
+    assert.deepEqual(readdirSync(configDir).sort(), ['config.json', 'env', 'web.json']);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a dangling symlink in place of env is replaced by a real file', async () => {
+  const dir = tempDir();
+  const configDir = join(dir, 'cfg');
+  try {
+    mkdirSync(configDir);
+    symlinkSync(join(dir, 'nowhere'), join(configDir, 'env'));
+    await init(deps(configDir), { url: 'https://board.example.com', tokenFile: tokenFile(dir), machine: 'm' });
+    assert.equal(statSync(join(configDir, 'env')).isFile(), true);
+    assert.equal(readFileSync(join(configDir, 'env'), 'utf8'), `AGENT_BOARD_TOKEN=${TOKEN}\n`);
+    assert.equal(mode(join(configDir, 'env')), 0o600);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('only the values whose file will be written are asked for', async () => {
+  const dir = tempDir();
+  const configDir = join(dir, 'cfg');
+  try {
+    await init(deps(configDir), { url: 'https://board.example.com', tokenFile: tokenFile(dir), machine: 'm' });
+    rmSync(join(configDir, 'env'));
+    const result = await init(deps(configDir), { tokenFile: tokenFile(dir, 'abm_new') });
+    assert.deepEqual(result.written, [join(configDir, 'env')]);
+    rmSync(join(configDir, 'env'));
+    const prompts = clackLike({ text: [], secret: [TOKEN] });
+    await init(deps(configDir, { interactive: true, prompts }), {});
+    assert.deepEqual(prompts.asked, ['Machine token (not shown)']);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a token file is held to the same mode as env', async () => {
+  const dir = tempDir();
+  try {
+    const wide = tokenFile(dir);
+    chmodSync(wide, 0o644);
+    await assert.rejects(
+      init(deps(join(dir, 'cfg')), { url: 'https://board.example.com', tokenFile: wide }),
+      /token file must be mode 600 or 400, is 644/,
+    );
+    assert.throws(() => readdirSync(join(dir, 'cfg')));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('config.json is always kept, and the line says so', async () => {
+  const dir = tempDir();
+  const configDir = join(dir, 'cfg');
+  try {
+    const first = deps(configDir);
+    await init(first, { url: 'https://board.example.com', tokenFile: tokenFile(dir), machine: 'm' });
+    const second = deps(configDir);
+    await init(second, { force: true, url: 'https://board.example.com', tokenFile: tokenFile(dir) });
+    assert.ok(second.printed.some((line) => /kept .*config\.json \(config\.json is always kept/.test(line)));
+    assert.ok(!second.printed.some((line) => /config\.json.*--force/.test(line)));
   } finally {
     rmSync(dir, { recursive: true });
   }

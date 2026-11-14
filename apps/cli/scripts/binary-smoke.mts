@@ -12,6 +12,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -234,6 +235,38 @@ await check('setup --print points at the installed binary when there is one, sym
   const result = await board(['setup', '--print'], empty, { BOARD_INSTALL_DIR: installDir });
   assert.equal(result.code, 0, result.stderr);
   assert.ok(result.stdout.includes(` ${real} internal dispatch\n`), result.stdout);
+});
+await check('init reads the token from a pipe (--token-file /dev/stdin) and writes env with mode 600', async () => {
+  const dir = join(root, 'init-cfg');
+  const result = await new Promise<Result>((resolve) => {
+    execFile(
+      'sh',
+      ['-c', `printf %s "$TOKEN" | "$BOARD" init --url ${url} --token-file /dev/stdin --machine smoke`],
+      {
+        cwd: root,
+        env: { PATH: path, HOME: root, AGENT_BOARD_CONFIG_DIR: dir, TOKEN: 'abm_piped', BOARD: binary },
+        timeout: 30_000,
+      },
+      (error, stdout, stderr) =>
+        resolve({ code: error === null ? 0 : typeof error.code === 'number' ? error.code : -1, stdout, stderr }),
+    );
+  });
+  assert.equal(readFileSync(join(dir, 'env'), 'utf8'), 'AGENT_BOARD_TOKEN=abm_piped\n');
+  assert.equal(statSync(join(dir, 'env')).mode & 0o777, 0o600);
+  assert.match(result.stdout, /✓ server: .* answers, contract matches/);
+  assert.ok(!result.stdout.includes('abm_piped'));
+});
+await check('a world-readable token file is refused by init', async () => {
+  const file = join(root, 'wide-token');
+  writeFileSync(file, 'abm_wide\n', { mode: 0o644 });
+  chmodSync(file, 0o644);
+  const result = await board(['init', '--url', url, '--token-file', file], join(root, 'init-cfg2'));
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /token file must be mode 600 or 400, is 644/);
+});
+await check('the prompts library is bundled although it is loaded only when init asks', async () => {
+  // Loaded by a dynamic import, which has to end up inside the executable; a string that only clack carries.
+  assert.ok(readFileSync(binary).includes('Press Ctrl+C to cancel') || readFileSync(binary).includes('withGuide'));
 });
 await check('internal hook creates the heartbeat file', async () => {
   const runDir = mkdtempSync(join(root, 'run-'));

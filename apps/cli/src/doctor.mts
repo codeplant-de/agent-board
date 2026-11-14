@@ -4,7 +4,7 @@ import { BackendError, checkBoardUrl, looksLikeMachineToken, verifyContract } fr
 import type { WebConfig } from './backend.mts';
 import { ConfigError, isSafeMode, parseConfig } from './config.mts';
 import { parseEnv } from './env-file.mts';
-import { parseExecStart, UNIT_NAMES } from './setup.mts';
+import { parseExecStart, UNIT_NAMES, UNIT_PATH, whichOnPath } from './setup.mts';
 
 export type Level = 'ok' | 'fail' | 'warn';
 
@@ -26,7 +26,10 @@ export interface DoctorDeps {
   mode: (path: string) => number | undefined;
   exists: (path: string) => boolean;
   isDirectory: (path: string) => boolean;
+  // Where a program is on the shell's PATH, and where on the PATH the units run with.
   which: (program: string) => string | undefined;
+  whichInUnits: (program: string) => string | undefined;
+  home: string;
   // A read-only systemctl call: its exit code.
   systemctl: (args: string[]) => Promise<number>;
   verifyServer: (config: WebConfig) => Promise<void>;
@@ -47,8 +50,12 @@ export function realDoctorDeps(
   unitDir: string,
   systemctl: DoctorDeps['systemctl'],
   which: DoctorDeps['which'],
+  home: string,
+  whichInUnits: DoctorDeps['whichInUnits'] = (program) => whichOnPath(program, unitPath(home)),
 ): DoctorDeps {
   return {
+    home,
+    whichInUnits,
     configDir,
     unitDir,
     nodeVersion: process.versions['bun'] ? undefined : process.versions.node,
@@ -158,6 +165,8 @@ function readToken({ configDir, readText, mode }: DoctorDeps): { token?: string;
 
 const checkEnv: Check = (deps) => readToken(deps).results;
 
+const unitPath = (home: string): string => UNIT_PATH.replaceAll('%h', () => home);
+
 const checkServer: Check = async (deps) => {
   const { url } = readWebUrl(deps);
   const { token } = readToken(deps);
@@ -167,7 +176,8 @@ const checkServer: Check = async (deps) => {
     return [ok('server', `${url} answers, contract matches`)];
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (error instanceof BackendError && (error.status === 401 || error.status === 403))
+    // Only the API's own answer says the token is refused; a login page or proxy with a 401 is something else.
+    if (error instanceof BackendError && error.fromApi && (error.status === 401 || error.status === 403))
       return [
         problem(
           'server',
@@ -232,17 +242,28 @@ const checkWorker: Check = async (deps) => {
   const level = installed.length > 0 ? 'fail' : 'warn';
   const results: CheckResult[] = [];
   for (const tool of TOOLS) {
-    const found = deps.which(tool);
-    results.push(
-      found
-        ? ok(`tool ${tool}`, found)
-        : problem(
-            `tool ${tool}`,
-            level,
-            `${tool} is not on PATH`,
-            `install ${tool} and make it visible to the user systemd units`,
-          ),
-    );
+    const found = deps.whichInUnits(tool);
+    const onShell = deps.which(tool);
+    if (found === undefined && onShell !== undefined)
+      results.push(
+        problem(
+          `tool ${tool}`,
+          level,
+          `${tool} is at ${onShell}, on your shell's PATH but not on the units' (${unitPath(deps.home)})`,
+          `link it into ~/.local/bin (ln -s ${onShell} ~/.local/bin/${tool}), then run "board doctor" again`,
+        ),
+      );
+    else
+      results.push(
+        found
+          ? ok(`tool ${tool}`, found)
+          : problem(
+              `tool ${tool}`,
+              level,
+              `${tool} is not on PATH`,
+              `install ${tool} and make it visible to the user systemd units`,
+            ),
+      );
   }
   if (installed.length === 0) {
     results.push(problem('units', 'warn', 'no agent-board unit is installed', 'run "board setup" on a worker machine'));
@@ -260,7 +281,11 @@ const checkWorker: Check = async (deps) => {
     const args = text === undefined ? undefined : parseExecStart(text);
     if (args !== undefined) {
       // Absolute paths that are not systemd specifiers must still exist: a moved checkout or a removed Node breaks the unit quietly.
-      const missing = args.filter((arg) => arg.startsWith('/') && !arg.includes('%') && !deps.exists(arg));
+      // %h is the home directory; what is left with a % (the lock in %t) is not a program.
+      const paths = args
+        .map((arg) => arg.replaceAll('%h', () => deps.home))
+        .filter((arg) => arg.startsWith('/') && !arg.includes('%'));
+      const missing = paths.filter((path) => !deps.exists(path));
       results.push(
         missing.length === 0
           ? ok(`${service} command`, 'its programs exist')
