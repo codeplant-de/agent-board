@@ -24,6 +24,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     lastActiveAt: null,
     runStartedAt: null,
     paused: false,
+    notBefore: null,
     ...overrides,
   };
 }
@@ -90,7 +91,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         (candidate) => draft.dedupeKey !== undefined && parseFirstLine(candidate.input).includes(draft.dedupeKey),
       );
       if (existing) return { task: { ...existing }, created: false };
-      const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, ...fields } = draft;
+      const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, ...fields } = draft;
       return {
         task: task({
           id: 'new',
@@ -99,6 +100,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
           machine: machine ?? null,
           workdir: workdir ?? null,
           head: head ?? null,
+          notBefore: notBefore ?? null,
         }),
         created: true,
       };
@@ -115,6 +117,8 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       if (patch.sessionId !== undefined) state.writes.push(`session ${id}: ${patch.sessionId}`);
       if (patch.next !== undefined) state.writes.push(`next ${id}: ${patch.next}`);
       if (patch.workdir !== undefined) state.writes.push(`workdir ${id}: ${patch.workdir}`);
+      if (patch.notBefore !== undefined)
+        state.writes.push(`notBefore ${id}: ${patch.notBefore?.toISOString() ?? 'cleared'}`);
       const { expect: _expect, ...fields } = patch;
       Object.assign(found, fields);
       return { ...found };
@@ -123,12 +127,13 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       const found = state.tasks.find((t) => t.id === id);
       if (!found) throw new Error(`no task ${id}`);
       const pinned = found.next === 'resume' && found.machine !== null && found.machine !== machine;
-      if (found.status !== 'todo' || pinned || state.lostClaims.includes(id)) {
+      const waiting = found.notBefore !== null && found.notBefore.getTime() > Date.now();
+      if (found.status !== 'todo' || pinned || waiting || state.lostClaims.includes(id)) {
         state.writes.push(`claim ${id} lost`);
         return undefined;
       }
       state.writes.push(`claim ${id} by ${machine}`);
-      Object.assign(found, { status: 'running', machine });
+      Object.assign(found, { status: 'running', machine, notBefore: null });
       return { ...found };
     },
     async addNote(id, text, options) {

@@ -11,6 +11,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     title: undefined,
     hold: false,
     backlog: false,
+    notBefore: undefined,
     forceNew: false,
   });
   assert.deepEqual(parseScheduleArgs(['--hold', '--new', '--title', 'Export', 'Find', 'out', 'why']), {
@@ -19,6 +20,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     title: 'Export',
     hold: true,
     backlog: false,
+    notBefore: undefined,
     forceNew: true,
   });
   assert.equal(parseScheduleArgs(['--', '--weird', 'prompt']).prompt, '--weird prompt');
@@ -122,4 +124,57 @@ test("the model's answer counts only for a task that is really open", () => {
   });
   assert.equal(parseDuplicateAnswer(answer({ duplicate: true, taskId: 'zz', reason: 'x' }), open), undefined);
   assert.equal(parseDuplicateAnswer(answer({ duplicate: false, taskId: null, reason: 'x' }), open), undefined);
+});
+
+const NOW = new Date(2026, 10, 14, 10, 0, 0);
+
+test('--in and --at set when the task starts; both need Todo and exclude each other', () => {
+  assert.equal(parseScheduleArgs(['--in', '2h', 'x'], NOW).notBefore?.getTime(), NOW.getTime() + 2 * 3_600_000);
+  assert.equal(parseScheduleArgs(['--in', '1h30m', 'x'], NOW).notBefore?.getTime(), NOW.getTime() + 90 * 60_000);
+  assert.equal(
+    parseScheduleArgs(['--at', '14:30', 'x'], NOW).notBefore?.getTime(),
+    new Date(2026, 10, 14, 14, 30).getTime(),
+  );
+  assert.equal(
+    parseScheduleArgs(['--at', '2027-01-01', '--new', 'x'], NOW).notBefore?.getTime(),
+    new Date(2027, 0, 1).getTime(),
+  );
+  assert.equal(parseScheduleArgs(['x'], NOW).notBefore, undefined);
+  assert.throws(() => parseScheduleArgs(['--in', '1h', '--at', '14:30', 'x'], NOW), /--in and --at cannot be combined/);
+  for (const flag of ['--hold', '--backlog'])
+    for (const timing of [
+      ['--in', '1h'],
+      ['--at', '14:30'],
+    ])
+      assert.throws(
+        () => parseScheduleArgs([flag, ...timing, 'x'], NOW),
+        /cannot be combined with --hold or --backlog/,
+      );
+  assert.throws(() => parseScheduleArgs(['--in', 'soon', 'x'], NOW), /not a duration; use .*m, h, d, w/);
+  assert.throws(() => parseScheduleArgs(['--in', '0m', 'x'], NOW), /longer than zero/);
+  assert.throws(() => parseScheduleArgs(['--at', '2020-01-01', 'x'], NOW), /in the past/);
+  assert.throws(() => parseScheduleArgs(['--at', 'tomorrow', 'x'], NOW), /not a time/);
+  assert.throws(() => parseScheduleArgs(['--in'], NOW), /usage: board schedule/);
+  assert.throws(() => parseScheduleArgs(['--in', '1h'], NOW), /usage: board schedule/);
+});
+
+test('a delayed task is created in Todo with its start time, which the confirmation names', async () => {
+  const { deps, backend, printed } = setup(undefined);
+  const created = await schedule(deps, parseScheduleArgs(['--in', '2h', '/grill', 'plan']));
+  assert.equal(created?.status, 'todo');
+  assert.ok(created?.notBefore && created.notBefore.getTime() > Date.now() + 100 * 60_000);
+  assert.ok(
+    printed.some((line) => /^scheduled new .*, starts \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(line)),
+    printed.join('\n'),
+  );
+  assert.equal(backend.writes.length, 1);
+});
+
+test('a requeue with a delay gives the requeued task the delay', async () => {
+  const requeue = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
+  const requeued = await schedule(requeue.deps, parseScheduleArgs(['--in', '1h', '/review-pr', '17741']));
+  assert.ok(requeue.backend.writes.includes('status old -> todo'));
+  assert.ok(requeue.backend.writes.some((w) => w.startsWith('notBefore old: ')));
+  assert.ok(requeued?.notBefore);
+  assert.ok(requeue.printed.some((line) => line.startsWith('requeued old') && line.includes(', starts ')));
 });

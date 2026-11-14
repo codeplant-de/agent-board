@@ -5,9 +5,11 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardTask, ThreadNote } from '../lib/trpc';
+import { stamp } from '../lib/time';
 import { ActionPanel } from './ActionPanel';
 
 const takeBack = vi.hoisted(() => vi.fn(async (_: unknown) => null));
+const setNotBefore = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 
 vi.mock('../lib/trpc', () => {
   const procedure = (mutationFn: (variables: unknown) => Promise<unknown>) => ({
@@ -24,6 +26,7 @@ vi.mock('../lib/trpc', () => {
         setClosed: idle,
         move: idle,
         takeBack: procedure(takeBack),
+        setNotBefore: procedure(setNotBefore),
       },
     }),
   };
@@ -54,6 +57,7 @@ function running(overrides: Partial<BoardTask>): BoardTask {
     lastActiveAt: minutesAgo(1),
     runStartedAt: minutesAgo(30),
     paused: false,
+    notBefore: null,
     proposed: false,
     parentId: null,
     createdAt: minutesAgo(60),
@@ -132,5 +136,24 @@ describe('ActionPanel of a backlog task', () => {
     expect(screen.getByText(/Parked/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Move to Todo' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Comment' })).toBeInTheDocument();
+  });
+});
+
+describe('ActionPanel of a delayed task', () => {
+  it('says when it starts and Run now clears the delay', async () => {
+    setNotBefore.mockClear();
+    const notBefore = new Date(Date.now() + 3_600_000).toISOString();
+    renderPanel(running({ status: 'todo', machine: null, sessionId: null, notBefore }), []);
+    expect(screen.getByText(`Waiting until ${stamp(notBefore)}.`)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Run now' }));
+    await waitFor(() => expect(setNotBefore).toHaveBeenCalled());
+    expect(setNotBefore.mock.calls[0]?.[0]).toEqual({ id: 'abc12345', notBefore: null });
+  });
+
+  it('shows neither once the task is due', () => {
+    const notBefore = new Date(Date.now() - 1000).toISOString();
+    renderPanel(running({ status: 'todo', notBefore }), []);
+    expect(screen.queryByText(/Waiting until/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Run now' })).not.toBeInTheDocument();
   });
 });

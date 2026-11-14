@@ -1,13 +1,21 @@
-// `board schedule [--priority p] [--title t] [--hold | --backlog] [--new] <prompt...>`: a task from a prompt, written as you would
+// `board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...>`: a task from a prompt, written as you would
 // type it into Claude Code, bound to this machine and the directory it was scheduled from. Before it creates one, a
 // quick Haiku call checks whether an open task already covers it.
 import { execFile } from 'node:child_process';
-import { defaultTitle, isPriority, isRecord, PRIORITIES } from '@agent-board/shared';
+import {
+  ContractError,
+  defaultTitle,
+  isPriority,
+  isRecord,
+  parseDuration,
+  parseWhen,
+  PRIORITIES,
+} from '@agent-board/shared';
 import type { Backend, Priority, Status, Task } from '@agent-board/shared';
 import { UsageError } from './cli.mts';
 
 export const SCHEDULE_USAGE =
-  'usage: board schedule [--priority <p>] [--title <t>] [--hold | --backlog] [--new] <prompt...>';
+  'usage: board schedule [--priority <p>] [--title <t>] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...>';
 
 export interface ScheduleArgs {
   prompt: string;
@@ -17,20 +25,25 @@ export interface ScheduleArgs {
   hold: boolean;
   // Parked in Backlog instead of Todo.
   backlog: boolean;
+  // Waits in Todo until then (`--in`, `--at`).
+  notBefore: Date | undefined;
   // Skips the duplicate check.
   forceNew: boolean;
 }
 
 // The board's flags come first; everything from the first other word on is the prompt, flags included (`--auto`).
-export function parseScheduleArgs(args: string[]): ScheduleArgs {
+export function parseScheduleArgs(args: string[], now: Date = new Date()): ScheduleArgs {
   const result: ScheduleArgs = {
     prompt: '',
     priority: undefined,
     title: undefined,
     hold: false,
     backlog: false,
+    notBefore: undefined,
     forceNew: false,
   };
+  let delay: string | undefined;
+  let at: string | undefined;
   let index = 0;
   for (; index < args.length; index++) {
     const arg = args[index];
@@ -41,7 +54,12 @@ export function parseScheduleArgs(args: string[]): ScheduleArgs {
     if (arg === '--hold') result.hold = true;
     else if (arg === '--backlog') result.backlog = true;
     else if (arg === '--new') result.forceNew = true;
-    else if (arg === '--priority' || arg === '--title') {
+    else if (arg === '--in' || arg === '--at') {
+      const value = args[++index];
+      if (value === undefined) throw new UsageError(SCHEDULE_USAGE);
+      if (arg === '--in') delay = value;
+      else at = value;
+    } else if (arg === '--priority' || arg === '--title') {
       const value = args[++index];
       if (value === undefined) throw new UsageError(SCHEDULE_USAGE);
       if (arg === '--title') result.title = value.trim();
@@ -50,14 +68,37 @@ export function parseScheduleArgs(args: string[]): ScheduleArgs {
     } else break;
   }
   if (result.hold && result.backlog) throw new UsageError('--hold and --backlog cannot be combined');
+  if (delay !== undefined && at !== undefined) throw new UsageError('--in and --at cannot be combined');
+  if ((delay !== undefined || at !== undefined) && (result.hold || result.backlog))
+    throw new UsageError('--in and --at queue the task in Todo; they cannot be combined with --hold or --backlog');
+  result.notBefore = parseStart({ delay, at }, now);
   result.prompt = args.slice(index).join(' ').trim();
   if (result.prompt === '') throw new UsageError(SCHEDULE_USAGE);
   return result;
 }
 
+// The time a delayed task starts, from `--in` or `--at`; undefined when neither is given.
+export function parseStart(
+  flags: { delay?: string | undefined; at?: string | undefined },
+  now: Date,
+): Date | undefined {
+  try {
+    if (flags.delay !== undefined) return new Date(now.getTime() + parseDuration(flags.delay));
+    return flags.at === undefined ? undefined : parseWhen(flags.at, now);
+  } catch (error) {
+    if (error instanceof ContractError) throw new UsageError(error.message);
+    throw error;
+  }
+}
+
 function startStatus(args: Pick<ScheduleArgs, 'hold' | 'backlog'>): Status {
   if (args.hold) return 'needs-me';
   return args.backlog ? 'backlog' : 'todo';
+}
+
+// 2027-01-01 12:00 in the caller's time zone.
+export function localTime(date: Date): string {
+  return date.toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' });
 }
 
 export interface Duplicate {
@@ -173,11 +214,14 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
         const requeued = await backend.updateTask(existing.id, {
           status: startStatus(args),
           next: 'fresh',
+          ...(args.notBefore ? { notBefore: args.notBefore } : {}),
         });
         await backend.addNote(existing.id, `Scheduled again from ${deps.machine}:${deps.workdir}.`, {
           author: 'system',
         });
-        deps.print(`requeued ${requeued.id} ${requeued.url}`);
+        deps.print(
+          `requeued ${requeued.id} ${requeued.url}${requeued.notBefore ? `, starts ${localTime(requeued.notBefore)}` : ''}`,
+        );
         return requeued;
       }
       if (!deps.choose) warning = `Possibly a duplicate of ${existing.id} ("${existing.title}"): ${duplicate.reason}`;
@@ -188,12 +232,13 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     input: args.prompt,
     labels: [],
     status: startStatus(args),
+    ...(args.notBefore ? { notBefore: args.notBefore } : {}),
     createdBy: 'user',
     machine: deps.machine,
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
   });
   if (warning) await backend.addNote(task.id, warning, { author: 'system' });
-  deps.print(`scheduled ${task.id} ${task.url}`);
+  deps.print(`scheduled ${task.id} ${task.url}${task.notBefore ? `, starts ${localTime(task.notBefore)}` : ''}`);
   return task;
 }

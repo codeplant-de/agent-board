@@ -24,9 +24,17 @@ A run ends in `needs-me`: with a report, with a question, or, when it fails, tim
 board schedule /review-pr 17741
 board schedule --priority high /review-pr cosuno/cosuno#17741 --auto
 board schedule "Find out why the bidder export is slow and propose a fix"
+board schedule --in 2h /review-pr 17741
+board schedule --at 09:00 /grill the plan in docs/x.md
+board delay Ab3dEf9x --in 1d
 ```
 
-`board schedule [--priority p] [--title t] [--hold | --backlog] [--new] <prompt...>` makes a task of the prompt, bound to this machine and the directory you run it in, and prints its URL. The board's flags come first; everything from the first other word on is the prompt, flags included (`--auto` above goes to the skill). The title defaults to the prompt's first line; `--hold` lands it in `needs-me` instead of Todo, `--backlog` in `backlog` (the two cannot be combined). When the duplicate check offers to requeue an existing task, the same flags pick where it goes.
+`board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...>` makes a task of the prompt, bound to this machine and the directory you run it in, and prints its URL. The board's flags come first; everything from the first other word on is the prompt, flags included (`--auto` above goes to the skill). The title defaults to the prompt's first line; `--hold` lands it in `needs-me` instead of Todo, `--backlog` in `backlog` (the two cannot be combined). When the duplicate check offers to requeue an existing task, the same flags pick where it goes, and a delay is set on it.
+
+**Delays.** `--in <dur>` or `--at <time>` keeps the task in Todo until then: it sits last in the column with a "Starts in 4h" badge, and no worker takes it before. They exclude each other and cannot be combined with `--hold` or `--backlog` (a delay only exists in Todo); the confirmation line names the start time. `board delay <task> (--in <dur> | --at <time> | --now)` sets or moves the delay of a task in Todo, or with `--now` clears it so the task is due at once; the task page has a **Run now** button for the same. The New task form has the same under **When: Later**. A delay is cleared when the task leaves Todo, so a task that is moved back later is not delayed again.
+
+- `<dur>` is a number and a unit, largest unit first: `m` minutes, `h` hours, `d` days, `w` weeks, alone or combined: `30m`, `2h`, `1d`, `1h30m`, `1w2d`. Zero, negative and unknown units are refused.
+- `<time>` is an ISO date and time with an offset or `Z` (`2027-01-01T12:00:00Z`), without one for your local time (`2027-01-01T12:00`, `2027-01-01T12:00:00`), a date for local midnight (`2027-01-01`), or `HH:MM` for the next time of day (`09:30`: today if it is still ahead, else tomorrow). A time in the past is refused.
 
 Before it creates the task, a Haiku call (a few seconds, under a cent) checks whether an open task already covers the same work. On a likely match it asks in the terminal: requeue that task (a fresh run), create a new one anyway, or abort. Without a terminal it creates the task with a note naming the likely duplicate. `--new` skips the check.
 
@@ -230,11 +238,12 @@ The spec between the CLI and the board, contract version 5. The CLI calls the bo
   "borrowed": false,
   "lastActiveAt": null,
   "runStartedAt": null,
-  "paused": false
+  "paused": false,
+  "notBefore": null
 }
 ```
 
-All twenty fields are required.
+All twenty-one fields are required.
 
 | Field | Meaning |
 | --- | --- |
@@ -258,8 +267,9 @@ All twenty fields are required.
 | `lastActiveAt` | While running: the last heartbeat, ISO 8601; otherwise `null`. |
 | `runStartedAt` | While running: when the worker claimed it, ISO 8601; otherwise `null`. |
 | `paused` | The last run gave up its slot (`pause`) and the task has not run since. Unlike the board's "Paused" badge, which shows it only in Todo, it stays `true` through the claim, so the worker that resumes the task can tell the agent; the worker's first `update-task` of the run clears it, as does the task leaving Running another way. |
+| `notBefore` | Todo only: no machine may claim the task before this time, ISO 8601; otherwise `null`. The server clears it whenever the task leaves Todo, the claim included. |
 
-Pickup order is the order of the array that `list-tasks` returns: within a status, the first task is the top. In Todo the store lists resumes (`next: resume`) first, then by `priority`, then by manual order; the lanes pick from that order.
+Pickup order is the order of the array that `list-tasks` returns: within a status, the first task is the top. In Todo the store lists resumes (`next: resume`) first, then by `priority`, then by manual order; the lanes pick from that order. Waiting tasks (`notBefore` in the future) come last in Todo, by `notBefore`; once due they sort like any other. The dispatcher does not try to claim a waiting task.
 
 ### Note
 
@@ -276,8 +286,8 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 | `version` | - | `{"contract": 5}` |
 | `list-tasks` | `all?` | `[Task, ...]` in priority order |
 | `get-task` | `id` | `Task` |
-| `add-task` | `body`: `{"title", "input"?, "labels"?, "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "head"?}` | `{"task": Task, "created": bool}` |
-| `update-task` | `id`, `body`: `{"status"?, "priority"?, "input"?, "sessionId"?, "workdir"?, "next"?, "head"?, "expect"?}` | the updated `Task`, or status 409 |
+| `add-task` | `body`: `{"title", "input"?, "labels"?, "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "head"?, "notBefore"?}` | `{"task": Task, "created": bool}` |
+| `update-task` | `id`, `body`: `{"status"?, "priority"?, "input"?, "sessionId"?, "workdir"?, "next"?, "head"?, "notBefore"?, "expect"?}` | the updated `Task`, or status 409 |
 | `claim-task` | `id`, `machine` | the claimed `Task`, or status 409 |
 | `add-note` | `id`, `author?` (`agent` or `system`), `body`: the note text, verbatim | `null` |
 | `ask` | `id`, `body`: `{"questions": [...]}` | `null` |
@@ -288,9 +298,9 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 | `read-notes` | `id` | `[Note, ...]`, oldest first |
 
 - `version`: see the rules above.
-- `add-task`: `input` defaults to `""`, `labels` to the skill the prompt starts with, `status` to `todo`, `priority` to the parent's with a `parentId` and to `normal` without, `createdBy` (`intake`, `user`, `agent`) to `user`. `machine` and `workdir` come together and pin the task there. The new task goes to the bottom of its status. With a `dedupeKey` that a task already has, nothing is created: the answer is that task with `created: false`. `createdBy: agent` makes the task a proposal: it lands in `needs-me` whatever `status` the draft names. `head` is 7 to 40 hex characters.
-- `update-task`: at least one key; unknown keys are a failure. A status or priority change puts the task at the bottom of its new place. A status change of a proposal is refused with 403. Leaving `needs-me` for `todo` or `done` clears `openQuestion`. `head` is 7 to 40 hex characters, or `null` to clear it. `expect` is a status and not a change: when the task's status differs under the update's lock, nothing is written and the answer is 409 (intake uses it, so a close or requeue planned from an earlier listing cannot hit a task a dispatcher claimed since). It does not count as a key.
-- `claim-task`: `todo` to `running` for the machine, at the bottom of running, in one atomic step. Lost when the task is not in `todo` (a `backlog` task is never claimed), or when it is a resume (`next: resume` with a session) pinned to another machine. A token claims for its own machine only. Lost for a proposal. Sets `runStartedAt`; `paused` stays as it is.
+- `add-task`: `input` defaults to `""`, `labels` to the skill the prompt starts with, `status` to `todo`, `priority` to the parent's with a `parentId` and to `normal` without, `createdBy` (`intake`, `user`, `agent`) to `user`. `machine` and `workdir` come together and pin the task there. The new task goes to the bottom of its status. With a `dedupeKey` that a task already has, nothing is created: the answer is that task with `created: false`. `createdBy: agent` makes the task a proposal: it lands in `needs-me` whatever `status` the draft names. `head` is 7 to 40 hex characters. `notBefore` (ISO 8601) is accepted only with status `todo` (else 400).
+- `update-task`: at least one key; unknown keys are a failure. A status or priority change puts the task at the bottom of its new place. A status change of a proposal is refused with 403. Leaving `needs-me` for `todo` or `done` clears `openQuestion`. `head` is 7 to 40 hex characters, or `null` to clear it. `expect` is a status and not a change: when the task's status differs under the update's lock, nothing is written and the answer is 409 (intake uses it, so a close or requeue planned from an earlier listing cannot hit a task a dispatcher claimed since). It does not count as a key. `notBefore` is an ISO 8601 time, or `null` to clear it; a time is refused with 409 unless the task ends up in `todo`.
+- `claim-task`: `todo` to `running` for the machine, at the bottom of running, in one atomic step. Lost when the task is not in `todo` (a `backlog` task is never claimed), or when it is a resume (`next: resume` with a session) pinned to another machine. A token claims for its own machine only. Lost for a proposal. Sets `runStartedAt`; `paused` stays as it is. Lost while `notBefore` is in the future.
 - `add-note`: author `agent` makes a `comment`, `system` an `event`. An empty text is a failure.
 - `heartbeat`: sets `lastActiveAt` to now with the lane, on a running task only; on any other it changes nothing.
 - `transcript`: appends a run's condensed events (see `packages/shared/src/transcript.mts`; at most 5000 per call, each with an integer `seq` from 0 and a parseable `at`, or the call fails with 400); an event already stored (same run and `seq`) stays as it is, so a retried batch is harmless.
@@ -330,8 +340,10 @@ board tasks                     open tasks per status
 board show <task>               the task and its thread as markdown (what a skill reads)
 board comment <task> <text>     add a note; `-` reads the text from stdin
 board comment <task> --file <p> add a note from a file in /tmp (what the reviewer uses)
-board schedule [--priority p] [--title t] [--hold | --backlog] [--new] <prompt...>
+board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...>
                                 a task from a prompt, run here on this machine; checks for duplicates first; refused inside a run
+board delay <task> (--in <dur> | --at <time> | --now)
+                                delay a task in Todo until then; --now makes it due at once
 board ask <task> --file <p>     ask the user 1-4 questions (JSON in /tmp); moves the task to needs-me and notifies Slack
 board add --title <t> --file <p> [--parent <task>] [--priority <p>]
                                 propose a follow-up task; it waits in needs-me until the user starts it

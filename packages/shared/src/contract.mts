@@ -66,6 +66,8 @@ export interface Task {
   // worker that resumes it can see it, and cleared by that worker's first `update-task` of the run or by the task leaving
   // Running another way. A worker that reads `paused: true` on its claimed task tells the agent it was paused.
   paused: boolean;
+  // Todo only: no worker may claim the task before this time. Cleared when the task leaves Todo.
+  notBefore: Date | null;
 }
 
 export interface Heartbeat {
@@ -102,6 +104,8 @@ export interface TaskDraft {
   machine?: string;
   workdir?: string;
   head?: string;
+  // Only with status todo.
+  notBefore?: Date;
 }
 
 export interface TaskPatch {
@@ -112,6 +116,8 @@ export interface TaskPatch {
   workdir?: string | null;
   next?: NextRun;
   head?: string | null;
+  // Only on a todo task; null starts the wait over: the task is claimable now.
+  notBefore?: Date | null;
   // Applies the patch only while the task has this status; otherwise the server answers 409 and writes nothing.
   expect?: Status;
 }
@@ -207,6 +213,12 @@ function nullableDate(obj: Record<string, unknown>, key: string, what: string): 
   return date;
 }
 
+function date(obj: Record<string, unknown>, key: string, what: string): Date {
+  const value = nullableDate(obj, key, what);
+  if (value === null) throw new ContractError(`${what}.${key} must be a date`);
+  return value;
+}
+
 function boolean(obj: Record<string, unknown>, key: string, what: string): boolean {
   const value = obj[key];
   if (typeof value !== 'boolean') throw new ContractError(`${what}.${key} must be a boolean`);
@@ -274,6 +286,7 @@ export function parseTask(value: unknown): Task {
     lastActiveAt: nullableDate(obj, 'lastActiveAt', 'task'),
     runStartedAt: nullableDate(obj, 'runStartedAt', 'task'),
     paused: boolean(obj, 'paused', 'task'),
+    notBefore: nullableDate(obj, 'notBefore', 'task'),
   };
 }
 
@@ -346,6 +359,7 @@ export function parseDraft(value: unknown): TaskDraft {
       'machine',
       'workdir',
       'head',
+      'notBefore',
     ],
     'draft',
   );
@@ -373,6 +387,10 @@ export function parseDraft(value: unknown): TaskDraft {
     if (!draft.workdir.startsWith('/')) throw new ContractError('draft.workdir must be an absolute path');
   }
   if ('head' in obj) draft.head = head(obj['head'], 'draft');
+  if ('notBefore' in obj) {
+    draft.notBefore = date(obj, 'notBefore', 'draft');
+    if (draft.status !== 'todo') throw new ContractError('draft.notBefore needs status todo');
+  }
   if ((draft.machine === undefined) !== (draft.workdir === undefined))
     throw new ContractError('draft.machine and draft.workdir go together');
   return draft;
@@ -381,7 +399,7 @@ export function parseDraft(value: unknown): TaskDraft {
 // Body of update-task. At least one key.
 export function parsePatch(value: unknown): TaskPatch {
   const obj = record(value, 'patch');
-  const keys = ['status', 'priority', 'input', 'sessionId', 'workdir', 'next', 'head'];
+  const keys = ['status', 'priority', 'input', 'sessionId', 'workdir', 'next', 'head', 'notBefore'];
   rejectUnknownKeys(obj, [...keys, 'expect'], 'patch');
   if (!keys.some((key) => key in obj)) throw new ContractError(`patch needs one of ${keys.join(', ')}`);
   const patch: TaskPatch = {};
@@ -392,6 +410,7 @@ export function parsePatch(value: unknown): TaskPatch {
   if ('sessionId' in obj) patch.sessionId = nullableString(obj, 'sessionId', 'patch');
   if ('next' in obj) patch.next = member(obj, 'next', 'patch', NEXT_RUNS);
   if ('head' in obj) patch.head = obj['head'] === null ? null : head(obj['head'], 'patch');
+  if ('notBefore' in obj) patch.notBefore = nullableDate(obj, 'notBefore', 'patch');
   if ('workdir' in obj) {
     patch.workdir = nullableString(obj, 'workdir', 'patch');
     if (patch.workdir !== null && !patch.workdir.startsWith('/'))
@@ -416,6 +435,7 @@ export function serializeTask(task: Task): Record<string, unknown> {
     ...task,
     lastActiveAt: task.lastActiveAt?.toISOString() ?? null,
     runStartedAt: task.runStartedAt?.toISOString() ?? null,
+    notBefore: task.notBefore?.toISOString() ?? null,
   };
 }
 
