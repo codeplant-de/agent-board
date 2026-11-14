@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -17,12 +17,12 @@ interface Result {
   stderr: string;
 }
 
-function run(bin: string, args: string[], configDir: string): Promise<Result> {
+function run(bin: string, args: string[], configDir: string, env: Record<string, string> = {}): Promise<Result> {
   return new Promise((resolve) => {
     const child = execFile(
       join(BIN, bin),
       args,
-      { env: { ...process.env, AGENT_BOARD_CONFIG_DIR: configDir, AGENT_BOARD_TASK: '' }, timeout: 20_000 },
+      { env: { ...process.env, AGENT_BOARD_CONFIG_DIR: configDir, AGENT_BOARD_TASK: '', ...env }, timeout: 20_000 },
       (error, stdout, stderr) => {
         const code = error === null ? 0 : typeof error.code === 'number' ? error.code : -1;
         resolve({ code, stdout, stderr });
@@ -94,18 +94,69 @@ test('an unknown command gets the nearest match', async () => {
   }
 });
 
-test('the other entry points keep the agent-board prefix, and the hook never fails', async () => {
+test('the other entry points keep the agent-board prefix', async () => {
   const dir = emptyConfigDir();
   try {
     const worker = await run('worker', ['not/a/task'], dir);
     assert.equal(worker.code, 2);
     assert.match(worker.stderr, /^agent-board: "not\/a\/task" is not a task id\n/);
-    const hook = await run('agent-hook', [], dir);
-    assert.equal(hook.code, 0);
-    assert.match(hook.stderr, /usage: board internal hook/);
-    assert.equal(hook.stdout, '');
   } finally {
     rmSync(dir, { recursive: true });
+  }
+});
+
+// These spawn the real wrapper with an empty config dir: a broken guard must fail on the missing config, never run a tick.
+test('a typo or an extra argument on an internal command is refused before its action runs', async () => {
+  const dir = emptyConfigDir();
+  try {
+    for (const args of [
+      ['internal', 'dispatch', '--dryrun'],
+      ['internal', 'intake', 'extra'],
+      ['internal', 'dispatch', 'extra'],
+    ]) {
+      const result = await run('board', args, dir);
+      assert.equal(result.code, 2, args.join(' '));
+      assert.doesNotMatch(result.stderr, /config file missing/, args.join(' '));
+      assert.match(result.stderr, /^agent-board: /);
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('internal dispatch, intake and worker are refused inside a run', async () => {
+  const dir = emptyConfigDir();
+  try {
+    for (const args of [
+      ['internal', 'dispatch'],
+      ['internal', 'intake'],
+      ['internal', 'worker', 'Zt0Test1'],
+    ]) {
+      const result = await run('board', args, dir, { AGENT_BOARD_TASK: 'Zt0Test1' });
+      assert.equal(result.code, 2, args.join(' '));
+      assert.match(result.stderr, /not available inside a board run/);
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('the hook of a run touches its own task only, and exits 0 on bad arguments', async () => {
+  const dir = emptyConfigDir();
+  const runDir = mkdtempSync(join(tmpdir(), 'board-hook-test-'));
+  try {
+    const other = await run('agent-hook', [runDir, 'Other001'], dir, { AGENT_BOARD_TASK: 'Zt0Test1' });
+    assert.equal(other.code, 0);
+    assert.deepEqual(readdirSync(runDir), []);
+    const own = await run('agent-hook', [runDir, 'Zt0Test1'], dir, { AGENT_BOARD_TASK: 'Zt0Test1' });
+    assert.equal(own.code, 0);
+    assert.deepEqual(readdirSync(runDir), ['Zt0Test1.alive']);
+    const bad = await run('agent-hook', [], dir);
+    assert.equal(bad.code, 0);
+    assert.match(bad.stderr, /usage: board internal hook/);
+  } finally {
+    rmSync(dir, { recursive: true });
+    rmSync(runDir, { recursive: true });
   }
 });
 

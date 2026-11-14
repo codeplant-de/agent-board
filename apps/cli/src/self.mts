@@ -1,11 +1,8 @@
-// How to start this CLI again: the dispatcher starts workers with it, and a worker starts its hook with it.
+import { fileURLToPath } from 'node:url';
 
-// Step 4 of the CLI polish decides this from the runtime of the compiled binary.
-function isCompiledBinary(): boolean {
-  return false;
-}
+const MAIN = fileURLToPath(new URL('./main.mts', import.meta.url));
 
+// The argv that starts this CLI again: the dispatcher starts workers with it, and a worker starts its hook with it.
 export function selfCommand(...args: string[]): string[] {
-  if (isCompiledBinary()) return [process.execPath, ...args];
-  return [process.execPath, process.argv[1] ?? '', ...args];
+  return [process.execPath, MAIN, ...args];
 }

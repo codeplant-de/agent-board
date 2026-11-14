@@ -17,7 +17,7 @@ export function print(line: string): void {
 }
 
 export interface ContextOptions {
-  // A missing config.json means the defaults, for commands that need only the web config.
+  // A missing config.json means the defaults: for the commands that never bind work to this machine's name (not schedule, add, dispatch, intake, worker).
   optionalConfig?: boolean;
 }
 
