@@ -369,3 +369,19 @@ test('a board URL with whitespace anywhere is refused', () => {
   ])
     assert.throws(() => checkBoardUrl(url), /http\(s\) URL/, JSON.stringify(url));
 });
+
+test('a contract mismatch says how to fix the older side, for a checkout', async () => {
+  const answering =
+    (contract: number): Fetch =>
+    async () =>
+      new Response(JSON.stringify({ result: { contract, owner: 'alice', keyId: null } }));
+  await assert.rejects(
+    verifyContract(config, answering(CONTRACT_VERSION + 1)),
+    /this CLI is older than the board server: it speaks contract \d+, the server has \d+; run "git pull" and "pnpm install" in the checkout/,
+  );
+  await assert.rejects(
+    verifyContract(config, answering(CONTRACT_VERSION - 1)),
+    /the board server is older than this CLI: .*; update the board server/,
+  );
+  assert.deepEqual(await verifyContract(config, answering(CONTRACT_VERSION)), { owner: 'alice', keyId: null });
+});

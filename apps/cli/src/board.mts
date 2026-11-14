@@ -111,11 +111,36 @@ export function formatTasks(found: Task[], flags: TasksFlags, style: Style): str
         const hints = [
           task.notBefore ? `starts ${localTime(task.notBefore)}` : undefined,
           task.closed ? 'closed' : undefined,
+          task.unreadable.length > 0 ? `cannot decrypt: ${task.unreadable.join(', ')}` : undefined,
         ].filter((hint) => hint !== undefined);
         return `  ${task.id.padEnd(idWidth)}  ${task.priority.padEnd(priorityWidth)}  ${task.title}${labels}${hints.length > 0 ? style.dim(`  (${hints.join(', ')})`) : ''}`;
       }),
     ];
   });
+}
+
+// A value this machine could not decrypt is `null` in JSON and listed in `unreadable`: the placeholder the CLI shows in
+// text must not pass for what the user wrote.
+export function taskJson(task: Task): Omit<Task, 'title' | 'input'> & { title: string | null; input: string | null } {
+  return {
+    ...task,
+    title: task.unreadable.includes('title') ? null : task.title,
+    input: task.unreadable.includes('input') ? null : task.input,
+  };
+}
+
+export function scheduleJson(
+  schedule: Schedule,
+): Omit<Schedule, 'title' | 'input'> & { title: string | null; input: string | null } {
+  return {
+    ...schedule,
+    title: schedule.unreadable.includes('title') ? null : schedule.title,
+    input: schedule.unreadable.includes('input') ? null : schedule.input,
+  };
+}
+
+export function noteJson(note: Note): Omit<Note, 'text'> & { text: string | null } {
+  return { ...note, text: note.unreadable ? null : note.text };
 }
 
 export async function tasks(context: Context, flags: TasksFlags = {}): Promise<void> {
@@ -275,6 +300,7 @@ export function formatSchedule(schedule: Schedule): string {
     left !== null ? `${left} left` : schedule.until ? `until ${localTime(schedule.until)}` : 'forever',
     state,
     schedule.title,
+    ...(schedule.unreadable.length > 0 ? [`(cannot decrypt: ${schedule.unreadable.join(', ')})`] : []),
   ].join('  ');
 }
 
