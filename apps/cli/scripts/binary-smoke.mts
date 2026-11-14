@@ -24,8 +24,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  blindIndex,
   CONTRACT_VERSION,
+  dedupeKeyIndex,
+  headIndex,
   deriveKeys,
   encodeDataKey,
   generateDataKey,
@@ -110,7 +111,13 @@ const foreign = {
   input: await seal(otherKeys, 'input', '', 'a prompt this machine cannot open'),
 };
 // What the fake board answers; a check changes it and puts it back.
-const fake = { contract: CONTRACT_VERSION, keyId: KEYS.keyId as string | null, tasks: [todo] as unknown[] };
+const fake = {
+  contract: CONTRACT_VERSION,
+  keyId: KEYS.keyId as string | null,
+  tasks: [todo] as unknown[],
+  // What get-task answers; a worker's run changes it to the task it runs.
+  current: todo as unknown,
+};
 async function withBoard(patch: Partial<typeof fake>, run: () => Promise<void>): Promise<void> {
   const before = { ...fake };
   Object.assign(fake, patch);
@@ -133,7 +140,10 @@ const server = createServer((request: IncomingMessage, response: ServerResponse)
     const results: Record<string, unknown> = {
       version: { contract: fake.contract, owner: OWNER, keyId: fake.keyId },
       'list-tasks': fake.tasks,
-      'get-task': todo,
+      'get-task': fake.current,
+      fail: { applied: true, task: fake.current },
+      pause: fake.current,
+      'read-notes': [],
       'update-task': todo,
       'add-task': { task: todo, created: true },
       'claim-task': { ...todo, status: 'running', machine: 'smoke' },
@@ -271,6 +281,11 @@ await check('comment --file reads a file in /tmp, and refuses a link to a file o
     const ok = await board(['comment', 'Ab3dEf9x', '--file', note], config());
     assert.equal(ok.code, 0, ok.stderr);
     assert.deepEqual(await storedNotes(), ['from a file']);
+    assert.equal(
+      ok.stdout.trim(),
+      `commented on Ab3dEf9x  ${url}/t/Ab3dEf9x`,
+      'the link is built from web.json, not sent by the board',
+    );
     const secret = join(outside, 'secret');
     writeFileSync(secret, 'TOKEN=1');
     const link = join(dir, 'link.md');
@@ -349,8 +364,17 @@ await check('the binary computes the same blind index for a dedupe key as node d
   assert.match(result.stdout, /INTAKE prs=1 created=1/);
   const added = requests.find((request) => request.command === 'add-task');
   assert.ok(added, 'intake sent no add-task');
-  const sent = (JSON.parse(added.body) as { body: { dedupeKey: string } }).body.dedupeKey;
-  assert.equal(sent, await blindIndex(KEYS, PR_URL));
+  const draft = (
+    JSON.parse(added.body) as { body: { dedupeKey: string; head: string; id: string; title: string; input: string } }
+  ).body;
+  const sent = draft.dedupeKey;
+  assert.equal(sent, await dedupeKeyIndex(KEYS, PR_URL));
+  assert.equal(draft.head, await headIndex(KEYS, 'abc123'), 'the PR head is a blind index too');
+  assert.match(draft.id, /^[A-Za-z0-9]{12}$/, 'the client chooses the task id');
+  assert.ok(
+    draft.title.startsWith('abe1.') && draft.input.startsWith('abe1.'),
+    'title and prompt reach the server sealed',
+  );
   assert.ok(!sent.includes('github.com'), 'the PR URL must not reach the server');
 });
 await check('a board of another contract says how to update this binary', async () => {
@@ -388,6 +412,71 @@ await check('a task this machine cannot open is shown as such, and the dispatche
     assert.match(result.stdout, /TICK started=0/);
     assert.ok(!result.stdout.includes('DRY claim-task'));
   });
+});
+// A prompt that starts with dashes, is large and has multi-byte characters: it must reach claude on stdin, whole, and never in argv.
+const BIG_PROMPT = `--dangerously-skip-permissions --mcp-config x\n${'héllo wörld 日本語 '.repeat(8000)}`.trim();
+
+function fakeClaude(name: string, script: string): string {
+  const dir = join(root, name);
+  mkdirSync(dir);
+  writeFileSync(join(dir, 'claude'), script, { mode: 0o755 });
+  return `${dir}:${path}`;
+}
+
+async function runWorkerWith(claudePath: string, prompt: string): Promise<{ result: Result; seen: string }> {
+  const running = await wireTask({
+    id: 'Wk0Run01',
+    title: 'Run it',
+    input: prompt,
+    status: 'running',
+    machine: 'smoke',
+  });
+  const dir = config({ config: true });
+  const seen = join(root, `claude-seen-${configCount}`);
+  mkdirSync(seen);
+  const result = await withBoardAsync({ current: running }, () =>
+    board(['internal', 'worker', 'Wk0Run01'], dir, {
+      PATH: claudePath,
+      SEEN: seen,
+      AGENT_BOARD_STATE_DIR: join(root, `state-${configCount}`),
+    }),
+  );
+  return { result, seen };
+}
+
+async function withBoardAsync<T>(patch: Partial<typeof fake>, run: () => Promise<T>): Promise<T> {
+  const before = { ...fake };
+  Object.assign(fake, patch);
+  try {
+    return await run();
+  } finally {
+    Object.assign(fake, before);
+  }
+}
+
+await check('a worker hands claude a large prompt on stdin, whole, and not in its arguments', async () => {
+  const claudePath = fakeClaude(
+    'claude-reads',
+    '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$SEEN/args"\ncat > "$SEEN/stdin"\n',
+  );
+  const { result, seen } = await runWorkerWith(claudePath, BIG_PROMPT);
+  assert.equal(result.code, 0, result.stderr);
+  const received = readFileSync(join(seen, 'stdin'), 'utf8');
+  assert.ok(received === BIG_PROMPT, `claude received ${received.length} characters, expected ${BIG_PROMPT.length}`);
+  const args = readFileSync(join(seen, 'args'), 'utf8');
+  assert.ok(
+    !args.includes('héllo') && !args.includes('--dangerously-skip-permissions\n--mcp-config'),
+    'the prompt reached argv',
+  );
+  assert.match(args, /--session-id=[0-9a-f-]{36}\n/);
+  // The hook claude is given is this binary again, whatever claude does with stdin.
+  assert.ok(args.includes(`${binary}' 'internal' 'hook'`), 'the hook command does not run this binary');
+});
+await check('a claude that exits without reading its stdin does not take the worker down', async () => {
+  const claudePath = fakeClaude('claude-deaf', '#!/bin/sh\nexit 0\n');
+  const { result } = await runWorkerWith(claudePath, BIG_PROMPT);
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(!/unexpected error|EPIPE/.test(result.stderr), result.stderr);
 });
 await check('setup writes the binary that runs, not whatever ~/.local/bin/board resolves to', async () => {
   const installDir = join(root, 'installed');

@@ -6,7 +6,10 @@ export interface ResolveOptions {
   inRun: boolean;
 }
 
-const FULL_ID_LENGTH = 8;
+// A task's id is 12 characters (clients choose them now) or 8 (older tasks): either is taken as a whole id, anything
+// shorter or in between as the start of one. So the first 8 characters of a 12-character id read as a whole, unknown id.
+const FULL_ID_LENGTHS = [8, 12];
+const LONGEST_PREFIX = 11;
 const MIN_PREFIX_LENGTH = 3;
 
 // The board builds task links from its public URL, which need not be the URL in web.json, so only the path counts; an id of another board fails at the server.
@@ -37,7 +40,7 @@ function matchPrefix(candidates: { id: string; title: string }[], prefix: string
 }
 
 function needsLookup(arg: string): boolean {
-  return arg.length >= MIN_PREFIX_LENGTH && arg.length < FULL_ID_LENGTH;
+  return arg.length >= MIN_PREFIX_LENGTH && arg.length <= LONGEST_PREFIX && !FULL_ID_LENGTHS.includes(arg.length);
 }
 
 // A full id costs no request; a board task link yields its id; a shorter prefix is matched against every task, closed ones included.

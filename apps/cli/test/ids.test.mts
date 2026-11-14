@@ -88,3 +88,21 @@ test('inside a run nothing is resolved: the id is used as given, with no request
   assert.equal(await resolveScheduleId(backend, 'rq9', inRun), 'rq9');
   assert.deepEqual(calls, []);
 });
+
+test('an id is 12 characters or, for older tasks, 8: those are whole ids, the lengths between are the start of one', async () => {
+  const backend = fakeBackend([task({ id: 'Ab3dEf9xK2mN', title: 'New' }), task({ id: 'Zq8wErTy', title: 'Old' })]);
+  const calls: string[] = [];
+  const list = backend.listTasks;
+  backend.listTasks = async (options) => {
+    calls.push('list');
+    return list(options);
+  };
+  assert.equal(await resolveTaskId(backend, 'Ab3dEf9xK2mN', OUT), 'Ab3dEf9xK2mN');
+  assert.equal(await resolveTaskId(backend, 'Zq8wErTy', OUT), 'Zq8wErTy');
+  assert.deepEqual(calls, [], 'a whole id costs no request');
+  assert.equal(await resolveTaskId(backend, 'Ab3dEf9xK2', OUT), 'Ab3dEf9xK2mN');
+  assert.equal(await resolveTaskId(backend, 'Ab3dEf9', OUT), 'Ab3dEf9xK2mN');
+  assert.deepEqual(calls, ['list', 'list']);
+  // Eight characters of a twelve-character id read as a whole, unknown id: the board says so.
+  assert.equal(await resolveTaskId(backend, 'Ab3dEf9x', OUT), 'Ab3dEf9x');
+});

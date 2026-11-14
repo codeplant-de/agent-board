@@ -582,8 +582,9 @@ Print a task and its thread (input, questions, answers and notes) as markdown. A
 resumed run reads this first. With --json, print the task and its notes as JSON.
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters; an exact-case match wins, else case does not matter; it must
-be unique). Inside a board run only the full id is accepted.
+id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
+exact-case match wins, else case does not matter; it must be unique). Inside a
+board run only the full id is accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
@@ -613,8 +614,9 @@ or not, and is never read as a flag.
 from a regular file in /tmp, for long text.
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters; an exact-case match wins, else case does not matter; it must
-be unique). Inside a board run only the full id is accepted.
+id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
+exact-case match wins, else case does not matter; it must be unique). Inside a
+board run only the full id is accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
@@ -641,8 +643,9 @@ Move a task to the bottom of a status: backlog, todo, running, needs-me, done.
 "Backlog", "Todo", "Running", "Needs me" and "Done" work too.
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters; an exact-case match wins, else case does not matter; it must
-be unique). Inside a board run only the full id is accepted.
+id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
+exact-case match wins, else case does not matter; it must be unique). Inside a
+board run only the full id is accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
@@ -667,8 +670,9 @@ Send a Slack message with the task link. The text is every word after the task;
 `-` reads it from stdin.
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters; an exact-case match wins, else case does not matter; it must
-be unique). Inside a board run only the full id is accepted.
+id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
+exact-case match wins, else case does not matter; it must be unique). Inside a
+board run only the full id is accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
@@ -695,8 +699,9 @@ The questions are JSON in a regular file in /tmp: {"questions": [{"header",
 "recommended"?}]}]}
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters; an exact-case match wins, else case does not matter; it must
-be unique). Inside a board run only the full id is accepted.
+id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
+exact-case match wins, else case does not matter; it must be unique). Inside a
+board run only the full id is accepted.
 
 Arguments:
   task           the task: its id, a board task link or the start of its id
@@ -720,8 +725,9 @@ user starts it, and runs in this directory on this machine. With --json, print
 {"id", "url"} on stdout.
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters; an exact-case match wins, else case does not matter; it must
-be unique). Inside a board run only the full id is accepted.
+id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
+exact-case match wins, else case does not matter; it must be unique). Inside a
+board run only the full id is accepted.
 
 Options:
   --title <title>        the task's title
@@ -834,8 +840,9 @@ Delay a task in Todo until then, or with --now make it due at once. Give exactly
 one of --in, --at and --now.
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters; an exact-case match wins, else case does not matter; it must
-be unique). Inside a board run only the full id is accepted.
+id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
+exact-case match wins, else case does not matter; it must be unique). Inside a
+board run only the full id is accepted.
 
 Arguments:
   task             the task: its id, a board task link or the start of its id

@@ -92,7 +92,9 @@ export function dataKeyProblem(key: string): string | undefined {
 }
 
 export function machineProblem(name: string): string | undefined {
-  return isSafeMachineName(name.trim()) ? undefined : "use letters, digits, '.', '-' and '_'";
+  return isSafeMachineName(name.trim())
+    ? undefined
+    : "use letters, digits, '.', '-' and '_', at most 32 characters, starting with a letter or digit";
 }
 
 // A token or key file is a secret like env: refused unless mode 600 or 400, which a pipe (`--token-file /dev/stdin`) is.
