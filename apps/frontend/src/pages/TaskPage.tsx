@@ -20,6 +20,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ActionPanel } from '../components/ActionPanel';
+import { Markdown } from '../components/Markdown';
 import { PriorityPicker } from '../components/PriorityPicker';
 import { TaskBadges } from '../components/TaskBadges';
 import { ThreadItem } from '../components/ThreadItem';
@@ -167,9 +168,7 @@ export function TaskPage() {
               Prompt
             </Text>
             <Spoiler maxHeight={180} showLabel="Show all" hideLabel="Show less">
-              <Text size="sm" ff="monospace" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-                {task.input}
-              </Text>
+              <Markdown>{task.input}</Markdown>
             </Spoiler>
           </Paper>
         )}
