@@ -304,7 +304,7 @@ export function TranscriptDrawer({
             />
             {run && (
               <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
-                {run.eventCount} events · last {ago(run.lastEventAt)}
+                {run.eventCount ?? '?'} events · last {ago(run.lastEventAt)}
               </Text>
             )}
           </Group>

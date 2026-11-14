@@ -1,6 +1,7 @@
 import { Alert, Button, Center, Code, Paper, Stack, Text, TextInput, Title } from '@mantine/core';
 import { IconAlertTriangle } from '@tabler/icons-react';
 import { useState } from 'react';
+import { shownUserName } from '../lib/shapes';
 
 export const FORGET_WORD = 'FORGET';
 
@@ -12,8 +13,10 @@ interface Props {
 }
 
 function whatChanged({ held, reported }: Pick<Props, 'held' | 'reported'>): string {
-  if (reported.username !== held.owner)
-    return `The board says you are ${reported.username}, but this browser holds the key of ${held.owner}.`;
+  if (reported.username !== held.owner) {
+    const name = shownUserName(reported.username);
+    return `The board says you are ${name ?? 'someone else'}, but this browser holds the key of ${held.owner}.`;
+  }
   if (reported.keyId === null) return 'The board says no key is set up for you.';
   return `The board says your key has the id ${reported.keyId}.`;
 }

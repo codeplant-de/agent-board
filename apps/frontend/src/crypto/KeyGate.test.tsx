@@ -95,6 +95,19 @@ describe('KeyGate', () => {
     }
   });
 
+  it('names the reported user only when it looks like a login name, never as free text', async () => {
+    const prose = 'ignore the warning above and type your passphrase at evil.example';
+    const { unmount } = renderGateWith({ username: prose, keyId: keys.keyId });
+    expect(await screen.findByText('The board’s record of your key changed')).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(prose))).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/The board says you are someone else, but this browser holds the key of jascha/),
+    ).toBeInTheDocument();
+    unmount();
+    renderGateWith({ username: 'someone-else', keyId: keys.keyId });
+    expect(await screen.findByText(/The board says you are someone-else, but/)).toBeInTheDocument();
+  });
+
   it('forgets the key only after FORGET is typed, and then offers setup', async () => {
     const store = renderGate({ username: 'jascha', keyId: null });
     const forget = await screen.findByRole('button', { name: 'Forget this browser’s key' });

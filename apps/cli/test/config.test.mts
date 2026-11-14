@@ -49,6 +49,19 @@ test('invalid configs are refused with a pointed message', () => {
     );
 });
 
+test('a machine name that is too long is refused with the limit, and one of 64 characters is accepted', () => {
+  assert.throws(
+    () => parseConfig({ ...valid, machine: 'm'.repeat(65) }),
+    (error) =>
+      error instanceof ConfigError && /1 to 64 characters/.test(error.message) && /65 characters/.test(error.message),
+  );
+  assert.equal(parseConfig({ ...valid, machine: 'm'.repeat(64) }).machine, 'm'.repeat(64));
+  assert.throws(
+    () => parseConfig({ ...valid, lanes: { ['l'.repeat(65)]: { skills: ['x'] } } }),
+    (error) => error instanceof ConfigError && /1 to 64 characters/.test(error.message),
+  );
+});
+
 test('only modes 600 and 400 pass', () => {
   assert.equal(isSafeMode(0o100600), true);
   assert.equal(isSafeMode(0o100400), true);

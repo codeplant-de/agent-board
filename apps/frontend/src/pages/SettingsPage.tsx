@@ -15,7 +15,7 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
-import { INVALID_VALUE, type Keys } from '@agent-board/shared';
+import { INVALID_VALUE, MACHINE_NAME_RULE, type Keys } from '@agent-board/shared';
 import { modals } from '@mantine/modals';
 import { notifications } from '@mantine/notifications';
 import { IconCheck, IconCopy, IconKey } from '@tabler/icons-react';
@@ -153,7 +153,7 @@ function Machines() {
               <Table.Tr key={m.name}>
                 <Table.Td>
                   <Group gap="xs">
-                    <Text size="sm">{m.name}</Text>
+                    <Text size="sm">{m.shown}</Text>
                     {m.revokedAt && (
                       <Badge size="xs" color="red" variant="light">
                         revoked
@@ -167,11 +167,13 @@ function Machines() {
                   </Text>
                 </Table.Td>
                 <Table.Td>
-                  <Group gap="xs" justify="flex-end" display={m.name === INVALID_VALUE ? 'none' : undefined}>
-                    <Button size="xs" variant="default" onClick={() => issueFor(m.name)}>
-                      New token
-                    </Button>
-                    {!m.revokedAt && (
+                  <Group gap="xs" justify="flex-end">
+                    {m.shown !== INVALID_VALUE && (
+                      <Button size="xs" variant="default" onClick={() => issueFor(m.name)}>
+                        New token
+                      </Button>
+                    )}
+                    {!m.revokedAt && m.shown !== INVALID_VALUE && (
                       <Button size="xs" variant="default" onClick={() => setAsking({ name: m.name, issuing: false })}>
                         Show data key
                       </Button>
@@ -183,7 +185,7 @@ function Machines() {
                         color="red"
                         onClick={() =>
                           modals.openConfirmModal({
-                            title: `Revoke ${m.name}?`,
+                            title: m.shown === INVALID_VALUE ? 'Revoke this machine’s token?' : `Revoke ${m.shown}?`,
                             children: (
                               <Text size="sm">Its dispatcher and intake stop working until it gets a new token.</Text>
                             ),
@@ -205,6 +207,7 @@ function Machines() {
         <Group align="flex-end">
           <TextInput
             label="Add a machine"
+            description={`A name of ${MACHINE_NAME_RULE}`}
             placeholder="laptop"
             value={name}
             onChange={(e) => setName(e.currentTarget.value)}

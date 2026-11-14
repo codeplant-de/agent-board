@@ -44,6 +44,11 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
   return { deps, backend, notes, calls };
 }
 
+// The calls to the board that a tick starts without waiting need a few turns of the event loop to finish.
+const settle = async (): Promise<void> => {
+  for (let turn = 0; turn < 20; turn += 1) await new Promise<void>((done) => setImmediate(done));
+};
+
 test('non-zero exit reports the error and log tail', async () => {
   const { deps, backend, notes } = setup({ exitCode: 1, signal: null });
   await runWorker(deps, 'w1');
@@ -326,7 +331,7 @@ test("the run's stream becomes readable log lines and a transcript sent with eac
       ),
     );
     await watch.tick();
-    await watch.settled();
+    await settle();
     logged.push(
       onLine(
         JSON.stringify({
@@ -358,7 +363,7 @@ test('a transcript batch the board refused is sent again with the next one', asy
   deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
     onLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'first' }] } }));
     await watch.tick();
-    await watch.settled();
+    await settle();
     onLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'second' }] } }));
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
@@ -535,7 +540,7 @@ test("a backlog is sent in batches of at most the board's limit, and a refused o
     for (let n = 0; n < MAX_BATCH_EVENTS + 10; n++)
       onLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `t${n}` }] } }));
     await watch.tick();
-    await watch.settled();
+    await settle();
     assert.deepEqual(sizes, [], 'the first batch was refused, nothing else went out');
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
@@ -698,7 +703,7 @@ test('an event the board refuses for good is dropped alone, and never holds the 
   deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
     for (const text of ['a', 'b', 'too big for the board', 'c']) onLine(textEvent(text));
     await watch.tick();
-    await watch.settled();
+    await settle();
     onLine(textEvent('d'));
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
@@ -719,11 +724,11 @@ test('an event the board refused for a passing reason waits, in order, with ever
   deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
     onLine(textEvent('a'));
     await watch.tick();
-    await watch.settled();
+    await settle();
     onLine(textEvent('b'));
     down = false;
     await watch.tick();
-    await watch.settled();
+    await settle();
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
   };
@@ -822,12 +827,96 @@ test('a board that refuses every transcript batch costs a bounded number of call
   const inner = deps.run;
   deps.run = async (invocation, taskId, env, watch, onLine) => {
     const result = await inner(invocation, taskId, env, watch, onLine);
-    await watch.settled();
+    await settle();
     afterTick = calls;
     return result;
   };
   await runWorker(deps, 'w1');
   assert.equal(decisions[0]?.kind, 'stop');
   assert.ok(afterTick >= 1 && afterTick <= 24, `${afterTick} calls in one pass`);
-  assert.ok(calls <= 48, `${calls} calls in all, the end of the run included`);
+  assert.ok(calls <= 72, `${calls} calls in all, the end of the run with its two passes included`);
+});
+
+const toolPair = (n: number, output: string) => [
+  JSON.stringify({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: `t${n}`, name: 'Bash', input: { command: `step ${n}` } }] },
+  }),
+  JSON.stringify({
+    type: 'user',
+    message: { content: [{ type: 'tool_result', tool_use_id: `t${n}`, content: output }] },
+  }),
+];
+
+test('a backlog past its byte budget loses the oldest tool outputs first, and the transcript says so', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  deps.maxPendingBytes = 5_000;
+  const stored: { kind: string; output?: string; text?: string }[] = [];
+  let down = true;
+  backend.transcript = async (_id, batch) => {
+    if (down) throw new BackendError('transcript: error from the board server (HTTP 503)', 503);
+    stored.push(...batch.events);
+  };
+  deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
+    for (let n = 0; n < 6; n++) for (const line of toolPair(n, `output ${n} ${'x'.repeat(1_000)}`)) onLine(line);
+    await watch.tick();
+    await settle();
+    down = false;
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  const results = stored.filter((event) => event.kind === 'tool_result');
+  assert.equal(results.length, 6, 'every tool result is still there, in order');
+  assert.equal(results[0]?.output, '', 'the oldest output went first');
+  assert.match(results.at(-1)?.output ?? '', /^output 5 /, 'the newest output is kept');
+  assert.equal(stored.filter((event) => event.kind === 'tool_use').length, 6);
+  const notes = stored.filter((event) => event.kind === 'note');
+  assert.ok(notes.length >= 1, 'a note says that outputs were dropped');
+  for (const note of notes)
+    assert.match(note.text ?? '', /\d+ tool outputs of this run were dropped from the transcript/);
+});
+
+test('a backlog that outgrows its budget even without outputs drops its oldest events, and notes it', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  deps.maxPendingBytes = 2_000;
+  const stored: { kind: string; text?: string }[] = [];
+  let down = true;
+  backend.transcript = async (_id, batch) => {
+    if (down) throw new BackendError('transcript: error from the board server (HTTP 503)', 503);
+    stored.push(...batch.events);
+  };
+  deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
+    for (let n = 0; n < 30; n++) onLine(textEvent(`event ${n} ${'y'.repeat(200)}`));
+    await watch.tick();
+    await settle();
+    down = false;
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  const texts = stored.filter((event) => event.kind === 'text').map((event) => event.text ?? '');
+  assert.ok(texts.length > 0 && texts.length < 30, `${texts.length} events kept`);
+  assert.match(texts.at(-1) ?? '', /^event 29 /, 'the newest events are the ones kept');
+  assert.match(stored.find((event) => event.kind === 'note')?.text ?? '', /\d+ events of this run were dropped/);
+});
+
+test('the end of the run makes a second pass over what the first left', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  let calls = 0;
+  const sent: string[] = [];
+  backend.transcript = async (_id, batch) => {
+    calls += 1;
+    if (calls === 1) throw new BackendError('transcript: error from the board server (HTTP 503)', 503);
+    sent.push(...batch.events.map((event) => (event.kind === 'text' ? event.text : event.kind)));
+  };
+  deps.run = async (_invocation, _taskId, _env, _watch, onLine) => {
+    onLine(textEvent('a'));
+    onLine(textEvent('b'));
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.equal(calls, 2);
+  assert.deepEqual(sent, ['a', 'b']);
 });

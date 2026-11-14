@@ -44,6 +44,11 @@ interface Checked<T> {
   invalid: boolean;
 }
 
+/** `value` when it passes `is`, else the neutral stand-in. */
+function guarded<T>(value: unknown, is: (candidate: unknown) => candidate is T, neutral: T): Checked<T> {
+  return is(value) ? { value, invalid: false } : { value: neutral, invalid: true };
+}
+
 const checked = <T>(ok: boolean, value: T, neutral: T): Checked<T> => ({ value: ok ? value : neutral, invalid: !ok });
 
 export function safeId(value: unknown, what: string): string {
@@ -93,26 +98,33 @@ export function checkTaskShapes(wire: {
   parentId?: string | null;
 }): TaskShapes {
   safeId(wire.id, 'task id');
+  const status = guarded(wire.status, isStatus, NEUTRAL_STATUS);
+  const priority = guarded(wire.priority, isPriority, NEUTRAL_PRIORITY);
+  const next = guarded(wire.next, isNextRun, NEUTRAL_NEXT);
+  const createdBy = guarded(wire.createdBy, isTaskCreator, NEUTRAL_CREATOR);
+  const machine = checked(wire.machine === null || isSafeMachineName(wire.machine), wire.machine, INVALID_VALUE);
+  const lane = checked(wire.lane === null || isSafeLane(wire.lane), wire.lane, INVALID_VALUE);
+  const sessionId = checked(wire.sessionId === null || isSessionId(wire.sessionId), wire.sessionId, null);
+  const head = checked(wire.head === null || isBlindIndex(wire.head), wire.head, null);
   const fields: [string, Checked<unknown>][] = [
-    ['status', checked(isStatus(wire.status), wire.status, NEUTRAL_STATUS)],
-    ['priority', checked(isPriority(wire.priority), wire.priority, NEUTRAL_PRIORITY)],
-    ['next', checked(isNextRun(wire.next), wire.next, NEUTRAL_NEXT)],
-    ['createdBy', checked(isTaskCreator(wire.createdBy), wire.createdBy, NEUTRAL_CREATOR)],
-    ['machine', checked(wire.machine === null || isSafeMachineName(wire.machine), wire.machine, INVALID_VALUE)],
-    ['lane', checked(wire.lane === null || isSafeLane(wire.lane), wire.lane, INVALID_VALUE)],
-    ['sessionId', checked(wire.sessionId === null || isSessionId(wire.sessionId), wire.sessionId, null)],
-    ['head', checked(wire.head === null || isBlindIndex(wire.head), wire.head, null)],
+    ['status', status],
+    ['priority', priority],
+    ['next', next],
+    ['createdBy', createdBy],
+    ['machine', machine],
+    ['lane', lane],
+    ['sessionId', sessionId],
+    ['head', head],
   ];
-  const by = Object.fromEntries(fields.map(([name, { value }]) => [name, value]));
   return {
-    status: by['status'] as Status,
-    priority: by['priority'] as Priority,
-    next: by['next'] as NextRun,
-    createdBy: by['createdBy'] as TaskCreator,
-    machine: by['machine'] as string | null,
-    lane: by['lane'] as string | null,
-    sessionId: by['sessionId'] as string | null,
-    head: by['head'] as string | null,
+    status: status.value,
+    priority: priority.value,
+    next: next.value,
+    createdBy: createdBy.value,
+    machine: machine.value,
+    lane: lane.value,
+    sessionId: sessionId.value,
+    head: head.value,
     scheduleId: safeNullableId(wire.scheduleId, 'schedule id'),
     parentId: safeNullableId(wire.parentId, 'parent id'),
     invalid: fields.filter(([, { invalid }]) => invalid).map(([name]) => name),
@@ -127,15 +139,15 @@ export function checkNoteShapes(wire: { id: string; author: unknown; kind: unkno
   by: string | null;
   ok: boolean;
 } {
-  const author = isOneOf(WIRE_NOTE_AUTHORS, wire.author);
-  const kind = isOneOf(NOTE_KINDS, wire.kind);
-  const id = typeof wire.id === 'string' && isSafeNoteId(wire.id);
+  const author = isOneOf(WIRE_NOTE_AUTHORS, wire.author) ? wire.author : undefined;
+  const kind = isOneOf(NOTE_KINDS, wire.kind) ? wire.kind : undefined;
+  const id = typeof wire.id === 'string' && isSafeNoteId(wire.id) ? wire.id : undefined;
   return {
-    id: id ? wire.id : INVALID_VALUE,
-    author: author ? (wire.author as WireNoteAuthor) : UNKNOWN_AUTHOR,
-    kind: kind ? (wire.kind as NoteKind) : 'comment',
+    id: id ?? INVALID_VALUE,
+    author: author ?? UNKNOWN_AUTHOR,
+    kind: kind ?? 'comment',
     by: shownName(wire.by),
-    ok: author && kind && id,
+    ok: author !== undefined && kind !== undefined && id !== undefined,
   };
 }
 
@@ -149,6 +161,18 @@ export function shownRule(wire: { cron: string | null; timezone: string | null }
     timezone: wire.timezone === null || isTimeZoneName(wire.timezone) ? wire.timezone : INVALID_VALUE,
   };
 }
+
+/** A count as the CLI's wire parser reads one: a whole number, zero or more. */
+export const isCount = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+
+const SHOWN_USER_NAME = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/;
+
+/**
+ * The user name the board reports, for a sentence built to resist a board that cannot be trusted: shown only when it looks
+ * like a login name, never as free text.
+ */
+export const shownUserName = (value: string): string | undefined => (SHOWN_USER_NAME.test(value) ? value : undefined);
 
 /** The name the board reports for the signed-in user: one line, as the CLI requires of it. */
 export function isUserName(value: unknown): value is string {

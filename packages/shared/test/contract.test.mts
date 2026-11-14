@@ -472,7 +472,7 @@ test('what the board returns that reaches an argument, a path, a unit name or a 
     ['lane', '$(id)'],
     ['lane', 'a\nb'],
     ['scheduleId', '../x'],
-    ['machine', 'm'.repeat(33)],
+    ['machine', 'm'.repeat(65)],
   ] as const)
     assert.throws(() => parseWireTask({ ...task, [key]: bad }), ContractError, `${key} ${bad.slice(0, 20)}`);
   assert.equal(parseWireTask({ ...task, status: 'running', lane: 'general' }).lane, 'general');
