@@ -5,14 +5,19 @@ import {
   type TranscriptEventView,
 } from '@agent-board/shared';
 import { and, asc, desc, eq, gt, inArray, lt, or, sql } from 'drizzle-orm';
-import type { Db } from '../db/client';
+import type { DbOrTx } from '../db/client';
 import { tasks, transcriptEvents, transcriptRuns } from '../db/schema';
 import { AppError } from './errors';
 import { DONE_TRANSCRIPT_DAYS, daysBefore, TRANSCRIPT_RETENTION_DAYS } from './retention';
 import { getTask } from './tasks';
 
 /** Stores a batch; a retried batch (same run and seq) changes nothing. */
-export async function appendTranscript(db: Db, taskId: string, machine: string, batch: TranscriptBatch): Promise<void> {
+export async function appendTranscript(
+  db: DbOrTx,
+  taskId: string,
+  machine: string,
+  batch: TranscriptBatch,
+): Promise<void> {
   await getTask(db, taskId);
   await db.transaction(async (tx) => {
     const [existing] = await tx.select().from(transcriptRuns).where(eq(transcriptRuns.id, batch.runId));
@@ -62,7 +67,7 @@ export async function appendTranscript(db: Db, taskId: string, machine: string, 
   });
 }
 
-export async function listRuns(db: Db, taskId: string) {
+export async function listRuns(db: DbOrTx, taskId: string) {
   return db
     .select()
     .from(transcriptRuns)
@@ -71,7 +76,7 @@ export async function listRuns(db: Db, taskId: string) {
 }
 
 /** Events after `afterSeq`, without tool output: a result says how long its output is instead. */
-export async function listEvents(db: Db, runId: string, afterSeq: number, limit = TRANSCRIPT_PAGE_SIZE) {
+export async function listEvents(db: DbOrTx, runId: string, afterSeq: number, limit = TRANSCRIPT_PAGE_SIZE) {
   const rows = await db
     .select({ seq: transcriptEvents.seq, data: transcriptEvents.data, outputSize: transcriptEvents.outputSize })
     .from(transcriptEvents)
@@ -81,7 +86,7 @@ export async function listEvents(db: Db, runId: string, afterSeq: number, limit 
   return rows.map((row) => ({ ...(row.data as object), outputSize: row.outputSize }) as TranscriptEventView);
 }
 
-export async function eventOutput(db: Db, runId: string, seq: number): Promise<string> {
+export async function eventOutput(db: DbOrTx, runId: string, seq: number): Promise<string> {
   const [row] = await db
     .select({ output: transcriptEvents.output })
     .from(transcriptEvents)
@@ -91,7 +96,7 @@ export async function eventOutput(db: Db, runId: string, seq: number): Promise<s
 }
 
 /** Deletes the transcripts of tasks closed more than the retention ago, and of open tasks untouched in Done for longer. Returns how many runs went. */
-export async function deleteOldTranscripts(db: Db, now: Date = new Date()): Promise<number> {
+export async function deleteOldTranscripts(db: DbOrTx, now: Date = new Date()): Promise<number> {
   const cutoff = daysBefore(now, TRANSCRIPT_RETENTION_DAYS);
   const doneCutoff = daysBefore(now, DONE_TRANSCRIPT_DAYS);
   // A task closed before closedAt existed counts from its last change.

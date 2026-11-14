@@ -1,13 +1,19 @@
 import { loadConfig } from './config';
-import { createDb, runMigrations } from './db/client';
+import { assertUnprivileged, createDb, ensureAppRole, runMigrations } from './db/client';
 import { buildServer } from './server';
 import { archiveStaleDone } from './services/tasks';
 import { deleteOldTranscripts } from './services/transcripts';
 
 const config = loadConfig();
-const { db, pool } = createDb(config.databaseUrl);
 
-await runMigrations(db);
+// The admin pool only prepares the database and is closed before the first request, so nothing can reach it.
+const admin = createDb(config.databaseUrl);
+await ensureAppRole(admin.db, config.appDatabaseUrl);
+await runMigrations(admin.db);
+await admin.pool.end();
+
+const { db, pool } = createDb(config.appDatabaseUrl);
+await assertUnprivileged(db);
 const app = await buildServer(config, db);
 
 // At start and every hour: tasks untouched in Done for 14 days are closed, and the transcripts of tasks closed 14 days ago go.
