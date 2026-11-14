@@ -7,6 +7,26 @@ import { logPath } from "../src/logs.mts";
 import { runProcess } from "../src/worker.mts";
 import type { Watch } from "../src/worker.mts";
 
+// A killed process nobody has reaped yet (a zombie, as when the container's init reaps late) still answers kill(pid, 0).
+function isGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return true;
+  }
+  try {
+    return /^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+async function waitUntilGone(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!isGone(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  return isGone(pid);
+}
+
 const QUIET: Watch = { everyMs: 50, tick: async () => ({ kind: "continue" }) };
 
 process.env["AGENT_BOARD_STATE_DIR"] = mkdtempSync(join(tmpdir(), "agent-board-state-"));
@@ -28,7 +48,7 @@ test("a process the watch stops is ended with everything it started", async () =
   assert.ok(Date.now() - started < 5_000);
   const grandchild = Number(readFileSync(pidFile, "utf8").trim());
   assert.ok(grandchild > 0);
-  assert.throws(() => process.kill(grandchild, 0), /ESRCH/, "the grandchild must be dead");
+  assert.ok(await waitUntilGone(grandchild, 3_000), "the grandchild must be dead");
 });
 
 test("a missing command rejects", async () => {
