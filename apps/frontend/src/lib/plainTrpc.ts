@@ -14,7 +14,7 @@ import {
   openTaskDetail,
 } from './opening';
 import type { useRawTRPC } from './rawTrpc';
-import { sealAnswer, sealNewTask, sealReply, sealStart, type NewTask, type Proposal } from './sealing';
+import { sealAnswer, sealNewTask, sealReply, sealStart, startsProposal, type NewTask, type Proposal } from './sealing';
 import { parseMe } from './shapes';
 
 export type RawTRPC = ReturnType<typeof useRawTRPC>;
@@ -106,7 +106,7 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
           mutationOptions({
             mutationKey: raw.tasks.move.mutationKey(),
             mutationFn: async ({ task, ...variables }: MoveVariables) => {
-              const starts = task?.createdBy === 'agent' && variables.status === 'todo';
+              const starts = task !== undefined && startsProposal(task, variables.status);
               return client.tasks.move.mutate({
                 ...variables,
                 ...(starts ? { startInput: await sealStart(need(), task) } : {}),

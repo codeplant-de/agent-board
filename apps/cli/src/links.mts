@@ -1,5 +1,5 @@
 // A link to a task on the board. The CLI builds every one itself, from the board URL in its own web.json and the task id: the
-// board server also sends a link per task, but it is server text, so nothing here (a printed line, a Slack message) uses it.
+// board sends no link, so nothing here (a printed line, a Slack message) carries text of the server's.
 import { isSafeTaskId } from '@agent-board/shared';
 
 export function taskLink(boardUrl: string, taskId: string): string {

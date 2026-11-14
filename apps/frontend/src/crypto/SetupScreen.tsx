@@ -42,10 +42,11 @@ function PassphraseStep({ owner, kdf, onReady }: { owner: string; kdf: KdfParams
   const [passphrase, setPassphrase] = useState('');
   const [again, setAgain] = useState('');
   const [busy, setBusy] = useState(false);
+  const [firstTime, setFirstTime] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const problem = passphrase === '' ? null : passphraseProblem(passphrase);
   const mismatch = again !== '' && !samePassphrase(again, passphrase);
-  const ready = passphrase !== '' && problem === null && samePassphrase(again, passphrase);
+  const ready = firstTime && passphrase !== '' && problem === null && samePassphrase(again, passphrase);
   const submit = async () => {
     if (!ready || busy) return;
     setBusy(true);
@@ -65,6 +66,15 @@ function PassphraseStep({ owner, kdf, onReady }: { owner: string; kdf: KdfParams
       }}
     >
       <Stack>
+        <Alert color="red" icon={<IconAlertTriangle size={18} />} title="Only if this board has never been used">
+          <Text size="sm">
+            If this board was already in use, do not set up again. A new key is a different key: your worker machines do
+            not hold it, and it cannot read anything stored under the old one. A board that reports no key may be a new
+            one, or a browser that does not hold your key (after Lock, in a private window, on another computer) while
+            the board does, and then you need your passphrase or recovery key instead. Ask whoever runs the board if you
+            are unsure.
+          </Text>
+        </Alert>
         <Text size="sm">
           Everything on this board (titles, prompts, notes, transcripts) is encrypted in your browser with a key of your
           own before it is sent, so the server only stores text it cannot read. Choose a passphrase to protect that key.
@@ -86,6 +96,11 @@ function PassphraseStep({ owner, kdf, onReady }: { owner: string; kdf: KdfParams
           onChange={(event) => setAgain(event.currentTarget.value)}
           error={mismatch ? 'The passphrases differ.' : null}
           autoComplete="new-password"
+        />
+        <Checkbox
+          checked={firstTime}
+          onChange={(event) => setFirstTime(event.currentTarget.checked)}
+          label="This is the first time this board is set up. I understand that setting up again would create a second key that existing content and my worker machines cannot use."
         />
         {error && (
           <Text c="red" size="sm">

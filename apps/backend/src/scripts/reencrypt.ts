@@ -3,7 +3,7 @@
 //
 //   DATABASE_URL=postgresql://admin:...@localhost:5432/board \
 //   AGENT_BOARD_DATA_KEY=abk1_... \
-//   pnpm --filter @agent-board/backend reencrypt -- --owner <username> [--dry-run] [--key-file <path>]
+//   pnpm --filter @agent-board/backend reencrypt --owner <username> [--dry-run] [--key-file <path>]
 import { decodeDataKey, deriveKeys } from '@agent-board/shared';
 import { readFileSync, statSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -43,6 +43,29 @@ function dataKeyText(keyFile: string | undefined): string {
   return fromEnv;
 }
 
+/** Each legacy proposal whose `proposed` flag was read, and what became of it: for both outcomes, in the dry run and the real one. */
+function printProposals({ proposals }: ReencryptSummary): void {
+  if (proposals.length === 0) return;
+  console.log('\nLegacy proposals with proposed = false (task, creator before, status, created_at, outcome):');
+  for (const { id, createdBy, status, createdAt, outcome, evidence } of proposals)
+    console.log(
+      `  ${id}  created by ${createdBy}  ${status}  ${createdAt}  ` +
+        (outcome === 'started'
+          ? `-> started by the user, now created by the user (evidence: ${evidence.join(', ')})`
+          : '-> no sign of a start, kept as the agent’s proposal and waiting (proposed = true)'),
+    );
+}
+
+/** What the owner's rows were when the run read them, to compare with the dump taken before the cutover; in the dry run only. */
+function printInventory({ inventory, dryRun }: ReencryptSummary): void {
+  console.log('\nRows of the owner, per table:');
+  for (const [table, n] of Object.entries(inventory.counts)) console.log(`  ${table}: ${n}`);
+  if (!dryRun) return;
+  console.log('\nEvery task (id, creator, status, created_at), to compare with the dump from before the cutover:');
+  for (const { id, createdBy, status, createdAt } of inventory.tasks)
+    console.log(`  ${id}  ${createdBy}  ${status}  ${createdAt}`);
+}
+
 function printSummary(summary: ReencryptSummary): void {
   const rows = Object.entries(summary.columns).sort(([a], [b]) => a.localeCompare(b));
   const width = Math.max(6, ...rows.map(([column]) => column.length));
@@ -57,7 +80,9 @@ function printSummary(summary: ReencryptSummary): void {
     console.log(`${table}: ${total} rows read, ${changed} rewritten, ${seconds.toFixed(1)} s (${rate} rows/s)`);
   }
   for (const [what, n] of Object.entries(summary.notices)) console.log(`${n} ${what}`);
+  printProposals(summary);
   for (const warning of summary.warnings) console.log(`WARNING ${warning}`);
+  printInventory(summary);
   console.log(
     summary.dryRun
       ? '\nDry run: everything was checked and rolled back; nothing changed.'

@@ -30,6 +30,7 @@ function renderSetup(onComplete = vi.fn(async () => undefined)) {
 }
 
 async function choosePassphrase(passphrase = PASSPHRASE) {
+  await userEvent.click(screen.getByRole('checkbox', { name: /first time this board is set up/ }));
   await userEvent.type(screen.getByLabelText('Passphrase', { selector: 'input' }), passphrase);
   await userEvent.type(screen.getByLabelText('Passphrase again', { selector: 'input' }), passphrase);
   await userEvent.click(screen.getByRole('button', { name: 'Create my key' }));
@@ -38,6 +39,20 @@ async function choosePassphrase(passphrase = PASSPHRASE) {
 beforeEach(() => setup.mockClear());
 
 describe('SetupScreen', () => {
+  it('says that a board already in use must not be set up again, and needs a deliberate confirmation of a first-time setup', async () => {
+    renderSetup();
+    expect(screen.getByText(/If this board was already in use, do not set up again/)).toBeInTheDocument();
+    expect(screen.getByText(/worker machines do not hold it/)).toBeInTheDocument();
+    expect(screen.getByText(/cannot read anything stored under the old one/)).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText('Passphrase', { selector: 'input' }), PASSPHRASE);
+    await userEvent.type(screen.getByLabelText('Passphrase again', { selector: 'input' }), PASSPHRASE);
+    expect(screen.getByRole('button', { name: 'Create my key' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('checkbox', { name: /first time this board is set up/ }));
+    expect(screen.getByRole('button', { name: 'Create my key' })).toBeEnabled();
+    await userEvent.click(screen.getByRole('checkbox', { name: /first time this board is set up/ }));
+    expect(screen.getByRole('button', { name: 'Create my key' })).toBeDisabled();
+  });
+
   it('refuses a short passphrase and one typed twice differently', async () => {
     renderSetup();
     await userEvent.type(screen.getByLabelText('Passphrase', { selector: 'input' }), 'too short');

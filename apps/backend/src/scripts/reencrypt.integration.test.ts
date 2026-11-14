@@ -1,4 +1,13 @@
-import { deriveKeys, generateDataKey, sealInput, sealNote, sealTitle, seal, type Keys } from '@agent-board/shared';
+import {
+  dedupeKeyIndex,
+  deriveKeys,
+  generateDataKey,
+  sealInput,
+  sealNote,
+  sealTitle,
+  seal,
+  type Keys,
+} from '@agent-board/shared';
 import { sql } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
@@ -76,11 +85,12 @@ async function legacySeed(db: Db): Promise<void> {
     status?: string;
     parentId?: string | null;
     proposed?: boolean;
+    sessionId?: string | null;
   }) =>
     exec(sql`
-    insert into task (id, owner, title, input, workdir, created_by, schedule_id, dedupe_key, head, status, parent_id, proposed, position)
+    insert into task (id, owner, title, input, workdir, created_by, schedule_id, dedupe_key, head, status, parent_id, proposed, session_id, position)
     values (${t.id}, ${OWNER}, ${t.title}, ${t.input}, ${t.workdir ?? null}, ${t.createdBy ?? 'user'}::task_creator, ${t.scheduleId ?? null},
-      ${t.dedupeKey ?? null}, ${t.head ?? null}, ${t.status ?? 'todo'}::task_status, ${t.parentId ?? null}, ${t.proposed ?? false}, 0)`);
+      ${t.dedupeKey ?? null}, ${t.head ?? null}, ${t.status ?? 'todo'}::task_status, ${t.parentId ?? null}, ${t.proposed ?? false}, ${t.sessionId ?? null}, 0)`);
   await task({ id: 't1plain1', title: 'Fix ünïcode ✓ 修正', input: LONG, workdir: '/home/a/work' });
   await task({
     id: 't2intake',
@@ -109,8 +119,34 @@ async function legacySeed(db: Db): Promise<void> {
     parentId: 't1plain1',
     proposed: true,
   });
-  // A proposal the user started before this change: its creator stayed "agent" and only `proposed = false` says so.
-  await task({ id: 't8start1', title: 'Started proposal', input: 'do it now', createdBy: 'agent', proposed: false });
+  // Proposals whose `proposed` was cleared before this change: by a start (its creator stayed "agent", and the task went to
+  // Todo, or ran, or was answered), or by reopening a discarded one, which cleared it too without anyone starting anything.
+  const legacyProposal = { createdBy: 'agent', proposed: false } as const;
+  await task({ id: 't8start1', title: 'Started proposal', input: 'do it now', ...legacyProposal });
+  await task({
+    id: 't9reopen',
+    title: 'Discarded then reopened',
+    input: 'never started',
+    status: 'needs-me',
+    ...legacyProposal,
+  });
+  await task({
+    id: 't10sess',
+    title: 'Has a session',
+    input: 'ran',
+    status: 'needs-me',
+    sessionId: '33333333-3333-4333-8333-333333333333',
+    ...legacyProposal,
+  });
+  await task({ id: 't11run1', title: 'Has a run', input: 'ran too', status: 'done', ...legacyProposal });
+  await task({ id: 't12move', title: 'Was dragged', input: 'dragged', status: 'backlog', ...legacyProposal });
+  await task({
+    id: 't13done1',
+    title: 'Marked done',
+    input: 'never started either',
+    status: 'done',
+    ...legacyProposal,
+  });
   await task({ id: 't7mixed', title: halfSealedTitle, input: 'The prompt is still plain' });
 
   const note = (n: {
@@ -175,6 +211,9 @@ async function legacySeed(db: Db): Promise<void> {
     { id: 'n19', author: 'system', kind: 'event', body: 'Possibly a duplicate of EqYgVKEt ("/x"): Open it.' },
     { id: 'n20', author: 'server', kind: 'event', body: 'Closed.' },
     { id: 'n21', author: 'user', kind: 'comment', body: 'on the intake task', taskId: 't2intake' },
+    { id: 'n22', author: 'system', kind: 'event', body: 'Moved from needs-me to todo.', taskId: 't12move' },
+    { id: 'n23', author: 'system', kind: 'event', body: 'Reopened.', taskId: 't9reopen' },
+    { id: 'n24', author: 'system', kind: 'event', body: 'Moved from needs-me to done.', taskId: 't13done1' },
   ];
   for (const n of notes) await note(n);
 
@@ -182,7 +221,8 @@ async function legacySeed(db: Db): Promise<void> {
   await exec(sql`
     insert into transcript_run (id, owner, task_id, machine, session_id, started_at, last_event_at, event_count)
     values (${runId}, ${OWNER}, 't1plain1', 'laptop', '11111111-1111-4111-8111-111111111111', now(), now(), 25),
-           ('22222222-aaaa-4aaa-8aaa-222222222222', ${OWNER}, 't2intake', 'laptop', null, now(), now(), 0)`);
+           ('22222222-aaaa-4aaa-8aaa-222222222222', ${OWNER}, 't2intake', 'laptop', null, now(), now(), 0),
+           ('44444444-aaaa-4aaa-8aaa-444444444444', ${OWNER}, 't11run1', 'laptop', null, now(), now(), 0)`);
   for (let seq = 0; seq < 25; seq += 1) {
     const toolResult = seq % 5 === 2;
     const output = !toolResult
@@ -292,6 +332,25 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     await admin.db.execute(sql`delete from task where id = 'dispatch'`);
   });
 
+  it('stops, naming both tasks, when intake made a second task for a pull request that a legacy task holds', async () => {
+    const index = await dedupeKeyIndex(keys, PR);
+    await admin.db.execute(sql`
+      insert into task (id, owner, title, input, created_by, dedupe_key, position)
+      values ('t0newint', ${OWNER}, 'sealed later', 'sealed later', 'intake', ${index}, 0)`);
+    try {
+      const before = await snapshot();
+      const attempt = run({ dryRun: true });
+      await expect(attempt).rejects.toThrow(ReencryptError);
+      await expect(attempt).rejects.toThrow(
+        /task t2intake \(legacy, created .*\) and task t0newint \(created by intake .*\)/,
+      );
+      await expect(attempt).rejects.toThrow(/delete it .*dedupe_key = null.*Nothing was changed/s);
+      expect(await snapshot()).toBe(before);
+    } finally {
+      await admin.db.execute(sql`delete from task where id = 't0newint'`);
+    }
+  });
+
   it('refuses, naming the cause, while another session is writing', async () => {
     const writer = new pg.Client({ connectionString: scratch.adminUrl });
     await writer.connect();
@@ -313,16 +372,64 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     summary = await run({ dryRun: true });
     expect(await snapshot()).toBe(before);
     expect(summary.dryRun).toBe(true);
-    expect(summary.columns['task.title']).toEqual({ converted: 7, alreadySealed: 1, leftPlain: 0 });
+    expect(summary.columns['task.title']).toEqual({ converted: 12, alreadySealed: 1, leftPlain: 0 });
+    // Every task and a count per table, for the operator to compare with the dump from before the cutover.
+    expect(summary.inventory.counts).toEqual({
+      task: 13,
+      schedule: 1,
+      note: 24,
+      transcript_run: 3,
+      transcript_event: 25,
+    });
+    expect(summary.inventory.tasks).toHaveLength(13);
+    expect(summary.inventory.tasks.map(({ id }) => id).sort()).toEqual(
+      [
+        't10sess',
+        't11run1',
+        't12move',
+        't13done1',
+        't1plain1',
+        't2intake',
+        't3occur1',
+        't4orphan',
+        't5empty',
+        't6agent',
+        't7mixed',
+        't8start1',
+        't9reopen',
+      ].sort(),
+    );
+    expect(summary.inventory.tasks[0]).toMatchObject({ createdBy: expect.any(String), status: expect.any(String) });
+    expect(summary.inventory.tasks[0]?.createdAt).toMatch(/^\d{4}-\d\d-\d\dT/);
     expect(summary.columns['transcript_event.output']?.converted).toBe(4);
+  });
+
+  it('decides each legacy proposal with proposed = false by evidence of a start, and says so for both outcomes', () => {
+    const byId = Object.fromEntries(summary.proposals.map((proposal) => [proposal.id, proposal]));
+    expect(Object.keys(byId).sort()).toEqual(['t10sess', 't11run1', 't12move', 't13done1', 't8start1', 't9reopen']);
+    expect(byId['t8start1']).toMatchObject({ outcome: 'started', createdBy: 'agent', status: 'todo' });
+    expect(byId['t8start1']?.evidence).toEqual(['status todo']);
+    expect(byId['t10sess']).toMatchObject({ outcome: 'started', status: 'needs-me', evidence: ['a session id'] });
+    expect(byId['t11run1']).toMatchObject({ outcome: 'started', status: 'done', evidence: ['a transcript run'] });
+    expect(byId['t12move']).toMatchObject({
+      outcome: 'started',
+      status: 'backlog',
+      evidence: ['an answer of the user or the move into Todo'],
+    });
+    // Reopened after a discard, or marked done: nobody started them, whatever `proposed` says.
+    expect(byId['t9reopen']).toMatchObject({ outcome: 'kept', createdBy: 'agent', status: 'needs-me', evidence: [] });
+    expect(byId['t13done1']).toMatchObject({ outcome: 'kept', createdBy: 'agent', status: 'done', evidence: [] });
+    expect(byId['t9reopen']?.createdAt).toMatch(/^\d{4}-\d\d-\d\dT/);
+    // A proposal that is still waiting (proposed = true) is not decided.
+    expect(byId['t6agent']).toBeUndefined();
   });
 
   it('seals every legacy value and reports what it did', async () => {
     const real = await run();
     expect(real.columns).toEqual(summary.columns);
     expect(real.columns).toMatchObject({
-      'task.title': { converted: 7, alreadySealed: 1 },
-      'task.input': { converted: 8, alreadySealed: 0 },
+      'task.title': { converted: 12, alreadySealed: 1 },
+      'task.input': { converted: 13, alreadySealed: 0 },
       'task.workdir': { converted: 2 },
       'task.dedupe_key': { converted: 1 },
       'task.head': { converted: 1 },
@@ -333,12 +440,24 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
       'transcript_event.data': { converted: 25 },
     });
     // Server events by the allow-list: Marked done, Moved, Taken back from laptop, Closed after, Priority, Start time, Reopened.
-    expect(real.columns['note.body']?.leftPlain).toBe(8);
+    expect(real.columns['note.body']?.leftPlain).toBe(11);
     expect(real.notices).toMatchObject({
       'tasks that are occurrences of a schedule that no longer exists (sealed for the schedule id they name)': 1,
       'answer notes without usable questions, made comments of the user': 3,
-      'proposals the user had started (now created by the user, as a started proposal is)': 1,
+      'proposals the user had started (now created by the user, as a started proposal is)': 4,
+      'proposals with no sign of a start (kept as the agent’s, waiting for you to start them)': 2,
     });
+    expect(real.proposals).toEqual(summary.proposals);
+    const stored = await rows<{ id: string; created_by: string; proposed: boolean }>(
+      `select id, created_by::text, proposed from task where created_by = 'agent' or id in ('t8start1', 't10sess') order by id`,
+    );
+    expect(stored).toEqual([
+      { id: 't10sess', created_by: 'user', proposed: false },
+      { id: 't13done1', created_by: 'agent', proposed: true },
+      { id: 't6agent', created_by: 'agent', proposed: true },
+      { id: 't8start1', created_by: 'user', proposed: false },
+      { id: 't9reopen', created_by: 'agent', proposed: true },
+    ]);
     expect(await plaintextCounts(client, 'all')).toEqual({});
     expect(real.tables['transcript_event']?.rows).toBe(25);
   });
@@ -387,7 +506,21 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     });
     const tasks = await backend.listTasks({ all: true });
     expect(tasks.map((task) => task.id).sort()).toEqual(
-      ['t1plain1', 't2intake', 't3occur1', 't4orphan', 't5empty', 't6agent', 't7mixed', 't8start1'].sort(),
+      [
+        't10sess',
+        't11run1',
+        't12move',
+        't13done1',
+        't1plain1',
+        't2intake',
+        't3occur1',
+        't4orphan',
+        't5empty',
+        't6agent',
+        't7mixed',
+        't8start1',
+        't9reopen',
+      ].sort(),
     );
     expect(tasks.filter((task) => task.unreadable.length > 0)).toEqual([]);
     const byId = Object.fromEntries(tasks.map((task) => [task.id, task]));
@@ -404,6 +537,10 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     // A proposal still waiting stays the agent's, and no worker runs it; one the user had started is the user's now.
     expect(byId['t6agent']).toMatchObject({ createdBy: 'agent', input: 'do it' });
     expect(byId['t8start1']).toMatchObject({ createdBy: 'user', input: 'do it now', unreadable: [] });
+    for (const id of ['t10sess', 't11run1', 't12move']) expect(byId[id], id).toMatchObject({ createdBy: 'user' });
+    // Reopened after a discard, or marked done, without a start: still the agent's, still waiting for the user to start it.
+    for (const id of ['t9reopen', 't13done1'])
+      expect(byId[id], id).toMatchObject({ createdBy: 'agent', unreadable: [] });
     expect(byId['t2intake']?.head).toBe(await backend.indexHead(SHA));
 
     const schedules = await backend.listSchedules();
@@ -473,7 +610,7 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
   it('is read by the browser code: lists, threads, previews, transcripts, nothing unreadable', async () => {
     const ui = plainUi(app.db, OWNER);
     const list = await ui.tasks.list();
-    expect(list).toHaveLength(8);
+    expect(list).toHaveLength(13);
     const previews = Object.fromEntries(list.map((task) => [task.id, task.lastNote]));
     expect(previews['t1plain1']).toBeTruthy();
     for (const { id } of list) {
@@ -497,7 +634,7 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     const again = await run();
     expect(await snapshot()).toBe(before);
     for (const [column, { converted }] of Object.entries(again.columns)) expect(converted, column).toBe(0);
-    expect(again.columns['task.title']?.alreadySealed).toBe(8);
+    expect(again.columns['task.title']?.alreadySealed).toBe(13);
     expect(Object.values(again.tables).every((table) => table.changed === 0)).toBe(true);
     expect(Object.keys(again.notices)).toEqual([expect.stringMatching(/schedule that no longer exists/)]);
   });

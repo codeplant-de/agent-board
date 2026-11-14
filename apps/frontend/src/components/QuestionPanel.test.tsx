@@ -38,7 +38,7 @@ describe('QuestionPanel', () => {
   it('preselects the recommended option and sends with an empty multi-select', async () => {
     const onSubmit = renderPanel();
     await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
-    expect(onSubmit).toHaveBeenCalledWith([{ selected: ['Blocking'] }, { selected: [] }], '');
+    expect(onSubmit).toHaveBeenCalledWith(questions, [{ selected: ['Blocking'] }, { selected: [] }], '');
   });
 
   it('number keys pick in the active question, which moves on after a single choice', async () => {
@@ -47,13 +47,13 @@ describe('QuestionPanel', () => {
     await userEvent.keyboard('1');
     await userEvent.keyboard('2');
     await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
-    expect(onSubmit).toHaveBeenCalledWith([{ selected: ['Nit'] }, { selected: ['Audit', 'Fixtures'] }], '');
+    expect(onSubmit).toHaveBeenCalledWith(questions, [{ selected: ['Nit'] }, { selected: ['Audit', 'Fixtures'] }], '');
   });
 
   it('the Other text goes with the answer', async () => {
     const onSubmit = renderPanel();
     await userEvent.type(screen.getAllByPlaceholderText(/Other…/)[0]!, 'only if cheap');
     await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
-    expect(onSubmit.mock.calls[0]?.[0][0]).toEqual({ selected: ['Blocking'], other: 'only if cheap' });
+    expect(onSubmit.mock.calls[0]?.[1][0]).toEqual({ selected: ['Blocking'], other: 'only if cheap' });
   });
 });

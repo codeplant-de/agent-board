@@ -12,6 +12,7 @@ import {
   type Priority,
   type Question,
   type RowRef,
+  type Status,
   type TaskCreator,
   type UnreadableField,
 } from '@agent-board/shared';
@@ -94,10 +95,19 @@ export async function sealAnswer(
 /** What starting an agent's proposal needs of the proposal as the page shows it. */
 export interface Proposal {
   id: string;
+  status: Status;
   input: string;
   createdBy: TaskCreator;
   scheduleId: string | null;
   unreadable: UnreadableField[];
+}
+
+/**
+ * A move starts a proposal only when an agent's task enters Todo from another column. One already in Todo was put there by the
+ * board (a proposal never waits in Todo), so reordering it must not seal its prompt as the user's.
+ */
+export function startsProposal(task: Pick<Proposal, 'createdBy' | 'status'>, to: Status): boolean {
+  return task.createdBy === 'agent' && task.status !== 'todo' && to === 'todo';
 }
 
 /**

@@ -49,6 +49,19 @@ test('invalid configs are refused with a pointed message', () => {
     );
 });
 
+test('a machine name that is too long is refused with the limit, and one of 64 characters is accepted', () => {
+  assert.throws(
+    () => parseConfig({ ...valid, machine: 'm'.repeat(65) }),
+    (error) =>
+      error instanceof ConfigError && /1 to 64 characters/.test(error.message) && /65 characters/.test(error.message),
+  );
+  assert.equal(parseConfig({ ...valid, machine: 'm'.repeat(64) }).machine, 'm'.repeat(64));
+  assert.throws(
+    () => parseConfig({ ...valid, lanes: { ['l'.repeat(65)]: { skills: ['x'] } } }),
+    (error) => error instanceof ConfigError && /1 to 64 characters/.test(error.message),
+  );
+});
+
 test('only modes 600 and 400 pass', () => {
   assert.equal(isSafeMode(0o100600), true);
   assert.equal(isSafeMode(0o100400), true);
@@ -96,10 +109,10 @@ test('a missing config.json is the defaults only when the command allows it; any
   }
 });
 
-test('a machine name longer than 32 characters, valid before contract 6, says so and what to do', () => {
+test('a machine name is 1 to 64 characters, and a longer one says what the rule is and how long it was', () => {
+  assert.equal(parseConfig({ machine: 'm'.repeat(64) }).machine, 'm'.repeat(64));
   assert.throws(
-    () => parseConfig({ machine: 'm'.repeat(40) }),
-    /machine must be a name of .* at most 32 characters .*create a new token for the new name/,
+    () => parseConfig({ machine: 'm'.repeat(65) }),
+    /machine must be a name of 1 to 64 characters: .*\(65 characters\)/,
   );
-  assert.equal(parseConfig({ machine: 'm'.repeat(32) }).machine, 'm'.repeat(32));
 });
