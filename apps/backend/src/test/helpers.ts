@@ -41,6 +41,9 @@ export function caller(root: Db, username = 'jascha') {
   return appRouter.createCaller({ root, config: testConfig, username });
 }
 
+/** A value of the shape of an envelope, for rows a test inserts directly: the database refuses anything else in a sealed column. */
+export const SEALED = `abe1.${'A'.repeat(40)}`;
+
 export const question = {
   header: 'Scope',
   question: 'Review the migration too?',

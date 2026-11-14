@@ -142,14 +142,14 @@ async function sealRequest(command: string, request: Json, sealing: Sealing, raw
       const events = await Promise.all(
         (body.events as Json[]).map(async ({ output, ...event }) => {
           const data = await sealing.seal(
-            transcriptBinding('tr.data', body.runId, event['seq']),
+            transcriptBinding('tr.data', id, body.runId, event['seq']),
             JSON.stringify(event),
           );
           const wire = { seq: event['seq'], at: event['at'], kind: event['kind'], parent: event['parent'], data };
           if (event['kind'] !== 'tool_result') return wire;
           return {
             ...wire,
-            output: await sealing.seal(transcriptBinding('tr.output', body.runId, event['seq']), output ?? ''),
+            output: await sealing.seal(transcriptBinding('tr.output', id, body.runId, event['seq']), output ?? ''),
             outputSize: (output ?? '').length,
           };
         }),
@@ -301,20 +301,20 @@ export function plainUi(db: Db, owner = 'jascha') {
     me: raw.me,
     transcript: {
       runs: raw.transcript.runs,
-      events: async (input: { runId: string; afterSeq?: number }) =>
+      events: async ({ taskId, ...input }: { taskId: string; runId: string; afterSeq?: number }) =>
         Promise.all(
           (await raw.transcript.events(input)).map(async ({ data, ...row }) => ({
             ...row,
             ...(JSON.parse(
-              await sealing.openStrict(transcriptBinding('tr.data', input.runId, row.seq), data),
+              await sealing.openStrict(transcriptBinding('tr.data', taskId, input.runId, row.seq), data),
             ) as Record<string, unknown>),
           })),
         ),
-      output: async (input: { runId: string; seq: number }) => {
+      output: async ({ taskId, ...input }: { taskId: string; runId: string; seq: number }) => {
         const output = await raw.transcript.output(input);
         return output === null
           ? null
-          : sealing.openStrict(transcriptBinding('tr.output', input.runId, input.seq), output);
+          : sealing.openStrict(transcriptBinding('tr.output', taskId, input.runId, input.seq), output);
       },
     },
   };

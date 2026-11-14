@@ -152,8 +152,12 @@ export async function openSchedules(keys: Keys, wire: WireSchedule[]): Promise<S
 }
 
 /** An event that cannot be opened becomes a note saying so, so the rest of the run still reads. */
-export async function openEvent(keys: Keys, runId: string, wire: WireEvent): Promise<TranscriptEventView> {
-  const text = await tryOpen(keys, transcriptBinding('tr.data', runId, wire.seq), wire.data);
+export async function openEvent(
+  keys: Keys,
+  run: { taskId: string; runId: string },
+  wire: WireEvent,
+): Promise<TranscriptEventView> {
+  const text = await tryOpen(keys, transcriptBinding('tr.data', run.taskId, run.runId, wire.seq), wire.data);
   try {
     const data: unknown = text === undefined ? undefined : JSON.parse(text);
     if (typeof data === 'object' && data !== null && 'kind' in data && 'seq' in data)
@@ -166,11 +170,20 @@ export async function openEvent(keys: Keys, runId: string, wire: WireEvent): Pro
   return { seq: wire.seq, at: wire.at, parent: wire.parent, kind: 'note', text: UNREADABLE_TEXT, outputSize: null };
 }
 
-export async function openEvents(keys: Keys, runId: string, wire: WireEvent[]): Promise<TranscriptEventView[]> {
-  return Promise.all(wire.map((event) => openEvent(keys, runId, event)));
+export async function openEvents(
+  keys: Keys,
+  run: { taskId: string; runId: string },
+  wire: WireEvent[],
+): Promise<TranscriptEventView[]> {
+  return Promise.all(wire.map((event) => openEvent(keys, run, event)));
 }
 
-export async function openOutput(keys: Keys, runId: string, seq: number, wire: string | null): Promise<string> {
+export async function openOutput(
+  keys: Keys,
+  run: { taskId: string; runId: string },
+  seq: number,
+  wire: string | null,
+): Promise<string> {
   if (wire === null) return '';
-  return (await tryOpen(keys, transcriptBinding('tr.output', runId, seq), wire)) ?? UNREADABLE_TEXT;
+  return (await tryOpen(keys, transcriptBinding('tr.output', run.taskId, run.runId, seq), wire)) ?? UNREADABLE_TEXT;
 }

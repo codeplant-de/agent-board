@@ -125,20 +125,30 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
     transcript: {
       runs: raw.transcript.runs,
       events: {
-        queryKey: (input: { runId: string }): QueryKey => plainKey(raw.transcript.events.queryKey(input)),
-        queryOptions: (input: { runId: string; afterSeq?: number }) =>
+        queryKey: (input: { taskId: string; runId: string }): QueryKey =>
+          plainKey(raw.transcript.events.queryKey({ runId: input.runId })),
+        queryOptions: ({ taskId, ...input }: { taskId: string; runId: string; afterSeq?: number }) =>
           queryOptions({
             queryKey: plainKey(raw.transcript.events.queryKey(input)),
             queryFn: async ({ signal }) =>
-              openEvents(need(), input.runId, await client.transcript.events.query(input, { signal })),
+              openEvents(
+                need(),
+                { taskId, runId: input.runId },
+                await client.transcript.events.query(input, { signal }),
+              ),
           }),
       },
       output: {
-        queryOptions: (input: { runId: string; seq: number }) =>
+        queryOptions: ({ taskId, ...input }: { taskId: string; runId: string; seq: number }) =>
           queryOptions({
             queryKey: plainKey(raw.transcript.output.queryKey(input)),
             queryFn: async ({ signal }) =>
-              openOutput(need(), input.runId, input.seq, await client.transcript.output.query(input, { signal })),
+              openOutput(
+                need(),
+                { taskId, runId: input.runId },
+                input.seq,
+                await client.transcript.output.query(input, { signal }),
+              ),
           }),
       },
     },
@@ -151,9 +161,16 @@ export function createPlainClient(client: RawClient, keys: Keys | null) {
   return {
     transcript: {
       events: {
-        query: async (input: { runId: string; afterSeq?: number }): Promise<TranscriptEventView[]> => {
+        query: async ({
+          taskId,
+          ...input
+        }: {
+          taskId: string;
+          runId: string;
+          afterSeq?: number;
+        }): Promise<TranscriptEventView[]> => {
           if (keys === null) throw new Error('The board is locked.');
-          return openEvents(keys, input.runId, await client.transcript.events.query(input));
+          return openEvents(keys, { taskId, runId: input.runId }, await client.transcript.events.query(input));
         },
       },
     },

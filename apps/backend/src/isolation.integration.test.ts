@@ -8,7 +8,7 @@ import { appUsers, machines, notes, schedules, tasks, transcriptEvents, transcri
 import { withOwner } from './db/scope';
 import { buildServer } from './server';
 import { plainMachine, plainUi } from './test/client';
-import { asOwner, question, SESSION, testConfig, useTestDb } from './test/helpers';
+import { asOwner, question, SEALED, SESSION, testConfig, useTestDb } from './test/helpers';
 import { sealed } from './test/sealed';
 
 const { db, admin } = useTestDb();
@@ -109,11 +109,11 @@ describe('one user cannot reach another user’s board', () => {
       () => alice.tasks.move({ id: bob.idle.id, status: 'backlog' }),
       () => alice.schedules.setPaused({ id: bob.scheduleId, paused: true }),
       () => alice.schedules.remove({ id: bob.scheduleId }),
-      () => alice.transcript.output({ runId: 'run-bob-0001', seq: 1 }),
+      () => alice.transcript.output({ taskId: bob.idle.id, runId: 'run-bob-0001', seq: 1 }),
     ];
     for (const attempt of attempts) await expect(attempt()).rejects.toMatchObject(notFound);
     expect(await alice.transcript.runs({ id: bob.idle.id })).toEqual([]);
-    expect(await alice.transcript.events({ runId: 'run-bob-0001' })).toEqual([]);
+    expect(await alice.transcript.events({ taskId: bob.idle.id, runId: 'run-bob-0001' })).toEqual([]);
     // A foreign neighbour is not found, so the drop lands as if it were not named.
     const moved = await alice.tasks.move({
       id: own.id,
@@ -222,9 +222,9 @@ describe('one user cannot reach another user’s board', () => {
       const { rows } = await db.execute<{ n: number }>(sql`select count(*)::int as n from ${sql.identifier(table)}`);
       expect(rows[0]!.n, table).toBe(0);
     }
-    await expect(db.insert(tasks).values({ id: 'raw-1', title: 't', input: 'i', position: 0 })).rejects.toThrow();
+    await expect(db.insert(tasks).values({ id: 'raw-1', title: SEALED, input: SEALED, position: 0 })).rejects.toThrow();
     await expect(
-      db.insert(tasks).values({ id: 'raw-2', title: 't', input: 'i', position: 0, owner: 'bob' }),
+      db.insert(tasks).values({ id: 'raw-2', title: SEALED, input: SEALED, position: 0, owner: 'bob' }),
     ).rejects.toThrow();
     await expect(db.update(tasks).set({ title: 'x' })).resolves.toBeDefined();
     expect(
@@ -244,11 +244,13 @@ describe('one user cannot reach another user’s board', () => {
         // A savepoint, so a refused write does not abort the transaction for the next attempt.
         tx.transaction(() => fn());
       await expect(
-        attempt(() => tx.insert(tasks).values({ id: 'x-1', title: 't', input: 'i', position: 0, owner: 'bob' })),
+        attempt(() => tx.insert(tasks).values({ id: 'x-1', title: SEALED, input: SEALED, position: 0, owner: 'bob' })),
       ).rejects.toThrow();
       await expect(
         attempt(() =>
-          tx.insert(notes).values({ id: 'x-note-1', taskId: bob.idle.id, author: 'user', kind: 'comment' }),
+          tx
+            .insert(notes)
+            .values({ id: 'x-note-1', taskId: bob.idle.id, author: 'user', kind: 'comment', body: SEALED }),
         ),
       ).rejects.toThrow();
       await expect(
@@ -266,7 +268,7 @@ describe('one user cannot reach another user’s board', () => {
         attempt(() =>
           tx
             .insert(transcriptEvents)
-            .values({ runId: 'run-bob-0001', seq: 9, at: new Date(), kind: 'text', data: '{}' }),
+            .values({ runId: 'run-bob-0001', seq: 9, at: new Date(), kind: 'text', data: SEALED }),
         ),
       ).rejects.toThrow();
     });
@@ -289,11 +291,11 @@ describe('one user cannot reach another user’s board', () => {
       await asOwner(db, 'alice', async (tx) => {
         const [own] = await tx
           .insert(tasks)
-          .values({ id: 'alice-task', title: 't', input: 'i', position: 0 })
+          .values({ id: 'alice-task', title: SEALED, input: SEALED, position: 0 })
           .returning();
         const [ownSchedule] = await tx
           .insert(schedules)
-          .values({ id: 'alice-sched', title: 't', input: 'i', anchorAt: new Date() })
+          .values({ id: 'alice-sched', title: SEALED, input: SEALED, anchorAt: new Date() })
           .returning();
         const cases: [string, (id: string) => Promise<unknown>, string][] = [
           ['task_parent_fk', (id) => tx.update(tasks).set({ parentId: id }).where(eq(tasks.id, own!.id)), bob.idle.id],
@@ -305,7 +307,9 @@ describe('one user cannot reach another user’s board', () => {
           [
             'note_task_fk',
             (id) =>
-              tx.insert(notes).values({ id: `n-${id}`.slice(0, 20), taskId: id, author: 'user', kind: 'comment' }),
+              tx
+                .insert(notes)
+                .values({ id: `n-${id}`.slice(0, 20), taskId: id, author: 'user', kind: 'comment', body: SEALED }),
             bob.idle.id,
           ],
           [
@@ -322,7 +326,8 @@ describe('one user cannot reach another user’s board', () => {
           ],
           [
             'transcript_event_run_fk',
-            (id) => tx.insert(transcriptEvents).values({ runId: id, seq: 0, at: new Date(), kind: 'text', data: '{}' }),
+            (id) =>
+              tx.insert(transcriptEvents).values({ runId: id, seq: 0, at: new Date(), kind: 'text', data: SEALED }),
             'run-bob-0001',
           ],
         ];
@@ -337,12 +342,12 @@ describe('one user cannot reach another user’s board', () => {
 
     it('clears only the reference column when the parent goes', async () => {
       await asOwner(db, 'alice', async (tx) => {
-        const row = (id: string) => ({ id, title: 't', input: 'i', position: 0 });
+        const row = (id: string) => ({ id, title: SEALED, input: SEALED, position: 0 });
         await tx.insert(tasks).values(row('parent-1'));
         await tx.insert(tasks).values({ ...row('child-1'), parentId: 'parent-1' });
         await tx
           .insert(schedules)
-          .values({ id: 'sched-1', title: 't', input: 'i', anchorAt: new Date(), occurrenceTaskId: 'parent-1' });
+          .values({ id: 'sched-1', title: SEALED, input: SEALED, anchorAt: new Date(), occurrenceTaskId: 'parent-1' });
         await tx.update(tasks).set({ scheduleId: 'sched-1' }).where(eq(tasks.id, 'child-1'));
         await tx.delete(tasks).where(eq(tasks.id, 'parent-1'));
         const [child] = await tx.select().from(tasks).where(eq(tasks.id, 'child-1'));
@@ -365,12 +370,12 @@ describe('one user cannot reach another user’s board', () => {
       ...(await sealFields(
         sealed.seal,
         { kind: 'task', id, createdBy: 'user', scheduleId: null },
-        { title: 't', input: 'i' },
+        { title: SEALED, input: SEALED },
       )),
     });
     const schedule = async (id: string) => ({
       id,
-      ...(await sealFields(sealed.seal, { kind: 'schedule', id }, { title: 't', input: 'i' })),
+      ...(await sealFields(sealed.seal, { kind: 'schedule', id }, { title: SEALED, input: SEALED })),
     });
     const foreignTask = await ctx.raw('alice', 'add-task', { body: await task(bob.idle.id) });
     const foreignSchedule = await ctx.raw('alice', 'add-schedule', {

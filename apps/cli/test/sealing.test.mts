@@ -330,7 +330,7 @@ test('questions are validated, sealed as JSON and opened; an answer carries the 
   );
 });
 
-test('a transcript is sealed per event with its run and position; output size is counted by the client', async () => {
+test('a transcript is sealed per event with its task, run and position; output size is counted by the client', async () => {
   const wire = fakeWire();
   const board = sealingBackend(wire, KEYS);
   const at = '2026-11-14T10:00:00.000Z';
@@ -343,10 +343,10 @@ test('a transcript is sealed per event with its run and position; output size is
   const sent = parseWireTranscriptBatch(JSON.parse(wire.requests[0]!));
   assert.equal(sent.events[1]?.outputSize, 'MARKER-output ünï'.length);
   assert.equal(sent.events[0]?.output, undefined);
-  assert.deepEqual(JSON.parse(await open(KEYS, 'tr.data', 'run-12345678:0', sent.events[0]!.data)), events[0]);
+  assert.deepEqual(JSON.parse(await open(KEYS, 'tr.data', 't1:run-12345678:0', sent.events[0]!.data)), events[0]);
   const { output: _output, ...withoutOutput } = events[1] as TranscriptEvent & { output: string };
-  assert.deepEqual(JSON.parse(await open(KEYS, 'tr.data', 'run-12345678:1', sent.events[1]!.data)), withoutOutput);
-  assert.equal(await open(KEYS, 'tr.output', 'run-12345678:1', sent.events[1]!.output!), 'MARKER-output ünï');
+  assert.deepEqual(JSON.parse(await open(KEYS, 'tr.data', 't1:run-12345678:1', sent.events[1]!.data)), withoutOutput);
+  assert.equal(await open(KEYS, 'tr.output', 't1:run-12345678:1', sent.events[1]!.output!), 'MARKER-output ünï');
 });
 
 test('a schedule is sealed and opens again on the way back', async () => {

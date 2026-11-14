@@ -328,10 +328,13 @@ export function runProcess(
     // straight into the log.
     const child = spawn(invocation.command, invocation.args, {
       cwd: invocation.cwd,
-      stdio: ['ignore', 'pipe', fd],
+      stdio: ['pipe', 'pipe', fd],
       detached: true,
       env: { ...process.env, ...env },
     });
+    // The prompt goes in on stdin, never in argv. A process that exits without reading it must not take the worker down.
+    child.stdin?.on('error', () => undefined);
+    child.stdin?.end(invocation.prompt);
     let buffered = '';
     const emit = (line: string): void => {
       const text = onLine(line);

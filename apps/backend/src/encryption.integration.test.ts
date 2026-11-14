@@ -188,10 +188,10 @@ describe('the machine API refuses plaintext in every sealed field', () => {
       parent: null,
       kind: 'tool_result',
       data: await sealed.seal(
-        transcriptBinding('tr.data', 'run-enc-0001', seq),
+        transcriptBinding('tr.data', id, 'run-enc-0001', seq),
         JSON.stringify({ kind: 'tool_result' }),
       ),
-      output: await sealed.seal(transcriptBinding('tr.output', 'run-enc-0001', seq), 'out'),
+      output: await sealed.seal(transcriptBinding('tr.output', id, 'run-enc-0001', seq), 'out'),
       outputSize: 3,
       ...patch,
     });

@@ -54,8 +54,9 @@ const invoke = (
 test('a scheduled task runs its prompt as written, in its directory, as the user in auto mode', () => {
   const plan = invoke({ id: 'abc', input: '/review-pr 17741 --fresh', machine: 'here', workdir: '/work/cosuno' });
   assert.ok(plan.ok);
-  const { args, cwd } = plan.invocation;
-  assert.deepEqual(args.slice(0, 3), ['-p', '/review-pr 17741 --fresh', `--session-id=${SESSION}`]);
+  const { args, cwd, prompt } = plan.invocation;
+  assert.equal(prompt, '/review-pr 17741 --fresh');
+  assert.deepEqual(args.slice(0, 2), ['-p', `--session-id=${SESSION}`]);
   assert.equal(cwd, '/work/cosuno');
   assert.equal(args[args.indexOf('--permission-mode') + 1], 'auto');
   assert.ok(!args.includes('--setting-sources'), "all of the user's settings load");
@@ -88,8 +89,8 @@ test("an intake review runs in the PR's checkout with intake's narrow rules", ()
     workdir: '/stale/dir',
   });
   assert.ok(plan.ok);
-  const { args, cwd } = plan.invocation;
-  assert.equal(args[1], `/review-pr ${PR} --auto`);
+  const { args, cwd, prompt } = plan.invocation;
+  assert.equal(prompt, `/review-pr ${PR} --auto`);
   assert.equal(cwd, '/work/cosuno', 'a fresh intake run goes back to the checkout');
   assert.deepEqual(args.slice(args.indexOf('--permission-mode'), args.indexOf('--permission-mode') + 4), [
     '--permission-mode',
@@ -115,7 +116,8 @@ test('a resume passes the reply and continues where the session stopped', () => 
     { kind: 'resume', sessionId: SESSION, prompt: 'the reply' },
   );
   assert.ok(plan.ok);
-  assert.deepEqual(plan.invocation.args.slice(0, 3), ['-p', 'the reply', `--resume=${SESSION}`]);
+  assert.equal(plan.invocation.prompt, 'the reply');
+  assert.deepEqual(plan.invocation.args.slice(0, 2), ['-p', `--resume=${SESSION}`]);
   assert.equal(plan.invocation.cwd, '/repo/.claude/worktrees/x');
 });
 
@@ -454,7 +456,7 @@ test("a fresh run reads the user's notes since the previous run started, and is 
     pluginRoots: {},
   });
   assert.ok(invocation.ok);
-  assert.equal(invocation.invocation.args[1], `/grill the plan\n\n${block}`);
+  assert.equal(invocation.invocation.prompt, `/grill the plan\n\n${block}`);
 });
 
 test("a fresh run's prompt is verbatim when the thread has no user or agent notes", () => {
@@ -557,4 +559,67 @@ test('a refusal is permanent when sending it again cannot help', () => {
   for (const status of [401, 403, 429, 500, 502, 503, undefined])
     assert.equal(isPermanentRefusal(new BackendError('x', status)), false);
   assert.equal(isPermanentRefusal(new Error('ECONNRESET')), false);
+});
+
+// `claude -p <prompt>` would take the prompt as an operand, and a sealed prompt is whatever the user (or an agent's proposal the
+// user started) wrote. `--mcp-config=...` starts a process before any permission mode applies, so the prompt goes in on stdin.
+const HOSTILE_PROMPTS = [
+  '--version',
+  '--dangerously-skip-permissions',
+  '-p',
+  '-',
+  '--',
+  '- fix the flaky login test',
+  '--mcp-config={"mcpServers":{"poc":{"command":"touch","args":["/tmp/marker"]}}}',
+];
+
+for (const hostile of HOSTILE_PROMPTS) {
+  test(`a prompt of ${JSON.stringify(hostile.slice(0, 30))} is carried as the prompt and adds nothing to argv`, () => {
+    const reference = invoke({ id: 'abc', input: 'plain' });
+    assert.ok(reference.ok);
+    for (const run of [FRESH, { kind: 'resume', sessionId: SESSION, prompt: hostile } as const]) {
+      const plan = invoke({ id: 'abc', input: run.kind === 'fresh' ? hostile : '/grill' }, run);
+      assert.ok(plan.ok);
+      assert.equal(plan.invocation.prompt, hostile);
+      assert.ok(!plan.invocation.args.includes('--'), 'no separator to rely on');
+      // Apart from the session flag, the arguments do not depend on the prompt at all.
+      const withoutSession = (args: string[]) =>
+        args.filter((arg) => !arg.startsWith('--session-id=') && !arg.startsWith('--resume='));
+      assert.deepEqual(withoutSession(plan.invocation.args), withoutSession(reference.invocation.args));
+    }
+  });
+}
+
+test('every other board-derived value on the command line is one argument that cannot read as an option', () => {
+  const plan = invoke({ id: 'abc', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
+  assert.ok(plan.ok);
+  const { args } = plan.invocation;
+  // The session id is part of one `--flag=value` argument (and a UUID), the rules and the settings follow their flag.
+  assert.ok(args.includes(`--session-id=${SESSION}`));
+  assert.ok(!args.includes(SESSION));
+  assert.match(
+    args[args.indexOf('--append-system-prompt') + 1] ?? '',
+    /^You are running headless as agent-board task abc/,
+  );
+  assert.match(args[args.indexOf('--settings') + 1] ?? '', /^\{/);
+  // `--allowedTools` and `--disallowedTools` take every following argument that does not start with "-".
+  const rules = args.slice(args.indexOf('--allowedTools') + 1).filter((arg) => !arg.startsWith('--'));
+  assert.ok(rules.length > 0 && rules.every((rule) => !rule.startsWith('-')));
+});
+
+test('an intake tool rule that would read as an option stops the run', () => {
+  for (const rule of ['--dangerously-skip-permissions', '-x', '{pr-review}/--x'.replace('{pr-review}', '-')]) {
+    for (const list of ['allowedTools', 'disallowedTools'] as const) {
+      const plan = buildInvocation({
+        run: FRESH,
+        task: task({ id: 'a', input: PR, createdBy: 'intake' }),
+        repos: CONFIG.repos,
+        defaultCwd: CONFIG.defaultCwd,
+        intake: { ...CONFIG.intake, [list]: [rule] },
+        home: '/h',
+        pluginRoots: {},
+      });
+      assert.ok(!plan.ok && /starts with "-"/.test(plan.reason), `${list} ${rule}`);
+    }
+  }
 });

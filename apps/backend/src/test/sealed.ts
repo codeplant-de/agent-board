@@ -39,6 +39,11 @@ export function keysFor(owner = 'jascha'): Promise<Keys> {
   return keys;
 }
 
+/** Makes `owner` use this data key for the rest of the test file, as when a test seals with a key it also hands to the CLI. */
+export function useDataKey(owner: string, dataKey: Uint8Array): void {
+  keysByOwner.set(owner, deriveKeys(dataKey, owner, { index: true }));
+}
+
 /**
  * What a client has in hand: a way to seal and open one value under a binding, with the user's key. Everything above that
  * (which binding a field gets, what may be opened) is `@agent-board/shared`, the code the CLI and the browser run.

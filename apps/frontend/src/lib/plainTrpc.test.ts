@@ -571,14 +571,15 @@ describe('opening what arrives', () => {
   it('opens transcript events and outputs, and shows one it cannot open as a note', async () => {
     const event = { seq: 0, at: NOW, kind: 'text', text: 'working on it', parent: null };
     handle.mockImplementation(async (path, input) => {
-      if (path === 'transcript.output') return sealAs(keys, transcriptBinding('tr.output', 'run1', 1), 'the output');
+      if (path === 'transcript.output')
+        return sealAs(keys, transcriptBinding('tr.output', 'task1', 'run1', 1), 'the output');
       return [
         {
           seq: 0,
           at: NOW,
           kind: 'text',
           parent: null,
-          data: await sealAs(keys, transcriptBinding('tr.data', 'run1', 0), JSON.stringify(event)),
+          data: await sealAs(keys, transcriptBinding('tr.data', 'task1', 'run1', 0), JSON.stringify(event)),
           outputSize: null,
         },
         {
@@ -586,7 +587,7 @@ describe('opening what arrives', () => {
           at: NOW,
           kind: 'tool_result',
           parent: null,
-          data: await sealAs(otherKeys, transcriptBinding('tr.data', 'run1', 1), '{}'),
+          data: await sealAs(otherKeys, transcriptBinding('tr.data', 'task1', 'run1', 1), '{}'),
           outputSize: 10,
         },
         {
@@ -594,30 +595,60 @@ describe('opening what arrives', () => {
           at: NOW,
           kind: 'text',
           parent: null,
-          data: await sealAs(keys, transcriptBinding('tr.data', 'run1', 2), JSON.stringify({ ...event, seq: 5 })),
+          data: await sealAs(
+            keys,
+            transcriptBinding('tr.data', 'task1', 'run1', 2),
+            JSON.stringify({ ...event, seq: 5 }),
+          ),
           outputSize: null,
         },
         { seq: 3, at: NOW, kind: 'tool_result', parent: null, data: 'plain', outputSize: 0 },
       ].filter(() => (input as { afterSeq?: number }).afterSeq !== 99);
     });
     const { trpc, client } = plain();
-    const events = await client.transcript.events.query({ runId: 'run1', afterSeq: -1 });
+    const events = await client.transcript.events.query({ taskId: 'task1', runId: 'run1', afterSeq: -1 });
     expect(events[0]).toMatchObject({ kind: 'text', text: 'working on it', seq: 0, outputSize: null });
     for (const placeholder of events.slice(1))
       expect(placeholder).toMatchObject({ kind: 'note', text: UNREADABLE_TEXT });
-    expect(await queryClient.fetchQuery(trpc.transcript.output.queryOptions({ runId: 'run1', seq: 1 }))).toBe(
-      'the output',
+    expect(
+      await queryClient.fetchQuery(trpc.transcript.output.queryOptions({ taskId: 'task1', runId: 'run1', seq: 1 })),
+    ).toBe('the output');
+  });
+
+  it('shows a run of another task as unreadable, events and outputs alike', async () => {
+    const event = { seq: 0, at: NOW, kind: 'text', text: 'working on it', parent: null };
+    handle.mockImplementation(async (path) =>
+      path === 'transcript.output'
+        ? sealAs(keys, transcriptBinding('tr.output', 'task1', 'run1', 1), 'the output')
+        : [
+            {
+              seq: 0,
+              at: NOW,
+              kind: 'text',
+              parent: null,
+              data: await sealAs(keys, transcriptBinding('tr.data', 'task1', 'run1', 0), JSON.stringify(event)),
+              outputSize: null,
+            },
+          ],
     );
+    const { trpc, client } = plain();
+    const [shown] = await client.transcript.events.query({ taskId: 'task2', runId: 'run1', afterSeq: -1 });
+    expect(shown).toMatchObject({ kind: 'note', text: UNREADABLE_TEXT });
+    expect(
+      await queryClient.fetchQuery(trpc.transcript.output.queryOptions({ taskId: 'task2', runId: 'run1', seq: 1 })),
+    ).toBe(UNREADABLE_TEXT);
   });
 
   it('opens a null output as empty and an unopenable one as a placeholder', async () => {
     const { trpc } = plain();
     handle.mockResolvedValueOnce(null);
-    expect(await queryClient.fetchQuery(trpc.transcript.output.queryOptions({ runId: 'r', seq: 0 }))).toBe('');
+    expect(
+      await queryClient.fetchQuery(trpc.transcript.output.queryOptions({ taskId: 'task1', runId: 'r', seq: 0 })),
+    ).toBe('');
     handle.mockResolvedValueOnce('not sealed');
-    expect(await queryClient.fetchQuery(trpc.transcript.output.queryOptions({ runId: 'r', seq: 1 }))).toBe(
-      UNREADABLE_TEXT,
-    );
+    expect(
+      await queryClient.fetchQuery(trpc.transcript.output.queryOptions({ taskId: 'task1', runId: 'r', seq: 1 })),
+    ).toBe(UNREADABLE_TEXT);
   });
 
   it('does not decrypt an unchanged value again on the next poll', async () => {
