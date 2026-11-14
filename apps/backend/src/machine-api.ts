@@ -22,7 +22,7 @@ import {
 } from '@agent-board/shared';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config';
-import type { Db } from './db/client';
+import type { Db, DbOrTx, Tx } from './db/client';
 import { AppError } from './services/errors';
 import { machineForToken } from './services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
@@ -67,7 +67,7 @@ function parsed<T>(parse: () => T): T {
 }
 
 export async function handleMachineCall(
-  db: Db,
+  db: DbOrTx,
   config: Config,
   machine: string,
   command: string,
@@ -169,6 +169,11 @@ export async function handleMachineCall(
   }
 }
 
+/** One transaction per machine call, so it commits or rolls back as a whole. */
+function inMachineTransaction<T>(db: Db, fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return db.transaction(fn);
+}
+
 export function registerMachineApi(app: FastifyInstance, db: Db, config: Config): void {
   app.post<{ Params: { command: string } }>('/api/machine/:command', async (req) => {
     const header = req.headers.authorization ?? '';
@@ -176,6 +181,8 @@ export function registerMachineApi(app: FastifyInstance, db: Db, config: Config)
     const machine = token ? await machineForToken(db, token) : null;
     if (!machine) throw new AppError('UNAUTHORIZED', 'unknown or revoked machine token');
     const body = isRecord(req.body) ? req.body : {};
-    return { result: await handleMachineCall(db, config, machine, req.params.command, body) };
+    return {
+      result: await inMachineTransaction(db, (tx) => handleMachineCall(tx, config, machine, req.params.command, body)),
+    };
   });
 }
