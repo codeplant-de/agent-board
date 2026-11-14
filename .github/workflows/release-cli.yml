@@ -1,0 +1,93 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - 'cli-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Full history, for the ancestor check; no credential is left in the checkout, only the publish step gets a token.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.28.9
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - name: Check the tag is a release of the package version, on main
+        run: |
+          version=$(node -p "require('./apps/cli/package.json').version")
+          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "apps/cli/package.json version $version is not x.y.z" >&2
+            exit 1
+          fi
+          if [ "$GITHUB_REF_NAME" != "cli-v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match apps/cli/package.json version $version" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "the tagged commit is not on main" >&2
+            exit 1
+          fi
+
+      # The completion tests parse the zsh and fish scripts with the real shells and fail without them on CI.
+      - name: Install zsh and fish
+        run: sudo apt-get update && sudo apt-get install -y zsh fish
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Format
+        run: pnpm format:check
+
+      # The backend integration tests need the Postgres service of ci.yml, which this job does not have.
+      - name: Tests
+        run: pnpm --filter "@agent-board/cli..." test
+
+      - name: Build
+        run: pnpm --filter @agent-board/cli build
+
+      - name: Binary smoke test
+        run: pnpm --filter @agent-board/cli test:binary
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            apps/cli/dist/board-linux-x64 \
+            apps/cli/dist/board-linux-arm64 \
+            apps/cli/dist/board-darwin-arm64 \
+            apps/cli/dist/SHA256SUMS \
+            scripts/install.sh \
+            --title "board $GITHUB_REF_NAME" \
+            --verify-tag \
+            --generate-notes

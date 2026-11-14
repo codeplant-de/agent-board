@@ -1,10 +1,8 @@
-#!/usr/bin/env node
 /**
  * One dispatcher tick: sweep stale Running tasks, then fill free slots from the top of Todo.
  * No LLM calls. Add --dry-run to read everything and print every write and process start instead.
  */
-import { fileURLToPath } from 'node:url';
-import { buildContext, print, rejectExtraArgs, runMain, takeFlag } from './cli.mts';
+import { buildContext, print } from './cli.mts';
 import type { Context } from './cli.mts';
 import type { Task } from '@agent-board/shared';
 import { promptSkill } from '@agent-board/shared';
@@ -169,24 +167,18 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   log(`TICK started=${started.size} ${summary}`);
 }
 
-if (import.meta.main) {
-  await runMain(async () => {
-    const args = process.argv.slice(2);
-    const dryRun = takeFlag(args, '--dry-run');
-    rejectExtraArgs(args, 'usage: dispatch [--dry-run]');
-    const context = buildContext(dryRun);
-    const workerScript = fileURLToPath(new URL('./worker.mts', import.meta.url));
-    await runDispatch({
-      ...context,
-      print,
-      system: createSystem({ workerScript, dryRun, print }),
-      files: createRunFiles(),
-      now: () => new Date(),
-      logTail: readLogTail,
-      notify: async (task, text) => {
-        if (dryRun) return print(`DRY slack ${task.id} ${text}`);
-        await postSlack(context.config.slackWebhookFile, slackText(task, text));
-      },
-    });
+export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<void> {
+  const context = buildContext(dryRun);
+  await runDispatch({
+    ...context,
+    print,
+    system: createSystem({ dryRun, print }),
+    files: createRunFiles(),
+    now: () => new Date(),
+    logTail: readLogTail,
+    notify: async (task, text) => {
+      if (dryRun) return print(`DRY slack ${task.id} ${text}`);
+      await postSlack(context.config.slackWebhookFile, slackText(task, text));
+    },
   });
 }

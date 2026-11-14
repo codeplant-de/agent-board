@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { unitName } from './decide.mts';
+import { selfCommand } from './self.mts';
 
 const run = promisify(execFile);
 
@@ -67,7 +68,7 @@ async function systemctl(args: string[]): Promise<string> {
   }
 }
 
-export function createSystem(input: { workerScript: string; dryRun: boolean; print: (line: string) => void }): System {
+export function createSystem(input: { dryRun: boolean; print: (line: string) => void }): System {
   return {
     async isActive(unit) {
       return parseUnitState(await systemctl(['is-active', unit]));
@@ -107,7 +108,7 @@ export function createSystem(input: { workerScript: string; dryRun: boolean; pri
       ]) {
         if (process.env[name]) args.push(`--setenv=${name}`);
       }
-      args.push('--', process.execPath, input.workerScript, taskId);
+      args.push('--', ...selfCommand('internal', 'worker', taskId));
       if (input.dryRun) {
         input.print(`DRY systemd-run ${args.join(' ')}`);
         return { pid: undefined };

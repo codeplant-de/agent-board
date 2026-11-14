@@ -76,6 +76,7 @@
     "disallowedTools": [
       "Bash(board schedule *)",
       "Bash(board schedules *)",
+      "Bash(board internal *)",
       "Bash(gh api *)",
       "Bash(gh pr review *)",
       "Bash(gh pr comment *)",
