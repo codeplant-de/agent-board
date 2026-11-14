@@ -25,17 +25,22 @@ import {
 import type { Backend, Keys, Schedule, Task, TaskDraft, WireBackend } from '@agent-board/shared';
 import { ConfigError } from './config.mts';
 import { loadEnvFile } from './env-file.mts';
+import { isCompiledBinary } from './self.mts';
 import { oneLine } from './text.mts';
 
 const REQUEST_TIMEOUT_MS = 45_000;
+const AGENT_BOARD_TOKEN_PREFIX = 'abm_';
 
 export class BackendError extends Error {
   // The HTTP status of the server's answer, when there was one.
   status: number | undefined;
+  // Whether the status came in a JSON answer of the machine API; a login page or a proxy has a status too, and means something else.
+  fromApi: boolean;
 
-  constructor(message: string, status?: number) {
+  constructor(message: string, status?: number, fromApi = false) {
     super(message);
     this.status = status;
+    this.fromApi = fromApi;
   }
 }
 
@@ -46,21 +51,35 @@ export interface WebConfig {
   dataKey: Uint8Array;
 }
 
-export function parseWebConfig(raw: unknown, env: Record<string, string>): WebConfig {
-  if (!isRecord(raw)) throw new ConfigError('web.json: top level must be an object');
-  const url = raw['url'];
-  if (typeof url !== 'string' || !/^https?:\/\/[^\s/]+/.test(url))
+// The board's URL as web.json and `board init` accept it.
+export function checkBoardUrl(url: unknown): string {
+  if (typeof url !== 'string' || /\s/.test(url) || !/^https?:\/\/[^/]+/.test(url))
     throw new ConfigError("web.json: url must be the board's http(s) URL");
   // Plain http only to this machine: the token must not cross a network in the clear.
   if (url.startsWith('http://') && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/.test(url)) {
     throw new ConfigError('web.json: url must use https unless it is localhost');
   }
+  return url.replace(/\/+$/, '');
+}
+
+// A machine token as the board issues them.
+export function looksLikeMachineToken(token: string): boolean {
+  return token.startsWith(AGENT_BOARD_TOKEN_PREFIX) && !/\s/.test(token);
+}
+
+export function parseWebConfig(raw: unknown, env: Record<string, string>): WebConfig {
+  if (!isRecord(raw)) throw new ConfigError('web.json: top level must be an object');
+  const url = checkBoardUrl(raw['url']);
   const token = env['AGENT_BOARD_TOKEN'];
   if (!token)
-    throw new ConfigError("the credentials file needs AGENT_BOARD_TOKEN (create one on the board's Settings page)");
+    throw new ConfigError(
+      'the credentials file needs AGENT_BOARD_TOKEN (create one on the board\'s Settings page, then run "board init")',
+    );
   const encodedKey = env['AGENT_BOARD_DATA_KEY'];
   if (!encodedKey)
-    throw new ConfigError("the credentials file needs AGENT_BOARD_DATA_KEY (copy it from the board's Settings page)");
+    throw new ConfigError(
+      'the credentials file needs AGENT_BOARD_DATA_KEY (copy it from the board\'s Settings page, then run "board init")',
+    );
   let dataKey: Uint8Array;
   try {
     dataKey = decodeDataKey(encodedKey);
@@ -69,7 +88,7 @@ export function parseWebConfig(raw: unknown, env: Record<string, string>): WebCo
       "AGENT_BOARD_DATA_KEY is not a data key (abk1_ and 43 more characters): copy it again from the board's Settings page",
     );
   }
-  return { url: url.replace(/\/+$/, ''), token, dataKey };
+  return { url, token, dataKey };
 }
 
 export function loadWebConfig(configDir: string): WebConfig {
@@ -79,7 +98,9 @@ export function loadWebConfig(configDir: string): WebConfig {
     raw = JSON.parse(readFileSync(path, 'utf8'));
   } catch (error) {
     throw new ConfigError(
-      error instanceof SyntaxError ? `web.json is not valid JSON: ${path}` : `web.json missing: ${path}`,
+      error instanceof SyntaxError
+        ? `web.json is not valid JSON: ${path}`
+        : `web.json missing: ${path} (run "board init")`,
     );
   }
   return parseWebConfig(raw, loadEnvFile(join(configDir, 'env')));
@@ -98,10 +119,11 @@ export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
 // One request. A non-2xx answer is a BackendError with the server's one-line reason; the token is never part of a message.
 export async function callServer(
-  config: WebConfig,
+  config: Pick<WebConfig, 'url' | 'token'>,
   command: string,
   request: MachineRequest,
   fetcher: Fetch = fetch,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<unknown> {
   let response: Response;
   try {
@@ -109,7 +131,7 @@ export async function callServer(
       method: 'POST',
       headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' },
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
       redirect: 'error',
     });
   } catch (error) {
@@ -129,7 +151,7 @@ export async function callServer(
   if (!response.ok) {
     const reason =
       isRecord(payload) && typeof payload['error'] === 'string' ? payload['error'] : `HTTP ${response.status}`;
-    throw new BackendError(`${command}: ${oneLine(reason, 200)}`, response.status);
+    throw new BackendError(`${command}: ${oneLine(reason, 200)}`, response.status, true);
   }
   if (!isRecord(payload) || !('result' in payload)) throw new BackendError(`${command}: the answer has no result`);
   return payload['result'];
@@ -139,6 +161,71 @@ export interface WebBackendOptions {
   // Called on the first request, so a command that fails on usage needs no credentials.
   loadConfig: () => WebConfig;
   fetch?: Fetch;
+  // Per request; commands that must answer quickly, such as completion, shorten it.
+  timeoutMs?: number;
+}
+
+// How to bring this CLI up to the board's contract: a binary updates itself, a checkout is pulled.
+const updateCliHint = (): string =>
+  isCompiledBinary() ? 'run "board self-update"' : 'run "git pull" and "pnpm install" in the checkout';
+
+// Whose board this is and which data key it expects (null before encryption is set up).
+export interface ServerIdentity {
+  owner: string;
+  keyId: string | null;
+}
+
+// Asks the server for its contract version and refuses a mismatch in either direction; returns whose board it is.
+export async function verifyContract(
+  config: Pick<WebConfig, 'url' | 'token'>,
+  fetcher?: Fetch,
+  timeoutMs?: number,
+): Promise<ServerIdentity> {
+  let version: unknown;
+  let served: number;
+  try {
+    version = await callServer(config, 'version', {}, fetcher, timeoutMs);
+    served = parseVersion(version);
+  } catch (error) {
+    // A server from before the version command.
+    if (error instanceof BackendError && error.status === 404 && error.fromApi) {
+      throw new BackendError(
+        `the board server is older than this CLI: it does not know the version command; the CLI needs contract ${CONTRACT_VERSION}; update the board server`,
+        404,
+      );
+    }
+    throw asBackendError('version', error);
+  }
+  if (served < CONTRACT_VERSION)
+    throw new BackendError(
+      `the board server is older than this CLI: it speaks contract ${served}, the CLI needs ${CONTRACT_VERSION}; update the board server`,
+    );
+  if (served > CONTRACT_VERSION)
+    throw new BackendError(
+      `this CLI is older than the board server: it speaks contract ${CONTRACT_VERSION}, the server has ${served}; ${updateCliHint()}`,
+    );
+  try {
+    return parseVersionIdentity(version);
+  } catch (error) {
+    throw asBackendError('version', error);
+  }
+}
+
+export type DataKeyCheck =
+  { keys: Keys } | { problem: 'board-has-no-key' } | { problem: 'different-key'; mine: string; boards: string };
+
+// Whether the data key is the board's: derives the keys for this board's owner and compares key ids.
+export async function checkDataKey(dataKey: Uint8Array, identity: ServerIdentity): Promise<DataKeyCheck> {
+  if (identity.keyId === null) return { problem: 'board-has-no-key' };
+  const keys = await deriveKeys(dataKey, identity.owner, { index: true });
+  if (keys.keyId !== identity.keyId) return { problem: 'different-key', mine: keys.keyId, boards: identity.keyId };
+  return { keys };
+}
+
+export function keyProblemMessage(problem: Exclude<DataKeyCheck, { keys: Keys }>): string {
+  return problem.problem === 'board-has-no-key'
+    ? 'the board has no data key yet: set up encryption in the browser first'
+    : `this machine holds a different data key (id ${problem.mine}) than the board's (id ${problem.boards}): copy the current key from the board's Settings page into AGENT_BOARD_DATA_KEY`;
 }
 
 // The board over HTTP with sealed values, and the keys of the board it is connected to.
@@ -157,49 +244,16 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
   const connect = (): Promise<Connection> => {
     ready ??= (async () => {
       const config = options.loadConfig();
-      let version: unknown;
-      let served: number;
-      try {
-        version = await callServer(config, 'version', {}, options.fetch);
-        served = parseVersion(version);
-      } catch (error) {
-        // A server from before the version command.
-        if (error instanceof BackendError && error.status === 404) {
-          throw new BackendError(
-            `the board server is older than this CLI: it does not know the version command; the CLI needs contract ${CONTRACT_VERSION}; update the board`,
-            404,
-          );
-        }
-        throw asBackendError('version', error);
-      }
-      if (served < CONTRACT_VERSION)
-        throw new BackendError(
-          `the board server is older than this CLI: it speaks contract ${served}, the CLI needs ${CONTRACT_VERSION}; update the board`,
-        );
-      if (served > CONTRACT_VERSION)
-        throw new BackendError(
-          `this CLI is older than the board server: it speaks contract ${CONTRACT_VERSION}, the server has ${served}; update the CLI checkout`,
-        );
-      let identity: ReturnType<typeof parseVersionIdentity>;
-      try {
-        identity = parseVersionIdentity(version);
-      } catch (error) {
-        throw asBackendError('version', error);
-      }
-      if (identity.keyId === null)
-        throw new BackendError('the board has no data key yet: set up encryption in the browser first');
-      const keys = await deriveKeys(config.dataKey, identity.owner, { index: true });
-      if (keys.keyId !== identity.keyId)
-        throw new BackendError(
-          `this machine holds a different data key (id ${keys.keyId}) than the board's (id ${identity.keyId}): copy the current key from the board's Settings page into AGENT_BOARD_DATA_KEY`,
-        );
-      return { config, keys };
+      const identity = await verifyContract(config, options.fetch, options.timeoutMs);
+      const checked = await checkDataKey(config.dataKey, identity);
+      if ('problem' in checked) throw new BackendError(keyProblemMessage(checked));
+      return { config, keys: checked.keys };
     })();
     return ready;
   };
 
   async function call<T>(command: string, request: MachineRequest, parse: (value: unknown) => T): Promise<T> {
-    const result = await callServer((await connect()).config, command, request, options.fetch);
+    const result = await callServer((await connect()).config, command, request, options.fetch, options.timeoutMs);
     try {
       return parse(result);
     } catch (error) {
@@ -208,7 +262,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
   }
 
   const send = async (command: string, request: MachineRequest): Promise<void> => {
-    await callServer((await connect()).config, command, request, options.fetch);
+    await callServer((await connect()).config, command, request, options.fetch, options.timeoutMs);
   };
 
   const taskId = (id: string): string => {

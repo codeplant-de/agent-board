@@ -2,4 +2,4 @@
 # One intake run at a time, whoever starts it. Exit 75 (lock held) is not a failure.
 runtime=${XDG_RUNTIME_DIR:-/tmp}
 dir=$(dirname "$(readlink -f "$0")")
-exec flock -n -E 75 "$runtime/agent-board-intake.lock" "$dir/_node" "$dir/../src/intake.mts" "$@"
+exec flock -n -E 75 "$runtime/agent-board-intake.lock" "$dir/_node" "$dir/../src/main.mts" internal intake "$@"

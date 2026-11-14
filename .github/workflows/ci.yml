@@ -48,6 +48,10 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
+      # The completion tests parse the zsh and fish scripts with the real shells and fail without them on CI.
+      - name: Install zsh and fish
+        run: sudo apt-get update && sudo apt-get install -y zsh fish
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -62,6 +66,40 @@ jobs:
 
       - name: Tests
         run: pnpm test
+
+  # The released binary runs on Bun while the tests run on Node, so a pull request builds one and runs it. Its own job:
+  # a Bun download problem must not hold back the image push.
+  binary:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.28.9
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the CLI binary
+        run: pnpm --filter @agent-board/cli build
+
+      - name: Binary smoke test
+        run: pnpm --filter @agent-board/cli test:binary
 
   # Images are built only after the tests pass, so Flux never rolls out a commit that failed them.
   build-and-push:

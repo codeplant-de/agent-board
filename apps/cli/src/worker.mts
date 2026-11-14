@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * One task: run `claude -p` for it, keep its log and transcript, and report failures on the task.
  * Started by the dispatcher as the transient unit agent-board-<id>. While the run goes on it checks every 15 seconds:
@@ -9,8 +8,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { statSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
-import { buildContext, print, rejectExtraArgs, runMain, UsageError } from './cli.mts';
+import { buildContext, print, UsageError } from './cli.mts';
 import type { Context } from './cli.mts';
 import { isSafeTaskId } from '@agent-board/shared';
 import { logLine, StreamCondenser } from '@agent-board/shared';
@@ -27,6 +25,7 @@ import {
   supervise,
   unreadableForRun,
 } from './decide.mts';
+import { selfCommand } from './self.mts';
 import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
 import type { Invocation, Supervision } from './decide.mts';
 import { createRunFiles } from './runtime.mts';
@@ -363,44 +362,41 @@ export function runProcess(
   });
 }
 
-const HOOK_BIN = fileURLToPath(new URL('../bin/agent-hook', import.meta.url));
-
 // Hook commands run through a shell.
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-if (import.meta.main) {
-  await runMain(async () => {
-    const [taskId, ...extra] = process.argv.slice(2);
-    const usage = 'usage: worker <task>';
-    if (!taskId || !isSafeTaskId(taskId)) throw new UsageError(usage);
-    rejectExtraArgs(extra, usage);
-    const context = buildContext(false);
-    print(`worker ${taskId} log=${logPath(taskId)}`);
-    const deps: WorkerDeps = {
-      ...context,
-      run: runProcess,
-      logTail: readLogTail,
-      notify: (task, text) => postSlack(context.config.slackWebhookFile, slackText(task, text)),
-      resetLog,
-      appendLog,
-      pluginPath: resolvePluginPath,
-      dirExists: (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true,
-      settingsEnv: readSettingsEnv,
-      mcpServers: readMcpServers,
-      home: homedir(),
-      newSessionId: randomUUID,
-      files: createRunFiles(),
-      hookCommand: (runDir, id) => `${shellQuote(HOOK_BIN)} ${shellQuote(runDir)} ${id}`,
-      now: () => new Date(),
-      watchEveryMs: 15_000,
-    };
-    try {
-      await runWorker(deps, taskId);
-    } catch (error) {
-      appendLog(taskId, `worker failed: ${error instanceof Error ? error.message : String(error)}`);
-      throw error;
-    }
-  });
+export function hookCommand(runDir: string, id: string): string {
+  return `${selfCommand('internal', 'hook').map(shellQuote).join(' ')} ${shellQuote(runDir)} ${id}`;
+}
+
+export async function workerMain(taskId: string): Promise<void> {
+  if (!isSafeTaskId(taskId)) throw new UsageError(`"${taskId.slice(0, 40)}" is not a task id`);
+  const context = buildContext(false);
+  print(`worker ${taskId} log=${logPath(taskId)}`);
+  const deps: WorkerDeps = {
+    ...context,
+    run: runProcess,
+    logTail: readLogTail,
+    notify: (task, text) => postSlack(context.config.slackWebhookFile, slackText(task, text)),
+    resetLog,
+    appendLog,
+    pluginPath: resolvePluginPath,
+    dirExists: (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true,
+    settingsEnv: readSettingsEnv,
+    mcpServers: readMcpServers,
+    home: homedir(),
+    newSessionId: randomUUID,
+    files: createRunFiles(),
+    hookCommand,
+    now: () => new Date(),
+    watchEveryMs: 15_000,
+  };
+  try {
+    await runWorker(deps, taskId);
+  } catch (error) {
+    appendLog(taskId, `worker failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
 }
