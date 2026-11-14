@@ -14,7 +14,10 @@ import {
   readThread,
   scheduleCommand,
   schedules,
+  noteJson,
+  scheduleJson,
   selectTasks,
+  taskJson,
   show,
   tasks,
 } from './board.mts';
@@ -137,7 +140,11 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   const writeJson = (value: unknown): void => writeOut(`${JSON.stringify(value, null, 2)}\n`);
   const inRun = Boolean(env['AGENT_BOARD_TASK']);
   const taskIdOf = (context: Context, arg: string): Promise<string> => resolveTaskId(context.backend, arg, { inRun });
-  const jsonOption = (command: Command): Command => command.option('--json', 'print JSON on stdout instead of text');
+  const jsonOption = (command: Command): Command =>
+    command.option(
+      '--json',
+      'print JSON on stdout instead of text; a value this machine cannot decrypt is null there and listed in "unreadable" (text shows "(cannot decrypt this title)")',
+    );
   // On the old parser a trailing --dry-run meant a dry run; doing the real thing silently would be the wrong direction.
   const refuseDryRunInText = (words: string[], usage: string): void => {
     if (words[0] === '--dry-run' || words.at(-1) === '--dry-run')
@@ -176,7 +183,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     ),
   ).action(async (flags: TasksFlags, command: Command) => {
     const context = contextOf(command, { json: flags.json === true });
-    if (flags.json) writeJson(await selectTasks(context, flags));
+    if (flags.json) writeJson((await selectTasks(context, flags)).map(taskJson));
     else await tasks(context, flags);
   });
 
@@ -200,7 +207,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     const id = await taskIdOf(context, arg);
     if (!flags.json) return show(context, id);
     const { task, notes } = await readThread(context, id);
-    writeJson({ task, notes });
+    writeJson({ task: taskJson(task), notes: notes.map(noteJson) });
   });
 
   dryRunOption(
@@ -407,7 +414,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     const context = contextOf(command, { json: flags.json === true });
     if (flags.json) {
       if (words.length > 0) throw new UsageError('--json only prints the list of schedules');
-      return writeJson(await context.backend.listSchedules());
+      return writeJson((await context.backend.listSchedules()).map(scheduleJson));
     }
     const [action, arg, ...rest] = words;
     const changes = action === 'pause' || action === 'resume' || action === 'rm';
@@ -476,20 +483,22 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .summary('write web.json, env and config.json for this machine')
     .description(
       paragraphs(
-        "Set this machine up for the board: write web.json (the board's URL), env (the machine token, mode 600) and, if it is missing, config.json (from the example, with this machine's name). Then run the checks of `board doctor`.",
-        'Without flags it asks. For a script give --url and --token-file: the token never goes on the command line, where it would land in the shell history. The file must be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board init --url … --token-file /dev/stdin`. --machine defaults to the host name. A file that exists is kept unless --force, which copies it to <name>.bak-<timestamp> first; config.json is never replaced.',
+        "Set this machine up for the board: write web.json (the board's URL), env (the machine token and the data key, mode 600) and, if it is missing, config.json (from the example, with this machine's name). Then run the checks of `board doctor`.",
+        'Set up encryption in the browser first: init asks for the data key from the board\'s Settings page as well as the token. Without flags it asks. For a script give --url, --token-file and --data-key-file: a secret never goes on the command line, where it would land in the shell history. A secret file must be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board init --url … --token-file /dev/stdin --data-key-file ~/key`; only one of the two can be /dev/stdin. --machine defaults to the host name.',
+        'A file that exists is kept unless --force, which copies it to <name>.bak-<timestamp> first and, for env, keeps the token, the data key and any other line you do not give again. An env that has the token but no data key (or the reverse) is completed without --force: init asks for the missing value only. config.json is never replaced.',
         'Not available inside a board run.',
       ),
     )
     .option('--url <url>', "the board's URL (https, or http for localhost)")
-    .option('--token-file <path>', 'read the machine token from this file')
+    .option('--token-file <path>', 'read the machine token from this file (mode 600 or 400, or a pipe)')
+    .option('--data-key-file <path>', 'read the data key from this file (mode 600 or 400, or a pipe)')
     .option('--machine <name>', "this machine's name on the board (default: the host name)")
     .option('--force', 'replace web.json and env after backing them up')
     .addHelpText(
       'after',
       examples(
         'board init',
-        'printf %s "$TOKEN" | board init --url https://board.example.com --token-file /dev/stdin --machine laptop',
+        'printf %s "$TOKEN" | board init --url https://board.example.com --token-file /dev/stdin --data-key-file ~/key --machine laptop',
       ),
     )
     .action(async (flags: InitFlags) => {
@@ -521,7 +530,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       .description(
         paragraphs(
           'Check this machine, read-only, one line per check: ✓ passes, ✗ fails (with a fix), ! is a warning. Exit 1 if any check fails; warnings alone exit 0. The token is never printed.',
-          'Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600 or 400, token), the board (reachable, token accepted, contract version), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers. The worker checks only warn on a machine with no unit installed.',
+          'Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600 or 400, token, data key), the board (reachable, token accepted, contract version, and whether it has a data key and this machine holds the same one), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers. The worker checks only warn on a machine with no unit installed.',
         ),
       )
       .addHelpText('after', examples('board doctor', 'board doctor --json')),

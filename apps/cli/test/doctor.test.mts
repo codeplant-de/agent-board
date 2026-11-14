@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { KEYS, OWNER } from './helpers.mts';
+import { encodeDataKey } from '@agent-board/shared';
+import { DATA_KEY, KEYS, OWNER } from './helpers.mts';
 import { BackendError } from '../src/backend.mts';
 import { formatResult, hasFailure, runChecks } from '../src/doctor.mts';
 import type { CheckResult, DoctorDeps } from '../src/doctor.mts';
@@ -9,6 +10,7 @@ import { renderUnits } from '../src/setup.mts';
 const CONFIG_DIR = '/home/me/.config/agent-board';
 const UNIT_DIR = '/home/me/.config/systemd/user';
 const TOKEN = 'abm_secretsecretsecret';
+const KEY_TEXT = encodeDataKey(DATA_KEY);
 
 function machine(
   files: Record<string, { text: string; mode?: number }>,
@@ -35,7 +37,7 @@ function machine(
 
 const GOOD = {
   [`${CONFIG_DIR}/web.json`]: { text: '{"url": "https://board.example.com"}' },
-  [`${CONFIG_DIR}/env`]: { text: `AGENT_BOARD_TOKEN=${TOKEN}\n`, mode: 0o100600 },
+  [`${CONFIG_DIR}/env`]: { text: `AGENT_BOARD_TOKEN=${TOKEN}\nAGENT_BOARD_DATA_KEY=${KEY_TEXT}\n`, mode: 0o100600 },
   [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box"}' },
 };
 
@@ -260,4 +262,48 @@ test('a tool on the shell PATH but not on the units PATH is a failure that says 
     /\/home\/me\/\.nvm\/bin\/claude, on your shell's PATH but not on the units' \(\/home\/me\/\.local\/bin:/,
   );
   assert.match(claude?.hint ?? '', /ln -s \/home\/me\/\.nvm\/bin\/claude ~\/\.local\/bin\/claude/);
+});
+
+const envWith = (text: string) => ({ [`${CONFIG_DIR}/env`]: { text, mode: 0o100600 } });
+
+test('the data key must be set and well-formed, and is never printed', async () => {
+  const missing = await runChecks(machine({ ...GOOD, ...envWith(`AGENT_BOARD_TOKEN=${TOKEN}\n`) }));
+  const missingKey = missing.find((result) => result.name === 'data key');
+  assert.equal(missingKey?.level, 'fail');
+  assert.match(missingKey?.hint ?? '', /Settings page.*board init/);
+  assert.equal(
+    missing.some((result) => result.name === 'board key'),
+    false,
+    'no key to compare',
+  );
+  const damaged = `${KEY_TEXT}-damaged`;
+  const malformed = await runChecks(
+    machine({ ...GOOD, ...envWith(`AGENT_BOARD_TOKEN=${TOKEN}\nAGENT_BOARD_DATA_KEY=${damaged}\n`) }),
+  );
+  assert.equal(malformed.find((result) => result.name === 'data key')?.level, 'fail');
+  const printed = [...missing, ...malformed, ...(await runChecks(machine(GOOD)))].map(formatResult).join('\n');
+  assert.ok(!printed.includes(KEY_TEXT) && !printed.includes(damaged));
+});
+
+test('the board has a key and this machine holds the same one, or the check fails with the way out', async () => {
+  const ok = await runChecks(machine(GOOD));
+  assert.equal(ok.find((result) => result.name === 'board key')?.level, 'ok');
+  assert.match(ok.find((result) => result.name === 'board key')?.message ?? '', new RegExp(`id ${KEYS.keyId}`));
+
+  const noKey = await runChecks(machine(GOOD, { verifyServer: async () => ({ owner: OWNER, keyId: null }) }));
+  const board = noKey.find((result) => result.name === 'board key');
+  assert.equal(board?.level, 'fail');
+  assert.match(board?.hint ?? '', /set up encryption in the browser first/);
+
+  const other = '0123456789abcdef';
+  const different = await runChecks(machine(GOOD, { verifyServer: async () => ({ owner: OWNER, keyId: other }) }));
+  const mismatch = different.find((result) => result.name === 'board key');
+  assert.equal(mismatch?.level, 'fail');
+  assert.match(
+    mismatch?.message ?? '',
+    new RegExp(`different data key \\(id ${KEYS.keyId}\\) than the board's \\(id ${other}\\)`),
+  );
+  assert.match(mismatch?.hint ?? '', /copy the current key from the board's Settings page/);
+  assert.ok(!formatResult(mismatch as CheckResult).includes(KEY_TEXT));
+  assert.ok(hasFailure(different));
 });

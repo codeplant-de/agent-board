@@ -61,7 +61,9 @@ export function completionModel(program: Command): CompletionModel {
     ),
   ];
   const taskFlags: string[] = valueFlags.filter((flag) => flag === '--parent');
-  const fileFlags: string[] = valueFlags.filter((flag) => flag === '--file' || flag === '--token-file');
+  const fileFlags: string[] = valueFlags.filter(
+    (flag) => flag === '--file' || flag === '--token-file' || flag === '--data-key-file',
+  );
   const flagValues = Object.fromEntries(Object.entries(FLAG_VALUES).filter(([flag]) => valueFlags.includes(flag)));
   return {
     commands,

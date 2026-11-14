@@ -149,9 +149,9 @@ board setup --enable
 board doctor
 ```
 
-`install.sh` needs `gh`, logged in (the repository is private). It downloads the newest `cli-v*` release for this platform, checks it against `SHA256SUMS` and installs it as `~/.local/bin/board` (`BOARD_INSTALL_DIR` chooses another directory). Set up encryption in the browser first (see [Encryption](#encryption)), and copy your data key from the **Settings** page. `board init` asks for the board's URL, the token (create one for this machine on the board's **Settings** page; it is not shown) and the machine name, and writes `~/.config/agent-board/web.json`, `env` (mode 600; a file with any other mode is refused) and, if it is missing, `config.json` from `apps/cli/config.example.json`; edit `repos` there to this machine's checkouts. For a script: `board init --url https://board.codeplant.de --token-file <file> --machine <name>`. A file that exists is kept unless `--force`, which copies it to `<name>.bak-<timestamp>` first. `board setup` writes the dispatch and intake services and timers into `~/.config/systemd/user` as copies and reloads systemd; `--enable` also enables and starts the timers, and `--print` only shows the units. `board doctor` checks the whole machine: Node (checkout only), config, token, server and contract version, the worker tools and the units.
+`install.sh` needs `gh`, logged in (the repository is private). It downloads the newest `cli-v*` release for this platform, checks it against `SHA256SUMS` and installs it as `~/.local/bin/board` (`BOARD_INSTALL_DIR` chooses another directory). Set up encryption in the browser first (see [Encryption](#encryption)), and copy your data key from the **Settings** page. `board init` asks for the board's URL, the token (create one for this machine on the board's **Settings** page; it is not shown), the data key (not shown either) and the machine name, and writes `~/.config/agent-board/web.json`, `env` (mode 600, token and data key; a file with any other mode is refused) and, if it is missing, `config.json` from `apps/cli/config.example.json`; edit `repos` there to this machine's checkouts. For a script: `board init --url https://board.codeplant.de --token-file <file> --data-key-file <file> --machine <name>`; a secret never goes on the command line, and a file can be `/dev/stdin` for one of them (a pipe). An `env` that has the token but no data key (a machine from before encryption) is completed without `--force`: `board init` asks for the missing value only. A file that exists is kept unless `--force`, which copies it to `<name>.bak-<timestamp>` first and keeps the secrets you do not give again. `board setup` writes the dispatch and intake services and timers into `~/.config/systemd/user` as copies and reloads systemd; `--enable` also enables and starts the timers, and `--print` only shows the units. `board doctor` checks the whole machine: Node (checkout only), config, token, server and contract version, the worker tools and the units.
 
-The credentials file `env` holds two lines, the token and the data key: `AGENT_BOARD_TOKEN=abm_...` and `AGENT_BOARD_DATA_KEY=abk1_...`. The data key is the same on every machine and never leaves your machines and browser. The CLI refuses to start without it, with a different key than the board's, or before the board has a key. Add the second line to `env` by hand.
+The credentials file `env` holds two lines, the token and the data key: `AGENT_BOARD_TOKEN=abm_...` and `AGENT_BOARD_DATA_KEY=abk1_...`. The data key is the same on every machine and never leaves your machines and browser. The CLI refuses to start without it, with a different key than the board's, or before the board has a key; `board doctor` checks all three.
 
 The checksum catches a broken or partial download. It is not a signature: anyone who can write releases of this repository can replace the binary and `SHA256SUMS` together, so the trust is in who has write access to the repository.
 
@@ -172,7 +172,7 @@ The CLI checks the server's contract version once per process and refuses to run
 1. Stop the dispatch and intake timers on every worker machine.
 2. Deploy or restart the server; migrations run on start.
 3. Set up encryption in the browser (a new passphrase and recovery key), then copy the data key from the Settings page.
-4. On each machine: add `AGENT_BOARD_DATA_KEY=abk1_...` to `~/.config/agent-board/env`, then update the CLI: `board self-update` for a release binary (it needs `gh`; `--check` only reports), or for a checkout `git pull`, `pnpm install` and `apps/cli/install.sh`. A checkout that only pulls cannot resolve new dependencies, and then `board`, dispatch, intake and every run's hook fail. Then `board setup` once if the units were written by an older version, and `board doctor`.
+4. On each machine: update the CLI first: `board self-update` for a release binary (it needs `gh`; `--check` only reports), or for a checkout `git pull`, `pnpm install` and `apps/cli/install.sh`. A checkout that only pulls cannot resolve new dependencies, and then `board`, dispatch, intake and every run's hook fail. Then add the data key with `board init` (it sees an `env` with a token and no key, and asks for the key only), `board setup` once if the units were written by an older version, and `board doctor`.
 5. Re-encrypt the content that was stored before contract 6 (a one-off script, run once the key exists). Until then the old tasks, notes and transcripts are plain text on the server: the CLI shows them as unreadable and never runs one, and intake would create a second task for a PR whose old task it cannot read.
 6. In an existing `config.json`, narrow `Bash(board *)` in `intake.allowedTools` to the forms in `config.example.json`, and add `Bash(board internal *)` to `intake.disallowedTools`. The old `backend` key is ignored; remove it if you like.
 7. Start the timers again.
@@ -469,7 +469,9 @@ Options:
   --all              closed tasks too
   --status <status>  only this status (backlog, todo, running, needs-me, done;
                      "Needs me" works too)
-  --json             print JSON on stdout instead of text
+  --json             print JSON on stdout instead of text; a value this machine
+                     cannot decrypt is null there and listed in "unreadable"
+                     (text shows "(cannot decrypt this title)")
   --dry-run          read everything, print every write instead of doing it
   -h, --help         display help for command
 
@@ -495,7 +497,9 @@ Arguments:
   task        the task: its id, a board task link or the start of its id
 
 Options:
-  --json      print JSON on stdout instead of text
+  --json      print JSON on stdout instead of text; a value this machine cannot
+              decrypt is null there and listed in "unreadable" (text shows
+              "(cannot decrypt this title)")
   --dry-run   read everything, print every write instead of doing it
   -h, --help  display help for command
 
@@ -632,7 +636,9 @@ Options:
   --parent <task>        the task this follows from (the task: its id, a board
                          task link or the start of its id)
   --priority <priority>  urgent, high, normal or low (default normal)
-  --json                 print JSON on stdout instead of text
+  --json                 print JSON on stdout instead of text; a value this
+                         machine cannot decrypt is null there and listed in
+                         "unreadable" (text shows "(cannot decrypt this title)")
   --dry-run              read everything, print every write instead of doing it
   -h, --help             display help for command
 
@@ -682,7 +688,9 @@ Options:
   --until <time>         end a repeat after this time
   --new                  skip the duplicate check
   --dry-run              read everything, print every write instead of doing it
-  --json                 print JSON on stdout instead of text
+  --json                 print JSON on stdout instead of text; a value this
+                         machine cannot decrypt is null there and listed in
+                         "unreadable" (text shows "(cannot decrypt this title)")
   -h, --help             display help for command
 
 Examples:
@@ -714,7 +722,9 @@ Arguments:
   action      pause, resume or rm, and the schedule id
 
 Options:
-  --json      print JSON on stdout instead of text
+  --json      print JSON on stdout instead of text; a value this machine cannot
+              decrypt is null there and listed in "unreadable" (text shows
+              "(cannot decrypt this title)")
   --dry-run   read everything, print every write instead of doing it
   -h, --help  display help for command
 
@@ -761,28 +771,40 @@ Examples:
 Usage: board init [options]
 
 Set this machine up for the board: write web.json (the board's URL), env (the
-machine token, mode 600) and, if it is missing, config.json (from the example,
-with this machine's name). Then run the checks of `board doctor`.
+machine token and the data key, mode 600) and, if it is missing, config.json
+(from the example, with this machine's name). Then run the checks of `board
+doctor`.
 
-Without flags it asks. For a script give --url and --token-file: the token never
-goes on the command line, where it would land in the shell history. The file
-must be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board
-init --url … --token-file /dev/stdin`. --machine defaults to the host name. A
-file that exists is kept unless --force, which copies it to
-<name>.bak-<timestamp> first; config.json is never replaced.
+Set up encryption in the browser first: init asks for the data key from the
+board's Settings page as well as the token. Without flags it asks. For a script
+give --url, --token-file and --data-key-file: a secret never goes on the command
+line, where it would land in the shell history. A secret file must be mode 600
+or 400 like env, which a pipe is: `printf %s "$TOKEN" | board init --url …
+--token-file /dev/stdin --data-key-file ~/key`; only one of the two can be
+/dev/stdin. --machine defaults to the host name.
+
+A file that exists is kept unless --force, which copies it to
+<name>.bak-<timestamp> first and, for env, keeps the token, the data key and any
+other line you do not give again. An env that has the token but no data key (or
+the reverse) is completed without --force: init asks for the missing value only.
+config.json is never replaced.
 
 Not available inside a board run.
 
 Options:
-  --url <url>          the board's URL (https, or http for localhost)
-  --token-file <path>  read the machine token from this file
-  --machine <name>     this machine's name on the board (default: the host name)
-  --force              replace web.json and env after backing them up
-  -h, --help           display help for command
+  --url <url>             the board's URL (https, or http for localhost)
+  --token-file <path>     read the machine token from this file (mode 600 or
+                          400, or a pipe)
+  --data-key-file <path>  read the data key from this file (mode 600 or 400, or
+                          a pipe)
+  --machine <name>        this machine's name on the board (default: the host
+                          name)
+  --force                 replace web.json and env after backing them up
+  -h, --help              display help for command
 
 Examples:
   board init
-  printf %s "$TOKEN" | board init --url https://board.example.com --token-file /dev/stdin --machine laptop
+  printf %s "$TOKEN" | board init --url https://board.example.com --token-file /dev/stdin --data-key-file ~/key --machine laptop
 ```
 
 #### board doctor
@@ -795,13 +817,16 @@ fix), ! is a warning. Exit 1 if any check fails; warnings alone exit 0. The
 token is never printed.
 
 Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600
-or 400, token), the board (reachable, token accepted, contract version),
+or 400, token, data key), the board (reachable, token accepted, contract
+version, and whether it has a data key and this machine holds the same one),
 config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl
 and the installed units with their timers. The worker checks only warn on a
 machine with no unit installed.
 
 Options:
-  --json      print JSON on stdout instead of text
+  --json      print JSON on stdout instead of text; a value this machine cannot
+              decrypt is null there and listed in "unreadable" (text shows
+              "(cannot decrypt this title)")
   -h, --help  display help for command
 
 Examples:
