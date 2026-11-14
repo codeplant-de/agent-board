@@ -133,6 +133,8 @@ Environment=PATH=${UNIT_PATH}
 ExecStart=${command('listen').map(quoteExecArg).join(' ')}
 Restart=always
 RestartSec=10
+# Stopping signals the listener only; it waits for a running tick, which systemd then no longer cuts off midway.
+KillMode=mixed
 
 [Install]
 WantedBy=default.target
@@ -254,6 +256,7 @@ export async function setup(deps: SetupDeps, flags: SetupFlags): Promise<void> {
     deps.print(`warning: ${mismatch}`);
   }
   mkdirSync(deps.unitDir, { recursive: true });
+  let listenerChanged = false;
   for (const unit of units) {
     const path = join(deps.unitDir, unit.file);
     let old: string | undefined;
@@ -271,8 +274,14 @@ export async function setup(deps: SetupDeps, flags: SetupFlags): Promise<void> {
     rmSync(path, { force: true });
     writeFileSync(path, unit.text, { mode: 0o644 });
     deps.print(`wrote ${path}`);
+    if (unit.file === LISTEN_SERVICE) listenerChanged = true;
   }
   await deps.run('systemctl', ['--user', 'daemon-reload']);
+  // A running listener keeps the old unit and code until it is restarted; try-restart leaves a stopped one alone.
+  if (listenerChanged) {
+    await deps.run('systemctl', ['--user', 'try-restart', LISTEN_SERVICE]);
+    deps.print(`restarted ${LISTEN_SERVICE} if it was running, to run the new unit`);
+  }
   if (flags.enable) {
     await deps.run('systemctl', ['--user', 'enable', '--now', ...ENABLE_UNITS]);
     deps.print('enabled and started the dispatch and intake timers and the listener');

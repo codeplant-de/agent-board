@@ -93,6 +93,8 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/opt/node/bin/node /opt/board/apps/cli/src/main.mts internal listen
 Restart=always
 RestartSec=10
+# Stopping signals the listener only; it waits for a running tick, which systemd then no longer cuts off midway.
+KillMode=mixed
 
 [Install]
 WantedBy=default.target
@@ -149,7 +151,10 @@ test('setup writes five unit copies, reloads systemd and prints the enable line'
       'agent-board-intake.timer',
       'agent-board-listen.service',
     ]);
-    assert.deepEqual(calls, ['systemctl --user daemon-reload']);
+    assert.deepEqual(calls, [
+      'systemctl --user daemon-reload',
+      'systemctl --user try-restart agent-board-listen.service',
+    ]);
     assert.ok(printed.some((line) => line.includes(ENABLE_COMMAND)));
     assert.equal(
       ENABLE_COMMAND,
@@ -164,12 +169,30 @@ test('setup writes five unit copies, reloads systemd and prints the enable line'
   }
 });
 
+test('setup restarts a running listener when it wrote a changed unit, and only then', async () => {
+  const { dir, printed, calls, deps } = fixture();
+  try {
+    await setup(deps, {});
+    assert.deepEqual(calls, [
+      'systemctl --user daemon-reload',
+      'systemctl --user try-restart agent-board-listen.service',
+    ]);
+    assert.ok(printed.some((line) => line.startsWith('restarted agent-board-listen.service')));
+    calls.length = 0;
+    await setup(deps, {});
+    assert.deepEqual(calls, ['systemctl --user daemon-reload'], 'unchanged units restart nothing');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test('setup --enable also enables and starts the timers and the listener', async () => {
   const { dir, calls, deps } = fixture();
   try {
     await setup(deps, { enable: true });
     assert.deepEqual(calls, [
       'systemctl --user daemon-reload',
+      'systemctl --user try-restart agent-board-listen.service',
       'systemctl --user enable --now agent-board-dispatch.timer agent-board-intake.timer agent-board-listen.service',
     ]);
   } finally {
@@ -240,7 +263,10 @@ test('board setup goes through the command line into a temp unit dir and is refu
   try {
     await runBoard(['setup'], options);
     assert.deepEqual(readdirSync(join(dir, 'xdg', 'systemd', 'user')).length, 5);
-    assert.deepEqual(calls, ['systemctl --user daemon-reload']);
+    assert.deepEqual(calls, [
+      'systemctl --user daemon-reload',
+      'systemctl --user try-restart agent-board-listen.service',
+    ]);
     await assert.rejects(
       runBoard(['setup'], { ...options, env: { ...options.env, AGENT_BOARD_TASK: 'Zt0Test1' } }),
       /not available inside a board run/,
