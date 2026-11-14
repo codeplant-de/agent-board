@@ -5,6 +5,7 @@ import { AppLayout } from './AppLayout';
 import { errorMessage, useTRPC } from './lib/trpc';
 import { BoardPage } from './pages/BoardPage';
 import { ClosedPage } from './pages/ClosedPage';
+import { SchedulesPage } from './pages/SchedulesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskPage } from './pages/TaskPage';
 
@@ -30,6 +31,7 @@ export function App() {
       <Route element={<AppLayout />}>
         <Route index element={<BoardPage />} />
         <Route path="t/:id" element={<TaskPage />} />
+        <Route path="schedules" element={<SchedulesPage />} />
         <Route path="closed" element={<ClosedPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
