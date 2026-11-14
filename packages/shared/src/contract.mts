@@ -238,6 +238,8 @@ export interface Backend {
   // Open tasks in priority order (first is the top); `all` adds closed ones.
   listTasks(options?: { all?: boolean }): Promise<Task[]>;
   getTask(id: string): Promise<Task>;
+  // The session of a task and the directory it ended in, for the machine whose token ran it; the server refuses with 409 (running, or no session) or 403 (another machine).
+  attachSession(id: string): Promise<{ sessionId: string; workdir: string | null }>;
   addTask(draft: TaskDraft): Promise<AddTaskResult>;
   // With `patch.expect`, a task of another status is left alone and the call throws an error with status 409.
   updateTask(id: string, patch: TaskPatch): Promise<Task>;
@@ -335,6 +337,7 @@ export interface WireAddScheduleResult {
 export interface WireBackend {
   listTasks(options?: { all?: boolean }): Promise<WireTask[]>;
   getTask(id: string): Promise<WireTask>;
+  attachSession(id: string): Promise<WireTask>;
   addTask(draft: WireTaskDraft): Promise<WireAddTaskResult>;
   updateTask(id: string, patch: WireTaskPatch): Promise<WireTask>;
   claimTask(id: string, machine: string): Promise<WireTask | undefined>;

@@ -136,6 +136,7 @@ describe('one user cannot reach another user’s board', () => {
     const foreign = { id: bob.idle.id };
     const commands: [string, Record<string, unknown>][] = [
       ['get-task', foreign],
+      ['attach-session', foreign],
       ['update-task', { ...foreign, body: { sessionId: SESSION } }],
       ['claim-task', { ...foreign, machine: 'laptop' }],
       ['add-note', { ...foreign, body: 'hello' }],

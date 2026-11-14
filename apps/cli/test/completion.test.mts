@@ -16,6 +16,7 @@ const model = completionModel(buildProgram({ env: {} }));
 const VISIBLE = [
   'tasks',
   'show',
+  'attach',
   'comment',
   'move',
   'notify',
@@ -43,6 +44,7 @@ test('the model lists the visible commands only, with their flags', () => {
   );
   const flags = (name: string): string[] => model.commands.find((command) => command.name === name)?.flags ?? [];
   assert.ok(['--all', '--status', '--json', '--dry-run'].every((flag) => flags('tasks').includes(flag)));
+  assert.ok(flags('attach').includes('--fork'));
   assert.ok(flags('schedule').includes('--cron') && flags('add').includes('--priority'));
   assert.deepEqual(model.flagValues['--status'], ['backlog', 'todo', 'running', 'needs-me', 'done']);
   assert.deepEqual(model.flagValues['--priority'], ['urgent', 'high', 'normal', 'low']);
