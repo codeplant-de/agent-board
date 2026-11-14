@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { selfCommand } from './self.mts';
+import { installedCommand } from './self.mts';
 import { SystemError } from './system.mts';
 
 const exec = promisify(execFile);
@@ -148,7 +148,7 @@ export function realSetupDeps(env: Record<string, string | undefined>, print: (l
     unitDir: unitDirectory(env),
     platform: process.platform,
     which: (program) => whichOnPath(program, env['PATH']),
-    command: (name) => selfCommand('internal', name),
+    command: (name) => installedCommand(env, 'internal', name),
     run: async (program, args) => {
       try {
         await exec(program, args);

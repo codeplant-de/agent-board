@@ -29,7 +29,12 @@ const NOTE_FILE_MAX_BYTES = 1024 * 1024;
 // Long notes come from a file, so a run's allow list can keep every command simple (no heredoc, no pipe). The agent
 // can write /tmp, so the file is opened without following a link and its real location is checked on the open
 // descriptor: a link to a secret is refused.
-export function readNoteFile(path: string): string {
+export function readNoteFile(path: string, platform: string = process.platform): string {
+  // The check below reads /proc/self/fd; no other system has a way to see where an open descriptor really points.
+  if (platform !== 'linux')
+    throw new UsageError(
+      `reading a note file needs Linux; on ${platform} give the text as arguments, or - to read it from stdin`,
+    );
   let fd: number;
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);

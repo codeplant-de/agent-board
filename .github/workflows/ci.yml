@@ -63,6 +63,18 @@ jobs:
       - name: Tests
         run: pnpm test
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      # The released binary runs on Bun while the tests run on Node, so a pull request builds one and runs it.
+      - name: Build the CLI binary
+        run: pnpm --filter @agent-board/cli build
+
+      - name: Binary smoke test
+        run: pnpm --filter @agent-board/cli test:binary
+
   # Images are built only after the tests pass, so Flux never rolls out a commit that failed them.
   build-and-push:
     needs: test

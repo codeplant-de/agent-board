@@ -32,6 +32,11 @@ import { formatResult, hasFailure, realDoctorDeps, runChecks } from './doctor.mt
 import type { CheckResult, DoctorDeps } from './doctor.mts';
 import { clackPrompts, init } from './init.mts';
 import type { InitFlags, Prompts } from './init.mts';
+import { isCompiledBinary } from './self.mts';
+import { realGh, selfUpdate } from './self-update.mts';
+import type { SelfUpdateFlags } from './self-update.mts';
+import { SystemError } from './system.mts';
+import { releaseVersion } from './version.mts';
 import { realSetupDeps, setup, unitDirectory, whichOnPath } from './setup.mts';
 import type { SetupDeps, SetupFlags } from './setup.mts';
 import { runHook } from './hook.mts';
@@ -62,6 +67,8 @@ export interface ProgramOptions {
   // The exit code of a read-only systemctl call.
   systemctlCode?: DoctorDeps['systemctl'];
   verifyServer?: (config: WebConfig) => Promise<void>;
+  // Runs `gh` for self-update.
+  gh?: (args: string[]) => Promise<string>;
   // The command line being run, set by runBoard.
   argv?: string[];
 }
@@ -537,6 +544,34 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     });
 
   program
+    .command('self-update')
+    .helpGroup(SETUP)
+    .summary('replace this binary with the newest release')
+    .description(
+      paragraphs(
+        'Download the newest cli-v* release of codeplant-de/agent-board with `gh`, check it against SHA256SUMS and replace this binary with it. Running workers keep the old file until they end. --check only reports whether a newer release exists.',
+        'It needs `gh`, logged in. A checkout is updated with `git pull` and `pnpm install` instead, and says so. Not available inside a board run.',
+      ),
+    )
+    .option('--check', 'only report whether a newer release exists')
+    .addHelpText('after', examples('board self-update --check', 'board self-update'))
+    .action(async (flags: SelfUpdateFlags) => {
+      notInRun('board self-update is not available inside a board run');
+      await selfUpdate(
+        {
+          compiled: isCompiledBinary(),
+          version: releaseVersion(),
+          execPath: process.execPath,
+          platform: options.platform ?? process.platform,
+          arch: process.arch,
+          gh: options.gh ?? realGh(env),
+          print: out,
+        },
+        flags,
+      );
+    });
+
+  program
     .command('completion')
     .helpGroup(SETUP)
     .summary('print a shell completion script')
@@ -583,7 +618,12 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .action(() => {
       throw new UsageError('internal needs dispatch, intake, worker or hook');
     });
-  const refuseInternalInRun = (): void => notInRun('board internal is not available inside a board run');
+  const refuseInternalInRun = (): void => {
+    notInRun('board internal is not available inside a board run');
+    const platform = options.platform ?? process.platform;
+    if (platform !== 'linux')
+      throw new SystemError(`board internal runs worker machines and needs Linux with systemd; this is ${platform}`);
+  };
   dryRunOption(internal.command('dispatch').description('One dispatcher tick')).action((_options, command: Command) => {
     refuseInternalInRun();
     return dispatchMain({ dryRun: contextOf(command).dryRun });

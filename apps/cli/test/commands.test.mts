@@ -347,3 +347,16 @@ test('ask and add keep their flag shapes', async () => {
     rmSync(dir, { recursive: true });
   }
 });
+
+test('internal dispatch, intake and worker say they need Linux elsewhere', async () => {
+  for (const argv of [
+    ['internal', 'dispatch'],
+    ['internal', 'intake'],
+    ['internal', 'worker', ID],
+  ])
+    await assert.rejects(
+      runBoard(argv, { env: {}, platform: 'darwin' }),
+      /needs Linux with systemd; this is darwin/,
+      argv.join(' '),
+    );
+});
