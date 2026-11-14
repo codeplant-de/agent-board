@@ -201,9 +201,11 @@ export function parseDuplicateAnswer(stdout: string, open: Task[]): Duplicate | 
   return { taskId, reason: typeof answer['reason'] === 'string' ? answer['reason'] : '' };
 }
 
-export function haikuDuplicateCheck(warn: (line: string) => void): DuplicateCheck {
+// `announce` tells the person waiting that the check is running; it is not called when there is nothing to compare with.
+export function haikuDuplicateCheck(warn: (line: string) => void, announce?: (line: string) => void): DuplicateCheck {
   return async (prompt, workdir, open) => {
     if (open.length === 0) return undefined;
+    announce?.('checking for duplicates…');
     const args = [
       '-p',
       '--model',

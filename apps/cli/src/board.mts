@@ -18,6 +18,8 @@ import {
 } from '@agent-board/shared';
 import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
 import { postSlack, slackText } from './notify.mts';
+import { createStyle } from './style.mts';
+import type { Style } from './style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
 import type { Choice, ScheduleFlags } from './schedule.mts';
 
@@ -53,22 +55,81 @@ export function parseStatus(name: string): Status {
   return normalised;
 }
 
-export async function notify(context: Context, id: string, text: string): Promise<void> {
-  const message = slackText(await context.backend.getTask(id), text);
-  if (context.dryRun) return context.print(`DRY slack ${message.replaceAll('\n', ' | ')}`);
-  await postSlack(context.config.slackWebhookFile, message);
+// The task's link for a confirmation line, built from the board's URL without asking the server; empty when unknown.
+function link(context: Context, id: string): string {
+  try {
+    const url = context.boardUrl?.();
+    return url ? `  ${url.replace(/\/+$/, '')}/t/${id}` : '';
+  } catch {
+    return '';
+  }
 }
 
-export async function tasks(context: Context): Promise<void> {
-  const open = await context.backend.listTasks();
-  for (const status of STATUSES) {
-    const inStatus = open.filter((task) => task.status === status);
-    context.print(`${status} (${inStatus.length})`);
-    for (const task of inStatus)
-      context.print(
-        `  ${task.id}  ${task.priority.padEnd(6)}  [${task.labels.join(',') || '-'}]  ${task.title}${task.notBefore ? `  (starts ${localTime(task.notBefore)})` : ''}`,
-      );
-  }
+// Nothing is confirmed in a dry run: the DRY lines already say what would happen.
+function confirm(context: Context, line: string): void {
+  if (!context.dryRun) context.print(line);
+}
+
+export async function comment(context: Context, id: string, text: string): Promise<void> {
+  await context.backend.addNote(id, text);
+  confirm(context, `commented on ${id}${link(context, id)}`);
+}
+
+// Sends the Slack message; returns the task, which the command read to write it.
+async function sendNotification(context: Context, id: string, text: string): Promise<Task> {
+  const task = await context.backend.getTask(id);
+  const message = slackText(task, text);
+  if (context.dryRun) context.print(`DRY slack ${message.replaceAll('\n', ' | ')}`);
+  else await postSlack(context.config.slackWebhookFile, message);
+  return task;
+}
+
+export async function notify(context: Context, id: string, text: string): Promise<void> {
+  const task = await sendNotification(context, id, text);
+  confirm(context, `notified about ${id}  ${task.url}`);
+}
+
+export interface TasksFlags {
+  all?: boolean;
+  status?: string;
+  json?: boolean;
+}
+
+// The tasks `board tasks` lists: the open ones, or every one with --all, of one status with --status.
+export async function selectTasks(context: Context, flags: TasksFlags): Promise<Task[]> {
+  const status = flags.status === undefined ? undefined : parseStatus(flags.status);
+  const found = await context.backend.listTasks({ all: flags.all === true });
+  return status === undefined ? found : found.filter((task) => task.status === status);
+}
+
+export function formatTasks(found: Task[], flags: TasksFlags, style: Style): string[] {
+  const idWidth = Math.max(...found.map((task) => task.id.length), 0);
+  const priorityWidth = Math.max(...found.map((task) => task.priority.length), 0);
+  const only = flags.status === undefined ? undefined : parseStatus(flags.status);
+  return (only ? [only] : STATUSES).flatMap((status) => {
+    const inStatus = found.filter((task) => task.status === status);
+    return [
+      style.bold(`${status} (${inStatus.length})`),
+      ...inStatus.map((task) => {
+        const hints = [
+          task.notBefore ? `starts ${localTime(task.notBefore)}` : undefined,
+          task.closed ? 'closed' : undefined,
+        ].filter((hint) => hint !== undefined);
+        return `  ${task.id.padEnd(idWidth)}  ${task.priority.padEnd(priorityWidth)}  ${task.title}${hints.length > 0 ? style.dim(`  (${hints.join(', ')})`) : ''}`;
+      }),
+    ];
+  });
+}
+
+// A task as JSON for scripts: what the lists show, without the dead labels field.
+export function taskJson(task: Task): Omit<Task, 'labels'> {
+  const { labels: _labels, ...rest } = task;
+  return rest;
+}
+
+export async function tasks(context: Context, flags: TasksFlags = {}): Promise<void> {
+  const found = await selectTasks(context, flags);
+  for (const line of formatTasks(found, flags, createStyle(context.color === true))) context.print(line);
 }
 
 export async function ask(context: Context, id: string, path: string): Promise<void> {
@@ -83,13 +144,16 @@ export async function ask(context: Context, id: string, path: string): Promise<v
   await context.backend.ask(id, questions);
   // Best effort: the question is on the board either way.
   const first = questions[0];
-  await notify(
+  const task = await sendNotification(
     context,
     id,
     `Question: ${first?.question ?? ''}${questions.length > 1 ? ` (+${questions.length - 1} more)` : ''}`,
   ).catch((error: unknown) => {
     context.print(`WARN notify failed: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
   });
+  const count = `${questions.length} question${questions.length > 1 ? 's' : ''}`;
+  confirm(context, `asked ${count} on ${id}, now in needs-me${task ? `  ${task.url}` : link(context, id)}`);
 }
 
 export function renderThread(task: Task, notes: Note[]): string {
@@ -97,7 +161,7 @@ export function renderThread(task: Task, notes: Note[]): string {
   const lines = [
     `# ${task.title}`,
     '',
-    `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(', ') || '-'} · ${task.url}`,
+    `status: ${task.status} · priority: ${task.priority} · ${task.url}`,
     '',
     '## Input',
     '',
@@ -115,8 +179,13 @@ export function renderThread(task: Task, notes: Note[]): string {
   return lines.join('\n');
 }
 
-export async function show(context: Context, id: string): Promise<void> {
+export async function readThread(context: Context, id: string): Promise<{ task: Task; notes: Note[] }> {
   const [task, notes] = await Promise.all([context.backend.getTask(id), context.backend.readNotes(id)]);
+  return { task, notes };
+}
+
+export async function show(context: Context, id: string): Promise<void> {
+  const { task, notes } = await readThread(context, id);
   context.print(renderThread(task, notes));
 }
 
@@ -144,7 +213,7 @@ export function parseAddFlags(flags: AddFlags): {
 }
 
 // The board puts a proposal in Needs me itself, so no status is sent.
-export async function add(context: Context, flags: AddFlags): Promise<void> {
+export async function add(context: Context, flags: AddFlags): Promise<Task> {
   const { title, file, parent, priority } = parseAddFlags(flags);
   // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
   // proposing agent works, on this machine.
@@ -160,16 +229,19 @@ export async function add(context: Context, flags: AddFlags): Promise<void> {
   };
   const { task } = await context.backend.addTask(draft);
   context.print(`proposed ${task.id} ${task.url}`);
+  return task;
 }
 
 export async function move(context: Context, id: string, status: Status): Promise<void> {
+  let task: Task;
   try {
-    await context.backend.updateTask(id, { status });
+    task = await context.backend.updateTask(id, { status });
   } catch (error) {
     if (error instanceof BackendError && error.status === 403)
       throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Needs me.`);
     throw error;
   }
+  confirm(context, `moved ${id} to ${status}  ${task.url}`);
 }
 
 export interface DelayFlags {
@@ -219,7 +291,7 @@ export async function schedules(context: Context, args: string[]): Promise<void>
   const [action, id, ...extra] = args;
   if (action === undefined) {
     const all = await context.backend.listSchedules();
-    context.print(`schedules (${all.length})`);
+    context.print(createStyle(context.color === true).bold(`schedules (${all.length})`));
     for (const schedule of all) context.print(`  ${formatSchedule(schedule)}`);
     return;
   }
@@ -237,8 +309,9 @@ export async function schedules(context: Context, args: string[]): Promise<void>
   );
 }
 
+// The question goes to stderr, so a JSON document on stdout stays alone.
 async function chooseInTerminal(): Promise<Choice> {
-  const terminal = createInterface({ input: process.stdin, output: process.stdout });
+  const terminal = createInterface({ input: process.stdin, output: process.stderr });
   try {
     for (;;) {
       const answer = (await terminal.question('[r]equeue it, [n]ew task anyway, [a]bort? ')).trim().toLowerCase();
@@ -251,16 +324,23 @@ async function chooseInTerminal(): Promise<Choice> {
   }
 }
 
-export async function scheduleCommand(context: Context, flags: ScheduleFlags, words: string[]): Promise<void> {
+export async function scheduleCommand(
+  context: Context,
+  flags: ScheduleFlags,
+  words: string[],
+): Promise<Task | undefined> {
   const args = parseScheduleArgs(flags, words);
-  await schedule(
+  return schedule(
     {
       backend: context.backend,
       machine: context.config.machine,
       workdir: realpathSync(process.cwd()),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       print: context.print,
-      check: haikuDuplicateCheck(context.print),
+      check: haikuDuplicateCheck(
+        context.print,
+        process.stderr.isTTY ? (line) => void process.stderr.write(`${line}\n`) : undefined,
+      ),
       choose: process.stdin.isTTY && process.stdout.isTTY ? chooseInTerminal : undefined,
     },
     args,

@@ -3,21 +3,26 @@ import { CONTRACT_VERSION, STATUSES } from '@agent-board/shared';
 import {
   add,
   ask,
+  comment,
   delay,
   notify,
   move,
   parseStatus,
   readNoteFile,
+  readThread,
   scheduleCommand,
   schedules,
+  selectTasks,
   show,
+  taskJson,
   tasks,
 } from './board.mts';
-import type { AddFlags, DelayFlags } from './board.mts';
+import type { AddFlags, DelayFlags, TasksFlags } from './board.mts';
 import { buildContext, readStdin, UsageError } from './cli.mts';
 import type { Context, ContextOptions } from './cli.mts';
 import { dispatchMain } from './dispatch.mts';
 import { runHook } from './hook.mts';
+import { resolveScheduleId, resolveTaskId } from './ids.mts';
 import { intakeMain } from './intake.mts';
 import { addScheduleOptions } from './schedule.mts';
 import type { ScheduleFlags } from './schedule.mts';
@@ -39,6 +44,9 @@ const SCHEDULING = 'Scheduling:';
 const SETUP = 'Setup:';
 
 const STATUS_LIST = STATUSES.join(', ');
+const TASK_ARGUMENT = 'the task: its id, a board task link or the start of its id';
+const ID_NOTE =
+  '<task> can be the full id, a link to the task on this board, or the start of the id (3+ characters, case-insensitive; it must be unique). Inside a board run only the full id is accepted.';
 
 // `comment <task> [text...]` in the overview, without commander's `[options]` and without the long usage of `comment`.
 function overviewTerm(command: Command): string {
@@ -83,11 +91,20 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .addHelpText('after', '\nRun "board help <command>" for the details and examples of one command.\n');
 
   // `strictConfig`: the command binds work to this machine's name, which needs a config.json to mean anything.
-  const contextOf = (command: Command, { strictConfig = false } = {}): Context => {
+  // `json`: stdout holds the JSON document alone, so every other line goes to stderr.
+  const contextOf = (command: Command, { strictConfig = false, json = false } = {}): Context => {
     const dryRun =
       program.opts<{ dryRun?: boolean }>().dryRun === true || command.opts<{ dryRun?: boolean }>().dryRun === true;
-    return makeContext(dryRun, { optionalConfig: !strictConfig });
+    return makeContext(dryRun, {
+      optionalConfig: !strictConfig,
+      ...(json ? { print: (line: string) => writeErr(`${line}\n`) } : {}),
+    });
   };
+  const writeJson = (value: unknown): void => writeOut(`${JSON.stringify(value, null, 2)}\n`);
+  const inRun = Boolean(env['AGENT_BOARD_TASK']);
+  const taskIdOf = (context: Context, arg: string): Promise<string> =>
+    resolveTaskId(context.backend, arg, { inRun, boardUrl: context.boardUrl });
+  const jsonOption = (command: Command): Command => command.option('--json', 'print JSON on stdout instead of text');
   // On the old parser a trailing --dry-run meant a dry run; doing the real thing silently would be the wrong direction.
   const refuseTrailingDryRun = (words: string[], usage: string): void => {
     if (words.at(-1) === '--dry-run') throw new UsageError(`--dry-run goes before the text: ${usage}`);
@@ -111,25 +128,46 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     command.option('--dry-run', 'read everything, print every write instead of doing it');
 
   dryRunOption(
-    program
-      .command('tasks')
-      .helpGroup(TASKS)
-      .summary('open tasks per status')
-      .description('List the open tasks per status, with their id, priority and title, and when a delayed task starts.')
-      .addHelpText('after', examples('board tasks')),
-  ).action((_options, command: Command) => tasks(contextOf(command)));
+    jsonOption(
+      program
+        .command('tasks')
+        .helpGroup(TASKS)
+        .summary('open tasks per status')
+        .description(
+          'List the open tasks per status, with their id, priority and title, and when a delayed task starts. --all adds the closed ones, --status shows one status.',
+        )
+        .option('--all', 'closed tasks too')
+        .option('--status <status>', `only this status (${STATUS_LIST}; "Needs me" works too)`)
+        .addHelpText('after', examples('board tasks', 'board tasks --status needs-me', 'board tasks --all --json')),
+    ),
+  ).action(async (flags: TasksFlags, command: Command) => {
+    const context = contextOf(command, { json: flags.json === true });
+    if (flags.json) writeJson((await selectTasks(context, flags)).map(taskJson));
+    else await tasks(context, flags);
+  });
 
   dryRunOption(
-    program
-      .command('show')
-      .helpGroup(TASKS)
-      .summary('a task and its thread as markdown')
-      .description(
-        'Print a task and its thread (input, questions, answers and notes) as markdown. A resumed run reads this first.',
-      )
-      .argument('<task>', 'the task id')
-      .addHelpText('after', examples('board show Ab3dEf9x')),
-  ).action((task: string, _options, command: Command) => show(contextOf(command), task));
+    jsonOption(
+      program
+        .command('show')
+        .helpGroup(TASKS)
+        .summary('a task and its thread as markdown')
+        .description(
+          paragraphs(
+            'Print a task and its thread (input, questions, answers and notes) as markdown. A resumed run reads this first. With --json, print the task and its notes as JSON.',
+            ID_NOTE,
+          ),
+        )
+        .argument('<task>', TASK_ARGUMENT)
+        .addHelpText('after', examples('board show Ab3dEf9x', 'board show Ab3 --json')),
+    ),
+  ).action(async (arg: string, flags: { json?: boolean }, command: Command) => {
+    const context = contextOf(command, { json: flags.json === true });
+    const id = await taskIdOf(context, arg);
+    if (!flags.json) return show(context, id);
+    const { task, notes } = await readThread(context, id);
+    writeJson({ task: taskJson(task), notes });
+  });
 
   dryRunOption(
     program
@@ -140,10 +178,11 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         paragraphs(
           "Add a note to the task's thread. The text is every word after the task, quoted or not, and is never read as a flag.",
           '`-` reads the text from stdin; `--file <path>` right after the task reads it from a regular file in /tmp, for long text.',
+          ID_NOTE,
         ),
       )
       .usage('[options] <task> <text...|-|--file <path>>')
-      .argument('<task>', 'the task id')
+      .argument('<task>', TASK_ARGUMENT)
       .argument('[text...]', 'the note')
       .passThroughOptions()
       .addHelpText(
@@ -153,12 +192,14 @@ export function buildProgram(options: ProgramOptions = {}): Command {
           'board comment Ab3dEf9x tests pass, one flaky',
           'board comment Ab3dEf9x --file /tmp/review.md',
           'echo "from a script" | board comment Ab3dEf9x -',
+          'board comment Ab3 looks good',
         ),
       ),
-  ).action(async (task: string, words: string[], _options, command: Command) => {
+  ).action(async (arg: string, words: string[], _options, command: Command) => {
     refuseTrailingDryRun(words, 'board comment --dry-run <task> <text...>');
     const text = await textOf(words, { allowFile: true });
-    await contextOf(command).backend.addNote(task, text);
+    const context = contextOf(command);
+    await comment(context, await taskIdOf(context, arg), text);
   });
 
   dryRunOption(
@@ -167,17 +208,22 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       .helpGroup(TASKS)
       .summary('move a task to the bottom of a status')
       .description(
-        `Move a task to the bottom of a status: ${STATUS_LIST}. "Backlog", "Todo", "Running", "Needs me" and "Done" work too.`,
+        paragraphs(
+          `Move a task to the bottom of a status: ${STATUS_LIST}. "Backlog", "Todo", "Running", "Needs me" and "Done" work too.`,
+          ID_NOTE,
+        ),
       )
-      .argument('<task>', 'the task id')
+      .argument('<task>', TASK_ARGUMENT)
       .argument('<status...>', 'the status to move it to')
       .addHelpText(
         'after',
-        examples('board move Ab3dEf9x needs-me', 'board move Ab3dEf9x Needs me', 'board move Ab3dEf9x todo'),
+        examples('board move Ab3dEf9x needs-me', 'board move Ab3dEf9x Needs me', 'board move Ab3 todo'),
       ),
-  ).action((task: string, status: string[], _options, command: Command) =>
-    move(contextOf(command), task, parseStatus(status.join(' '))),
-  );
+  ).action(async (arg: string, status: string[], _options, command: Command) => {
+    const target = parseStatus(status.join(' '));
+    const context = contextOf(command);
+    await move(context, await taskIdOf(context, arg), target);
+  });
 
   dryRunOption(
     program
@@ -185,16 +231,20 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       .helpGroup(TASKS)
       .summary('Slack message with the task link')
       .description(
-        'Send a Slack message with the task link. The text is every word after the task; `-` reads it from stdin.',
+        paragraphs(
+          'Send a Slack message with the task link. The text is every word after the task; `-` reads it from stdin.',
+          ID_NOTE,
+        ),
       )
-      .argument('<task>', 'the task id')
+      .argument('<task>', TASK_ARGUMENT)
       .argument('<text...>', 'the message')
       .passThroughOptions()
       .addHelpText('after', examples('board notify Ab3dEf9x "needs your decision"')),
-  ).action(async (task: string, words: string[], _options, command: Command) => {
+  ).action(async (arg: string, words: string[], _options, command: Command) => {
     refuseTrailingDryRun(words, 'board notify --dry-run <task> <text...>');
     const text = await textOf(words, { allowFile: false });
-    await notify(contextOf(command), task, text);
+    const context = contextOf(command);
+    await notify(context, await taskIdOf(context, arg), text);
   });
 
   dryRunOption(
@@ -206,27 +256,44 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         paragraphs(
           'Ask the user 1-4 questions and move the task to needs-me; Slack is told. The user answers on the board and the run is resumed with the answers.',
           'The questions are JSON in a regular file in /tmp: {"questions": [{"header", "question", "multiSelect", "options": [{"label", "description", "recommended"?}]}]}',
+          ID_NOTE,
         ),
       )
-      .argument('<task>', 'the task id')
+      .argument('<task>', TASK_ARGUMENT)
       .requiredOption('--file <path>', 'the questions as JSON, in /tmp')
       .addHelpText('after', examples('board ask Ab3dEf9x --file /tmp/pr-Ab3dEf9x-questions.json')),
-  ).action((task: string, flags: { file: string }, command: Command) => ask(contextOf(command), task, flags.file));
+  ).action(async (arg: string, flags: { file: string }, command: Command) => {
+    const context = contextOf(command);
+    await ask(context, await taskIdOf(context, arg), flags.file);
+  });
 
   dryRunOption(
-    program
-      .command('add')
-      .helpGroup(TASKS)
-      .summary('propose a follow-up task')
-      .description(
-        'Propose a follow-up task; the file is its prompt. It waits in needs-me until the user starts it, and runs in this directory on this machine.',
-      )
-      .requiredOption('--title <title>', "the task's title")
-      .requiredOption('--file <path>', 'the prompt, a regular file in /tmp')
-      .option('--parent <task>', 'the task this follows from')
-      .option('--priority <priority>', 'urgent, high, normal or low (default normal)')
-      .addHelpText('after', examples('board add --title "Fix the flaky test" --file /tmp/prompt.md --parent Ab3dEf9x')),
-  ).action((flags: AddFlags, command: Command) => add(contextOf(command, { strictConfig: true }), flags));
+    jsonOption(
+      program
+        .command('add')
+        .helpGroup(TASKS)
+        .summary('propose a follow-up task')
+        .description(
+          paragraphs(
+            'Propose a follow-up task; the file is its prompt. It waits in needs-me until the user starts it, and runs in this directory on this machine. With --json, print {"id", "url"} on stdout.',
+            ID_NOTE,
+          ),
+        )
+        .requiredOption('--title <title>', "the task's title")
+        .requiredOption('--file <path>', 'the prompt, a regular file in /tmp')
+        .option('--parent <task>', `the task this follows from (${TASK_ARGUMENT})`)
+        .option('--priority <priority>', 'urgent, high, normal or low (default normal)')
+        .addHelpText(
+          'after',
+          examples('board add --title "Fix the flaky test" --file /tmp/prompt.md --parent Ab3dEf9x'),
+        ),
+    ),
+  ).action(async (flags: AddFlags & { json?: boolean }, command: Command) => {
+    const context = contextOf(command, { strictConfig: true, json: flags.json === true });
+    const parent = flags.parent === undefined ? undefined : await taskIdOf(context, flags.parent);
+    const task = await add(context, { ...flags, ...(parent === undefined ? {} : { parent }) });
+    if (flags.json) writeJson({ id: task.id, url: task.url });
+  });
 
   const schedule = program
     .command('schedule')
@@ -237,14 +304,13 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         'Make a task of the prompt, written as you would type it into Claude Code, bound to this machine and this directory. Prints its URL. A quick Haiku call first checks whether an open task already covers it; --new skips that.',
         'The flags come first; everything from the first other word on is the prompt, flags included (`--auto` below goes to the skill). To start the prompt with dashes, put -- before it.',
         '--in or --at keeps the task in Todo until then. --every or --cron makes a repeating schedule instead, starting at --in/--at (default now), for --times runs or until --until, else forever.',
-        'Not available inside a board run: there, propose follow-up work with `board add`.',
+        'With --json, print {"id", "url"} of the task on stdout; everything else goes to stderr. Not available inside a board run: there, propose follow-up work with `board add`.',
       ),
     )
     .usage('[options] <prompt...>')
     .argument('<prompt...>', 'what the task should do')
     .passThroughOptions();
-  addScheduleOptions(schedule)
-    .option('--dry-run', 'read everything, print every write instead of doing it')
+  jsonOption(addScheduleOptions(schedule).option('--dry-run', 'read everything, print every write instead of doing it'))
     .addHelpText(
       'after',
       examples(
@@ -256,34 +322,55 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         'board schedule --every 2h --times 5 /sweep the stale branches',
         'board schedule --cron "0 9 * * 1-5" /review-pr --auto',
         'board schedule --hold -- --weird prompt',
+        'board schedule --json /review-pr 17741',
       ),
     )
-    .action(async (words: string[], flags: ScheduleFlags, command: Command) => {
+    .action(async (words: string[], flags: ScheduleFlags & { json?: boolean }, command: Command) => {
       notInRun('board schedule is not available inside a board run; use `board add` to propose follow-up work');
       refuseTrailingDryRun(words, 'board schedule --dry-run <prompt...>');
-      await scheduleCommand(contextOf(command, { strictConfig: true }), flags, words);
+      const task = await scheduleCommand(
+        contextOf(command, { strictConfig: true, json: flags.json === true }),
+        flags,
+        words,
+      );
+      if (flags.json && task) writeJson({ id: task.id, url: task.url });
     });
 
   dryRunOption(
-    program
-      .command('schedules')
-      .helpGroup(SCHEDULING)
-      .summary('list, pause, resume or delete repeating schedules')
-      .description(
-        paragraphs(
-          'Without arguments, list the repeating schedules: id, rule, next run, runs left, paused or ended, title.',
-          '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run. Changing a schedule is not available inside a board run.',
+    jsonOption(
+      program
+        .command('schedules')
+        .helpGroup(SCHEDULING)
+        .summary('list, pause, resume or delete repeating schedules')
+        .description(
+          paragraphs(
+            'Without arguments, list the repeating schedules: id, rule, next run, runs left, paused or ended, title; --json prints them as JSON.',
+            '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run. Changing a schedule is not available inside a board run. The id can be the start of it (3+ characters) outside a run.',
+          ),
+        )
+        .usage('[options] [pause|resume|rm <id>]')
+        .argument('[action...]', 'pause, resume or rm, and the schedule id')
+        .addHelpText(
+          'after',
+          examples(
+            'board schedules',
+            'board schedules --json',
+            'board schedules pause s1b2c3d4',
+            'board schedules rm s1b',
+          ),
         ),
-      )
-      .usage('[options] [pause|resume|rm <id>]')
-      .argument('[action...]', 'pause, resume or rm, and the schedule id')
-      .addHelpText(
-        'after',
-        examples('board schedules', 'board schedules pause s1b2c3d4', 'board schedules rm s1b2c3d4'),
-      ),
-  ).action((words: string[], _options, command: Command) => {
+    ),
+  ).action(async (words: string[], flags: { json?: boolean }, command: Command) => {
     if (words.length > 0) notInRun('board schedules changes are not available inside a board run');
-    return schedules(contextOf(command), words);
+    const context = contextOf(command, { json: flags.json === true });
+    if (flags.json) {
+      if (words.length > 0) throw new UsageError('--json only prints the list of schedules');
+      return writeJson(await context.backend.listSchedules());
+    }
+    const [action, arg, ...rest] = words;
+    const changes = action === 'pause' || action === 'resume' || action === 'rm';
+    const id = arg === undefined || !changes ? undefined : await resolveScheduleId(context.backend, arg, { inRun });
+    return schedules(context, id === undefined ? words : [action ?? '', id, ...rest]);
   });
 
   dryRunOption(
@@ -292,17 +379,23 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       .helpGroup(SCHEDULING)
       .summary('delay a task in Todo, or make it due at once')
       .description(
-        'Delay a task in Todo until then, or with --now make it due at once. Give exactly one of --in, --at and --now.',
+        paragraphs(
+          'Delay a task in Todo until then, or with --now make it due at once. Give exactly one of --in, --at and --now.',
+          ID_NOTE,
+        ),
       )
-      .argument('<task>', 'the task id')
+      .argument('<task>', TASK_ARGUMENT)
       .option('--in <duration>', 'start after this long (30m, 2h, 1d, 1h30m)')
       .option('--at <time>', 'start then (2027-01-01T12:00, 2027-01-01, 09:30)')
       .option('--now', 'clear the delay: due at once')
       .addHelpText(
         'after',
-        examples('board delay Ab3dEf9x --in 1d', 'board delay Ab3dEf9x --at 09:00', 'board delay Ab3dEf9x --now'),
+        examples('board delay Ab3dEf9x --in 1d', 'board delay Ab3 --at 09:00', 'board delay Ab3dEf9x --now'),
       ),
-  ).action((task: string, flags: DelayFlags, command: Command) => delay(contextOf(command), task, flags));
+  ).action(async (arg: string, flags: DelayFlags, command: Command) => {
+    const context = contextOf(command);
+    await delay(context, await taskIdOf(context, arg), flags);
+  });
 
   const internal = program
     .command('internal', { hidden: true })
