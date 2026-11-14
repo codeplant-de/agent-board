@@ -137,10 +137,39 @@ function parsePasted(text: string, own: 'token' | 'dataKey'): Pasted {
   return bare === '' ? {} : { [own]: bare };
 }
 
+// How a path reads once the shell's habits are undone: a leading `export `, quotes and spaces around it.
+function normalisedPath(path: string): string {
+  return path
+    .trim()
+    .replace(/^export\s+/, '')
+    .replace(/^(["'])(.*)\1$/, '$2')
+    .trim();
+}
+
+const NAME_OF = { token: TOKEN, dataKey: DATA_KEY } as const;
+
+// What a one-line answer holds for the question asked: its bare value or its own NAME=value line; the other value's line
+// is a mistake worth naming (the Settings page copies both lines, and one is pasted at each prompt).
+function ownOfAnswer(text: string, field: 'token' | 'dataKey'): { value: string } | { wrongLine: string } {
+  const other = field === 'token' ? 'dataKey' : 'token';
+  const lines = parseEnv(text);
+  if (lines[NAME_OF[field]] !== undefined) return { value: (lines[NAME_OF[field]] ?? '').trim() };
+  if (lines[NAME_OF[other]] !== undefined) return { wrongLine: NAME_OF[other] };
+  return { value: text.trim() };
+}
+
+function wrongLineMessage(wrongLine: string, field: 'token' | 'dataKey'): string {
+  return field === 'token'
+    ? `that is the ${wrongLine} line; this question wants the machine token (the bare token, or the AGENT_BOARD_TOKEN=… line)`
+    : `that is the ${wrongLine} line; this question wants the data key (the bare key, or the AGENT_BOARD_DATA_KEY=… line)`;
+}
+
 // A secret typed where a path belongs: refused without echoing it.
 function looksLikeSecret(path: string): boolean {
   return /^(abk1_|abm_)/.test(path) || /^AGENT_BOARD_[A-Z_]+=/.test(path);
 }
+
+const CARRIES_SECRET = /abk1_|abm_/;
 
 function readWebUrl(path: string): string | undefined {
   try {
@@ -239,9 +268,13 @@ export async function init(deps: InitDeps, flags: InitFlags): Promise<InitResult
       );
     // The board's Settings page copies whole env lines, so a file or an answer may hold either value, as NAME=value or
     // bare, and may hold both: one text then gives both.
-    const fromFile = (flag: string, path: string | undefined, what: string, own: 'token' | 'dataKey'): Pasted => {
-      if (path === undefined) return {};
+    const fromFile = (flag: string, given: string | undefined, what: string, own: 'token' | 'dataKey'): Pasted => {
+      if (given === undefined) return {};
+      const path = normalisedPath(given);
       if (looksLikeSecret(path)) throw new UsageError(`${flag} takes the path of a file, not the secret itself`);
+      // A path that holds a secret somewhere inside it is never echoed, not even in "file missing".
+      if (CARRIES_SECRET.test(path))
+        throw new UsageError(`${flag}: no such file (the path is not shown: it contains a secret)`);
       return parsePasted(readSecret(path, what), own);
     };
     const tokenFile = fromFile('--token-file', flags.tokenFile, 'token file', 'token');
@@ -269,19 +302,24 @@ export async function init(deps: InitDeps, flags: InitFlags): Promise<InitResult
         return need(options.flag, options.what);
       }
       const keepable = current !== undefined && force;
+      // A prompt takes one line: the bare value, or its own NAME=value line as the Settings page offers it.
       const answer = await deps.prompts.secret(
         keepable ? `${options.message} (Enter keeps the current one)` : options.message,
         {
-          validate: (value) =>
-            value.trim() === '' && keepable ? undefined : options.problem(parsePasted(value, field)[field] ?? ''),
+          validate: (value) => {
+            if (value.trim() === '' && keepable) return undefined;
+            const own = ownOfAnswer(value, field);
+            return 'wrongLine' in own ? wrongLineMessage(own.wrongLine, field) : options.problem(own.value);
+          },
         },
       );
       if (answer.trim() === '' && keepable) return { value: current, fresh: false };
-      const pasted = parsePasted(answer, field);
-      // A pasted pair also answers the other question.
-      const other = field === 'token' ? 'dataKey' : 'token';
-      if (pasted[other] !== undefined && supplied[other] === undefined) supplied[other] = pasted[other];
-      return { value: (pasted[field] ?? '').trim(), fresh: true };
+      const own = ownOfAnswer(answer, field);
+      if ('wrongLine' in own)
+        throw new UsageError(
+          `${field === 'token' ? 'the token' : 'the data key'}: ${wrongLineMessage(own.wrongLine, field)}`,
+        );
+      return { value: own.value, fresh: true };
     };
     const token = await resolve({
       field: 'token',

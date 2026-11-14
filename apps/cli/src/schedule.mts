@@ -16,6 +16,7 @@ import {
 import type { Command } from 'commander';
 import type { Backend, Priority, Status, Task } from '@agent-board/shared';
 import { UsageError } from './cli.mts';
+import { plainLine } from './terminal.mts';
 
 export interface ScheduleArgs {
   prompt: string;
@@ -285,7 +286,9 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     const duplicate = await deps.check(args.prompt, deps.workdir, open);
     const existing = duplicate === undefined ? undefined : open.find((task) => task.id === duplicate.taskId);
     if (duplicate && existing) {
-      deps.print(`Looks like ${existing.id} (${existing.status}) "${existing.title}" covers this: ${duplicate.reason}`);
+      deps.print(
+        `Looks like ${existing.id} (${existing.status}) "${plainLine(existing.title)}" covers this: ${plainLine(duplicate.reason)}`,
+      );
       const choice = deps.choose ? await deps.choose(duplicate, existing) : 'new';
       if (choice === 'abort') {
         deps.print('nothing scheduled');

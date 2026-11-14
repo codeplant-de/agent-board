@@ -43,6 +43,7 @@ import { realSetupDeps, setup, unitDirectory, whichOnPath } from './setup.mts';
 import type { SetupDeps, SetupFlags } from './setup.mts';
 import { runHook } from './hook.mts';
 import { resolveScheduleId, resolveTaskId } from './ids.mts';
+import { plainLine } from './terminal.mts';
 import { intakeMain } from './intake.mts';
 import { addScheduleOptions } from './schedule.mts';
 import type { ScheduleFlags } from './schedule.mts';
@@ -82,7 +83,7 @@ const SETUP = 'Setup:';
 const STATUS_LIST = STATUSES.join(', ');
 const TASK_ARGUMENT = 'the task: its id, a board task link or the start of its id';
 const ID_NOTE =
-  '<task> can be the full id, a link to the task on this board, or the start of the id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an exact-case match wins, else case does not matter; it must be unique). Inside a board run only the full id is accepted.';
+  '<task> can be the full id, a link to the task on this board (as the CLI prints it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an exact-case match wins, else case does not matter; it must be unique). Inside a board run only the full id is accepted.';
 
 // `comment <task> [text...]` in the overview, without commander's `[options]` and without the long usage of `comment`.
 function overviewTerm(command: Command): string {
@@ -140,7 +141,11 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   const writeJson = (value: unknown): void => writeOut(`${JSON.stringify(value, null, 2)}\n`);
   const inRun = Boolean(env['AGENT_BOARD_TASK']);
   const taskIdOf = (context: LinkingContext, arg: string): Promise<string> =>
-    resolveTaskId(context.backend, arg, { inRun });
+    resolveTaskId(context.backend, arg, {
+      inRun,
+      // The same source as every link the CLI prints.
+      boardLinkPrefix: () => context.taskLink('a').slice(0, -1),
+    });
   // `readable`: the command lists tasks, notes or schedules, whose values this machine may be unable to decrypt.
   const jsonOptionReadable = (command: Command): Command => jsonOption(command, { readable: true });
   const jsonOption = (command: Command, { readable = false } = {}): Command =>
@@ -402,7 +407,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         .description(
           paragraphs(
             'Without arguments, list the repeating schedules: id, rule, next run, runs left, paused or ended, title; --json prints them as JSON.',
-            '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run. Changing a schedule is not available inside a board run. The id can be the start of it (3+ characters) outside a run.',
+            '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run. Changing a schedule is not available inside a board run. The id can be the start of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.',
           ),
         )
         .usage('[options] [pause|resume|rm <id>]')
@@ -492,7 +497,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .description(
       paragraphs(
         "Set this machine up for the board: write web.json (the board's URL), env (the machine token and the data key, mode 600) and, if it is missing, config.json (from the example, with this machine's name). Then run the checks of `board doctor`.",
-        'Set up encryption in the browser first: init asks for the data key from the board\'s Settings page as well as the token. The page offers the env lines to copy (`AGENT_BOARD_TOKEN=…`, `AGENT_BOARD_DATA_KEY=…`): paste them as they are, or the bare values; a text or file with both lines answers both questions. Without flags it asks. For a script give --url, --token-file and --data-key-file: a secret never goes on the command line, where it would land in the shell history. A secret file must be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board init --url … --token-file /dev/stdin --data-key-file ~/key`; only one of the two can be /dev/stdin. --machine defaults to the host name.',
+        'Set up encryption in the browser first: init asks for the data key from the board\'s Settings page as well as the token. The page offers the env lines to copy (`AGENT_BOARD_TOKEN=…`, `AGENT_BOARD_DATA_KEY=…`). At a prompt paste one line: the bare value, or its own line (a prompt takes one line, so the other line is refused, naming which one it wants); a file or pipe given with --token-file or --data-key-file may hold both lines. Without flags it asks. For a script give --url, --token-file and --data-key-file: a secret never goes on the command line, where it would land in the shell history. A secret file must be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board init --url … --token-file /dev/stdin --data-key-file ~/key`; only one of the two can be /dev/stdin. --machine defaults to the host name.',
         'A file that exists is kept unless --force, which copies it to <name>.bak-<timestamp> first (an env backup is mode 600 at most) and keeps what you do not give again: the URL, the token, the data key and any other line of env. An env that has the token but no data key (or the reverse) is completed without --force: init asks for the missing value only. config.json is never replaced.',
         'Not available inside a board run.',
       ),
@@ -629,7 +634,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       try {
         const context = makeContext(false, { optionalConfig: true, timeoutMs: limitMs });
         const lines = async (): Promise<string[]> => {
-          const oneLine = (text: string): string => text.replace(/\s+/g, ' ');
+          const oneLine = (text: string): string => plainLine(text.replace(/\s+/g, ' '));
           if (kind === 'tasks')
             return (await context.backend.listTasks()).map((task) => `${task.id}\t${oneLine(task.title)}`);
           if (kind === 'schedules')

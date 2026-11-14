@@ -174,7 +174,7 @@ export function parseConfig(raw: unknown): Config {
   const machine = raw['machine'] ?? hostname().split('.')[0] ?? '';
   if (typeof machine !== 'string' || !isSafeMachineName(machine)) {
     throw new ConfigError(
-      "config: machine must be a name of letters, digits, '.', '-' and '_' (defaults to the host name)",
+      "config: machine must be a name of letters, digits, '.', '-' and '_', at most 32 characters (defaults to the host name; a longer one was valid before contract 6: shorten it and create a new token for the new name)",
     );
   }
   return {

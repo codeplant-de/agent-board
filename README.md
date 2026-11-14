@@ -149,7 +149,7 @@ board setup --enable
 board doctor
 ```
 
-`install.sh` needs `gh`, logged in (the repository is private). It downloads the newest `cli-v*` release for this platform, checks it against `SHA256SUMS` and installs it as `~/.local/bin/board` (`BOARD_INSTALL_DIR` chooses another directory). Set up encryption in the browser first (see [Encryption](#encryption)), and copy your data key from the **Settings** page. `board init` asks for the board's URL, the token (create one for this machine on the board's **Settings** page; it is not shown), the data key (not shown either) and the machine name (paste what the Settings page offers: the `AGENT_BOARD_TOKEN=…` and `AGENT_BOARD_DATA_KEY=…` lines as they are, or the bare values; a text with both lines answers both questions), and writes `~/.config/agent-board/web.json`, `env` (mode 600, token and data key; a file with any other mode is refused) and, if it is missing, `config.json` from `apps/cli/config.example.json`; edit `repos` there to this machine's checkouts. For a script: `board init --url https://board.codeplant.de --token-file <file> --data-key-file <file> --machine <name>`; a secret never goes on the command line, and a file can be `/dev/stdin` for one of them (a pipe). An `env` that has the token but no data key (a machine from before encryption) is completed without `--force`: `board init` asks for the missing value only. A file that exists is kept unless `--force`, which copies it to `<name>.bak-<timestamp>` first and keeps the secrets you do not give again. `board setup` writes the dispatch and intake services and timers into `~/.config/systemd/user` as copies and reloads systemd; `--enable` also enables and starts the timers, and `--print` only shows the units. `board doctor` checks the whole machine: Node (checkout only), config, token, server and contract version, the worker tools and the units.
+`install.sh` needs `gh`, logged in (the repository is private). It downloads the newest `cli-v*` release for this platform, checks it against `SHA256SUMS` and installs it as `~/.local/bin/board` (`BOARD_INSTALL_DIR` chooses another directory). Set up encryption in the browser first (see [Encryption](#encryption)), and copy your data key from the **Settings** page. `board init` asks for the board's URL, the token (create one for this machine on the board's **Settings** page; it is not shown), the data key (not shown either) and the machine name (at a prompt paste one line: the bare value, or its own `AGENT_BOARD_TOKEN=…` or `AGENT_BOARD_DATA_KEY=…` line as the Settings page offers it; a file or a pipe given with `--token-file` or `--data-key-file` can hold both lines), and writes `~/.config/agent-board/web.json`, `env` (mode 600, token and data key; a file with any other mode is refused) and, if it is missing, `config.json` from `apps/cli/config.example.json`; edit `repos` there to this machine's checkouts. For a script: `board init --url https://board.codeplant.de --token-file <file> --data-key-file <file> --machine <name>`; a secret never goes on the command line, and a file can be `/dev/stdin` for one of them (a pipe). An `env` that has the token but no data key (a machine from before encryption) is completed without `--force`: `board init` asks for the missing value only. A file that exists is kept unless `--force`, which copies it to `<name>.bak-<timestamp>` first and keeps the secrets you do not give again. `board setup` writes the dispatch and intake services and timers into `~/.config/systemd/user` as copies and reloads systemd; `--enable` also enables and starts the timers, and `--print` only shows the units. `board doctor` checks the whole machine: Node (checkout only), config, token, server and contract version, the worker tools and the units.
 
 The credentials file `env` holds two lines, the token and the data key: `AGENT_BOARD_TOKEN=abm_...` and `AGENT_BOARD_DATA_KEY=abk1_...`. The data key is the same on every machine and never leaves your machines and browser. The CLI refuses to start without it, with a different key than the board's, or before the board has a key; `board doctor` checks all three.
 
@@ -169,32 +169,33 @@ User timers only run while you are logged in. For runs after logout: `loginctl e
 
 The CLI checks the server's contract version once per process and refuses to run when it differs from its own, in either direction, so a contract bump needs the server and every machine's CLI updated together. A machine left on the old CLI fails each dispatch and intake run with a version error until it is updated. So, in this order:
 
+**Contract 6 (encryption) moves data, so it has its own sequence: follow [Cutover to encryption](#cutover-to-encryption) from its first step, in its order.** It stops the timers and takes the dump before anything is deployed, and it holds the CLI release, the keys, the re-encryption and the restart. The list below is the general order for a contract bump that needs no such cutover:
+
 1. Stop the dispatch and intake timers on every worker machine.
-2. Deploy or restart the server; migrations run on start.
-3. Release the CLI: once the change is on `main`, tag the commit `cli-v<version>` (the version in `apps/cli/package.json`, 0.4.0 for contract 6; `cli-v0.3.0` is the contract-5 build) and push the tag. The release workflow builds and publishes the binaries, so that `board self-update` has something to fetch before any machine is switched. `board self-update --check` on a machine shows it.
-4. Set up encryption in the browser (a new passphrase and recovery key). The Settings page then offers the `AGENT_BOARD_DATA_KEY=…` line (and the `AGENT_BOARD_TOKEN=…` line too when it issues a token) to copy; `board init` takes those lines as they are.
-5. On each machine: update the CLI first: `board self-update` for a release binary (it needs `gh`; `--check` only reports), or for a checkout `git pull`, `pnpm install` and `apps/cli/install.sh`. A checkout that only pulls cannot resolve new dependencies, and then `board`, dispatch, intake and every run's hook fail. Then add the data key with `board init` (it sees an `env` with a token and no key, and asks for the key only), `board setup` once if the units were written by an older version, and `board doctor`.
-6. Re-encrypt the content that was stored before contract 6 (a one-off script, run once the key exists): see [Cutover to encryption](#cutover-to-encryption), which has the whole sequence in order. Until then the old tasks, notes and transcripts are plain text on the server: the CLI shows them as unreadable and never runs one, and intake would create a second task for a PR whose old task it cannot read.
-7. In an existing `config.json`, narrow `Bash(board *)` in `intake.allowedTools` to the forms in `config.example.json`, and add `Bash(board internal *)` to `intake.disallowedTools`. The old `backend` key is ignored; remove it if you like.
-8. Start the timers again.
+2. Take a dump of the database, your way back if a migration has to be undone.
+3. Deploy or restart the server; migrations run on start.
+4. Release the CLI: once the change is on `main`, tag the commit `cli-v<version>` (the version in `apps/cli/package.json`; `cli-v0.3.0` is the contract-5 build, `0.4.0` is contract 6) and push the tag. The release workflow builds and publishes the binaries, so that `board self-update` has something to fetch before any machine is switched. `board self-update --check` on a machine shows it.
+5. On each machine: update the CLI: `board self-update` for a release binary (it needs `gh`; `--check` only reports), or for a checkout `git pull`, `pnpm install` and `apps/cli/install.sh`. A checkout that only pulls cannot resolve new dependencies, and then `board`, dispatch, intake and every run's hook fail. Then `board setup` once if the units were written by an older version, and `board doctor`. A machine name in `config.json` of 33 to 64 characters was valid before contract 6 and is refused now: shorten `machine`, create a new token for the new name on the Settings page (the board ties a token to its machine name), and store it with `board init --force`.
+6. In an existing `config.json`, narrow `Bash(board *)` in `intake.allowedTools` to the forms in `config.example.json`, and add `Bash(board internal *)` to `intake.disallowedTools`. The old `backend` key is ignored; remove it if you like.
+7. Start the timers again.
 
 ## Cutover to encryption
 
 For the one user who owns every row from before encryption, once. The operator is that user. It takes **two releases**, in this order:
 
 1. **The first release** (this branch) has the migrations up to 0013, the browser and CLI that encrypt, and the re-encryption script. It has no constraint on the sealed columns: it starts on a database that still holds plain text, which is what lets the backend run while you set up your key in the browser (step 4), the one thing the script needs.
-2. **The second release**, shipped later, adds migration 0014 and nothing else: check constraints that make the database refuse plain text in every sealed column (`apps/backend/src/db/sealedColumns.ts` lists them). The migration fails, changing nothing, while any plain text remains, so it must not roll out before step 10 of the first release is done and its result checked. See [The second release](#the-second-release).
+2. **The second release**, shipped later, adds migration 0014 and nothing else: check constraints that make the database refuse plain text in every sealed column (`apps/backend/src/db/sealedColumns.ts` lists them). The migration fails, changing nothing, while any plain text remains, so it must not roll out before step 11 of the first release is done and its result checked. See [The second release](#the-second-release).
 
 Every step says what to do if it fails; steps 6 to 8 either complete or change nothing.
 
 **Needs:** `kubectl` for the `agent-board` namespace, a checkout at the first release's commit with `pnpm install`, the backend's env secret with `DATABASE_URL`, `APP_DATABASE_URL` (`board_app`) and `BACKFILL_OWNER` (your lower-case username: the migration that adds owners stops without it), and a password manager for the recovery key.
 
-0. **Rehearse** on a restored dump. `pg_restore` the newest `agent-board.dump` into a scratch database, start `pnpm dev:backend` on it (`DATABASE_URL`, `APP_DATABASE_URL`, `BACKFILL_OWNER`, `DEV_AUTH_USER=<you>`), set up encryption in the browser, then run steps 6 to 9 against it. To rehearse the second release as well, apply its patch and run its migration (`pnpm db:migrate`) against the result. The script does about 6,000 transcript events per second: 300,000 events took 50 seconds. Drop the scratch database.
+0. **Rehearse** on a restored dump. `pg_restore` the newest `agent-board.dump` into a scratch database, start `pnpm dev:backend` on it (`DATABASE_URL`, `APP_DATABASE_URL`, `BACKFILL_OWNER`, `DEV_AUTH_USER=<you>`), set up encryption in the browser, then run steps 6 to 10 against it. To rehearse the second release as well, apply its patch and run its migration (`pnpm db:migrate`) against the result. The script does about 6,000 transcript events per second: 300,000 events took 50 seconds. Drop the scratch database.
 1. **Stop the timers** on every worker machine, and wait for the running tasks: `systemctl --user disable --now agent-board-dispatch.timer agent-board-intake.timer`, then `systemctl --user list-units 'agent-board-*'` shows no task. *Safe to repeat.*
-2. **Take a dump**, your way back: `kubectl -n agent-board exec postgres-0 -c postgres -- sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' > agent-board-before.dump`. It holds plain text: step 11 deletes it.
+2. **Take a dump**, your way back: `kubectl -n agent-board exec postgres-0 -c postgres -- sh -c 'pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"' > agent-board-before.dump`. It holds plain text: step 12 deletes it.
 3. **Deploy the first release** (merge to main, Flux), and tag the CLI release: `cli-v<version>` on that commit (the version in `apps/cli/package.json`), so that `board self-update` has the contract-6 binary to fetch in step 5. The migrations run on start, in one transaction. *If the backend does not start:* read `kubectl -n agent-board logs deploy/backend`; the usual cause is a missing `BACKFILL_OWNER`; nothing was changed, fix the secret and let it restart. *Once it runs, the old image no longer fits the schema:* the way back is restoring the dump.
 4. **Set up encryption in the browser:** sign in, choose a passphrase, store the recovery key in the password manager, then copy the data key from **Settings**. *If it says encryption is already set up, a key exists: use its passphrase or recovery key.*
-5. **Put the data key on each machine:** update the CLI first (`board self-update` for a release binary, or `git pull`, `pnpm install` and `apps/cli/install.sh` for a checkout), then run `board init`: it sees the `env` that has a token and no key and asks for the key only (paste the `AGENT_BOARD_DATA_KEY=…` line from Settings as it is; the file stays mode 600, with a backup of the old one). Leave the timers off. Check with `board doctor` (the key must match the board's) and `board tasks`: until step 8 every task reads `(cannot decrypt …)`.
+5. **Put the data key on each machine:** update the CLI first (`board self-update` for a release binary, or `git pull`, `pnpm install` and `apps/cli/install.sh` for a checkout), narrow the tools intake may use (in `~/.config/agent-board/config.json`: `Bash(board *)` in `intake.allowedTools` to the forms in `config.example.json`, and `Bash(board internal *)` added to `intake.disallowedTools`), then run `board init`: it sees the `env` that has a token and no key and asks for the key only (paste the `AGENT_BOARD_DATA_KEY=…` line from Settings as it is; the file stays mode 600, with a backup of the old one). If `board doctor` says the machine name is too long (at most 32 characters since contract 6; longer ones were valid before): shorten `machine` in `config.json`, create a new token for the new name on Settings (a token is tied to its machine name), and store it with `board init --force`. Leave the timers off. Check with `board doctor` (the key must match the board's) and `board tasks`: until step 8 every task reads `(cannot decrypt …)`.
 6. **Stop the writers:** `kubectl -n agent-board scale deploy/backend --replicas=0` (if Flux scales it back, suspend the apps Kustomization first). The script also takes a lock and stops with a clear message when anything is writing.
 7. **Dry run.** Keep the port-forward's process id, and stop it at the end by that id.
 
@@ -207,17 +208,18 @@ Every step says what to do if it fails; steps 6 to 8 either complete or change n
    It reads the key from the file (mode 600 or 400) or from `AGENT_BOARD_DATA_KEY`, never from an argument, and never prints it. It does everything in a transaction, checks the result and rolls back. Read the table: `converted` is what it seals, `left plain on purpose` the events the server wrote itself (`Closed.`, `Moved from … to ….`; any other text, including older wordings, is sealed as the system's), and every `WARNING` line. A started proposal used to stay `created by agent` with only `proposed = false` to tell it from one still waiting; the script reads that as you having started it, seals its prompt for the creator `user` and makes you its creator (the notice `proposals the user had started` counts them), while a proposal still waiting stays the agent's and is not run until you start it. *If it stops:* "another key" means the data key is not the one of Settings; "an envelope that does not open" names a row that holds a value of another key or damage; "being written to" means step 6 or 1 was not finished; "rows of another user still hold plain text" means the board is not a one-owner board, and the script is not for it; "values that the clients refuse" lists rows (an id or a name a client rejects) to fix in SQL first. Nothing was changed in any of these.
 8. **Run it for real:** the same command without `--dry-run`. One transaction: *if it fails, nothing changed; fix the cause and run it again.* A second run changes nothing, so a doubt about whether it finished is answered by running it.
 9. **`VACUUM FULL`** the rewritten tables, so the old plain-text row versions leave the files (an update leaves them behind until the table is rewritten): `psql "$DATABASE_URL" -c 'VACUUM FULL task, schedule, note, transcript_run, transcript_event'`. It needs free disk about the size of the biggest table and locks them, so the backend stays off. In the rehearsal `transcript_event` was 116 MB, 919 MB after the script and 438 MB after. *Safe to repeat.*
-10. **Start again:** `kubectl -n agent-board scale deploy/backend --replicas=1`, open the board, unlock, open a task and a transcript, run `board tasks` on a machine, then `systemctl --user enable --now agent-board-dispatch.timer agent-board-intake.timer`. Check that no plain text remains: `pnpm --filter @agent-board/backend reencrypt --owner <you> --key-file ~/.config/agent-board/env --dry-run` reports `converted` as 0 everywhere on a second run (step 7's port-forward and `DATABASE_URL`).
-11. **Prune what holds plain text:** `agent-board-before.dump`, the dumps in `/var/backups/agent-board`, and the restic snapshots made before step 8 (`restic snapshots`, then `restic forget --prune <ids>`). Do this only after step 10 works, and the second release is the better moment: until then they are your way back. Dumps and snapshots from after step 8 hold ciphertext only. `BACKFILL_OWNER` may then leave the env secret.
+10. **Check that nothing plain is left, while the writers are still off:** the same dry-run command (step 7's port-forward and `DATABASE_URL`) reports `converted` as 0 everywhere, since a second run changes nothing. The real run already checks, in its own transaction and before it commits, that no plain text remains in a sealed column, so this shows the second run is idle rather than finding anything new. It takes a lock on the board's tables for its whole pass, and stops with "being written to" when a backend, a worker or a timer is writing: that is why it comes before the next step, not after.
+11. **Start again:** `kubectl -n agent-board scale deploy/backend --replicas=1`, open the board, unlock, open a task and a transcript, run `board tasks` on a machine, then `systemctl --user enable --now agent-board-dispatch.timer agent-board-intake.timer`.
+12. **Prune what holds plain text:** `agent-board-before.dump`, the dumps in `/var/backups/agent-board`, and the restic snapshots made before step 8 (`restic snapshots`, then `restic forget --prune <ids>`). Do this only after step 11 works, and the second release is the better moment: until then they are your way back. Dumps and snapshots from after step 8 hold ciphertext only. `BACKFILL_OWNER` may then leave the env secret.
 
 `VACUUM FULL` rewrites the table files but does not scrub the disk blocks it frees or the write-ahead log, so the old plain text can still sit in freed space and in replicas until they are overwritten.
 
 ### The second release
 
-Ships after step 10 of the first, as its own change: migration 0014 (`0014_sealed_content_constraints.sql`), its snapshot and journal entry, the check constraints in `apps/backend/src/db/schema.ts` and their test. It first checks every sealed column and, when plain text remains, stops with `Plain text is still stored in sealed columns: <table.column (rows)>. Run the re-encryption script first`, changing nothing (the migrations run in one transaction); then it adds the constraints and validates them.
+Ships after step 11 of the first, as its own change: migration 0014 (`0014_sealed_content_constraints.sql`), its snapshot and journal entry, the check constraints in `apps/backend/src/db/schema.ts` and their test. It first checks every sealed column and, when plain text remains, stops with `Plain text is still stored in sealed columns: <table.column (rows)>. Run the re-encryption script first`, changing nothing (the migrations run in one transaction); then it adds the constraints and validates them.
 
-1. Confirm step 10 of the first release is done and the dry run of the script converts nothing.
-2. Deploy the second release. *If its backend does not start* with the message above, the board is down meanwhile (the deployment recreates): pin the previous image tag to bring it back (the migration changed nothing), run steps 6 to 9 of the first release again, and deploy the second release again.
+1. Confirm step 11 of the first release is done and the check of step 10 converted nothing.
+2. Deploy the second release. *If its backend does not start* with the message above, the board is down meanwhile (the deployment recreates): pin the previous image tag to bring it back (the migration changed nothing), run steps 6 to 10 of the first release again, and deploy the second release again.
 3. Once it runs, a client that forgets to seal a field gets a 400 from the server's own check, and one that bypassed it would be refused by the database.
 
 
@@ -499,7 +501,7 @@ A missing allowed tool in an intake review shows up as a failed run: the log say
 
 ## Commands
 
-`<task>` is a task id; outside a run it can also be a link to the task on the board or the start of an id (3 or more characters, unique). `--json` prints tasks, threads and schedules as JSON for scripts. `--dry-run` reads everything and prints every write as `DRY ...` instead of doing it. A usage error exits 2, any other failure 1. `dispatch` and `intake` are `board internal dispatch|intake`, started by the timers; the wrappers `apps/cli/bin/dispatch` and `apps/cli/bin/intake` of a checkout take their own lock (`$XDG_RUNTIME_DIR/agent-board-{dispatch,intake}.lock`, the one the units use), so a run by hand cannot overlap a timer run. When the lock is held they exit 75 without output.
+`<task>` is a task id; outside a run it can also be a link to the task on the board or the start of an id (3 to 7 or 9 to 11 characters, unique; an id is 12 characters, or 8 for older tasks, and those lengths are whole ids). A link counts only when it is `<web.json url>/t/<id>`, the form the CLI prints. `--json` prints tasks, threads and schedules as JSON for scripts. `--dry-run` reads everything and prints every write as `DRY ...` instead of doing it. A usage error exits 2, any other failure 1. `dispatch` and `intake` are `board internal dispatch|intake`, started by the timers; the wrappers `apps/cli/bin/dispatch` and `apps/cli/bin/intake` of a checkout take their own lock (`$XDG_RUNTIME_DIR/agent-board-{dispatch,intake}.lock`, the one the units use), so a run by hand cannot overlap a timer run. When the lock is held they exit 75 without output.
 
 A file given with `--file` (`comment`, `ask`, `add`) is read only from a regular file in `/tmp`, without following a link, and only on Linux.
 
@@ -581,10 +583,11 @@ Usage: board show [options] <task>
 Print a task and its thread (input, questions, answers and notes) as markdown. A
 resumed run reads this first. With --json, print the task and its notes as JSON.
 
-<task> can be the full id, a link to the task on this board, or the start of the
-id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
-exact-case match wins, else case does not matter; it must be unique). Inside a
-board run only the full id is accepted.
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
@@ -613,10 +616,11 @@ or not, and is never read as a flag.
 `-` reads the text from stdin; `--file <path>` right after the task reads it
 from a regular file in /tmp, for long text.
 
-<task> can be the full id, a link to the task on this board, or the start of the
-id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
-exact-case match wins, else case does not matter; it must be unique). Inside a
-board run only the full id is accepted.
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
@@ -642,10 +646,11 @@ Usage: board move [options] <task> <status...>
 Move a task to the bottom of a status: backlog, todo, running, needs-me, done.
 "Backlog", "Todo", "Running", "Needs me" and "Done" work too.
 
-<task> can be the full id, a link to the task on this board, or the start of the
-id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
-exact-case match wins, else case does not matter; it must be unique). Inside a
-board run only the full id is accepted.
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
@@ -669,10 +674,11 @@ Usage: board notify [options] <task> <text...>
 Send a Slack message with the task link. The text is every word after the task;
 `-` reads it from stdin.
 
-<task> can be the full id, a link to the task on this board, or the start of the
-id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
-exact-case match wins, else case does not matter; it must be unique). Inside a
-board run only the full id is accepted.
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
@@ -698,10 +704,11 @@ The questions are JSON in a regular file in /tmp: {"questions": [{"header",
 "question", "multiSelect", "options": [{"label", "description",
 "recommended"?}]}]}
 
-<task> can be the full id, a link to the task on this board, or the start of the
-id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
-exact-case match wins, else case does not matter; it must be unique). Inside a
-board run only the full id is accepted.
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
 
 Arguments:
   task           the task: its id, a board task link or the start of its id
@@ -724,10 +731,11 @@ Propose a follow-up task; the file is its prompt. It waits in needs-me until the
 user starts it, and runs in this directory on this machine. With --json, print
 {"id", "url"} on stdout.
 
-<task> can be the full id, a link to the task on this board, or the start of the
-id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
-exact-case match wins, else case does not matter; it must be unique). Inside a
-board run only the full id is accepted.
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
 
 Options:
   --title <title>        the task's title
@@ -810,8 +818,8 @@ paused or ended, title; --json prints them as JSON.
 
 `pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes
 the next run, `rm <id>` deletes the schedule and its waiting run. Changing a
-schedule is not available inside a board run. The id can be the start of it (3+
-characters) outside a run.
+schedule is not available inside a board run. The id can be the start of it (3
+to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.
 
 Arguments:
   action      pause, resume or rm, and the schedule id
@@ -839,10 +847,11 @@ Usage: board delay [options] <task>
 Delay a task in Todo until then, or with --now make it due at once. Give exactly
 one of --in, --at and --now.
 
-<task> can be the full id, a link to the task on this board, or the start of the
-id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an
-exact-case match wins, else case does not matter; it must be unique). Inside a
-board run only the full id is accepted.
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
 
 Arguments:
   task             the task: its id, a board task link or the start of its id
@@ -874,14 +883,15 @@ doctor`.
 
 Set up encryption in the browser first: init asks for the data key from the
 board's Settings page as well as the token. The page offers the env lines to
-copy (`AGENT_BOARD_TOKEN=…`, `AGENT_BOARD_DATA_KEY=…`): paste them as they are,
-or the bare values; a text or file with both lines answers both questions.
-Without flags it asks. For a script give --url, --token-file and
---data-key-file: a secret never goes on the command line, where it would land in
-the shell history. A secret file must be mode 600 or 400 like env, which a pipe
-is: `printf %s "$TOKEN" | board init --url … --token-file /dev/stdin
---data-key-file ~/key`; only one of the two can be /dev/stdin. --machine
-defaults to the host name.
+copy (`AGENT_BOARD_TOKEN=…`, `AGENT_BOARD_DATA_KEY=…`). At a prompt paste one
+line: the bare value, or its own line (a prompt takes one line, so the other
+line is refused, naming which one it wants); a file or pipe given with
+--token-file or --data-key-file may hold both lines. Without flags it asks. For
+a script give --url, --token-file and --data-key-file: a secret never goes on
+the command line, where it would land in the shell history. A secret file must
+be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board init
+--url … --token-file /dev/stdin --data-key-file ~/key`; only one of the two can
+be /dev/stdin. --machine defaults to the host name.
 
 A file that exists is kept unless --force, which copies it to
 <name>.bak-<timestamp> first (an env backup is mode 600 at most) and keeps what
