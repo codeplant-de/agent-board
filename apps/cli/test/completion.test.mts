@@ -26,6 +26,7 @@ const VISIBLE = [
   'init',
   'doctor',
   'setup',
+  'self-update',
   'completion',
   'help',
 ];

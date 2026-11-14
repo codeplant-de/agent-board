@@ -243,3 +243,10 @@ test('board schedules changes are refused inside a board run, listing is not', a
       /not available inside a board run/,
     );
 });
+
+test('a note file needs Linux: elsewhere the command says how to give the text instead', () => {
+  assert.throws(
+    () => readNoteFile('/tmp/x', 'darwin'),
+    /needs Linux; on darwin give the text as arguments, or - to read it from stdin/,
+  );
+});

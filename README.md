@@ -136,24 +136,30 @@ A task is bound to a directory on the machine that ran it:
 
 Claude Code itself (2.1.323) also restores a session's worktree when it is resumed from the original directory; the `workdir` makes the board independent of that and shows it on the task page.
 
-## Install a worker machine
+## Install
 
-Needs Node 24+, pnpm, `flock`, `systemd-run`, `gh` (logged in) and `claude` (logged in).
+The `board` command and the worker (`dispatch`, `intake`, `worker`) are one program. A released build is a single binary per platform (Linux x64 and arm64, macOS arm64) and needs no Node; a worker machine needs Linux with systemd, `flock`, `systemd-run`, `gh` (logged in) and `claude` (logged in). On macOS only the `board` commands run, not the worker.
 
-1. `pnpm install` in the repo. The CLI depends on `commander` and imports `@agent-board/shared` through the workspace link, so every machine needs this install (and again after each pull).
-2. On the board's **Settings** page, create a token for this machine, then run `apps/cli/install.sh` (it links `board` into `~/.local/bin` and `apps/cli/bin/.node` to a Node 24+ binary, then runs `board setup`). Set `NODE=` to choose the Node.
-3. `board init` asks for the board's URL, the token (not shown) and this machine's name, and writes `~/.config/agent-board/web.json`, `env` (mode 600; a file with any other mode is refused) and, if it is missing, `config.json` from `apps/cli/config.example.json`. Edit `repos` in `config.json` to this machine's checkouts. For a script: `board init --url https://board.codeplant.de --token-file <file> --machine <name>`. Existing files are kept unless `--force`, which copies them to `<name>.bak-<timestamp>` first.
-4. `board doctor` checks it all: Node, config, token, server and contract version, `claude`, `gh`, `flock`, `systemd-run`, and the units.
-5. `board setup` writes the dispatch and intake services and timers into `~/.config/systemd/user` as copies and reloads systemd (`--print` only shows them). It enables and starts nothing; `--enable` does. `install.sh` runs it for you.
-6. Enable when ready:
+### From a release
 
-   ```
-   systemctl --user enable --now agent-board-dispatch.timer agent-board-intake.timer
-   ```
+```
+gh release download --repo codeplant-de/agent-board --pattern install.sh -O - | sh
+board init
+board setup --enable
+board doctor
+```
 
-The units run `<node> <checkout>/apps/cli/src/main.mts internal dispatch|intake` under `flock`, with the Node that ran `board setup`; run `board setup` again after moving the checkout or upgrading Node (`board doctor` flags a unit whose Node or checkout has gone). `board completion bash|zsh|fish` prints a shell completion script.
+`install.sh` needs `gh`, logged in (the repository is private). It downloads the newest `cli-v*` release for this platform, checks it against `SHA256SUMS` and installs it as `~/.local/bin/board` (`BOARD_INSTALL_DIR` chooses another directory). `board init` asks for the board's URL, the token (create one for this machine on the board's **Settings** page; it is not shown) and the machine name, and writes `~/.config/agent-board/web.json`, `env` (mode 600; a file with any other mode is refused) and, if it is missing, `config.json` from `apps/cli/config.example.json`; edit `repos` there to this machine's checkouts. For a script: `board init --url https://board.codeplant.de --token-file <file> --machine <name>`. A file that exists is kept unless `--force`, which copies it to `<name>.bak-<timestamp>` first. `board setup` writes the dispatch and intake services and timers into `~/.config/systemd/user` as copies and reloads systemd; `--enable` also enables and starts the timers, and `--print` only shows the units. `board doctor` checks the whole machine: Node (checkout only), config, token, server and contract version, the worker tools and the units.
 
-User timers only run while you are logged in. For runs after logout: `loginctl enable-linger $USER`.
+The units run the installed binary under `flock`: `<board> internal dispatch|intake`. Run `board setup` again after moving the binary. A board-only machine needs just `board init`.
+
+### From a checkout (development)
+
+Needs Node 24+, pnpm, and for a worker the tools above. `pnpm install` in the repo (the CLI depends on `commander` and `@clack/prompts`, and imports `@agent-board/shared` through the workspace link, so every machine needs this install, again after each pull). Then `apps/cli/install.sh`: it links `board` into `~/.local/bin` and `apps/cli/bin/.node` to a Node 24+ binary (`NODE=` chooses one; it is a real binary, not a mise shim, which does not resolve a version outside a project directory), and runs `board setup`. Continue with `board init` and `board doctor` as above. The units then run `<node> <checkout>/apps/cli/src/main.mts internal dispatch|intake`, with the Node that ran `board setup`; run `install.sh` or `board setup` again after moving the checkout or upgrading Node (`board doctor` flags a unit whose Node or checkout has gone).
+
+`apps/cli/build.sh` compiles the binaries (needs Bun, pinned in `mise.toml`) into `apps/cli/dist` with a `SHA256SUMS`; `pnpm --filter @agent-board/cli test:binary` builds one for this host and runs it the way a worker machine would. A release is a tag `cli-v<version>` matching `apps/cli/package.json`; `.github/workflows/release-cli.yml` builds, tests and publishes it.
+
+User timers only run while you are logged in. For runs after logout: `loginctl enable-linger $USER`. `board completion bash|zsh|fish` prints a shell completion script, see [Commands](#commands).
 
 ### Upgrading
 
@@ -161,7 +167,7 @@ The CLI checks the server's contract version once per process and refuses to run
 
 1. Stop the dispatch and intake timers on every worker machine.
 2. Deploy or restart the server; migrations run on start.
-3. On each machine: pull the repo, run `pnpm install`, then `apps/cli/install.sh`. A machine that only pulls cannot resolve `commander`, and then `board`, dispatch, intake and every run's hook fail.
+3. On each machine: `board self-update` for a release binary (it needs `gh`; `--check` only reports), or for a checkout `git pull`, `pnpm install` and `apps/cli/install.sh`. A checkout that only pulls cannot resolve new dependencies, and then `board`, dispatch, intake and every run's hook fail. Then `board setup` once if the units were written by an older version, and `board doctor`.
 4. In an existing `config.json`, narrow `Bash(board *)` in `intake.allowedTools` to the forms in `config.example.json`, and add `Bash(board internal *)` to `intake.disallowedTools`. The old `backend` key is ignored; remove it if you like.
 5. Start the timers again.
 
@@ -380,32 +386,486 @@ A missing allowed tool in an intake review shows up as a failed run: the log say
 
 ## Commands
 
+`<task>` is a task id; outside a run it can also be a link to the task on the board or the start of an id (3 or more characters, unique). `--json` prints tasks, threads and schedules as JSON for scripts. `--dry-run` reads everything and prints every write as `DRY ...` instead of doing it. A usage error exits 2, any other failure 1. `dispatch` and `intake` are `board internal dispatch|intake`, started by the timers; the wrappers `apps/cli/bin/dispatch` and `apps/cli/bin/intake` of a checkout take their own lock (`$XDG_RUNTIME_DIR/agent-board-{dispatch,intake}.lock`, the one the units use), so a run by hand cannot overlap a timer run. When the lock is held they exit 75 without output.
+
+The reference below is generated from the program (`pnpm --filter @agent-board/cli docs`), as `board help <command>` shows it.
+
+<!-- commands:start -->
+
 ```
-board tasks                     open tasks per status
-board show <task>               the task and its thread as markdown (what a skill reads)
-board comment <task> <text>     add a note; `-` reads the text from stdin
-board comment <task> --file <p> add a note from a file in /tmp (what the reviewer uses)
-board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...>
-                                a task from a prompt, run here on this machine; checks for duplicates first; refused inside a run
-board schedule --every <dur> | --cron "<expr>" [--times <n> | --until <time>] ... <prompt...>
-                                repeat the prompt (the flags above still apply; --in/--at is the first run)
-board schedules                 list the repeating schedules
-board schedules pause|resume|rm <id>
-                                pause, resume or delete a schedule; refused inside a run
-board delay <task> (--in <dur> | --at <time> | --now)
-                                delay a task in Todo until then; --now makes it due at once
-board ask <task> --file <p>     ask the user 1-4 questions (JSON in /tmp); moves the task to needs-me and notifies Slack
-board add --title <t> --file <p> [--parent <task>] [--priority <p>]
-                                propose a follow-up task; it waits in needs-me until the user starts it
-board move <task> <status>      move to the bottom of a status
-board notify <task> <text>      Slack message with the task link
-dispatch                        one dispatcher tick
-intake                          review requests to tasks
+Usage: board [options] [command]
+
+Work with the agent board from a terminal, and from inside a run: comment on
+tasks, move them, schedule new ones.
+
+Options:
+  -V, --version             print the version
+  --dry-run                 read everything, print every write instead of doing
+                            it
+  -h, --help                display help for command
+
+Tasks:
+  tasks                     open tasks per status
+  show <task>               a task and its thread as markdown
+  comment <task> [text...]  add a note to a task
+  move <task> <status...>   move a task to the bottom of a status
+  notify <task> <text...>   Slack message with the task link
+  ask <task>                ask the user 1-4 questions
+  add                       propose a follow-up task
+
+Scheduling:
+  schedule <prompt...>      a task from a prompt, run here on this machine
+  schedules [action...]     list, pause, resume or delete repeating schedules
+  delay <task>              delay a task in Todo, or make it due at once
+
+Setup:
+  init                      write web.json, env and config.json for this machine
+  doctor                    check this machine: config, token, server, worker
+                            tools and units
+  setup                     install the dispatch and intake timers as systemd
+                            user units
+  self-update               replace this binary with the newest release
+  completion <shell>        print a shell completion script
+  help [command]            show the help of a command
+
+Run "board help <command>" for the details and examples of one command.
 ```
 
-`<status>` is `backlog`, `todo`, `running`, `needs-me` or `done`; "Backlog", "Todo", "Running", "Needs me" and "Done" work too. `dispatch`, `intake` and `board` take `--dry-run`: reads happen, every write and process start is printed as `DRY ...`. An unknown argument is a usage error. The question file of `board ask` is `{"questions": [{"header", "question", "multiSelect", "options": [{"label", "description", "recommended"?}]}]}`; like `--file` of `board comment`, it is read only from a regular file in `/tmp`, without following a link.
+### Tasks
 
-`apps/cli/bin/dispatch` and `apps/cli/bin/intake` take their own lock (`$XDG_RUNTIME_DIR/agent-board-{dispatch,intake}.lock`), so a run by hand cannot overlap a timer run. When the lock is held they exit 75 without output.
+#### board tasks
+
+```
+Usage: board tasks [options]
+
+List the open tasks per status, with their id, priority and title, and when a
+delayed task starts. --all adds the closed ones, --status shows one status.
+
+Options:
+  --all              closed tasks too
+  --status <status>  only this status (backlog, todo, running, needs-me, done;
+                     "Needs me" works too)
+  --json             print JSON on stdout instead of text
+  --dry-run          read everything, print every write instead of doing it
+  -h, --help         display help for command
+
+Examples:
+  board tasks
+  board tasks --status needs-me
+  board tasks --all --json
+```
+
+#### board show
+
+```
+Usage: board show [options] <task>
+
+Print a task and its thread (input, questions, answers and notes) as markdown. A
+resumed run reads this first. With --json, print the task and its notes as JSON.
+
+<task> can be the full id, a link to the task on this board, or the start of the
+id (3+ characters, case-insensitive; it must be unique). Inside a board run only
+the full id is accepted.
+
+Arguments:
+  task        the task: its id, a board task link or the start of its id
+
+Options:
+  --json      print JSON on stdout instead of text
+  --dry-run   read everything, print every write instead of doing it
+  -h, --help  display help for command
+
+Examples:
+  board show Ab3dEf9x
+  board show Ab3 --json
+```
+
+#### board comment
+
+```
+Usage: board comment [options] <task> <text...|-|--file <path>>
+
+Add a note to the task's thread. The text is every word after the task, quoted
+or not, and is never read as a flag.
+
+`-` reads the text from stdin; `--file <path>` right after the task reads it
+from a regular file in /tmp, for long text.
+
+<task> can be the full id, a link to the task on this board, or the start of the
+id (3+ characters, case-insensitive; it must be unique). Inside a board run only
+the full id is accepted.
+
+Arguments:
+  task        the task: its id, a board task link or the start of its id
+  text        the note
+
+Options:
+  --dry-run   read everything, print every write instead of doing it
+  -h, --help  display help for command
+
+Examples:
+  board comment Ab3dEf9x "step 3 done"
+  board comment Ab3dEf9x tests pass, one flaky
+  board comment Ab3dEf9x --file /tmp/review.md
+  echo "from a script" | board comment Ab3dEf9x -
+  board comment Ab3 looks good
+```
+
+#### board move
+
+```
+Usage: board move [options] <task> <status...>
+
+Move a task to the bottom of a status: backlog, todo, running, needs-me, done.
+"Backlog", "Todo", "Running", "Needs me" and "Done" work too.
+
+<task> can be the full id, a link to the task on this board, or the start of the
+id (3+ characters, case-insensitive; it must be unique). Inside a board run only
+the full id is accepted.
+
+Arguments:
+  task        the task: its id, a board task link or the start of its id
+  status      the status to move it to
+
+Options:
+  --dry-run   read everything, print every write instead of doing it
+  -h, --help  display help for command
+
+Examples:
+  board move Ab3dEf9x needs-me
+  board move Ab3dEf9x Needs me
+  board move Ab3 todo
+```
+
+#### board notify
+
+```
+Usage: board notify [options] <task> <text...>
+
+Send a Slack message with the task link. The text is every word after the task;
+`-` reads it from stdin.
+
+<task> can be the full id, a link to the task on this board, or the start of the
+id (3+ characters, case-insensitive; it must be unique). Inside a board run only
+the full id is accepted.
+
+Arguments:
+  task        the task: its id, a board task link or the start of its id
+  text        the message
+
+Options:
+  --dry-run   read everything, print every write instead of doing it
+  -h, --help  display help for command
+
+Examples:
+  board notify Ab3dEf9x "needs your decision"
+```
+
+#### board ask
+
+```
+Usage: board ask [options] <task>
+
+Ask the user 1-4 questions and move the task to needs-me; Slack is told. The
+user answers on the board and the run is resumed with the answers.
+
+The questions are JSON in a regular file in /tmp: {"questions": [{"header",
+"question", "multiSelect", "options": [{"label", "description",
+"recommended"?}]}]}
+
+<task> can be the full id, a link to the task on this board, or the start of the
+id (3+ characters, case-insensitive; it must be unique). Inside a board run only
+the full id is accepted.
+
+Arguments:
+  task           the task: its id, a board task link or the start of its id
+
+Options:
+  --file <path>  the questions as JSON, in /tmp
+  --dry-run      read everything, print every write instead of doing it
+  -h, --help     display help for command
+
+Examples:
+  board ask Ab3dEf9x --file /tmp/pr-Ab3dEf9x-questions.json
+```
+
+#### board add
+
+```
+Usage: board add [options]
+
+Propose a follow-up task; the file is its prompt. It waits in needs-me until the
+user starts it, and runs in this directory on this machine. With --json, print
+{"id", "url"} on stdout.
+
+<task> can be the full id, a link to the task on this board, or the start of the
+id (3+ characters, case-insensitive; it must be unique). Inside a board run only
+the full id is accepted.
+
+Options:
+  --title <title>        the task's title
+  --file <path>          the prompt, a regular file in /tmp
+  --parent <task>        the task this follows from (the task: its id, a board
+                         task link or the start of its id)
+  --priority <priority>  urgent, high, normal or low (default normal)
+  --json                 print JSON on stdout instead of text
+  --dry-run              read everything, print every write instead of doing it
+  -h, --help             display help for command
+
+Examples:
+  board add --title "Fix the flaky test" --file /tmp/prompt.md --parent Ab3dEf9x
+```
+
+### Scheduling
+
+#### board schedule
+
+```
+Usage: board schedule [options] <prompt...>
+
+Make a task of the prompt, written as you would type it into Claude Code, bound
+to this machine and this directory. Prints its URL. A quick Haiku call first
+checks whether an open task already covers it; --new skips that.
+
+The flags come first; everything from the first other word on is the prompt,
+flags included (`--auto` below goes to the skill). To start the prompt with
+dashes, put -- before it.
+
+--in or --at keeps the task in Todo until then. --every or --cron makes a
+repeating schedule instead, starting at --in/--at (default now), for --times
+runs or until --until, else forever.
+
+With --json, print {"id", "url"} of the task on stdout; everything else goes to
+stderr. Not available inside a board run: there, propose follow-up work with
+`board add`.
+
+Arguments:
+  prompt                 what the task should do
+
+Options:
+  --priority <priority>  urgent, high, normal, low (default normal)
+  --title <title>        the task's title (default: the prompt's first line)
+  --hold                 land it in needs-me instead of Todo
+  --backlog              park it in backlog instead of Todo
+  --in <duration>        keep it in Todo for this long (30m, 2h, 1d, 1h30m);
+                         with a repeat, the first run
+  --at <time>            keep it in Todo until then (2027-01-01T12:00,
+                         2027-01-01, 09:30); with a repeat, the first run
+  --every <duration>     repeat on a fixed grid from the first run (2h)
+  --cron <expr>          repeat by a 5-field cron expression in this machine's
+                         time zone ("0 9 * * 1-5")
+  --times <n>            end a repeat after this many runs, the first included
+  --until <time>         end a repeat after this time
+  --new                  skip the duplicate check
+  --dry-run              read everything, print every write instead of doing it
+  --json                 print JSON on stdout instead of text
+  -h, --help             display help for command
+
+Examples:
+  board schedule /review-pr 17741
+  board schedule --priority high /review-pr cosuno/cosuno#17741 --auto
+  board schedule "Find out why the bidder export is slow and propose a fix"
+  board schedule --in 2h /review-pr 17741
+  board schedule --at 09:00 /grill the plan in docs/x.md
+  board schedule --every 2h --times 5 /sweep the stale branches
+  board schedule --cron "0 9 * * 1-5" /review-pr --auto
+  board schedule --hold -- --weird prompt
+  board schedule --json /review-pr 17741
+```
+
+#### board schedules
+
+```
+Usage: board schedules [options] [pause|resume|rm <id>]
+
+Without arguments, list the repeating schedules: id, rule, next run, runs left,
+paused or ended, title; --json prints them as JSON.
+
+`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes
+the next run, `rm <id>` deletes the schedule and its waiting run. Changing a
+schedule is not available inside a board run. The id can be the start of it (3+
+characters) outside a run.
+
+Arguments:
+  action      pause, resume or rm, and the schedule id
+
+Options:
+  --json      print JSON on stdout instead of text
+  --dry-run   read everything, print every write instead of doing it
+  -h, --help  display help for command
+
+Examples:
+  board schedules
+  board schedules --json
+  board schedules pause s1b2c3d4
+  board schedules rm s1b
+```
+
+#### board delay
+
+```
+Usage: board delay [options] <task>
+
+Delay a task in Todo until then, or with --now make it due at once. Give exactly
+one of --in, --at and --now.
+
+<task> can be the full id, a link to the task on this board, or the start of the
+id (3+ characters, case-insensitive; it must be unique). Inside a board run only
+the full id is accepted.
+
+Arguments:
+  task             the task: its id, a board task link or the start of its id
+
+Options:
+  --in <duration>  start after this long (30m, 2h, 1d, 1h30m)
+  --at <time>      start then (2027-01-01T12:00, 2027-01-01, 09:30)
+  --now            clear the delay: due at once
+  --dry-run        read everything, print every write instead of doing it
+  -h, --help       display help for command
+
+Examples:
+  board delay Ab3dEf9x --in 1d
+  board delay Ab3 --at 09:00
+  board delay Ab3dEf9x --now
+```
+
+### Setup
+
+#### board init
+
+```
+Usage: board init [options]
+
+Set this machine up for the board: write web.json (the board's URL), env (the
+machine token, mode 600) and, if it is missing, config.json (from the example,
+with this machine's name). Then run the checks of `board doctor`.
+
+Without flags it asks. For a script give --url and --token-file (a token on the
+command line would land in the shell history); --machine defaults to the host
+name. A file that exists is kept unless --force, which copies it to
+<name>.bak-<timestamp> first; config.json is never replaced.
+
+Not available inside a board run.
+
+Options:
+  --url <url>          the board's URL (https, or http for localhost)
+  --token-file <path>  read the machine token from this file
+  --machine <name>     this machine's name on the board (default: the host name)
+  --force              replace web.json and env after backing them up
+  -h, --help           display help for command
+
+Examples:
+  board init
+  board init --url https://board.example.com --token-file ~/token --machine laptop
+```
+
+#### board doctor
+
+```
+Usage: board doctor [options]
+
+Check this machine, read-only, one line per check: ✓ passes, ✗ fails (with a
+fix), ! is a warning. Exit 1 if any check fails; warnings alone exit 0. The
+token is never printed.
+
+Checks: Node 24+, the config directory, web.json, env (mode 600 or 400, token),
+the board (reachable, token accepted, contract version), config.json, and for a
+worker machine claude, gh, flock, systemd-run, systemctl and the installed units
+with their timers. The worker checks only warn on a machine with no unit
+installed.
+
+Options:
+  --json      print JSON on stdout instead of text
+  -h, --help  display help for command
+
+Examples:
+  board doctor
+  board doctor --json
+```
+
+#### board setup
+
+```
+Usage: board setup [options]
+
+Install this machine as a worker: write the dispatch and intake services and
+timers into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies,
+run `systemctl --user daemon-reload` and print the line that enables the timers.
+Run it again after moving the checkout or upgrading Node. It needs Linux with
+systemd and flock.
+
+The services run this CLI with the node that ran `board setup`. --print shows
+the units and changes nothing; --enable also enables and starts the timers. When
+an installed unit differs from what it writes, the differing lines are shown.
+Not available inside a board run.
+
+Options:
+  --enable    also enable and start the timers
+  --print     print the units and change nothing
+  -h, --help  display help for command
+
+Examples:
+  board setup
+  board setup --print
+  board setup --enable
+```
+
+#### board self-update
+
+```
+Usage: board self-update [options]
+
+Download the newest cli-v* release of codeplant-de/agent-board with `gh`, check
+it against SHA256SUMS and replace this binary with it. Running workers keep the
+old file until they end. --check only reports whether a newer release exists.
+
+It needs `gh`, logged in. A checkout is updated with `git pull` and `pnpm
+install` instead, and says so. Not available inside a board run.
+
+Options:
+  --check     only report whether a newer release exists
+  -h, --help  display help for command
+
+Examples:
+  board self-update --check
+  board self-update
+```
+
+#### board completion
+
+```
+Usage: board completion [options] <shell>
+
+Print a completion script for bash, zsh or fish: commands, flags, statuses and
+priorities, and the ids of your tasks and schedules (asked from the board, with
+a 2 second limit).
+
+Install it once:
+  bash: board completion bash > ~/.local/share/bash-completion/completions/board
+  zsh:  board completion zsh > "${fpath[1]}/_board"   (a directory on your
+fpath)
+  fish: board completion fish > ~/.config/fish/completions/board.fish
+
+Arguments:
+  shell       bash, zsh or fish (choices: "bash", "zsh", "fish")
+
+Options:
+  -h, --help  display help for command
+
+Examples:
+  board completion bash
+  eval "$(board completion zsh)"
+```
+
+#### board help
+
+```
+Usage: help [command]
+
+show the help of a command
+```
+
+<!-- commands:end -->
 
 ## How it decides
 

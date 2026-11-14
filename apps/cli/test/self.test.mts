@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { selfCommand } from '../src/self.mts';
+import { installedCommand, isCompiledBinary, selfCommand } from '../src/self.mts';
 import { createSystem } from '../src/system.mts';
 import { hookCommand } from '../src/worker.mts';
 
@@ -12,6 +12,14 @@ test('the command that starts a worker ends in main.mts internal worker <id>', a
 
 test('the hook command of a run ends in main.mts internal hook <dir> <id>', () => {
   assert.match(hookCommand('/run/x', 'Ab3dEf9x'), /\/src\/main\.mts' 'internal' 'hook' '\/run\/x' Ab3dEf9x$/);
+});
+
+test('a checkout is not a compiled binary, and a unit points at the same node form', () => {
+  assert.equal(isCompiledBinary(), false);
+  assert.deepEqual(
+    installedCommand({ BOARD_INSTALL_DIR: '/nonexistent' }, 'internal', 'dispatch'),
+    selfCommand('internal', 'dispatch'),
+  );
 });
 
 test('the entry does not depend on how the process was started', () => {
