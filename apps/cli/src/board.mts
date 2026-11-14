@@ -225,6 +225,12 @@ export async function delay(context: Context, id: string, args: string[]): Promi
   context.print(notBefore === null ? `${id} is due now` : `${id} starts ${localTime(notBefore)}`);
 }
 
+// A pending card with no start time is due now.
+function nextRun(schedule: Schedule): string {
+  if (schedule.nextRunAt) return localTime(schedule.nextRunAt);
+  return schedule.occurrenceTaskId ? 'now' : '-';
+}
+
 // `  <id>  every 2h  next 2027-01-01 10:00  3 left  paused  <title>`
 export function formatSchedule(schedule: Schedule): string {
   const left = runsLeft(schedule);
@@ -232,8 +238,8 @@ export function formatSchedule(schedule: Schedule): string {
   return [
     schedule.id,
     describeRule(schedule),
-    `next ${schedule.nextRunAt ? localTime(schedule.nextRunAt) : '-'}`,
-    left === null ? 'forever' : `${left} left`,
+    `next ${nextRun(schedule)}`,
+    left !== null ? `${left} left` : schedule.until ? `until ${localTime(schedule.until)}` : 'forever',
     state,
     schedule.title,
   ].join('  ');

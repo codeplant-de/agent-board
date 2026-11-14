@@ -60,9 +60,20 @@ function localDate(
 
 function parsedAt(text: string, now: Date): Date | null {
   const input = text.trim();
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/i.test(input)) {
+  const offset = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/i.exec(input);
+  if (offset !== null) {
     const date = new Date(input);
-    return Number.isNaN(date.getTime()) ? null : date;
+    if (Number.isNaN(date.getTime())) return null;
+    // Date rolls an impossible calendar date over (02-30 becomes 03-02); the stated fields must survive in UTC.
+    const [year, month, day, hour, minute, second] = offset.slice(1).map((part) => Number(part ?? 0));
+    const stated = new Date(Date.UTC(year ?? 0, (month ?? 1) - 1, day ?? 0, hour ?? 0, minute ?? 0, second ?? 0));
+    const exact =
+      stated.getUTCFullYear() === year &&
+      stated.getUTCMonth() === (month ?? 1) - 1 &&
+      stated.getUTCDate() === day &&
+      stated.getUTCHours() === hour &&
+      stated.getUTCMinutes() === minute;
+    return exact ? date : null;
   }
   const local = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(input);
   if (local !== null) {
@@ -73,10 +84,9 @@ function parsedAt(text: string, now: Date): Date | null {
   if (clock !== null) {
     const [hour, minute] = [Number(clock[1]), Number(clock[2])];
     if (hour > 23 || minute > 59) return null;
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute);
-    return today.getTime() > now.getTime()
-      ? today
-      : new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, hour, minute);
+    const ahead = hour * 60 + minute > now.getHours() * 60 + now.getMinutes();
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + (ahead ? 0 : 1));
+    return localDate(day.getFullYear(), day.getMonth() + 1, day.getDate(), hour, minute, 0);
   }
   return null;
 }

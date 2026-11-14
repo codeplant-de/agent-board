@@ -62,9 +62,32 @@ test('parseWhen rejects what is not a time or is not ahead', () => {
     '2027-13-01',
     '2027-01-01T25:00',
     '2027-01-01 12:00',
+    '2027-02-30T12:00Z',
+    '2027-02-30T12:00:00+02:00',
+    '2027-13-01T12:00Z',
+    '2027-01-01T24:00Z',
+    '2027-01-01T12:60Z',
   ])
     assert.throws(() => parseWhen(bad, now), /is not a time; use .*09:30/, bad);
   assert.throws(() => parseWhen('2026-11-14T09:00', now), /is in the past/);
   assert.throws(() => parseWhen('2026-11-14T10:00', now), /is in the past/);
   assert.throws(() => parseWhen('2020-01-01T00:00:00Z', now), /is in the past/);
+});
+
+test('parseWhen refuses a local time that does not exist, in every form', () => {
+  const zone = process.env.TZ;
+  process.env.TZ = 'Europe/Berlin';
+  try {
+    // Berlin skips 02:00-03:00 on 2027-03-28.
+    const eve = new Date(2027, 2, 27, 22, 0);
+    assert.throws(() => parseWhen('2027-03-28T02:30', eve), /is not a time/);
+    assert.throws(() => parseWhen('02:30', eve), /is not a time/);
+    assert.equal(parseWhen('03:30', eve).getTime(), new Date(2027, 2, 28, 3, 30).getTime());
+    // Once that hour has passed the next 02:30 is the following day, which exists.
+    const after = new Date(2027, 2, 28, 3, 30);
+    assert.equal(parseWhen('02:30', after).getTime(), new Date(2027, 2, 29, 2, 30).getTime());
+  } finally {
+    if (zone === undefined) delete process.env.TZ;
+    else process.env.TZ = zone;
+  }
 });

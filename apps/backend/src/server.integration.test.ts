@@ -1082,6 +1082,19 @@ describe('schedules', () => {
     expect(await scheduled(id)).toHaveLength(1);
   });
 
+  it('resuming a cron schedule before its start time waits for the start time', async () => {
+    const ui = caller(db);
+    const startAt = new Date(Date.now() + 3 * 24 * hour);
+    const { json } = await ctx.call('laptop', 'add-schedule', {
+      body: { title: 't', input: 'x', cron: '*/15 * * * *', timezone: 'UTC', startAt: startAt.toISOString() },
+    });
+    const id = json.result.schedule.id;
+    await ui.schedules.setPaused({ id, paused: true });
+    const resumed = await ui.schedules.setPaused({ id, paused: false });
+    expect(resumed.nextRunAt?.getTime()).toBeGreaterThanOrEqual(startAt.getTime());
+    expect(resumed.nextRunAt?.getTime()).toBeLessThan(startAt.getTime() + hour);
+  });
+
   it('a paused schedule creates nothing when its pending card leaves Todo', async () => {
     const ui = caller(db);
     const { json } = await addSchedule({});
@@ -1094,6 +1107,42 @@ describe('schedules', () => {
     expect((await listed())[0]).toMatchObject({ paused: true, occurrenceTaskId: null });
     await ui.schedules.setPaused({ id, paused: false });
     expect(await scheduled(id)).toHaveLength(2);
+  });
+
+  it('reopening a closed pending card changes nothing: one pointer, the runs stay counted', async () => {
+    const ui = caller(db);
+    const { json } = await addSchedule({ times: 3 });
+    const id = json.result.schedule.id;
+    const first = json.result.task.id;
+    await ui.tasks.setClosed({ id: first, closed: true });
+    const second = (await scheduled(id))[1]!;
+    expect((await listed())[0]).toMatchObject({ remaining: 1, occurrenceTaskId: second.id });
+    await ui.tasks.setClosed({ id: first, closed: false });
+    await ui.tasks.setClosed({ id: first, closed: true });
+    expect(await scheduled(id)).toHaveLength(2);
+    expect((await listed())[0]).toMatchObject({ remaining: 1, occurrenceTaskId: second.id });
+  });
+
+  it('nextRunAt follows the pending card: a changed delay, and run now', async () => {
+    const ui = caller(db);
+    const { json } = await addSchedule({ startAt: new Date(Date.now() + 2 * hour).toISOString() });
+    const pending = json.result.task.id;
+    const later = new Date(Date.now() + 5 * hour);
+    await ui.tasks.setNotBefore({ id: pending, notBefore: later });
+    expect((await listed())[0].nextRunAt).toBe(later.toISOString());
+    expect((await ui.schedules.list())[0]?.nextRunAt).toEqual(later);
+    await ui.tasks.setNotBefore({ id: pending, notBefore: null });
+    expect((await listed())[0]).toMatchObject({ nextRunAt: null, occurrenceTaskId: pending });
+  });
+
+  it('lists the schedule whose pending card starts first on top, one that is due now before all', async () => {
+    const far = (await addSchedule({ title: 'far', startAt: new Date(Date.now() + 9 * hour).toISOString() })).json;
+    await addSchedule({ title: 'soon', startAt: new Date(Date.now() + 2 * hour).toISOString() });
+    const ui = caller(db);
+    const titles = async () => (await listed()).map((schedule) => schedule.title);
+    expect(await titles()).toEqual(['soon', 'far']);
+    await ui.tasks.setNotBefore({ id: far.result.task.id, notBefore: null });
+    expect(await titles()).toEqual(['far', 'soon']);
   });
 
   it('removing a schedule deletes its pending card and leaves the cards that ran', async () => {

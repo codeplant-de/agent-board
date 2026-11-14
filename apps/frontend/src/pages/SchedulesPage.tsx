@@ -84,13 +84,13 @@ function ScheduleRowView({ schedule }: { schedule: ScheduleRow }) {
             </Text>
           </Text>
         ) : (
-          <Text size="sm" c="dimmed">
-            -
+          <Text size="sm" c={schedule.occurrenceTaskId ? undefined : 'dimmed'}>
+            {schedule.occurrenceTaskId ? 'now' : '-'}
           </Text>
         )}
       </Table.Td>
       <Table.Td>
-        <Text size="sm">{runsLeft(schedule) ?? 'forever'}</Text>
+        <Text size="sm">{runsLeft(schedule) ?? (schedule.until ? `until ${stamp(schedule.until)}` : 'forever')}</Text>
       </Table.Td>
       <Table.Td>
         <Text size="sm" c={schedule.machine ? undefined : 'dimmed'}>

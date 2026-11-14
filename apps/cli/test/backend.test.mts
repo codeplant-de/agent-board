@@ -159,6 +159,8 @@ test('an answer that is not JSON, or not a task, is a one-line failure', async (
 test('a lost claim is undefined; other failures still throw', async () => {
   const lost = board({ 'claim-task': { status: 409, body: { error: 'the task is not free for this machine' } } });
   assert.equal(await lost.backend.claimTask('abc', 'laptop'), undefined);
+  const removed = board({ 'claim-task': { status: 404, body: { error: 'no task abc' } } });
+  assert.equal(await removed.backend.claimTask('abc', 'laptop'), undefined);
   const forbidden = board({ 'claim-task': { status: 403, body: { error: 'wrong machine' } } });
   await assert.rejects(forbidden.backend.claimTask('abc', 'laptop'), /wrong machine/);
 });

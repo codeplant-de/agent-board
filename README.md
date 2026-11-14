@@ -163,7 +163,7 @@ User timers only run while you are logged in. For runs after logout: `loginctl e
 
 ### Upgrading
 
-An older CLI keeps working against a new server (it answers the contract version itself), but its intake would keep writing a `head: <sha>` line into `input`. So, in this order:
+The CLI checks the server's contract version once per process and refuses to run when it differs from its own, in either direction, so a contract bump needs the server and every machine's CLI updated together. A machine left on the old CLI fails each dispatch and intake run with a version error until it is updated. So, in this order:
 
 1. Stop the dispatch and intake timers on every worker machine.
 2. Deploy or restart the server; migrations run on start.
@@ -311,9 +311,9 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 }
 ```
 
-All sixteen fields are required. Exactly one of `everyMs` (an interval in ms, at least one minute, on the grid `anchorAt + k * everyMs`) and `cron` (5 fields, read in the IANA zone `timezone`, which a cron rule needs) is set. `anchorAt` is the first run of an interval, or the time a cron rule matches from. `nextRunAt` is the start time of the pending occurrence, `occurrenceTaskId` its task; both are `null` while the schedule is paused with nothing waiting, and once it has ended. `remaining` is the number of occurrences still to be made after the pending one (`null`: forever), `until` the last time an occurrence may start. `machine` and `workdir` pin the occurrences, or are both `null`.
+All seventeen fields are required. Exactly one of `everyMs` (an interval in ms, at least one minute, on the grid `anchorAt + k * everyMs`) and `cron` (5 fields, read in the IANA zone `timezone`, which a cron rule needs) is set. `anchorAt` is the first run of an interval, or the time a cron rule matches from. `nextRunAt` is the start time of the pending occurrence (read from its task, so a changed delay shows), `occurrenceTaskId` its task; both are `null` while the schedule is paused with nothing waiting, and once it has ended. `nextRunAt` is also `null` while `occurrenceTaskId` is set when the pending task has no start time any more (it was told to run now): it is due now. `remaining` is the number of occurrences still to be made after the pending one (`null`: forever), `until` the last time an occurrence may start. `machine` and `workdir` pin the occurrences, or are both `null`.
 
-A schedule always has at most one pending occurrence, a task in Todo with `notBefore` at `nextRunAt` and `scheduleId` set; its `createdBy` is `user`. When that task leaves Todo (a claim, `update-task`, a move, a close), in the same transaction the server makes the next one: the first match of the rule after the previous occurrence's time that is not in the past, so missed runs are skipped. With nothing left (`remaining` used up, or the next match after `until`) the schedule ends (`ended: true`) and makes no more. A task that was an occurrence and returns to Todo later does not trigger another; only the pending one does.
+A schedule always has at most one pending occurrence, a task in Todo with `scheduleId` set and `notBefore` at `nextRunAt` (until someone changes it); its `createdBy` is `user`. When that task leaves Todo (a claim, `update-task`, a move, a close), in the same transaction the server makes the next one: the first match of the rule after the previous occurrence's time that is not in the past, so missed runs are skipped. With nothing left (`remaining` used up, or the next match after `until`) the schedule ends (`ended: true`) and makes no more. A task that was an occurrence and returns to Todo later does not trigger another; only the pending one does.
 
 ### Note
 

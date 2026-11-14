@@ -69,7 +69,10 @@ function validRule(draft: Pick<ScheduleDraft, 'everyMs' | 'cron' | 'timezone'>):
   return null;
 }
 
-export function toSchedule(row: ScheduleRow): Schedule {
+/** A schedule with the start time of its pending occurrence, which only the task knows (a delay changes it). */
+export type ScheduleView = ScheduleRow & { pendingNotBefore: Date | null };
+
+export function toSchedule(row: ScheduleView): Schedule {
   return {
     id: row.id,
     title: row.title,
@@ -81,7 +84,7 @@ export function toSchedule(row: ScheduleRow): Schedule {
     cron: row.cron,
     timezone: row.timezone,
     anchorAt: row.anchorAt,
-    nextRunAt: row.occurrenceTaskId === null ? null : row.lastOccurrenceAt,
+    nextRunAt: row.occurrenceTaskId === null ? null : row.pendingNotBefore,
     remaining: row.remaining,
     until: row.until,
     paused: row.pausedAt !== null,
@@ -89,6 +92,18 @@ export function toSchedule(row: ScheduleRow): Schedule {
     occurrenceTaskId: row.occurrenceTaskId,
     createdAt: row.createdAt,
   };
+}
+
+function selectViews(db: DbOrTx) {
+  return db
+    .select({ schedule: schedules, pendingNotBefore: tasks.notBefore })
+    .from(schedules)
+    .leftJoin(tasks, eq(tasks.id, schedules.occurrenceTaskId));
+}
+
+async function viewOf(tx: DbOrTx, id: string): Promise<ScheduleView> {
+  const [found] = await selectViews(tx).where(eq(schedules.id, id));
+  return { ...found!.schedule, pendingNotBefore: found!.pendingNotBefore };
 }
 
 async function lockSchedule(tx: DbOrTx, id: string): Promise<ScheduleRow> {
@@ -155,6 +170,12 @@ async function materializeNext(
 
 /** The pending occurrence `taskId` left Todo (or was closed): creates the next, unless it is no longer the pending one. */
 export async function completeOccurrence(tx: DbOrTx, taskId: string, scheduleId: string, now: Date): Promise<void> {
+  // A former occurrence must not take the schedule's lock: removeSchedule holds it while it locks the tasks.
+  const [current] = await tx
+    .select({ occurrenceTaskId: schedules.occurrenceTaskId })
+    .from(schedules)
+    .where(eq(schedules.id, scheduleId));
+  if (current?.occurrenceTaskId !== taskId) return;
   const [schedule] = await tx.select().from(schedules).where(eq(schedules.id, scheduleId)).for('update');
   if (schedule?.occurrenceTaskId === taskId) await materializeNext(tx, schedule, now);
 }
@@ -164,7 +185,7 @@ export async function addSchedule(
   db: Db,
   draft: ScheduleDraft,
   now: Date = new Date(),
-): Promise<{ schedule: ScheduleRow; task: TaskRow }> {
+): Promise<{ schedule: ScheduleView; task: TaskRow }> {
   const everyMs = validRule(draft);
   return db.transaction(async (tx) => {
     const [inserted] = await tx
@@ -186,21 +207,20 @@ export async function addSchedule(
       .returning();
     const task = await materializeNext(tx, inserted!, now);
     if (!task) throw new AppError('BAD_REQUEST', 'The schedule would never run: nothing matches before its end.');
-    const [schedule] = await tx.select().from(schedules).where(eq(schedules.id, inserted!.id));
-    return { schedule: schedule!, task };
+    return { schedule: await viewOf(tx, inserted!.id), task };
   });
 }
 
-export async function listSchedules(db: DbOrTx): Promise<ScheduleRow[]> {
-  return db
-    .select()
-    .from(schedules)
-    .orderBy(
-      sql`${schedules.endedAt} is not null`,
-      sql`${schedules.pausedAt} is not null`,
-      asc(schedules.lastOccurrenceAt),
-      asc(schedules.createdAt),
-    );
+/** Active schedules first, by when the pending card starts (one that is due now leads); paused and ended after. */
+export async function listSchedules(db: DbOrTx): Promise<ScheduleView[]> {
+  const rows = await selectViews(db).orderBy(
+    sql`${schedules.endedAt} is not null`,
+    sql`${schedules.pausedAt} is not null`,
+    sql`${tasks.notBefore} asc nulls first`,
+    asc(schedules.lastOccurrenceAt),
+    asc(schedules.createdAt),
+  );
+  return rows.map(({ schedule, pendingNotBefore }) => ({ ...schedule, pendingNotBefore }));
 }
 
 /** Locks the pending occurrence, then the schedule: the order a claim takes them in. */
@@ -230,11 +250,11 @@ async function removePending(tx: DbOrTx, pending: TaskRow | undefined): Promise<
 }
 
 /** Pausing takes the pending occurrence off the board if it never ran; resuming creates the next one, from now. */
-export async function setPaused(db: Db, id: string, paused: boolean, now: Date = new Date()): Promise<ScheduleRow> {
+export async function setPaused(db: Db, id: string, paused: boolean, now: Date = new Date()): Promise<ScheduleView> {
   return db.transaction(async (tx) => {
     const { schedule, pending } = await lockWithOccurrence(tx, id);
     if (schedule.endedAt !== null) throw new AppError('CONFLICT', 'The schedule has ended.');
-    if (paused === (schedule.pausedAt !== null)) return schedule;
+    if (paused === (schedule.pausedAt !== null)) return viewOf(tx, id);
     if (paused) {
       const removed = await removePending(tx, pending);
       await tx
@@ -249,10 +269,11 @@ export async function setPaused(db: Db, id: string, paused: boolean, now: Date =
     } else {
       const resumed = { ...schedule, pausedAt: null };
       await tx.update(schedules).set({ pausedAt: null }).where(eq(schedules.id, id));
-      if (resumed.occurrenceTaskId === null) await materializeNext(tx, resumed, now, now);
+      // Never before the start time: the cron path does not clamp to the anchor as the interval grid does.
+      const from = schedule.anchorAt.getTime() > now.getTime() ? schedule.anchorAt : now;
+      if (resumed.occurrenceTaskId === null) await materializeNext(tx, resumed, now, from);
     }
-    const [row] = await tx.select().from(schedules).where(eq(schedules.id, id));
-    return row!;
+    return viewOf(tx, id);
   });
 }
 

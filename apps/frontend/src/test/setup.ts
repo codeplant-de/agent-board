@@ -17,6 +17,8 @@ globalThis.ResizeObserver ??= class {
   unobserve() {}
   disconnect() {}
 };
+// Mantine's Select scrolls its active option into view.
+Element.prototype.scrollIntoView ??= () => {};
 // Mantine's autosizing Textarea listens for web fonts loading.
 if (!('fonts' in document)) {
   Object.defineProperty(document, 'fonts', {

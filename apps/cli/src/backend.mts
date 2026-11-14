@@ -192,8 +192,9 @@ export function createWebBackend(options: WebBackendOptions): Backend {
       try {
         return await call('claim-task', { id: taskId(id), machine }, parseTask);
       } catch (error) {
-        // A lost claim is an answer, not a failure: the caller moves on to the next task.
-        if (error instanceof BackendError && error.status === 409) return undefined;
+        // A lost claim is an answer, not a failure: the caller moves on to the next task. 404: the card was removed
+        // (a paused or deleted schedule's occurrence) after the dispatcher listed it.
+        if (error instanceof BackendError && (error.status === 409 || error.status === 404)) return undefined;
         throw error;
       }
     },
