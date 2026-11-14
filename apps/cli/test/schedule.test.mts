@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseDuplicateAnswer, parseScheduleArgs, schedule, titleOf } from '../src/schedule.mts';
+import { parseDuplicateAnswer, parseScheduleArgs, schedule } from '../src/schedule.mts';
 import type { Duplicate, ScheduleDeps } from '../src/schedule.mts';
 import { fakeBackend, task } from './helpers.mts';
 
@@ -22,7 +22,6 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
   assert.equal(parseScheduleArgs(['--', '--weird', 'prompt']).prompt, '--weird prompt');
   assert.throws(() => parseScheduleArgs(['--priority', 'asap', 'x']), /unknown priority/);
   assert.throws(() => parseScheduleArgs(['--hold']), /usage: board schedule/);
-  assert.equal(titleOf('Find out X\nmore detail'), 'Find out X');
 });
 
 function setup(duplicate: Duplicate | undefined, choice?: 'requeue' | 'new' | 'abort') {

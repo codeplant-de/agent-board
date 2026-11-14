@@ -1,34 +1,31 @@
+import { prUrlIn } from '@agent-board/shared';
 import { ActionIcon, Card, Group, Stack, Text, Tooltip } from '@mantine/core';
 import { IconBrandGithub, IconTerminal2 } from '@tabler/icons-react';
 import type { DragEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { prUrl } from '../lib/status';
 import { ago } from '../lib/time';
-import type { BoardTask, RouterOutputs } from '../lib/trpc';
+import type { LastNote, ListedTask } from '../lib/trpc';
 import { LivenessText } from './LivenessText';
 import { TaskBadges } from './TaskBadges';
 
-type Activity = RouterOutputs['tasks']['activity'][string];
-
 /** The latest note as one line: who said what, how long ago. */
-function activityLine(activity: Activity | undefined, task: BoardTask): string {
-  if (!activity) return `created ${ago(task.createdAt)}`;
+function lastNoteLine(note: LastNote | null, task: ListedTask): string {
+  if (!note) return `created ${ago(task.createdAt)}`;
   const text =
-    activity.kind === 'question'
+    note.kind === 'question'
       ? 'asked a question'
-      : activity.kind === 'answer'
+      : note.kind === 'answer'
         ? 'answered'
-        : activity.body
+        : note.text
             .replace(/[#*`>_]/g, '')
             .replace(/\s+/g, ' ')
             .trim()
             .slice(0, 90);
-  return `${activity.author}: ${text} · ${ago(activity.createdAt)}`;
+  return `${note.author}: ${text} · ${ago(note.createdAt)}`;
 }
 
 interface Props {
-  task: BoardTask;
-  activity: Activity | undefined;
+  task: ListedTask;
   draggable: boolean;
   dragging: boolean;
   onDragStart: (event: DragEvent) => void;
@@ -36,8 +33,8 @@ interface Props {
   onDragOver: (event: DragEvent) => void;
 }
 
-export function TaskCard({ task, activity, draggable, dragging, onDragStart, onDragEnd, onDragOver }: Props) {
-  const pr = prUrl(task.input);
+export function TaskCard({ task, draggable, dragging, onDragStart, onDragEnd, onDragOver }: Props) {
+  const pr = prUrlIn(task.input);
   const navigate = useNavigate();
   return (
     <Card
@@ -84,7 +81,7 @@ export function TaskCard({ task, activity, draggable, dragging, onDragStart, onD
         <TaskBadges task={task} />
         {task.status === 'running' && <LivenessText size="xs" lastActiveAt={task.lastActiveAt} />}
         <Text size="xs" c="dimmed" lineClamp={1}>
-          {activityLine(activity, task)}
+          {lastNoteLine(task.lastNote, task)}
         </Text>
       </Stack>
     </Card>

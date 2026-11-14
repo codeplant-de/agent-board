@@ -2,7 +2,7 @@
 // type it into Claude Code, bound to this machine and the directory it was scheduled from. Before it creates one, a
 // quick Haiku call checks whether an open task already covers it.
 import { execFile } from 'node:child_process';
-import { isPriority, isRecord, PRIORITIES } from '@agent-board/shared';
+import { defaultTitle, isPriority, isRecord, PRIORITIES } from '@agent-board/shared';
 import type { Backend, Priority, Task } from '@agent-board/shared';
 import { UsageError } from './cli.mts';
 
@@ -41,11 +41,6 @@ export function parseScheduleArgs(args: string[]): ScheduleArgs {
   result.prompt = args.slice(index).join(' ').trim();
   if (result.prompt === '') throw new UsageError(SCHEDULE_USAGE);
   return result;
-}
-
-export function titleOf(prompt: string): string {
-  const first = prompt.split('\n')[0]?.trim() ?? '';
-  return first.length > 100 ? `${first.slice(0, 99)}…` : first;
 }
 
 export interface Duplicate {
@@ -172,7 +167,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     }
   }
   const { task } = await backend.addTask({
-    title: args.title || titleOf(args.prompt),
+    title: args.title || defaultTitle(args.prompt),
     input: args.prompt,
     labels: [],
     status: args.hold ? 'needs-me' : 'todo',

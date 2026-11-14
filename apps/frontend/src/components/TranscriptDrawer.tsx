@@ -23,10 +23,11 @@ import {
   IconFlag,
   IconX,
 } from '@tabler/icons-react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ago, stamp } from '../lib/time';
-import { useTRPC, type RouterOutputs } from '../lib/trpc';
+import { loadEventsAfter } from '../lib/transcript';
+import { useTRPC, useTRPCClient, type RouterOutputs } from '../lib/trpc';
 import { Markdown } from './Markdown';
 
 type Event = RouterOutputs['transcript']['events'][number];
@@ -192,6 +193,10 @@ function EventRow({ runId, event, results }: { runId: string; event: Event; resu
   }
 }
 
+// The last batch of a run arrives after the task has already left Running, so polling goes on a little longer.
+const recentlyActive = (lastEventAt: Date | string | undefined) =>
+  lastEventAt !== undefined && Date.now() - new Date(lastEventAt).getTime() < SETTLE_MS;
+
 /** Everything a run did, live while it runs: the agent's text, its tool calls (output on demand), notes and results. */
 export function TranscriptDrawer({
   taskId,
@@ -205,9 +210,6 @@ export function TranscriptDrawer({
   live: boolean;
 }) {
   const trpc = useTRPC();
-  // The last batch of a run arrives after the task has already left Running, so polling goes on a little longer.
-  const recentlyActive = (lastEventAt: Date | string | undefined) =>
-    lastEventAt !== undefined && Date.now() - new Date(lastEventAt).getTime() < SETTLE_MS;
   const runs = useQuery({
     ...trpc.transcript.runs.queryOptions({ id: taskId }),
     enabled: opened,
@@ -217,8 +219,17 @@ export function TranscriptDrawer({
   const [runId, setRunId] = useState<string | null>(null);
   const selected = runId ?? runs.data?.[0]?.id ?? null;
   const newest = selected !== null && selected === runs.data?.[0]?.id;
+  // The events of a run are kept per run and extended: a refetch asks only for what follows the last seq it has.
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  const eventsKey = trpc.transcript.events.queryKey({ runId: selected ?? '' });
   const events = useQuery({
-    ...trpc.transcript.events.queryOptions({ runId: selected ?? '' }),
+    queryKey: eventsKey,
+    queryFn: () =>
+      loadEventsAfter(queryClient.getQueryData(eventsKey) ?? [], (afterSeq) =>
+        client.transcript.events.query({ runId: selected ?? '', afterSeq }),
+      ),
+    structuralSharing: false,
     enabled: opened && selected !== null,
     refetchInterval: opened && newest && (live || recentlyActive(runs.data?.[0]?.lastEventAt)) ? LIVE_MS : false,
   });

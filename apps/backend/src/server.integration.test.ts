@@ -1,6 +1,10 @@
+import { CONTRACT_VERSION, TAKE_BACK_AFTER_MS } from '@agent-board/shared';
+import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { tasks } from './db/schema';
 import { buildServer } from './server';
 import { issueToken } from './services/machines';
+import { archiveStaleDone } from './services/tasks';
 import { caller, question, testConfig, useTestDb } from './test/helpers';
 
 const { db } = useTestDb();
@@ -43,6 +47,12 @@ describe('machine API', () => {
     expect((await ctx.call('workstation', 'list-tasks')).status).toBe(200);
   });
 
+  it('answers the contract version it speaks', async () => {
+    const { status, json } = await ctx.call('laptop', 'version');
+    expect(status).toBe(200);
+    expect(json.result).toEqual({ contract: CONTRACT_VERSION });
+  });
+
   it('the UI needs a signed-in user in an allowed group; Remote-* headers do not open the machine API', async () => {
     expect((await ctx.app.inject({ method: 'GET', url: '/trpc/me' })).statusCode).toBe(403);
     const outsider = await ctx.app.inject({
@@ -68,18 +78,22 @@ describe('machine API', () => {
 
   it('round-trips the contract: add, list, update, note, read', async () => {
     const added = await ctx.call('laptop', 'add-task', {
-      body: {
-        title: '#1 PR',
-        input: `${pr}\nhead: abc1234`,
-        labels: ['review-pr'],
-        dedupeKey: pr,
-        createdBy: 'intake',
-      },
+      body: { title: '#1 PR', input: pr, head: 'abc1234', labels: ['review-pr'], dedupeKey: pr, createdBy: 'intake' },
     });
     expect(added.status).toBe(200);
     const task = added.json.result.task;
     expect(added.json.result.created).toBe(true);
-    expect(task).toMatchObject({ status: 'todo', machine: null, sessionId: null, next: 'fresh', openQuestion: false });
+    expect(task).toMatchObject({
+      status: 'todo',
+      input: pr,
+      head: 'abc1234',
+      machine: null,
+      sessionId: null,
+      next: 'fresh',
+      openQuestion: false,
+      runStartedAt: null,
+      paused: false,
+    });
     expect(task.url).toBe(`https://board.test/t/${task.id}`);
     expect(task.id).toMatch(/^[A-Za-z0-9]{8}$/);
 
@@ -386,8 +400,11 @@ describe('lanes, liveness and pausing', () => {
     ]);
     expect((await ctx.call('laptop', 'pause', { id, body: 'again' })).status).toBe(409);
     expect((await ctx.call('workstation', 'claim-task', { id, machine: 'workstation' })).status).toBe(409);
-    await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' });
-    expect((await ui.tasks.get({ id })).task.paused).toBe(false);
+    const claimed = await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' });
+    // The worker that resumes it still sees the pause until its first update of the run.
+    expect(claimed.json.result).toMatchObject({ status: 'running', paused: true });
+    await ctx.call('laptop', 'update-task', { id, body: { next: 'fresh' } });
+    expect((await ctx.call('laptop', 'get-task', { id })).json.result.paused).toBe(false);
     const { thread } = await ui.tasks.get({ id });
     expect(thread.some((n) => n.author === 'system' && n.text.startsWith('Paused on laptop'))).toBe(true);
   });
@@ -455,6 +472,43 @@ describe('transcripts', () => {
     );
   });
 
+  it('refuses an event with a bad seq or date instead of failing in the database', async () => {
+    const task = await caller(db).tasks.create({ input: '/grill' });
+    for (const bad of [{ seq: -1 }, { seq: 1.5 }, { at: 'soon' }]) {
+      const body = batch('run-bad-00001', [{ ...events[0], ...bad }]);
+      expect((await ctx.call('laptop', 'transcript', { id: task.id, body })).status).toBe(400);
+    }
+  });
+
+  it('transcripts of open tasks untouched in Done for 28 days are deleted, others stay', async () => {
+    const ui = caller(db);
+    const stale = await ui.tasks.create({ input: '/stale', start: false });
+    const fresh = await ui.tasks.create({ input: '/fresh', start: false });
+    const running = await ui.tasks.create({ input: '/running', start: false });
+    for (const [task, run] of [
+      [stale, 'run-stale-001'],
+      [fresh, 'run-fresh-001'],
+      [running, 'run-runnin-01'],
+    ] as const) {
+      await ctx.call('laptop', 'transcript', { id: task.id, body: batch(run, events) });
+    }
+    await ui.tasks.done({ id: stale.id });
+    await ui.tasks.done({ id: fresh.id });
+    const idle = (id: string, days: number) =>
+      db
+        .update(tasks)
+        .set({ updatedAt: new Date(Date.now() - days * 24 * 60 * 60_000) })
+        .where(eq(tasks.id, id));
+    await idle(stale.id, 29);
+    await idle(fresh.id, 27);
+    await idle(running.id, 29);
+    const { deleteOldTranscripts } = await import('./services/transcripts');
+    expect(await deleteOldTranscripts(db)).toBe(1);
+    expect(await ui.transcript.runs({ id: stale.id })).toHaveLength(0);
+    expect(await ui.transcript.runs({ id: fresh.id })).toHaveLength(1);
+    expect(await ui.transcript.runs({ id: running.id })).toHaveLength(1);
+  });
+
   it('transcripts of tasks closed more than 14 days ago are deleted, others stay', async () => {
     const ui = caller(db);
     const old = await ui.tasks.create({ input: '/old' });
@@ -482,5 +536,279 @@ describe('transcripts', () => {
     expect(await ui.transcript.runs({ id: open.id })).toHaveLength(1);
     await ui.tasks.setClosed({ id: recent.id, closed: false });
     expect((await ui.tasks.get({ id: recent.id })).task.closed).toBe(false);
+  });
+});
+
+describe('proposals', () => {
+  const propose = async (body: Record<string, unknown> = {}) =>
+    (await ctx.call('laptop', 'add-task', { body: { title: 'idea', input: 'do Y', createdBy: 'agent', ...body } })).json
+      .result.task;
+
+  it('an agent task lands in needs-me as a proposal whatever status it names', async () => {
+    for (const status of ['todo', 'running', 'done', 'needs-me']) {
+      expect(await propose({ status })).toMatchObject({ status: 'needs-me', createdBy: 'agent' });
+    }
+    expect((await caller(db).tasks.list()).every((t) => t.proposed)).toBe(true);
+  });
+
+  it('the machine API cannot start a proposal; the user can', async () => {
+    const { id } = await propose();
+    for (const status of ['todo', 'done']) {
+      const refused = await ctx.call('laptop', 'update-task', { id, body: { status } });
+      expect(refused.status).toBe(403);
+    }
+    // Other fields are fine, and so is staying put.
+    expect((await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me', sessionId: 's' } })).status).toBe(
+      200,
+    );
+    expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
+    // Even a proposal that somehow sits in Todo is not claimable.
+    await db.update(tasks).set({ status: 'todo' }).where(eq(tasks.id, id));
+    expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
+    await db.update(tasks).set({ status: 'needs-me' }).where(eq(tasks.id, id));
+    const started = await caller(db).tasks.move({ id, status: 'todo' });
+    expect(started).toMatchObject({ status: 'todo', proposed: false });
+    expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(200);
+  });
+
+  it('a proposal cannot ask a question, so answering never starts it', async () => {
+    const { id } = await propose();
+    const asked = await ctx.call('laptop', 'ask', { id, body: { questions: [question] } });
+    expect(asked.status).toBe(403);
+    expect(asked.json.error).toMatch(/only you start it/);
+    const { task, thread } = await caller(db).tasks.get({ id });
+    expect(task).toMatchObject({ status: 'needs-me', proposed: true, openQuestion: false });
+    expect(thread.filter((n) => n.kind === 'question')).toEqual([]);
+  });
+});
+
+describe('transitions', () => {
+  async function asking(options: { session?: boolean } = {}) {
+    const ui = caller(db);
+    const task = await ui.tasks.create({ title: 't', input: 'do it' });
+    await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
+    if (options.session ?? true) await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: 's' } });
+    await ctx.call('laptop', 'ask', { id: task.id, body: { questions: [question] } });
+    expect((await ui.tasks.get({ id: task.id })).task.openQuestion).toBe(true);
+    return task.id;
+  }
+
+  it('marking done and dragging to Done both close the open question', async () => {
+    const ui = caller(db);
+    expect(await ui.tasks.done({ id: await asking() })).toMatchObject({ status: 'done', openQuestion: false });
+    expect(await ui.tasks.move({ id: await asking(), status: 'done' })).toMatchObject({
+      status: 'done',
+      openQuestion: false,
+    });
+  });
+
+  it('dragging to Todo drops the open question and leaves a session its next run', async () => {
+    const ui = caller(db);
+    const id = await asking();
+    const before = (await ui.tasks.get({ id })).task;
+    const moved = await ui.tasks.move({ id, status: 'todo' });
+    expect(moved).toMatchObject({ status: 'todo', openQuestion: false, next: before.next, sessionId: 's' });
+  });
+
+  it('an intake requeue with a fresh run and a re-run drop the open question', async () => {
+    const ui = caller(db);
+    const requeued = await ctx.call('laptop', 'update-task', {
+      id: await asking(),
+      body: { status: 'todo', next: 'fresh' },
+    });
+    expect(requeued.json.result).toMatchObject({ status: 'todo', next: 'fresh', openQuestion: false });
+    expect(await ui.tasks.rerun({ id: await asking() })).toMatchObject({ status: 'todo', openQuestion: false });
+  });
+
+  it('a question stays open only in Needs me: moving around there keeps it', async () => {
+    const ui = caller(db);
+    const id = await asking();
+    expect(await ui.tasks.setPriority({ id, priority: 'high' })).toMatchObject({
+      status: 'needs-me',
+      openQuestion: true,
+    });
+    expect(await ui.tasks.move({ id, status: 'needs-me' })).toMatchObject({ openQuestion: true });
+  });
+
+  it('records the run start while it runs, and nothing after', async () => {
+    const ui = caller(db);
+    const task = await ui.tasks.create({ title: 't', input: 'do it' });
+    expect((await ctx.call('laptop', 'get-task', { id: task.id })).json.result.runStartedAt).toBeNull();
+    const claimed = (await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' })).json.result;
+    expect(Date.now() - new Date(claimed.runStartedAt).getTime()).toBeLessThan(5_000);
+    await ctx.call('laptop', 'update-task', { id: task.id, body: { status: 'needs-me' } });
+    expect((await ctx.call('laptop', 'get-task', { id: task.id })).json.result.runStartedAt).toBeNull();
+  });
+
+  it('a pause is cleared when the task leaves Running another way', async () => {
+    const ui = caller(db);
+    const task = await ui.tasks.create({ title: 't', input: 'do it' });
+    await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
+    await ctx.call('laptop', 'pause', { id: task.id, body: 'Paused on laptop' });
+    await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
+    await ctx.call('laptop', 'ask', { id: task.id, body: { questions: [question] } });
+    expect((await ctx.call('laptop', 'get-task', { id: task.id })).json.result.paused).toBe(false);
+  });
+});
+
+describe('taking back a stuck task', () => {
+  async function running() {
+    const task = await caller(db).tasks.create({ title: 't', input: 'do it' });
+    await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
+    return task.id;
+  }
+  const quietFor = (id: string, ms: number) =>
+    db
+      .update(tasks)
+      .set({ lastActiveAt: new Date(Date.now() - ms) })
+      .where(eq(tasks.id, id));
+
+  it('is refused while the agent is active, and for a task that is not running', async () => {
+    const ui = caller(db);
+    const id = await running();
+    await quietFor(id, TAKE_BACK_AFTER_MS - 60_000);
+    await expect(ui.tasks.takeBack({ id })).rejects.toThrow(/active 19 min ago/);
+    await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me' } });
+    await expect(ui.tasks.takeBack({ id })).rejects.toThrow(/not running/);
+  });
+
+  it('moves a task quiet for the limit to Needs me with a note; the worker then finds it reported', async () => {
+    const ui = caller(db);
+    const id = await running();
+    await quietFor(id, TAKE_BACK_AFTER_MS + 1_000);
+    const taken = await ui.tasks.takeBack({ id });
+    expect(taken).toMatchObject({ status: 'needs-me', lane: null, lastActiveAt: null, runStartedAt: null });
+    const { thread } = await ui.tasks.get({ id });
+    expect(thread.at(-1)).toMatchObject({ author: 'system', kind: 'event' });
+    expect(thread.at(-1)?.text).toMatch(/^Taken back from laptop/);
+    // Nothing left to claim or fail for the worker that comes back.
+    expect((await ctx.call('laptop', 'fail', { id, body: 'late' })).json.result.applied).toBe(false);
+  });
+});
+
+describe('fail', () => {
+  it('moves a running task to needs-me with the text as a system note, once', async () => {
+    const ui = caller(db);
+    const task = await ui.tasks.create({ title: 't', input: 'do it' });
+    expect((await ctx.call('laptop', 'fail', { id: task.id, body: '  ' })).status).toBe(400);
+    expect((await ctx.call('laptop', 'fail', { id: task.id, body: 'too early' })).json.result).toMatchObject({
+      applied: false,
+      task: { status: 'todo' },
+    });
+    await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
+    const failed = await ctx.call('laptop', 'fail', { id: task.id, body: 'The worker exited with code 1.' });
+    expect(failed.json.result).toMatchObject({ applied: true, task: { status: 'needs-me', lane: null } });
+    expect((await ctx.call('laptop', 'fail', { id: task.id, body: 'again' })).json.result.applied).toBe(false);
+    const notes = (await ctx.call('laptop', 'read-notes', { id: task.id })).json.result;
+    expect(notes.map((n: { text: string; author: string }) => [n.author, n.text])).toEqual([
+      ['system', 'The worker exited with code 1.'],
+    ]);
+  });
+
+  it('leaves a closed task alone', async () => {
+    const ui = caller(db);
+    const task = await ui.tasks.create({ title: 't', input: 'do it' });
+    await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
+    await db.update(tasks).set({ closed: true }).where(eq(tasks.id, task.id));
+    expect((await ctx.call('laptop', 'fail', { id: task.id, body: 'x' })).json.result).toMatchObject({
+      applied: false,
+      task: { status: 'running' },
+    });
+  });
+});
+
+describe('head', () => {
+  it('is set by a draft, changed and cleared by a patch, and checked', async () => {
+    const added = await ctx.call('laptop', 'add-task', { body: { title: 't', input: pr, head: 'abc1234' } });
+    const id = added.json.result.task.id;
+    expect(added.json.result.task.head).toBe('abc1234');
+    expect((await ctx.call('laptop', 'update-task', { id, body: { head: 'def56789ab' } })).json.result.head).toBe(
+      'def56789ab',
+    );
+    expect((await ctx.call('laptop', 'update-task', { id, body: { head: null } })).json.result.head).toBeNull();
+    expect((await ctx.call('laptop', 'update-task', { id, body: { head: 'nothex!' } })).status).toBe(400);
+    expect((await ctx.call('laptop', 'add-task', { body: { title: 't', head: 'abc' } })).status).toBe(400);
+  });
+
+  it('is cleared together with a status change', async () => {
+    const added = await ctx.call('laptop', 'add-task', { body: { title: 't', input: pr, head: 'abc1234' } });
+    const id = added.json.result.task.id;
+    const done = await ctx.call('laptop', 'update-task', { id, body: { status: 'done', head: null } });
+    expect(done.json.result).toMatchObject({ status: 'done', head: null });
+  });
+});
+
+describe('the board list', () => {
+  it('carries the newest note of each task, and null for a task without notes', async () => {
+    const ui = caller(db);
+    const quiet = await ui.tasks.create({ title: 'quiet', input: 'do it' });
+    const busy = await ui.tasks.create({ title: 'busy', input: 'do it' });
+    await ctx.call('laptop', 'add-note', { id: busy.id, body: 'first' });
+    await ctx.call('laptop', 'add-note', { id: busy.id, body: 'x'.repeat(1000) });
+    const list = await ui.tasks.list();
+    expect(list.find((t) => t.id === quiet.id)?.lastNote).toBeNull();
+    const last = list.find((t) => t.id === busy.id)?.lastNote;
+    expect(last).toMatchObject({ kind: 'comment', author: 'agent' });
+    expect(last?.text).toHaveLength(300);
+  });
+});
+
+describe('update-task expect', () => {
+  it('writes only while the task has the expected status, and answers 409 without a write otherwise', async () => {
+    const ui = caller(db);
+    const task = await ui.tasks.create({ title: 't', input: 'do it' });
+    const refused = await ctx.call('laptop', 'update-task', {
+      id: task.id,
+      body: { status: 'done', head: null, expect: 'needs-me' },
+    });
+    expect(refused.status).toBe(409);
+    expect((await ui.tasks.get({ id: task.id })).task.status).toBe('todo');
+    const applied = await ctx.call('laptop', 'update-task', {
+      id: task.id,
+      body: { priority: 'high', expect: 'todo' },
+    });
+    expect(applied.status).toBe(200);
+    expect(applied.json.result.priority).toBe('high');
+    expect((await ctx.call('laptop', 'update-task', { id: task.id, body: { expect: 'nope' } })).status).toBe(400);
+  });
+});
+
+describe('Done archival', () => {
+  const idle = (id: string, days: number) =>
+    db
+      .update(tasks)
+      .set({ updatedAt: new Date(Date.now() - days * 24 * 60 * 60_000) })
+      .where(eq(tasks.id, id));
+
+  it('closes tasks untouched in Done for 14 days, with a note, and nothing else', async () => {
+    const ui = caller(db);
+    const old = await ui.tasks.create({ title: 'old', input: 'do it', start: false });
+    const recent = await ui.tasks.create({ title: 'recent', input: 'do it', start: false });
+    const waiting = await ui.tasks.create({ title: 'waiting', input: 'do it', start: false });
+    await ui.tasks.done({ id: old.id });
+    await ui.tasks.done({ id: recent.id });
+    await idle(old.id, 15);
+    await idle(recent.id, 13);
+    await idle(waiting.id, 30);
+    expect(await archiveStaleDone(db)).toBe(1);
+    const closed = (await ui.tasks.get({ id: old.id })).task;
+    expect(closed).toMatchObject({ closed: true, status: 'done' });
+    expect((await ui.tasks.get({ id: old.id })).thread.at(-1)?.text).toBe('Closed after 14 days in Done.');
+    expect((await ui.tasks.get({ id: recent.id })).task.closed).toBe(false);
+    expect((await ui.tasks.get({ id: waiting.id })).task.closed).toBe(false);
+    expect(await archiveStaleDone(db)).toBe(0);
+    // Its transcripts now go after the usual retention.
+    expect((await db.select().from(tasks).where(eq(tasks.id, old.id)))[0]?.closedAt).not.toBeNull();
+  });
+
+  it('leaves intake tasks open, so a re-requested review is not blocked', async () => {
+    const added = await ctx.call('laptop', 'add-task', {
+      body: { title: 'review', input: '/review-pr x', createdBy: 'intake' },
+    });
+    const id = added.json.result.task.id;
+    await db.update(tasks).set({ status: 'done' }).where(eq(tasks.id, id));
+    await idle(id, 40);
+    expect(await archiveStaleDone(db)).toBe(0);
+    expect((await caller(db).tasks.get({ id })).task.closed).toBe(false);
   });
 });

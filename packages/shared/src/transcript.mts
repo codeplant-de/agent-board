@@ -255,6 +255,12 @@ export function logLine(event: TranscriptEvent): string | undefined {
   }
 }
 
+// The board takes at most this many events in one `transcript` call.
+export const MAX_BATCH_EVENTS = 5000;
+
+// The board lists a run's events in pages of this size; a shorter page is the last.
+export const TRANSCRIPT_PAGE_SIZE = 2000;
+
 const KINDS = ['text', 'thinking', 'tool_use', 'tool_result', 'result', 'note'];
 
 // Stdin of `transcript`: checked for shape, not content; the worker made it.
@@ -270,17 +276,16 @@ export function parseTranscriptBatch(value: unknown): TranscriptBatch {
   if (sessionId !== null && typeof sessionId !== 'string')
     throw new TranscriptError('transcript sessionId must be a string or null');
   const events = value['events'];
-  if (!Array.isArray(events) || events.length > 5000)
-    throw new TranscriptError('transcript events must be a list of at most 5000');
+  if (!Array.isArray(events) || events.length > MAX_BATCH_EVENTS)
+    throw new TranscriptError(`transcript events must be a list of at most ${MAX_BATCH_EVENTS}`);
   for (const event of events) {
-    if (
-      !isRecord(event) ||
-      typeof event['seq'] !== 'number' ||
-      typeof event['at'] !== 'string' ||
-      !KINDS.includes(String(event['kind']))
-    ) {
-      throw new TranscriptError('transcript event needs seq, at and a known kind');
-    }
+    if (!isRecord(event) || !KINDS.includes(String(event['kind'])))
+      throw new TranscriptError('transcript event needs a known kind');
+    const { seq, at } = event;
+    if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0)
+      throw new TranscriptError('transcript event seq must be an integer from 0');
+    if (typeof at !== 'string' || Number.isNaN(Date.parse(at)))
+      throw new TranscriptError('transcript event at must be a date');
   }
   return { runId, startedAt, sessionId, resumed: value['resumed'] === true, events: events as TranscriptEvent[] };
 }

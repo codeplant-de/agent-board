@@ -1,24 +1,19 @@
 import type { IntakeConfig, Lane } from './config.mts';
-import { formatAnswers, promptSkill, shortSkill } from '@agent-board/shared';
-import type { Note, Task } from '@agent-board/shared';
+import { formatAnswers, MAX_BATCH_EVENTS, parsePrUrl, prUrlIn, promptSkill, shortSkill } from '@agent-board/shared';
+import type { Note, Task, TranscriptEvent } from '@agent-board/shared';
 
 // `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives `<plugin>@ccc`, such as {pr-review}.
 const PLUGIN_PLACEHOLDER = /\{([a-z0-9][a-z0-9-]*)\}/g;
 export const PLUGIN_MARKETPLACE = 'ccc';
 
 export const START_MARKER = 'agent-board: started';
-// The note of a run that gave up its slot; the next run resumes with "you were paused".
-export const PAUSE_MARKER = 'Paused on';
+// Half the server's body limit.
+const BATCH_MAX_BYTES = 8 * 1024 * 1024;
 // The worker enforces the timeout itself; the sweep only catches a worker that cannot.
 const SWEEP_GRACE_MINUTES = 5;
 
 export function unitName(taskId: string): string {
   return `agent-board-${taskId}`;
-}
-
-export function startedAt(notes: Note[]): Date | undefined {
-  const starts = notes.filter((note) => note.text.startsWith(START_MARKER));
-  return starts.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]?.createdAt;
 }
 
 export type StaleDecision = { stale: false } | { stale: true; reason: string; stopUnit: boolean };
@@ -62,7 +57,7 @@ export type Supervision =
 export function supervise(input: {
   now: Date;
   startedAt: Date;
-  // The agent's last tool call; undefined before its first one. A command label passes `now`.
+  // The agent's last tool call; undefined before its first one.
   lastActive: Date | undefined;
   pauseRequestedAt: Date | undefined;
   limits: RunLimits;
@@ -182,39 +177,6 @@ export function planPauses(input: {
   return pauses;
 }
 
-// Intake adds a `head: <sha>` line under the prompt: the PR head the task was made for.
-export function parseHead(input: string): string | undefined {
-  return input
-    .split('\n')
-    .map((line) => /^\s*head:\s*([0-9a-f]{7,40})\s*$/i.exec(line)?.[1])
-    .find((sha) => sha !== undefined);
-}
-
-// What the agent is given: the prompt as written, without the board's own `head:` line.
-export function runPrompt(input: string): string {
-  return input
-    .split('\n')
-    .filter((line) => !/^\s*head:\s*[0-9a-f]{7,40}\s*$/i.test(line))
-    .join('\n')
-    .trim();
-}
-
-export function formatIntakeInput(prompt: string, head: string): string {
-  return `${prompt}\nhead: ${head}`;
-}
-
-export function parsePrUrl(url: string): { repo: string; number: number } | undefined {
-  const match = /^https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)\/?$/.exec(url);
-  if (!match?.[1] || !match[2]) return undefined;
-  return { repo: match[1], number: Number(match[2]) };
-}
-
-// The first GitHub PR URL in the prompt's first line: the PR an intake task reviews.
-export function prUrlIn(input: string): string | undefined {
-  const first = input.split('\n')[0] ?? '';
-  return /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/.exec(first)?.[0];
-}
-
 // The plugins whose roots the rules name, such as ["pr-review", "engineering"].
 export function pluginPlaceholders(rules: string[]): string[] {
   return [
@@ -251,41 +213,69 @@ export function notServableHere(task: Task, machine: string, repos: Record<strin
 }
 
 // What the worker starts: a new Claude session, or the task's last one with the user's reply.
-export type RunPlan = { kind: 'fresh'; sessionId: string } | { kind: 'resume'; sessionId: string; prompt: string };
+export type RunPlan =
+  { kind: 'fresh'; sessionId: string; thread?: string } | { kind: 'resume'; sessionId: string; prompt: string };
 
-// The user's reply since the agent last spoke: answers to its question and free comments, oldest first.
+const byTime = (notes: Note[]): Note[] => [...notes].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+// What the user wrote: answers to the agent's questions and free comments.
+const userNotes = (notes: Note[]): Note[] =>
+  notes.filter((note) => note.author === 'user' && (note.kind === 'answer' || note.kind === 'comment'));
+
+// The user's reply since the agent last spoke, oldest first.
 export function userReply(notes: Note[]): Note[] {
-  const sorted = [...notes].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  const lastAgent = sorted.findLastIndex((note) => note.author === 'agent');
-  return sorted
-    .slice(lastAgent + 1)
-    .filter((note) => note.author === 'user' && (note.kind === 'answer' || note.kind === 'comment'));
+  const sorted = byTime(notes);
+  return userNotes(sorted.slice(sorted.findLastIndex((note) => note.author === 'agent') + 1));
 }
 
-// The last run gave up its slot: a pause note the agent has not spoken after. Not "after the last start": the
-// dispatcher adds the new run's start note while its worker is still reading the thread.
-export function wasPaused(notes: Note[]): boolean {
-  const sorted = [...notes].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  const lastAgent = sorted.findLastIndex((note) => note.author === 'agent');
-  return sorted.slice(lastAgent + 1).some((note) => note.author === 'system' && note.text.startsWith(PAUSE_MARKER));
+// A note as the agent reads it; an answer comes with the questions it answers.
+function noteText(note: Note, notes: Note[]): string {
+  if (note.kind !== 'answer') return note.text.trim();
+  const questions = notes.find((candidate) => candidate.id === note.questionNoteId)?.questions;
+  const answers = formatAnswers(questions, note.answers ?? []);
+  return note.text.trim() === '' ? `Answers:\n${answers}` : `Answers:\n${answers}\n\n${note.text.trim()}`;
+}
+
+// When the run before this one started, from the dispatcher's start notes; `before` is when this run was claimed.
+function previousRunStart(notes: Note[], before: Date | null): Date | undefined {
+  const starts = notes.filter(
+    (note) =>
+      note.author === 'system' && note.text.startsWith(START_MARKER) && (before === null || note.createdAt < before),
+  );
+  return starts.map((note) => note.createdAt).sort((a, b) => b.getTime() - a.getTime())[0];
+}
+
+/**
+ * What a fresh run is told of the thread on top of its prompt: the user's notes since the previous run started, as
+ * written, and where to read the rest. Undefined when only the board wrote to the thread.
+ */
+export function freshThreadBlock(task: Task, notes: Note[]): string | undefined {
+  if (!notes.some((note) => note.author !== 'system')) return undefined;
+  const lastStart = previousRunStart(notes, task.runStartedAt);
+  const written = byTime(userNotes(notes.filter((note) => lastStart === undefined || note.createdAt > lastStart)));
+  return [
+    ...(written.length > 0
+      ? [
+          `The user wrote on board task ${task.id} since its last run started:`,
+          '',
+          ...written.flatMap((note) => [noteText(note, notes), '']),
+        ]
+      : []),
+    `The thread holds earlier notes: run \`board show ${task.id}\` first to read it.`,
+  ].join('\n');
 }
 
 const CONTINUE_LINE = "The board's rules from the start of this session still hold.";
 
 export function buildResumePrompt(task: Task, notes: Note[]): string | undefined {
   const reply = userReply(notes);
-  const paused = wasPaused(notes);
+  const paused = task.paused;
   if (reply.length === 0 && !paused) return undefined;
   const pausedLine = `You were paused on board task ${task.id} to free the slot for other work. Continue where you left off; check the state of anything you were in the middle of before you go on.`;
   if (reply.length === 0) {
     return [pausedLine, '', CONTINUE_LINE].join('\n');
   }
-  const parts = reply.map((note) => {
-    if (note.kind !== 'answer') return note.text.trim();
-    const questions = notes.find((candidate) => candidate.id === note.questionNoteId)?.questions;
-    const answers = formatAnswers(questions, note.answers ?? []);
-    return note.text.trim() === '' ? `Answers:\n${answers}` : `Answers:\n${answers}\n\n${note.text.trim()}`;
-  });
+  const parts = reply.map((note) => noteText(note, notes));
   return [
     ...(paused ? [pausedLine, ''] : []),
     `The user replied on board task ${task.id}:`,
@@ -301,7 +291,16 @@ export function planRun(task: Task, notes: Note[], newSessionId: () => string): 
     const prompt = buildResumePrompt(task, notes);
     if (prompt !== undefined) return { kind: 'resume', sessionId: task.sessionId, prompt };
   }
-  return { kind: 'fresh', sessionId: newSessionId() };
+  const thread = freshThreadBlock(task, notes);
+  return { kind: 'fresh', sessionId: newSessionId(), ...(thread === undefined ? {} : { thread }) };
+}
+
+/**
+ * The run this worker started is no longer the task's to report on: the task was closed (archived, parked by hand: nobody
+ * is waiting), or it was taken back and run again, so the `running` it shows is another run's.
+ */
+export function isRunOver(started: Pick<Task, 'runStartedAt'>, after: Pick<Task, 'closed' | 'runStartedAt'>): boolean {
+  return after.closed || after.runStartedAt?.getTime() !== started.runStartedAt?.getTime();
 }
 
 export type Outcome = { kind: 'ok' } | { kind: 'failed'; reason: string } | { kind: 'unreported' } | { kind: 'paused' };
@@ -313,7 +312,7 @@ export function decideOutcome(input: {
   stopped: Exclude<Supervision, { kind: 'continue' }> | undefined;
   // The dispatcher asked the run to give up its slot.
   pauseRequested: boolean;
-  // The worker (or the skill) moved the task to Needs me or Done.
+  // The task is no longer Running: the agent reported, the user answered, or the task was taken back.
   reported: boolean;
 }): Outcome {
   // A run that reported before it noticed the pause is simply done.
@@ -371,7 +370,7 @@ export function buildInvocation(input: {
 }): InvocationPlan {
   const { task, intake } = input;
   const fromIntake = task.createdBy === 'intake';
-  const prompt = runPrompt(task.input);
+  const prompt = task.input.trim();
   if (input.run.kind === 'fresh' && prompt === '') return { ok: false, reason: 'The task has no prompt.' };
 
   // Where it runs: a resume where the session stopped; a scheduled task in its own directory; a task whose prompt
@@ -403,7 +402,9 @@ export function buildInvocation(input: {
   // Prompt first: --allowedTools and --disallowedTools take every following argument.
   const args = [
     '-p',
-    input.run.kind === 'fresh' ? prompt : input.run.prompt,
+    input.run.kind === 'fresh'
+      ? [prompt, input.run.thread].filter((part) => part !== undefined).join('\n\n')
+      : input.run.prompt,
     ...session,
     // Every event as a JSON line: the worker keeps a readable log and sends the transcript to the board.
     '--output-format',
@@ -436,4 +437,26 @@ export function buildInvocation(input: {
   if (intake.allowedTools.length > 0) args.push('--allowedTools', ...intake.allowedTools.map(expand));
   if (intake.disallowedTools.length > 0) args.push('--disallowedTools', ...intake.disallowedTools.map(expand));
   return { ok: true, invocation: { command: 'claude', args, cwd } };
+}
+
+// Events as the board takes them: batches of at most `maxEvents` events and about `maxBytes` of JSON, so a backlog
+// stays under the server's limits. One event larger than `maxBytes` goes alone.
+export function splitBatches(
+  events: TranscriptEvent[],
+  { maxEvents = MAX_BATCH_EVENTS, maxBytes = BATCH_MAX_BYTES }: { maxEvents?: number; maxBytes?: number } = {},
+): TranscriptEvent[][] {
+  const batches: TranscriptEvent[][] = [];
+  let bytes = 0;
+  for (const event of events) {
+    const size = Buffer.byteLength(JSON.stringify(event));
+    const last = batches.at(-1);
+    if (last === undefined || last.length >= maxEvents || bytes + size > maxBytes) {
+      batches.push([event]);
+      bytes = size;
+    } else {
+      last.push(event);
+      bytes += size;
+    }
+  }
+  return batches;
 }

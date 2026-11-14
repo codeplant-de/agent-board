@@ -1,12 +1,15 @@
-import type { TranscriptBatch, TranscriptEvent, TranscriptEventView } from '@agent-board/shared';
-import { and, asc, desc, eq, gt, inArray, lt, sql } from 'drizzle-orm';
+import {
+  TRANSCRIPT_PAGE_SIZE,
+  type TranscriptBatch,
+  type TranscriptEvent,
+  type TranscriptEventView,
+} from '@agent-board/shared';
+import { and, asc, desc, eq, gt, inArray, lt, or, sql } from 'drizzle-orm';
 import type { Db } from '../db/client';
 import { tasks, transcriptEvents, transcriptRuns } from '../db/schema';
 import { AppError } from './errors';
+import { DONE_TRANSCRIPT_DAYS, daysBefore, TRANSCRIPT_RETENTION_DAYS } from './retention';
 import { getTask } from './tasks';
-
-/** Closed tasks keep their transcripts this long. */
-export const TRANSCRIPT_RETENTION_DAYS = 14;
 
 /** Stores a batch; a retried batch (same run and seq) changes nothing. */
 export async function appendTranscript(db: Db, taskId: string, machine: string, batch: TranscriptBatch): Promise<void> {
@@ -68,7 +71,7 @@ export async function listRuns(db: Db, taskId: string) {
 }
 
 /** Events after `afterSeq`, without tool output: a result says how long its output is instead. */
-export async function listEvents(db: Db, runId: string, afterSeq: number, limit = 2000) {
+export async function listEvents(db: Db, runId: string, afterSeq: number, limit = TRANSCRIPT_PAGE_SIZE) {
   const rows = await db
     .select({ seq: transcriptEvents.seq, data: transcriptEvents.data, outputSize: transcriptEvents.outputSize })
     .from(transcriptEvents)
@@ -87,14 +90,20 @@ export async function eventOutput(db: Db, runId: string, seq: number): Promise<s
   return row.output ?? '';
 }
 
-/** Deletes the transcripts of tasks closed more than the retention ago. Returns how many runs went. */
+/** Deletes the transcripts of tasks closed more than the retention ago, and of open tasks untouched in Done for longer. Returns how many runs went. */
 export async function deleteOldTranscripts(db: Db, now: Date = new Date()): Promise<number> {
-  const cutoff = new Date(now.getTime() - TRANSCRIPT_RETENTION_DAYS * 24 * 60 * 60_000);
+  const cutoff = daysBefore(now, TRANSCRIPT_RETENTION_DAYS);
+  const doneCutoff = daysBefore(now, DONE_TRANSCRIPT_DAYS);
   // A task closed before closedAt existed counts from its last change.
   const old = db
     .select({ id: tasks.id })
     .from(tasks)
-    .where(and(eq(tasks.closed, true), lt(sql`coalesce(${tasks.closedAt}, ${tasks.updatedAt})`, cutoff)));
+    .where(
+      or(
+        and(eq(tasks.closed, true), lt(sql`coalesce(${tasks.closedAt}, ${tasks.updatedAt})`, cutoff)),
+        and(eq(tasks.status, 'done'), eq(tasks.closed, false), lt(tasks.updatedAt, doneCutoff)),
+      ),
+    );
   const gone = await db
     .delete(transcriptRuns)
     .where(inArray(transcriptRuns.taskId, old))

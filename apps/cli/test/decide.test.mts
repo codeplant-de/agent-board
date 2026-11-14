@@ -4,10 +4,8 @@ import {
   boardRules,
   buildInvocation,
   ownLane,
-  parseHead,
-  prUrlIn,
-  runPrompt,
   decideOutcome,
+  isRunOver,
   decideStale,
   expandRule,
   pluginPlaceholders,
@@ -16,11 +14,13 @@ import {
   supervise,
   notServableHere,
   planRun,
+  freshThreadBlock,
+  splitBatches,
   START_MARKER,
-  startedAt,
-  PAUSE_MARKER,
 } from '../src/decide.mts';
 import type { LaneRun } from '../src/decide.mts';
+import { MAX_BATCH_EVENTS } from '@agent-board/shared';
+import type { TranscriptEvent } from '@agent-board/shared';
 import { tail } from '../src/text.mts';
 import { CONFIG, note as makeNote, task } from './helpers.mts';
 
@@ -71,10 +71,11 @@ test('a task without a directory runs in the default one', () => {
   assert.ok(!invoke({ id: 'abc', input: '  ' }).ok, 'an empty prompt is refused');
 });
 
-test("an intake review runs in the PR's checkout with intake's narrow rules, without its head line", () => {
+test("an intake review runs in the PR's checkout with intake's narrow rules", () => {
   const plan = invoke({
     id: 'abc',
-    input: `/review-pr ${PR} --auto\nhead: 56120dc60b`,
+    input: `/review-pr ${PR} --auto`,
+    head: '56120dc60b',
     createdBy: 'intake',
     workdir: '/stale/dir',
   });
@@ -90,7 +91,7 @@ test("an intake review runs in the PR's checkout with intake's narrow rules, wit
   ]);
   assert.deepEqual(args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--disallowedTools')), [
     'Read',
-    'Bash(board *)',
+    'Bash(board comment *)',
   ]);
   const unmapped = invoke({
     id: 'abc',
@@ -168,12 +169,7 @@ test("a machine leaves a task to another when it is pinned there or lacks the PR
   );
 });
 
-test("intake's head line is kept on the task but not given to the agent", () => {
-  const input = `/review-pr ${PR} --auto\nhead: 56120dc60b`;
-  assert.equal(parseHead(input), '56120dc60b');
-  assert.equal(runPrompt(input), `/review-pr ${PR} --auto`);
-  assert.equal(prUrlIn(input), PR);
-  assert.equal(prUrlIn('Find out X'), undefined);
+test("the board's rules tell the agent to ask through the board, and an intake run to keep its commands simple", () => {
   assert.match(
     boardRules(task({ id: 'abc' })),
     /AskUserQuestion is not available.*board ask abc --file \/tmp\/pr-abc-questions\.json/s,
@@ -183,17 +179,6 @@ test("intake's head line is kept on the task but not given to the agent", () => 
     boardRules(task({ id: 'abc', createdBy: 'intake' })),
     /run every Bash command on its own, without pipes/,
   );
-});
-
-test('the start time is the latest start note', () => {
-  const note = (text: string, iso: string) => makeNote(text, new Date(iso), { author: 'system' });
-  const found = startedAt([
-    note(`${START_MARKER} old`, '2026-01-01T10:00:00Z'),
-    note('unrelated', '2026-01-01T12:00:00Z'),
-    note(`${START_MARKER} new`, '2026-01-01T11:00:00Z'),
-  ]);
-  assert.equal(found?.toISOString(), '2026-01-01T11:00:00.000Z');
-  assert.equal(startedAt([]), undefined);
 });
 
 test('long text is tailed', () => {
@@ -257,17 +242,12 @@ test('a resume carries the answers and comments given since the agent last spoke
 
 test('a run starts fresh without a resume request, without a session, or without a reply', () => {
   const reply = [questionNote, makeNote('go on', at(2), { author: 'user' })];
-  assert.deepEqual(
-    planRun(task({ id: 'a', next: 'fresh', sessionId: 's' }), reply, () => 'n'),
-    { kind: 'fresh', sessionId: 'n' },
-  );
-  assert.deepEqual(
-    planRun(task({ id: 'a', next: 'resume', sessionId: null }), reply, () => 'n'),
-    { kind: 'fresh', sessionId: 'n' },
-  );
-  assert.deepEqual(
-    planRun(task({ id: 'a', next: 'resume', sessionId: 's' }), [questionNote], () => 'n'),
-    { kind: 'fresh', sessionId: 'n' },
+  const sessionOf = (plan: ReturnType<typeof planRun>) => `${plan.kind}:${plan.sessionId}`;
+  assert.equal(sessionOf(planRun(task({ id: 'a', next: 'fresh', sessionId: 's' }), reply, () => 'n')), 'fresh:n');
+  assert.equal(sessionOf(planRun(task({ id: 'a', next: 'resume', sessionId: null }), reply, () => 'n')), 'fresh:n');
+  assert.equal(
+    sessionOf(planRun(task({ id: 'a', next: 'resume', sessionId: 's' }), [questionNote], () => 'n')),
+    'fresh:n',
   );
 });
 
@@ -310,6 +290,15 @@ test('supervision: inactivity, the ceiling and an ignored pause stop a run; acti
   );
   const forced = supervise({ ...run, startedAt: ago(30), lastActive: ago(0), pauseRequestedAt: ago(6) });
   assert.ok(forced.kind === 'stop' && forced.why === 'pause-forced');
+});
+
+test('a run is over for its worker when the task closed or runs again from another start', () => {
+  const started = { runStartedAt: new Date('2026-01-01T10:00:00Z') };
+  assert.equal(isRunOver(started, { closed: false, runStartedAt: new Date('2026-01-01T10:00:00Z') }), false);
+  assert.equal(isRunOver(started, { closed: true, runStartedAt: started.runStartedAt }), true);
+  assert.equal(isRunOver(started, { closed: false, runStartedAt: new Date('2026-01-01T11:00:00Z') }), true);
+  assert.equal(isRunOver(started, { closed: false, runStartedAt: null }), true);
+  assert.equal(isRunOver({ runStartedAt: null }, { closed: false, runStartedAt: null }), false);
 });
 
 test('outcomes: a pause wins over the stop it caused, a report wins over a pause', () => {
@@ -404,27 +393,101 @@ test('a full lane with its own work waiting pauses its newest borrowed run that 
 });
 
 test('a paused run resumes with a note that it was paused, and with any reply since', () => {
-  const notes = [
-    makeNote(`${START_MARKER} x`, at(1), { author: 'system' }),
-    makeNote('Halfway through the resolvers', at(2)),
-    makeNote(`${PAUSE_MARKER} laptop: its reviews lane needed the slot`, at(3), { author: 'system', kind: 'event' }),
-  ];
-  const paused = planRun(task({ id: 'p', next: 'resume', sessionId: 's' }), notes, () => 'n');
+  const notes = [makeNote('Halfway through the resolvers', at(2))];
+  const paused = planRun(task({ id: 'p', next: 'resume', sessionId: 's', paused: true }), notes, () => 'n');
   assert.ok(paused.kind === 'resume');
   assert.match(paused.prompt, /You were paused on board task p/);
   const replied = planRun(
-    task({ id: 'p', next: 'resume', sessionId: 's' }),
+    task({ id: 'p', next: 'resume', sessionId: 's', paused: true }),
     [...notes, makeNote('also do X', at(4), { author: 'user' })],
     () => 'n',
   );
   assert.ok(replied.kind === 'resume' && /You were paused/.test(replied.prompt) && /also do X/.test(replied.prompt));
-  // The dispatcher's start note for the resumed run may already be there when the worker reads the thread.
-  const restarting = [...notes, makeNote(`${START_MARKER} y`, at(5), { author: 'system' })];
-  assert.equal(planRun(task({ id: 'p', next: 'resume', sessionId: 's' }), restarting, () => 'n').kind, 'resume');
-  const spokenSince = [...restarting, makeNote('step 4 done', at(6))];
   assert.equal(
-    planRun(task({ id: 'p', next: 'resume', sessionId: 's' }), spokenSince, () => 'n').kind,
+    planRun(task({ id: 'p', next: 'resume', sessionId: 's', paused: false }), notes, () => 'n').kind,
     'fresh',
-    'a pause the agent has spoken after is history',
+    'a task that was not paused has nothing to resume without a reply',
+  );
+});
+
+const start = (iso: number) => makeNote(`${START_MARKER} x`, at(iso), { author: 'system', kind: 'event' });
+
+test("a fresh run reads the user's notes since the previous run started, and is pointed at the thread", () => {
+  const notes = [
+    makeNote('please look at the migration first', at(0), { author: 'user' }),
+    start(1),
+    makeNote('Findings: two issues', at(5)),
+    makeNote('also the seed', at(6), { author: 'user' }),
+    start(10),
+  ];
+  const current = task({ id: 'abc', runStartedAt: at(9) });
+  const block = freshThreadBlock(current, notes) ?? '';
+  assert.match(block, /The user wrote on board task abc since its last run started:\n\nalso the seed\n/);
+  assert.doesNotMatch(block, /migration/, 'written before the previous run started');
+  assert.doesNotMatch(block, /two issues/, "the agent's notes are for `board show`");
+  assert.match(block, /run `board show abc` first/);
+  const plan = planRun(current, notes, () => 'n');
+  assert.ok(plan.kind === 'fresh' && plan.thread === block);
+  const invocation = buildInvocation({
+    run: plan,
+    task: task({ id: 'abc', input: '/grill the plan' }),
+    repos: {},
+    defaultCwd: '/',
+    intake: CONFIG.intake,
+    home: '/h',
+    pluginRoots: {},
+  });
+  assert.ok(invocation.ok);
+  assert.equal(invocation.invocation.args[1], `/grill the plan\n\n${block}`);
+});
+
+test("a fresh run's prompt is verbatim when the thread has no user or agent notes", () => {
+  assert.equal(freshThreadBlock(task({ id: 'a' }), []), undefined);
+  assert.equal(
+    freshThreadBlock(task({ id: 'a' }), [start(1), makeNote('Paused', at(2), { author: 'system', kind: 'event' })]),
+    undefined,
+  );
+  assert.deepEqual(
+    planRun(task({ id: 'a' }), [start(1)], () => 'n'),
+    { kind: 'fresh', sessionId: 'n' },
+  );
+});
+
+test('earlier findings alone point the fresh run at the thread; a first message on a never-run task is carried whole', () => {
+  assert.equal(
+    freshThreadBlock(task({ id: 'a', runStartedAt: at(20) }), [start(1), makeNote('Findings', at(5)), start(10)]),
+    'The thread holds earlier notes: run `board show a` first to read it.',
+  );
+  const proposal = freshThreadBlock(task({ id: 'a' }), [makeNote('start with the API', at(1), { author: 'user' })]);
+  assert.match(proposal ?? '', /start with the API/);
+});
+
+test('a backlog goes out in batches under the event and size limits', () => {
+  const event = (seq: number): TranscriptEvent => ({
+    kind: 'text',
+    seq,
+    at: '2026-01-01T00:00:00Z',
+    parent: null,
+    text: 'x'.repeat(100),
+  });
+  const events = Array.from({ length: 7 }, (_, seq) => event(seq));
+  const size = Buffer.byteLength(JSON.stringify(event(0)));
+  assert.deepEqual(
+    splitBatches(events, { maxEvents: 3 }).map((batch) => batch.length),
+    [3, 3, 1],
+  );
+  assert.deepEqual(
+    splitBatches(events, { maxBytes: size * 2 + 5 }).map((batch) => batch.length),
+    [2, 2, 2, 1],
+  );
+  assert.deepEqual(
+    splitBatches(events, { maxBytes: 10 }).map((batch) => batch.length),
+    [1, 1, 1, 1, 1, 1, 1],
+    'an event over the limit goes alone',
+  );
+  assert.deepEqual(splitBatches([]), []);
+  assert.deepEqual(
+    splitBatches(Array.from({ length: MAX_BATCH_EVENTS + 1 }, (_, seq) => event(seq))).map((batch) => batch.length),
+    [MAX_BATCH_EVENTS, 1],
   );
 });

@@ -3,6 +3,7 @@ import { modals } from '@mantine/modals';
 import {
   IconArchive,
   IconArchiveOff,
+  IconArrowBackUp,
   IconCheck,
   IconChevronDown,
   IconMessage,
@@ -12,7 +13,9 @@ import {
 } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
+import { canTakeBack } from '../lib/liveness';
 import { ago } from '../lib/time';
+import { useNow } from '../lib/useNow';
 import { useTRPC, type BoardTask, type ThreadNote } from '../lib/trpc';
 import { LivenessText } from './LivenessText';
 import { MarkdownEditor } from './MarkdownEditor';
@@ -27,6 +30,7 @@ function useActions(id: string) {
     rerun: useMutation(trpc.tasks.rerun.mutationOptions()),
     close: useMutation(trpc.tasks.setClosed.mutationOptions()),
     move: useMutation(trpc.tasks.move.mutationOptions()),
+    takeBack: useMutation(trpc.tasks.takeBack.mutationOptions()),
     id,
   };
 }
@@ -55,6 +59,38 @@ function CommentOnly({ actions, hint }: { actions: ReturnType<typeof useActions>
   );
 }
 
+/** For a running task whose agent has gone quiet: its worker is probably gone, and only that machine could end the run. */
+function TakeBack({ task, actions }: { task: BoardTask; actions: ReturnType<typeof useActions> }) {
+  const now = useNow(10_000);
+  if (!canTakeBack(task.lastActiveAt, now)) return null;
+  const confirm = () =>
+    modals.openConfirmModal({
+      title: 'Take the task back?',
+      children: (
+        <Text size="sm">
+          The agent has been quiet for a while, so {task.machine ?? 'its worker'} may be off. The task moves to Needs
+          me. If the worker is still alive, its result is dropped.
+        </Text>
+      ),
+      labels: { confirm: 'Take back', cancel: 'Cancel' },
+      confirmProps: { color: 'red' },
+      onConfirm: () => actions.takeBack.mutate({ id: task.id }),
+    });
+  return (
+    <Group justify="flex-end">
+      <Button
+        variant="default"
+        color="red"
+        leftSection={<IconArrowBackUp size={16} />}
+        onClick={confirm}
+        loading={actions.takeBack.isPending}
+      >
+        Take back
+      </Button>
+    </Group>
+  );
+}
+
 /**
  * What you can do with the task now, as explicit buttons: answer the agent's question, send it a follow-up,
  * finish it, start it over, or start a proposal.
@@ -63,9 +99,6 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
   const actions = useActions(task.id);
   const [message, setMessage] = useState('');
   const openQuestion = task.openQuestion ? thread.findLast((n) => n.kind === 'question') : undefined;
-  const startedAt = thread.findLast(
-    (n) => n.author === 'system' && n.text.startsWith('agent-board: started'),
-  )?.createdAt;
 
   if (task.closed) {
     return (
@@ -95,19 +128,21 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
             <Text size="sm">
               Running on <b>{task.machine ?? 'a worker'}</b>
               {task.lane ? ` in the ${task.lane} lane${task.borrowed ? ' (borrowed)' : ''}` : ''}
-              {startedAt ? ` since ${ago(startedAt)}` : ''}
+              {task.runStartedAt ? ` since ${ago(task.runStartedAt)}` : ''}
               {' · '}
               <LivenessText span size="sm" lastActiveAt={task.lastActiveAt} />. It reports back here when it is done or
               has a question.
             </Text>
           </Group>
+          <TakeBack task={task} actions={actions} />
           <CommentOnly actions={actions} hint="Leave a note for later (does not reach the running agent)" />
         </Stack>
       </Paper>
     );
   }
 
-  if (openQuestion?.questions) {
+  // A proposal waits for the user to start it, even with a question on it: the alert below comes first.
+  if (openQuestion?.questions && !task.proposed) {
     return (
       <QuestionPanel
         key={openQuestion.id}

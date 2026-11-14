@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { MAX_BATCH_EVENTS } from '@agent-board/shared';
 import { runWorker } from '../src/worker.mts';
 import type { RunResult, WorkerDeps } from '../src/worker.mts';
 import { CONFIG, fakeBackend, fakeRunFiles, note, task } from './helpers.mts';
@@ -42,7 +43,7 @@ test('non-zero exit reports the error and log tail', async () => {
   const { deps, backend, notes } = setup({ exitCode: 1, signal: null });
   await runWorker(deps, 'w1');
   assert.ok(backend.writes.some((w) => w.includes('exited with code 1') && w.includes('tail of log')));
-  assert.ok(backend.writes.includes('status w1 -> needs-me'));
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:')));
   assert.equal(notes.length, 1);
 });
 
@@ -54,14 +55,14 @@ test('a run the watch stopped is reported with the reason', async () => {
   });
   await runWorker(deps, 'w1');
   assert.ok(backend.writes.some((w) => w.includes('no tool call for 15 minutes')));
-  assert.ok(backend.writes.includes('status w1 -> needs-me'));
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:')));
 });
 
 test('exit 0 with the task still in Running is reported as unreported', async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
   await runWorker(deps, 'w1');
   assert.ok(backend.writes.some((w) => w.includes('finished without reporting')));
-  assert.ok(backend.writes.includes('status w1 -> needs-me'));
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:')));
 });
 
 test('exit 0 after the worker moved the task writes nothing', async () => {
@@ -85,16 +86,18 @@ test('the log is reset before anything else', async () => {
   assert.equal(calls[0], 'reset w1');
 });
 
-test('exit 0 with the task moved back to Todo is unreported, not ok', async () => {
-  const { deps, backend } = setup({ exitCode: 0, signal: null });
+test('exit 0 with the task already moved to Todo by a quick answer writes nothing', async () => {
+  const { deps, backend, notes } = setup({ exitCode: 0, signal: null });
   deps.run = async () => {
-    const found = await backend.getTask('w1');
     backend.tasks[0]!.status = 'todo';
-    assert.equal(found.status, 'running');
     return { exitCode: 0, signal: null };
   };
   await runWorker(deps, 'w1');
-  assert.ok(backend.writes.some((w) => w.includes('finished without reporting')));
+  assert.deepEqual(
+    backend.writes.filter((w) => !/^(heartbeat|session|next) /.test(w)),
+    [],
+  );
+  assert.deepEqual(notes, []);
 });
 
 test('an unresolvable pr-review plugin sends the task to Needs me with the reason', async () => {
@@ -113,7 +116,7 @@ test('an unresolvable pr-review plugin sends the task to Needs me with the reaso
       w.includes('Cannot resolve the pr-review plugin: plugin pr-review@ccc is not installed'),
     ),
   );
-  assert.ok(backend.writes.includes('status w1 -> needs-me'));
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:')));
   assert.ok(calls.some((c) => c.startsWith('append w1:')));
 });
 
@@ -141,6 +144,25 @@ test('a task closed during the run is left alone, whatever the outcome', async (
       backend.writes.filter((w) => !/^(heartbeat|session|next) /.test(w)),
       [],
     );
+    assert.deepEqual(notes, []);
+  }
+});
+
+test('a run another machine took over is left alone: no workdir, no failure', async () => {
+  for (const result of [
+    { exitCode: 0, signal: null },
+    { exitCode: 1, signal: null },
+  ]) {
+    const { deps, backend, notes } = setup(result);
+    backend.tasks[0]!.runStartedAt = new Date('2026-01-01T10:00:00Z');
+    deps.run = async () => {
+      deps.files.writeCwd('w1', '/tmp/.claude/worktrees/feat-x');
+      // Taken back and claimed again: still Running, with the other run's start.
+      backend.tasks[0]!.runStartedAt = new Date('2026-01-01T11:00:00Z');
+      return result;
+    };
+    await runWorker(deps, 'w1');
+    assert.ok(!backend.writes.some((w) => w.startsWith('workdir w1: /tmp/.claude') || w.startsWith('fail ')));
     assert.deepEqual(notes, []);
   }
 });
@@ -357,7 +379,7 @@ test("an intake run gets the variables intake names from the checkout's settings
   };
   await runWorker(deps, 'w1');
   assert.deepEqual(read, ['/work/cosuno']);
-  assert.deepEqual(env, { CIRCLECI_TOKEN: 'ci-secret' });
+  assert.deepEqual(env, { CIRCLECI_TOKEN: 'ci-secret', AGENT_BOARD_TASK: 'w1' });
   assert.ok(calls.some((c) => c.includes("not in the checkout's settings: SHORTCUT_API_TOKEN")));
   assert.ok(!calls.some((c) => c.includes('ci-secret')), 'values never reach the log');
 });
@@ -373,7 +395,7 @@ test("a scheduled run loads the checkout's settings itself: no variables are cop
     return { exitCode: 0, signal: null };
   };
   await runWorker(deps, 'w1');
-  assert.deepEqual(env, {});
+  assert.deepEqual(env, { AGENT_BOARD_TASK: 'w1' });
 });
 
 test("an intake run gets the MCP servers intake names from the checkout's .mcp.json", async () => {
@@ -402,4 +424,110 @@ test("an intake run gets the MCP servers intake names from the checkout's .mcp.j
     '{"mcpServers":{"shortcut":{"type":"http","url":"https://mcp.example"}}}',
   );
   assert.ok(calls.some((c) => c.includes("not in the checkout's .mcp.json: gone")));
+});
+
+test('a run that failed before it started leaves no session behind, and one that could not be spawned gives it back', async () => {
+  const gone = setup({ exitCode: 0, signal: null });
+  gone.deps.dirExists = () => false;
+  await runWorker(gone.deps, 'w1');
+  assert.ok(!gone.backend.writes.some((w) => w.startsWith('session w1')), 'the directory check failed first');
+
+  const unplanned = setup({ exitCode: 0, signal: null });
+  unplanned.backend.tasks[0]!.input = '  ';
+  await runWorker(unplanned.deps, 'w1');
+  assert.ok(!unplanned.backend.writes.some((w) => w.startsWith('session w1')), 'no prompt');
+
+  const unspawned = setup(new Error('could not start claude: ENOENT'));
+  await runWorker(unspawned.deps, 'w1');
+  assert.deepEqual(
+    unspawned.backend.writes.filter((w) => w.startsWith('session w1')),
+    ['session w1: s-new', 'session w1: null'],
+  );
+});
+
+test("the agent's environment names the task, so `board schedule` can refuse inside a run", async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  let env: Record<string, string> = {};
+  deps.run = async (_invocation, _taskId, runEnv) => {
+    env = runEnv;
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.equal(env['AGENT_BOARD_TASK'], 'w1');
+});
+
+test("a fresh run's prompt carries the user's message and points at the thread", async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  backend.notes.set('w1', [
+    note('Findings', new Date('2026-11-13T10:00:00Z')),
+    note('now with the seed too', new Date('2026-11-13T10:05:00Z'), { author: 'user' }),
+  ]);
+  let prompt = '';
+  deps.run = async (invocation) => {
+    prompt = invocation.args[1] ?? '';
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.match(
+    prompt,
+    /^\/selftest go\n\nThe user wrote on board task w1 since its last run started:\n\nnow with the seed too\n/,
+  );
+  assert.match(prompt, /run `board show w1` first/);
+});
+
+test("a worker that finds the task paused tells the agent, from the task's flag", async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  Object.assign(backend.tasks[0]!, { next: 'resume', sessionId: 's-old', paused: true });
+  let prompt = '';
+  deps.run = async (invocation) => {
+    prompt = invocation.args[1] ?? '';
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.match(prompt, /You were paused on board task w1/);
+});
+
+test('the upload still in flight when the run ends is awaited, then the rest is sent', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  const sent: string[] = [];
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => void (release = resolve));
+  backend.transcript = async (_id, batch) => {
+    if (sent.length === 0) await gate;
+    sent.push(batch.events.map((e) => e.kind).join(','));
+  };
+  deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
+    onLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'first' }] } }));
+    void watch.tick();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    onLine(JSON.stringify({ type: 'result', result: 'All done', is_error: false }));
+    setTimeout(release, 10);
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.deepEqual(sent, ['text', 'result']);
+});
+
+test("a backlog is sent in batches of at most the board's limit, and a refused one is retried", async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  const sizes: number[] = [];
+  let failures = 1;
+  backend.transcript = async (_id, batch) => {
+    if (failures-- > 0) throw new Error('board down');
+    sizes.push(batch.events.length);
+  };
+  deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
+    for (let n = 0; n < MAX_BATCH_EVENTS + 10; n++)
+      onLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `t${n}` }] } }));
+    await watch.tick();
+    assert.deepEqual(sizes, [], 'the first batch was refused, nothing else went out');
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.deepEqual(sizes, [MAX_BATCH_EVENTS, 10]);
 });

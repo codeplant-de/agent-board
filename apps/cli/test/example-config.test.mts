@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { isRecord } from '@agent-board/shared';
 import { buildInvocation, expandRule } from '../src/decide.mts';
 import { parseConfig } from '../src/config.mts';
 import { task } from './helpers.mts';
@@ -11,6 +12,10 @@ const raw: unknown = JSON.parse(readFileSync(new URL('../config.example.json', i
 const config = parseConfig(raw);
 // Intake reviews run unattended on PR text: these are the only rules with a job to do.
 const entry = config.intake;
+
+test('the example has no backend entry: the CLI talks to the board directly', () => {
+  assert.ok(!(isRecord(raw) && 'backend' in raw));
+});
 
 test('no shipped rule starts with a wildcard before a path', () => {
   for (const rule of [...entry.allowedTools, ...entry.disallowedTools]) assert.doesNotMatch(rule, /^Bash\(\*/);
@@ -79,4 +84,45 @@ test('the shipped lanes give reviews their own slots and everything else three',
     ],
   );
   assert.equal(entry.prompt, '/review-pr {url} --auto');
+});
+
+// Claude Code's Bash rule matching as far as the shipped rules need it: `*` is any run of characters.
+const allows = (command: string): boolean =>
+  entry.allowedTools.some((rule) => {
+    const pattern = /^Bash\((.*)\)$/.exec(rule)?.[1];
+    return (
+      pattern !== undefined &&
+      new RegExp(
+        `^${pattern
+          .split('*')
+          .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+          .join('.*')}$`,
+      ).test(command)
+    );
+  });
+
+test('an intake run may report and propose through board, but never schedule or start work', () => {
+  for (const command of [
+    'board schedule /review-pr 1 --auto',
+    'board schedule',
+    'board',
+    'board move abc todo',
+    'board move abc running',
+    'board move abc done',
+    'board notify abc hi',
+    'board tasks',
+  ]) {
+    assert.ok(!allows(command), command);
+  }
+  for (const command of [
+    'board comment abc --file /tmp/pr-abc.md',
+    'board ask abc --file /tmp/pr-abc-questions.json',
+    'board add --title t --file /tmp/pr-x.md --parent abc',
+    'board show abc',
+    'board move abc needs-me',
+  ]) {
+    assert.ok(allows(command), command);
+  }
+  assert.ok(!entry.allowedTools.includes('Bash(board *)'));
+  assert.ok(entry.disallowedTools.includes('Bash(board schedule *)'));
 });
