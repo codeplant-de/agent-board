@@ -117,6 +117,8 @@ interface Context {
   // Legacy values the wire parsers at HEAD refuse; any of them aborts the run, because one such row fails every listing.
   problems: string[];
   warnedOversize: Set<string>;
+  // `note.suggestion` came with migration 0015, so a board that has not got it yet is converted without it.
+  hasSuggestion: boolean;
 }
 
 const counts = (ctx: Context, column: string): ColumnCounts => {
@@ -542,6 +544,7 @@ interface NoteRecord extends Record<string, unknown> {
   kind: NoteKind;
   body: string;
   preview: string | null;
+  suggestion: string | null;
   questions: string | null;
   answers: string | null;
   question_note_id: string | null;
@@ -615,7 +618,7 @@ async function convertNote(ctx: Context, note: NoteRecord): Promise<ChangedRow |
   if (!isSafeNoteId(note.id)) problem(ctx, `${name}: the id is not one a client accepts`);
   if (note.question_note_id !== null && !isSafeNoteId(note.question_note_id))
     problem(ctx, `${name}: the question note id is not one a client accepts`);
-  const unchanged = [note.author, note.kind, note.body, note.preview, note.questions, note.answers];
+  const unchanged = [note.author, note.kind, note.body, note.preview, note.suggestion, note.questions, note.answers];
 
   if (note.author === 'server') {
     counts(ctx, 'note.body').leftPlain += 1;
@@ -629,7 +632,10 @@ async function convertNote(ctx: Context, note: NoteRecord): Promise<ChangedRow |
   // note that happens to read the same is harmless as one; any other text, a client's or an older wording of the server's, is sealed.
   if (note.author === 'system' && note.kind === 'event' && !isEnvelope(note.body) && isServerEventText(note.body)) {
     counts(ctx, 'note.body').leftPlain += 1;
-    return { key: [note.id], values: ['server', note.kind, note.body, note.preview, note.questions, note.answers] };
+    return {
+      key: [note.id],
+      values: ['server', note.kind, note.body, note.preview, note.suggestion, note.questions, note.answers],
+    };
   }
 
   let { kind } = note;
@@ -712,7 +718,18 @@ async function convertNote(ctx: Context, note: NoteRecord): Promise<ChangedRow |
     preview = wanted === null ? null : await sealValue(ctx, 'note.preview', name, previewBinding, wanted);
   }
 
-  const values = [author, kind, body, preview, questions, answers];
+  const suggestion =
+    note.suggestion === null
+      ? null
+      : await sealColumn(
+          ctx,
+          'note.suggestion',
+          name,
+          note.suggestion,
+          noteBinding('note.suggestion', note.task_id, author, kind),
+        );
+
+  const values = [author, kind, body, preview, suggestion, questions, answers];
   return same(values, unchanged) ? undefined : { key: [note.id], values };
 }
 
@@ -723,7 +740,7 @@ async function convertNotes(ctx: Context): Promise<void> {
     (after) =>
       query(
         ctx,
-        `select id, task_id, author::text as author, kind::text as kind, body, preview, questions, answers, question_note_id, created_at
+        `select id, task_id, author::text as author, kind::text as kind, body, preview, ${ctx.hasSuggestion ? 'suggestion' : 'null::text as suggestion'}, questions, answers, question_note_id, created_at
          from note where owner = $1 and ($2::text is null or id > $2) order by id limit $3`,
         [ctx.owner, after?.id ?? null, ctx.batchSize],
       ),
@@ -731,12 +748,12 @@ async function convertNotes(ctx: Context): Promise<void> {
     async (rows) => {
       const { rows: stored } = await ctx.client.query<{ id: string; v: Value[] }>(
         `update note n set author = v.author::note_author, kind = v.kind::note_kind, body = v.body, preview = v.preview,
-           questions = v.questions, answers = v.answers
-         from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[])
-           as v(id, author, kind, body, preview, questions, answers)
+           ${ctx.hasSuggestion ? 'suggestion = v.suggestion, ' : ''}questions = v.questions, answers = v.answers
+         from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[])
+           as v(id, author, kind, body, preview, suggestion, questions, answers)
          where n.owner = $1 and n.id = v.id
-         returning n.id, array[n.author::text, n.kind::text, n.body, n.preview, n.questions, n.answers] as v`,
-        [ctx.owner, ...columnsOf(rows, 7)],
+         returning n.id, array[n.author::text, n.kind::text, n.body, n.preview, ${ctx.hasSuggestion ? 'n.suggestion' : 'null::text'}, n.questions, n.answers] as v`,
+        [ctx.owner, ...columnsOf(rows, 8)],
       );
       return stored.map(({ id, v }) => [id, ...v]);
     },
@@ -813,13 +830,23 @@ async function convertEvents(ctx: Context): Promise<void> {
 
 // The checks around the conversion.
 
+/** The `table.column` names of the current schema. */
+async function existingColumns(client: pg.Client): Promise<Set<string>> {
+  const { rows } = await client.query<{ name: string }>(
+    `select table_name || '.' || column_name as name from information_schema.columns where table_schema = current_schema()`,
+  );
+  return new Set(rows.map(({ name }) => name));
+}
+
 /** How many values of each sealed column are not of the shape a sealed column holds (what the later constraints migration checks). */
 export async function plaintextCounts(
   client: pg.Client,
   scope: { exceptOwner: string } | 'all',
 ): Promise<Record<string, number>> {
   const found: Record<string, number> = {};
+  const existing = await existingColumns(client);
   for (const sealed of SEALED_COLUMNS) {
+    if (!existing.has(`${sealed.table}.${sealed.column}`)) continue;
     const column = `"${sealed.column}"`;
     const shape = `${column} ~ $1`;
     const bad =
@@ -928,6 +955,7 @@ export async function reencryptOwner(options: ReencryptOptions): Promise<Reencry
     inventoryTasks: [],
     problems: [],
     warnedOversize: new Set(),
+    hasSuggestion: (await existingColumns(client)).has('note.suggestion'),
   };
   if (!keys.index) throw new ReencryptError('The keys need the blind-index key: derive them with { index: true }.');
   let tableCounts: Record<string, number>;

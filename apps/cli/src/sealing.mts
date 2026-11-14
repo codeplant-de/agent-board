@@ -123,10 +123,11 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     taskId: string,
     author: 'agent' | 'system',
     text: string,
+    options: { suggestion?: string } = {},
   ): Promise<WireNoteInput> => {
     if (text.trim() === '') throw invalid(command, 'note text is empty');
     return checked(command, () =>
-      sealNote(sealer, { taskId, author, kind: author === 'agent' ? 'comment' : 'event' }, text),
+      sealNote(sealer, { taskId, author, kind: author === 'agent' ? 'comment' : 'event' }, text, options),
     );
   };
 
@@ -226,8 +227,10 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       const claimed = await inner.claimTask(id, machine);
       return claimed === undefined ? undefined : opened(claimed, openTask);
     },
-    addNote: async (id, text, options) =>
-      inner.addNote(id, await noteInput('add-note', id, options?.author ?? 'agent', text), options),
+    addNote: async (id, text, { author = 'agent', suggestion } = {}) =>
+      inner.addNote(id, await noteInput('add-note', id, author, text, suggestion === undefined ? {} : { suggestion }), {
+        author,
+      }),
     async ask(id, questions: Question[]) {
       await inner.ask(id, await checked('ask', () => sealQuestions(sealer, id, questions)));
     },

@@ -489,6 +489,15 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     ]);
   });
 
+  it('lets the later migrations pass afterwards, and the constraints are validated (the clients read the board at its latest schema)', async () => {
+    await migrate(admin.db, { migrationsFolder: migrationsFolder() });
+    const constraints = await rows<{ conname: string; convalidated: boolean }>(
+      `select conname, convalidated from pg_constraint where conname like '%\\_sealed' or conname like '%\\_blind'`,
+    );
+    expect(constraints).toHaveLength(15);
+    expect(constraints.every((constraint) => constraint.convalidated)).toBe(true);
+  });
+
   it('is read by the CLI sealed backend: every task, note and schedule, nothing unreadable', async () => {
     const server = await buildServer({ ...testConfig, appDatabaseUrl: scratch.appUrl }, app.db);
     const { token } = await caller(app.db, OWNER).machines.issue({ name: 'laptop' });
@@ -644,12 +653,16 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     expect(bob?.title).toMatch(/^abe1\./);
   });
 
-  it('lets the constraints migration pass afterwards, and the constraints are validated', async () => {
-    await migrate(admin.db, { migrationsFolder: migrationsFolder() });
-    const constraints = await rows<{ conname: string; convalidated: boolean }>(
-      `select conname, convalidated from pg_constraint where conname like '%\\_sealed' or conname like '%\\_blind'`,
-    );
-    expect(constraints).toHaveLength(14);
-    expect(constraints.every((constraint) => constraint.convalidated)).toBe(true);
+  it('leaves a sealed suggestion as it is, and refuses one that does not open', async () => {
+    const context = 'note:t1plain1:agent:comment';
+    const suggestion = await seal(keys, 'note.suggestion', context, 'Yes, open the PR.');
+    await admin.db.execute(sql`update note set suggestion = ${suggestion} where id = 'n01'`);
+    const before = await snapshot();
+    const again = await run();
+    expect(again.columns['note.suggestion']).toMatchObject({ converted: 0, alreadySealed: 1 });
+    expect(await snapshot()).toBe(before);
+    const elsewhere = await seal(keys, 'note.suggestion', 'note:other:agent:comment', 'Yes');
+    await admin.db.execute(sql`update note set suggestion = ${elsewhere} where id = 'n01'`);
+    await refuses(() => run(), /note\.suggestion of note n01/);
   });
 });
