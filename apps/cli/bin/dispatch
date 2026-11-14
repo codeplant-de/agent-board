@@ -2,4 +2,4 @@
 # One tick at a time, whoever starts it. Exit 75 (lock held) is not a failure.
 runtime=${XDG_RUNTIME_DIR:-/tmp}
 dir=$(dirname "$(readlink -f "$0")")
-exec flock -n -E 75 "$runtime/agent-board-dispatch.lock" "$dir/_node" "$dir/../src/dispatch.mts" "$@"
+exec flock -n -E 75 "$runtime/agent-board-dispatch.lock" "$dir/_node" "$dir/../src/main.mts" internal dispatch "$@"

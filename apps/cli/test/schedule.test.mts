@@ -1,8 +1,31 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseDuplicateAnswer, parseScheduleArgs, schedule } from '../src/schedule.mts';
-import type { Duplicate, ScheduleDeps } from '../src/schedule.mts';
+import { Command } from 'commander';
+import {
+  addScheduleOptions,
+  parseDuplicateAnswer,
+  parseScheduleArgs as toScheduleArgs,
+  schedule,
+} from '../src/schedule.mts';
+import type { Duplicate, ScheduleArgs, ScheduleDeps, ScheduleFlags } from '../src/schedule.mts';
 import { fakeBackend, task } from './helpers.mts';
+
+// The command line as `board schedule` reads it: commander splits flags from the prompt, then the flags are checked.
+function parseScheduleArgs(args: string[], now?: Date): ScheduleArgs {
+  let parsed: ScheduleArgs | undefined;
+  const program = new Command()
+    .enablePositionalOptions()
+    .exitOverride()
+    .configureOutput({ outputError: () => undefined });
+  addScheduleOptions(program.command('schedule').argument('<prompt...>').passThroughOptions()).action(
+    (words: string[], flags: ScheduleFlags) => {
+      parsed = toScheduleArgs(flags, words, now);
+    },
+  );
+  program.parse(['schedule', ...args], { from: 'user' });
+  if (!parsed) throw new Error('schedule did not run');
+  return parsed;
+}
 
 test("the board's flags come first; the rest is the prompt, its own flags included", () => {
   assert.deepEqual(parseScheduleArgs(['--priority', 'high', '/review-pr', '17741', '--auto']), {
@@ -33,7 +56,9 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
   });
   assert.equal(parseScheduleArgs(['--', '--weird', 'prompt']).prompt, '--weird prompt');
   assert.throws(() => parseScheduleArgs(['--priority', 'asap', 'x']), /unknown priority/);
-  assert.throws(() => parseScheduleArgs(['--hold']), /usage: board schedule/);
+  assert.throws(() => parseScheduleArgs(['--hold']), /missing required argument 'prompt'/);
+  assert.throws(() => parseScheduleArgs(['--hodl', 'x']), /unknown option '--hodl'/);
+  assert.throws(() => parseScheduleArgs(['--hold', '  ']), /a prompt is required/);
   assert.equal(parseScheduleArgs(['--backlog', 'Find', 'out']).backlog, true);
   assert.throws(() => parseScheduleArgs(['--hold', '--backlog', 'x']), /cannot be combined/);
 });
@@ -163,8 +188,8 @@ test('--in and --at set when the task starts; both need Todo and exclude each ot
   assert.throws(() => parseScheduleArgs(['--in', '0m', 'x'], NOW), /longer than zero/);
   assert.throws(() => parseScheduleArgs(['--at', '2020-01-01', 'x'], NOW), /in the past/);
   assert.throws(() => parseScheduleArgs(['--at', 'tomorrow', 'x'], NOW), /not a time/);
-  assert.throws(() => parseScheduleArgs(['--in'], NOW), /usage: board schedule/);
-  assert.throws(() => parseScheduleArgs(['--in', '1h'], NOW), /usage: board schedule/);
+  assert.throws(() => parseScheduleArgs(['--in'], NOW), /argument missing/);
+  assert.throws(() => parseScheduleArgs(['--in', '1h'], NOW), /missing required argument 'prompt'/);
 });
 
 test('a delayed task is created in Todo with its start time, which the confirmation names', async () => {
@@ -235,7 +260,7 @@ test('repeat flags that cannot go together, or are malformed, are usage errors',
   bad(['--cron', '0 0 9 * * *'], /5 fields/);
   bad(['--every', '1h', '--until', '2020-01-01'], /in the past/);
   bad(['--every', '1h', '--in', '3h', '--until', '11:00'], /--until is before the first run/);
-  assert.throws(() => parseScheduleArgs(['--every'], NOW), /usage: board schedule/);
+  assert.throws(() => parseScheduleArgs(['--every'], NOW), /argument missing/);
   bad(['--every', '1h', '--in', '1h', '--at', '14:30'], /--in and --at cannot be combined/);
 });
 
