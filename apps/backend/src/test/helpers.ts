@@ -4,6 +4,7 @@ import type { Config } from '../config';
 import { createDb, type Db, type Tx } from '../db/client';
 import { appUsers } from '../db/schema';
 import { withOwner } from '../db/scope';
+import { Changes } from '../services/changes';
 import { appRouter } from '../trpc/router';
 import { testAppDatabaseUrl, testDatabaseUrl } from './global-setup';
 
@@ -36,8 +37,8 @@ export function asOwner<T>(db: Db, owner: string, fn: (tx: Tx) => Promise<T>): P
   });
 }
 
-export function caller(root: Db, username = 'jascha') {
-  return appRouter.createCaller({ root, config: testConfig, username });
+export function caller(root: Db, username = 'jascha', changes = new Changes()) {
+  return appRouter.createCaller({ root, config: testConfig, changes, username });
 }
 
 /** A value of the shape of an envelope, for rows a test inserts directly: the sealed-content constraints of a later release refuse anything else. */

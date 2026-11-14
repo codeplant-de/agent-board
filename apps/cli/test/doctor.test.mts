@@ -122,13 +122,13 @@ test('the server check tells unreachable, unauthorised and a contract mismatch a
   const unauthorised = await run(new BackendError('version: bad token', 401, true));
   assert.match(unauthorised?.message ?? '', /refused the token/);
   const serverOlder = await run(
-    Object.assign(new BackendError('the board server is older than this CLI: it speaks contract 4, the CLI needs 6'), {
+    Object.assign(new BackendError('the board server is older than this CLI: it speaks contract 4, the CLI needs 7'), {
       contractMismatch: 'server-older' as const,
     }),
   );
   assert.match(serverOlder?.hint ?? '', /update the board server/);
   const cliOlder = await run(
-    Object.assign(new BackendError('this CLI is older than the board server: it speaks contract 6, the server has 7'), {
+    Object.assign(new BackendError('this CLI is older than the board server: it speaks contract 7, the server has 8'), {
       contractMismatch: 'cli-older' as const,
     }),
   );
