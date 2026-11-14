@@ -200,6 +200,8 @@ export const notes = pgTable(
     body: text('body').notNull().default(''),
     /** A sealed start of the text, for the board cards; null for a note without text. */
     preview: text('preview'),
+    /** A sealed reply the agent drafted for the user; only on a comment by the agent. */
+    suggestion: text('suggestion'),
     /** Sealed JSON. */
     questions: text('questions'),
     answers: text('answers'),
@@ -211,6 +213,11 @@ export const notes = pgTable(
   (t) => [
     check('note_body_sealed', sql`(${t.author}::text = 'server' and ${t.kind} = 'event') or ${isEnvelope(t.body)}`),
     check('note_preview_sealed', isEnvelope(t.preview)),
+    check('note_suggestion_sealed', isEnvelope(t.suggestion)),
+    check(
+      'note_suggestion_agent_comment',
+      sql`${t.suggestion} is null or (${t.author}::text = 'agent' and ${t.kind} = 'comment')`,
+    ),
     check('note_questions_sealed', isEnvelope(t.questions)),
     check('note_answers_sealed', isEnvelope(t.answers)),
     index('note_task_created_idx').on(t.taskId, t.createdAt),

@@ -287,6 +287,7 @@ The goal is stronger than secrecy: **a worker, and the browser, only acts on, or
 | `input` | `<origin>:<creator>` | the same client; `<creator>` is who made the task, which that client states itself |
 | `workdir` | `<origin>`; for an occurrence also `task:<id>:schedule:<scheduleId>` | the same client; the worker for the occurrence's later rewrite |
 | `note.body`, `note.preview` | `note:<taskId>:<author>:<kind>` | the client of that author |
+| `note.suggestion` | `note:<taskId>:agent:comment` | the agent's CLI |
 | `note.questions` | `note:<taskId>:agent:question` | the agent's CLI |
 | `note.answers` | `note:<taskId>:user:answer` | the user's browser |
 | `tr.data`, `tr.output` | `<taskId>:<runId>:<seq>` | the worker |
@@ -323,6 +324,8 @@ What that stops:
 The server refuses a sealed field that is not an envelope (400) or that is longer than its limit (`SEALED_LIMITS`), and checks nothing about what is inside. So all content validation (a non-empty title, an absolute `workdir`, the shape of questions and answers, whether an answer fits its question) happens in the client, before sealing and after opening; the clients refuse too long a value themselves, naming the limit (`board comment --file` and `board add --file` included). A task's `dedupeKey` is the blind index (`abh1.…`, an HMAC) of the PR URL and `head` the blind index of `head:<sha>`, so the server can keep the one unique per board and nothing else. Labels are not stored: `taskLabels` in `packages/shared` derives them from the opened prompt and the creator. Existing rows stay plain text until the one-off re-encryption (`apps/backend/src/scripts/reencrypt.ts`, see [Cutover to encryption](#cutover-to-encryption)), which seals each field under the contexts above; the server hands them back untouched, and the CLI treats them as unreadable. A later release adds migration 0014, which makes the database refuse plain text in every sealed column (see [Cutover to encryption](#cutover-to-encryption)); it is not in this one.
 
 **Previews.** A client that writes a note with text also sends `preview`: the first 300 characters of the text, sealed apart, for the board cards, which list every task's newest note without opening threads. A note without text (a question note, an answer without a message) has none. The board card shows a server event's own text when it is one of the fixed ones.
+
+**Suggested replies.** A comment by the agent may carry `suggestion` (sealed `note.suggestion`, at most 2000 characters): the reply the agent expects the user to send next, which `board comment --suggest <text>` (or `--suggest-file <path>`) seals and the browser offers as ghost text and a one-click Send while no note of the user follows it. Only agent comments can carry one (the server and a database check refuse it on any other note, and a client opens it only there). The field is optional and additive, so the contract version did not change: older clients ignore it.
 
 **Unreadable values.** The CLI never crashes a listing on a value it cannot open (legacy plain text, another key, another row, damage) and never treats one as a prompt. A task or schedule gets `unreadable`: the names of the fields that failed (`title`, `input`, `workdir`; a workdir that opens to a relative path counts). An unreadable title shows as a placeholder, an unreadable input is empty, an unreadable workdir is `null`. Dispatch skips a task whose input or workdir is unreadable and the worker refuses to run it, reporting why on the task; an unreadable title alone does not stop a run. A note that cannot be opened (or whose questions or answers do not parse) is `unreadable` with no text. A run is refused when it would hand the agent such a note of the user's: the reply a resume carries, or what a fresh run is told the user wrote since the previous run started. Older ones do not matter, so Re-run fresh (which starts after the refused attempt) does get past it. `board show` and `board tasks` print `(cannot decrypt …)` instead of text. The data key is read from `AGENT_BOARD_DATA_KEY` and is never printed or put into an error.
 
@@ -454,7 +457,7 @@ A schedule always has at most one pending occurrence, a task in Todo with `sched
 { "id": "n1", "body": "abe1.…", "preview": "abe1.…", "createdAt": "2026-11-13T10:00:00Z", "author": "agent", "kind": "comment" }
 ```
 
-`author` is `agent`, `user`, `system` or `server`; `kind` is `comment`, `question`, `answer` or `event`. `body` is sealed for its task, author and kind, except on an `author: "server"` note, whose body is plain text and one of the fixed event texts (see [Encryption](#encryption)); `preview` is a sealed preview or `null`. A question note adds `questions` and an answer note `answers` (both sealed JSON: the list `ask` took, and `{"questions": [...], "answers": [...]}` with one `{"selected": [labels], "other"?: text}` per question) and `questionNoteId`, which only informs. The CLI's plaintext `Note` has `text` instead of `body`, keeps a server event as `author: "server"`, gives an answer note the `questions` from its own envelope, and adds `unreadable`. A resume prompt is built from the `user` notes after the last `agent` note.
+`author` is `agent`, `user`, `system` or `server`; `kind` is `comment`, `question`, `answer` or `event`. `body` is sealed for its task, author and kind, except on an `author: "server"` note, whose body is plain text and one of the fixed event texts (see [Encryption](#encryption)); `preview` is a sealed preview or `null`. A comment by the agent may add `suggestion`, a sealed reply drafted for the user. A question note adds `questions` and an answer note `answers` (both sealed JSON: the list `ask` took, and `{"questions": [...], "answers": [...]}` with one `{"selected": [labels], "other"?: text}` per question) and `questionNoteId`, which only informs. The CLI's plaintext `Note` has `text` instead of `body`, keeps a server event as `author: "server"`, gives an answer note the `questions` from its own envelope, and adds `unreadable`. A resume prompt is built from the `user` notes after the last `agent` note.
 
 ### Commands
 
@@ -467,7 +470,7 @@ A schedule always has at most one pending occurrence, a task in Todo with `sched
 | `add-task` | `body`: `{"id", "title", "input", "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "head"?, "notBefore"?}` | `{"task": Task, "created": bool}` |
 | `update-task` | `id`, `body`: `{"status"?, "priority"?, "input"?, "sessionId"?, "workdir"?, "next"?, "head"?, "notBefore"?, "expect"?}` | the updated `Task`, or status 409 |
 | `claim-task` | `id`, `machine` | the claimed `Task`, or status 409 |
-| `add-note` | `id`, `author?` (`agent` or `system`), `body`: `{"body", "preview"?}` | `null` |
+| `add-note` | `id`, `author?` (`agent` or `system`), `body`: `{"body", "preview"?, "suggestion"?}` | `null` |
 | `ask` | `id`, `body`: `{"body", "questions"}` (a sealed empty body, sealed questions JSON) | `null` |
 | `heartbeat` | `id`, `body`: `{"lane": string, "borrowed": bool}` | `null` |
 | `pause` | `id`, `body`: `{"body", "preview"?}` | the updated `Task` |
@@ -486,7 +489,7 @@ A schedule always has at most one pending occurrence, a task in Todo with `sched
 - `add-schedule`: `id` is the client's, as for `add-task` (409 when taken). Exactly one of `everyMs` and `cron`; `cron` needs its `timezone`, and `timezone` goes only with `cron`. `title`, `input` and `workdir` are sealed. `machine` and `workdir` come together. `startAt` (ISO 8601; default now) is the first run of an interval and the earliest match of a cron rule. `times` (a positive integer, the number of occurrences in all) and `until` (ISO 8601) exclude each other; neither means forever. The answer is 400 for a cron expression the server cannot read (6-field patterns included), an unknown time zone, an interval under a minute, or a rule with no run before `until`, and nothing is written. The schedule and its first card are made in one transaction.
 - `update-schedule`: `paused: true` takes the pending occurrence off the board when it never ran (still in Todo, no session, no run) and gives its run back to `remaining`; `paused: false` makes the next occurrence at the first match from now. 409 for an ended schedule. Pausing a paused schedule, or resuming a running one, changes nothing.
 - `remove-schedule`: deletes the schedule and a pending occurrence that never ran; tasks that ran stay, keeping their `scheduleId`. 404 for an unknown schedule.
-- `add-note`: author `agent` makes a `comment`, `system` an `event`; both bodies are sealed (else 400), and the CLI refuses an empty text before sealing. `preview` is the sealed start of the text, or absent.
+- `add-note`: author `agent` makes a `comment`, `system` an `event`; both bodies are sealed (else 400), and the CLI refuses an empty text before sealing. `preview` is the sealed start of the text, or absent. `suggestion` is a sealed reply for the user and only author `agent` may send one (else 400).
 - `heartbeat`: sets `lastActiveAt` to now with the lane, on a running task only; on any other it changes nothing.
 - `transcript`: appends a run's condensed events (see `packages/shared/src/transcript.mts`; at most 5000 per call, each with an integer `seq` from 0 and a parseable `at`, or the call fails with 400). `data` is the sealed JSON of the event without its output. A `tool_result` also carries the sealed `output` and `outputSize`, its length in characters counted by the client (the server cannot read it; it is bounded, nothing more); any other event carries neither. an event already stored (same run and `seq`) stays as it is, so a retried batch is harmless.
 - `pause`: a running task only. Adds the sealed note as a `system` event, then moves the task to Todo with `next: resume` (`fresh` without a session), at the top, and sets `paused`.
@@ -670,6 +673,10 @@ or not, and is never read as a flag.
 `-` reads the text from stdin; `--file <path>` right after the task reads it
 from a regular file in /tmp, for long text.
 
+`--suggest <text>` (or `--suggest-file <path>`, a file in /tmp) attaches the
+reply you expect the user to send next, which the board offers as a one-click
+answer. Give it before the task, because everything after the task is the note.
+
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
 not exactly 8, which counts as a whole older id; an exact-case match wins, else
@@ -677,12 +684,16 @@ case does not matter; it must be unique). Inside a board run only the full id is
 accepted.
 
 Arguments:
-  task        the task: its id, a board task link or the start of its id
-  text        the note
+  task                   the task: its id, a board task link or the start of its
+                         id
+  text                   the note
 
 Options:
-  --dry-run   read everything, print every write instead of doing it
-  -h, --help  display help for command
+  --suggest <text>       a ready-to-send reply in the user's voice, offered on
+                         the board
+  --suggest-file <path>  like --suggest, from a regular file in /tmp
+  --dry-run              read everything, print every write instead of doing it
+  -h, --help             display help for command
 
 Examples:
   board comment Ab3dEf9x "step 3 done"
@@ -690,6 +701,7 @@ Examples:
   board comment Ab3dEf9x --file /tmp/review.md
   echo "from a script" | board comment Ab3dEf9x -
   board comment Ab3 looks good
+  board comment --suggest "Yes, open the PR." Ab3dEf9x "Ready: tests pass, diff reviewed."
 ```
 
 #### board move

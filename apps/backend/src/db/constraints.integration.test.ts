@@ -114,15 +114,16 @@ describe('what the application role can store afterwards', () => {
       kind?: string;
       body?: string;
       preview?: string | null;
+      suggestion?: string | null;
       questions?: string | null;
       answers?: string | null;
     } = {},
   ) => {
     await task(tx);
     await tx.execute(sql`
-      insert into note (id, task_id, author, kind, body, preview, questions, answers)
+      insert into note (id, task_id, author, kind, body, preview, suggestion, questions, answers)
       values ('n1', 't1', ${o.author ?? 'agent'}::note_author, ${o.kind ?? 'comment'}::note_kind, ${o.body ?? ENVELOPE},
-        ${o.preview ?? null}, ${o.questions ?? null}, ${o.answers ?? null})`);
+        ${o.preview ?? null}, ${o.suggestion ?? null}, ${o.questions ?? null}, ${o.answers ?? null})`);
   };
   const event = async (tx: Tx, o: { data?: string; output?: string | null } = {}) => {
     await task(tx);
@@ -159,6 +160,7 @@ describe('what the application role can store afterwards', () => {
     ],
     ['note_body_sealed', 'a plain empty body', (tx) => note(tx, { body: '' })],
     ['note_preview_sealed', 'a plain preview', (tx) => note(tx, { preview: 'plain' })],
+    ['note_suggestion_sealed', 'a plain suggestion', (tx) => note(tx, { suggestion: 'Yes, go ahead.' })],
     ['note_questions_sealed', 'plain questions', (tx) => note(tx, { kind: 'question', questions: '[]' })],
     ['note_answers_sealed', 'plain answers', (tx) => note(tx, { author: 'user', kind: 'answer', answers: '[]' })],
     ['transcript_event_data_sealed', 'plain event data', (tx) => event(tx, { data: '{"kind":"note"}' })],
@@ -176,13 +178,25 @@ describe('what the application role can store afterwards', () => {
     );
   });
 
+  it.each([
+    ['a user comment', { author: 'user', kind: 'comment' }],
+    ['an agent question', { author: 'agent', kind: 'question', questions: ENVELOPE }],
+    ['a system event', { author: 'system', kind: 'event' }],
+  ])('refuses a sealed suggestion on %s', async (_what, fields) => {
+    expect(await refusedBy(() => as((tx) => note(tx, { ...fields, suggestion: ENVELOPE })))).toBe(
+      'note_suggestion_agent_comment',
+    );
+  });
+
   it('accepts sealed values, null where a column may be empty, and the server events in plain text', async () => {
     await as(async (tx) => {
       await task(tx, { workdir: ENVELOPE, dedupeKey: BLIND_INDEX, head: BLIND_INDEX });
       await schedule(tx, { workdir: ENVELOPE });
     });
     await clear();
-    await as(async (tx) => note(tx, { preview: ENVELOPE, questions: ENVELOPE, answers: ENVELOPE }));
+    await as(async (tx) =>
+      note(tx, { preview: ENVELOPE, suggestion: ENVELOPE, questions: ENVELOPE, answers: ENVELOPE }),
+    );
     await clear();
     await as(async (tx) => note(tx, { author: 'server', kind: 'event', body: 'Marked done.' }));
     await clear();
