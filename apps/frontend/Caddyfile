@@ -1,19 +1,57 @@
 # TLS terminates at Traefik in the cluster. Authelia forward-auth runs there for the UI and sets the Remote-*
 # headers, which reverse_proxy passes on to the backend. /api/machine/* is routed past the login (bearer tokens,
 # checked by the backend).
+
+# What the backend serves is data, never a page. Its answers share the app's origin, so a page it made up under /api or
+# /trpc would run under `script-src 'self'` with the app's access to the keys in IndexedDB, and a header of its choosing
+# (Clear-Site-Data wipes that storage, Set-Cookie, Refresh, Link, Location, Service-Worker-Allowed, Strict-Transport-Security,
+# Access-Control-*) would act on the app's origin too. So nothing the backend sends as a header reaches the browser: `header_down -*`
+# drops every one of them (an allow-list, so a header nobody has thought of is dropped as well; the status code and the body
+# are all that pass), and the answer leaves with the headers below, which `>` writes at the last moment. Everything under
+# these paths is JSON (tRPC, the machine API, /healthz), so the type is fixed to it, and `sandbox` with `default-src 'none'`
+# leaves a browser that opened one as a page with no origin, no scripts and nothing to load. A script of a service worker
+# must have a JavaScript type and a worker is scoped by its path, so one cannot be registered from here either.
+# Every proxy to the backend is in this snippet, and every handle that proxies imports it.
+(data_only) {
+	header {
+		>Content-Type "application/json; charset=utf-8"
+		>Content-Security-Policy "sandbox; default-src 'none'"
+		>X-Content-Type-Options "nosniff"
+		>Cross-Origin-Resource-Policy "same-origin"
+		>Content-Disposition "attachment"
+		>Cache-Control "no-store"
+	}
+	reverse_proxy backend:4000 {
+		header_down -*
+	}
+}
+
 :80 {
 	encode gzip zstd
 
+	# The app is a static SPA with no inline scripts. 'wasm-unsafe-eval' is for Argon2 (WebAssembly, compiled from bytes in
+	# the bundle); 'unsafe-inline' for styles is Mantine's <style> tags for its theme variables. Images from other origins
+	# are refused on purpose: a markdown image in an agent's note would otherwise send a request to a stranger's server.
+	# `worker-src 'none'`: the app registers no service or web worker, and none can be added.
+	# Cross-Origin-Opener-Policy keeps other windows from holding a reference to the app's window.
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; worker-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+	}
+
 	handle /trpc* {
-		reverse_proxy backend:4000
+		import data_only
 	}
 
 	handle /api/* {
-		reverse_proxy backend:4000
+		import data_only
 	}
 
 	handle /healthz {
-		reverse_proxy backend:4000
+		import data_only
 	}
 
 	handle /assets/* {

@@ -1,4 +1,4 @@
-import { isSafeMachineName } from '@agent-board/shared';
+import { isSafeMachineName, MACHINE_NAME_RULE } from '@agent-board/shared';
 import { asc, eq, sql } from 'drizzle-orm';
 import { createHash, randomBytes } from 'node:crypto';
 import type { DbOrTx } from '../db/client';
@@ -9,8 +9,7 @@ const hash = (token: string): string => createHash('sha256').update(token).diges
 
 /** A new token for `name`, shown once; a machine that had one gets a new one and the old one stops working. */
 export async function issueToken(db: DbOrTx, name: string): Promise<string> {
-  if (!isSafeMachineName(name))
-    throw new AppError('BAD_REQUEST', "A machine name has letters, digits, '.', '-' and '_' only.");
+  if (!isSafeMachineName(name)) throw new AppError('BAD_REQUEST', `A machine name is ${MACHINE_NAME_RULE}.`);
   const token = `abm_${randomBytes(32).toString('base64url')}`;
   await db
     .insert(machines)

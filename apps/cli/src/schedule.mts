@@ -16,6 +16,7 @@ import {
 import type { Command } from 'commander';
 import type { Backend, Priority, Status, Task } from '@agent-board/shared';
 import { UsageError } from './cli.mts';
+import { plainLine } from './terminal.mts';
 
 export interface ScheduleArgs {
   prompt: string;
@@ -248,6 +249,8 @@ export interface ScheduleDeps {
   print: (line: string) => void;
   // Where the line that confirms a write goes; unset means print. A dry run confirms nothing.
   confirm?: (line: string) => void;
+  // The link to a task, built from this machine's own board URL.
+  link: (taskId: string) => string;
   check: DuplicateCheck;
   // Asks in the terminal; undefined when there is none (a script), which creates the task with a warning.
   choose: ((duplicate: Duplicate, task: Task) => Promise<Choice>) | undefined;
@@ -268,7 +271,7 @@ async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<T
   });
   const end = args.times ? `, ${args.times} runs` : args.until ? `, until ${localTime(args.until)}` : '';
   (deps.confirm ?? deps.print)(
-    `scheduled repeat ${schedule.id}: ${describeRule(schedule)}${end}; first run ${localTime(task.notBefore ?? new Date())} ${task.url}`,
+    `scheduled repeat ${schedule.id}: ${describeRule(schedule)}${end}; first run ${localTime(task.notBefore ?? new Date())} ${deps.link(task.id)}`,
   );
   return task;
 }
@@ -278,11 +281,14 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
   if (args.every !== undefined || args.cron !== undefined) return scheduleRepeat(deps, args);
   let warning: string | undefined;
   if (!args.forceNew) {
-    const open = (await backend.listTasks()).filter((task) => task.status !== 'done');
+    // A task this machine cannot read says nothing to the check, and the model must not see its placeholder.
+    const open = (await backend.listTasks()).filter((task) => task.status !== 'done' && task.unreadable.length === 0);
     const duplicate = await deps.check(args.prompt, deps.workdir, open);
     const existing = duplicate === undefined ? undefined : open.find((task) => task.id === duplicate.taskId);
     if (duplicate && existing) {
-      deps.print(`Looks like ${existing.id} (${existing.status}) "${existing.title}" covers this: ${duplicate.reason}`);
+      deps.print(
+        `Looks like ${existing.id} (${existing.status}) "${plainLine(existing.title)}" covers this: ${plainLine(duplicate.reason)}`,
+      );
       const choice = deps.choose ? await deps.choose(duplicate, existing) : 'new';
       if (choice === 'abort') {
         deps.print('nothing scheduled');
@@ -292,14 +298,14 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
         if (existing.status === 'todo' && args.notBefore) {
           const delayed = await backend.updateTask(existing.id, { notBefore: args.notBefore, expect: 'todo' });
           (deps.confirm ?? deps.print)(
-            `${existing.id} is already queued, now starts ${localTime(args.notBefore)}: ${delayed.url}`,
+            `${existing.id} is already queued, now starts ${localTime(args.notBefore)}: ${deps.link(delayed.id)}`,
           );
           return delayed;
         }
         if (existing.status === 'todo' || existing.status === 'running') {
           const note = args.notBefore ? '; the start time was not applied' : '';
           (deps.confirm ?? deps.print)(
-            `${existing.id} is already ${existing.status === 'todo' ? 'queued' : 'running'}${note}: ${existing.url}`,
+            `${existing.id} is already ${existing.status === 'todo' ? 'queued' : 'running'}${note}: ${deps.link(existing.id)}`,
           );
           return existing;
         }
@@ -312,7 +318,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
           author: 'system',
         });
         (deps.confirm ?? deps.print)(
-          `requeued ${requeued.id} ${requeued.url}${requeued.notBefore ? `, starts ${localTime(requeued.notBefore)}` : ''}`,
+          `requeued ${requeued.id} ${deps.link(requeued.id)}${requeued.notBefore ? `, starts ${localTime(requeued.notBefore)}` : ''}`,
         );
         return requeued;
       }
@@ -322,7 +328,6 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
   const { task } = await backend.addTask({
     title: args.title || defaultTitle(args.prompt),
     input: args.prompt,
-    labels: [],
     status: startStatus(args),
     ...(args.notBefore ? { notBefore: args.notBefore } : {}),
     createdBy: 'user',
@@ -332,7 +337,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
   });
   if (warning) await backend.addNote(task.id, warning, { author: 'system' });
   (deps.confirm ?? deps.print)(
-    `scheduled ${task.id} ${task.url}${task.notBefore ? `, starts ${localTime(task.notBefore)}` : ''}`,
+    `scheduled ${task.id} ${deps.link(task.id)}${task.notBefore ? `, starts ${localTime(task.notBefore)}` : ''}`,
   );
   return task;
 }

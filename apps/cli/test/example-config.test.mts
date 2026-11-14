@@ -6,7 +6,7 @@ import { buildInvocation, expandRule } from '../src/decide.mts';
 import { parseConfig } from '../src/config.mts';
 import { task } from './helpers.mts';
 
-const FRESH = { kind: 'fresh', sessionId: 's1' } as const;
+const FRESH = { kind: 'fresh', sessionId: '11111111-1111-4111-8111-111111111111' } as const;
 
 const raw: unknown = JSON.parse(readFileSync(new URL('../config.example.json', import.meta.url), 'utf8'));
 const config = parseConfig(raw);

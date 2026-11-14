@@ -6,11 +6,12 @@
  * `board comment`, telling the agent to post a status and end its turn. It never fails the tool call for its own errors: a broken
  * hook must not break a run.
  */
-import { isRecord, isSafeTaskId, parseQuestions, QuestionError } from '@agent-board/shared';
+import { isRecord, isSafeTaskId, isSafeWorkdir, parseQuestions, QuestionError } from '@agent-board/shared';
 import type { Question } from '@agent-board/shared';
 import { buildContext, readStdin } from './cli.mts';
 import { postSlack, slackText } from './notify.mts';
 import { createRunFiles } from './runtime.mts';
+import { oneLine } from './text.mts';
 
 export const PAUSE_REASON =
   'Pause requested: this machine needs the slot for other work. Post a one-line status of where you are with `board comment <task> "..."`, then end your turn without any other tool call. You will be resumed later in this same session.';
@@ -59,7 +60,7 @@ export function askedQuestions(input: unknown): Question[] | undefined {
 export function askedDecision(taskId: string, failure: string | undefined): string {
   if (failure !== undefined) {
     return deny(
-      `Could not put the question on the board (${failure}). Post the question with \`board comment ${taskId} "..."\`, then run \`board move ${taskId} needs-me\` and end your turn.`,
+      `Could not put the question on the board (${oneLine(failure, 400)}). Post the question with \`board comment ${taskId} "..."\`, then run \`board move ${taskId} needs-me\` and end your turn.`,
     );
   }
   return deny(
@@ -85,7 +86,7 @@ export async function runHook(args: string[]): Promise<void> {
     } catch {
       input = undefined;
     }
-    if (isRecord(input) && typeof input['cwd'] === 'string' && input['cwd'].startsWith('/'))
+    if (isRecord(input) && typeof input['cwd'] === 'string' && isSafeWorkdir(input['cwd']))
       files.writeCwd(taskId, input['cwd']);
     const pauseRequested = files.pauseRequestedAt(taskId) !== undefined;
     let decision = hookDecision(input, pauseRequested, taskId);
@@ -110,7 +111,7 @@ export async function runHook(args: string[]): Promise<void> {
                 postSlack(
                   context.config.slackWebhookFile,
                   slackText(
-                    task,
+                    { title: task.title, url: context.taskLink(task.id) },
                     `Question: ${first}${questions && questions.length > 1 ? ` (+${questions.length - 1} more)` : ''}`,
                   ),
                 ),

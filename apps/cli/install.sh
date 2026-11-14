@@ -12,4 +12,4 @@ node_bin=${NODE:-$(node -e 'console.log(process.execPath)' 2>/dev/null || true)}
   || { echo "no Node 24+ found; run NODE=/path/to/node ./install.sh" >&2; exit 1; }
 ln -sfn "$node_bin" "$root/bin/.node"
 "$root/bin/board" setup "$@"
-echo "installed. Next: board init (web.json, env, config.json), then board doctor."
+echo "installed. Next: board init (the board's URL, the machine token and the data key: set up encryption in the browser first, then copy the key from the Settings page), then board doctor."

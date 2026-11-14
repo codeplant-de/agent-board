@@ -295,3 +295,25 @@ test('a task that is not due yet is left alone: no claim, no log line', async ()
   assert.ok(!backend.writes.some((w) => w.includes('w1')));
   assert.ok(!logs.some((line) => line.includes('w1') || line.includes('w2')));
 });
+
+test('a task whose prompt or directory cannot be decrypted is never claimed or started; an unreadable title alone is fine', async () => {
+  const { deps, started, backend, logs } = setup([
+    task({ id: 'u1', input: '', unreadable: ['input'] }),
+    task({ id: 'u2', input: '/selftest go', unreadable: ['workdir'] }),
+    task({ id: 'u3', input: '/selftest go', unreadable: ['title'] }),
+  ]);
+  await runDispatch(deps);
+  assert.deepEqual(started, ['u3']);
+  assert.ok(!backend.writes.some((w) => w.startsWith('claim u1') || w.startsWith('claim u2')));
+  assert.ok(logs.includes('SKIP u1 cannot decrypt its input'));
+  assert.ok(logs.includes('SKIP u2 cannot decrypt its workdir'));
+});
+
+test('a task that still names an agent as its creator is never started, whatever status the board shows (unstarted proposal)', async () => {
+  const proposal = task({ id: 'prop', input: 'rm -rf the world', createdBy: 'agent' });
+  const { deps, started, backend, logs } = setup([proposal, todo('t1')]);
+  await runDispatch(deps);
+  assert.deepEqual(started, ['t1']);
+  assert.ok(!backend.writes.some((w) => w.includes('claim prop')));
+  assert.ok(logs.some((line) => line.startsWith('SKIP prop proposed by an agent')));
+});

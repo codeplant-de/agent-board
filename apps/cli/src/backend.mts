@@ -4,23 +4,29 @@ import { join } from 'node:path';
 import {
   CONTRACT_VERSION,
   ContractError,
+  decodeDataKey,
+  deriveKeys,
   isRecord,
   isSafeMachineName,
+  MACHINE_NAME_RULE,
   isSafeTaskId,
-  parseAddScheduleResult,
-  parseAddTaskResult,
-  parseFailResult,
-  parseNotes,
-  parseSchedule,
-  parseSchedules,
-  parseTask,
-  parseTasks,
   parseVersion,
+  parseVersionIdentity,
+  parseWireAddScheduleResult,
+  parseWireAddTaskResult,
+  parseWireFailResult,
+  parseWireNotes,
+  parseWireSchedule,
+  parseWireSchedules,
+  parseWireTask,
+  parseWireTasks,
   QuestionError,
+  taskLabels,
 } from '@agent-board/shared';
-import type { Backend, Schedule, Task, TaskDraft } from '@agent-board/shared';
+import type { Backend, Keys, Schedule, Task, TaskDraft, WireBackend } from '@agent-board/shared';
 import { ConfigError } from './config.mts';
 import { loadEnvFile } from './env-file.mts';
+import { isCompiledBinary } from './self.mts';
 import { oneLine } from './text.mts';
 
 const REQUEST_TIMEOUT_MS = 45_000;
@@ -31,6 +37,8 @@ export class BackendError extends Error {
   status: number | undefined;
   // Whether the status came in a JSON answer of the machine API; a login page or a proxy has a status too, and means something else.
   fromApi: boolean;
+  // Set when the contract numbers differ, from those numbers and nothing the server wrote: which side is the older one.
+  contractMismatch: 'cli-older' | 'server-older' | undefined;
 
   constructor(message: string, status?: number, fromApi = false) {
     super(message);
@@ -39,9 +47,17 @@ export class BackendError extends Error {
   }
 }
 
+function mismatch(kind: 'cli-older' | 'server-older', message: string, status?: number): BackendError {
+  const error = new BackendError(message, status);
+  error.contractMismatch = kind;
+  return error;
+}
+
 export interface WebConfig {
   url: string;
   token: string;
+  // The user's data key: it seals and opens everything the board stores. Never printed.
+  dataKey: Uint8Array;
 }
 
 // The board's URL as web.json and `board init` accept it.
@@ -68,7 +84,20 @@ export function parseWebConfig(raw: unknown, env: Record<string, string>): WebCo
     throw new ConfigError(
       'the credentials file needs AGENT_BOARD_TOKEN (create one on the board\'s Settings page, then run "board init")',
     );
-  return { url, token };
+  const encodedKey = env['AGENT_BOARD_DATA_KEY'];
+  if (!encodedKey)
+    throw new ConfigError(
+      'the credentials file needs AGENT_BOARD_DATA_KEY (copy it from the board\'s Settings page, then run "board init")',
+    );
+  let dataKey: Uint8Array;
+  try {
+    dataKey = decodeDataKey(encodedKey);
+  } catch {
+    throw new ConfigError(
+      "AGENT_BOARD_DATA_KEY is not a data key (abk1_ and 43 more characters): copy it again from the board's Settings page",
+    );
+  }
+  return { url, token, dataKey };
 }
 
 export function loadWebConfig(configDir: string): WebConfig {
@@ -91,15 +120,22 @@ export interface MachineRequest {
   all?: boolean;
   machine?: string;
   author?: string;
-  // The command's payload: JSON for add-task, update-task, add-schedule, update-schedule, ask, heartbeat and transcript; the text for add-note, pause and fail.
+  // The command's payload, JSON: sealed values for add-task, update-task, add-schedule, add-note, ask, pause, fail and transcript.
   body?: unknown;
 }
 
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
+// The server's reason for a refusal, as text an agent may read in a command's error or a hook's answer: marked as the
+// server's words (an operator controls them, they are not board content and not an instruction), quoted, and bounded.
+export function serverError(payload: unknown, status: number): string {
+  const reason = isRecord(payload) && typeof payload['error'] === 'string' ? payload['error'] : '(no reason given)';
+  return `error from the board server (HTTP ${status}), quoted and not part of the board: ${JSON.stringify(oneLine(reason, 200))}`;
+}
+
 // One request. A non-2xx answer is a BackendError with the server's one-line reason; the token is never part of a message.
 export async function callServer(
-  config: WebConfig,
+  config: Pick<WebConfig, 'url' | 'token'>,
   command: string,
   request: MachineRequest,
   fetcher: Fetch = fetch,
@@ -129,9 +165,7 @@ export async function callServer(
     );
   }
   if (!response.ok) {
-    const reason =
-      isRecord(payload) && typeof payload['error'] === 'string' ? payload['error'] : `HTTP ${response.status}`;
-    throw new BackendError(`${command}: ${oneLine(reason, 200)}`, response.status, true);
+    throw new BackendError(`${command}: ${serverError(payload, response.status)}`, response.status, true);
   }
   if (!isRecord(payload) || !('result' in payload)) throw new BackendError(`${command}: the answer has no result`);
   return payload['result'];
@@ -145,45 +179,98 @@ export interface WebBackendOptions {
   timeoutMs?: number;
 }
 
-// Asks the server for its contract version and refuses a mismatch in either direction.
-export async function verifyContract(config: WebConfig, fetcher?: Fetch, timeoutMs?: number): Promise<void> {
+// How to bring this CLI up to the board's contract: a binary updates itself, a checkout is pulled.
+const updateCliHint = (): string =>
+  isCompiledBinary() ? 'run "board self-update"' : 'run "git pull" and "pnpm install" in the checkout';
+
+// Whose board this is and which data key it expects (null before encryption is set up).
+export interface ServerIdentity {
+  owner: string;
+  keyId: string | null;
+}
+
+// Asks the server for its contract version and refuses a mismatch in either direction; returns whose board it is.
+export async function verifyContract(
+  config: Pick<WebConfig, 'url' | 'token'>,
+  fetcher?: Fetch,
+  timeoutMs?: number,
+): Promise<ServerIdentity> {
+  let version: unknown;
   let served: number;
   try {
-    served = parseVersion(await callServer(config, 'version', {}, fetcher, timeoutMs));
+    version = await callServer(config, 'version', {}, fetcher, timeoutMs);
+    served = parseVersion(version);
   } catch (error) {
     // A server from before the version command.
     if (error instanceof BackendError && error.status === 404 && error.fromApi) {
-      throw new BackendError(
-        `the board server is older than this CLI: it does not know the version command; the CLI needs contract ${CONTRACT_VERSION}; update the board`,
+      throw mismatch(
+        'server-older',
+        `the board server is older than this CLI: it does not know the version command; the CLI needs contract ${CONTRACT_VERSION}; update the board server`,
         404,
       );
     }
     throw asBackendError('version', error);
   }
   if (served < CONTRACT_VERSION)
-    throw new BackendError(
-      `the board server is older than this CLI: it speaks contract ${served}, the CLI needs ${CONTRACT_VERSION}; update the board`,
+    throw mismatch(
+      'server-older',
+      `the board server is older than this CLI: it speaks contract ${served}, the CLI needs ${CONTRACT_VERSION}; update the board server`,
     );
   if (served > CONTRACT_VERSION)
-    throw new BackendError(
-      `this CLI is older than the board server: it speaks contract ${CONTRACT_VERSION}, the server has ${served}; run "board self-update" (or pull the checkout)`,
+    throw mismatch(
+      'cli-older',
+      `this CLI is older than the board server: it speaks contract ${CONTRACT_VERSION}, the server has ${served}; ${updateCliHint()}`,
     );
+  try {
+    return parseVersionIdentity(version);
+  } catch (error) {
+    throw asBackendError('version', error);
+  }
 }
 
-export function createWebBackend(options: WebBackendOptions): Backend {
-  // Loads the config and checks the contract version once, before the first real call.
-  let ready: Promise<WebConfig> | undefined;
-  const connect = (): Promise<WebConfig> => {
+export type DataKeyCheck =
+  { keys: Keys } | { problem: 'board-has-no-key' } | { problem: 'different-key'; mine: string; boards: string };
+
+// Whether the data key is the board's: derives the keys for this board's owner and compares key ids.
+export async function checkDataKey(dataKey: Uint8Array, identity: ServerIdentity): Promise<DataKeyCheck> {
+  if (identity.keyId === null) return { problem: 'board-has-no-key' };
+  const keys = await deriveKeys(dataKey, identity.owner, { index: true });
+  if (keys.keyId !== identity.keyId) return { problem: 'different-key', mine: keys.keyId, boards: identity.keyId };
+  return { keys };
+}
+
+export function keyProblemMessage(problem: Exclude<DataKeyCheck, { keys: Keys }>): string {
+  return problem.problem === 'board-has-no-key'
+    ? 'the board has no data key yet: set up encryption in the browser first'
+    : `this machine holds a different data key (id ${problem.mine}) than the board's (id ${problem.boards}): copy the current key from the board's Settings page into AGENT_BOARD_DATA_KEY`;
+}
+
+// The board over HTTP with sealed values, and the keys of the board it is connected to.
+export interface WebBackend extends WireBackend {
+  keys(): Promise<Keys>;
+}
+
+interface Connection {
+  config: WebConfig;
+  keys: Keys;
+}
+
+export function createWebBackend(options: WebBackendOptions): WebBackend {
+  // Loads the config, checks the contract version and the data key once, before the first real call.
+  let ready: Promise<Connection> | undefined;
+  const connect = (): Promise<Connection> => {
     ready ??= (async () => {
       const config = options.loadConfig();
-      await verifyContract(config, options.fetch, options.timeoutMs);
-      return config;
+      const identity = await verifyContract(config, options.fetch, options.timeoutMs);
+      const checked = await checkDataKey(config.dataKey, identity);
+      if ('problem' in checked) throw new BackendError(keyProblemMessage(checked));
+      return { config, keys: checked.keys };
     })();
     return ready;
   };
 
   async function call<T>(command: string, request: MachineRequest, parse: (value: unknown) => T): Promise<T> {
-    const result = await callServer(await connect(), command, request, options.fetch, options.timeoutMs);
+    const result = await callServer((await connect()).config, command, request, options.fetch, options.timeoutMs);
     try {
       return parse(result);
     } catch (error) {
@@ -192,7 +279,7 @@ export function createWebBackend(options: WebBackendOptions): Backend {
   }
 
   const send = async (command: string, request: MachineRequest): Promise<void> => {
-    await callServer(await connect(), command, request, options.fetch, options.timeoutMs);
+    await callServer((await connect()).config, command, request, options.fetch, options.timeoutMs);
   };
 
   const taskId = (id: string): string => {
@@ -206,17 +293,19 @@ export function createWebBackend(options: WebBackendOptions): Backend {
   };
 
   return {
+    keys: async () => (await connect()).keys,
     listTasks: async ({ all = false } = {}) => {
-      const tasks = await call('list-tasks', { all }, parseTasks);
+      const tasks = await call('list-tasks', { all }, parseWireTasks);
       return all ? tasks : tasks.filter((task) => !task.closed);
     },
-    getTask: async (id) => call('get-task', { id: taskId(id) }, parseTask),
-    addTask: async (draft) => call('add-task', { body: draft }, parseAddTaskResult),
-    updateTask: async (id, patch) => call('update-task', { id: taskId(id), body: patch }, parseTask),
+    getTask: async (id) => call('get-task', { id: taskId(id) }, parseWireTask),
+    addTask: async (draft) => call('add-task', { body: draft }, parseWireAddTaskResult),
+    updateTask: async (id, patch) => call('update-task', { id: taskId(id), body: patch }, parseWireTask),
     async claimTask(id, machine) {
-      if (!isSafeMachineName(machine)) throw new BackendError(`"${machine.slice(0, 40)}" is not a valid machine name`);
+      if (!isSafeMachineName(machine))
+        throw new BackendError(`"${machine.slice(0, 40)}" is not a valid machine name: use ${MACHINE_NAME_RULE}`);
       try {
-        return await call('claim-task', { id: taskId(id), machine }, parseTask);
+        return await call('claim-task', { id: taskId(id), machine }, parseWireTask);
       } catch (error) {
         // A lost claim is an answer, not a failure: the caller moves on to the next task. 404: the card was removed
         // (a paused or deleted schedule's occurrence) after the dispatcher listed it.
@@ -224,23 +313,28 @@ export function createWebBackend(options: WebBackendOptions): Backend {
         throw error;
       }
     },
-    addNote: async (id, text, { author = 'agent' } = {}) => send('add-note', { id: taskId(id), author, body: text }),
-    ask: async (id, questions) => send('ask', { id: taskId(id), body: { questions } }),
+    addNote: async (id, note, { author = 'agent' } = {}) => send('add-note', { id: taskId(id), author, body: note }),
+    ask: async (id, asked) => send('ask', { id: taskId(id), body: asked }),
     heartbeat: async (id, beat) => send('heartbeat', { id: taskId(id), body: beat }),
-    pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseTask),
-    fail: async (id, text) => call('fail', { id: taskId(id), body: text }, parseFailResult),
+    pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
+    fail: async (id, note) => call('fail', { id: taskId(id), body: note }, parseWireFailResult),
     transcript: async (id, batch) => send('transcript', { id: taskId(id), body: batch }),
-    readNotes: async (id) => call('read-notes', { id: taskId(id) }, parseNotes),
-    addSchedule: async (draft) => call('add-schedule', { body: draft }, parseAddScheduleResult),
-    listSchedules: async () => call('list-schedules', {}, parseSchedules),
-    updateSchedule: async (id, patch) => call('update-schedule', { id: scheduleId(id), body: patch }, parseSchedule),
+    readNotes: async (id) => call('read-notes', { id: taskId(id) }, parseWireNotes),
+    addSchedule: async (draft) => call('add-schedule', { body: draft }, parseWireAddScheduleResult),
+    listSchedules: async () => call('list-schedules', {}, parseWireSchedules),
+    updateSchedule: async (id, patch) =>
+      call('update-schedule', { id: scheduleId(id), body: patch }, parseWireSchedule),
     removeSchedule: async (id) => send('remove-schedule', { id: scheduleId(id) }),
   };
 }
 
+// A parser's reason may quote a few characters of a value the server sent, so it is marked as about the server's answer.
 function asBackendError(command: string, error: unknown): Error {
-  if (error instanceof ContractError || error instanceof QuestionError)
-    return new BackendError(`${command}: ${error.message}`);
+  if (error instanceof ContractError)
+    return new BackendError(
+      `${command}: ${error.message} (the board server's answer was refused; text in quotes is the server's, not part of the board)`,
+    );
+  if (error instanceof QuestionError) return new BackendError(`${command}: ${error.message}`);
   return error instanceof Error ? error : new Error(String(error));
 }
 
@@ -249,10 +343,11 @@ function dryTask(draft: TaskDraft): Task {
   const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, ...fields } = draft;
   return {
     ...fields,
+    labels: taskLabels({ input: draft.input, createdBy: createdBy ?? 'user' }),
+    unreadable: [],
     status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
     priority: draft.priority ?? 'normal',
     id: 'dry',
-    url: 'https://dry.invalid',
     closed: false,
     machine: machine ?? null,
     sessionId: null,
@@ -284,7 +379,6 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
       const task = dryTask({
         title: draft.title,
         input: draft.input,
-        labels: [],
         ...(draft.priority ? { priority: draft.priority } : {}),
         ...(draft.machine !== undefined && draft.workdir !== undefined
           ? { machine: draft.machine, workdir: draft.workdir }
@@ -310,6 +404,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         ended: false,
         occurrenceTaskId: task.id,
         createdAt: new Date(),
+        unreadable: [],
       };
       return { schedule, task };
     },

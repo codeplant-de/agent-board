@@ -11,7 +11,7 @@ test('the command that starts a worker ends in main.mts internal worker <id>', a
 });
 
 test('the hook command of a run ends in main.mts internal hook <dir> <id>', () => {
-  assert.match(hookCommand('/run/x', 'Ab3dEf9x'), /\/src\/main\.mts' 'internal' 'hook' '\/run\/x' Ab3dEf9x$/);
+  assert.match(hookCommand('/run/x', 'Ab3dEf9x'), /\/src\/main\.mts' 'internal' 'hook' '\/run\/x' 'Ab3dEf9x'$/);
 });
 
 test('a checkout is not a compiled binary, and the running program is read once at load', () => {

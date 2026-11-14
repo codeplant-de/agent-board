@@ -6,6 +6,7 @@ import {
   isPriority,
   isRecord,
   isSafeMachineName,
+  MACHINE_NAME_RULE,
   isStringList,
   PRIORITIES,
   shortSkill,
@@ -62,6 +63,8 @@ export interface Paths {
   configDir: string;
   configFile: string;
   logDir: string;
+  // Per-task records of the Claude sessions this machine started (see sessions.mts).
+  sessionDir: string;
 }
 
 export function getPaths(env: NodeJS.ProcessEnv = process.env): Paths {
@@ -72,6 +75,7 @@ export function getPaths(env: NodeJS.ProcessEnv = process.env): Paths {
     configDir,
     configFile: join(configDir, 'config.json'),
     logDir: join(stateDir, 'logs'),
+    sessionDir: join(stateDir, 'sessions'),
   };
 }
 
@@ -98,7 +102,7 @@ function parseLanes(raw: unknown): Lane[] {
   return Object.entries(raw).map(([name, entry]): Lane => {
     const where = `lanes.${name}.`;
     if (!isSafeMachineName(name))
-      throw new ConfigError(`config: lane name "${name}" must be letters, digits, '.', '-' and '_'`);
+      throw new ConfigError(`config: lane name "${name.slice(0, 40)}" must be ${MACHINE_NAME_RULE}`);
     if (!isRecord(entry)) throw new ConfigError(`config: lanes.${name} must be an object`);
     const skills = entry['skills'];
     if (!isStringList(skills) || skills.length === 0)
@@ -171,7 +175,7 @@ export function parseConfig(raw: unknown): Config {
   const machine = raw['machine'] ?? hostname().split('.')[0] ?? '';
   if (typeof machine !== 'string' || !isSafeMachineName(machine)) {
     throw new ConfigError(
-      "config: machine must be a name of letters, digits, '.', '-' and '_' (defaults to the host name)",
+      `config: machine must be a name of ${MACHINE_NAME_RULE} (defaults to the host name), not "${String(machine).slice(0, 40)}" (${String(machine).length} characters)`,
     );
   }
   return {

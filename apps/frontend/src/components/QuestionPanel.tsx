@@ -1,7 +1,20 @@
 import type { Answer, Question } from '@agent-board/shared';
-import { Badge, Button, Checkbox, Group, Kbd, Paper, Radio, SimpleGrid, Stack, Text, TextInput } from '@mantine/core';
+import {
+  Alert,
+  Badge,
+  Button,
+  Checkbox,
+  Group,
+  Kbd,
+  Paper,
+  Radio,
+  SimpleGrid,
+  Stack,
+  Text,
+  TextInput,
+} from '@mantine/core';
 import { useHotkeys } from '@mantine/hooks';
-import { IconMessageQuestion, IconPlayerPlay } from '@tabler/icons-react';
+import { IconAlertTriangle, IconMessageQuestion, IconPlayerPlay } from '@tabler/icons-react';
 import { useState } from 'react';
 import { MarkdownEditor } from './MarkdownEditor';
 
@@ -22,16 +35,57 @@ export function toAnswers(drafts: Draft[]): Answer[] {
 }
 
 interface Props {
+  /** What the board serves now under the open question's note id. The panel shows the first value it saw. */
   questions: Question[];
   submitting: boolean;
-  onSubmit: (answers: Answer[], message: string) => void;
+  /** `questions` are the ones this panel showed, which the answers are checked against and sealed with. */
+  onSubmit: (questions: Question[], answers: Answer[], message: string) => void;
 }
 
+interface FormProps extends Props {
+  questions: Question[];
+}
+
+const sameQuestions = (a: Question[], b: Question[]): boolean => JSON.stringify(a) === JSON.stringify(b);
+
 /**
- * The agent's open question, answered like AskUserQuestion in the terminal: option cards (the recommended one
- * preselected), an "Other" field per question, number keys to pick, ⌘/Ctrl+Enter to send.
+ * The agent's open question, answered like AskUserQuestion in the terminal. The questions are frozen when the panel mounts:
+ * the answer is sealed with what was on screen. A question note is immutable, so if the board later serves other questions
+ * under the same note id, nothing is swapped in silently: the form is replaced by a notice, the picks are dropped, and the
+ * user chooses to look at the changed questions, which starts a new set of picks.
  */
 export function QuestionPanel({ questions, submitting, onSubmit }: Props) {
+  const [shown, setShown] = useState(questions);
+  const [round, setRound] = useState(0);
+  if (!sameQuestions(shown, questions))
+    return (
+      <Paper withBorder p="md" radius="md" style={{ borderColor: 'var(--mantine-color-red-5)' }}>
+        <Stack>
+          <Alert color="red" icon={<IconAlertTriangle size={18} />} title="The question changed">
+            <Text size="sm">
+              The board is now serving other questions under the one you were answering. An agent’s question is never
+              edited, so the board may be misleading you. Your picks were dropped and nothing was sent. Read the changed
+              questions carefully before you answer, or leave the task alone.
+            </Text>
+          </Alert>
+          <Group justify="flex-end">
+            <Button
+              variant="default"
+              onClick={() => {
+                setShown(questions);
+                setRound((current) => current + 1);
+              }}
+            >
+              Show the changed questions
+            </Button>
+          </Group>
+        </Stack>
+      </Paper>
+    );
+  return <QuestionForm key={round} questions={shown} submitting={submitting} onSubmit={onSubmit} />;
+}
+
+function QuestionForm({ questions, submitting, onSubmit }: FormProps) {
   const [drafts, setDrafts] = useState<Draft[]>(() => initial(questions));
   const [active, setActive] = useState(0);
   const [message, setMessage] = useState('');
@@ -58,7 +112,7 @@ export function QuestionPanel({ questions, submitting, onSubmit }: Props) {
   };
 
   const submit = () => {
-    if (ready && !submitting) onSubmit(toAnswers(drafts), message);
+    if (ready && !submitting) onSubmit(questions, toAnswers(drafts), message);
   };
 
   useHotkeys([

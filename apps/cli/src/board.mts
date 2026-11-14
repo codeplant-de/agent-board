@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { UsageError } from './cli.mts';
-import type { Context } from './cli.mts';
+import type { Context, LinkingContext } from './cli.mts';
 import { BackendError } from './backend.mts';
 import {
   formatAnswers,
@@ -15,10 +15,12 @@ import {
   QuestionError,
   runsLeft,
   STATUSES,
+  UNREADABLE_TEXT,
 } from '@agent-board/shared';
 import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
 import { postSlack, slackText } from './notify.mts';
 import { createStyle } from './style.mts';
+import { plainLine, plainText } from './terminal.mts';
 import type { Style } from './style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
 import type { Choice, ScheduleFlags } from './schedule.mts';
@@ -65,23 +67,23 @@ function confirm(context: Context, line: string): void {
   if (!context.dryRun) context.print(line);
 }
 
-export async function comment(context: Context, id: string, text: string): Promise<void> {
+export async function comment(context: LinkingContext, id: string, text: string): Promise<void> {
   await context.backend.addNote(id, text);
-  confirm(context, `commented on ${id}`);
+  confirm(context, `commented on ${id}  ${context.taskLink(id)}`);
 }
 
 // Sends the Slack message; returns the task, which the command read to write it.
-async function sendNotification(context: Context, id: string, text: string): Promise<Task> {
+async function sendNotification(context: LinkingContext, id: string, text: string): Promise<Task> {
   const task = await context.backend.getTask(id);
-  const message = slackText(task, text);
+  const message = slackText({ title: task.title, url: context.taskLink(task.id) }, text);
   if (context.dryRun) context.print(`DRY slack ${message.replaceAll('\n', ' | ')}`);
   else await postSlack(context.config.slackWebhookFile, message);
   return task;
 }
 
-export async function notify(context: Context, id: string, text: string): Promise<void> {
-  const task = await sendNotification(context, id, text);
-  confirm(context, `notified about ${id}  ${task.url}`);
+export async function notify(context: LinkingContext, id: string, text: string): Promise<void> {
+  await sendNotification(context, id, text);
+  confirm(context, `notified about ${id}  ${context.taskLink(id)}`);
 }
 
 export interface TasksFlags {
@@ -106,15 +108,40 @@ export function formatTasks(found: Task[], flags: TasksFlags, style: Style): str
     return [
       style.bold(`${status} (${inStatus.length})`),
       ...inStatus.map((task) => {
-        const labels = task.labels.length > 0 ? `  [${task.labels.join(',')}]` : '';
+        const labels = task.labels.length > 0 ? `  [${plainLine(task.labels.join(','))}]` : '';
         const hints = [
           task.notBefore ? `starts ${localTime(task.notBefore)}` : undefined,
           task.closed ? 'closed' : undefined,
+          task.unreadable.length > 0 ? `cannot decrypt: ${task.unreadable.join(', ')}` : undefined,
         ].filter((hint) => hint !== undefined);
-        return `  ${task.id.padEnd(idWidth)}  ${task.priority.padEnd(priorityWidth)}  ${task.title}${labels}${hints.length > 0 ? style.dim(`  (${hints.join(', ')})`) : ''}`;
+        return `  ${task.id.padEnd(idWidth)}  ${task.priority.padEnd(priorityWidth)}  ${plainLine(task.title)}${labels}${hints.length > 0 ? style.dim(`  (${hints.join(', ')})`) : ''}`;
       }),
     ];
   });
+}
+
+// A value this machine could not decrypt is `null` in JSON and listed in `unreadable`: the placeholder the CLI shows in
+// text must not pass for what the user wrote.
+export function taskJson(task: Task): Omit<Task, 'title' | 'input'> & { title: string | null; input: string | null } {
+  return {
+    ...task,
+    title: task.unreadable.includes('title') ? null : task.title,
+    input: task.unreadable.includes('input') ? null : task.input,
+  };
+}
+
+export function scheduleJson(
+  schedule: Schedule,
+): Omit<Schedule, 'title' | 'input'> & { title: string | null; input: string | null } {
+  return {
+    ...schedule,
+    title: schedule.unreadable.includes('title') ? null : schedule.title,
+    input: schedule.unreadable.includes('input') ? null : schedule.input,
+  };
+}
+
+export function noteJson(note: Note): Omit<Note, 'text'> & { text: string | null } {
+  return { ...note, text: note.unreadable ? null : note.text };
 }
 
 export async function tasks(context: Context, flags: TasksFlags = {}): Promise<void> {
@@ -122,7 +149,7 @@ export async function tasks(context: Context, flags: TasksFlags = {}): Promise<v
   for (const line of formatTasks(found, flags, createStyle(context.color === true))) context.print(line);
 }
 
-export async function ask(context: Context, id: string, path: string): Promise<void> {
+export async function ask(context: LinkingContext, id: string, path: string): Promise<void> {
   let questions;
   try {
     questions = parseQuestions(JSON.parse(readNoteFile(path)));
@@ -134,39 +161,44 @@ export async function ask(context: Context, id: string, path: string): Promise<v
   await context.backend.ask(id, questions);
   // Best effort: the question is on the board either way.
   const first = questions[0];
-  const task = await sendNotification(
+  await sendNotification(
     context,
     id,
     `Question: ${first?.question ?? ''}${questions.length > 1 ? ` (+${questions.length - 1} more)` : ''}`,
   ).catch((error: unknown) => {
     context.print(`WARN notify failed: ${error instanceof Error ? error.message : String(error)}`);
-    return undefined;
   });
   const count = `${questions.length} question${questions.length > 1 ? 's' : ''}`;
-  confirm(context, `asked ${count} on ${id}, now in needs-me${task ? `  ${task.url}` : ''}`);
+  confirm(context, `asked ${count} on ${id}, now in needs-me  ${context.taskLink(id)}`);
 }
 
 export function renderThread(task: Task, notes: Note[]): string {
-  const byId = new Map(notes.map((note) => [note.id, note]));
   const lines = [
     `# ${task.title}`,
     '',
-    `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(', ') || '-'} · ${task.url}`,
+    `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(', ') || '-'}`,
     '',
     '## Input',
     '',
-    task.input.trim() || '(empty)',
+    task.unreadable.includes('input') ? UNREADABLE_TEXT : task.input.trim() || '(empty)',
     '',
     '## Thread',
   ];
   for (const note of [...notes].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())) {
+    // The server's own events are plain text from a fixed list, shown as the server's and not as a note of the thread.
+    if (note.author === 'server') {
+      lines.push('', `### from the board server, not board content · ${note.createdAt.toISOString()}`, '');
+      lines.push(note.unreadable ? UNREADABLE_TEXT : note.text.trim());
+      continue;
+    }
     lines.push('', `### ${note.author} ${note.kind} · ${note.createdAt.toISOString()}`, '');
     if (note.kind === 'question' && note.questions) lines.push(formatQuestions(note.questions));
-    if (note.kind === 'answer')
-      lines.push(formatAnswers(byId.get(note.questionNoteId ?? '')?.questions, note.answers ?? []));
-    if (note.text.trim() !== '') lines.push(note.text.trim());
+    if (note.kind === 'answer' && !note.unreadable) lines.push(formatAnswers(note.questions, note.answers ?? []));
+    if (note.unreadable) lines.push(UNREADABLE_TEXT);
+    else if (note.text.trim() !== '') lines.push(note.text.trim());
   }
-  return lines.join('\n');
+  // The thread is text from the board's writers, questions and answers included.
+  return plainText(lines.join('\n'));
 }
 
 export async function readThread(context: Context, id: string): Promise<{ task: Task; notes: Note[] }> {
@@ -203,14 +235,13 @@ export function parseAddFlags(flags: AddFlags): {
 }
 
 // The board puts a proposal in Needs me itself, so no status is sent.
-export async function add(context: Context, flags: AddFlags): Promise<Task> {
+export async function add(context: LinkingContext, flags: AddFlags): Promise<Task> {
   const { title, file, parent, priority } = parseAddFlags(flags);
   // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
   // proposing agent works, on this machine.
   const draft = {
     title,
     input: readNoteFile(file),
-    labels: [],
     createdBy: 'agent' as const,
     machine: context.config.machine,
     workdir: realpathSync(process.cwd()),
@@ -218,20 +249,19 @@ export async function add(context: Context, flags: AddFlags): Promise<Task> {
     ...(priority ? { priority } : {}),
   };
   const { task } = await context.backend.addTask(draft);
-  confirm(context, `proposed ${task.id} ${task.url}`);
+  confirm(context, `proposed ${task.id} ${context.taskLink(task.id)}`);
   return task;
 }
 
-export async function move(context: Context, id: string, status: Status): Promise<void> {
-  let task: Task;
+export async function move(context: LinkingContext, id: string, status: Status): Promise<void> {
   try {
-    task = await context.backend.updateTask(id, { status });
+    await context.backend.updateTask(id, { status });
   } catch (error) {
     if (error instanceof BackendError && error.status === 403)
       throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Needs me.`);
     throw error;
   }
-  confirm(context, `moved ${id} to ${status}  ${task.url}`);
+  confirm(context, `moved ${id} to ${status}  ${context.taskLink(id)}`);
 }
 
 export interface DelayFlags {
@@ -273,7 +303,8 @@ export function formatSchedule(schedule: Schedule): string {
     `next ${nextRun(schedule)}`,
     left !== null ? `${left} left` : schedule.until ? `until ${localTime(schedule.until)}` : 'forever',
     state,
-    schedule.title,
+    plainLine(schedule.title),
+    ...(schedule.unreadable.length > 0 ? [`(cannot decrypt: ${schedule.unreadable.join(', ')})`] : []),
   ].join('  ');
 }
 
@@ -312,7 +343,7 @@ async function chooseInTerminal(): Promise<Choice> {
 }
 
 export async function scheduleCommand(
-  context: Context,
+  context: LinkingContext,
   flags: ScheduleFlags,
   words: string[],
 ): Promise<Task | undefined> {
@@ -325,6 +356,7 @@ export async function scheduleCommand(
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       print: context.print,
       confirm: (line) => confirm(context, line),
+      link: context.taskLink,
       check: haikuDuplicateCheck(
         context.print,
         process.stderr.isTTY ? (line) => void process.stderr.write(`${line}\n`) : undefined,

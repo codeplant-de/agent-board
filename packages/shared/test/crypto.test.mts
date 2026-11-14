@@ -6,8 +6,10 @@ import {
   decodeDataKey,
   deriveKeys,
   encodeDataKey,
+  envelopeLength,
   ENVELOPE_PREFIX,
   generateDataKey,
+  isBlindIndex,
   isEnvelope,
   open,
   seal,
@@ -216,4 +218,16 @@ test('known-answer vector keeps the derivation and AAD format stable', async () 
   assert.equal(keys.keyId, '0573c0a7b6879764');
   assert.equal(await blindIndex(keys, 'https://example.test/pr/1'), 'abh1.motVWtZkCTTN6P6Beby586qTOh3FtoMEKPOHTgEhd4o');
   assert.equal(await open(keys, 'note.body', 'task-1', KNOWN_ENVELOPE), 'known answer');
+});
+
+test('envelopeLength is the length seal produces, and isBlindIndex knows the blind index shape', async () => {
+  const keys = await setup();
+  for (const length of [0, 1, 2, 3, 100, 1001]) {
+    const envelope = await seal(keys, 'title', '', 'é'.repeat(length));
+    assert.equal(envelope.length, envelopeLength(length * 2));
+  }
+  assert.ok(isBlindIndex(await blindIndex(keys, 'https://github.com/o/r/pull/1')));
+  assert.equal(isBlindIndex('https://github.com/o/r/pull/1'), false);
+  assert.equal(isBlindIndex(`abh1.${'A'.repeat(42)}`), false);
+  assert.equal(isBlindIndex(`abh1.${'A'.repeat(44)}`), false);
 });

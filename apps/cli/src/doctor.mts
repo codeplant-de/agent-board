@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { BackendError, checkBoardUrl, looksLikeMachineToken, verifyContract } from './backend.mts';
-import type { WebConfig } from './backend.mts';
+import { BackendError, checkBoardUrl, checkDataKey, looksLikeMachineToken, verifyContract } from './backend.mts';
+import type { ServerIdentity, WebConfig } from './backend.mts';
 import { ConfigError, isSafeMode, parseConfig } from './config.mts';
+import { decodeDataKey } from '@agent-board/shared';
 import { parseEnv } from './env-file.mts';
 import { parseExecStart, UNIT_NAMES, UNIT_PATH, whichOnPath } from './setup.mts';
 
@@ -32,7 +33,7 @@ export interface DoctorDeps {
   home: string;
   // A read-only systemctl call: its exit code.
   systemctl: (args: string[]) => Promise<number>;
-  verifyServer: (config: WebConfig) => Promise<void>;
+  verifyServer: (config: Pick<WebConfig, 'url' | 'token'>) => Promise<ServerIdentity>;
 }
 
 type Check = (deps: DoctorDeps) => CheckResult[] | Promise<CheckResult[]>;
@@ -112,7 +113,11 @@ function readWebUrl({ configDir, readText }: DoctorDeps): { url?: string; result
 
 const checkWeb: Check = (deps) => [readWebUrl(deps).result];
 
-function readToken({ configDir, readText, mode }: DoctorDeps): { token?: string; results: CheckResult[] } {
+function readCredentials({ configDir, readText, mode }: DoctorDeps): {
+  token?: string;
+  dataKey?: Uint8Array;
+  results: CheckResult[];
+} {
   const path = join(configDir, 'env');
   const text = readText(path);
   if (text === undefined)
@@ -138,42 +143,100 @@ function readToken({ configDir, readText, mode }: DoctorDeps): { token?: string;
         `chmod 600 ${path}`,
       ),
     );
-  const token = parseEnv(text)['AGENT_BOARD_TOKEN'];
+  const values = parseEnv(text);
+  const token = values['AGENT_BOARD_TOKEN'];
   if (!token) {
     results.push(
       problem(
         'token',
         'fail',
         'AGENT_BOARD_TOKEN is not set in env',
-        'run "board init --force" or add it to the env file',
+        'run "board init": it sees the env without a token and asks for the token only',
       ),
     );
-    return { results };
+  } else {
+    results.push(
+      looksLikeMachineToken(token)
+        ? ok('token', 'present')
+        : problem(
+            'token',
+            'warn',
+            'the token does not start with abm_',
+            "create a machine token on the board's Settings page",
+          ),
+    );
   }
-  results.push(
-    looksLikeMachineToken(token)
-      ? ok('token', 'present')
-      : problem(
-          'token',
-          'warn',
-          'the token does not start with abm_',
-          "create a machine token on the board's Settings page",
+  // The key is never printed, nor part of any message.
+  const encodedKey = values['AGENT_BOARD_DATA_KEY'];
+  let dataKey: Uint8Array | undefined;
+  if (!encodedKey) {
+    results.push(
+      problem(
+        'data key',
+        'fail',
+        'AGENT_BOARD_DATA_KEY is not set in env',
+        'copy the data key from the board\'s Settings page and run "board init": it sees the env without a key and asks for the key only',
+      ),
+    );
+  } else {
+    try {
+      dataKey = decodeDataKey(encodedKey);
+      results.push(ok('data key', 'present and well-formed'));
+    } catch {
+      results.push(
+        problem(
+          'data key',
+          'fail',
+          'AGENT_BOARD_DATA_KEY is not a data key (abk1_ and 43 more characters)',
+          'copy it again from the board\'s Settings page and run "board init --force": it keeps the URL and the token unless you give them again, and asks for the key',
         ),
-  );
-  return { token, results };
+      );
+    }
+  }
+  return { ...(token ? { token } : {}), ...(dataKey ? { dataKey } : {}), results };
 }
 
-const checkEnv: Check = (deps) => readToken(deps).results;
+const checkEnv: Check = (deps) => readCredentials(deps).results;
 
 const unitPath = (home: string): string => UNIT_PATH.replaceAll('%h', () => home);
 
 const checkServer: Check = async (deps) => {
   const { url } = readWebUrl(deps);
-  const { token } = readToken(deps);
+  const { token, dataKey } = readCredentials(deps);
   if (url === undefined || token === undefined) return [];
   try {
-    await deps.verifyServer({ url, token });
-    return [ok('server', `${url} answers, contract matches`)];
+    const identity = await deps.verifyServer({ url, token });
+    const results = [ok('server', `${url} answers, contract matches`)];
+    // A board without a key cannot be matched, whatever env holds: say so first, with the way out.
+    if (identity.keyId === null)
+      return [
+        ...results,
+        problem(
+          'board key',
+          'fail',
+          'the board has no data key yet',
+          'set up encryption in the browser first, then copy the key from the Settings page and run "board init"',
+        ),
+      ];
+    if (dataKey === undefined) return results;
+    // The board's key and this machine's: derived for the board's owner, compared by id, neither ever printed.
+    const checked = await checkDataKey(dataKey, identity);
+    if ('keys' in checked)
+      return [
+        ...results,
+        ok('board key', `the board's data key is id ${checked.keys.keyId}, and this machine holds it`),
+      ];
+    return [
+      ...results,
+      problem(
+        'board key',
+        'fail',
+        checked.problem === 'board-has-no-key'
+          ? 'the board has no data key yet'
+          : `this machine holds a different data key (id ${checked.mine}) than the board's (id ${checked.boards})`,
+        'copy the current key from the board\'s Settings page and run "board init --force": it keeps the URL and the token unless you give them again, and asks for the key',
+      ),
+    ];
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // Only the API's own answer says the token is refused; a login page or proxy with a 401 is something else.
@@ -183,16 +246,19 @@ const checkServer: Check = async (deps) => {
           'server',
           'fail',
           `${url} refused the token`,
-          'create a new machine token on the board\'s Settings page and run "board init --force"',
+          'create a new machine token on the board\'s Settings page and run "board init --force": it keeps the URL and the data key unless you give them again, and asks for the token',
         ),
       ];
-    if (/older than/.test(message))
+    // Which update hint to show comes from the two contract numbers, never from text the server wrote.
+    if (error instanceof BackendError && error.contractMismatch !== undefined)
       return [
         problem(
           'server',
           'fail',
           message,
-          'update the older side: the board server, or the CLI with "board self-update" (or pull the checkout)',
+          error.contractMismatch === 'server-older'
+            ? "update the board server to this CLI's contract"
+            : 'update this CLI: "board self-update" for a binary; "git pull" and "pnpm install" in the checkout for a checkout',
         ),
       ];
     return [problem('server', 'fail', message, 'check the URL in web.json and that the board is up')];

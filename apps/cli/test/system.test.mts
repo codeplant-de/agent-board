@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseUnitState, parseUnixTimestamp, parseWorkerUnits, SystemError } from '../src/system.mts';
+import { createSystem, parseUnitState, parseUnixTimestamp, parseWorkerUnits, SystemError } from '../src/system.mts';
 
 test('only known unit states answer; anything else throws', () => {
   for (const state of ['active\n', 'activating', 'deactivating']) assert.equal(parseUnitState(state), true);
@@ -25,4 +25,14 @@ test('the unit start time is read from a unix timestamp', () => {
   assert.equal(parseUnixTimestamp('@1794468224\n')?.toISOString(), '2026-11-12T07:23:44.000Z');
   assert.equal(parseUnixTimestamp(''), undefined);
   assert.equal(parseUnixTimestamp('@0'), undefined);
+});
+
+test('a worker unit is started only for a task id of the safe shape, so no argument or unit name can be injected', async () => {
+  const lines: string[] = [];
+  const system = createSystem({ dryRun: true, print: (line) => void lines.push(line) });
+  for (const hostile of ['--property=ExecStart=/bin/sh', '../x', 'a b', 'dispatch', 'intake', '', 'x'.repeat(65)])
+    await assert.rejects(system.startWorker(hostile), SystemError, hostile);
+  assert.deepEqual(lines, []);
+  await system.startWorker('Ab3dEf9x');
+  assert.match(lines[0] ?? '', /--unit=agent-board-Ab3dEf9x .* -- \S+ \S+\/src\/main\.mts internal worker Ab3dEf9x$/);
 });

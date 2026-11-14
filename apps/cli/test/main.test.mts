@@ -7,10 +7,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { task } from './helpers.mts';
+import { encodeDataKey } from '@agent-board/shared';
+import { DATA_KEY, ENV_FILE, VERSION_ANSWER, wireTask } from './helpers.mts';
 import { keepLoopbackOffProxy } from '../src/cli.mts';
 
 const BIN = fileURLToPath(new URL('../bin/', import.meta.url));
+const sealedTask = await wireTask({ id: 'Ab3dEf9x', title: 'Fix the thing' });
 
 interface Result {
   code: number;
@@ -176,7 +178,7 @@ test('tasks works with only web.json and env', async () => {
     const command = request.url?.split('/').pop();
     request.resume();
     request.on('end', () => {
-      const result = command === 'version' ? { contract: 5 } : [task({ id: 'Ab3dEf9x', title: 'Fix the thing' })];
+      const result = command === 'version' ? VERSION_ANSWER : [sealedTask];
       response.end(JSON.stringify({ result }));
     });
   });
@@ -184,7 +186,7 @@ test('tasks works with only web.json and env', async () => {
   try {
     const { port } = server.address() as AddressInfo;
     writeFileSync(join(dir, 'web.json'), JSON.stringify({ url: `http://127.0.0.1:${port}` }));
-    writeFileSync(join(dir, 'env'), 'AGENT_BOARD_TOKEN=secret\n', { mode: 0o600 });
+    writeFileSync(join(dir, 'env'), ENV_FILE, { mode: 0o600 });
     const result = await run('board', ['tasks'], dir);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /todo \(1\)\n {2}Ab3dEf9x {2}normal {2}Fix the thing\n/);
@@ -205,7 +207,7 @@ test('__complete is gone after about two seconds of wall time, whatever is in fl
   try {
     const { port } = server.address() as AddressInfo;
     writeFileSync(join(dir, 'web.json'), JSON.stringify({ url: `http://127.0.0.1:${port}` }));
-    writeFileSync(join(dir, 'env'), 'AGENT_BOARD_TOKEN=abm_secret\n', { mode: 0o600 });
+    writeFileSync(join(dir, 'env'), ENV_FILE, { mode: 0o600 });
     const started = Date.now();
     const result = await run('board', ['__complete', 'tasks'], dir);
     const took = Date.now() - started;
@@ -221,15 +223,21 @@ test('__complete is gone after about two seconds of wall time, whatever is in fl
 test('init reads the token from a pipe with --token-file /dev/stdin, and writes env with mode 600', async () => {
   const dir = emptyConfigDir();
   try {
+    const keyFile = join(dir, 'datakey');
+    writeFileSync(keyFile, `${encodeDataKey(DATA_KEY)}\n`, { mode: 0o600 });
     const result = await new Promise<Result>((resolve) => {
       execFile(
         'sh',
-        ['-c', 'printf %s "$TOKEN" | "$BOARD" init --url http://127.0.0.1:1 --token-file /dev/stdin --machine box'],
+        [
+          '-c',
+          'printf %s "$TOKEN" | "$BOARD" init --url http://127.0.0.1:1 --token-file /dev/stdin --data-key-file "$KEYFILE" --machine box',
+        ],
         {
           env: {
             ...process.env,
             AGENT_BOARD_CONFIG_DIR: dir,
             TOKEN: 'abm_piped',
+            KEYFILE: keyFile,
             BOARD: join(BIN, 'board'),
             AGENT_BOARD_TASK: '',
           },
@@ -240,7 +248,10 @@ test('init reads the token from a pipe with --token-file /dev/stdin, and writes 
     });
     // The doctor at the end cannot reach the board on port 1, so the command exits 1; the files are written.
     assert.equal(result.code, 1, result.stderr);
-    assert.equal(readFileSync(join(dir, 'env'), 'utf8'), 'AGENT_BOARD_TOKEN=abm_piped\n');
+    assert.equal(
+      readFileSync(join(dir, 'env'), 'utf8'),
+      `AGENT_BOARD_TOKEN=abm_piped\nAGENT_BOARD_DATA_KEY=${encodeDataKey(DATA_KEY)}\n`,
+    );
     assert.equal(statSync(join(dir, 'env')).mode & 0o777, 0o600);
     assert.ok(!result.stdout.includes('abm_piped'));
   } finally {
@@ -269,7 +280,7 @@ test('a board on loopback is never sent through a proxy, even when node is told 
       const command = request.url?.split('/').pop();
       response.end(
         JSON.stringify({
-          result: command === 'version' ? { contract: 5 } : [task({ id: 'Ab3dEf9x', title: 'Fix the thing' })],
+          result: command === 'version' ? VERSION_ANSWER : [sealedTask],
         }),
       );
     });
@@ -282,7 +293,7 @@ test('a board on loopback is never sent through a proxy, even when node is told 
       join(dir, 'web.json'),
       JSON.stringify({ url: `http://127.0.0.1:${(board.address() as AddressInfo).port}` }),
     );
-    writeFileSync(join(dir, 'env'), 'AGENT_BOARD_TOKEN=abm_secret\n', { mode: 0o600 });
+    writeFileSync(join(dir, 'env'), ENV_FILE, { mode: 0o600 });
     const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
     const result = await run('board', ['tasks'], dir, {
       NODE_USE_ENV_PROXY: '1',

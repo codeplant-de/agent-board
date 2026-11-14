@@ -5,11 +5,13 @@ import {
   logLine,
   MAX_BATCH_EVENTS,
   MAX_OUTPUT_CHARS,
-  parseTranscriptBatch,
+  MAX_TEXT_CHARS,
+  parseWireTranscriptBatch,
   StreamCondenser,
   toolSummary,
   TranscriptError,
 } from '../src/transcript.mts';
+import { deriveKeys, generateDataKey, seal } from '../src/crypto.mts';
 
 // A real `claude -p --output-format stream-json --verbose` run (Claude Code 2.1.325): thinking, two Bash calls (one
 // failing), a subagent with its own Bash call, and the final result.
@@ -85,44 +87,122 @@ test('tool summaries name what a person looks for', () => {
   assert.equal(toolSummary('Skill', { skill: 'review-pr', args: '17741 --auto' }), 'review-pr 17741 --auto');
 });
 
+const keys = await deriveKeys(generateDataKey(), 'alice');
+const DATA = await seal(keys, 'tr.data', 'run:0', '{"kind":"note","text":"x"}');
+const OUTPUT = await seal(keys, 'tr.output', 'run:1', 'out');
+
+const note = { seq: 0, at: at.toISOString(), parent: null, kind: 'note', data: DATA };
+const result = {
+  seq: 1,
+  at: at.toISOString(),
+  parent: null,
+  kind: 'tool_result',
+  data: DATA,
+  output: OUTPUT,
+  outputSize: 3,
+};
+const batch = {
+  runId: '1b9a7c6e-aaaa',
+  startedAt: at.toISOString(),
+  sessionId: 's',
+  resumed: true,
+  events: [note, result],
+};
+
 test('a batch is checked for shape', () => {
-  const batch = {
-    runId: '1b9a7c6e-aaaa',
-    startedAt: at.toISOString(),
-    sessionId: 's',
-    resumed: true,
-    events: [{ seq: 0, at: at.toISOString(), parent: null, kind: 'note', text: 'x' }],
-  };
-  assert.equal(parseTranscriptBatch(batch).events.length, 1);
-  assert.throws(() => parseTranscriptBatch({ ...batch, runId: '../x' }), TranscriptError);
-  assert.throws(() => parseTranscriptBatch({ ...batch, events: [{ seq: 0, at: 'x', kind: 'weird' }] }), /known kind/);
+  const parsed = parseWireTranscriptBatch(batch);
+  assert.deepEqual(parsed.events, [note, result]);
+  assert.throws(() => parseWireTranscriptBatch({ ...batch, runId: '../x' }), TranscriptError);
+  assert.throws(
+    () => parseWireTranscriptBatch({ ...batch, events: [{ seq: 0, at: 'x', kind: 'weird' }] }),
+    /known kind/,
+  );
 });
 
 test('a batch needs an integer seq from 0, a date and at most the batch limit', () => {
-  const event = { seq: 0, at: at.toISOString(), parent: null, kind: 'note', text: 'x' };
-  const batch = {
-    runId: '1b9a7c6e-aaaa',
-    startedAt: at.toISOString(),
-    sessionId: null,
-    resumed: false,
-    events: [event],
-  };
   for (const bad of [{ seq: -1 }, { seq: 1.5 }, { seq: '1' }, { at: 'soon' }, { at: 5 }]) {
-    assert.throws(() => parseTranscriptBatch({ ...batch, events: [{ ...event, ...bad }] }), TranscriptError);
+    assert.throws(() => parseWireTranscriptBatch({ ...batch, events: [{ ...note, ...bad }] }), TranscriptError);
   }
   assert.equal(
-    parseTranscriptBatch({
+    parseWireTranscriptBatch({
       ...batch,
-      events: Array.from({ length: MAX_BATCH_EVENTS }, (_, seq) => ({ ...event, seq })),
+      events: Array.from({ length: MAX_BATCH_EVENTS }, (_, seq) => ({ ...note, seq })),
     }).events.length,
     MAX_BATCH_EVENTS,
   );
   assert.throws(
     () =>
-      parseTranscriptBatch({
+      parseWireTranscriptBatch({
         ...batch,
-        events: Array.from({ length: MAX_BATCH_EVENTS + 1 }, (_, seq) => ({ ...event, seq })),
+        events: Array.from({ length: MAX_BATCH_EVENTS + 1 }, (_, seq) => ({ ...note, seq })),
       }),
     /at most 5000/,
   );
+});
+
+test('the server refuses plaintext data and plaintext output, and checks the output size it cannot measure', () => {
+  const withEvents = (...events: unknown[]) => ({ ...batch, events });
+  assert.throws(() => parseWireTranscriptBatch(withEvents({ ...note, data: '{"kind":"note"}' })), /must be encrypted/);
+  assert.throws(() => parseWireTranscriptBatch(withEvents({ ...result, output: 'plain output' })), /must be encrypted/);
+  assert.throws(() => parseWireTranscriptBatch(withEvents({ ...result, output: undefined })), /output/);
+  for (const outputSize of [-1, 1.5, '3', null, MAX_OUTPUT_CHARS + 2048])
+    assert.throws(() => parseWireTranscriptBatch(withEvents({ ...result, outputSize })), /outputSize/);
+  assert.throws(() => parseWireTranscriptBatch(withEvents({ ...note, output: OUTPUT })), /only a tool result/);
+  assert.throws(() => parseWireTranscriptBatch(withEvents({ ...note, outputSize: 3 })), /only a tool result/);
+  assert.throws(() => parseWireTranscriptBatch(withEvents({ ...note, parent: 5 })), /parent/);
+});
+
+// The board refuses an event whose sealed data passes this, and a worker cannot get past a refused event: so no stream may
+// produce one.
+const DATA_LIMIT = 1024 * 1024;
+const sealedBytes = (event: unknown): number => new TextEncoder().encode(JSON.stringify(event)).length;
+
+test('every string of an event is bounded, so its sealed data stays under the board limit', () => {
+  const huge = 'x'.repeat(1_500_000);
+  // The worst case for the JSON size: control characters become six-character escapes, astral ones are two code units.
+  const nasty = '\u0001'.repeat(MAX_TEXT_CHARS * 2);
+  const stream: unknown[] = [
+    {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: nasty },
+          { type: 'thinking', thinking: nasty },
+        ],
+      },
+    },
+    {
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: huge, name: huge, input: { command: nasty } }] },
+    },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: huge, content: huge }] } },
+    { type: 'system', subtype: 'task_notification', summary: huge, status: huge, tool_use_id: huge },
+    `not json at all ${huge}`,
+    {
+      type: 'result',
+      result: nasty,
+      is_error: false,
+      permission_denials: Array.from({ length: 500 }, () => ({ tool_name: 'Write', tool_input: { content: nasty } })),
+    },
+  ];
+  const condenser = new StreamCondenser(() => at);
+  const events = stream.flatMap((line) => condenser.line(typeof line === 'string' ? line : JSON.stringify(line)));
+  assert.equal(events.length, 7);
+  for (const event of events) {
+    const { output, ...data } = event.kind === 'tool_result' ? event : { ...event, output: '' };
+    assert.ok(sealedBytes(data) < DATA_LIMIT, `${event.kind} event is ${sealedBytes(data)} bytes`);
+    assert.ok(output.length <= MAX_OUTPUT_CHARS + 100);
+    if (event.parent !== null) assert.ok(event.parent.length <= 256);
+  }
+  const result = events.find((event) => event.kind === 'result');
+  assert.ok(result?.kind === 'result' && result.denials.length === 21 && result.text.length < MAX_TEXT_CHARS + 100);
+  assert.match(result.denials.at(-1) ?? '', /and 480 more denials/);
+});
+
+test('text within the bound is kept as it is', () => {
+  const condenser = new StreamCondenser(() => at);
+  const [event] = condenser.line(
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'x'.repeat(MAX_TEXT_CHARS) }] } }),
+  );
+  assert.ok(event?.kind === 'text' && event.text.length === MAX_TEXT_CHARS);
 });

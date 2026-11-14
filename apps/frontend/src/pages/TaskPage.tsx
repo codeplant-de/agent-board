@@ -1,5 +1,6 @@
-import { prUrlIn } from '@agent-board/shared';
+import { prUrlIn, type UnreadableField } from '@agent-board/shared';
 import {
+  Alert,
   Anchor,
   Badge,
   Breadcrumbs,
@@ -14,7 +15,7 @@ import {
   Text,
   Title,
 } from '@mantine/core';
-import { IconBrandGithub, IconCornerDownRight, IconTerminal2 } from '@tabler/icons-react';
+import { IconBrandGithub, IconCornerDownRight, IconLockOff, IconTerminal2 } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
@@ -26,6 +27,9 @@ import { TranscriptDrawer } from '../components/TranscriptDrawer';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago, stamp } from '../lib/time';
 import { errorMessage, POLL_MS, useTRPC } from '../lib/trpc';
+
+const UNREADABLE_LABEL = (field: UnreadableField): string =>
+  field === 'input' ? 'prompt' : field === 'workdir' ? 'directory' : field;
 
 export function TaskPage() {
   const { id = '' } = useParams();
@@ -129,6 +133,34 @@ export function TaskPage() {
           )}
         </Stack>
 
+        {task.invalid.length > 0 && (
+          <Alert
+            color="orange"
+            variant="light"
+            icon={<IconLockOff size={18} />}
+            title="The board sent unexpected values"
+          >
+            <Text size="sm">
+              The board sent {task.invalid.join(', ')} for this task in a form it does not use, so neutral values are
+              shown instead. Treat this task with care.
+            </Text>
+          </Alert>
+        )}
+
+        {task.unreadable.length > 0 && (
+          <Alert
+            color="orange"
+            variant="light"
+            icon={<IconLockOff size={18} />}
+            title="Part of this task cannot be read"
+          >
+            <Text size="sm">
+              This browser could not decrypt the task&apos;s {task.unreadable.map(UNREADABLE_LABEL).join(', ')}. It was
+              not written with your key, or it is damaged, so it is not shown. Workers will not run the task.
+            </Text>
+          </Alert>
+        )}
+
         {task.input && (
           <Paper withBorder p="sm">
             <Text size="xs" c="dimmed" fw={600} mb={4} tt="uppercase">
@@ -170,8 +202,8 @@ export function TaskPage() {
               No activity yet.
             </Text>
           )}
-          {thread.map((note) => (
-            <ThreadItem key={note.id} note={note} thread={thread} />
+          {thread.map((note, index) => (
+            <ThreadItem key={index} note={note} thread={thread} />
           ))}
         </Stack>
 

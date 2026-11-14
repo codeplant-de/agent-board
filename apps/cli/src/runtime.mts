@@ -6,7 +6,7 @@
 // They live in $XDG_RUNTIME_DIR, private to the user, apart from any checkout.
 import { mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isRecord } from '@agent-board/shared';
+import { isRecord, isSafeWorkdir } from '@agent-board/shared';
 
 export interface RunRecord {
   lane: string;
@@ -86,7 +86,7 @@ export function createRunFiles(dir: string = runDir()): RunFiles {
     lastCwd(taskId) {
       try {
         const cwd = readFileSync(path(taskId, 'cwd'), 'utf8').trim();
-        return cwd.startsWith('/') ? cwd : undefined;
+        return isSafeWorkdir(cwd) ? cwd : undefined;
       } catch {
         return undefined;
       }

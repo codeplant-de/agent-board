@@ -1,10 +1,10 @@
-import type { Schedule, ScheduleDraft } from '@agent-board/shared';
+import type { WireSchedule, WireScheduleDraft } from '@agent-board/shared';
 import { Cron } from 'croner';
 import { asc, count, eq, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
 import { schedules, tasks, transcriptRuns, type ScheduleRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
-import { insertTask, lockTask, newId } from './taskRows';
+import { insertTask, lockTask } from './taskRows';
 
 const MIN_INTERVAL_MS = 60_000;
 
@@ -38,7 +38,7 @@ function nextMatch(rule: Rule, after: Date, inclusive: boolean): Date | null {
   return cronOf(rule).nextRun(inclusive ? new Date(after.getTime() - 1) : after);
 }
 
-function validRule(draft: Pick<ScheduleDraft, 'everyMs' | 'cron' | 'timezone'>): Rule['everyMs'] {
+function validRule(draft: Pick<WireScheduleDraft, 'everyMs' | 'cron' | 'timezone'>): Rule['everyMs'] {
   if (draft.everyMs !== undefined) {
     if (draft.everyMs < MIN_INTERVAL_MS) throw new AppError('BAD_REQUEST', 'An interval must be at least 1 minute.');
     return draft.everyMs;
@@ -72,7 +72,7 @@ function validRule(draft: Pick<ScheduleDraft, 'everyMs' | 'cron' | 'timezone'>):
 /** A schedule with the start time of its pending occurrence, which only the task knows (a delay changes it). */
 export type ScheduleView = ScheduleRow & { pendingNotBefore: Date | null };
 
-export function toSchedule(row: ScheduleView): Schedule {
+export function toSchedule(row: ScheduleView): WireSchedule {
   return {
     id: row.id,
     title: row.title,
@@ -148,7 +148,6 @@ async function materializeNext(
     {
       title: schedule.title,
       input: schedule.input,
-      labels: [],
       status: 'todo',
       priority: schedule.priority,
       notBefore: at,
@@ -180,10 +179,13 @@ export async function completeOccurrence(tx: DbOrTx, taskId: string, scheduleId:
   if (schedule?.occurrenceTaskId === taskId) await materializeNext(tx, schedule, now);
 }
 
-/** Creates the schedule and its first occurrence, which waits for the first run. */
+/**
+ * Creates the schedule and its first occurrence, which waits for the first run. The schedule's id is the client's, because the
+ * schedule's sealed fields are bound to it; one that is taken, by anyone, is a conflict.
+ */
 export async function addSchedule(
   db: DbOrTx,
-  draft: ScheduleDraft,
+  draft: WireScheduleDraft,
   now: Date = new Date(),
 ): Promise<{ schedule: ScheduleView; task: TaskRow }> {
   const everyMs = validRule(draft);
@@ -191,8 +193,8 @@ export async function addSchedule(
     const [inserted] = await tx
       .insert(schedules)
       .values({
-        id: newId(),
-        title: draft.title.trim(),
+        id: draft.id,
+        title: draft.title,
         input: draft.input,
         priority: draft.priority ?? 'normal',
         machine: draft.machine ?? null,
@@ -204,10 +206,12 @@ export async function addSchedule(
         remaining: draft.times ?? null,
         until: draft.until ?? null,
       })
+      .onConflictDoNothing()
       .returning();
-    const task = await materializeNext(tx, inserted!, now);
+    if (!inserted) throw new AppError('CONFLICT', 'that schedule id is already taken');
+    const task = await materializeNext(tx, inserted, now);
     if (!task) throw new AppError('BAD_REQUEST', 'The schedule would never run: nothing matches before its end.');
-    return { schedule: await viewOf(tx, inserted!.id), task };
+    return { schedule: await viewOf(tx, inserted.id), task };
   });
 }
 
@@ -282,7 +286,7 @@ export async function setPaused(
   });
 }
 
-/** Deletes the schedule and its never-run pending occurrence. Tasks that ran stay, no longer linked to it. */
+/** Deletes the schedule and its never-run pending occurrence. Tasks that ran stay, still naming it: their sealed fields are bound to its id. */
 export async function removeSchedule(db: DbOrTx, id: string): Promise<void> {
   await db.transaction(async (tx) => {
     const { pending } = await lockWithOccurrence(tx, id);

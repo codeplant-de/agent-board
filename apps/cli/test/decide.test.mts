@@ -5,6 +5,7 @@ import {
   buildInvocation,
   ownLane,
   decideOutcome,
+  isPermanentRefusal,
   isRunOver,
   decideStale,
   expandRule,
@@ -20,11 +21,18 @@ import {
 } from '../src/decide.mts';
 import type { LaneRun } from '../src/decide.mts';
 import { MAX_BATCH_EVENTS } from '@agent-board/shared';
+import { BackendError } from '../src/backend.mts';
 import type { TranscriptEvent } from '@agent-board/shared';
 import { tail } from '../src/text.mts';
-import { CONFIG, note as makeNote, task } from './helpers.mts';
+import { CONFIG, note as makeNote, OTHER_SESSION, SESSION, task } from './helpers.mts';
 
-const FRESH = { kind: 'fresh', sessionId: 's1' } as const;
+// What a worker knows of this machine's sessions: by default, every session it is asked for is its own.
+const options = (newSession = OTHER_SESSION, own = true) => ({
+  newSessionId: () => newSession,
+  isOwnSession: () => own,
+});
+
+const FRESH = { kind: 'fresh', sessionId: SESSION } as const;
 const PR = 'https://github.com/cosuno/cosuno/pull/17741';
 const invoke = (
   overrides: Parameters<typeof task>[0],
@@ -46,8 +54,9 @@ const invoke = (
 test('a scheduled task runs its prompt as written, in its directory, as the user in auto mode', () => {
   const plan = invoke({ id: 'abc', input: '/review-pr 17741 --fresh', machine: 'here', workdir: '/work/cosuno' });
   assert.ok(plan.ok);
-  const { args, cwd } = plan.invocation;
-  assert.deepEqual(args.slice(0, 4), ['-p', '/review-pr 17741 --fresh', '--session-id', 's1']);
+  const { args, cwd, prompt } = plan.invocation;
+  assert.equal(prompt, '/review-pr 17741 --fresh');
+  assert.deepEqual(args.slice(0, 2), ['-p', `--session-id=${SESSION}`]);
   assert.equal(cwd, '/work/cosuno');
   assert.equal(args[args.indexOf('--permission-mode') + 1], 'auto');
   assert.ok(!args.includes('--setting-sources'), "all of the user's settings load");
@@ -80,8 +89,8 @@ test("an intake review runs in the PR's checkout with intake's narrow rules", ()
     workdir: '/stale/dir',
   });
   assert.ok(plan.ok);
-  const { args, cwd } = plan.invocation;
-  assert.equal(args[1], `/review-pr ${PR} --auto`);
+  const { args, cwd, prompt } = plan.invocation;
+  assert.equal(prompt, `/review-pr ${PR} --auto`);
   assert.equal(cwd, '/work/cosuno', 'a fresh intake run goes back to the checkout');
   assert.deepEqual(args.slice(args.indexOf('--permission-mode'), args.indexOf('--permission-mode') + 4), [
     '--permission-mode',
@@ -104,10 +113,11 @@ test("an intake review runs in the PR's checkout with intake's narrow rules", ()
 test('a resume passes the reply and continues where the session stopped', () => {
   const plan = invoke(
     { id: 'abc', input: '/grill', workdir: '/repo/.claude/worktrees/x' },
-    { kind: 'resume', sessionId: 's-old', prompt: 'the reply' },
+    { kind: 'resume', sessionId: SESSION, prompt: 'the reply' },
   );
   assert.ok(plan.ok);
-  assert.deepEqual(plan.invocation.args.slice(0, 4), ['-p', 'the reply', '--resume', 's-old']);
+  assert.equal(plan.invocation.prompt, 'the reply');
+  assert.deepEqual(plan.invocation.args.slice(0, 2), ['-p', `--resume=${SESSION}`]);
   assert.equal(plan.invocation.cwd, '/repo/.claude/worktrees/x');
 });
 
@@ -155,7 +165,7 @@ test("a machine leaves a task to another when it is pinned there or lacks the PR
   assert.match(here({ id: 'a', input: '/grill', machine: 'there', workdir: '/x' }) ?? '', /pinned to there/);
   assert.equal(here({ id: 'a', input: '/grill', machine: 'here', workdir: '/x' }), undefined);
   assert.match(
-    here({ id: 'a', input: '/grill', next: 'resume', sessionId: 's', machine: 'there' }) ?? '',
+    here({ id: 'a', input: '/grill', next: 'resume', sessionId: SESSION, machine: 'there' }) ?? '',
     /pinned to there/,
   );
   assert.equal(
@@ -225,14 +235,15 @@ test('a resume carries the answers and comments given since the agent last spoke
       author: 'user',
       kind: 'answer',
       questionNoteId: questionNote.id,
+      questions: questionNote.questions,
       answers: [{ selected: ['Yes'] }],
     }),
     makeNote('and keep it short', at(4), { author: 'user' }),
   ];
-  const plan = planRun(task({ id: 'abc', next: 'resume', sessionId: 's-old' }), notes, () => 's-new');
+  const plan = planRun(task({ id: 'abc', next: 'resume', sessionId: SESSION }), notes, options(OTHER_SESSION));
   assert.equal(plan.kind, 'resume');
   assert.ok(plan.kind === 'resume');
-  assert.equal(plan.sessionId, 's-old');
+  assert.equal(plan.sessionId, SESSION);
   assert.match(plan.prompt, /Scope: Review the migration\? → Yes/);
   assert.match(plan.prompt, /also check the seed/);
   assert.match(plan.prompt, /and keep it short/);
@@ -242,12 +253,19 @@ test('a resume carries the answers and comments given since the agent last spoke
 
 test('a run starts fresh without a resume request, without a session, or without a reply', () => {
   const reply = [questionNote, makeNote('go on', at(2), { author: 'user' })];
-  const sessionOf = (plan: ReturnType<typeof planRun>) => `${plan.kind}:${plan.sessionId}`;
-  assert.equal(sessionOf(planRun(task({ id: 'a', next: 'fresh', sessionId: 's' }), reply, () => 'n')), 'fresh:n');
-  assert.equal(sessionOf(planRun(task({ id: 'a', next: 'resume', sessionId: null }), reply, () => 'n')), 'fresh:n');
+  const sessionOf = (plan: ReturnType<typeof planRun>) =>
+    `${plan.kind}:${plan.kind === 'blocked' ? plan.reason : plan.sessionId}`;
   assert.equal(
-    sessionOf(planRun(task({ id: 'a', next: 'resume', sessionId: 's' }), [questionNote], () => 'n')),
-    'fresh:n',
+    sessionOf(planRun(task({ id: 'a', next: 'fresh', sessionId: SESSION }), reply, options())),
+    `fresh:${OTHER_SESSION}`,
+  );
+  assert.equal(
+    sessionOf(planRun(task({ id: 'a', next: 'resume', sessionId: null }), reply, options())),
+    `fresh:${OTHER_SESSION}`,
+  );
+  assert.equal(
+    sessionOf(planRun(task({ id: 'a', next: 'resume', sessionId: SESSION }), [questionNote], options())),
+    `fresh:${OTHER_SESSION}`,
   );
 });
 
@@ -394,17 +412,17 @@ test('a full lane with its own work waiting pauses its newest borrowed run that 
 
 test('a paused run resumes with a note that it was paused, and with any reply since', () => {
   const notes = [makeNote('Halfway through the resolvers', at(2))];
-  const paused = planRun(task({ id: 'p', next: 'resume', sessionId: 's', paused: true }), notes, () => 'n');
+  const paused = planRun(task({ id: 'p', next: 'resume', sessionId: SESSION, paused: true }), notes, options());
   assert.ok(paused.kind === 'resume');
   assert.match(paused.prompt, /You were paused on board task p/);
   const replied = planRun(
-    task({ id: 'p', next: 'resume', sessionId: 's', paused: true }),
+    task({ id: 'p', next: 'resume', sessionId: SESSION, paused: true }),
     [...notes, makeNote('also do X', at(4), { author: 'user' })],
-    () => 'n',
+    options(),
   );
   assert.ok(replied.kind === 'resume' && /You were paused/.test(replied.prompt) && /also do X/.test(replied.prompt));
   assert.equal(
-    planRun(task({ id: 'p', next: 'resume', sessionId: 's', paused: false }), notes, () => 'n').kind,
+    planRun(task({ id: 'p', next: 'resume', sessionId: SESSION, paused: false }), notes, options()).kind,
     'fresh',
     'a task that was not paused has nothing to resume without a reply',
   );
@@ -426,7 +444,7 @@ test("a fresh run reads the user's notes since the previous run started, and is 
   assert.doesNotMatch(block, /migration/, 'written before the previous run started');
   assert.doesNotMatch(block, /two issues/, "the agent's notes are for `board show`");
   assert.match(block, /run `board show abc` first/);
-  const plan = planRun(current, notes, () => 'n');
+  const plan = planRun(current, notes, options());
   assert.ok(plan.kind === 'fresh' && plan.thread === block);
   const invocation = buildInvocation({
     run: plan,
@@ -438,7 +456,7 @@ test("a fresh run reads the user's notes since the previous run started, and is 
     pluginRoots: {},
   });
   assert.ok(invocation.ok);
-  assert.equal(invocation.invocation.args[1], `/grill the plan\n\n${block}`);
+  assert.equal(invocation.invocation.prompt, `/grill the plan\n\n${block}`);
 });
 
 test("a fresh run's prompt is verbatim when the thread has no user or agent notes", () => {
@@ -447,10 +465,7 @@ test("a fresh run's prompt is verbatim when the thread has no user or agent note
     freshThreadBlock(task({ id: 'a' }), [start(1), makeNote('Paused', at(2), { author: 'system', kind: 'event' })]),
     undefined,
   );
-  assert.deepEqual(
-    planRun(task({ id: 'a' }), [start(1)], () => 'n'),
-    { kind: 'fresh', sessionId: 'n' },
-  );
+  assert.deepEqual(planRun(task({ id: 'a' }), [start(1)], options()), { kind: 'fresh', sessionId: OTHER_SESSION });
 });
 
 test('earlier findings alone point the fresh run at the thread; a first message on a never-run task is carried whole', () => {
@@ -490,4 +505,121 @@ test('a backlog goes out in batches under the event and size limits', () => {
     splitBatches(Array.from({ length: MAX_BATCH_EVENTS + 1 }, (_, seq) => event(seq))).map((batch) => batch.length),
     [MAX_BATCH_EVENTS, 1],
   );
+});
+
+test('a session id that is not a UUID, or a directory that is not a path, never reaches an argument (flag injection)', () => {
+  const run = (sessionId: string, workdir: string | null = null) =>
+    buildInvocation({
+      run: { kind: 'resume', sessionId, prompt: 'go on' },
+      task: task({ id: 'a', input: '/grill', workdir }),
+      repos: {},
+      defaultCwd: '/',
+      intake: CONFIG.intake,
+      home: '/h',
+      pluginRoots: {},
+    });
+  for (const hostile of ['--dangerously-skip-permissions', '-p', `${SESSION} --x`, `${SESSION}\n`, ''])
+    assert.deepEqual(run(hostile), { ok: false, reason: 'The session id is not a UUID.' }, hostile);
+  assert.equal(run(SESSION, 'relative/dir').ok, false);
+  assert.equal(run(SESSION, '/a\nb').ok, false);
+  const ok = run(SESSION, '/work/x');
+  assert.ok(ok.ok);
+  assert.ok(ok.invocation.args.includes(`--resume=${SESSION}`) && !ok.invocation.args.includes('--resume'));
+  assert.ok(!ok.invocation.args.includes(SESSION), 'the id is part of one argument, never one of its own');
+});
+
+test('a blocked plan never becomes an invocation', () => {
+  const plan = buildInvocation({
+    run: { kind: 'blocked', reason: 'because' },
+    task: task({ id: 'a', input: '/grill' }),
+    repos: {},
+    defaultCwd: '/',
+    intake: CONFIG.intake,
+    home: '/h',
+    pluginRoots: {},
+  });
+  assert.deepEqual(plan, { ok: false, reason: 'because' });
+});
+
+test('a run resumes only a session this machine started, and only with a reply it can read', () => {
+  const replied = [questionNote, makeNote('go on', at(2), { author: 'user' })];
+  const resume = (sessionId: string | null) => task({ id: 'a', next: 'resume', sessionId });
+  const foreign = planRun(resume(OTHER_SESSION), replied, options(OTHER_SESSION, false));
+  assert.ok(foreign.kind === 'blocked' && /did not start for this task/.test(foreign.reason));
+  assert.equal(planRun(resume(SESSION), replied, options(OTHER_SESSION, true)).kind, 'resume');
+  // Without a reply to hand over, nothing is resumed and nothing needs to be known.
+  assert.equal(planRun(resume(OTHER_SESSION), [questionNote], options(OTHER_SESSION, false)).kind, 'fresh');
+  const unreadable = [questionNote, makeNote('', at(2), { author: 'user', unreadable: true })];
+  const blocked = planRun(resume(SESSION), unreadable, options());
+  assert.ok(blocked.kind === 'blocked' && /Re-run fresh/.test(blocked.reason));
+});
+
+test('a refusal is permanent when sending it again cannot help', () => {
+  for (const status of [400, 404, 409, 413, 422]) assert.equal(isPermanentRefusal(new BackendError('x', status)), true);
+  for (const status of [401, 403, 429, 500, 502, 503, undefined])
+    assert.equal(isPermanentRefusal(new BackendError('x', status)), false);
+  assert.equal(isPermanentRefusal(new Error('ECONNRESET')), false);
+});
+
+// `claude -p <prompt>` would take the prompt as an operand, and a sealed prompt is whatever the user (or an agent's proposal the
+// user started) wrote. `--mcp-config=...` starts a process before any permission mode applies, so the prompt goes in on stdin.
+const HOSTILE_PROMPTS = [
+  '--version',
+  '--dangerously-skip-permissions',
+  '-p',
+  '-',
+  '--',
+  '- fix the flaky login test',
+  '--mcp-config={"mcpServers":{"poc":{"command":"touch","args":["/tmp/marker"]}}}',
+];
+
+for (const hostile of HOSTILE_PROMPTS) {
+  test(`a prompt of ${JSON.stringify(hostile.slice(0, 30))} is carried as the prompt and adds nothing to argv`, () => {
+    const reference = invoke({ id: 'abc', input: 'plain' });
+    assert.ok(reference.ok);
+    for (const run of [FRESH, { kind: 'resume', sessionId: SESSION, prompt: hostile } as const]) {
+      const plan = invoke({ id: 'abc', input: run.kind === 'fresh' ? hostile : '/grill' }, run);
+      assert.ok(plan.ok);
+      assert.equal(plan.invocation.prompt, hostile);
+      assert.ok(!plan.invocation.args.includes('--'), 'no separator to rely on');
+      // Apart from the session flag, the arguments do not depend on the prompt at all.
+      const withoutSession = (args: string[]) =>
+        args.filter((arg) => !arg.startsWith('--session-id=') && !arg.startsWith('--resume='));
+      assert.deepEqual(withoutSession(plan.invocation.args), withoutSession(reference.invocation.args));
+    }
+  });
+}
+
+test('every other board-derived value on the command line is one argument that cannot read as an option', () => {
+  const plan = invoke({ id: 'abc', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
+  assert.ok(plan.ok);
+  const { args } = plan.invocation;
+  // The session id is part of one `--flag=value` argument (and a UUID), the rules and the settings follow their flag.
+  assert.ok(args.includes(`--session-id=${SESSION}`));
+  assert.ok(!args.includes(SESSION));
+  assert.match(
+    args[args.indexOf('--append-system-prompt') + 1] ?? '',
+    /^You are running headless as agent-board task abc/,
+  );
+  assert.match(args[args.indexOf('--settings') + 1] ?? '', /^\{/);
+  // `--allowedTools` and `--disallowedTools` take every following argument that does not start with "-".
+  const rules = args.slice(args.indexOf('--allowedTools') + 1).filter((arg) => !arg.startsWith('--'));
+  assert.ok(rules.length > 0 && rules.every((rule) => !rule.startsWith('-')));
+});
+
+test('an intake tool rule that would read as an option stops the run', () => {
+  for (const rule of ['--dangerously-skip-permissions', '-x', '{pr-review}/--x'.replace('{pr-review}', '-')]) {
+    for (const list of ['allowedTools', 'disallowedTools'] as const) {
+      const plan = buildInvocation({
+        run: FRESH,
+        task: task({ id: 'a', input: PR, createdBy: 'intake' }),
+        repos: CONFIG.repos,
+        defaultCwd: CONFIG.defaultCwd,
+        intake: { ...CONFIG.intake, [list]: [rule] },
+        home: '/h',
+        pluginRoots: {},
+      });
+      assert.ok(!plan.ok && /starts with "-"/.test(plan.reason), `${list} ${rule}`);
+    }
+  }
 });

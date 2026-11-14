@@ -5,11 +5,11 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RouterOutputs } from '../lib/trpc';
+import type { Schedule } from '../lib/trpc';
 import { stamp } from '../lib/time';
 import { SchedulesPage } from './SchedulesPage';
 
-type Row = RouterOutputs['schedules']['list'][number];
+type Row = Schedule;
 
 const list = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
 const setPaused = vi.hoisted(() => vi.fn(async (_: unknown) => null));
@@ -48,6 +48,8 @@ function row(overrides: Partial<Row>): Row {
     ended: false,
     occurrenceTaskId: 'task1',
     createdAt: nextRunAt,
+    unreadable: [],
+    invalid: [],
     ...overrides,
   } as Row;
 }
@@ -73,6 +75,14 @@ beforeEach(() => {
 });
 
 describe('SchedulesPage', () => {
+  it('shows a placeholder, not the board’s text, for a run count or an interval that is not a number', async () => {
+    list.mockResolvedValue([row({ invalid: ['remaining', 'everyMs'], remaining: null, everyMs: null })]);
+    renderPage();
+    expect(await screen.findByText('Nightly sweep')).toBeInTheDocument();
+    expect(screen.getAllByText('(invalid)')).toHaveLength(2);
+    expect(screen.queryByText('forever')).not.toBeInTheDocument();
+  });
+
   it('says so when there are no schedules', async () => {
     list.mockResolvedValue([]);
     renderPage();
