@@ -6,8 +6,11 @@ export interface Style {
 }
 
 // Colour only on a terminal that wants it; piped output and NO_COLOR stay free of escape codes.
-export function wantsColor(stream: { isTTY?: boolean }, env: Record<string, string | undefined>): boolean {
-  return stream.isTTY === true && !env['NO_COLOR'];
+export function wantsColor(
+  stream: { hasColors?: (env: Record<string, string | undefined>) => boolean },
+  env: Record<string, string | undefined>,
+): boolean {
+  return typeof stream.hasColors === 'function' && stream.hasColors(env);
 }
 
 export function createStyle(color: boolean): Style {

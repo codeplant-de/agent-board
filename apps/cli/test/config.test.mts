@@ -90,7 +90,7 @@ test('a missing config.json is the defaults only when the command allows it; any
     assert.throws(() => loadConfig(path, { optionalConfig: true }), ConfigError);
     rmSync(path);
     mkdirSync(path);
-    assert.throws(() => loadConfig(path, { optionalConfig: true }), /cannot read the config file/);
+    assert.throws(() => loadConfig(path, { optionalConfig: true }), /cannot read the config file .* \(EISDIR\)/);
   } finally {
     rmSync(dir, { recursive: true });
   }

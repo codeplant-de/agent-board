@@ -16,7 +16,6 @@ import {
   schedules,
   selectTasks,
   show,
-  taskJson,
   tasks,
 } from './board.mts';
 import type { AddFlags, DelayFlags, TasksFlags } from './board.mts';
@@ -27,6 +26,7 @@ import type { WebConfig } from './backend.mts';
 import { completionModel, renderCompletion, SHELLS } from './completion.mts';
 import type { Shell } from './completion.mts';
 import { getPaths } from './config.mts';
+import { runDir } from './runtime.mts';
 import { dispatchMain } from './dispatch.mts';
 import { formatResult, hasFailure, realDoctorDeps, runChecks } from './doctor.mts';
 import type { CheckResult, DoctorDeps } from './doctor.mts';
@@ -62,6 +62,8 @@ export interface ProgramOptions {
   // The exit code of a read-only systemctl call.
   systemctlCode?: DoctorDeps['systemctl'];
   verifyServer?: (config: WebConfig) => Promise<void>;
+  // The command line being run, set by runBoard.
+  argv?: string[];
 }
 
 const TASKS = 'Tasks:';
@@ -93,6 +95,7 @@ function examples(...lines: string[]): string {
 // A fresh program per call, so tests run it in-process with their own context and output.
 export function buildProgram(options: ProgramOptions = {}): Command {
   const env = options.env ?? process.env;
+  const argv = options.argv ?? [];
   const stdin = options.readStdin ?? readStdin;
   const makeContext = options.context ?? buildContext;
   const writeOut = options.writeOut ?? ((text: string) => void process.stdout.write(text));
@@ -127,12 +130,12 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   };
   const writeJson = (value: unknown): void => writeOut(`${JSON.stringify(value, null, 2)}\n`);
   const inRun = Boolean(env['AGENT_BOARD_TASK']);
-  const taskIdOf = (context: Context, arg: string): Promise<string> =>
-    resolveTaskId(context.backend, arg, { inRun, boardUrl: context.boardUrl });
+  const taskIdOf = (context: Context, arg: string): Promise<string> => resolveTaskId(context.backend, arg, { inRun });
   const jsonOption = (command: Command): Command => command.option('--json', 'print JSON on stdout instead of text');
   // On the old parser a trailing --dry-run meant a dry run; doing the real thing silently would be the wrong direction.
-  const refuseTrailingDryRun = (words: string[], usage: string): void => {
-    if (words.at(-1) === '--dry-run') throw new UsageError(`--dry-run goes before the text: ${usage}`);
+  const refuseDryRunInText = (words: string[], usage: string): void => {
+    if (words[0] === '--dry-run' || words.at(-1) === '--dry-run')
+      throw new UsageError(`--dry-run goes before the text, not at its start or end: ${usage}`);
   };
   // A run's agent works on untrusted text; a task it schedules would run with the user's full permissions.
   const notInRun = (message: string): void => {
@@ -167,7 +170,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     ),
   ).action(async (flags: TasksFlags, command: Command) => {
     const context = contextOf(command, { json: flags.json === true });
-    if (flags.json) writeJson((await selectTasks(context, flags)).map(taskJson));
+    if (flags.json) writeJson(await selectTasks(context, flags));
     else await tasks(context, flags);
   });
 
@@ -191,7 +194,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     const id = await taskIdOf(context, arg);
     if (!flags.json) return show(context, id);
     const { task, notes } = await readThread(context, id);
-    writeJson({ task: taskJson(task), notes });
+    writeJson({ task, notes });
   });
 
   dryRunOption(
@@ -221,7 +224,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         ),
       ),
   ).action(async (arg: string, words: string[], _options, command: Command) => {
-    refuseTrailingDryRun(words, 'board comment --dry-run <task> <text...>');
+    refuseDryRunInText(words, 'board comment --dry-run <task> <text...>');
     const text = await textOf(words, { allowFile: true });
     const context = contextOf(command);
     await comment(context, await taskIdOf(context, arg), text);
@@ -266,7 +269,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       .passThroughOptions()
       .addHelpText('after', examples('board notify Ab3dEf9x "needs your decision"')),
   ).action(async (arg: string, words: string[], _options, command: Command) => {
-    refuseTrailingDryRun(words, 'board notify --dry-run <task> <text...>');
+    refuseDryRunInText(words, 'board notify --dry-run <task> <text...>');
     const text = await textOf(words, { allowFile: false });
     const context = contextOf(command);
     await notify(context, await taskIdOf(context, arg), text);
@@ -352,13 +355,21 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     )
     .action(async (words: string[], flags: ScheduleFlags & { json?: boolean }, command: Command) => {
       notInRun('board schedule is not available inside a board run; use `board add` to propose follow-up work');
-      refuseTrailingDryRun(words, 'board schedule --dry-run <prompt...>');
+      // Commander drops a `--`, so the raw arguments tell whether the person wrote one before a prompt that ends in --dry-run.
+      const afterCommand = argv.slice(argv.indexOf('schedule') + 1);
+      if (words.at(-1) === '--dry-run' && !afterCommand.includes('--'))
+        throw new UsageError(
+          'the prompt ends in --dry-run: put --dry-run before the prompt (board schedule --dry-run <prompt...>), or put -- before a prompt that really ends in it',
+        );
       const task = await scheduleCommand(
         contextOf(command, { strictConfig: true, json: flags.json === true }),
         flags,
         words,
       );
-      if (flags.json && task) writeJson({ id: task.id, url: task.url });
+      if (flags.json)
+        writeJson(
+          task ? { id: task.id, url: task.url, ...(task.scheduleId ? { scheduleId: task.scheduleId } : {}) } : null,
+        );
     });
 
   dryRunOption(
@@ -601,7 +612,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .action((args: string[]) => {
       // `Bash(board *)` reaches this: a run may only touch its own task's files.
       const run = env['AGENT_BOARD_TASK'];
-      if (run && args[1] !== run) return;
+      if (run && (args[1] !== run || args[0] !== runDir(env))) return;
       return runHook(args);
     });
 
@@ -661,7 +672,7 @@ function commandLine(program: Command, argv: string[]): string[] {
 
 // Runs the command line; throws what `runMain` reports. Help and version output end normally.
 export async function runBoard(argv: string[], options: ProgramOptions = {}): Promise<void> {
-  const program = buildProgram(options);
+  const program = buildProgram({ ...options, argv });
   const args = commandLine(program, argv);
   try {
     await program.parseAsync(args, { from: 'user' });

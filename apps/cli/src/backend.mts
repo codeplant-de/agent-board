@@ -83,19 +83,6 @@ export function loadWebConfig(configDir: string): WebConfig {
   return parseWebConfig(raw, loadEnvFile(join(configDir, 'env')));
 }
 
-// The board's URL alone, for recognising its task links; needs neither the token nor a working server.
-export function loadBoardUrl(configDir: string): string {
-  const path = join(configDir, 'web.json');
-  try {
-    const raw: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    const url = isRecord(raw) ? raw['url'] : undefined;
-    if (typeof url === 'string') return url;
-  } catch {
-    throw new ConfigError(`web.json missing or not valid JSON: ${path}`);
-  }
-  throw new ConfigError("web.json: url must be the board's http(s) URL");
-}
-
 export interface MachineRequest {
   id?: string;
   all?: boolean;

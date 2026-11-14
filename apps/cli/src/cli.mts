@@ -1,6 +1,6 @@
 import { GitHubError } from './github.mts';
 import { SystemError } from './system.mts';
-import { BackendError, createWebBackend, dryRunBackend, loadBoardUrl, loadWebConfig } from './backend.mts';
+import { BackendError, createWebBackend, dryRunBackend, loadWebConfig } from './backend.mts';
 import { ConfigError, getPaths, loadConfig } from './config.mts';
 import type { Config } from './config.mts';
 import type { Backend } from '@agent-board/shared';
@@ -11,8 +11,6 @@ export interface Context {
   backend: Backend;
   dryRun: boolean;
   print: (line: string) => void;
-  // The board's URL, when the context can read it, to name a task's link without asking the server.
-  boardUrl?: () => string;
   // Whether output may carry colour.
   color?: boolean;
 }
@@ -47,7 +45,6 @@ export function buildContext(dryRun: boolean, options: ContextOptions = {}): Con
     backend: dryRun ? dryRunBackend(backend, out) : backend,
     dryRun,
     print: out,
-    boardUrl: () => loadBoardUrl(paths.configDir),
     color: wantsColor(process.stdout, process.env),
   };
 }

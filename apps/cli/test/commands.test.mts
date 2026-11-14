@@ -173,20 +173,33 @@ test('tasks, show, comment and move need no config file', async () => {
     await runBoard(argv, { env: {}, context });
 });
 
-test('a trailing --dry-run in the text is a usage error; one in the middle is text', async () => {
+test('--dry-run at the start or end of the text is a usage error; one in the middle is text', async () => {
   const { backend, go } = setup();
   await assert.rejects(
     go(['comment', ID, 'done', '--dry-run']),
-    /--dry-run goes before the text: board comment --dry-run/,
+    /--dry-run goes before the text.*board comment --dry-run/,
   );
+  await assert.rejects(go(['comment', ID, '--dry-run', 'hello']), /--dry-run goes before the text/);
   await assert.rejects(go(['notify', ID, 'done', '--dry-run']), /board notify --dry-run <task> <text...>/);
-  await assert.rejects(
-    go(['schedule', '/review-pr', '17', '--dry-run']),
-    /--dry-run goes before the text: board schedule --dry-run <prompt...>/,
-  );
+  await assert.rejects(go(['notify', ID, '--dry-run', 'hello']), /--dry-run goes before the text/);
   assert.deepEqual(backend.writes, []);
   await go(['comment', ID, 'a', '--dry-run', 'b']);
   assert.deepEqual(backend.writes, [`note ${ID}: a --dry-run b`]);
+});
+
+test('schedule: a prompt ending in --dry-run needs an explicit --, and the error names both ways out', async () => {
+  const { backend, go } = setup();
+  await assert.rejects(go(['schedule', '--new', '/review-pr', '17', '--dry-run']), (error: Error) => {
+    assert.match(
+      error.message,
+      /put --dry-run before the prompt \(board schedule --dry-run <prompt...>\), or put -- before/,
+    );
+    return true;
+  });
+  assert.deepEqual(backend.writes, []);
+  await go(['schedule', '--new', '--', '/review-pr', '17', '--dry-run']);
+  assert.deepEqual(backend.writes, ['create /review-pr 17 --dry-run | /review-pr 17 --dry-run | ']);
+  await go(['schedule', '--new', '/review-pr', '--dry-run', '17']);
 });
 
 test('schedule and add need a config.json; the other commands fall back to the defaults', async () => {

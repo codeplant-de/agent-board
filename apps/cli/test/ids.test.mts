@@ -25,7 +25,7 @@ function setup() {
   return { backend, calls };
 }
 
-const OUT = { inRun: false, boardUrl: () => 'https://board.example/' };
+const OUT = { inRun: false };
 
 test('a full id passes through with no request', async () => {
   const { backend, calls } = setup();
@@ -53,17 +53,21 @@ test('an ambiguous prefix lists the candidates, an unknown or too short one is r
   await assert.rejects(resolveTaskId(backend, 'Ab', OUT), /too short/);
 });
 
-test('a link of this board yields its id; another origin or shape is refused', async () => {
+test('a task link yields its id whatever its origin: the board builds links from its public URL', async () => {
   const { backend, calls } = setup();
   assert.equal(await resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x', OUT), 'Ab3dEf9x');
-  assert.equal(await resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x/', OUT), 'Ab3dEf9x');
-  await assert.rejects(
-    resolveTaskId(backend, 'https://evil.example/t/Ab3dEf9x', OUT),
-    /not a task link of https:\/\/board.example/,
-  );
+  assert.equal(await resolveTaskId(backend, 'http://localhost:5173/t/Ab3dEf9x/', OUT), 'Ab3dEf9x');
   await assert.rejects(resolveTaskId(backend, 'https://board.example/schedules', OUT), /not a task link/);
-  await assert.rejects(resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x', { inRun: false }), /cannot tell/);
+  await assert.rejects(resolveTaskId(backend, 'https://board.example/t/a/b', OUT), /not a task link/);
   assert.deepEqual(calls, []);
+});
+
+test('an exact-case prefix wins over a case-insensitive one', async () => {
+  const backend = fakeBackend([task({ id: 'Ab3dEf9x', title: 'A' }), task({ id: 'aB3zzzzz', title: 'B' })]);
+  assert.equal(await resolveTaskId(backend, 'Ab3', OUT), 'Ab3dEf9x');
+  assert.equal(await resolveTaskId(backend, 'aB3', OUT), 'aB3zzzzz');
+  await assert.rejects(resolveTaskId(backend, 'AB3', OUT), /matches 2 tasks/);
+  assert.equal(await resolveTaskId(backend, 'ab3d', OUT), 'Ab3dEf9x');
 });
 
 test('schedule ids resolve by prefix the same way', async () => {
@@ -75,7 +79,7 @@ test('schedule ids resolve by prefix the same way', async () => {
 
 test('inside a run nothing is resolved: the id is used as given, with no request', async () => {
   const { backend, calls } = setup();
-  const inRun = { inRun: true, boardUrl: OUT.boardUrl };
+  const inRun = { inRun: true };
   assert.equal(await resolveTaskId(backend, 'Ab3', inRun), 'Ab3');
   assert.equal(
     await resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x', inRun),
