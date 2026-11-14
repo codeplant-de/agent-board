@@ -14,7 +14,7 @@ import {
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 
-export const taskStatus = pgEnum('task_status', ['todo', 'running', 'needs-me', 'done']);
+export const taskStatus = pgEnum('task_status', ['backlog', 'todo', 'running', 'needs-me', 'done']);
 /** Declared highest first, so ordering by the enum puts urgent on top. */
 export const taskPriority = pgEnum('task_priority', ['urgent', 'high', 'normal', 'low']);
 export const nextRun = pgEnum('next_run', ['fresh', 'resume']);

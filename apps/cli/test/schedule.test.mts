@@ -10,6 +10,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     priority: 'high',
     title: undefined,
     hold: false,
+    backlog: false,
     forceNew: false,
   });
   assert.deepEqual(parseScheduleArgs(['--hold', '--new', '--title', 'Export', 'Find', 'out', 'why']), {
@@ -17,11 +18,14 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     priority: undefined,
     title: 'Export',
     hold: true,
+    backlog: false,
     forceNew: true,
   });
   assert.equal(parseScheduleArgs(['--', '--weird', 'prompt']).prompt, '--weird prompt');
   assert.throws(() => parseScheduleArgs(['--priority', 'asap', 'x']), /unknown priority/);
   assert.throws(() => parseScheduleArgs(['--hold']), /usage: board schedule/);
+  assert.equal(parseScheduleArgs(['--backlog', 'Find', 'out']).backlog, true);
+  assert.throws(() => parseScheduleArgs(['--hold', '--backlog', 'x']), /cannot be combined/);
 });
 
 function setup(duplicate: Duplicate | undefined, choice?: 'requeue' | 'new' | 'abort') {
@@ -72,6 +76,24 @@ test('a likely duplicate can be requeued, created anyway, or dropped', async () 
   const abort = setup(dup, 'abort');
   assert.equal(await schedule(abort.deps, parseScheduleArgs(['/review-pr', '17741'])), undefined);
   assert.deepEqual(abort.backend.writes, []);
+});
+
+test('--backlog creates the task in Backlog, --hold in Needs me, neither in Todo', async () => {
+  const statusOf = async (flags: string[]) =>
+    (await schedule(setup(undefined).deps, parseScheduleArgs([...flags, 'do', 'it'])))?.status;
+  assert.equal(await statusOf(['--backlog']), 'backlog');
+  assert.equal(await statusOf(['--hold']), 'needs-me');
+  assert.equal(await statusOf([]), 'todo');
+});
+
+test('a requeue lands in Backlog with --backlog and in Needs me with --hold', async () => {
+  const dup = { taskId: 'old', reason: 'same PR' };
+  const parked = setup(dup, 'requeue');
+  await schedule(parked.deps, parseScheduleArgs(['--backlog', '/review-pr', '17741']));
+  assert.ok(parked.backend.writes.includes('status old -> backlog'));
+  const held = setup(dup, 'requeue');
+  await schedule(held.deps, parseScheduleArgs(['--hold', '/review-pr', '17741']));
+  assert.ok(held.backend.writes.includes('status old -> needs-me'));
 });
 
 test('without a terminal a duplicate is created with a warning; --new skips the check', async () => {

@@ -24,7 +24,8 @@ test('board move takes the human status names as well as the neutral ones', () =
   assert.equal(parseStatus('Todo'), 'todo');
   assert.equal(parseStatus('Running'), 'running');
   assert.equal(parseStatus('Done'), 'done');
-  assert.throws(() => parseStatus('Backlog'), UsageError);
+  assert.equal(parseStatus('Backlog'), 'backlog');
+  assert.throws(() => parseStatus('Someday'), UsageError);
 });
 
 test('a note file is read only from /tmp, without following links', () => {

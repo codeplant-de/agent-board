@@ -125,3 +125,12 @@ describe('ActionPanel of a proposal', () => {
     expect(screen.queryByText('Go?')).not.toBeInTheDocument();
   });
 });
+
+describe('ActionPanel of a backlog task', () => {
+  it('says it is parked and offers Move to Todo and a comment box', () => {
+    renderPanel(running({ status: 'backlog' }), []);
+    expect(screen.getByText(/Parked/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Move to Todo' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Comment' })).toBeInTheDocument();
+  });
+});
