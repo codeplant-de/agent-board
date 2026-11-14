@@ -3,7 +3,11 @@ import { useEffect, useState } from 'react';
 import { liveness } from '../lib/liveness';
 
 /** "active 12s ago", re-rendered every second by itself, so the card or panel around it does not re-render. */
-export function LivenessText({ lastActiveAt, span = false, ...props }: TextProps & { lastActiveAt: Date | string | null; span?: boolean }) {
+export function LivenessText({
+  lastActiveAt,
+  span = false,
+  ...props
+}: TextProps & { lastActiveAt: Date | string | null; span?: boolean }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);

@@ -156,7 +156,11 @@ export function ThreadItem({ note, thread }: Props) {
         <ThemeIcon size="sm" variant="light" color={fromUser ? 'indigo' : 'gray'}>
           {fromUser ? <IconUser size={14} /> : <IconRobot size={14} />}
         </ThemeIcon>
-        <Meta who={fromUser ? (note.kind === 'answer' ? 'You answered' : 'You') : 'Agent'} by={fromUser ? null : note.by} at={at} />
+        <Meta
+          who={fromUser ? (note.kind === 'answer' ? 'You answered' : 'You') : 'Agent'}
+          by={fromUser ? null : note.by}
+          at={at}
+        />
       </Group>
       {note.kind === 'answer' && note.answers && (
         <Text size="sm" style={{ whiteSpace: 'pre-wrap' }} mb={note.text.trim() ? 6 : 0}>

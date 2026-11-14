@@ -30,7 +30,10 @@ export const tasks = pgTable(
     id: text('id').primaryKey(),
     title: text('title').notNull(),
     input: text('input').notNull().default(''),
-    labels: text('labels').array().notNull().default(sql`'{}'::text[]`),
+    labels: text('labels')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     status: taskStatus('status').notNull().default('todo'),
     priority: taskPriority('priority').notNull().default('normal'),
     /** Order within a status and priority: lower is higher up. */
@@ -48,8 +51,12 @@ export const tasks = pgTable(
     lane: text('lane'),
     borrowed: boolean('borrowed').notNull().default(false),
     lastActiveAt: timestamp('last_active_at', { withTimezone: true }),
-    /** When a worker last gave up the task's slot; cleared by the next claim. */
+    /** When the current run was claimed; null unless running. */
+    runStartedAt: timestamp('run_started_at', { withTimezone: true }),
+    /** When a worker gave up the task's slot; kept through the claim until the run's first update or its end. */
     pausedAt: timestamp('paused_at', { withTimezone: true }),
+    /** The PR head sha an intake review was made for. */
+    head: text('head'),
     /** The question note waiting for an answer, if any. */
     openQuestionNoteId: text('open_question_note_id'),
     dedupeKey: text('dedupe_key').unique(),
@@ -82,12 +89,6 @@ export const notes = pgTable(
   },
   (t) => [index('note_task_created_idx').on(t.taskId, t.createdAt)],
 );
-
-export const labels = pgTable('label', {
-  name: text('name').primaryKey(),
-  description: text('description').notNull().default(''),
-  createdAt: createdAt(),
-});
 
 export const machines = pgTable('machine', {
   name: text('name').primaryKey(),

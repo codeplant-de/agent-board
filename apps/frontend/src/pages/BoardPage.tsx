@@ -4,7 +4,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState, type DragEvent } from 'react';
 import { TaskCard } from '../components/TaskCard';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
-import { POLL_MS, useTRPC, type BoardTask } from '../lib/trpc';
+import { POLL_MS, useTRPC, type ListedTask } from '../lib/trpc';
 
 const HINT: Record<Status, string> = {
   todo: 'By priority; top runs first',
@@ -20,14 +20,12 @@ interface DropTarget {
 }
 
 /** Only a worker moves a task into or out of Running. */
-const canDrag = (task: BoardTask) => task.status !== 'running';
+const canDrag = (task: ListedTask) => task.status !== 'running';
 const canDrop = (status: Status) => status !== 'running';
 
 export function BoardPage() {
   const trpc = useTRPC();
   const tasks = useQuery({ ...trpc.tasks.list.queryOptions(), refetchInterval: POLL_MS });
-  const ids = (tasks.data ?? []).map((t) => t.id);
-  const activity = useQuery({ ...trpc.tasks.activity.queryOptions({ ids }), enabled: ids.length > 0, refetchInterval: POLL_MS });
   const move = useMutation(trpc.tasks.move.mutationOptions());
   const [dragId, setDragId] = useState<string | null>(null);
   const [over, setOver] = useState<DropTarget | null>(null);
@@ -58,7 +56,11 @@ export function BoardPage() {
             className="board-column"
             data-over={dragId !== null && over?.status === status && canDrop(status)}
             bg="var(--mantine-color-default-hover)"
-            style={status === 'needs-me' && column.length > 0 ? { borderTop: '3px solid var(--mantine-color-orange-5)' } : undefined}
+            style={
+              status === 'needs-me' && column.length > 0
+                ? { borderTop: '3px solid var(--mantine-color-orange-5)' }
+                : undefined
+            }
             onDragOver={(event: DragEvent) => {
               if (!dragId || !canDrop(status)) return;
               event.preventDefault();
@@ -91,7 +93,6 @@ export function BoardPage() {
                   <TaskCard
                     key={task.id}
                     task={task}
-                    activity={activity.data?.[task.id]}
                     draggable={canDrag(task)}
                     dragging={dragId === task.id}
                     onDragStart={(event) => {

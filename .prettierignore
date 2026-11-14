@@ -1,0 +1,5 @@
+pnpm-lock.yaml
+apps/backend/drizzle
+infra
+# Long hand-aligned tables and one-line paragraphs: Prettier pads every table row to its longest cell.
+README.md

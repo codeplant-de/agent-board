@@ -1,68 +1,76 @@
-import assert from "node:assert/strict";
-import { test } from "node:test";
-import { GitHubError, parsePrView } from "../src/github.mts";
-import { STATUSES } from "@agent-board/shared";
-import type { Status } from "@agent-board/shared";
-import type { LivePr } from "../src/github.mts";
-import { planIntake, runIntake } from "../src/intake.mts";
-import { CONFIG, fakeBackend, task } from "./helpers.mts";
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { GitHubError, parseSearchPage, searchQuery } from '../src/github.mts';
+import { STATUSES } from '@agent-board/shared';
+import type { Status } from '@agent-board/shared';
+import type { LivePr } from '../src/github.mts';
+import { planIntake, runIntake } from '../src/intake.mts';
+import { CONFIG, fakeBackend, task } from './helpers.mts';
 
-const NOW = new Date("2026-01-01T12:00:00Z");
+const NOW = new Date('2026-01-01T12:00:00Z');
 const url = (n: number) => `https://github.com/cosuno/cosuno/pull/${n}`;
 
 function pr(n: number, overrides: Partial<LivePr> = {}): LivePr {
   return {
     url: url(n),
     title: `PR ${n}`,
-    author: "dev",
+    author: 'dev',
     number: n,
-    headSha: "bbbbbbb1",
+    headSha: 'bbbbbbb1',
     headCommittedAt: new Date(NOW.getTime() - 30 * 60_000),
     isDraft: false,
     ...overrides,
   };
 }
 
-const taskFor = (n: number, status: Status, head = "aaaaaaa1") => task({ id: `c${n}`, status, createdBy: "intake", input: `/review-pr ${url(n)} --auto\nhead: ${head}` });
+const taskFor = (n: number, status: Status, head = 'aaaaaaa1') =>
+  task({ id: `c${n}`, status, createdBy: 'intake', input: `/review-pr ${url(n)} --auto`, head });
 const plan = (prs: LivePr[], tasks = [] as ReturnType<typeof task>[]) =>
-  planIntake({ prs, tasks, repos: Object.keys(CONFIG.repos), now: NOW }).map((a) => a.kind === "skip" ? `skip:${a.reason}` : a.kind);
+  planIntake({ prs, tasks, repos: Object.keys(CONFIG.repos), now: NOW }).map((a) =>
+    a.kind === 'skip' ? `skip:${a.reason}` : a.kind === 'close' ? `close:${a.task.id}` : a.kind,
+  );
 
-test("a new settled PR gets a task", () => {
-  assert.deepEqual(plan([pr(1)]), ["create"]);
+test('a new settled PR gets a task', () => {
+  assert.deepEqual(plan([pr(1)]), ['create']);
 });
 
-test("drafts, unmapped repos and unsettled heads are skipped", () => {
-  const unmapped = pr(2, { url: "https://github.com/other/repo/pull/2" });
+test('drafts, unmapped repos and unsettled heads are skipped', () => {
+  const unmapped = pr(2, { url: 'https://github.com/other/repo/pull/2' });
   const fresh = pr(3, { headCommittedAt: new Date(NOW.getTime() - 60_000) });
-  assert.deepEqual(plan([pr(1, { isDraft: true }), unmapped, fresh]), ["skip:draft", "skip:repository not in config", "skip:head not settled"]);
+  assert.deepEqual(plan([pr(1, { isDraft: true }), unmapped, fresh]), [
+    'skip:draft',
+    'skip:repository not in config',
+    'skip:head not settled',
+  ]);
 });
 
-test("a PR with a task in any status never gets a second task", () => {
-  for (const status of STATUSES) assert.deepEqual(plan([pr(1, { headSha: "aaaaaaa1" })], [taskFor(1, status)]), ["skip:task exists"]);
+test('a PR with a task in any status never gets a second task', () => {
+  for (const status of STATUSES)
+    assert.deepEqual(plan([pr(1, { headSha: 'aaaaaaa1' })], [taskFor(1, status)]), ['skip:task exists']);
 });
 
-test("a moved, settled head requeues a task from Needs me or Done only", () => {
-  assert.deepEqual(plan([pr(1)], [taskFor(1, "needs-me")]), ["requeue"]);
-  assert.deepEqual(plan([pr(1)], [taskFor(1, "done")]), ["requeue"]);
-  assert.deepEqual(plan([pr(1)], [taskFor(1, "todo")]), ["skip:head moved, task is todo"]);
-  assert.deepEqual(plan([pr(1)], [taskFor(1, "running")]), ["skip:head moved, task is running"]);
+test('a moved, settled head requeues a task from Needs me or Done only', () => {
+  assert.deepEqual(plan([pr(1)], [taskFor(1, 'needs-me')]), ['requeue']);
+  assert.deepEqual(plan([pr(1)], [taskFor(1, 'done')]), ['requeue']);
+  assert.deepEqual(plan([pr(1)], [taskFor(1, 'todo')]), ['skip:head moved, task is todo']);
+  assert.deepEqual(plan([pr(1)], [taskFor(1, 'running')]), ['skip:head moved, task is running']);
 });
 
-test("a failed task stays put while its head is unchanged, and is retried when the head moves", () => {
-  assert.deepEqual(plan([pr(1, { headSha: "aaaaaaa1" })], [taskFor(1, "needs-me")]), ["skip:task exists"]);
-  assert.deepEqual(plan([pr(1)], [taskFor(1, "needs-me")]), ["requeue"]);
+test('a failed task stays put while its head is unchanged, and is retried when the head moves', () => {
+  assert.deepEqual(plan([pr(1, { headSha: 'aaaaaaa1' })], [taskFor(1, 'needs-me')]), ['skip:task exists']);
+  assert.deepEqual(plan([pr(1)], [taskFor(1, 'needs-me')]), ['requeue']);
 });
 
-test("a moved head that has not settled waits", () => {
+test('a moved head that has not settled waits', () => {
   const fresh = pr(1, { headCommittedAt: new Date(NOW.getTime() - 60_000) });
-  assert.deepEqual(plan([fresh], [taskFor(1, "needs-me")]), ["skip:head moved, not settled"]);
+  assert.deepEqual(plan([fresh], [taskFor(1, 'needs-me')]), ['skip:head moved, not settled']);
 });
 
-test("a hand-made task without a head line is left alone", () => {
-  assert.deepEqual(plan([pr(1)], [task({ id: "h", status: "needs-me", input: url(1) })]), ["skip:task exists"]);
+test('a hand-made task without a head is left alone', () => {
+  assert.deepEqual(plan([pr(1)], [task({ id: 'h', status: 'needs-me', input: url(1) })]), ['skip:task exists']);
 });
 
-test("running intake twice creates the task once", async () => {
+test('running intake twice creates the task once', async () => {
   const backend = fakeBackend([]);
   const logs: string[] = [];
   const deps = {
@@ -70,31 +78,45 @@ test("running intake twice creates the task once", async () => {
     config: CONFIG,
     dryRun: false,
     print: (line: string) => logs.push(line),
-    github: { listReviewRequested: async () => [pr(1)] },
+    github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
     now: () => NOW,
   };
   await runIntake(deps);
-  backend.tasks.push(task({ id: "new", input: `${url(1)}\nhead: bbbbbbb1` }));
+  backend.tasks.push(task({ id: 'new', input: url(1), head: 'bbbbbbb1' }));
   await runIntake(deps);
-  assert.equal(backend.writes.filter((w) => w.startsWith("create")).length, 1);
-  assert.ok(logs.includes("INTAKE prs=1 created=0 requeued=0"));
+  assert.equal(backend.writes.filter((w) => w.startsWith('create')).length, 1);
+  assert.ok(logs.includes('INTAKE prs=1 created=0 requeued=0 done=0'));
 });
 
-test("requeue moves the task, updates the head line and comments", async () => {
-  const backend = fakeBackend([taskFor(1, "needs-me")]);
-  await runIntake({ backend, config: CONFIG, dryRun: false, print: () => undefined, github: { listReviewRequested: async () => [pr(1)] }, now: () => NOW });
-  assert.deepEqual(backend.writes.map((w) => w.split(":")[0]), ["status c1 -> todo", "input c1", "next c1", "note c1 (system)"]);
+test('requeue moves the task, updates the head and comments', async () => {
+  const backend = fakeBackend([taskFor(1, 'needs-me')]);
+  await runIntake({
+    backend,
+    config: CONFIG,
+    dryRun: false,
+    print: () => undefined,
+    github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+    now: () => NOW,
+  });
+  assert.deepEqual(
+    backend.writes.map((w) => w.split(':')[0]),
+    ['status c1 -> todo', 'input c1', 'next c1', 'note c1 (system)'],
+  );
 });
 
-test("a failed listing changes nothing and fails the run", async () => {
-  const backend = fakeBackend([taskFor(1, "needs-me")]);
+test('a failed listing changes nothing and fails the run', async () => {
+  const backend = fakeBackend([taskFor(1, 'needs-me')]);
   await assert.rejects(
     runIntake({
       backend,
       config: CONFIG,
       dryRun: false,
       print: () => undefined,
-      github: { listReviewRequested: async () => { throw new GitHubError("gh search failed: boom"); } },
+      github: {
+        listReviewRequested: async () => {
+          throw new GitHubError('gh search failed: boom');
+        },
+      },
       now: () => NOW,
     }),
     GitHubError,
@@ -102,41 +124,159 @@ test("a failed listing changes nothing and fails the run", async () => {
   assert.deepEqual(backend.writes, []);
 });
 
-test("a closed task still counts, so no second task and no requeue", () => {
-  const closedTask = { ...taskFor(1, "done"), closed: true };
-  assert.deepEqual(plan([pr(1)], [closedTask]), ["skip:task closed"]);
-  assert.deepEqual(plan([pr(1, { headSha: "aaaaaaa1" })], [closedTask]), ["skip:task closed"]);
+test('a closed task still counts, so no second task and no requeue', () => {
+  const closedTask = { ...taskFor(1, 'done'), closed: true };
+  assert.deepEqual(plan([pr(1)], [closedTask]), ['skip:task closed']);
+  assert.deepEqual(plan([pr(1, { headSha: 'aaaaaaa1' })], [closedTask]), ['skip:task closed']);
 });
 
-test("intake reads every task closed included", async () => {
-  const backend = fakeBackend([{ ...taskFor(1, "done"), closed: true }]);
-  await runIntake({ backend, config: CONFIG, dryRun: false, print: () => undefined, github: { listReviewRequested: async () => [pr(1)] }, now: () => NOW });
+test('intake reads every task closed included', async () => {
+  const backend = fakeBackend([{ ...taskFor(1, 'done'), closed: true }]);
+  await runIntake({
+    backend,
+    config: CONFIG,
+    dryRun: false,
+    print: () => undefined,
+    github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+    now: () => NOW,
+  });
   assert.deepEqual(backend.writes, []);
 });
 
-test("the search is asked per configured repo", async () => {
+test('the search is asked per configured repo', async () => {
   const asked: string[][] = [];
   const backend = fakeBackend([]);
-  await runIntake({ backend, config: CONFIG, dryRun: false, print: () => undefined, github: { listReviewRequested: async (repos) => { asked.push(repos); return []; } }, now: () => NOW });
-  assert.deepEqual(asked, [["cosuno/cosuno"]]);
+  await runIntake({
+    backend,
+    config: CONFIG,
+    dryRun: false,
+    print: () => undefined,
+    github: {
+      listReviewRequested: async (repos) => {
+        asked.push(repos);
+        return { prs: [], unreadable: [] };
+      },
+    },
+    now: () => NOW,
+  });
+  assert.deepEqual(asked, [['cosuno/cosuno']]);
 });
 
-test("gh pr view output is checked, not cast", () => {
-  const good = { headRefOid: "abc", title: "t", number: 1, isDraft: false, author: { login: "a" }, commits: [{ committedDate: "2026-01-01T00:00:00Z" }] };
-  assert.equal(parsePrView("u", good).headSha, "abc");
-  assert.throws(() => parsePrView("u", { ...good, commits: [] }), GitHubError);
+const node = (n: number, overrides: Record<string, unknown> = {}) => ({
+  url: url(n),
+  title: `PR ${n}`,
+  number: n,
+  isDraft: false,
+  headRefOid: 'b13e6c6ba770547fd5f799c1e7598ee182e1b4c6',
+  author: { login: 'dev' },
+  commits: { nodes: [{ commit: { committedDate: '2026-11-13T14:03:12Z' } }] },
+  ...overrides,
+});
+const page = (nodes: unknown[], hasNextPage = false) => ({
+  data: { search: { pageInfo: { hasNextPage, endCursor: hasNextPage ? 'CURSOR' : null }, nodes } },
 });
 
-test("a failed backend listing creates nothing and fails the run", async () => {
-  const backend = fakeBackend([]);
-  backend.listTasks = async () => {
-    throw new Error("backend list-tasks failed");
-  };
-  await assert.rejects(runIntake({ backend, config: CONFIG, dryRun: false, print: () => undefined, github: { listReviewRequested: async () => [pr(1)] }, now: () => NOW }), /list-tasks failed/);
+test('the GraphQL search answer is checked, not cast', () => {
+  const found = parseSearchPage(page([node(1), node(2, { author: null })], true));
+  assert.deepEqual(found.prs[0], {
+    url: url(1),
+    title: 'PR 1',
+    number: 1,
+    isDraft: false,
+    author: 'dev',
+    headSha: 'b13e6c6ba770547fd5f799c1e7598ee182e1b4c6',
+    headCommittedAt: new Date('2026-11-13T14:03:12Z'),
+  });
+  assert.equal(found.prs[1]?.author, 'ghost', 'a deleted account has no author');
+  assert.equal(found.next, 'CURSOR');
+  assert.equal(parseSearchPage(page([])).next, undefined);
+  for (const nameless of [{}, null, node(1, { url: undefined })]) {
+    assert.throws(() => parseSearchPage(page([nameless])), GitHubError, 'a node without a URL fails the run');
+  }
+  assert.throws(() => parseSearchPage({ data: null }), GitHubError);
+  assert.throws(
+    () => parseSearchPage({ data: { search: { pageInfo: { hasNextPage: true }, nodes: [] } } }),
+    GitHubError,
+  );
+});
+
+test('one search covers every configured repository', () => {
+  assert.equal(searchQuery(['a/b', 'c/d.e']), 'is:pr is:open draft:false review-requested:@me repo:a/b repo:c/d.e');
+  assert.throws(() => searchQuery(['a/b label:x']), GitHubError);
+});
+
+test('a todo review whose PR no longer asks for the review is done', async () => {
+  assert.deepEqual(plan([pr(2)], [taskFor(1, 'todo')]), ['create', 'close:c1']);
+  assert.deepEqual(plan([pr(1)], [taskFor(1, 'todo', 'bbbbbbb1')]), ['skip:task exists'], 'still listed');
+  const backend = fakeBackend([taskFor(1, 'todo')]);
+  const logs: string[] = [];
+  await runIntake({
+    backend,
+    config: CONFIG,
+    dryRun: false,
+    print: (line) => logs.push(line),
+    github: { listReviewRequested: async () => ({ prs: [], unreadable: [] }) },
+    now: () => NOW,
+  });
+  assert.deepEqual(backend.writes, ['status c1 -> done', 'note c1 (system): The PR no longer asks for your review.']);
+  assert.ok(logs.includes('INTAKE prs=0 created=0 requeued=0 done=1'));
+});
+
+test('only an open, fresh, intake-made todo task of a configured repo is closed for a gone PR', () => {
+  const other = (overrides: Partial<ReturnType<typeof task>>) => ({ ...taskFor(1, 'todo'), ...overrides });
+  for (const kept of [
+    other({ status: 'running' }),
+    other({ status: 'needs-me' }),
+    other({ closed: true }),
+    other({ next: 'resume', sessionId: 's', machine: 'here' }),
+    other({ createdBy: 'user' }),
+    other({ input: '/review-pr https://github.com/other/repo/pull/9 --auto' }),
+    other({ input: '/grill the plan' }),
+  ]) {
+    assert.deepEqual(plan([], [kept]), []);
+  }
+});
+
+test('a failed listing closes nothing', async () => {
+  const backend = fakeBackend([taskFor(1, 'todo')]);
+  await assert.rejects(
+    runIntake({
+      backend,
+      config: CONFIG,
+      dryRun: false,
+      print: () => undefined,
+      github: {
+        listReviewRequested: async () => {
+          throw new GitHubError('gh api failed');
+        },
+      },
+      now: () => NOW,
+    }),
+    GitHubError,
+  );
   assert.deepEqual(backend.writes, []);
 });
 
-test("intake creates its tasks with the configured priority", async () => {
+test('a failed backend listing creates nothing and fails the run', async () => {
+  const backend = fakeBackend([]);
+  backend.listTasks = async () => {
+    throw new Error('backend list-tasks failed');
+  };
+  await assert.rejects(
+    runIntake({
+      backend,
+      config: CONFIG,
+      dryRun: false,
+      print: () => undefined,
+      github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+      now: () => NOW,
+    }),
+    /list-tasks failed/,
+  );
+  assert.deepEqual(backend.writes, []);
+});
+
+test('intake creates its tasks with the configured priority', async () => {
   const backend = fakeBackend([]);
   const drafts: unknown[] = [];
   const addTask = backend.addTask.bind(backend);
@@ -144,6 +284,110 @@ test("intake creates its tasks with the configured priority", async () => {
     drafts.push(draft);
     return addTask(draft);
   };
-  await runIntake({ backend, config: { ...CONFIG, intake: { ...CONFIG.intake, priority: "high" } }, dryRun: false, print: () => undefined, github: { listReviewRequested: async () => [pr(1)] }, now: () => NOW });
-  assert.equal((drafts[0] as { priority: string }).priority, "high");
+  await runIntake({
+    backend,
+    config: { ...CONFIG, intake: { ...CONFIG.intake, priority: 'high' } },
+    dryRun: false,
+    print: () => undefined,
+    github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+    now: () => NOW,
+  });
+  assert.equal((drafts[0] as { priority: string }).priority, 'high');
+});
+
+test('a PR that cannot be read is reported apart and does not stop the others', () => {
+  const found = parseSearchPage(
+    page([node(1, { commits: { nodes: [] } }), node(2, { headRefOid: undefined }), node(3, { number: '1' }), node(4)]),
+  );
+  assert.deepEqual(found.unreadable, [url(1), url(2), url(3)]);
+  assert.deepEqual(
+    found.prs.map((listed) => listed.number),
+    [4],
+  );
+});
+
+test('intake logs an unreadable PR and neither creates nor closes a task for it', async () => {
+  const backend = fakeBackend([taskFor(1, 'todo')]);
+  const logs: string[] = [];
+  await runIntake({
+    backend,
+    config: CONFIG,
+    dryRun: false,
+    print: (line) => logs.push(line),
+    github: { listReviewRequested: async () => ({ prs: [], unreadable: [url(1), url(2)] }) },
+    now: () => NOW,
+  });
+  assert.deepEqual(backend.writes, []);
+  assert.ok(logs.includes(`WARN skipped ${url(1)}`));
+  assert.ok(logs.includes(`WARN skipped ${url(2)}`));
+  assert.deepEqual(
+    planIntake({
+      prs: [],
+      unreadable: [url(1)],
+      tasks: [taskFor(1, 'todo')],
+      repos: Object.keys(CONFIG.repos),
+      now: NOW,
+    }),
+    [],
+  );
+});
+
+test('a task closed as gone loses its head and comes back when the PR is listed again', async () => {
+  const backend = fakeBackend([taskFor(1, 'todo', 'bbbbbbb1')]);
+  const asked = { prs: [] as LivePr[], unreadable: [] as string[] };
+  const github = { listReviewRequested: async () => asked };
+  const deps = { backend, config: CONFIG, dryRun: false, print: () => undefined, github, now: () => NOW };
+  await runIntake(deps);
+  assert.equal(backend.tasks[0]?.status, 'done');
+  assert.equal(backend.tasks[0]?.head, null);
+  asked.prs = [pr(1)];
+  backend.writes.length = 0;
+  await runIntake(deps);
+  assert.deepEqual(
+    backend.writes.map((w) => w.split(':')[0]),
+    ['status c1 -> todo', 'input c1', 'next c1', 'note c1 (system)'],
+  );
+  assert.match(backend.writes.at(-1) ?? '', /The PR asks for your review again \(head bbbbbbb\)\. Queued again\./);
+  assert.equal(backend.tasks[0]?.head, 'bbbbbbb1');
+  assert.equal(backend.tasks[0]?.status, 'todo');
+});
+
+test('a task claimed since the listing is neither closed nor requeued: the update is refused and logged', async () => {
+  for (const [local, listed] of [
+    [taskFor(1, 'needs-me'), pr(1)],
+    [{ ...taskFor(1, 'done'), head: null }, pr(1)],
+    [taskFor(1, 'todo', 'bbbbbbb1'), undefined],
+  ] as const) {
+    const backend = fakeBackend([local]);
+    // The dispatcher claims the task between the listing and the plan's write.
+    const listTasks = backend.listTasks;
+    backend.listTasks = async (options) => {
+      const seen = await listTasks(options);
+      backend.tasks[0]!.status = 'running';
+      return seen;
+    };
+    const logs: string[] = [];
+    await runIntake({
+      backend,
+      config: CONFIG,
+      dryRun: false,
+      print: (line) => logs.push(line),
+      github: { listReviewRequested: async () => ({ prs: listed ? [listed] : [], unreadable: [] }) },
+      now: () => NOW,
+    });
+    assert.equal(backend.tasks[0]?.status, 'running');
+    assert.equal(backend.tasks[0]?.head, local.head);
+    assert.ok(!backend.writes.some((w) => w.startsWith('note ') || w.startsWith('status ')));
+    assert.ok(logs.includes('SKIP c1 changed since the listing'));
+  }
+});
+
+test("only a done intake task without a head comes back; a done task of the user's keeps its head and stays", () => {
+  assert.deepEqual(plan([pr(1)], [{ ...taskFor(1, 'done'), head: null }]), ['requeue']);
+  assert.deepEqual(plan([pr(1)], [{ ...taskFor(1, 'done'), head: null, createdBy: 'user' }]), ['skip:task exists']);
+  assert.deepEqual(plan([pr(1, { headSha: 'aaaaaaa1' })], [taskFor(1, 'done')]), ['skip:task exists']);
+  assert.deepEqual(
+    plan([pr(1, { headCommittedAt: new Date(NOW.getTime() - 60_000) })], [{ ...taskFor(1, 'done'), head: null }]),
+    ['skip:listed again, not settled'],
+  );
 });

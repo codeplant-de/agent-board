@@ -1,15 +1,14 @@
-import { isSafeTaskId, PRIORITIES, STATUSES, type Note, type Task } from '@agent-board/shared';
-import { asc, desc, eq, inArray } from 'drizzle-orm';
+import { defaultTitle, isSafeTaskId, PRIORITIES, STATUSES, type Note, type Task } from '@agent-board/shared';
+import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { labels, notes, tasks, type NoteRow, type TaskRow } from '../db/schema';
-import { AppError } from '../services/errors';
+import { tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { issueToken, listMachines, revokeMachine } from '../services/machines';
 import { eventOutput, listEvents, listRuns } from '../services/transcripts';
 import {
   addTask,
   answer,
   getTask,
-  listTasks,
+  listTasksWithLastNote,
   markDone,
   moveTask,
   readNotes,
@@ -17,6 +16,7 @@ import {
   reply,
   setClosed,
   setPriority,
+  takeBack,
   toNote,
   toTask,
 } from '../services/tasks';
@@ -29,8 +29,6 @@ const priority = z.enum(PRIORITIES);
 /** What the board needs of a task beyond the contract's fields. */
 export interface BoardTask extends Task {
   proposed: boolean;
-  /** In Todo after a worker gave up its slot; until the next claim. */
-  paused: boolean;
   createdBy: TaskRow['createdBy'];
   parentId: string | null;
   createdAt: Date;
@@ -45,7 +43,6 @@ function boardTask(row: TaskRow, publicUrl: string): BoardTask {
   return {
     ...toTask(row, publicUrl),
     proposed: row.proposed,
-    paused: row.status === 'todo' && row.pausedAt !== null,
     createdBy: row.createdBy,
     parentId: row.parentId,
     createdAt: row.createdAt,
@@ -53,30 +50,23 @@ function boardTask(row: TaskRow, publicUrl: string): BoardTask {
   };
 }
 
-/** The first line of a prompt, shortened. */
-export function defaultTitle(prompt: string): string {
-  const first = prompt.trim().split('\n')[0]?.trim() ?? '';
-  return first.length > 100 ? `${first.slice(0, 99)}…` : first;
-}
-
 const threadNote = (row: NoteRow): ThreadNote => ({ ...toNote(row), by: row.by });
 
 const tasksRouter = router({
-  list: procedure.input(z.object({ closed: z.boolean().default(false) }).default({ closed: false })).query(
-    async ({ ctx, input }) => {
-      const rows = await listTasks(ctx.db, { all: input.closed });
-      return rows.filter((row) => row.closed === input.closed).map((row) => boardTask(row, ctx.config.publicUrl));
-    },
-  ),
+  /** Each task with its newest note, for the board cards. */
+  list: procedure
+    .input(z.object({ closed: z.boolean().default(false) }).default({ closed: false }))
+    .query(async ({ ctx, input }) => {
+      const rows = await listTasksWithLastNote(ctx.db, { all: input.closed });
+      return rows
+        .filter(({ row }) => row.closed === input.closed)
+        .map(({ row, lastNote }) => ({ ...boardTask(row, ctx.config.publicUrl), lastNote }));
+    }),
 
   get: procedure.input(z.object({ id })).query(async ({ ctx, input }) => {
     const row = await getTask(ctx.db, input.id);
     const thread = (await readNotes(ctx.db, input.id)).map(threadNote);
-    const related = await ctx.db
-      .select()
-      .from(tasks)
-      .where(eq(tasks.parentId, input.id))
-      .orderBy(asc(tasks.createdAt));
+    const related = await ctx.db.select().from(tasks).where(eq(tasks.parentId, input.id)).orderBy(asc(tasks.createdAt));
     const parent = row.parentId ? await getTask(ctx.db, row.parentId).catch(() => null) : null;
     return {
       task: boardTask(row, ctx.config.publicUrl),
@@ -119,7 +109,13 @@ const tasksRouter = router({
     )
     .mutation(async ({ ctx, input }) =>
       boardTask(
-        await answer(ctx.db, { taskId: input.id, questionNoteId: input.questionNoteId, answers: input.answers, message: input.message, by: ctx.username }),
+        await answer(ctx.db, {
+          taskId: input.id,
+          questionNoteId: input.questionNoteId,
+          answers: input.answers,
+          message: input.message,
+          by: ctx.username,
+        }),
         ctx.config.publicUrl,
       ),
     ),
@@ -135,16 +131,27 @@ const tasksRouter = router({
 
   done: procedure
     .input(z.object({ id }))
-    .mutation(async ({ ctx, input }) => boardTask(await markDone(ctx.db, input.id, ctx.username), ctx.config.publicUrl)),
+    .mutation(async ({ ctx, input }) =>
+      boardTask(await markDone(ctx.db, input.id, ctx.username), ctx.config.publicUrl),
+    ),
 
   rerun: procedure
     .input(z.object({ id }))
-    .mutation(async ({ ctx, input }) => boardTask(await rerunFresh(ctx.db, input.id, ctx.username), ctx.config.publicUrl)),
+    .mutation(async ({ ctx, input }) =>
+      boardTask(await rerunFresh(ctx.db, input.id, ctx.username), ctx.config.publicUrl),
+    ),
 
   setPriority: procedure
     .input(z.object({ id, priority }))
     .mutation(async ({ ctx, input }) =>
       boardTask(await setPriority(ctx.db, input.id, input.priority, ctx.username), ctx.config.publicUrl),
+    ),
+
+  /** A running task whose agent has been quiet too long: its worker is gone, so the task goes to Needs me. */
+  takeBack: procedure
+    .input(z.object({ id }))
+    .mutation(async ({ ctx, input }) =>
+      boardTask(await takeBack(ctx.db, input.id, ctx.username), ctx.config.publicUrl),
     ),
 
   setClosed: procedure
@@ -167,32 +174,6 @@ const tasksRouter = router({
         ctx.config.publicUrl,
       ),
     ),
-
-  /** For the board cards: the newest note of each task and whether the agent is waiting on a question. */
-  activity: procedure.input(z.object({ ids: z.array(id).max(500) })).query(async ({ ctx, input }) => {
-    if (input.ids.length === 0) return {};
-    const rows = await ctx.db
-      .selectDistinctOn([notes.taskId], { taskId: notes.taskId, kind: notes.kind, author: notes.author, body: notes.body, createdAt: notes.createdAt })
-      .from(notes)
-      .where(inArray(notes.taskId, input.ids))
-      .orderBy(notes.taskId, desc(notes.createdAt));
-    return Object.fromEntries(rows.map((row) => [row.taskId, row]));
-  }),
-});
-
-const labelsRouter = router({
-  list: procedure.query(({ ctx }) => ctx.db.select().from(labels).orderBy(asc(labels.name))),
-  update: procedure
-    .input(z.object({ name: z.string().min(1), description: z.string().max(500) }))
-    .mutation(async ({ ctx, input }) => {
-      const [row] = await ctx.db
-        .update(labels)
-        .set({ description: input.description })
-        .where(eq(labels.name, input.name))
-        .returning();
-      if (!row) throw new AppError('NOT_FOUND', `no label ${input.name}`);
-      return row;
-    }),
 });
 
 const machinesRouter = router({
@@ -223,7 +204,6 @@ export const appRouter = router({
   transcript: transcriptRouter,
   me: procedure.query(({ ctx }) => ({ username: ctx.username })),
   tasks: tasksRouter,
-  labels: labelsRouter,
   machines: machinesRouter,
 });
 

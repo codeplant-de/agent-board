@@ -20,7 +20,15 @@ export function PriorityBadge({ priority, withChevron = false }: { priority: Pri
 }
 
 /** The task's priority as a badge that opens a menu of the four levels. */
-export function PriorityPicker({ value, onChange, disabled }: { value: Priority; onChange: (p: Priority) => void; disabled?: boolean }) {
+export function PriorityPicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: Priority;
+  onChange: (p: Priority) => void;
+  disabled?: boolean;
+}) {
   return (
     <Menu position="bottom-start" disabled={disabled}>
       <Menu.Target>

@@ -1,22 +1,13 @@
 {
-  "backend": {
-    "command": [
-      "~/workspace/agent-board/apps/cli/bin/web-backend"
-    ]
-  },
   "machine": "laptop",
   "lanes": {
     "reviews": {
-      "skills": [
-        "review-pr"
-      ],
+      "skills": ["review-pr"],
       "slots": 2,
       "cwd": "~/workspace/cosuno/cosuno"
     },
     "general": {
-      "skills": [
-        "*"
-      ],
+      "skills": ["*"],
       "slots": 3
     }
   },
@@ -38,7 +29,11 @@
       "Skill",
       "Agent",
       "Edit(//tmp/pr-*)",
-      "Bash(board *)",
+      "Bash(board comment *)",
+      "Bash(board ask *)",
+      "Bash(board add *)",
+      "Bash(board show *)",
+      "Bash(board move * needs-me)",
       "Bash({pr-review}/skills/review-pr/review-notes.sh path *)",
       "Bash({pr-review}/skills/review-pr/review-notes.sh status *)",
       "Bash({pr-review}/skills/review-pr/review-notes.sh read *)",
@@ -79,6 +74,7 @@
       "mcp__shortcut__list_story_comments"
     ],
     "disallowedTools": [
+      "Bash(board schedule *)",
       "Bash(gh api *)",
       "Bash(gh pr review *)",
       "Bash(gh pr comment *)",
@@ -114,14 +110,7 @@
       "Read(**/.env*)",
       "Read(//proc/**)"
     ],
-    "env": [
-      "CIRCLECI_TOKEN",
-      "SHORTCUT_API_TOKEN",
-      "COSUNO_PROD_REPLICA_ENDPOINT",
-      "COSUNO_STAGING_REPLICA_ENDPOINT"
-    ],
-    "mcpServers": [
-      "shortcut"
-    ]
+    "env": ["CIRCLECI_TOKEN", "SHORTCUT_API_TOKEN", "COSUNO_PROD_REPLICA_ENDPOINT", "COSUNO_STAGING_REPLICA_ENDPOINT"],
+    "mcpServers": ["shortcut"]
   }
 }
