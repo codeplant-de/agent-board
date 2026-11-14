@@ -187,12 +187,14 @@ export function parseConfig(raw: unknown): Config {
   };
 }
 
-export function loadConfig(path: string): Config {
+export function loadConfig(path: string, options: { optionalConfig?: boolean } = {}): Config {
   let content: string;
   try {
     content = readFileSync(path, 'utf8');
-  } catch {
-    throw new ConfigError(`config file missing: ${path} (copy config.example.json there)`);
+  } catch (error) {
+    if (options.optionalConfig && error instanceof Error && 'code' in error && error.code === 'ENOENT')
+      return parseConfig({});
+    throw new ConfigError(`config file missing: ${path} (run "board init")`);
   }
   try {
     return parseConfig(JSON.parse(content));

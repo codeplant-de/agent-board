@@ -7,10 +7,9 @@ import {
   add,
   delay,
   tasks,
-  main,
   move,
-  parseAddArgs,
-  parseDelayArgs,
+  parseAddFlags,
+  parseDelayFlags,
   parseStatus,
   readNoteFile,
   renderThread,
@@ -19,16 +18,8 @@ import {
 import { BackendError } from '../src/backend.mts';
 import type { Context } from '../src/cli.mts';
 import { CONFIG, fakeBackend, note, schedule, task } from './helpers.mts';
-import { rejectExtraArgs, takeFlag, UsageError } from '../src/cli.mts';
-
-test('leftover arguments are a usage error, so a typo never becomes a real run', () => {
-  const args = ['--dryrun'];
-  assert.equal(takeFlag(args, '--dry-run'), false);
-  assert.throws(() => rejectExtraArgs(args, 'usage: dispatch [--dry-run]'), UsageError);
-  const ok = ['--dry-run'];
-  takeFlag(ok, '--dry-run');
-  assert.doesNotThrow(() => rejectExtraArgs(ok, 'usage'));
-});
+import { runBoard } from '../src/commands.mts';
+import { UsageError } from '../src/cli.mts';
 
 test('board move takes the human status names as well as the neutral ones', () => {
   assert.equal(parseStatus('Needs me'), 'needs-me');
@@ -61,27 +52,19 @@ test('a note file is read only from /tmp, without following links', () => {
   }
 });
 
-test('board add takes its flags in any order and refuses a missing one', () => {
-  assert.deepEqual(parseAddArgs(['--file', '/tmp/x.md', '--title', 'Fix it', '--parent', 'abc']), {
+test('board add needs a title and a file, and checks the parent and the priority', () => {
+  assert.deepEqual(parseAddFlags({ file: '/tmp/x.md', title: 'Fix it', parent: 'abc' }), {
     title: 'Fix it',
     file: '/tmp/x.md',
     parent: 'abc',
     priority: undefined,
   });
-  assert.equal(parseAddArgs(['--title', 't', '--file', '/tmp/x', '--priority', 'high']).priority, 'high');
-  assert.throws(
-    () => parseAddArgs(['--title', 't', '--file', '/tmp/x', '--priority', 'asap']),
-    /unknown priority "asap"/,
-  );
-  assert.equal(parseAddArgs(['--title', 't', '--file', '/tmp/x']).parent, undefined);
-  assert.throws(() => parseAddArgs(['--title', 't']), UsageError);
-  assert.throws(() => parseAddArgs(['--title', 't', '--file', '/tmp/x', '--parent', '../x']), UsageError);
-  assert.throws(() => parseAddArgs(['--title', 't', '--title', 'u', '--file', '/tmp/x']), UsageError);
-  assert.throws(
-    () => parseAddArgs(['--label', 'l', '--title', 't', '--file', '/tmp/x']),
-    UsageError,
-    'labels are gone; the prompt names its skill',
-  );
+  assert.equal(parseAddFlags({ title: 't', file: '/tmp/x', priority: 'high' }).priority, 'high');
+  assert.throws(() => parseAddFlags({ title: 't', file: '/tmp/x', priority: 'asap' }), /unknown priority "asap"/);
+  assert.equal(parseAddFlags({ title: 't', file: '/tmp/x' }).parent, undefined);
+  assert.throws(() => parseAddFlags({ title: 't' }), UsageError);
+  assert.throws(() => parseAddFlags({ title: '  ', file: '/tmp/x' }), UsageError);
+  assert.throws(() => parseAddFlags({ title: 't', file: '/tmp/x', parent: '../x' }), UsageError);
 });
 
 test('board show renders questions and answers in the thread', () => {
@@ -113,11 +96,12 @@ test('board show renders questions and answers in the thread', () => {
 });
 
 test('board schedule refuses inside a board run', async () => {
+  const env = { AGENT_BOARD_TASK: 'abc' };
   await assert.rejects(
-    main(['schedule', '/grill the plan'], { AGENT_BOARD_TASK: 'abc' }),
+    runBoard(['schedule', '/grill the plan'], { env }),
     /not available inside a board run; use `board add`/,
   );
-  await assert.rejects(main(['schedule', '--hold', 'x'], { AGENT_BOARD_TASK: 'abc' }), UsageError);
+  await assert.rejects(runBoard(['schedule', '--hold', 'x'], { env }), UsageError);
 });
 
 test('board add sends no status: the board puts a proposal in Needs me itself', async () => {
@@ -131,7 +115,7 @@ test('board add sends no status: the board puts a proposal in Needs me itself', 
   const dir = mkdtempSync('/tmp/pr-add-test-');
   try {
     writeFileSync(join(dir, 'p.md'), 'do the thing');
-    await add(context, ['--title', 'Do it', '--file', join(dir, 'p.md'), '--parent', 'abc']);
+    await add(context, { title: 'Do it', file: join(dir, 'p.md'), parent: 'abc' });
   } finally {
     rmSync(dir, { recursive: true });
   }
@@ -160,27 +144,27 @@ test('board move on a proposal says so in one plain line', async () => {
 
 test('board delay takes --in, --at or --now and nothing else', () => {
   const now = new Date(2026, 10, 14, 10, 0, 0);
-  assert.equal(parseDelayArgs(['--in', '3h'], now)?.getTime(), now.getTime() + 3 * 3_600_000);
-  assert.equal(parseDelayArgs(['--at', '2027-01-01T12:00'], now)?.getTime(), new Date(2027, 0, 1, 12).getTime());
-  assert.equal(parseDelayArgs(['--now'], now), null);
-  for (const bad of [[], ['--in'], ['--now', 'x'], ['--in', '1h', '--at', '09:00'], ['3h'], ['--every', '1h']])
-    assert.throws(() => parseDelayArgs(bad, now), /usage: board comment/, bad.join(' '));
-  assert.throws(() => parseDelayArgs(['--in', '0h'], now), /longer than zero/);
-  assert.throws(() => parseDelayArgs(['--at', '2020-01-01'], now), /in the past/);
+  assert.equal(parseDelayFlags({ in: '3h' }, now)?.getTime(), now.getTime() + 3 * 3_600_000);
+  assert.equal(parseDelayFlags({ at: '2027-01-01T12:00' }, now)?.getTime(), new Date(2027, 0, 1, 12).getTime());
+  assert.equal(parseDelayFlags({ now: true }, now), null);
+  for (const bad of [{}, { in: '1h', at: '09:00' }, { now: true, in: '1h' }])
+    assert.throws(() => parseDelayFlags(bad, now), /exactly one of --in, --at or --now/, JSON.stringify(bad));
+  assert.throws(() => parseDelayFlags({ in: '0h' }, now), /longer than zero/);
+  assert.throws(() => parseDelayFlags({ at: '2020-01-01' }, now), /in the past/);
 });
 
 test('board delay patches notBefore on a Todo task, and --now clears it', async () => {
   const backend = fakeBackend([task({ id: 'd1' })]);
   const printed: string[] = [];
   const context: Context = { config: CONFIG, backend, dryRun: false, print: (line) => printed.push(line) };
-  await delay(context, 'd1', ['--in', '2h']);
+  await delay(context, 'd1', { in: '2h' });
   assert.ok(backend.tasks[0]?.notBefore && backend.tasks[0].notBefore.getTime() > Date.now());
   assert.ok(printed[0]?.startsWith('d1 starts '));
-  await delay(context, 'd1', ['--now']);
+  await delay(context, 'd1', { now: true });
   assert.equal(backend.tasks[0]?.notBefore, null);
   assert.deepEqual(printed.at(-1), 'd1 is due now');
   backend.tasks[0]!.status = 'running';
-  await assert.rejects(delay(context, 'd1', ['--in', '1h']), BackendError);
+  await assert.rejects(delay(context, 'd1', { in: '1h' }), BackendError);
 });
 
 test('board tasks shows when a delayed task starts', async () => {
@@ -254,5 +238,8 @@ test('board schedules changes are refused inside a board run, listing is not', a
     ['resume', 's1'],
     ['rm', 's1'],
   ])
-    await assert.rejects(main(['schedules', ...args], { AGENT_BOARD_TASK: 'abc' }), /not available inside a board run/);
+    await assert.rejects(
+      runBoard(['schedules', ...args], { env: { AGENT_BOARD_TASK: 'abc' } }),
+      /not available inside a board run/,
+    );
 });
