@@ -1,9 +1,4 @@
-import {
-  TRANSCRIPT_PAGE_SIZE,
-  type TranscriptBatch,
-  type TranscriptEvent,
-  type TranscriptEventView,
-} from '@agent-board/shared';
+import { TRANSCRIPT_PAGE_SIZE, type WireTranscriptBatch, type WireTranscriptEventView } from '@agent-board/shared';
 import { and, asc, desc, eq, gt, inArray, lt, or, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
 import { tasks, transcriptEvents, transcriptRuns } from '../db/schema';
@@ -16,7 +11,7 @@ export async function appendTranscript(
   db: DbOrTx,
   taskId: string,
   machine: string,
-  batch: TranscriptBatch,
+  batch: WireTranscriptBatch,
 ): Promise<void> {
   await getTask(db, taskId);
   await db.transaction(async (tx) => {
@@ -43,19 +38,16 @@ export async function appendTranscript(
     const inserted = await tx
       .insert(transcriptEvents)
       .values(
-        batch.events.map((event) => {
-          const { output, ...data } = event as TranscriptEvent & { output?: string };
-          return {
-            runId: batch.runId,
-            seq: event.seq,
-            at: new Date(event.at),
-            kind: event.kind,
-            parent: event.parent,
-            data,
-            output: event.kind === 'tool_result' ? (output ?? '') : null,
-            outputSize: event.kind === 'tool_result' ? (output ?? '').length : null,
-          };
-        }),
+        batch.events.map((event) => ({
+          runId: batch.runId,
+          seq: event.seq,
+          at: new Date(event.at),
+          kind: event.kind,
+          parent: event.parent,
+          data: event.data,
+          output: event.output ?? null,
+          outputSize: event.outputSize ?? null,
+        })),
       )
       .onConflictDoNothing()
       .returning({ seq: transcriptEvents.seq });
@@ -79,24 +71,36 @@ export async function listRuns(db: DbOrTx, taskId: string) {
     .orderBy(desc(transcriptRuns.startedAt));
 }
 
-/** Events after `afterSeq`, without tool output: a result says how long its output is instead. */
-export async function listEvents(db: DbOrTx, runId: string, afterSeq: number, limit = TRANSCRIPT_PAGE_SIZE) {
-  const rows = await db
-    .select({ seq: transcriptEvents.seq, data: transcriptEvents.data, outputSize: transcriptEvents.outputSize })
+/** Events after `afterSeq`, without tool output: a result says how long its output is instead. `data` is still sealed. */
+export async function listEvents(
+  db: DbOrTx,
+  runId: string,
+  afterSeq: number,
+  limit = TRANSCRIPT_PAGE_SIZE,
+): Promise<WireTranscriptEventView[]> {
+  return db
+    .select({
+      seq: transcriptEvents.seq,
+      at: transcriptEvents.at,
+      kind: transcriptEvents.kind,
+      parent: transcriptEvents.parent,
+      data: transcriptEvents.data,
+      outputSize: transcriptEvents.outputSize,
+    })
     .from(transcriptEvents)
     .where(and(eq(transcriptEvents.runId, runId), gt(transcriptEvents.seq, afterSeq)))
     .orderBy(asc(transcriptEvents.seq))
     .limit(limit);
-  return rows.map((row) => ({ ...(row.data as object), outputSize: row.outputSize }) as TranscriptEventView);
 }
 
-export async function eventOutput(db: DbOrTx, runId: string, seq: number): Promise<string> {
+/** A tool result's sealed output; null for an event without one. */
+export async function eventOutput(db: DbOrTx, runId: string, seq: number): Promise<string | null> {
   const [row] = await db
     .select({ output: transcriptEvents.output })
     .from(transcriptEvents)
     .where(and(eq(transcriptEvents.runId, runId), eq(transcriptEvents.seq, seq)));
   if (!row) throw new AppError('NOT_FOUND', 'no such event');
-  return row.output ?? '';
+  return row.output;
 }
 
 /** Deletes the transcripts of tasks closed more than the retention ago, and of open tasks untouched in Done for longer. Returns how many runs went. */

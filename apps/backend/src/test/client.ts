@@ -1,0 +1,338 @@
+import {
+  defaultTitle,
+  newTaskId,
+  noteBinding,
+  openFields,
+  openNote,
+  openPreview,
+  sealAnswers,
+  sealFields,
+  sealInput,
+  sealNote,
+  sealQuestions,
+  sealWorkdir,
+  transcriptBinding,
+  type Answer,
+  type NoteKind,
+  type Question,
+  type RowRef,
+} from '@agent-board/shared';
+import type { Db } from '../db/client';
+import { caller } from './helpers';
+import { sealerFor, type Sealing } from './sealed';
+
+type Raw = ReturnType<typeof caller>;
+// Machine API bodies and answers are untyped JSON.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Json = Record<string, any>;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type MachineAnswer = { status: number; json: { result?: any; error?: string } };
+export type MachineCall = (command: string, body?: Json) => Promise<MachineAnswer>;
+
+const isEnvelope = (value: unknown): value is string => typeof value === 'string' && value.startsWith('abe1.');
+
+const taskRowOf = (task: Json): RowRef => ({
+  kind: 'task',
+  id: task['id'],
+  createdBy: task['createdBy'],
+  scheduleId: task['scheduleId'],
+});
+
+/** Opens the title, input and directory of a row, or throws: a test that reads something it cannot open has found a bug. */
+async function openRow<T extends Json>(row: T, ref: RowRef, sealing: Sealing): Promise<T> {
+  if (!isEnvelope(row['title'])) return row;
+  const fields = await openFields(sealing.open, ref, {
+    title: row['title'],
+    input: row['input'],
+    workdir: row['workdir'],
+  });
+  if (fields.unreadable.length > 0)
+    throw new Error(`${ref.kind} ${ref.id}: cannot open ${fields.unreadable.join(', ')}`);
+  return { ...row, title: fields.title, input: fields.input, workdir: fields.workdir };
+}
+
+/** Opens the sealed fields of any task, schedule or note found in a machine API result. */
+async function openDeep(value: unknown, sealing: Sealing, taskId: string): Promise<unknown> {
+  if (Array.isArray(value)) return Promise.all(value.map((item) => openDeep(item, sealing, taskId)));
+  if (typeof value !== 'object' || value === null) return value;
+  let out: Json = {};
+  for (const [key, item] of Object.entries(value)) out[key] = await openDeep(item, sealing, taskId);
+  if ('createdBy' in out && 'scheduleId' in out && 'status' in out) out = await openRow(out, taskRowOf(out), sealing);
+  else if ('everyMs' in out && 'anchorAt' in out)
+    out = await openRow(out, { kind: 'schedule', id: out['id'] }, sealing);
+  else if (typeof out['body'] === 'string' && typeof out['kind'] === 'string' && typeof out['author'] === 'string') {
+    const note = await openNote(sealing.open, taskId, out as Parameters<typeof openNote>[2]);
+    if (note.unreadable) throw new Error(`note ${out['id']}: cannot open it`);
+    out = { ...out, ...note };
+  }
+  return out;
+}
+
+async function sealDraft(body: Json, sealing: Sealing, row: (id: string) => RowRef): Promise<Json> {
+  const { labels: _labels, ...rest } = body;
+  const out: Json = { ...rest };
+  const id: string = rest['id'] ?? newTaskId();
+  if (typeof rest['title'] === 'string') {
+    Object.assign(
+      out,
+      await sealFields(sealing.seal, row(id), {
+        title: rest['title'],
+        input: rest['input'] ?? '',
+        workdir: typeof rest['workdir'] === 'string' ? rest['workdir'] : undefined,
+      }),
+      { id },
+    );
+  }
+  if (typeof rest['dedupeKey'] === 'string') out['dedupeKey'] = await sealing.blind(rest['dedupeKey']);
+  if (typeof rest['head'] === 'string') out['head'] = await sealing.headIndex(rest['head']);
+  return out;
+}
+
+async function sealRequest(command: string, request: Json, sealing: Sealing, raw: MachineCall): Promise<Json> {
+  const id = String(request['id'] ?? '');
+  const body = request['body'];
+  const note = (author: 'agent' | 'system', kind: NoteKind, text: string) =>
+    sealNote(sealing.seal, { taskId: id, author, kind }, text);
+  switch (command) {
+    case 'add-task':
+      return {
+        ...request,
+        body: await sealDraft(body, sealing, (taskId) => ({
+          kind: 'task',
+          id: taskId,
+          createdBy: body['createdBy'] ?? 'user',
+          scheduleId: null,
+        })),
+      };
+    case 'add-schedule':
+      return {
+        ...request,
+        body: await sealDraft(body, sealing, (scheduleId) => ({ kind: 'schedule', id: scheduleId })),
+      };
+    case 'update-task': {
+      const patch: Json = { ...body };
+      if (typeof patch['input'] === 'string' || typeof patch['workdir'] === 'string') {
+        const row = taskRowOf((await raw('get-task', { id })).json.result);
+        if (typeof patch['input'] === 'string') patch['input'] = await sealInput(sealing.seal, row, patch['input']);
+        if (typeof patch['workdir'] === 'string')
+          patch['workdir'] = await sealWorkdir(sealing.seal, row, patch['workdir']);
+      }
+      if (typeof patch['head'] === 'string') patch['head'] = await sealing.headIndex(patch['head']);
+      return { ...request, body: patch };
+    }
+    case 'add-note':
+      return typeof body === 'string'
+        ? {
+            ...request,
+            body:
+              request['author'] === 'system'
+                ? await note('system', 'event', body)
+                : await note('agent', 'comment', body),
+          }
+        : request;
+    case 'pause':
+    case 'fail':
+      return typeof body === 'string' ? { ...request, body: await note('system', 'event', body) } : request;
+    case 'ask': {
+      const questions: Question[] = Array.isArray(body) ? body : body.questions;
+      return { ...request, body: await sealQuestions(sealing.seal, id, questions) };
+    }
+    case 'transcript': {
+      const events = await Promise.all(
+        (body.events as Json[]).map(async ({ output, ...event }) => {
+          const data = await sealing.seal(
+            transcriptBinding('tr.data', id, body.runId, event['seq']),
+            JSON.stringify(event),
+          );
+          const wire = { seq: event['seq'], at: event['at'], kind: event['kind'], parent: event['parent'], data };
+          if (event['kind'] !== 'tool_result') return wire;
+          return {
+            ...wire,
+            output: await sealing.seal(transcriptBinding('tr.output', id, body.runId, event['seq']), output ?? ''),
+            outputSize: (output ?? '').length,
+          };
+        }),
+      );
+      return { ...request, body: { ...body, events } };
+    }
+    default:
+      return request;
+  }
+}
+
+/**
+ * Makes a client of a raw machine API call: plaintext in, as the CLI's sealing backend takes it, and plaintext out, through
+ * the shared sealing rules the CLI runs. What it cannot seal (a body that is already an object) is sent as it is, so refusals
+ * can be tested through it too.
+ */
+export function plainMachine(raw: MachineCall, owner = 'jascha'): MachineCall {
+  const sealing = sealerFor(owner);
+  return async (command, request = {}) => {
+    const answer = await raw(command, await sealRequest(command, request, sealing, raw));
+    if (answer.json.result === undefined) return answer;
+    return {
+      ...answer,
+      json: { ...answer.json, result: await openDeep(answer.json.result, sealing, String(request['id'] ?? '')) },
+    };
+  };
+}
+
+type CreateInput = Omit<Parameters<Raw['tasks']['create']>[0], 'id' | 'title' | 'input'> & {
+  id?: string;
+  title?: string;
+  input: string;
+};
+
+/** Makes a client of a tRPC caller: plaintext in and out, with the sealing the browser does (the same shared rules). */
+export function plainUi(db: Db, owner = 'jascha') {
+  const raw = caller(db, owner);
+  const sealing = sealerFor(owner);
+
+  const openTask = async <T extends { id: string; title: string; input: string; workdir: string | null }>(task: T) =>
+    openRow(task, taskRowOf(task), sealing);
+  const openSchedule = async <T extends { id: string; title: string; input: string; workdir: string | null }>(
+    schedule: T,
+  ) => openRow(schedule, { kind: 'schedule', id: schedule.id }, sealing);
+  const openThreadNote = async <
+    N extends {
+      id: string;
+      body: string;
+      preview: string | null;
+      author: 'agent' | 'user' | 'system' | 'server';
+      kind: NoteKind;
+    },
+  >(
+    note: N,
+    taskId: string,
+  ) => {
+    const opened = await openNote(sealing.open, taskId, note);
+    if (opened.unreadable) throw new Error(`note ${note.id}: cannot open it`);
+    return { ...note, ...opened };
+  };
+  const mutation =
+    <I extends { id: string }>(call: (input: I) => ReturnType<Raw['tasks']['done']>) =>
+    async (input: I) =>
+      openTask(await call(input));
+
+  return {
+    raw,
+    sealing,
+    tasks: {
+      list: async (input?: Parameters<Raw['tasks']['list']>[0]) =>
+        Promise.all(
+          (await raw.tasks.list(input)).map(async ({ lastNote, ...task }) => ({
+            ...(await openTask(task)),
+            lastNote:
+              lastNote === null
+                ? null
+                : {
+                    ...lastNote,
+                    text:
+                      lastNote.preview === null ? null : ((await openPreviewText(sealing, task.id, lastNote)) ?? null),
+                  },
+          })),
+        ),
+      get: async (input: { id: string }) => {
+        const { task, thread, followUps, parent } = await raw.tasks.get(input);
+        return {
+          task: await openTask(task),
+          thread: await Promise.all(thread.map((note) => openThreadNote(note, input.id))),
+          followUps: await Promise.all(followUps.map(openTask)),
+          parent: parent === null ? null : await openTask(parent),
+        };
+      },
+      create: async ({ id: chosen, title, input, ...rest }: CreateInput) => {
+        const id = chosen ?? newTaskId();
+        const repeats = typeof rest.when === 'object' && ('every' in rest.when || 'cron' in rest.when);
+        const row: RowRef = repeats
+          ? { kind: 'schedule', id }
+          : { kind: 'task', id, createdBy: 'user', scheduleId: null };
+        const fields = await sealFields(sealing.seal, row, { title: title ?? defaultTitle(input), input });
+        return openTask(await raw.tasks.create({ id, ...fields, ...rest }));
+      },
+      answer: async (input: { id: string; questionNoteId: string; answers: Answer[]; message?: string }) => {
+        const { thread } = await raw.tasks.get({ id: input.id });
+        const asked = thread.find((note) => note.id === input.questionNoteId);
+        const questions = asked === undefined ? undefined : (await openNote(sealing.open, input.id, asked)).questions;
+        return openTask(
+          await raw.tasks.answer({
+            id: input.id,
+            questionNoteId: input.questionNoteId,
+            // An answer to a question that is not there cannot be checked; the server must be the one to refuse it.
+            answers:
+              questions === undefined
+                ? await sealing.seal(
+                    noteBinding('note.answers', input.id, 'user', 'answer'),
+                    JSON.stringify({ questions: [], answers: input.answers }),
+                  )
+                : await sealAnswers(sealing.seal, input.id, questions, input.answers),
+            message: await sealNote(
+              sealing.seal,
+              { taskId: input.id, author: 'user', kind: 'answer' },
+              input.message ?? '',
+            ),
+          }),
+        );
+      },
+      reply: async (input: { id: string; message: string; resume: boolean }) =>
+        openTask(
+          await raw.tasks.reply({
+            id: input.id,
+            message: await sealNote(sealing.seal, { taskId: input.id, author: 'user', kind: 'comment' }, input.message),
+            resume: input.resume,
+          }),
+        ),
+      done: mutation(raw.tasks.done),
+      rerun: mutation(raw.tasks.rerun),
+      setPriority: mutation(raw.tasks.setPriority),
+      setNotBefore: mutation(raw.tasks.setNotBefore),
+      takeBack: mutation(raw.tasks.takeBack),
+      setClosed: mutation(raw.tasks.setClosed),
+      // As the browser does: an agent's proposal enters Todo with its prompt sealed again for the creator "user".
+      move: async (input: Parameters<Raw['tasks']['move']>[0]) => {
+        const { startInput: _given, ...rest } = input;
+        const { task } = await raw.tasks.get({ id: input.id });
+        if (task.createdBy !== 'agent' || input.status !== 'todo') return openTask(await raw.tasks.move(rest));
+        const proposal = await openTask(task);
+        const row: RowRef = { kind: 'task', id: task.id, createdBy: 'user', scheduleId: task.scheduleId };
+        const startInput = await sealInput(sealing.seal, row, proposal.input);
+        return openTask(await raw.tasks.move({ ...rest, startInput }));
+      },
+    },
+    schedules: {
+      list: async () => Promise.all((await raw.schedules.list()).map(openSchedule)),
+      setPaused: async (input: { id: string; paused: boolean }) => openSchedule(await raw.schedules.setPaused(input)),
+      remove: raw.schedules.remove,
+    },
+    machines: raw.machines,
+    keys: raw.keys,
+    me: raw.me,
+    transcript: {
+      runs: raw.transcript.runs,
+      events: async ({ taskId, ...input }: { taskId: string; runId: string; afterSeq?: number }) =>
+        Promise.all(
+          (await raw.transcript.events(input)).map(async ({ data, ...row }) => ({
+            ...row,
+            ...(JSON.parse(
+              await sealing.openStrict(transcriptBinding('tr.data', taskId, input.runId, row.seq), data),
+            ) as Record<string, unknown>),
+          })),
+        ),
+      output: async ({ taskId, ...input }: { taskId: string; runId: string; seq: number }) => {
+        const output = await raw.transcript.output(input);
+        return output === null
+          ? null
+          : sealing.openStrict(transcriptBinding('tr.output', taskId, input.runId, input.seq), output);
+      },
+    },
+  };
+}
+
+async function openPreviewText(
+  sealing: Sealing,
+  taskId: string,
+  note: { author: 'agent' | 'user' | 'system' | 'server'; kind: NoteKind; preview: string | null },
+): Promise<string | undefined> {
+  return (await openPreview(sealing.open, taskId, note)).text;
+}

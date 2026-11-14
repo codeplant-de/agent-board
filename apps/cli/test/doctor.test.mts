@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { encodeDataKey } from '@agent-board/shared';
+import { DATA_KEY, KEYS, OWNER } from './helpers.mts';
 import { BackendError } from '../src/backend.mts';
 import { formatResult, hasFailure, runChecks } from '../src/doctor.mts';
 import type { CheckResult, DoctorDeps } from '../src/doctor.mts';
@@ -8,6 +10,7 @@ import { renderUnits } from '../src/setup.mts';
 const CONFIG_DIR = '/home/me/.config/agent-board';
 const UNIT_DIR = '/home/me/.config/systemd/user';
 const TOKEN = 'abm_secretsecretsecret';
+const KEY_TEXT = encodeDataKey(DATA_KEY);
 
 function machine(
   files: Record<string, { text: string; mode?: number }>,
@@ -27,14 +30,14 @@ function machine(
     whichInUnits: (program) => `/usr/bin/${program}`,
     home: '/home/me',
     systemctl: async () => 0,
-    verifyServer: async () => undefined,
+    verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId }),
     ...overrides,
   };
 }
 
 const GOOD = {
   [`${CONFIG_DIR}/web.json`]: { text: '{"url": "https://board.example.com"}' },
-  [`${CONFIG_DIR}/env`]: { text: `AGENT_BOARD_TOKEN=${TOKEN}\n`, mode: 0o100600 },
+  [`${CONFIG_DIR}/env`]: { text: `AGENT_BOARD_TOKEN=${TOKEN}\nAGENT_BOARD_DATA_KEY=${KEY_TEXT}\n`, mode: 0o100600 },
   [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box"}' },
 };
 
@@ -118,12 +121,27 @@ test('the server check tells unreachable, unauthorised and a contract mismatch a
     ).find((result) => result.name === 'server');
   const unauthorised = await run(new BackendError('version: bad token', 401, true));
   assert.match(unauthorised?.message ?? '', /refused the token/);
-  const older = await run(
+  const serverOlder = await run(
+    Object.assign(new BackendError('the board server is older than this CLI: it speaks contract 4, the CLI needs 6'), {
+      contractMismatch: 'server-older' as const,
+    }),
+  );
+  assert.match(serverOlder?.hint ?? '', /update the board server/);
+  const cliOlder = await run(
+    Object.assign(new BackendError('this CLI is older than the board server: it speaks contract 6, the server has 7'), {
+      contractMismatch: 'cli-older' as const,
+    }),
+  );
+  assert.match(cliOlder?.hint ?? '', /update this CLI: "board self-update"/);
+  // Words the server wrote must not pick the hint.
+  const quoted = await run(
     new BackendError(
-      'the board server is older than this CLI: it speaks contract 4, the CLI needs 5; update the board',
+      'get-task: error from the board server (HTTP 500): "this CLI is older than the board server"',
+      500,
+      true,
     ),
   );
-  assert.match(older?.hint ?? '', /update the older side/);
+  assert.match(quoted?.hint ?? '', /check the URL/);
   const unreachable = await run(new BackendError('cannot reach https://board.example.com: fetch failed'));
   assert.match(unreachable?.hint ?? '', /check the URL/);
   assert.equal(levels(await runChecks(machine(GOOD)))['server'], 'ok');
@@ -259,4 +277,70 @@ test('a tool on the shell PATH but not on the units PATH is a failure that says 
     /\/home\/me\/\.nvm\/bin\/claude, on your shell's PATH but not on the units' \(\/home\/me\/\.local\/bin:/,
   );
   assert.match(claude?.hint ?? '', /ln -s \/home\/me\/\.nvm\/bin\/claude ~\/\.local\/bin\/claude/);
+});
+
+const envWith = (text: string) => ({ [`${CONFIG_DIR}/env`]: { text, mode: 0o100600 } });
+
+test('the data key must be set and well-formed, and is never printed', async () => {
+  const missing = await runChecks(machine({ ...GOOD, ...envWith(`AGENT_BOARD_TOKEN=${TOKEN}\n`) }));
+  const missingKey = missing.find((result) => result.name === 'data key');
+  assert.equal(missingKey?.level, 'fail');
+  assert.match(missingKey?.hint ?? '', /Settings page.*board init/);
+  assert.equal(
+    missing.some((result) => result.name === 'board key'),
+    false,
+    'no key to compare',
+  );
+  const damaged = `${KEY_TEXT}-damaged`;
+  const malformed = await runChecks(
+    machine({ ...GOOD, ...envWith(`AGENT_BOARD_TOKEN=${TOKEN}\nAGENT_BOARD_DATA_KEY=${damaged}\n`) }),
+  );
+  assert.equal(malformed.find((result) => result.name === 'data key')?.level, 'fail');
+  const printed = [...missing, ...malformed, ...(await runChecks(machine(GOOD)))].map(formatResult).join('\n');
+  assert.ok(!printed.includes(KEY_TEXT) && !printed.includes(damaged));
+});
+
+test('the board has a key and this machine holds the same one, or the check fails with the way out', async () => {
+  const ok = await runChecks(machine(GOOD));
+  assert.equal(ok.find((result) => result.name === 'board key')?.level, 'ok');
+  assert.match(ok.find((result) => result.name === 'board key')?.message ?? '', new RegExp(`id ${KEYS.keyId}`));
+
+  const noKey = await runChecks(machine(GOOD, { verifyServer: async () => ({ owner: OWNER, keyId: null }) }));
+  const board = noKey.find((result) => result.name === 'board key');
+  assert.equal(board?.level, 'fail');
+  assert.match(board?.hint ?? '', /set up encryption in the browser first/);
+
+  const other = '0123456789abcdef';
+  const different = await runChecks(machine(GOOD, { verifyServer: async () => ({ owner: OWNER, keyId: other }) }));
+  const mismatch = different.find((result) => result.name === 'board key');
+  assert.equal(mismatch?.level, 'fail');
+  assert.match(
+    mismatch?.message ?? '',
+    new RegExp(`different data key \\(id ${KEYS.keyId}\\) than the board's \\(id ${other}\\)`),
+  );
+  assert.match(mismatch?.hint ?? '', /copy the current key from the board's Settings page/);
+  assert.ok(!formatResult(mismatch as CheckResult).includes(KEY_TEXT));
+  assert.ok(hasFailure(different));
+});
+
+test('a board with no key yet says so even when env has no key either, and the hints fit each case', async () => {
+  const results = await runChecks(
+    machine(
+      { ...GOOD, ...envWith(`AGENT_BOARD_TOKEN=${TOKEN}\n`) },
+      { verifyServer: async () => ({ owner: OWNER, keyId: null }) },
+    ),
+  );
+  const board = results.find((result) => result.name === 'board key');
+  assert.equal(board?.level, 'fail');
+  assert.match(board?.hint ?? '', /set up encryption in the browser first/);
+  assert.match(results.find((result) => result.name === 'data key')?.hint ?? '', /asks for the key only/);
+  const noToken = await runChecks(machine({ ...GOOD, ...envWith(`AGENT_BOARD_DATA_KEY=${KEY_TEXT}\n`) }));
+  assert.match(noToken.find((result) => result.name === 'token')?.hint ?? '', /asks for the token only/);
+  const other = await runChecks(
+    machine(GOOD, { verifyServer: async () => ({ owner: OWNER, keyId: '0123456789abcdef' }) }),
+  );
+  assert.match(
+    other.find((result) => result.name === 'board key')?.hint ?? '',
+    /board init --force": it keeps the URL and the token/,
+  );
 });

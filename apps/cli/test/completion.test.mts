@@ -8,9 +8,9 @@ import type { TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { SHELLS, renderCompletion, completionModel } from '../src/completion.mts';
 import type { Shell } from '../src/completion.mts';
-import type { Context } from '../src/cli.mts';
+import type { LinkingContext } from '../src/cli.mts';
 import { buildProgram, runBoard } from '../src/commands.mts';
-import { CONFIG, fakeBackend, schedule, task } from './helpers.mts';
+import { CONFIG, fakeBackend, linkTo, schedule, task } from './helpers.mts';
 
 const model = completionModel(buildProgram({ env: {} }));
 const VISIBLE = [
@@ -153,8 +153,8 @@ test('the bash script completes commands, task ids, statuses, priorities and sch
   assert.deepEqual(bashOffers(['completion'], 'z'), ['zsh']);
 });
 
-function completeContext(backend: ReturnType<typeof fakeBackend>): (dryRun: boolean) => Context {
-  return () => ({ config: CONFIG, backend, dryRun: false, print: () => undefined });
+function completeContext(backend: ReturnType<typeof fakeBackend>): (dryRun: boolean) => LinkingContext {
+  return () => ({ config: CONFIG, backend, dryRun: false, taskLink: linkTo, print: () => undefined });
 }
 
 test('__complete prints id and title per line, and nothing on any failure', async () => {

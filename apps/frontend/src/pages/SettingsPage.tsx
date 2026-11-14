@@ -7,6 +7,7 @@ import {
   CopyButton,
   Group,
   Paper,
+  PasswordInput,
   Stack,
   Table,
   Text,
@@ -14,31 +15,61 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
+import { INVALID_VALUE, MACHINE_NAME_RULE, type Keys } from '@agent-board/shared';
 import { modals } from '@mantine/modals';
+import { notifications } from '@mantine/notifications';
 import { IconCheck, IconCopy, IconKey } from '@tabler/icons-react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { KeyError } from '../crypto/kdf';
+import { exportDataKey, replacePassphrase, type StoredKey } from '../crypto/keySlots';
+import { useKeys } from '../crypto/KeyContext';
+import { PASSPHRASE_ADVICE, passphraseProblem, samePassphrase } from '../crypto/passphrase';
+import { PassphraseModal } from '../crypto/PassphraseModal';
 import { ago } from '../lib/time';
-import { useTRPC } from '../lib/trpc';
+import { errorMessage, useTRPC } from '../lib/trpc';
+
+/**
+ * The slots the board stores, read as the key this browser is using: the owner and key id are the browser's, not the ones the
+ * board reports, so a key that unwraps is shown or re-wrapped only when it is the one in use.
+ */
+function asHeld(stored: StoredKey, keys: Keys): StoredKey {
+  return { ...stored, keyId: keys.keyId };
+}
+
+interface Enrolment {
+  name: string;
+  token: string | null;
+  dataKey: string;
+}
+
+const envLines = ({ token, dataKey }: Enrolment): string[] => [
+  ...(token === null ? [] : [`AGENT_BOARD_TOKEN=${token}`]),
+  `AGENT_BOARD_DATA_KEY=${dataKey}`,
+];
 
 function Machines() {
   const trpc = useTRPC();
   const machines = useQuery(trpc.machines.list.queryOptions());
   const issue = useMutation(trpc.machines.issue.mutationOptions());
   const revoke = useMutation(trpc.machines.revoke.mutationOptions());
+  const keys = useKeys();
+  const queryClient = useQueryClient();
   const [name, setName] = useState('');
-  const [issued, setIssued] = useState<{ name: string; token: string } | null>(null);
+  const [issued, setIssued] = useState<Enrolment | null>(null);
+  const [asking, setAsking] = useState<{ name: string; issuing: boolean } | null>(null);
 
-  const create = (target: string) =>
-    issue.mutate(
-      { name: target },
-      {
-        onSuccess: ({ token }) => {
-          setIssued({ name: target, token });
-          setName('');
-        },
-      },
-    );
+  // The passphrase is checked before a token is issued, so a wrong one leaves the machine's old token alone.
+  const enrol = async (passphrase: string) => {
+    const stored = await queryClient.fetchQuery(trpc.keys.get.queryOptions());
+    if (!asking || !keys || !stored) throw new KeyError('The key is not available. Reload the page.');
+    const dataKey = await exportDataKey({ owner: keys.owner, stored: asHeld(stored, keys), passphrase });
+    const token = asking.issuing ? (await issue.mutateAsync({ name: asking.name })).token : null;
+    setIssued({ name: asking.name, token, dataKey });
+    setName('');
+    setAsking(null);
+  };
+  const create = (target: string) => setAsking({ name: target, issuing: true });
   // A new token for a machine that has one stops the old one at once.
   const issueFor = (target: string) =>
     machines.data?.some((m) => m.name === target)
@@ -65,23 +96,38 @@ function Machines() {
             <Code>machine</Code> in its config.json (default: the host name).
           </Text>
         </div>
+        {asking && (
+          <PassphraseModal
+            title={asking.issuing ? `Token for ${asking.name}` : `Data key for ${asking.name}`}
+            description={
+              <>
+                The machine needs your data key to read and write the board. Enter your passphrase to show it
+                {asking.issuing ? ' with the new token' : ''}.
+              </>
+            }
+            confirmLabel={asking.issuing ? 'Create token' : 'Show data key'}
+            onClose={() => setAsking(null)}
+            onSubmit={enrol}
+          />
+        )}
         {issued && (
           <Alert
             color="teal"
             icon={<IconKey size={18} />}
-            title={`Token for ${issued.name}, shown once`}
+            title={`${issued.token === null ? 'Data key' : 'Token and data key'} for ${issued.name}, shown once`}
             withCloseButton
             onClose={() => setIssued(null)}
           >
             <Stack gap="xs">
               <Text size="sm">
-                Put it in <Code>~/.config/agent-board/env</Code> (mode 600) on that machine:
+                Put {issued.token === null ? 'it' : 'both lines'} in <Code>~/.config/agent-board/env</Code> (mode 600)
+                on that machine. The data key opens everything on the board: keep it as secret as the passphrase.
               </Text>
               <Group gap="xs" wrap="nowrap">
                 <Code block style={{ flex: 1, overflowX: 'auto' }}>
-                  AGENT_BOARD_TOKEN={issued.token}
+                  {envLines(issued).join('\n')}
                 </Code>
-                <CopyButton value={`AGENT_BOARD_TOKEN=${issued.token}`}>
+                <CopyButton value={envLines(issued).join('\n')}>
                   {({ copied, copy }) => (
                     <Tooltip label={copied ? 'Copied' : 'Copy'}>
                       <ActionIcon variant="default" onClick={copy} size="lg">
@@ -107,7 +153,7 @@ function Machines() {
               <Table.Tr key={m.name}>
                 <Table.Td>
                   <Group gap="xs">
-                    <Text size="sm">{m.name}</Text>
+                    <Text size="sm">{m.shown}</Text>
                     {m.revokedAt && (
                       <Badge size="xs" color="red" variant="light">
                         revoked
@@ -122,9 +168,16 @@ function Machines() {
                 </Table.Td>
                 <Table.Td>
                   <Group gap="xs" justify="flex-end">
-                    <Button size="xs" variant="default" onClick={() => issueFor(m.name)}>
-                      New token
-                    </Button>
+                    {m.shown !== INVALID_VALUE && (
+                      <Button size="xs" variant="default" onClick={() => issueFor(m.name)}>
+                        New token
+                      </Button>
+                    )}
+                    {!m.revokedAt && m.shown !== INVALID_VALUE && (
+                      <Button size="xs" variant="default" onClick={() => setAsking({ name: m.name, issuing: false })}>
+                        Show data key
+                      </Button>
+                    )}
                     {!m.revokedAt && (
                       <Button
                         size="xs"
@@ -132,7 +185,7 @@ function Machines() {
                         color="red"
                         onClick={() =>
                           modals.openConfirmModal({
-                            title: `Revoke ${m.name}?`,
+                            title: m.shown === INVALID_VALUE ? 'Revoke this machine’s token?' : `Revoke ${m.shown}?`,
                             children: (
                               <Text size="sm">Its dispatcher and intake stop working until it gets a new token.</Text>
                             ),
@@ -154,15 +207,111 @@ function Machines() {
         <Group align="flex-end">
           <TextInput
             label="Add a machine"
+            description={`A name of ${MACHINE_NAME_RULE}`}
             placeholder="laptop"
             value={name}
             onChange={(e) => setName(e.currentTarget.value)}
             style={{ flex: 1 }}
           />
-          <Button onClick={() => issueFor(name.trim())} disabled={!name.trim()} loading={issue.isPending}>
+          <Button onClick={() => issueFor(name.trim())} disabled={!name.trim()}>
             Create token
           </Button>
         </Group>
+      </Stack>
+    </Paper>
+  );
+}
+
+function Encryption() {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const keys = useKeys();
+  const replaceSlots = useMutation(trpc.keys.replaceSlots.mutationOptions());
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [again, setAgain] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const problem = next === '' ? null : passphraseProblem(next);
+  const mismatch = again !== '' && !samePassphrase(again, next);
+  const ready = current !== '' && next !== '' && problem === null && samePassphrase(again, next);
+
+  const change = async () => {
+    if (!ready || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const stored = await queryClient.fetchQuery(trpc.keys.get.queryOptions());
+      if (!keys || !stored) throw new KeyError('The key is not available. Reload the page.');
+      const { slots } = await replacePassphrase({
+        owner: keys.owner,
+        stored: asHeld(stored, keys),
+        secret: { kind: 'passphrase', passphrase: current },
+        newPassphrase: next,
+      });
+      await replaceSlots.mutateAsync({ keyId: keys.keyId, slots });
+      setCurrent('');
+      setNext('');
+      setAgain('');
+      notifications.show({ color: 'teal', message: 'Passphrase changed. The recovery key still works.' });
+    } catch (err) {
+      setError(err instanceof KeyError ? err.message : errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Paper withBorder p="md">
+      <Stack>
+        <div>
+          <Title order={5}>Encryption</Title>
+          <Text size="sm" c="dimmed">
+            Your board is encrypted with a key only you hold
+            {keys ? (
+              <>
+                {' '}
+                (key id <Code>{keys.keyId}</Code>)
+              </>
+            ) : null}
+            . {PASSPHRASE_ADVICE}
+          </Text>
+        </div>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void change();
+          }}
+        >
+          <Stack maw={360}>
+            <PasswordInput
+              label="Current passphrase"
+              value={current}
+              onChange={(event) => setCurrent(event.currentTarget.value)}
+              error={error}
+              autoComplete="current-password"
+            />
+            <PasswordInput
+              label="New passphrase"
+              value={next}
+              onChange={(event) => setNext(event.currentTarget.value)}
+              error={problem}
+              autoComplete="new-password"
+            />
+            <PasswordInput
+              label="New passphrase again"
+              value={again}
+              onChange={(event) => setAgain(event.currentTarget.value)}
+              error={mismatch ? 'The passphrases differ.' : null}
+              autoComplete="new-password"
+            />
+            <Group>
+              <Button type="submit" disabled={!ready} loading={busy}>
+                Change passphrase
+              </Button>
+            </Group>
+          </Stack>
+        </form>
       </Stack>
     </Paper>
   );
@@ -173,6 +322,7 @@ export function SettingsPage() {
     <Stack maw={900} mx="auto">
       <Title order={3}>Settings</Title>
       <Machines />
+      <Encryption />
     </Stack>
   );
 }

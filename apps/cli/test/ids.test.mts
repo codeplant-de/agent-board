@@ -53,12 +53,46 @@ test('an ambiguous prefix lists the candidates, an unknown or too short one is r
   await assert.rejects(resolveTaskId(backend, 'Ab', OUT), /too short/);
 });
 
-test('a task link yields its id whatever its origin: the board builds links from its public URL', async () => {
+const OUT_LINKS = { inRun: false, boardLinkPrefix: () => 'https://board.example/t/' };
+
+test('a task link counts only when it starts with this machine’s board URL', async () => {
   const { backend, calls } = setup();
-  assert.equal(await resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x', OUT), 'Ab3dEf9x');
-  assert.equal(await resolveTaskId(backend, 'http://localhost:5173/t/Ab3dEf9x/', OUT), 'Ab3dEf9x');
-  await assert.rejects(resolveTaskId(backend, 'https://board.example/schedules', OUT), /not a task link/);
-  await assert.rejects(resolveTaskId(backend, 'https://board.example/t/a/b', OUT), /not a task link/);
+  assert.equal(await resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x', OUT_LINKS), 'Ab3dEf9x');
+  assert.equal(await resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x/', OUT_LINKS), 'Ab3dEf9x');
+  // A board under a path, as web.json may name it.
+  const under = { inRun: false, boardLinkPrefix: () => 'https://example.com/board/t/' };
+  assert.equal(await resolveTaskId(backend, 'https://example.com/board/t/Zk7mNp2q', under), 'Zk7mNp2q');
+  // Another board with the same ids (a restored dump on localhost): refused, naming both URLs.
+  await assert.rejects(resolveTaskId(backend, 'http://localhost:5173/t/Ab3dEf9x', OUT_LINKS), (error: Error) => {
+    assert.ok(error instanceof UsageError);
+    assert.match(
+      error.message,
+      /"http:\/\/localhost:5173\/t\/Ab3dEf9x" is not a link of this board: this machine's board is https:\/\/board\.example,/,
+    );
+    return true;
+  });
+  await assert.rejects(
+    resolveTaskId(backend, 'https://board.example.evil.test/t/Ab3dEf9x', OUT_LINKS),
+    /not a link of this board/,
+  );
+  await assert.rejects(
+    resolveTaskId(backend, 'https://board.example/schedules', OUT_LINKS),
+    /not a link of this board/,
+  );
+  await assert.rejects(resolveTaskId(backend, 'https://board.example/t/a/b', OUT_LINKS), /not a task link/);
+  await assert.rejects(
+    resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x', { inRun: false }),
+    /not a link of this board/,
+  );
+  await assert.rejects(
+    resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x', {
+      inRun: false,
+      boardLinkPrefix: () => {
+        throw new Error('no web.json');
+      },
+    }),
+    /web\.json is unreadable/,
+  );
   assert.deepEqual(calls, []);
 });
 
@@ -87,4 +121,22 @@ test('inside a run nothing is resolved: the id is used as given, with no request
   );
   assert.equal(await resolveScheduleId(backend, 'rq9', inRun), 'rq9');
   assert.deepEqual(calls, []);
+});
+
+test('an id is 12 characters or, for older tasks, 8: those are whole ids, the lengths between are the start of one', async () => {
+  const backend = fakeBackend([task({ id: 'Ab3dEf9xK2mN', title: 'New' }), task({ id: 'Zq8wErTy', title: 'Old' })]);
+  const calls: string[] = [];
+  const list = backend.listTasks;
+  backend.listTasks = async (options) => {
+    calls.push('list');
+    return list(options);
+  };
+  assert.equal(await resolveTaskId(backend, 'Ab3dEf9xK2mN', OUT), 'Ab3dEf9xK2mN');
+  assert.equal(await resolveTaskId(backend, 'Zq8wErTy', OUT), 'Zq8wErTy');
+  assert.deepEqual(calls, [], 'a whole id costs no request');
+  assert.equal(await resolveTaskId(backend, 'Ab3dEf9xK2', OUT), 'Ab3dEf9xK2mN');
+  assert.equal(await resolveTaskId(backend, 'Ab3dEf9', OUT), 'Ab3dEf9xK2mN');
+  assert.deepEqual(calls, ['list', 'list']);
+  // Eight characters of a twelve-character id read as a whole, unknown id: the board says so.
+  assert.equal(await resolveTaskId(backend, 'Ab3dEf9x', OUT), 'Ab3dEf9x');
 });

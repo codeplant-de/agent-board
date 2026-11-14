@@ -1,3 +1,4 @@
+import { sealFields } from '@agent-board/shared';
 import { createHash } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -6,7 +7,9 @@ import type { Tx } from './db/client';
 import { appUsers, machines, notes, schedules, tasks, transcriptEvents, transcriptRuns } from './db/schema';
 import { withOwner } from './db/scope';
 import { buildServer } from './server';
-import { asOwner, caller, question, testConfig, useTestDb } from './test/helpers';
+import { plainMachine, plainUi } from './test/client';
+import { asOwner, question, SEALED, SESSION, testConfig, useTestDb } from './test/helpers';
+import { sealed } from './test/sealed';
 
 const { db, admin } = useTestDb();
 
@@ -29,12 +32,12 @@ type Who = 'alice' | 'bob';
 /** Two users with a board each, both with a machine called "laptop". Bob's board has one of everything. */
 async function setup() {
   const app = await buildServer(testConfig, db);
-  const ui = { alice: caller(db, 'alice'), bob: caller(db, 'bob') };
+  const ui = { alice: plainUi(db, 'alice'), bob: plainUi(db, 'bob') };
   const tokens = {
     alice: (await ui.alice.machines.issue({ name: 'laptop' })).token,
     bob: (await ui.bob.machines.issue({ name: 'laptop' })).token,
   };
-  const call = async (who: Who, command: string, body: Record<string, unknown> = {}) => {
+  const raw = async (who: Who, command: string, body: Record<string, unknown> = {}) => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/machine/${command}`,
@@ -43,18 +46,29 @@ async function setup() {
     });
     return { status: res.statusCode, json: res.json() as { result?: any; error?: string } };
   };
+  const plain = {
+    alice: plainMachine((command, body) => raw('alice', command, body), 'alice'),
+    bob: plainMachine((command, body) => raw('bob', command, body), 'bob'),
+  };
+  const call = (who: Who, command: string, body: Record<string, unknown> = {}) => plain[who](command, body);
 
   const idle = await ui.bob.tasks.create({ input: 'idle' });
   const asked = await ui.bob.tasks.create({ input: 'asked' });
   await call('bob', 'claim-task', { id: asked.id, machine: 'laptop' });
-  await call('bob', 'update-task', { id: asked.id, body: { sessionId: 's' } });
+  await call('bob', 'update-task', { id: asked.id, body: { sessionId: SESSION } });
   await call('bob', 'ask', { id: asked.id, body: { questions: [question] } });
   const questionId = (await ui.bob.tasks.get({ id: asked.id })).thread.find((n) => n.kind === 'question')!.id;
   const running = await ui.bob.tasks.create({ input: 'running' });
   await call('bob', 'claim-task', { id: running.id, machine: 'laptop' });
   const scheduled = await ui.bob.tasks.create({ input: 'sweep', when: { every: HOUR } });
   await call('bob', 'transcript', { id: idle.id, body: transcript('run-bob-0001') });
-  return { app, ui, call, bob: { idle, asked, running, scheduled, questionId, scheduleId: scheduled.scheduleId! } };
+  return {
+    app,
+    ui,
+    call,
+    raw,
+    bob: { idle, asked, running, scheduled, questionId, scheduleId: scheduled.scheduleId! },
+  };
 }
 
 let ctx: Awaited<ReturnType<typeof setup>>;
@@ -95,11 +109,11 @@ describe('one user cannot reach another user’s board', () => {
       () => alice.tasks.move({ id: bob.idle.id, status: 'backlog' }),
       () => alice.schedules.setPaused({ id: bob.scheduleId, paused: true }),
       () => alice.schedules.remove({ id: bob.scheduleId }),
-      () => alice.transcript.output({ runId: 'run-bob-0001', seq: 1 }),
+      () => alice.transcript.output({ taskId: bob.idle.id, runId: 'run-bob-0001', seq: 1 }),
     ];
     for (const attempt of attempts) await expect(attempt()).rejects.toMatchObject(notFound);
     expect(await alice.transcript.runs({ id: bob.idle.id })).toEqual([]);
-    expect(await alice.transcript.events({ runId: 'run-bob-0001' })).toEqual([]);
+    expect(await alice.transcript.events({ taskId: bob.idle.id, runId: 'run-bob-0001' })).toEqual([]);
     // A foreign neighbour is not found, so the drop lands as if it were not named.
     const moved = await alice.tasks.move({
       id: own.id,
@@ -116,13 +130,13 @@ describe('one user cannot reach another user’s board', () => {
   it('reads every foreign id on the machine API as not found, and changes nothing', async () => {
     const { call, bob } = ctx;
     const before = await bobsRows();
-    const alice = caller(db, 'alice');
+    const alice = ctx.ui.alice;
     const own = await alice.tasks.create({ input: 'mine' });
     const ownSchedule = (await alice.tasks.create({ input: 'sweep', when: { every: HOUR } })).scheduleId!;
     const foreign = { id: bob.idle.id };
     const commands: [string, Record<string, unknown>][] = [
       ['get-task', foreign],
-      ['update-task', { ...foreign, body: { sessionId: 'x' } }],
+      ['update-task', { ...foreign, body: { sessionId: SESSION } }],
       ['claim-task', { ...foreign, machine: 'laptop' }],
       ['add-note', { ...foreign, body: 'hello' }],
       ['ask', { ...foreign, body: { questions: [question] } }],
@@ -208,9 +222,9 @@ describe('one user cannot reach another user’s board', () => {
       const { rows } = await db.execute<{ n: number }>(sql`select count(*)::int as n from ${sql.identifier(table)}`);
       expect(rows[0]!.n, table).toBe(0);
     }
-    await expect(db.insert(tasks).values({ id: 'raw-1', title: 't', input: 'i', position: 0 })).rejects.toThrow();
+    await expect(db.insert(tasks).values({ id: 'raw-1', title: SEALED, input: SEALED, position: 0 })).rejects.toThrow();
     await expect(
-      db.insert(tasks).values({ id: 'raw-2', title: 't', input: 'i', position: 0, owner: 'bob' }),
+      db.insert(tasks).values({ id: 'raw-2', title: SEALED, input: SEALED, position: 0, owner: 'bob' }),
     ).rejects.toThrow();
     await expect(db.update(tasks).set({ title: 'x' })).resolves.toBeDefined();
     expect(
@@ -230,11 +244,13 @@ describe('one user cannot reach another user’s board', () => {
         // A savepoint, so a refused write does not abort the transaction for the next attempt.
         tx.transaction(() => fn());
       await expect(
-        attempt(() => tx.insert(tasks).values({ id: 'x-1', title: 't', input: 'i', position: 0, owner: 'bob' })),
+        attempt(() => tx.insert(tasks).values({ id: 'x-1', title: SEALED, input: SEALED, position: 0, owner: 'bob' })),
       ).rejects.toThrow();
       await expect(
         attempt(() =>
-          tx.insert(notes).values({ id: 'x-note-1', taskId: bob.idle.id, author: 'user', kind: 'comment' }),
+          tx
+            .insert(notes)
+            .values({ id: 'x-note-1', taskId: bob.idle.id, author: 'user', kind: 'comment', body: SEALED }),
         ),
       ).rejects.toThrow();
       await expect(
@@ -250,7 +266,9 @@ describe('one user cannot reach another user’s board', () => {
       ).rejects.toThrow();
       await expect(
         attempt(() =>
-          tx.insert(transcriptEvents).values({ runId: 'run-bob-0001', seq: 9, at: new Date(), kind: 'text', data: {} }),
+          tx
+            .insert(transcriptEvents)
+            .values({ runId: 'run-bob-0001', seq: 9, at: new Date(), kind: 'text', data: SEALED }),
         ),
       ).rejects.toThrow();
     });
@@ -273,19 +291,14 @@ describe('one user cannot reach another user’s board', () => {
       await asOwner(db, 'alice', async (tx) => {
         const [own] = await tx
           .insert(tasks)
-          .values({ id: 'alice-task', title: 't', input: 'i', position: 0 })
+          .values({ id: 'alice-task', title: SEALED, input: SEALED, position: 0 })
           .returning();
         const [ownSchedule] = await tx
           .insert(schedules)
-          .values({ id: 'alice-sched', title: 't', input: 'i', anchorAt: new Date() })
+          .values({ id: 'alice-sched', title: SEALED, input: SEALED, anchorAt: new Date() })
           .returning();
         const cases: [string, (id: string) => Promise<unknown>, string][] = [
           ['task_parent_fk', (id) => tx.update(tasks).set({ parentId: id }).where(eq(tasks.id, own!.id)), bob.idle.id],
-          [
-            'task_schedule_fk',
-            (id) => tx.update(tasks).set({ scheduleId: id }).where(eq(tasks.id, own!.id)),
-            bob.scheduleId,
-          ],
           [
             'schedule_occurrence_task_fk',
             (id) => tx.update(schedules).set({ occurrenceTaskId: id }).where(eq(schedules.id, ownSchedule!.id)),
@@ -294,7 +307,9 @@ describe('one user cannot reach another user’s board', () => {
           [
             'note_task_fk',
             (id) =>
-              tx.insert(notes).values({ id: `n-${id}`.slice(0, 20), taskId: id, author: 'user', kind: 'comment' }),
+              tx
+                .insert(notes)
+                .values({ id: `n-${id}`.slice(0, 20), taskId: id, author: 'user', kind: 'comment', body: SEALED }),
             bob.idle.id,
           ],
           [
@@ -311,7 +326,8 @@ describe('one user cannot reach another user’s board', () => {
           ],
           [
             'transcript_event_run_fk',
-            (id) => tx.insert(transcriptEvents).values({ runId: id, seq: 0, at: new Date(), kind: 'text', data: {} }),
+            (id) =>
+              tx.insert(transcriptEvents).values({ runId: id, seq: 0, at: new Date(), kind: 'text', data: SEALED }),
             'run-bob-0001',
           ],
         ];
@@ -326,23 +342,61 @@ describe('one user cannot reach another user’s board', () => {
 
     it('clears only the reference column when the parent goes', async () => {
       await asOwner(db, 'alice', async (tx) => {
-        const row = (id: string) => ({ id, title: 't', input: 'i', position: 0 });
+        const row = (id: string) => ({ id, title: SEALED, input: SEALED, position: 0 });
         await tx.insert(tasks).values(row('parent-1'));
         await tx.insert(tasks).values({ ...row('child-1'), parentId: 'parent-1' });
         await tx
           .insert(schedules)
-          .values({ id: 'sched-1', title: 't', input: 'i', anchorAt: new Date(), occurrenceTaskId: 'parent-1' });
+          .values({ id: 'sched-1', title: SEALED, input: SEALED, anchorAt: new Date(), occurrenceTaskId: 'parent-1' });
         await tx.update(tasks).set({ scheduleId: 'sched-1' }).where(eq(tasks.id, 'child-1'));
         await tx.delete(tasks).where(eq(tasks.id, 'parent-1'));
         const [child] = await tx.select().from(tasks).where(eq(tasks.id, 'child-1'));
         expect(child).toMatchObject({ owner: 'alice', parentId: null, scheduleId: 'sched-1' });
         const [schedule] = await tx.select().from(schedules);
         expect(schedule).toMatchObject({ owner: 'alice', occurrenceTaskId: null });
+        // A task keeps naming its schedule after it is gone: its sealed fields are bound to that id.
         await tx.delete(schedules).where(eq(schedules.id, 'sched-1'));
         const [after] = await tx.select().from(tasks).where(eq(tasks.id, 'child-1'));
-        expect(after).toMatchObject({ owner: 'alice', scheduleId: null });
+        expect(after).toMatchObject({ owner: 'alice', scheduleId: 'sched-1' });
       });
     });
+  });
+
+  it('reads a task or schedule id that another user holds as the same conflict as an own duplicate, and writes nothing', async () => {
+    const { ui, bob } = ctx;
+    const before = await bobsRows();
+    const task = async (id: string) => ({
+      id,
+      ...(await sealFields(
+        sealed.seal,
+        { kind: 'task', id, createdBy: 'user', scheduleId: null },
+        { title: SEALED, input: SEALED },
+      )),
+    });
+    const schedule = async (id: string) => ({
+      id,
+      ...(await sealFields(sealed.seal, { kind: 'schedule', id }, { title: SEALED, input: SEALED })),
+    });
+    const foreignTask = await ctx.raw('alice', 'add-task', { body: await task(bob.idle.id) });
+    const foreignSchedule = await ctx.raw('alice', 'add-schedule', {
+      body: { ...(await schedule(bob.scheduleId)), everyMs: HOUR },
+    });
+    expect(foreignTask).toMatchObject({ status: 409, json: { error: 'that task id is already taken' } });
+    expect(foreignSchedule).toMatchObject({ status: 409, json: { error: 'that schedule id is already taken' } });
+    await expect(ui.alice.raw.tasks.create({ ...(await task(bob.idle.id)) })).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
+    await expect(
+      ui.alice.raw.tasks.create({ ...(await schedule(bob.scheduleId)), when: { every: HOUR } }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+    // An own duplicate says the same, so the answer does not tell whose the id is.
+    const own = await task('alice-own-id');
+    expect((await ctx.raw('alice', 'add-task', { body: own })).status).toBe(200);
+    expect(await ctx.raw('alice', 'add-task', { body: own })).toMatchObject({
+      status: 409,
+      json: { error: foreignTask.json.error },
+    });
+    expect(await bobsRows()).toBe(before);
   });
 
   it('closes stale Done tasks of every board, with the event under the right owner', async () => {

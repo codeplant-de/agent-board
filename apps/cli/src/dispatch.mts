@@ -6,7 +6,17 @@ import { buildContext, print } from './cli.mts';
 import type { Context } from './cli.mts';
 import type { Task } from '@agent-board/shared';
 import { promptSkill } from '@agent-board/shared';
-import { decideStale, notServableHere, ownLane, planPauses, planStarts, START_MARKER, unitName } from './decide.mts';
+import {
+  decideStale,
+  neverRun,
+  notServableHere,
+  ownLane,
+  planPauses,
+  planStarts,
+  START_MARKER,
+  unitName,
+  unreadableForRun,
+} from './decide.mts';
 import type { LaneRun } from './decide.mts';
 import { createRunFiles } from './runtime.mts';
 import type { RunFiles } from './runtime.mts';
@@ -74,6 +84,17 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     // A task put back in Todo (an answer came while the agent was still ending its turn) must not start twice.
     if (activeWorkers.includes(task.id)) {
       log(`SKIP ${task.id} its last worker is still stopping`);
+      continue;
+    }
+    // An agent's proposal waits for the user, whatever status the board shows. The worker refuses it as well.
+    if (neverRun(task) !== undefined) {
+      log(`SKIP ${task.id} proposed by an agent, not started by you`);
+      continue;
+    }
+    // A prompt or directory this machine cannot decrypt must never be run as an empty one. The worker refuses it as well.
+    const unreadable = unreadableForRun(task);
+    if (unreadable.length > 0) {
+      log(`SKIP ${task.id} cannot decrypt its ${unreadable.join(' and ')}`);
       continue;
     }
     // Not due yet; the board refuses the claim too, this only saves the attempt every tick. Checked before
@@ -178,7 +199,10 @@ export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<voi
     logTail: readLogTail,
     notify: async (task, text) => {
       if (dryRun) return print(`DRY slack ${task.id} ${text}`);
-      await postSlack(context.config.slackWebhookFile, slackText(task, text));
+      await postSlack(
+        context.config.slackWebhookFile,
+        slackText({ title: task.title, url: context.taskLink(task.id) }, text),
+      );
     },
   });
 }

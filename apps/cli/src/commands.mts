@@ -14,15 +14,17 @@ import {
   readThread,
   scheduleCommand,
   schedules,
+  noteJson,
+  scheduleJson,
   selectTasks,
+  taskJson,
   show,
   tasks,
 } from './board.mts';
 import type { AddFlags, DelayFlags, TasksFlags } from './board.mts';
 import { buildContext, readStdin, ReportedFailure, UsageError } from './cli.mts';
-import type { Context, ContextOptions } from './cli.mts';
+import type { ContextOptions, LinkingContext } from './cli.mts';
 import { verifyContract } from './backend.mts';
-import type { WebConfig } from './backend.mts';
 import { completionModel, renderCompletion, SHELLS } from './completion.mts';
 import type { Shell } from './completion.mts';
 import { getPaths } from './config.mts';
@@ -41,6 +43,7 @@ import { realSetupDeps, setup, unitDirectory, whichOnPath } from './setup.mts';
 import type { SetupDeps, SetupFlags } from './setup.mts';
 import { runHook } from './hook.mts';
 import { resolveScheduleId, resolveTaskId } from './ids.mts';
+import { plainLine } from './terminal.mts';
 import { intakeMain } from './intake.mts';
 import { addScheduleOptions } from './schedule.mts';
 import type { ScheduleFlags } from './schedule.mts';
@@ -50,7 +53,7 @@ import { workerMain } from './worker.mts';
 export interface ProgramOptions {
   env?: Record<string, string | undefined>;
   // The context of a command; tests hand over a fake backend.
-  context?: (dryRun: boolean, options: ContextOptions) => Context;
+  context?: (dryRun: boolean, options: ContextOptions) => LinkingContext;
   readStdin?: () => Promise<string>;
   writeOut?: (text: string) => void;
   writeErr?: (text: string) => void;
@@ -66,7 +69,7 @@ export interface ProgramOptions {
   runSystem?: SetupDeps['run'];
   // The exit code of a read-only systemctl call.
   systemctlCode?: DoctorDeps['systemctl'];
-  verifyServer?: (config: WebConfig) => Promise<void>;
+  verifyServer?: DoctorDeps['verifyServer'];
   // Runs `gh` for self-update.
   gh?: (args: string[]) => Promise<string>;
   // The command line being run, set by runBoard.
@@ -80,7 +83,7 @@ const SETUP = 'Setup:';
 const STATUS_LIST = STATUSES.join(', ');
 const TASK_ARGUMENT = 'the task: its id, a board task link or the start of its id';
 const ID_NOTE =
-  '<task> can be the full id, a link to the task on this board, or the start of the id (3+ characters; an exact-case match wins, else case does not matter; it must be unique). Inside a board run only the full id is accepted.';
+  '<task> can be the full id, a link to the task on this board (as the CLI prints it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but not exactly 8, which counts as a whole older id; an exact-case match wins, else case does not matter; it must be unique). Inside a board run only the full id is accepted.';
 
 // `comment <task> [text...]` in the overview, without commander's `[options]` and without the long usage of `comment`.
 function overviewTerm(command: Command): string {
@@ -127,7 +130,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
 
   // `strictConfig`: the command binds work to this machine's name, which needs a config.json to mean anything.
   // `json`: stdout holds the JSON document alone, so every other line goes to stderr.
-  const contextOf = (command: Command, { strictConfig = false, json = false } = {}): Context => {
+  const contextOf = (command: Command, { strictConfig = false, json = false } = {}): LinkingContext => {
     const dryRun =
       program.opts<{ dryRun?: boolean }>().dryRun === true || command.opts<{ dryRun?: boolean }>().dryRun === true;
     return makeContext(dryRun, {
@@ -137,8 +140,21 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   };
   const writeJson = (value: unknown): void => writeOut(`${JSON.stringify(value, null, 2)}\n`);
   const inRun = Boolean(env['AGENT_BOARD_TASK']);
-  const taskIdOf = (context: Context, arg: string): Promise<string> => resolveTaskId(context.backend, arg, { inRun });
-  const jsonOption = (command: Command): Command => command.option('--json', 'print JSON on stdout instead of text');
+  const taskIdOf = (context: LinkingContext, arg: string): Promise<string> =>
+    resolveTaskId(context.backend, arg, {
+      inRun,
+      // The same source as every link the CLI prints.
+      boardLinkPrefix: () => context.taskLink('a').slice(0, -1),
+    });
+  // `readable`: the command lists tasks, notes or schedules, whose values this machine may be unable to decrypt.
+  const jsonOptionReadable = (command: Command): Command => jsonOption(command, { readable: true });
+  const jsonOption = (command: Command, { readable = false } = {}): Command =>
+    command.option(
+      '--json',
+      readable
+        ? 'print JSON on stdout instead of text; a value this machine cannot decrypt is null there and named in "unreadable" (text shows "(cannot decrypt: input)" after the task, and "(cannot decrypt this title)" for a title)'
+        : 'print JSON on stdout instead of text',
+    );
   // On the old parser a trailing --dry-run meant a dry run; doing the real thing silently would be the wrong direction.
   const refuseDryRunInText = (words: string[], usage: string): void => {
     if (words[0] === '--dry-run' || words.at(-1) === '--dry-run')
@@ -163,7 +179,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     command.option('--dry-run', 'read everything, print every write instead of doing it');
 
   dryRunOption(
-    jsonOption(
+    jsonOptionReadable(
       program
         .command('tasks')
         .helpGroup(TASKS)
@@ -177,12 +193,12 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     ),
   ).action(async (flags: TasksFlags, command: Command) => {
     const context = contextOf(command, { json: flags.json === true });
-    if (flags.json) writeJson(await selectTasks(context, flags));
+    if (flags.json) writeJson((await selectTasks(context, flags)).map(taskJson));
     else await tasks(context, flags);
   });
 
   dryRunOption(
-    jsonOption(
+    jsonOptionReadable(
       program
         .command('show')
         .helpGroup(TASKS)
@@ -201,7 +217,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     const id = await taskIdOf(context, arg);
     if (!flags.json) return show(context, id);
     const { task, notes } = await readThread(context, id);
-    writeJson({ task, notes });
+    writeJson({ task: taskJson(task), notes: notes.map(noteJson) });
   });
 
   dryRunOption(
@@ -327,7 +343,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     const context = contextOf(command, { strictConfig: true, json: flags.json === true });
     const parent = flags.parent === undefined ? undefined : await taskIdOf(context, flags.parent);
     const task = await add(context, { ...flags, ...(parent === undefined ? {} : { parent }) });
-    if (flags.json) writeJson({ id: task.id, url: task.url });
+    if (flags.json) writeJson({ id: task.id, url: context.taskLink(task.id) });
   });
 
   const schedule = program
@@ -368,19 +384,22 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         throw new UsageError(
           'the prompt ends in --dry-run: put --dry-run before the prompt (board schedule --dry-run <prompt...>), or put -- before a prompt that really ends in it',
         );
-      const task = await scheduleCommand(
-        contextOf(command, { strictConfig: true, json: flags.json === true }),
-        flags,
-        words,
-      );
+      const context = contextOf(command, { strictConfig: true, json: flags.json === true });
+      const task = await scheduleCommand(context, flags, words);
       if (flags.json)
         writeJson(
-          task ? { id: task.id, url: task.url, ...(task.scheduleId ? { scheduleId: task.scheduleId } : {}) } : null,
+          task
+            ? {
+                id: task.id,
+                url: context.taskLink(task.id),
+                ...(task.scheduleId ? { scheduleId: task.scheduleId } : {}),
+              }
+            : null,
         );
     });
 
   dryRunOption(
-    jsonOption(
+    jsonOptionReadable(
       program
         .command('schedules')
         .helpGroup(SCHEDULING)
@@ -388,7 +407,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         .description(
           paragraphs(
             'Without arguments, list the repeating schedules: id, rule, next run, runs left, paused or ended, title; --json prints them as JSON.',
-            '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run. Changing a schedule is not available inside a board run. The id can be the start of it (3+ characters) outside a run.',
+            '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run. Changing a schedule is not available inside a board run. The id can be the start of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.',
           ),
         )
         .usage('[options] [pause|resume|rm <id>]')
@@ -408,7 +427,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     const context = contextOf(command, { json: flags.json === true });
     if (flags.json) {
       if (words.length > 0) throw new UsageError('--json only prints the list of schedules');
-      return writeJson(await context.backend.listSchedules());
+      return writeJson((await context.backend.listSchedules()).map(scheduleJson));
     }
     const [action, arg, ...rest] = words;
     const changes = action === 'pause' || action === 'resume' || action === 'rm';
@@ -477,20 +496,28 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .summary('write web.json, env and config.json for this machine')
     .description(
       paragraphs(
-        "Set this machine up for the board: write web.json (the board's URL), env (the machine token, mode 600) and, if it is missing, config.json (from the example, with this machine's name). Then run the checks of `board doctor`.",
-        'Without flags it asks. For a script give --url and --token-file: the token never goes on the command line, where it would land in the shell history. The file must be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board init --url … --token-file /dev/stdin`. --machine defaults to the host name. A file that exists is kept unless --force, which copies it to <name>.bak-<timestamp> first; config.json is never replaced.',
+        "Set this machine up for the board: write web.json (the board's URL), env (the machine token and the data key, mode 600) and, if it is missing, config.json (from the example, with this machine's name). Then run the checks of `board doctor`.",
+        'Set up encryption in the browser first: init asks for the data key from the board\'s Settings page as well as the token. The page offers the env lines to copy (`AGENT_BOARD_TOKEN=…`, `AGENT_BOARD_DATA_KEY=…`). At a prompt paste one line: the bare value, or its own line (a prompt takes one line, so the other line is refused, naming which one it wants); a file or pipe given with --token-file or --data-key-file may hold both lines. Without flags it asks. For a script give --url, --token-file and --data-key-file: a secret never goes on the command line, where it would land in the shell history. A secret file must be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board init --url … --token-file /dev/stdin --data-key-file ~/key`; only one of the two can be /dev/stdin. --machine defaults to the host name.',
+        'A file that exists is kept unless --force, which copies it to <name>.bak-<timestamp> first (an env backup is mode 600 at most) and keeps what you do not give again: the URL, the token, the data key and any other line of env. An env that has the token but no data key (or the reverse) is completed without --force: init asks for the missing value only. config.json is never replaced.',
         'Not available inside a board run.',
       ),
     )
     .option('--url <url>', "the board's URL (https, or http for localhost)")
-    .option('--token-file <path>', 'read the machine token from this file')
+    .option(
+      '--token-file <path>',
+      'read the machine token from this file: the bare token or the env line(s) the Settings page offers (mode 600 or 400, or a pipe)',
+    )
+    .option(
+      '--data-key-file <path>',
+      'read the data key from this file: the bare key or the env line(s) the Settings page offers (mode 600 or 400, or a pipe)',
+    )
     .option('--machine <name>', "this machine's name on the board (default: the host name)")
     .option('--force', 'replace web.json and env after backing them up')
     .addHelpText(
       'after',
       examples(
         'board init',
-        'printf %s "$TOKEN" | board init --url https://board.example.com --token-file /dev/stdin --machine laptop',
+        'printf %s "$TOKEN" | board init --url https://board.example.com --token-file /dev/stdin --data-key-file ~/key --machine laptop',
       ),
     )
     .action(async (flags: InitFlags) => {
@@ -522,7 +549,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       .description(
         paragraphs(
           'Check this machine, read-only, one line per check: ✓ passes, ✗ fails (with a fix), ! is a warning. Exit 1 if any check fails; warnings alone exit 0. The token is never printed.',
-          'Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600 or 400, token), the board (reachable, token accepted, contract version), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers. The worker checks only warn on a machine with no unit installed.',
+          'Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600 or 400, token, data key), the board (reachable, token accepted, contract version, and whether it has a data key and this machine holds the same one), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers. The worker checks only warn on a machine with no unit installed.',
         ),
       )
       .addHelpText('after', examples('board doctor', 'board doctor --json')),
@@ -607,7 +634,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       try {
         const context = makeContext(false, { optionalConfig: true, timeoutMs: limitMs });
         const lines = async (): Promise<string[]> => {
-          const oneLine = (text: string): string => text.replace(/\s+/g, ' ');
+          const oneLine = (text: string): string => plainLine(text.replace(/\s+/g, ' '));
           if (kind === 'tasks')
             return (await context.backend.listTasks()).map((task) => `${task.id}\t${oneLine(task.title)}`);
           if (kind === 'schedules')

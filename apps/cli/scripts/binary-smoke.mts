@@ -23,7 +23,18 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { task } from '../test/helpers.mts';
+import {
+  CONTRACT_VERSION,
+  dedupeKeyIndex,
+  headIndex,
+  deriveKeys,
+  encodeDataKey,
+  generateDataKey,
+  noteBinding,
+  open,
+  seal,
+} from '@agent-board/shared';
+import { DATA_KEY, ENV_FILE, KEYS, OWNER, wireTask } from '../test/helpers.mts';
 
 const cliDir = fileURLToPath(new URL('..', import.meta.url));
 const version = (JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')) as { version: string }).version;
@@ -52,6 +63,33 @@ writeFileSync(
   '#!/bin/sh\ncase "$*" in *is-active*) echo inactive; exit 3 ;; esac\nexit 0\n',
   { mode: 0o755 },
 );
+// A `gh` that lists one review request, so that an intake run reaches the call that computes the blind index.
+const PR_URL = 'https://github.com/o/r/pull/1';
+const searchAnswer = JSON.stringify({
+  data: {
+    search: {
+      pageInfo: { hasNextPage: false },
+      nodes: [
+        {
+          url: PR_URL,
+          title: 'Fix it',
+          number: 1,
+          isDraft: false,
+          headRefOid: 'abc123',
+          author: { login: 'someone' },
+          commits: { nodes: [{ commit: { committedDate: '2026-11-14T10:00:00Z' } }] },
+        },
+      ],
+    },
+  },
+});
+writeFileSync(
+  join(toolBin, 'gh'),
+  `#!/bin/sh\ncase "$1 $2" in "api graphql") cat <<'JSON'\n${searchAnswer}\nJSON\n;; *) exit 1 ;; esac\n`,
+  {
+    mode: 0o755,
+  },
+);
 writeFileSync(join(toolBin, 'systemd-run'), `#!/bin/sh\necho "$*" >> '${systemdRuns}'\n`, { mode: 0o755 });
 const path = `${toolBin}:/usr/bin:/bin`;
 for (const dir of path.split(':'))
@@ -65,7 +103,34 @@ let mode: Mode = 'normal';
 // How long list-tasks takes to answer: long enough to replace the binary while a tick waits for it.
 let listDelayMs = 0;
 const requests: { command: string; body: string }[] = [];
-const todo = task({ id: 'Ab3dEf9x', title: 'Fix the thing', status: 'todo' });
+// The board no longer sends a link, but a hostile one still says what a link of its own would be.
+const todo = {
+  ...(await wireTask({ id: 'Ab3dEf9x', title: 'Fix the thing', status: 'todo' })),
+  url: 'https://evil.example/t/Ab3dEf9x',
+};
+// A task sealed with another data key: this machine can open its title but not its prompt, or neither.
+const otherKeys = await deriveKeys(generateDataKey(), OWNER);
+const foreign = {
+  ...(await wireTask({ id: 'Un0pen01', title: 'Foreign', status: 'todo' })),
+  input: await seal(otherKeys, 'input', '', 'a prompt this machine cannot open'),
+};
+// What the fake board answers; a check changes it and puts it back.
+const fake = {
+  contract: CONTRACT_VERSION,
+  keyId: KEYS.keyId as string | null,
+  tasks: [todo] as unknown[],
+  // What get-task answers; a worker's run changes it to the task it runs.
+  current: todo as unknown,
+};
+async function withBoard(patch: Partial<typeof fake>, run: () => Promise<void>): Promise<void> {
+  const before = { ...fake };
+  Object.assign(fake, patch);
+  try {
+    await run();
+  } finally {
+    Object.assign(fake, before);
+  }
+}
 const server = createServer((request: IncomingMessage, response: ServerResponse) => {
   let body = '';
   request.on('data', (chunk: Buffer) => (body += String(chunk)));
@@ -77,10 +142,14 @@ const server = createServer((request: IncomingMessage, response: ServerResponse)
       return response.end();
     }
     const results: Record<string, unknown> = {
-      version: { contract: 5 },
-      'list-tasks': [todo],
-      'get-task': todo,
+      version: { contract: fake.contract, owner: OWNER, keyId: fake.keyId },
+      'list-tasks': fake.tasks,
+      'get-task': fake.current,
+      fail: { applied: true, task: fake.current },
+      pause: fake.current,
+      'read-notes': [],
       'update-task': todo,
+      'add-task': { task: todo, created: true },
       'claim-task': { ...todo, status: 'running', machine: 'smoke' },
     };
     const reply = (): void => void response.end(JSON.stringify({ result: results[command] ?? null }));
@@ -90,6 +159,19 @@ const server = createServer((request: IncomingMessage, response: ServerResponse)
 });
 await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
 const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+// The note bodies the fake server holds: sealed envelopes that only the test key opens.
+async function storedNotes(): Promise<string[]> {
+  const notes: string[] = [];
+  for (const request of requests.filter((entry) => entry.command === 'add-note')) {
+    const { id, body } = JSON.parse(request.body) as { id: string; body: { body: string } };
+    assert.ok(body.body.startsWith('abe1.'), 'a note must reach the server sealed');
+    // A note is bound to its task, author and kind.
+    const binding = noteBinding('note.body', id, 'agent', 'comment');
+    notes.push(await open(KEYS, binding.field, binding.context, body.body));
+  }
+  return notes;
+}
 
 interface Result {
   code: number;
@@ -122,13 +204,31 @@ function board(args: string[], configDir: string, env: Record<string, string> = 
 }
 
 let configCount = 0;
-function config(options: { webUrl?: string; envMode?: number; config?: boolean } = {}): string {
+function config(
+  options: {
+    webUrl?: string;
+    envMode?: number;
+    config?: boolean;
+    dataKey?: Uint8Array;
+    noKey?: boolean;
+    repos?: boolean;
+  } = {},
+): string {
   const dir = join(root, `cfg${(configCount += 1)}`);
   mkdirSync(dir);
   writeFileSync(join(dir, 'web.json'), JSON.stringify({ url: options.webUrl ?? url }));
-  writeFileSync(join(dir, 'env'), 'AGENT_BOARD_TOKEN=abm_smoketoken\n', { mode: options.envMode ?? 0o600 });
+  const env = options.noKey
+    ? 'AGENT_BOARD_TOKEN=abm_smoketoken\n'
+    : options.dataKey
+      ? `AGENT_BOARD_TOKEN=abm_smoketoken\nAGENT_BOARD_DATA_KEY=${encodeDataKey(options.dataKey)}\n`
+      : ENV_FILE;
+  writeFileSync(join(dir, 'env'), env, { mode: options.envMode ?? 0o600 });
   chmodSync(join(dir, 'env'), options.envMode ?? 0o600);
-  if (options.config) writeFileSync(join(dir, 'config.json'), JSON.stringify({ machine: 'smoke' }));
+  if (options.config)
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({ machine: 'smoke', ...(options.repos ? { repos: { 'o/r': '/tmp' } } : {}) }),
+    );
   return dir;
 }
 
@@ -150,7 +250,7 @@ mkdirSync(empty);
 
 await check('--version shows the injected version', async () => {
   const result = await board(['--version'], empty);
-  assert.deepEqual([result.code, result.stdout], [0, `board ${version} (contract 5)\n`]);
+  assert.deepEqual([result.code, result.stdout], [0, `board ${version} (contract ${CONTRACT_VERSION})\n`]);
 });
 await check('help and help schedule', async () => {
   const help = await board(['help'], empty);
@@ -182,9 +282,14 @@ await check('comment --file reads a file in /tmp, and refuses a link to a file o
     const note = join(dir, 'note.md');
     writeFileSync(note, 'from a file\n');
     requests.length = 0;
-    const ok = await board(['comment', 'Ab3dEf9x', '--file', note], config());
+    const ok = await board(['comment', 'Ab3dEf9x', '--file', note], config({ webUrl: `${url}/board` }));
     assert.equal(ok.code, 0, ok.stderr);
-    assert.ok(requests.some((request) => request.command === 'add-note' && request.body.includes('from a file')));
+    assert.deepEqual(await storedNotes(), ['from a file']);
+    assert.equal(
+      ok.stdout.trim(),
+      `commented on Ab3dEf9x  ${url}/board/t/Ab3dEf9x`,
+      'the link is built from web.json, not sent by the board',
+    );
     const secret = join(outside, 'secret');
     writeFileSync(secret, 'TOKEN=1');
     const link = join(dir, 'link.md');
@@ -229,6 +334,153 @@ await check('setup --print points ExecStart at this binary', async () => {
     result.stdout,
     new RegExp(`ExecStart=\\S*flock -n -E 75 %t/agent-board-dispatch.lock ${binary} internal dispatch\\n`),
   );
+});
+await check('a data key that is not the board’s is refused, naming both key ids and never the key', async () => {
+  const wrong = generateDataKey();
+  const result = await board(['tasks'], config({ dataKey: wrong }));
+  assert.equal(result.code, 1);
+  assert.match(
+    result.stderr,
+    /this machine holds a different data key \(id [0-9a-f]{16}\) than the board's \(id [0-9a-f]{16}\)/,
+  );
+  assert.ok(!result.stderr.includes(encodeDataKey(wrong)));
+});
+await check('a board without a data key is refused', async () => {
+  await withBoard({ keyId: null }, async () => {
+    const result = await board(['tasks'], config());
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /the board has no data key yet: set up encryption in the browser first/);
+  });
+});
+await check('a machine without a data key in env is refused, saying where to get it', async () => {
+  const result = await board(['tasks'], config({ noKey: true }));
+  assert.equal(result.code, 1);
+  assert.match(
+    result.stderr,
+    /the credentials file needs AGENT_BOARD_DATA_KEY \(copy it from the board's Settings page, then run "board init"\)/,
+  );
+});
+await check('the binary computes the same blind index for a dedupe key as node does', async () => {
+  // Both machines must create a PR's task once: the key is a keyed hash that Bun and Node have to agree on.
+  requests.length = 0;
+  const result = await board(['internal', 'intake'], config({ config: true, repos: true }));
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /INTAKE prs=1 created=1/);
+  const added = requests.find((request) => request.command === 'add-task');
+  assert.ok(added, 'intake sent no add-task');
+  const draft = (
+    JSON.parse(added.body) as { body: { dedupeKey: string; head: string; id: string; title: string; input: string } }
+  ).body;
+  const sent = draft.dedupeKey;
+  assert.equal(sent, await dedupeKeyIndex(KEYS, PR_URL));
+  assert.equal(draft.head, await headIndex(KEYS, 'abc123'), 'the PR head is a blind index too');
+  assert.match(draft.id, /^[A-Za-z0-9]{12}$/, 'the client chooses the task id');
+  assert.ok(
+    draft.title.startsWith('abe1.') && draft.input.startsWith('abe1.'),
+    'title and prompt reach the server sealed',
+  );
+  assert.ok(!sent.includes('github.com'), 'the PR URL must not reach the server');
+});
+await check('a board of another contract says how to update this binary', async () => {
+  await withBoard({ contract: CONTRACT_VERSION + 1 }, async () => {
+    const result = await board(['tasks'], config());
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /this CLI is older than the board server: .*run "board self-update"/);
+  });
+});
+await check('doctor compares this machine’s key with the board’s', async () => {
+  const good = await board(['doctor'], config({ config: true }));
+  assert.match(good.stdout, /✓ board key: the board's data key is id [0-9a-f]{16}, and this machine holds it/);
+  assert.ok(!good.stdout.includes(encodeDataKey(DATA_KEY)));
+  const bad = await board(['doctor', '--json'], config({ dataKey: generateDataKey() }));
+  assert.equal(bad.code, 1);
+  const checks = JSON.parse(bad.stdout) as { name: string; level: string }[];
+  assert.equal(checks.find((entry) => entry.name === 'board key')?.level, 'fail');
+});
+await check('a task this machine cannot open is shown as such, and the dispatcher skips it', async () => {
+  await withBoard({ tasks: [foreign, todo] }, async () => {
+    const listed = await board(['tasks'], config());
+    assert.match(listed.stdout, /Un0pen01 {2}normal {2}Foreign {2}\(cannot decrypt: input\)/);
+    assert.match(listed.stdout, /Ab3dEf9x {2}normal {2}Fix the thing\n/);
+    const json = JSON.parse((await board(['tasks', '--json'], config())).stdout) as {
+      id: string;
+      input: string | null;
+    }[];
+    assert.equal(json.find((entry) => entry.id === 'Un0pen01')?.input, null);
+  });
+  await withBoard({ tasks: [foreign] }, async () => {
+    requests.length = 0;
+    const result = await board(['internal', 'dispatch', '--dry-run'], config({ config: true }));
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /SKIP Un0pen01 cannot decrypt its input/);
+    assert.match(result.stdout, /TICK started=0/);
+    assert.ok(!result.stdout.includes('DRY claim-task'));
+  });
+});
+// A prompt that starts with dashes, is large and has multi-byte characters: it must reach claude on stdin, whole, and never in argv.
+const BIG_PROMPT = `--dangerously-skip-permissions --mcp-config x\n${'héllo wörld 日本語 '.repeat(8000)}`.trim();
+
+function fakeClaude(name: string, script: string): string {
+  const dir = join(root, name);
+  mkdirSync(dir);
+  writeFileSync(join(dir, 'claude'), script, { mode: 0o755 });
+  return `${dir}:${path}`;
+}
+
+async function runWorkerWith(claudePath: string, prompt: string): Promise<{ result: Result; seen: string }> {
+  const running = await wireTask({
+    id: 'Wk0Run01',
+    title: 'Run it',
+    input: prompt,
+    status: 'running',
+    machine: 'smoke',
+  });
+  const dir = config({ config: true });
+  const seen = join(root, `claude-seen-${configCount}`);
+  mkdirSync(seen);
+  const result = await withBoardAsync({ current: running }, () =>
+    board(['internal', 'worker', 'Wk0Run01'], dir, {
+      PATH: claudePath,
+      SEEN: seen,
+      AGENT_BOARD_STATE_DIR: join(root, `state-${configCount}`),
+    }),
+  );
+  return { result, seen };
+}
+
+async function withBoardAsync<T>(patch: Partial<typeof fake>, run: () => Promise<T>): Promise<T> {
+  const before = { ...fake };
+  Object.assign(fake, patch);
+  try {
+    return await run();
+  } finally {
+    Object.assign(fake, before);
+  }
+}
+
+await check('a worker hands claude a large prompt on stdin, whole, and not in its arguments', async () => {
+  const claudePath = fakeClaude(
+    'claude-reads',
+    '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$SEEN/args"\ncat > "$SEEN/stdin"\n',
+  );
+  const { result, seen } = await runWorkerWith(claudePath, BIG_PROMPT);
+  assert.equal(result.code, 0, result.stderr);
+  const received = readFileSync(join(seen, 'stdin'), 'utf8');
+  assert.ok(received === BIG_PROMPT, `claude received ${received.length} characters, expected ${BIG_PROMPT.length}`);
+  const args = readFileSync(join(seen, 'args'), 'utf8');
+  assert.ok(
+    !args.includes('héllo') && !args.includes('--dangerously-skip-permissions\n--mcp-config'),
+    'the prompt reached argv',
+  );
+  assert.match(args, /--session-id=[0-9a-f-]{36}\n/);
+  // The hook claude is given is this binary again, whatever claude does with stdin.
+  assert.ok(args.includes(`${binary}' 'internal' 'hook'`), 'the hook command does not run this binary');
+});
+await check('a claude that exits without reading its stdin does not take the worker down', async () => {
+  const claudePath = fakeClaude('claude-deaf', '#!/bin/sh\nexit 0\n');
+  const { result } = await runWorkerWith(claudePath, BIG_PROMPT);
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(!/unexpected error|EPIPE/.test(result.stderr), result.stderr);
 });
 await check('setup writes the binary that runs, not whatever ~/.local/bin/board resolves to', async () => {
   const installDir = join(root, 'installed');
@@ -320,26 +572,52 @@ await check('a tick that waits while the binary is replaced still plans a worker
     listDelayMs = 0;
   }
 });
-await check('init reads the token from a pipe (--token-file /dev/stdin) and writes env with mode 600', async () => {
-  const dir = join(root, 'init-cfg');
-  const result = await new Promise<Result>((resolve) => {
+// `init` with one secret on a real pipe (what a shell makes of `printf … |`) and the other in a file, under Bun.
+async function initThroughPipe(piped: 'token' | 'key', dir: string): Promise<Result> {
+  const file = join(root, `secret-${piped}`);
+  writeFileSync(file, piped === 'token' ? `${encodeDataKey(DATA_KEY)}\n` : 'abm_piped\n', { mode: 0o600 });
+  const flags =
+    piped === 'token'
+      ? '--token-file /dev/stdin --data-key-file "$FILE"'
+      : '--data-key-file /dev/stdin --token-file "$FILE"';
+  return new Promise<Result>((resolve) => {
     execFile(
       'sh',
-      ['-c', `printf %s "$TOKEN" | "$BOARD" init --url ${url} --token-file /dev/stdin --machine smoke`],
+      ['-c', `printf %s "$PIPED" | "$BOARD" init --url ${url} ${flags} --machine smoke`],
       {
         cwd: root,
-        env: { PATH: path, HOME: root, AGENT_BOARD_CONFIG_DIR: dir, TOKEN: 'abm_piped', BOARD: binary },
+        env: {
+          PATH: path,
+          HOME: root,
+          AGENT_BOARD_CONFIG_DIR: dir,
+          PIPED: piped === 'token' ? 'abm_piped' : encodeDataKey(DATA_KEY),
+          FILE: file,
+          BOARD: binary,
+        },
         timeout: 30_000,
       },
       (error, stdout, stderr) =>
         resolve({ code: error === null ? 0 : typeof error.code === 'number' ? error.code : -1, stdout, stderr }),
     );
   });
-  assert.equal(readFileSync(join(dir, 'env'), 'utf8'), 'AGENT_BOARD_TOKEN=abm_piped\n');
-  assert.equal(statSync(join(dir, 'env')).mode & 0o777, 0o600);
-  assert.match(result.stdout, /✓ server: .* answers, contract matches/);
-  assert.ok(!result.stdout.includes('abm_piped'));
-});
+}
+
+await check(
+  'init reads a secret from a pipe (--token-file or --data-key-file /dev/stdin) and writes env with mode 600',
+  async () => {
+    for (const piped of ['token', 'key'] as const) {
+      const dir = join(root, `init-cfg-${piped}`);
+      const result = await initThroughPipe(piped, dir);
+      assert.equal(
+        readFileSync(join(dir, 'env'), 'utf8'),
+        `AGENT_BOARD_TOKEN=abm_piped\nAGENT_BOARD_DATA_KEY=${encodeDataKey(DATA_KEY)}\n`,
+      );
+      assert.equal(statSync(join(dir, 'env')).mode & 0o777, 0o600);
+      assert.match(result.stdout, /✓ board key: the board's data key is id /);
+      assert.ok(!result.stdout.includes('abm_piped') && !result.stdout.includes(encodeDataKey(DATA_KEY)));
+    }
+  },
+);
 await check('a world-readable token file is refused by init', async () => {
   const file = join(root, 'wide-token');
   writeFileSync(file, 'abm_wide\n', { mode: 0o644 });

@@ -1,36 +1,35 @@
 import {
-  parseAnswers,
+  formatServerEvent,
   PRIORITIES,
   TAKE_BACK_AFTER_MS,
-  type Answer,
-  type Note,
-  type Priority,
+  type ServerEvent,
   type Heartbeat,
-  type Question,
+  type Priority,
   type Status,
-  type Task,
-  type TaskDraft,
-  type TaskPatch,
+  type WireNote,
+  type WireNoteInput,
+  type WireTask,
+  type WireTaskDraft,
+  type WireTaskPatch,
 } from '@agent-board/shared';
 import { and, asc, desc, eq, lt, ne, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
 import { notes, tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
+import { requireSealed } from './sealed';
 import { DONE_ARCHIVE_DAYS, daysBefore } from './retention';
 import { completeOccurrence } from './schedules';
 import { edgePosition, getTask, insertTask, lockTask, newId } from './taskRows';
 
 export { getTask, newId };
 
-export function toTask(row: TaskRow, publicUrl: string): Task {
+export function toTask(row: TaskRow): WireTask {
   return {
     id: row.id,
     title: row.title,
     input: row.input,
-    labels: row.labels,
     status: row.status,
     priority: row.priority,
-    url: `${publicUrl}/t/${row.id}`,
     closed: row.closed,
     machine: row.machine,
     sessionId: row.sessionId,
@@ -50,10 +49,11 @@ export function toTask(row: TaskRow, publicUrl: string): Task {
   };
 }
 
-export function toNote(row: NoteRow): Note {
-  const note: Note = {
+export function toNote(row: NoteRow): WireNote {
+  const note: WireNote = {
     id: row.id,
-    text: row.body,
+    body: row.body,
+    preview: row.preview,
     createdAt: row.createdAt,
     author: row.author,
     kind: row.kind,
@@ -87,12 +87,14 @@ export async function listTasks(db: DbOrTx, options: { all?: boolean } = {}): Pr
     .orderBy(...taskOrder());
 }
 
-/** The newest note of a task, as the board card shows it. */
+/**
+ * The newest note of a task, as the board card shows it. `preview` is the note's stored sealed preview, or null for a
+ * note without text; for a note by the server it is the event's own plain text, which the author tells apart.
+ */
 export interface LastNote {
   kind: NoteRow['kind'];
   author: NoteRow['author'];
-  /** The start of the text, enough for a one-line preview. */
-  text: string;
+  preview: string | null;
   createdAt: Date;
 }
 
@@ -105,7 +107,9 @@ export async function listTasksWithLastNote(
     .select({
       kind: notes.kind,
       author: notes.author,
-      text: sql<string>`left(${notes.body}, 300)`.as('text'),
+      preview: sql<string | null>`case when ${notes.author} = 'server' then ${notes.body} else ${notes.preview} end`.as(
+        'preview',
+      ),
       createdAt: notes.createdAt,
     })
     .from(notes)
@@ -116,7 +120,7 @@ export async function listTasksWithLastNote(
   const rows = await db
     .select({
       row: tasks,
-      lastNote: { kind: latest.kind, author: latest.author, text: latest.text, createdAt: latest.createdAt },
+      lastNote: { kind: latest.kind, author: latest.author, preview: latest.preview, createdAt: latest.createdAt },
     })
     .from(tasks)
     .leftJoinLateral(latest, sql`true`)
@@ -126,7 +130,7 @@ export async function listTasksWithLastNote(
 }
 
 /** New task at the bottom of its status. A known dedupe key returns the existing task instead. */
-export async function addTask(db: DbOrTx, draft: TaskDraft): Promise<{ row: TaskRow; created: boolean }> {
+export async function addTask(db: DbOrTx, draft: WireTaskDraft): Promise<{ row: TaskRow; created: boolean }> {
   return db.transaction((tx) => insertTask(tx, draft));
 }
 
@@ -139,6 +143,8 @@ interface Transition {
   place?: 'top' | 'bottom' | number;
   /** Only a user starts a proposal. */
   by: 'worker' | 'user';
+  /** The user's start of an agent's proposal: its prompt, sealed again for the creator "user". Nothing else takes a proposal into Todo. */
+  start?: { input: string };
   /** Columns on top of what the invariants set; they win. */
   set?: TaskValues;
 }
@@ -151,18 +157,25 @@ function keepsPause(from: Status, to: Status): boolean {
 /**
  * Every status change goes through here, in a transaction that holds the task's lock, so the columns that depend
  * on the status cannot drift apart: the open question (only while it waits in Needs me), the run's start, a proposal
- * (only a user starts it), a pause, a start time (only while it waits in Todo), the position.
+ * (only a user starts it, with its prompt sealed again as theirs), a pause, a start time (only while it waits in Todo), the
+ * position.
  */
 async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promise<TaskRow> {
   const to = change.to ?? task.status;
   const moved = to !== task.status;
   if (change.by === 'worker' && moved && task.proposed)
     throw new AppError('FORBIDDEN', 'An agent proposed this task; only you start it.');
+  if (task.proposed && to === 'todo' && change.start === undefined)
+    throw new AppError('FORBIDDEN', 'An agent proposed this task; start it first.');
   const now = new Date();
   const values: TaskValues = { status: to, updatedAt: now };
   if (to !== 'needs-me') values.openQuestionNoteId = null;
   if (!keepsPause(task.status, to)) values.pausedAt = null;
-  if (change.by === 'user' && to === 'todo') values.proposed = false;
+  if (change.start !== undefined) {
+    values.input = change.start.input;
+    values.createdBy = 'user';
+    values.proposed = false;
+  }
   if (to === 'running' && task.status !== 'running') {
     values.runStartedAt = now;
     values.lastActiveAt = now;
@@ -186,7 +199,7 @@ async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promis
 }
 
 /** A status or priority change puts the task at the bottom of its new place. */
-export async function updateTask(db: DbOrTx, id: string, patch: TaskPatch): Promise<TaskRow> {
+export async function updateTask(db: DbOrTx, id: string, patch: WireTaskPatch): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const current = await lockTask(tx, id);
     if (patch.expect !== undefined && patch.expect !== current.status)
@@ -216,8 +229,8 @@ export async function updateTask(db: DbOrTx, id: string, patch: TaskPatch): Prom
 
 /**
  * Todo to running for `machine`; the lock lets two machines claim at once and only one win.
- * A resume is pinned to the machine that holds its session, a proposal is not for a worker to start, and a delayed
- * task is not due before its start time.
+ * A resume is pinned to the machine that holds its session, a proposal (a task that still names an agent as its creator) is
+ * not for a worker to start, and a delayed task is not due before its start time.
  * Undefined when the claim is lost.
  */
 export async function claimTask(db: DbOrTx, id: string, machine: string): Promise<TaskRow | undefined> {
@@ -227,6 +240,7 @@ export async function claimTask(db: DbOrTx, id: string, machine: string): Promis
       task.status === 'todo' &&
       !task.closed &&
       !task.proposed &&
+      task.createdBy !== 'agent' &&
       (task.notBefore === null || task.notBefore.getTime() <= Date.now()) &&
       (task.next === 'fresh' || task.sessionId === null || task.machine === null || task.machine === machine);
     return free ? transition(tx, task, { to: 'running', by: 'worker', set: { machine } }) : undefined;
@@ -240,12 +254,18 @@ export async function addNote(
     author: NoteRow['author'];
     kind?: NoteRow['kind'];
     body: string;
+    preview?: string | null;
     by: string | null;
-    questions?: Question[];
-    answers?: Answer[];
+    questions?: string;
+    answers?: string;
     questionNoteId?: string;
   },
 ): Promise<NoteRow> {
+  // Only the server's own events are plain text; whatever a client wrote must arrive sealed.
+  if (note.author !== 'server') requireSealed(note.body, 'the note body');
+  requireSealed(note.preview, 'the note preview');
+  requireSealed(note.questions, 'the questions');
+  requireSealed(note.answers, 'the answers');
   await getTask(db, taskId);
   const [row] = await db
     .insert(notes)
@@ -255,6 +275,7 @@ export async function addNote(
       author: note.author,
       kind: note.kind ?? 'comment',
       body: note.body,
+      preview: note.preview ?? null,
       by: note.by,
       questions: note.questions ?? null,
       answers: note.answers ?? null,
@@ -266,12 +287,23 @@ export async function addNote(
 }
 
 /** The agent's question: a question note, and the task waits in needs-me for the answer. */
-export async function ask(db: DbOrTx, taskId: string, questions: Question[], by: string): Promise<NoteRow> {
+export async function ask(
+  db: DbOrTx,
+  taskId: string,
+  asked: { body: string; questions: string },
+  by: string,
+): Promise<NoteRow> {
   return db.transaction(async (tx) => {
     const current = await lockTask(tx, taskId);
     // Answering a question starts the task as the user, so a proposal cannot ask one.
     if (current.proposed) throw new AppError('FORBIDDEN', 'An agent proposed this task; only you start it.');
-    const note = await addNote(tx, taskId, { author: 'agent', kind: 'question', body: '', by, questions });
+    const note = await addNote(tx, taskId, {
+      author: 'agent',
+      kind: 'question',
+      body: asked.body,
+      by,
+      questions: asked.questions,
+    });
     await transition(tx, current, { to: 'needs-me', by: 'worker', set: { openQuestionNoteId: note.id } });
     return note;
   });
@@ -287,32 +319,32 @@ function requireNotRunning(task: TaskRow): void {
 }
 
 /**
- * The user's answer to the open question. With `resume` the task goes to the top of Todo and the next
- * run resumes the agent's session with it.
+ * The user's answer to the open question. The server cannot read questions or answers, so it only checks that the
+ * question note is the task's open one; the client checked the answers against the questions. The task goes to the top of
+ * Todo and the next run resumes the agent's session with the answers.
  */
 export async function answer(
   db: DbOrTx,
-  input: { taskId: string; questionNoteId: string; answers: unknown; message: string; by: string },
+  input: { taskId: string; questionNoteId: string; answers: string; message: WireNoteInput; by: string },
 ): Promise<TaskRow> {
+  requireSealed(input.answers, 'the answers');
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     requireNotRunning(task);
     if (task.openQuestionNoteId !== input.questionNoteId)
       throw new AppError('CONFLICT', 'This question was already answered or replaced.');
-    const [question] = await tx.select().from(notes).where(eq(notes.id, input.questionNoteId));
+    const [question] = await tx
+      .select({ id: notes.id, questions: notes.questions })
+      .from(notes)
+      .where(and(eq(notes.id, input.questionNoteId), eq(notes.taskId, task.id), eq(notes.kind, 'question')));
     if (!question?.questions) throw new AppError('NOT_FOUND', 'The question is gone.');
-    let answers: Answer[];
-    try {
-      answers = parseAnswers(question.questions, input.answers);
-    } catch (error) {
-      throw new AppError('BAD_REQUEST', error instanceof Error ? error.message : String(error));
-    }
     await addNote(tx, task.id, {
       author: 'user',
       kind: 'answer',
-      body: input.message.trim(),
+      body: input.message.body,
+      preview: input.message.preview ?? null,
       by: input.by,
-      answers,
+      answers: input.answers,
       questionNoteId: question.id,
     });
     return continueTask(tx, task);
@@ -322,14 +354,18 @@ export async function answer(
 /** A user comment; with `resume` it also sends the task back to the agent. */
 export async function reply(
   db: DbOrTx,
-  input: { taskId: string; message: string; resume: boolean; by: string },
+  input: { taskId: string; message: WireNoteInput; resume: boolean; by: string },
 ): Promise<TaskRow> {
-  const message = input.message.trim();
-  if (message === '') throw new AppError('BAD_REQUEST', 'Write something first.');
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     if (input.resume) requireNotRunning(task);
-    await addNote(tx, task.id, { author: 'user', kind: 'comment', body: message, by: input.by });
+    await addNote(tx, task.id, {
+      author: 'user',
+      kind: 'comment',
+      body: input.message.body,
+      preview: input.message.preview ?? null,
+      by: input.by,
+    });
     return input.resume ? continueTask(tx, task) : lockTask(tx, task.id);
   });
 }
@@ -347,15 +383,21 @@ async function continueTask(tx: DbOrTx, task: TaskRow): Promise<TaskRow> {
   });
 }
 
-async function systemEvent(tx: DbOrTx, taskId: string, body: string, by: string | null): Promise<void> {
-  await addNote(tx, taskId, { author: 'system', kind: 'event', body, by });
+/** An event the server writes itself, in plain text: it must never repeat anything the client sealed. */
+async function systemEvent(tx: DbOrTx, taskId: string, event: ServerEvent, by: string | null): Promise<void> {
+  await addNote(tx, taskId, { author: 'server', kind: 'event', body: formatServerEvent(event), by });
+}
+
+/** A system event the client wrote, sealed like any other client text. */
+async function clientEvent(tx: DbOrTx, taskId: string, note: WireNoteInput, by: string): Promise<void> {
+  await addNote(tx, taskId, { author: 'system', kind: 'event', body: note.body, preview: note.preview ?? null, by });
 }
 
 export async function markDone(db: DbOrTx, taskId: string, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     requireNotRunning(task);
-    await systemEvent(tx, taskId, 'Marked done.', by);
+    await systemEvent(tx, taskId, { type: 'done' }, by);
     return transition(tx, task, { to: 'done', place: 'top', by: 'user' });
   });
 }
@@ -365,7 +407,7 @@ export async function rerunFresh(db: DbOrTx, taskId: string, by: string): Promis
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     requireNotRunning(task);
-    await systemEvent(tx, taskId, 'Queued for a fresh run.', by);
+    await systemEvent(tx, taskId, { type: 'rerun' }, by);
     return transition(tx, task, {
       to: 'todo',
       place: 'bottom',
@@ -380,7 +422,7 @@ export async function setClosed(db: DbOrTx, taskId: string, closed: boolean, by:
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (closed) requireNotRunning(task);
-    await systemEvent(tx, taskId, closed ? 'Closed.' : 'Reopened.', by);
+    await systemEvent(tx, taskId, { type: closed ? 'closed' : 'reopened' }, by);
     return closeOrReopen(tx, task, closed);
   });
 }
@@ -388,7 +430,7 @@ export async function setClosed(db: DbOrTx, taskId: string, closed: boolean, by:
 function closeOrReopen(tx: DbOrTx, task: TaskRow, closed: boolean): Promise<TaskRow> {
   return transition(tx, task, {
     by: 'user',
-    set: { closed, closedAt: closed ? new Date() : null, proposed: closed ? task.proposed : false },
+    set: { closed, closedAt: closed ? new Date() : null },
   });
 }
 
@@ -415,7 +457,7 @@ export async function archiveStaleDone(db: DbOrTx, now: Date = new Date()): Prom
       // Someone may have touched it since the listing.
       const task = await lockTask(tx, id);
       if (task.status !== 'done' || task.closed || task.createdBy === 'intake' || task.updatedAt >= cutoff) return;
-      await systemEvent(tx, id, `Closed after ${DONE_ARCHIVE_DAYS} days in Done.`, null);
+      await systemEvent(tx, id, { type: 'archived', days: DONE_ARCHIVE_DAYS }, null);
       await closeOrReopen(tx, task, true);
       closed += 1;
     });
@@ -425,11 +467,12 @@ export async function archiveStaleDone(db: DbOrTx, now: Date = new Date()): Prom
 
 /**
  * Drag and drop: into `status`, between `afterId` (above) and `beforeId` (below), or at the bottom.
- * Nobody but a worker moves a task into or out of Running.
+ * Nobody but a worker moves a task into or out of Running. An agent's proposal enters Todo only with `startInput`, its prompt
+ * sealed again as the user's: the board stores it and takes the proposal's creator to be the user's from then on.
  */
 export async function moveTask(
   db: DbOrTx,
-  input: { taskId: string; status: Status; beforeId?: string; afterId?: string; by: string },
+  input: { taskId: string; status: Status; beforeId?: string; afterId?: string; startInput?: string; by: string },
 ): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, input.taskId);
@@ -457,14 +500,27 @@ export async function moveTask(
     else if (upper !== undefined) position = upper + 1;
     else position = await edgePosition(tx, input.status, 'bottom');
     if (task.status !== input.status) {
-      await systemEvent(tx, task.id, `Moved from ${task.status} to ${input.status}.`, input.by);
+      await systemEvent(tx, task.id, { type: 'moved', from: task.status, to: input.status }, input.by);
     }
     if (task.priority !== priority) {
-      await systemEvent(tx, task.id, `Priority ${task.priority} → ${priority}.`, input.by);
+      await systemEvent(tx, task.id, { type: 'priority', from: task.priority, to: priority }, input.by);
     }
-    // Into Todo it behaves like "Send & continue" without a reply: it starts a proposal and drops the open question,
-    // and a task with a session keeps its `next` (a resume with nothing to say starts fresh).
-    return transition(tx, task, { to: input.status, place: position, by: 'user', set: { priority } });
+    // Into Todo it behaves like "Send & continue" without a reply: it drops the open question, and a task with a session keeps
+    // its `next` (a resume with nothing to say starts fresh).
+    let start: { input: string } | undefined;
+    if (task.proposed && input.status === 'todo') {
+      if (input.startInput === undefined)
+        throw new AppError('BAD_REQUEST', 'Starting an agent’s proposal needs its prompt sealed again as yours.');
+      requireSealed(input.startInput, 'the prompt');
+      start = { input: input.startInput };
+    }
+    return transition(tx, task, {
+      to: input.status,
+      place: position,
+      by: 'user',
+      set: { priority },
+      ...(start && { start }),
+    });
   });
 }
 
@@ -485,7 +541,7 @@ export async function setPriority(db: DbOrTx, taskId: string, priority: Priority
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (task.priority === priority) return task;
-    await systemEvent(tx, taskId, `Priority ${task.priority} → ${priority}.`, by);
+    await systemEvent(tx, taskId, { type: 'priority', from: task.priority, to: priority }, by);
     return transition(tx, task, { place: 'bottom', by: 'user', set: { priority } });
   });
 }
@@ -498,7 +554,7 @@ export async function setNotBefore(db: DbOrTx, taskId: string, notBefore: Date |
     await systemEvent(
       tx,
       taskId,
-      notBefore === null ? 'Start time cleared.' : `Start time set to ${notBefore.toISOString()}.`,
+      notBefore === null ? { type: 'start-cleared' } : { type: 'start-set', at: notBefore },
       by,
     );
     return transition(tx, task, { by: 'user', set: { notBefore } });
@@ -518,11 +574,11 @@ export async function heartbeat(db: DbOrTx, taskId: string, beat: Heartbeat): Pr
  * A worker gave up the task's slot for its own lane's work. Back to Todo, ahead of new work (resumes come first),
  * and resumed in its session on the same machine.
  */
-export async function pause(db: DbOrTx, taskId: string, note: string, by: string): Promise<TaskRow> {
+export async function pause(db: DbOrTx, taskId: string, note: WireNoteInput, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (task.status !== 'running') throw new AppError('CONFLICT', `the task is ${task.status}, not running`);
-    await systemEvent(tx, taskId, note, by);
+    await clientEvent(tx, taskId, note, by);
     return transition(tx, task, {
       to: 'todo',
       place: 'top',
@@ -536,13 +592,13 @@ export async function pause(db: DbOrTx, taskId: string, note: string, by: string
 export async function failTask(
   db: DbOrTx,
   taskId: string,
-  text: string,
+  note: WireNoteInput,
   by: string,
 ): Promise<{ applied: boolean; row: TaskRow }> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (task.status !== 'running' || task.closed) return { applied: false, row: task };
-    await systemEvent(tx, taskId, text, by);
+    await clientEvent(tx, taskId, note, by);
     return { applied: true, row: await transition(tx, task, { to: 'needs-me', by: 'worker' }) };
   });
 }
@@ -561,12 +617,7 @@ export async function takeBack(db: DbOrTx, taskId: string, by: string, now: Date
         'CONFLICT',
         `The agent was active ${Math.floor(quietMs / 60_000)} min ago. A task can be taken back after ${TAKE_BACK_AFTER_MS / 60_000} quiet minutes.`,
       );
-    await systemEvent(
-      tx,
-      taskId,
-      `Taken back from ${task.machine ?? 'its worker'}: no sign of life for ${TAKE_BACK_AFTER_MS / 60_000} minutes.`,
-      by,
-    );
+    await systemEvent(tx, taskId, { type: 'taken-back', machine: task.machine }, by);
     return transition(tx, task, { to: 'needs-me', by: 'user' });
   });
 }

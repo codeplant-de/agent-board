@@ -1,5 +1,6 @@
 // A run's transcript: Claude Code's `--output-format stream-json` events, condensed to what a person reads when
 // they want to know why the agent did something. The worker sends them to the board in batches while the run goes on.
+import { ContractError, MAX_OUTPUT_SIZE, parseSealed } from './contract.mts';
 import { isRecord } from './guards.mts';
 
 interface EventBase {
@@ -43,6 +44,38 @@ export type TranscriptEventView = TranscriptEvent extends infer E
     : never
   : never;
 
+// An event as the board stores it: its position, time and kind in the clear, the rest sealed.
+export interface WireTranscriptEvent {
+  seq: number;
+  at: string;
+  kind: TranscriptEvent['kind'];
+  parent: string | null;
+  // Sealed ("tr.data", context `<taskId>:<runId>:<seq>`): the JSON of the whole event but its output.
+  data: string;
+  // A tool result's output, sealed ("tr.output", same context); absent on every other event.
+  output?: string | null;
+  // The output's length in characters, counted by the client: the server cannot read the output.
+  outputSize?: number | null;
+}
+
+// An event as the board lists it: `data` is still sealed.
+export interface WireTranscriptEventView {
+  seq: number;
+  at: Date;
+  kind: string;
+  parent: string | null;
+  data: string;
+  outputSize: number | null;
+}
+
+export interface WireTranscriptBatch {
+  runId: string;
+  startedAt: string;
+  sessionId: string | null;
+  resumed: boolean;
+  events: WireTranscriptEvent[];
+}
+
 export interface TranscriptBatch {
   // One per worker run; a resume or a re-run is a new run.
   runId: string;
@@ -55,6 +88,11 @@ export interface TranscriptBatch {
 // A tool result past this is cut, with a note; the full one stays in the session file on the machine.
 export const MAX_OUTPUT_CHARS = 256 * 1024;
 const MAX_INPUT_CHARS = 64 * 1024;
+// The agent's own words, a note and a result text are cut like a tool input; a denial and an id are short by nature.
+export const MAX_TEXT_CHARS = 64 * 1024;
+const MAX_DENIAL_CHARS = 2 * 1024;
+const MAX_DENIALS = 20;
+const MAX_ID_CHARS = 256;
 
 export class TranscriptError extends Error {}
 
@@ -82,6 +120,33 @@ function resultText(content: unknown): string {
     .join('\n');
 }
 
+const capId = (id: string | null): string | null => (id === null ? null : id.slice(0, MAX_ID_CHARS));
+
+// Every string of an event is bounded, so that its sealed JSON stays under the board's limit for `tr.data` whatever the
+// stream holds: one event past it would be refused for good.
+function capBody(body: TranscriptEventBody): TranscriptEventBody {
+  switch (body.kind) {
+    case 'text':
+    case 'note':
+      return { ...body, text: cap(body.text, MAX_TEXT_CHARS) };
+    case 'thinking':
+      return { ...body, text: cap(body.text, MAX_TEXT_CHARS) };
+    case 'tool_use':
+      return { ...body, toolUseId: body.toolUseId.slice(0, MAX_ID_CHARS), name: body.name.slice(0, MAX_ID_CHARS) };
+    case 'tool_result':
+      return { ...body, toolUseId: body.toolUseId.slice(0, MAX_ID_CHARS) };
+    case 'result':
+      return {
+        ...body,
+        text: cap(body.text, MAX_TEXT_CHARS),
+        denials: [
+          ...body.denials.slice(0, MAX_DENIALS).map((denial) => cap(denial, MAX_DENIAL_CHARS)),
+          ...(body.denials.length > MAX_DENIALS ? [`… and ${body.denials.length - MAX_DENIALS} more denials`] : []),
+        ],
+      };
+  }
+}
+
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
 const num = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 
@@ -96,6 +161,11 @@ export class StreamCondenser {
 
   constructor(now: () => Date = () => new Date()) {
     this.now = now;
+  }
+
+  /** A note of the worker's own, at the next position: for something that happened to the transcript itself. */
+  note(text: string): TranscriptEvent {
+    return this.make(null, { kind: 'note', text });
   }
 
   line(raw: string): TranscriptEvent[] {
@@ -199,7 +269,12 @@ export class StreamCondenser {
   }
 
   private make(parent: string | null, body: TranscriptEventBody): TranscriptEvent {
-    return { seq: this.seq++, at: this.now().toISOString(), parent, ...body } as TranscriptEvent;
+    return {
+      seq: this.seq++,
+      at: this.now().toISOString(),
+      parent: capId(parent),
+      ...capBody(body),
+    } as TranscriptEvent;
   }
 }
 
@@ -261,10 +336,25 @@ export const MAX_BATCH_EVENTS = 5000;
 // The board lists a run's events in pages of this size; a shorter page is the last.
 export const TRANSCRIPT_PAGE_SIZE = 2000;
 
-const KINDS = ['text', 'thinking', 'tool_use', 'tool_result', 'result', 'note'];
+const KINDS = [
+  'text',
+  'thinking',
+  'tool_use',
+  'tool_result',
+  'result',
+  'note',
+] as const satisfies readonly TranscriptEvent['kind'][];
 
-// Stdin of `transcript`: checked for shape, not content; the worker made it.
-export function parseTranscriptBatch(value: unknown): TranscriptBatch {
+function sealedOrBust(value: unknown, field: 'tr.data' | 'tr.output', what: string): string {
+  try {
+    return parseSealed(value, field, what);
+  } catch (error) {
+    throw error instanceof ContractError ? new TranscriptError(error.message) : error;
+  }
+}
+
+// Stdin of `transcript` on the server: checked for shape, with the sealed fields being envelopes and nothing about their content.
+export function parseWireTranscriptBatch(value: unknown): WireTranscriptBatch {
   if (!isRecord(value)) throw new TranscriptError('transcript batch must be an object');
   const runId = value['runId'];
   if (typeof runId !== 'string' || !/^[A-Za-z0-9-]{8,64}$/.test(runId))
@@ -275,17 +365,36 @@ export function parseTranscriptBatch(value: unknown): TranscriptBatch {
   const sessionId = value['sessionId'] ?? null;
   if (sessionId !== null && typeof sessionId !== 'string')
     throw new TranscriptError('transcript sessionId must be a string or null');
-  const events = value['events'];
-  if (!Array.isArray(events) || events.length > MAX_BATCH_EVENTS)
+  const rawEvents = value['events'];
+  if (!Array.isArray(rawEvents) || rawEvents.length > MAX_BATCH_EVENTS)
     throw new TranscriptError(`transcript events must be a list of at most ${MAX_BATCH_EVENTS}`);
-  for (const event of events) {
-    if (!isRecord(event) || !KINDS.includes(String(event['kind'])))
-      throw new TranscriptError('transcript event needs a known kind');
-    const { seq, at } = event;
+  const events = rawEvents.map((event: unknown): WireTranscriptEvent => {
+    if (!isRecord(event)) throw new TranscriptError('transcript event must be an object');
+    const kind = KINDS.find((candidate) => candidate === event['kind']);
+    if (kind === undefined) throw new TranscriptError('transcript event needs a known kind');
+    const { seq, at, parent } = event;
     if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0)
       throw new TranscriptError('transcript event seq must be an integer from 0');
     if (typeof at !== 'string' || Number.isNaN(Date.parse(at)))
       throw new TranscriptError('transcript event at must be a date');
-  }
-  return { runId, startedAt, sessionId, resumed: value['resumed'] === true, events: events as TranscriptEvent[] };
+    if (parent !== null && typeof parent !== 'string')
+      throw new TranscriptError('transcript event parent must be a string or null');
+    const data = sealedOrBust(event['data'], 'tr.data', 'transcript event data');
+    const base = { seq, at, kind, parent, data };
+    if (kind !== 'tool_result') {
+      if (event['output'] != null || event['outputSize'] != null)
+        throw new TranscriptError('only a tool result carries an output');
+      return base;
+    }
+    const outputSize = event['outputSize'];
+    if (
+      typeof outputSize !== 'number' ||
+      !Number.isInteger(outputSize) ||
+      outputSize < 0 ||
+      outputSize > MAX_OUTPUT_SIZE
+    )
+      throw new TranscriptError(`transcript event outputSize must be a whole number up to ${MAX_OUTPUT_SIZE}`);
+    return { ...base, output: sealedOrBust(event['output'], 'tr.output', 'transcript event output'), outputSize };
+  });
+  return { runId, startedAt, sessionId, resumed: value['resumed'] === true, events };
 }

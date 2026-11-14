@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { CONTRACT_VERSION } from '@agent-board/shared';
 import { UsageError } from '../src/cli.mts';
-import type { Context } from '../src/cli.mts';
+import type { LinkingContext } from '../src/cli.mts';
 import { runBoard } from '../src/commands.mts';
 import type { ProgramOptions } from '../src/commands.mts';
-import { CONFIG, fakeBackend, task } from './helpers.mts';
+import { CONFIG, fakeBackend, linkTo, task } from './helpers.mts';
 
 const ID = 'Zt0Test1';
 
@@ -25,9 +26,9 @@ function setup(): Run {
   const out: string[] = [];
   const err: string[] = [];
   const dryRuns: boolean[] = [];
-  const context = (dryRun: boolean): Context => {
+  const context = (dryRun: boolean): LinkingContext => {
     dryRuns.push(dryRun);
-    return { config: CONFIG, backend, dryRun, print: (line) => printed.push(line) };
+    return { config: CONFIG, backend, dryRun, taskLink: linkTo, print: (line) => printed.push(line) };
   };
   const go = (argv: string[], overrides: ProgramOptions = {}) =>
     runBoard(argv, {
@@ -98,7 +99,7 @@ test('schedule: a prompt after -- may start with dashes, and everything after th
   await go(['schedule', '--new', '--title=With equals', 'Look', 'at', '--hold']);
   assert.deepEqual(backend.writes, [
     'create --weird prompt | --weird prompt | ',
-    'create /review-pr https://github.com/o/r/pull/1 --auto | /review-pr https://github.com/o/r/pull/1 --auto | ',
+    'create /review-pr https://github.com/o/r/pull/1 --auto | /review-pr https://github.com/o/r/pull/1 --auto | review-pr',
     'create With equals | Look at --hold | ',
   ]);
 });
@@ -149,7 +150,10 @@ test('help and version print and end normally, help of a command lists flags and
   assert.match(help, /Usage: board schedule/);
   assert.match(help, /--every <duration>/);
   assert.match(help, /Examples:/);
-  assert.equal(await printed(['--version'], { version: '1.2.3-dev' }), 'board 1.2.3-dev (contract 5)\n');
+  assert.equal(
+    await printed(['--version'], { version: '1.2.3-dev' }),
+    `board 1.2.3-dev (contract ${CONTRACT_VERSION})\n`,
+  );
 });
 
 test('help text inside a comment is text, not a request for help', async () => {
@@ -161,12 +165,13 @@ test('help text inside a comment is text, not a request for help', async () => {
 
 test('tasks, show, comment and move need no config file', async () => {
   const backend = fakeBackend([task({ id: ID })]);
-  const context = (): Context => ({
+  const context = (): LinkingContext => ({
     get config(): never {
       throw new Error('the config was read');
     },
     backend,
     dryRun: false,
+    taskLink: linkTo,
     print: () => undefined,
   });
   for (const argv of [['tasks'], ['show', ID], ['comment', ID, 'hi'], ['move', ID, 'done']])
@@ -198,7 +203,7 @@ test('schedule: a prompt ending in --dry-run needs an explicit --, and the error
   });
   assert.deepEqual(backend.writes, []);
   await go(['schedule', '--new', '--', '/review-pr', '17', '--dry-run']);
-  assert.deepEqual(backend.writes, ['create /review-pr 17 --dry-run | /review-pr 17 --dry-run | ']);
+  assert.deepEqual(backend.writes, ['create /review-pr 17 --dry-run | /review-pr 17 --dry-run | review-pr']);
   await go(['schedule', '--new', '/review-pr', '--dry-run', '17']);
 });
 
@@ -208,9 +213,9 @@ test('schedule and add need a config.json; the other commands fall back to the d
   const dir = mkdtempSync('/tmp/board-commands-test-');
   try {
     writeFileSync(join(dir, 'p.md'), 'follow up');
-    const context = (_dryRun: boolean, { optionalConfig = false } = {}): Context => {
+    const context = (_dryRun: boolean, { optionalConfig = false } = {}): LinkingContext => {
       seen.push(optionalConfig);
-      return { config: CONFIG, backend, dryRun: false, print: () => undefined };
+      return { config: CONFIG, backend, dryRun: false, taskLink: linkTo, print: () => undefined };
     };
     await runBoard(['tasks'], { env: {}, context });
     await runBoard(['schedule', '--new', 'x'], { env: {}, context });

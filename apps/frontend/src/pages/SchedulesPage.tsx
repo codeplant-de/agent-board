@@ -1,13 +1,11 @@
-import { describeRule, runsLeft } from '@agent-board/shared';
+import { describeRule, INVALID_VALUE, runsLeft } from '@agent-board/shared';
 import { ActionIcon, Anchor, Badge, Code, Group, Paper, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
 import { modals } from '@mantine/modals';
 import { IconPlayerPause, IconPlayerPlay, IconTrash } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ago, stamp } from '../lib/time';
-import { errorMessage, POLL_MS, useTRPC, type RouterOutputs } from '../lib/trpc';
-
-type ScheduleRow = RouterOutputs['schedules']['list'][number];
+import { errorMessage, POLL_MS, useTRPC, type Schedule as ScheduleRow } from '../lib/trpc';
 
 function ScheduleActions({ schedule }: { schedule: ScheduleRow }) {
   const trpc = useTRPC();
@@ -73,7 +71,7 @@ function ScheduleRowView({ schedule }: { schedule: ScheduleRow }) {
         </Text>
       </Table.Td>
       <Table.Td>
-        <Text size="sm">{describeRule(schedule)}</Text>
+        <Text size="sm">{schedule.invalid.includes('everyMs') ? INVALID_VALUE : describeRule(schedule)}</Text>
       </Table.Td>
       <Table.Td>
         {schedule.nextRunAt ? (
@@ -90,7 +88,11 @@ function ScheduleRowView({ schedule }: { schedule: ScheduleRow }) {
         )}
       </Table.Td>
       <Table.Td>
-        <Text size="sm">{runsLeft(schedule) ?? (schedule.until ? `until ${stamp(schedule.until)}` : 'forever')}</Text>
+        <Text size="sm">
+          {schedule.invalid.includes('remaining')
+            ? INVALID_VALUE
+            : (runsLeft(schedule) ?? (schedule.until ? `until ${stamp(schedule.until)}` : 'forever'))}
+        </Text>
       </Table.Td>
       <Table.Td>
         <Text size="sm" c={schedule.machine ? undefined : 'dimmed'}>

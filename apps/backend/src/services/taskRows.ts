@@ -1,4 +1,4 @@
-import { DEFAULT_PRIORITY, isSafeTaskId, promptSkill, type Status, type TaskDraft } from '@agent-board/shared';
+import { DEFAULT_PRIORITY, isSafeTaskId, type Status, type WireTaskDraft } from '@agent-board/shared';
 import { eq, max, min } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import type { DbOrTx } from '../db/client';
@@ -32,10 +32,13 @@ export async function getTask(db: DbOrTx, id: string): Promise<TaskRow> {
   return row;
 }
 
-/** New task at the bottom of its status. A known dedupe key returns the existing task instead. */
+/**
+ * New task at the bottom of its status. A known dedupe key returns the existing task instead. The id is the caller's (a client
+ * seals the task's fields against it, the server makes one for a schedule's occurrence); one that is taken, by anyone, is a conflict.
+ */
 export async function insertTask(
   tx: DbOrTx,
-  draft: TaskDraft,
+  draft: Omit<WireTaskDraft, 'id'> & { id?: string },
   extra: { scheduleId?: string } = {},
 ): Promise<{ row: TaskRow; created: boolean }> {
   // A follow-up is as pressing as the task it came from, unless its creator says otherwise.
@@ -48,12 +51,9 @@ export async function insertTask(
   const [row] = await tx
     .insert(tasks)
     .values({
-      id: newId(),
-      title: draft.title.trim(),
+      id: draft.id ?? newId(),
+      title: draft.title,
       input: draft.input,
-      // A task is labelled with the skill its prompt starts with, unless its creator says otherwise.
-      labels:
-        draft.labels.length > 0 ? draft.labels : [promptSkill(draft.input)].filter((skill) => skill !== undefined),
       machine: draft.machine ?? null,
       workdir: draft.workdir ?? null,
       head: draft.head ?? null,
@@ -67,14 +67,13 @@ export async function insertTask(
       createdBy: draft.createdBy ?? 'user',
       proposed,
     })
-    .onConflictDoNothing({ target: [tasks.owner, tasks.dedupeKey] })
+    .onConflictDoNothing()
     .returning();
   if (row) return { row, created: true };
-  const [existing] = await tx
-    .select()
-    .from(tasks)
-    .where(eq(tasks.dedupeKey, draft.dedupeKey ?? ''));
-  if (!existing) throw new AppError('CONFLICT', 'the task was created and removed at once; try again');
+  // Nothing was inserted: the dedupe key is known, or the id is taken. A taken id reads the same whoever holds it.
+  const [existing] =
+    draft.dedupeKey === undefined ? [] : await tx.select().from(tasks).where(eq(tasks.dedupeKey, draft.dedupeKey));
+  if (!existing) throw new AppError('CONFLICT', 'that task id is already taken');
   return { row: existing, created: false };
 }
 

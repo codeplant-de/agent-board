@@ -1,4 +1,4 @@
-import type { Answer, KeySlot, Question } from '@agent-board/shared';
+import type { KeySlot } from '@agent-board/shared';
 import { sql } from 'drizzle-orm';
 import {
   bigint,
@@ -25,7 +25,8 @@ export const taskStatus = pgEnum('task_status', ['backlog', 'todo', 'running', '
 export const taskPriority = pgEnum('task_priority', ['urgent', 'high', 'normal', 'low']);
 export const nextRun = pgEnum('next_run', ['fresh', 'resume']);
 export const taskCreator = pgEnum('task_creator', ['intake', 'user', 'agent']);
-export const noteAuthor = pgEnum('note_author', ['agent', 'user', 'system']);
+/** "server" is the only author whose body is plain text: the events the server writes itself. Every other note body is sealed. */
+export const noteAuthor = pgEnum('note_author', ['agent', 'user', 'system', 'server']);
 export const noteKind = pgEnum('note_kind', ['comment', 'question', 'answer', 'event']);
 
 /** A signed-in user; every row below belongs to one, and a request sees only its own (`app.owner`, see db/scope.ts). */
@@ -88,12 +89,9 @@ export const tasks = pgTable(
   {
     id: text('id').primaryKey(),
     owner: owner(),
+    /** `title`, `input` and `workdir` hold sealed envelopes (abe1.…); the server never reads them. */
     title: text('title').notNull(),
     input: text('input').notNull().default(''),
-    labels: text('labels')
-      .array()
-      .notNull()
-      .default(sql`'{}'::text[]`),
     status: taskStatus('status').notNull().default('todo'),
     priority: taskPriority('priority').notNull().default('normal'),
     /** Order within a status and priority: lower is higher up. */
@@ -117,16 +115,20 @@ export const tasks = pgTable(
     pausedAt: timestamp('paused_at', { withTimezone: true }),
     /** Todo only: no worker claims the task before this time. Cleared when the task leaves Todo. */
     notBefore: timestamp('not_before', { withTimezone: true }),
-    /** The PR head sha an intake review was made for. */
+    /** The blind index (abh1.…) of the PR head sha an intake review was made for. */
     head: text('head'),
     /** The question note waiting for an answer, if any. */
     openQuestionNoteId: text('open_question_note_id'),
+    /** The blind index (abh1.…) of the PR URL; unique per owner. */
     dedupeKey: text('dedupe_key'),
     parentId: text('parent_id'),
     createdBy: taskCreator('created_by').notNull().default('user'),
-    /** The schedule this task is an occurrence of. */
+    /**
+     * The schedule this task is an occurrence of. Not a foreign key: the task's sealed fields are bound to this id, so it
+     * stays when the schedule is deleted.
+     */
     scheduleId: text('schedule_id'),
-    /** Proposed by an agent and not started by the user yet. */
+    /** Proposed by an agent and not started by the user yet; starting it takes this off and makes `created_by` the user, with the prompt sealed again for that creator. */
     proposed: boolean('proposed').notNull().default(false),
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -136,7 +138,6 @@ export const tasks = pgTable(
     index('task_status_priority_position_idx').on(t.owner, t.status, t.priority, t.position),
     unique('task_owner_id_unique').on(t.owner, t.id),
     ownerFk('task_parent_fk', [t.owner, t.parentId], [t.owner, t.id], 'set null'),
-    ownerFk('task_schedule_fk', [t.owner, t.scheduleId], [schedules.owner, schedules.id], 'set null'),
     tenant(),
   ],
 ).enableRLS();
@@ -183,9 +184,13 @@ export const notes = pgTable(
     taskId: text('task_id').notNull(),
     author: noteAuthor('author').notNull(),
     kind: noteKind('kind').notNull(),
+    /** Sealed, except on a note by author "server", whose body is plain text. */
     body: text('body').notNull().default(''),
-    questions: jsonb('questions').$type<Question[]>(),
-    answers: jsonb('answers').$type<Answer[]>(),
+    /** A sealed start of the text, for the board cards; null for a note without text. */
+    preview: text('preview'),
+    /** Sealed JSON. */
+    questions: text('questions'),
+    answers: text('answers'),
     questionNoteId: text('question_note_id'),
     /** The signed-in user for author "user", the machine for agent and system notes. */
     by: text('by'),
@@ -248,8 +253,8 @@ export const transcriptEvents = pgTable(
     at: timestamp('at', { withTimezone: true }).notNull(),
     kind: text('kind').notNull(),
     parent: text('parent'),
-    /** The event without `output`. */
-    data: jsonb('data').notNull(),
+    /** Sealed JSON of the event without `output`. */
+    data: text('data').notNull(),
     output: text('output'),
     outputSize: integer('output_size'),
   },

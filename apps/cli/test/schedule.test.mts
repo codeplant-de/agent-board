@@ -74,6 +74,7 @@ function setup(duplicate: Duplicate | undefined, choice?: 'requeue' | 'new' | 'a
     workdir: '/work/cosuno',
     timezone: 'Europe/Berlin',
     print: (line) => printed.push(line),
+    link: (id) => `https://board.test/t/${id}`,
     check: async (_prompt, _workdir, open) => {
       asked.push(open.map((t) => t.id).join(','));
       return duplicate;
@@ -281,7 +282,7 @@ test('a repeat creates a schedule bound to this machine, skips the duplicate che
   assert.equal(printed.length, 1);
   assert.match(
     printed[0] ?? '',
-    /^scheduled repeat sched: every 2h, 3 runs; first run \d{4}-\d{2}-\d{2} \d{2}:\d{2} https:\/\/tasks\.example\/pending$/,
+    /^scheduled repeat sched: every 2h, 3 runs; first run \d{4}-\d{2}-\d{2} \d{2}:\d{2} https:\/\/board\.test\/t\/pending$/,
   );
 });
 
