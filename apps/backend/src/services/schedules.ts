@@ -1,7 +1,7 @@
 import type { Schedule, ScheduleDraft } from '@agent-board/shared';
 import { Cron } from 'croner';
 import { asc, count, eq, sql } from 'drizzle-orm';
-import type { Db, DbOrTx } from '../db/client';
+import type { DbOrTx } from '../db/client';
 import { schedules, tasks, transcriptRuns, type ScheduleRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
 import { insertTask, lockTask, newId } from './taskRows';
@@ -182,7 +182,7 @@ export async function completeOccurrence(tx: DbOrTx, taskId: string, scheduleId:
 
 /** Creates the schedule and its first occurrence, which waits for the first run. */
 export async function addSchedule(
-  db: Db,
+  db: DbOrTx,
   draft: ScheduleDraft,
   now: Date = new Date(),
 ): Promise<{ schedule: ScheduleView; task: TaskRow }> {
@@ -250,7 +250,12 @@ async function removePending(tx: DbOrTx, pending: TaskRow | undefined): Promise<
 }
 
 /** Pausing takes the pending occurrence off the board if it never ran; resuming creates the next one, from now. */
-export async function setPaused(db: Db, id: string, paused: boolean, now: Date = new Date()): Promise<ScheduleView> {
+export async function setPaused(
+  db: DbOrTx,
+  id: string,
+  paused: boolean,
+  now: Date = new Date(),
+): Promise<ScheduleView> {
   return db.transaction(async (tx) => {
     const { schedule, pending } = await lockWithOccurrence(tx, id);
     if (schedule.endedAt !== null) throw new AppError('CONFLICT', 'The schedule has ended.');
@@ -278,7 +283,7 @@ export async function setPaused(db: Db, id: string, paused: boolean, now: Date =
 }
 
 /** Deletes the schedule and its never-run pending occurrence. Tasks that ran stay, no longer linked to it. */
-export async function removeSchedule(db: Db, id: string): Promise<void> {
+export async function removeSchedule(db: DbOrTx, id: string): Promise<void> {
   await db.transaction(async (tx) => {
     const { pending } = await lockWithOccurrence(tx, id);
     await removePending(tx, pending);

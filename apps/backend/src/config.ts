@@ -7,7 +7,10 @@ const requireEnv = (name: string): string => {
 export interface Config {
   nodeEnv: string;
   port: number;
+  /** Owner/admin connection: bootstrap and migrations only. */
   databaseUrl: string;
+  /** The unprivileged `board_app` connection that serves every request. */
+  appDatabaseUrl: string;
   /** Where people open the board; task URLs are <publicUrl>/t/<id>. */
   publicUrl: string;
   /** Authelia groups that may use the board. */
@@ -28,6 +31,7 @@ export function loadConfig(): Config {
     nodeEnv,
     port: Number(process.env.PORT ?? 4000),
     databaseUrl: requireEnv('DATABASE_URL'),
+    appDatabaseUrl: requireEnv('APP_DATABASE_URL'),
     publicUrl,
     allowedGroups: (process.env.ALLOWED_GROUPS ?? 'admins')
       .split(',')
