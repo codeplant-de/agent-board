@@ -50,7 +50,7 @@ describe('machine API', () => {
   it('answers the contract version it speaks', async () => {
     const { status, json } = await ctx.call('laptop', 'version');
     expect(status).toBe(200);
-    expect(json.result).toEqual({ contract: CONTRACT_VERSION, owner: 'jascha' });
+    expect(json.result).toEqual({ contract: CONTRACT_VERSION, owner: 'jascha', keyId: null });
   });
 
   it('the UI needs a signed-in user in an allowed group; Remote-* headers do not open the machine API', async () => {

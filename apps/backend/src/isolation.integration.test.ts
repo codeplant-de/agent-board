@@ -3,7 +3,8 @@ import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { cleanupAllBoards } from './cleanup';
 import type { Tx } from './db/client';
-import { machines, notes, schedules, tasks, transcriptEvents, transcriptRuns } from './db/schema';
+import { appUsers, machines, notes, schedules, tasks, transcriptEvents, transcriptRuns } from './db/schema';
+import { withOwner } from './db/scope';
 import { buildServer } from './server';
 import { asOwner, caller, question, testConfig, useTestDb } from './test/helpers';
 
@@ -384,5 +385,25 @@ describe('one user cannot reach another user’s board', () => {
     await ui.alice.machines.revoke({ name: 'extra' });
     expect((await lookup()).rows).toEqual([]);
     expect((await call('alice', 'version')).json.result).toMatchObject({ owner: 'alice' });
+  });
+
+  it('a user can neither read nor replace another user’s key slots', async () => {
+    const { ui } = ctx;
+    const wrapped = `abw1.${'A'.repeat(80)}`;
+    const slots = [
+      { kind: 'passphrase', kdf: 'argon2id', m: 65536, t: 3, p: 1, salt: 'A'.repeat(22), wrapped },
+    ] as const;
+    await ui.bob.keys.setup({ keyId: '0573c0a7b6879764', slots: [...slots] });
+    expect(await ui.alice.keys.get()).toBeNull();
+    expect(await ui.alice.me()).toEqual({ username: 'alice', keyId: null });
+    await expect(ui.alice.keys.replaceSlots({ keyId: '0573c0a7b6879764', slots: [...slots] })).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
+    const before = await admin.select().from(appUsers).where(eq(appUsers.username, 'bob'));
+    const changed = await withOwner(db, 'alice', (tx) =>
+      tx.update(appUsers).set({ keySlots: [] }).where(eq(appUsers.username, 'bob')).returning(),
+    );
+    expect(changed).toEqual([]);
+    expect(await admin.select().from(appUsers).where(eq(appUsers.username, 'bob'))).toEqual(before);
   });
 });

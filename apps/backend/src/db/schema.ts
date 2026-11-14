@@ -1,4 +1,4 @@
-import type { Answer, Question } from '@agent-board/shared';
+import type { Answer, KeySlot, Question } from '@agent-board/shared';
 import { sql } from 'drizzle-orm';
 import {
   bigint,
@@ -34,9 +34,13 @@ export const appUsers = pgTable(
   {
     username: text('username').primaryKey(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Fingerprint of the user's data key and its wrapped copies; both stay null until encryption is set up. */
+    keyId: text('key_id'),
+    keySlots: jsonb('key_slots').$type<KeySlot[]>(),
   },
   (t) => [
     check('app_user_username_not_empty', sql`${t.username} <> ''`),
+    check('app_user_key_all_or_nothing', sql`(${t.keyId} is null) = (${t.keySlots} is null)`),
     pgPolicy('tenant', {
       for: 'all',
       to: 'board_app',
