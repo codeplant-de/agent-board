@@ -26,12 +26,17 @@ export interface ContextOptions {
   optionalConfig?: boolean;
   // Where human lines go, including the DRY lines of a dry run; stderr while stdout carries a JSON document.
   print?: (line: string) => void;
+  // Per request to the board, for commands that must answer quickly.
+  timeoutMs?: number;
 }
 
 // The config is read on first use, so a command that never needs it works without a config.json.
 export function buildContext(dryRun: boolean, options: ContextOptions = {}): Context {
   const paths = getPaths();
-  const backend = createWebBackend({ loadConfig: () => loadWebConfig(paths.configDir) });
+  const backend = createWebBackend({
+    loadConfig: () => loadWebConfig(paths.configDir),
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+  });
   let config: Config | undefined;
   const out = options.print ?? print;
   return {
@@ -52,6 +57,10 @@ export async function runMain(main: () => Promise<void>, prefix = 'agent-board')
   try {
     await main();
   } catch (error) {
+    if (error instanceof ReportedFailure) {
+      process.exitCode = 1;
+      return;
+    }
     if (
       error instanceof ConfigError ||
       error instanceof BackendError ||
@@ -67,6 +76,9 @@ export async function runMain(main: () => Promise<void>, prefix = 'agent-board')
     process.exitCode = error instanceof UsageError ? 2 : 1;
   }
 }
+
+// A failure whose reason was already printed: it only sets the exit code.
+export class ReportedFailure extends Error {}
 
 export class UsageError extends Error {
   // Printed under the message: the command's usage and where to read more.

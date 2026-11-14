@@ -24,6 +24,7 @@ import { loadEnvFile } from './env-file.mts';
 import { oneLine } from './text.mts';
 
 const REQUEST_TIMEOUT_MS = 45_000;
+const AGENT_BOARD_TOKEN_PREFIX = 'abm_';
 
 export class BackendError extends Error {
   // The HTTP status of the server's answer, when there was one.
@@ -40,19 +41,31 @@ export interface WebConfig {
   token: string;
 }
 
-export function parseWebConfig(raw: unknown, env: Record<string, string>): WebConfig {
-  if (!isRecord(raw)) throw new ConfigError('web.json: top level must be an object');
-  const url = raw['url'];
+// The board's URL as web.json and `board init` accept it.
+export function checkBoardUrl(url: unknown): string {
   if (typeof url !== 'string' || !/^https?:\/\/[^\s/]+/.test(url))
     throw new ConfigError("web.json: url must be the board's http(s) URL");
   // Plain http only to this machine: the token must not cross a network in the clear.
   if (url.startsWith('http://') && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/.test(url)) {
     throw new ConfigError('web.json: url must use https unless it is localhost');
   }
+  return url.replace(/\/+$/, '');
+}
+
+// A machine token as the board issues them.
+export function looksLikeMachineToken(token: string): boolean {
+  return token.startsWith(AGENT_BOARD_TOKEN_PREFIX) && !/\s/.test(token);
+}
+
+export function parseWebConfig(raw: unknown, env: Record<string, string>): WebConfig {
+  if (!isRecord(raw)) throw new ConfigError('web.json: top level must be an object');
+  const url = checkBoardUrl(raw['url']);
   const token = env['AGENT_BOARD_TOKEN'];
   if (!token)
-    throw new ConfigError("the credentials file needs AGENT_BOARD_TOKEN (create one on the board's Settings page)");
-  return { url: url.replace(/\/+$/, ''), token };
+    throw new ConfigError(
+      'the credentials file needs AGENT_BOARD_TOKEN (create one on the board\'s Settings page, then run "board init")',
+    );
+  return { url, token };
 }
 
 export function loadWebConfig(configDir: string): WebConfig {
@@ -62,7 +75,9 @@ export function loadWebConfig(configDir: string): WebConfig {
     raw = JSON.parse(readFileSync(path, 'utf8'));
   } catch (error) {
     throw new ConfigError(
-      error instanceof SyntaxError ? `web.json is not valid JSON: ${path}` : `web.json missing: ${path}`,
+      error instanceof SyntaxError
+        ? `web.json is not valid JSON: ${path}`
+        : `web.json missing: ${path} (run "board init")`,
     );
   }
   return parseWebConfig(raw, loadEnvFile(join(configDir, 'env')));
@@ -98,6 +113,7 @@ export async function callServer(
   command: string,
   request: MachineRequest,
   fetcher: Fetch = fetch,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<unknown> {
   let response: Response;
   try {
@@ -105,7 +121,7 @@ export async function callServer(
       method: 'POST',
       headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' },
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
       redirect: 'error',
     });
   } catch (error) {
@@ -135,6 +151,33 @@ export interface WebBackendOptions {
   // Called on the first request, so a command that fails on usage needs no credentials.
   loadConfig: () => WebConfig;
   fetch?: Fetch;
+  // Per request; commands that must answer quickly, such as completion, shorten it.
+  timeoutMs?: number;
+}
+
+// Asks the server for its contract version and refuses a mismatch in either direction.
+export async function verifyContract(config: WebConfig, fetcher?: Fetch, timeoutMs?: number): Promise<void> {
+  let served: number;
+  try {
+    served = parseVersion(await callServer(config, 'version', {}, fetcher, timeoutMs));
+  } catch (error) {
+    // A server from before the version command.
+    if (error instanceof BackendError && error.status === 404) {
+      throw new BackendError(
+        `the board server is older than this CLI: it does not know the version command; the CLI needs contract ${CONTRACT_VERSION}; update the board`,
+        404,
+      );
+    }
+    throw asBackendError('version', error);
+  }
+  if (served < CONTRACT_VERSION)
+    throw new BackendError(
+      `the board server is older than this CLI: it speaks contract ${served}, the CLI needs ${CONTRACT_VERSION}; update the board`,
+    );
+  if (served > CONTRACT_VERSION)
+    throw new BackendError(
+      `this CLI is older than the board server: it speaks contract ${CONTRACT_VERSION}, the server has ${served}; run "board self-update" (or pull the checkout)`,
+    );
 }
 
 export function createWebBackend(options: WebBackendOptions): Backend {
@@ -143,34 +186,14 @@ export function createWebBackend(options: WebBackendOptions): Backend {
   const connect = (): Promise<WebConfig> => {
     ready ??= (async () => {
       const config = options.loadConfig();
-      let served: number;
-      try {
-        served = parseVersion(await callServer(config, 'version', {}, options.fetch));
-      } catch (error) {
-        // A server from before the version command.
-        if (error instanceof BackendError && error.status === 404) {
-          throw new BackendError(
-            `the board server is older than this CLI: it does not know the version command; the CLI needs contract ${CONTRACT_VERSION}; update the board`,
-            404,
-          );
-        }
-        throw asBackendError('version', error);
-      }
-      if (served < CONTRACT_VERSION)
-        throw new BackendError(
-          `the board server is older than this CLI: it speaks contract ${served}, the CLI needs ${CONTRACT_VERSION}; update the board`,
-        );
-      if (served > CONTRACT_VERSION)
-        throw new BackendError(
-          `this CLI is older than the board server: it speaks contract ${CONTRACT_VERSION}, the server has ${served}; run "board self-update" (or pull the checkout)`,
-        );
+      await verifyContract(config, options.fetch, options.timeoutMs);
       return config;
     })();
     return ready;
   };
 
   async function call<T>(command: string, request: MachineRequest, parse: (value: unknown) => T): Promise<T> {
-    const result = await callServer(await connect(), command, request, options.fetch);
+    const result = await callServer(await connect(), command, request, options.fetch, options.timeoutMs);
     try {
       return parse(result);
     } catch (error) {
@@ -179,7 +202,7 @@ export function createWebBackend(options: WebBackendOptions): Backend {
   }
 
   const send = async (command: string, request: MachineRequest): Promise<void> => {
-    await callServer(await connect(), command, request, options.fetch);
+    await callServer(await connect(), command, request, options.fetch, options.timeoutMs);
   };
 
   const taskId = (id: string): string => {

@@ -141,23 +141,17 @@ Claude Code itself (2.1.323) also restores a session's worktree when it is resum
 Needs Node 24+, pnpm, `flock`, `systemd-run`, `gh` (logged in) and `claude` (logged in).
 
 1. `pnpm install` in the repo. The CLI depends on `commander` and imports `@agent-board/shared` through the workspace link, so every machine needs this install (and again after each pull).
-2. On the board's **Settings** page, create a token for this machine. Put it in `~/.config/agent-board/env`, mode 600 (a file with any other mode is refused):
-
-   ```
-   AGENT_BOARD_TOKEN=abm_...
-   ```
-
-3. Write `~/.config/agent-board/web.json`: `{ "url": "https://board.codeplant.de" }`.
-4. Copy `apps/cli/config.example.json` to `~/.config/agent-board/config.json`. Set `machine` to the name you gave the token and `repos` to this machine's checkouts.
-5. `apps/cli/install.sh` copies the units into `~/.config/systemd/user`, symlinks `board` into `~/.local/bin`, links `apps/cli/bin/.node` to a Node 24+ binary and reloads systemd. It installs no skill. Run it again after changing a unit file or moving the repo. It enables and starts nothing.
+2. On the board's **Settings** page, create a token for this machine, then run `apps/cli/install.sh` (it links `board` into `~/.local/bin` and `apps/cli/bin/.node` to a Node 24+ binary, then runs `board setup`). Set `NODE=` to choose the Node.
+3. `board init` asks for the board's URL, the token (not shown) and this machine's name, and writes `~/.config/agent-board/web.json`, `env` (mode 600; a file with any other mode is refused) and, if it is missing, `config.json` from `apps/cli/config.example.json`. Edit `repos` in `config.json` to this machine's checkouts. For a script: `board init --url https://board.codeplant.de --token-file <file> --machine <name>`. Existing files are kept unless `--force`, which copies them to `<name>.bak-<timestamp>` first.
+4. `board doctor` checks it all: Node, config, token, server and contract version, `claude`, `gh`, `flock`, `systemd-run`, and the units.
+5. `board setup` writes the dispatch and intake services and timers into `~/.config/systemd/user` as copies and reloads systemd (`--print` only shows them). It enables and starts nothing; `--enable` does. `install.sh` runs it for you.
 6. Enable when ready:
 
    ```
-   systemctl --user enable --now agent-board-dispatch.timer
-   systemctl --user enable --now agent-board-intake.timer
+   systemctl --user enable --now agent-board-dispatch.timer agent-board-intake.timer
    ```
 
-The units expect the repo at `~/workspace/agent-board`; edit `ExecStart` if it lives elsewhere. `bin/.node` is a real binary, not a mise shim, because a shim does not resolve a version outside a project directory; set `NODE=` to choose one. Run `install.sh` again after a Node upgrade.
+The units run `<node> <checkout>/apps/cli/src/main.mts internal dispatch|intake` under `flock`, with the Node that ran `board setup`; run `board setup` again after moving the checkout or upgrading Node (`board doctor` flags a unit whose Node or checkout has gone). `board completion bash|zsh|fish` prints a shell completion script.
 
 User timers only run while you are logged in. For runs after logout: `loginctl enable-linger $USER`.
 
