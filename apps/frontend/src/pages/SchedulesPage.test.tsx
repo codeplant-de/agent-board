@@ -5,11 +5,11 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RouterOutputs } from '../lib/trpc';
+import type { Schedule } from '../lib/trpc';
 import { stamp } from '../lib/time';
 import { SchedulesPage } from './SchedulesPage';
 
-type Row = RouterOutputs['schedules']['list'][number];
+type Row = Schedule;
 
 const list = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
 const setPaused = vi.hoisted(() => vi.fn(async (_: unknown) => null));

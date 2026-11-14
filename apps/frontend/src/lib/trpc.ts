@@ -2,18 +2,28 @@ import type { AppRouter } from '@agent-board/backend/router';
 import { notifications } from '@mantine/notifications';
 import { MutationCache, QueryClient } from '@tanstack/react-query';
 import { createTRPCClient, httpBatchLink, TRPCClientError } from '@trpc/client';
-import { createTRPCContext } from '@trpc/tanstack-react-query';
-import type { inferRouterInputs, inferRouterOutputs } from '@trpc/server';
+import { useMemo } from 'react';
+import { useKeys } from '../crypto/KeyContext';
+import { createPlainClient, createPlainTRPC, type PlainTRPC } from './plainTrpc';
+import { useRawTRPC, useRawTRPCClient } from './rawTrpc';
 
-export type RouterOutputs = inferRouterOutputs<AppRouter>;
-export type RouterInputs = inferRouterInputs<AppRouter>;
-export type BoardTask = RouterOutputs['tasks']['get']['task'];
-/** A task on the board: with its newest note. */
-export type ListedTask = RouterOutputs['tasks']['list'][number];
-export type LastNote = NonNullable<ListedTask['lastNote']>;
-export type ThreadNote = RouterOutputs['tasks']['get']['thread'][number];
+export type { BoardTask, LastNote, ListedTask, Schedule, TaskDetail, ThreadNote } from './opening';
+export type { RouterInputs, RouterOutputs } from './wire';
+export { TRPCProvider, useRawTRPC, useRawTRPCClient } from './rawTrpc';
 
-export const { TRPCProvider, useTRPC, useTRPCClient } = createTRPCContext<AppRouter>();
+/** The board's tRPC with plaintext in and out: what it fetches is opened and what it sends is sealed with the unlocked keys. */
+export function useTRPC(): PlainTRPC {
+  const raw = useRawTRPC();
+  const client = useRawTRPCClient();
+  const keys = useKeys();
+  return useMemo(() => createPlainTRPC(raw, client, keys), [raw, client, keys]);
+}
+
+export function useTRPCClient(): ReturnType<typeof createPlainClient> {
+  const client = useRawTRPCClient();
+  const keys = useKeys();
+  return useMemo(() => createPlainClient(client, keys), [client, keys]);
+}
 
 export const errorMessage = (err: unknown): string => {
   if (err instanceof TRPCClientError) {
