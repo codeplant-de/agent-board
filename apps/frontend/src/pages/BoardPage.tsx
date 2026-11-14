@@ -7,6 +7,7 @@ import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { POLL_MS, useTRPC, type ListedTask } from '../lib/trpc';
 
 const HINT: Record<Status, string> = {
+  backlog: 'Parked; no worker takes these',
   todo: 'By priority; top runs first',
   running: 'On a worker machine',
   'needs-me': 'Waiting for you',
@@ -44,7 +45,7 @@ export function BoardPage() {
   };
 
   return (
-    <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing="md">
+    <SimpleGrid cols={{ base: 1, sm: 2, lg: 5 }} spacing="md">
       {STATUSES.map((status) => {
         const column = byStatus(status);
         return (

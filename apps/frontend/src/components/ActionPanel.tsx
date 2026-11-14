@@ -1,4 +1,4 @@
-import { Alert, Button, Group, Kbd, Loader, Menu, Paper, Stack, Text } from '@mantine/core';
+import { Alert, Anchor, Button, Group, Kbd, Loader, Menu, Paper, Stack, Text } from '@mantine/core';
 import { modals } from '@mantine/modals';
 import {
   IconArchive,
@@ -13,8 +13,10 @@ import {
 } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { canTakeBack } from '../lib/liveness';
-import { ago } from '../lib/time';
+import { startsIn } from '../lib/startsIn';
+import { ago, stamp } from '../lib/time';
 import { useNow } from '../lib/useNow';
 import { useTRPC, type BoardTask, type ThreadNote } from '../lib/trpc';
 import { LivenessText } from './LivenessText';
@@ -31,6 +33,7 @@ function useActions(id: string) {
     close: useMutation(trpc.tasks.setClosed.mutationOptions()),
     move: useMutation(trpc.tasks.move.mutationOptions()),
     takeBack: useMutation(trpc.tasks.takeBack.mutationOptions()),
+    setNotBefore: useMutation(trpc.tasks.setNotBefore.mutationOptions()),
     id,
   };
 }
@@ -97,6 +100,8 @@ function TakeBack({ task, actions }: { task: BoardTask; actions: ReturnType<type
  */
 export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadNote[] }) {
   const actions = useActions(task.id);
+  const now = useNow(30_000);
+  const waiting = startsIn(task.notBefore, now) !== undefined;
   const [message, setMessage] = useState('');
   const openQuestion = task.openQuestion ? thread.findLast((n) => n.kind === 'question') : undefined;
 
@@ -155,10 +160,56 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
     );
   }
 
+  if (task.status === 'backlog') {
+    return (
+      <Paper withBorder p="md">
+        <Stack>
+          <Group justify="space-between" wrap="nowrap">
+            <Text size="sm">Parked. No worker takes it until you move it to Todo.</Text>
+            <Button
+              size="xs"
+              leftSection={<IconPlayerPlay size={14} />}
+              onClick={() => actions.move.mutate({ id: task.id, status: 'todo' })}
+              loading={actions.move.isPending}
+            >
+              Move to Todo
+            </Button>
+          </Group>
+          <CommentOnly actions={actions} hint="Add to the thread" />
+        </Stack>
+      </Paper>
+    );
+  }
+
   if (task.status === 'todo') {
     return (
       <Paper withBorder p="md">
         <Stack>
+          {waiting && task.notBefore !== null && (
+            <Group justify="space-between" wrap="nowrap">
+              <Text size="sm">
+                Waiting until {stamp(task.notBefore)}.
+                {task.scheduleId !== null && (
+                  <>
+                    {' '}
+                    This is the next run of a repeating schedule (
+                    <Anchor component={Link} to="/schedules" size="sm">
+                      Schedules
+                    </Anchor>
+                    ).
+                  </>
+                )}
+              </Text>
+              <Button
+                size="xs"
+                leftSection={<IconPlayerPlay size={14} />}
+                onClick={() => actions.setNotBefore.mutate({ id: task.id, notBefore: null })}
+                loading={actions.setNotBefore.isPending}
+              >
+                Run now
+              </Button>
+            </Group>
+          )}
           <Text size="sm">
             {task.paused ? 'Paused to free its slot.' : 'Queued.'}{' '}
             {task.next === 'resume'

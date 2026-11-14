@@ -3,10 +3,22 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { add, main, move, parseAddArgs, parseStatus, readNoteFile, renderThread } from '../src/board.mts';
+import {
+  add,
+  delay,
+  tasks,
+  main,
+  move,
+  parseAddArgs,
+  parseDelayArgs,
+  parseStatus,
+  readNoteFile,
+  renderThread,
+  schedules,
+} from '../src/board.mts';
 import { BackendError } from '../src/backend.mts';
 import type { Context } from '../src/cli.mts';
-import { CONFIG, fakeBackend, note, task } from './helpers.mts';
+import { CONFIG, fakeBackend, note, schedule, task } from './helpers.mts';
 import { rejectExtraArgs, takeFlag, UsageError } from '../src/cli.mts';
 
 test('leftover arguments are a usage error, so a typo never becomes a real run', () => {
@@ -24,7 +36,8 @@ test('board move takes the human status names as well as the neutral ones', () =
   assert.equal(parseStatus('Todo'), 'todo');
   assert.equal(parseStatus('Running'), 'running');
   assert.equal(parseStatus('Done'), 'done');
-  assert.throws(() => parseStatus('Backlog'), UsageError);
+  assert.equal(parseStatus('Backlog'), 'backlog');
+  assert.throws(() => parseStatus('Someday'), UsageError);
 });
 
 test('a note file is read only from /tmp, without following links', () => {
@@ -143,4 +156,103 @@ test('board move on a proposal says so in one plain line', async () => {
     throw new BackendError('update-task: no task x', 404);
   };
   await assert.rejects(move(context, 'p1', 'todo'), BackendError);
+});
+
+test('board delay takes --in, --at or --now and nothing else', () => {
+  const now = new Date(2026, 10, 14, 10, 0, 0);
+  assert.equal(parseDelayArgs(['--in', '3h'], now)?.getTime(), now.getTime() + 3 * 3_600_000);
+  assert.equal(parseDelayArgs(['--at', '2027-01-01T12:00'], now)?.getTime(), new Date(2027, 0, 1, 12).getTime());
+  assert.equal(parseDelayArgs(['--now'], now), null);
+  for (const bad of [[], ['--in'], ['--now', 'x'], ['--in', '1h', '--at', '09:00'], ['3h'], ['--every', '1h']])
+    assert.throws(() => parseDelayArgs(bad, now), /usage: board comment/, bad.join(' '));
+  assert.throws(() => parseDelayArgs(['--in', '0h'], now), /longer than zero/);
+  assert.throws(() => parseDelayArgs(['--at', '2020-01-01'], now), /in the past/);
+});
+
+test('board delay patches notBefore on a Todo task, and --now clears it', async () => {
+  const backend = fakeBackend([task({ id: 'd1' })]);
+  const printed: string[] = [];
+  const context: Context = { config: CONFIG, backend, dryRun: false, print: (line) => printed.push(line) };
+  await delay(context, 'd1', ['--in', '2h']);
+  assert.ok(backend.tasks[0]?.notBefore && backend.tasks[0].notBefore.getTime() > Date.now());
+  assert.ok(printed[0]?.startsWith('d1 starts '));
+  await delay(context, 'd1', ['--now']);
+  assert.equal(backend.tasks[0]?.notBefore, null);
+  assert.deepEqual(printed.at(-1), 'd1 is due now');
+  backend.tasks[0]!.status = 'running';
+  await assert.rejects(delay(context, 'd1', ['--in', '1h']), BackendError);
+});
+
+test('board tasks shows when a delayed task starts', async () => {
+  const backend = fakeBackend([task({ id: 'w1', notBefore: new Date(Date.now() + 3_600_000) }), task({ id: 'p1' })]);
+  const printed: string[] = [];
+  const context: Context = { config: CONFIG, backend, dryRun: false, print: (line) => printed.push(line) };
+  await tasks(context);
+  assert.ok(printed.some((line) => line.includes('task w1') && /\(starts \d{4}-\d{2}-\d{2} \d{2}:\d{2}\)$/.test(line)));
+  assert.ok(printed.some((line) => line.endsWith('task p1')));
+});
+
+function schedulesContext(items: ReturnType<typeof schedule>[]) {
+  const backend = fakeBackend([]);
+  backend.schedules = items;
+  const printed: string[] = [];
+  const context: Context = { config: CONFIG, backend, dryRun: false, print: (line) => printed.push(line) };
+  return { backend, printed, context };
+}
+
+test('board schedules lists id, rule, next run, runs left, state and title', async () => {
+  const { context, printed } = schedulesContext([
+    schedule({ id: 's1', title: 'Sweep', remaining: 2 }),
+    schedule({
+      id: 's2',
+      title: 'Mornings',
+      everyMs: null,
+      cron: '0 9 * * 1-5',
+      timezone: 'Europe/Berlin',
+      paused: true,
+      nextRunAt: null,
+      occurrenceTaskId: null,
+    }),
+    schedule({ id: 's3', title: 'Done', remaining: 0, ended: true, nextRunAt: null, occurrenceTaskId: null }),
+  ]);
+  await schedules(context, []);
+  assert.equal(printed[0], 'schedules (3)');
+  assert.match(printed[1] ?? '', /^ {2}s1 {2}every 2h {2}next \d{4}-\d{2}-\d{2} \d{2}:\d{2} {2}3 left {2}- {2}Sweep$/);
+  assert.equal(printed[2], '  s2  cron 0 9 * * 1-5 (Europe/Berlin)  next -  forever  paused  Mornings');
+  assert.match(printed[3] ?? '', /^ {2}s3 {2}every 2h {2}next - {2}0 left {2}ended {2}Done$/);
+});
+
+test('board schedules shows until instead of forever, and now for a card that is due', async () => {
+  const { printed, context } = schedulesContext([
+    schedule({ id: 's1', until: new Date('2027-06-01T12:00:00Z') }),
+    schedule({ id: 's2', nextRunAt: null }),
+  ]);
+  await schedules(context, []);
+  assert.match(printed[1] ?? '', /^ {2}s1 {2}every 2h {2}next .* {2}until \d{4}-\d{2}-\d{2} \d{2}:\d{2} {2}- {2}/);
+  assert.match(printed[2] ?? '', /^ {2}s2 {2}every 2h {2}next now {2}forever {2}- {2}/);
+});
+
+test('board schedules pause, resume and rm act on one schedule', async () => {
+  const { backend, printed, context } = schedulesContext([schedule({ id: 's1' })]);
+  await schedules(context, ['pause', 's1']);
+  assert.equal(backend.schedules[0]?.paused, true);
+  await schedules(context, ['resume', 's1']);
+  assert.equal(backend.schedules[0]?.paused, false);
+  await schedules(context, ['rm', 's1']);
+  assert.deepEqual(backend.schedules, []);
+  assert.deepEqual(backend.writes, ['pause-schedule s1', 'resume-schedule s1', 'remove-schedule s1']);
+  assert.equal(printed[0], 'paused s1');
+  assert.match(printed[1] ?? '', /^resumed s1, next run /);
+  assert.equal(printed[2], 'removed s1');
+  for (const bad of [['pause'], ['rm', 's1', 'extra'], ['stop', 's1']])
+    await assert.rejects(schedules(context, bad), UsageError, bad.join(' '));
+});
+
+test('board schedules changes are refused inside a board run, listing is not', async () => {
+  for (const args of [
+    ['pause', 's1'],
+    ['resume', 's1'],
+    ['rm', 's1'],
+  ])
+    await assert.rejects(main(['schedules', ...args], { AGENT_BOARD_TASK: 'abc' }), /not available inside a board run/);
 });

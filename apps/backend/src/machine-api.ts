@@ -12,16 +12,20 @@ import {
   parseHeartbeat,
   parsePatch,
   parseQuestions,
+  parseScheduleDraft,
+  parseSchedulePatch,
   parseTranscriptBatch,
   QuestionError,
   TranscriptError,
   serializeNote,
+  serializeSchedule,
 } from '@agent-board/shared';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config';
 import type { Db } from './db/client';
 import { AppError } from './services/errors';
 import { machineForToken } from './services/machines';
+import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
 import { appendTranscript } from './services/transcripts';
 import {
   addNote,
@@ -38,6 +42,12 @@ import {
   toTask,
   updateTask,
 } from './services/tasks';
+
+function scheduleId(body: Record<string, unknown>): string {
+  const id = body['id'];
+  if (typeof id !== 'string' || !isSafeTaskId(id)) throw new AppError('BAD_REQUEST', 'a valid schedule id is required');
+  return id;
+}
 
 function taskId(body: Record<string, unknown>): string {
   const id = body['id'];
@@ -140,6 +150,20 @@ export async function handleMachineCall(
       return null;
     case 'read-notes':
       return (await readNotes(db, taskId(body))).map((row) => serializeNote(toNote(row)));
+    case 'add-schedule': {
+      const draft = parsed(() => parseScheduleDraft(body['body']));
+      const { schedule, task: pending } = await addSchedule(db, draft);
+      return { schedule: serializeSchedule(toSchedule(schedule)), task: task(pending) };
+    }
+    case 'list-schedules':
+      return (await listSchedules(db)).map((row) => serializeSchedule(toSchedule(row)));
+    case 'update-schedule': {
+      const { paused } = parsed(() => parseSchedulePatch(body['body']));
+      return serializeSchedule(toSchedule(await setPaused(db, scheduleId(body), paused)));
+    }
+    case 'remove-schedule':
+      await removeSchedule(db, scheduleId(body));
+      return null;
     default:
       throw new AppError('NOT_FOUND', `unknown command ${command.slice(0, 40)}`);
   }

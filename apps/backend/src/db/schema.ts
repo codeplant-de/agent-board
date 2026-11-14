@@ -1,6 +1,7 @@
 import type { Answer, Question } from '@agent-board/shared';
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
   doublePrecision,
   index,
@@ -14,7 +15,7 @@ import {
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 
-export const taskStatus = pgEnum('task_status', ['todo', 'running', 'needs-me', 'done']);
+export const taskStatus = pgEnum('task_status', ['backlog', 'todo', 'running', 'needs-me', 'done']);
 /** Declared highest first, so ordering by the enum puts urgent on top. */
 export const taskPriority = pgEnum('task_priority', ['urgent', 'high', 'normal', 'low']);
 export const nextRun = pgEnum('next_run', ['fresh', 'resume']);
@@ -55,6 +56,8 @@ export const tasks = pgTable(
     runStartedAt: timestamp('run_started_at', { withTimezone: true }),
     /** When a worker gave up the task's slot; kept through the claim until the run's first update or its end. */
     pausedAt: timestamp('paused_at', { withTimezone: true }),
+    /** Todo only: no worker claims the task before this time. Cleared when the task leaves Todo. */
+    notBefore: timestamp('not_before', { withTimezone: true }),
     /** The PR head sha an intake review was made for. */
     head: text('head'),
     /** The question note waiting for an answer, if any. */
@@ -62,6 +65,8 @@ export const tasks = pgTable(
     dedupeKey: text('dedupe_key').unique(),
     parentId: text('parent_id').references((): AnyPgColumn => tasks.id, { onDelete: 'set null' }),
     createdBy: taskCreator('created_by').notNull().default('user'),
+    /** The schedule this task is an occurrence of. */
+    scheduleId: text('schedule_id').references(() => schedules.id, { onDelete: 'set null' }),
     /** Proposed by an agent and not started by the user yet. */
     proposed: boolean('proposed').notNull().default(false),
     createdAt: createdAt(),
@@ -69,6 +74,31 @@ export const tasks = pgTable(
   },
   (t) => [index('task_status_priority_position_idx').on(t.status, t.priority, t.position)],
 );
+
+/** A rule that keeps exactly one pending occurrence, a Todo task with a start time; see services/schedules.ts. */
+export const schedules = pgTable('schedule', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  input: text('input').notNull(),
+  priority: taskPriority('priority').notNull().default('normal'),
+  machine: text('machine'),
+  workdir: text('workdir'),
+  /** An interval on the grid `anchor_at + k * every_ms`, or a 5-field cron expression in `timezone`. */
+  everyMs: bigint('every_ms', { mode: 'number' }),
+  cron: text('cron'),
+  timezone: text('timezone'),
+  anchorAt: timestamp('anchor_at', { withTimezone: true }).notNull(),
+  /** The start time of the newest occurrence; the next one lies after it. */
+  lastOccurrenceAt: timestamp('last_occurrence_at', { withTimezone: true }),
+  /** Occurrences still to create; null: forever. */
+  remaining: integer('remaining'),
+  until: timestamp('until', { withTimezone: true }),
+  pausedAt: timestamp('paused_at', { withTimezone: true }),
+  endedAt: timestamp('ended_at', { withTimezone: true }),
+  /** The pending occurrence. */
+  occurrenceTaskId: text('occurrence_task_id').references((): AnyPgColumn => tasks.id, { onDelete: 'set null' }),
+  createdAt: createdAt(),
+});
 
 export const notes = pgTable(
   'note',
@@ -101,6 +131,7 @@ export const machines = pgTable('machine', {
 
 export type TaskRow = typeof tasks.$inferSelect;
 export type NoteRow = typeof notes.$inferSelect;
+export type ScheduleRow = typeof schedules.$inferSelect;
 
 /** One worker run of a task: a fresh start, a resume or a re-run. */
 export const transcriptRuns = pgTable(

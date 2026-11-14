@@ -1,9 +1,6 @@
 import {
-  DEFAULT_PRIORITY,
-  isSafeTaskId,
   parseAnswers,
   PRIORITIES,
-  promptSkill,
   TAKE_BACK_AFTER_MS,
   type Answer,
   type Note,
@@ -15,23 +12,15 @@ import {
   type TaskDraft,
   type TaskPatch,
 } from '@agent-board/shared';
-import { and, asc, desc, eq, lt, max, min, ne, sql } from 'drizzle-orm';
-import { randomBytes } from 'node:crypto';
+import { and, asc, desc, eq, lt, ne, sql } from 'drizzle-orm';
 import type { Db, DbOrTx } from '../db/client';
 import { notes, tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
 import { DONE_ARCHIVE_DAYS, daysBefore } from './retention';
+import { completeOccurrence } from './schedules';
+import { edgePosition, getTask, insertTask, lockTask, newId } from './taskRows';
 
-const ID_ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-/** 8 characters, safe for a systemd unit name; never "dispatch" or "intake". */
-export function newId(length = 8): string {
-  for (;;) {
-    const bytes = randomBytes(length);
-    const id = Array.from(bytes, (b) => ID_ALPHABET[b % ID_ALPHABET.length]).join('');
-    if (isSafeTaskId(id)) return id;
-  }
-}
+export { getTask, newId };
 
 export function toTask(row: TaskRow, publicUrl: string): Task {
   return {
@@ -56,6 +45,8 @@ export function toTask(row: TaskRow, publicUrl: string): Task {
     lastActiveAt: row.status === 'running' ? row.lastActiveAt : null,
     runStartedAt: row.status === 'running' ? row.runStartedAt : null,
     paused: row.pausedAt !== null,
+    notBefore: row.notBefore,
+    scheduleId: row.scheduleId,
   };
 }
 
@@ -73,19 +64,14 @@ export function toNote(row: NoteRow): Note {
   return note;
 }
 
-/** A position below every task of the status (`bottom`) or above all of them (`top`). */
-async function edgePosition(db: DbOrTx, status: Status, edge: 'top' | 'bottom'): Promise<number> {
-  const [row] = await db
-    .select({ low: min(tasks.position), high: max(tasks.position) })
-    .from(tasks)
-    .where(eq(tasks.status, status));
-  if (edge === 'top') return row?.low == null ? 0 : row.low - 1;
-  return row?.high == null ? 0 : row.high + 1;
-}
-
-/** Columns by status, then priority (urgent first), then manual order. In Todo, resumes (answered, replied to, paused) come before everything else: that work is already under way. */
+/**
+ * Columns by status, then priority (urgent first), then manual order. In Todo, waiting cards (delayed, not yet due) come
+ * last, by their start; resumes (answered, replied to, paused) come before the rest: that work is already under way.
+ */
 const taskOrder = () => [
   asc(tasks.status),
+  sql`case when ${tasks.status} = 'todo' and ${tasks.notBefore} > now() then 1 else 0 end`,
+  asc(sql`case when ${tasks.status} = 'todo' and ${tasks.notBefore} > now() then ${tasks.notBefore} end`),
   sql`case when ${tasks.status} = 'todo' and ${tasks.next} = 'resume' then 0 else 1 end`,
   asc(tasks.priority),
   asc(tasks.position),
@@ -139,56 +125,9 @@ export async function listTasksWithLastNote(
   return rows.map(({ row, lastNote }) => ({ row, lastNote: lastNote?.kind ? lastNote : null }));
 }
 
-export async function getTask(db: DbOrTx, id: string): Promise<TaskRow> {
-  const [row] = await db.select().from(tasks).where(eq(tasks.id, id));
-  if (!row) throw new AppError('NOT_FOUND', `no task ${id.slice(0, 64)}`);
-  return row;
-}
-
 /** New task at the bottom of its status. A known dedupe key returns the existing task instead. */
 export async function addTask(db: Db, draft: TaskDraft): Promise<{ row: TaskRow; created: boolean }> {
-  return db.transaction(async (tx) => {
-    // A follow-up is as pressing as the task it came from, unless its creator says otherwise.
-    const parent = draft.parentId === undefined ? undefined : await getTask(tx, draft.parentId);
-    const proposed = draft.createdBy === 'agent';
-    // A proposal waits for the user whatever status the agent named.
-    const status = proposed ? 'needs-me' : (draft.status ?? 'todo');
-    const [row] = await tx
-      .insert(tasks)
-      .values({
-        id: newId(),
-        title: draft.title.trim(),
-        input: draft.input,
-        // A task is labelled with the skill its prompt starts with, unless its creator says otherwise.
-        labels:
-          draft.labels.length > 0 ? draft.labels : [promptSkill(draft.input)].filter((skill) => skill !== undefined),
-        machine: draft.machine ?? null,
-        workdir: draft.workdir ?? null,
-        head: draft.head ?? null,
-        status,
-        priority: draft.priority ?? parent?.priority ?? DEFAULT_PRIORITY,
-        position: await edgePosition(tx, status, 'bottom'),
-        dedupeKey: draft.dedupeKey ?? null,
-        parentId: draft.parentId ?? null,
-        createdBy: draft.createdBy ?? 'user',
-        proposed,
-      })
-      .onConflictDoNothing({ target: tasks.dedupeKey })
-      .returning();
-    if (row) return { row, created: true };
-    const [existing] = await tx
-      .select()
-      .from(tasks)
-      .where(eq(tasks.dedupeKey, draft.dedupeKey ?? ''));
-    if (!existing) throw new AppError('CONFLICT', 'the task was created and removed at once; try again');
-    return { row: existing, created: false };
-  });
-}
-
-async function lockTask(tx: DbOrTx, id: string): Promise<TaskRow> {
-  const [row] = await tx.select().from(tasks).where(eq(tasks.id, id)).for('update');
-  if (!row) throw new AppError('NOT_FOUND', `no task ${id.slice(0, 64)}`);
-  return row;
+  return db.transaction((tx) => insertTask(tx, draft));
 }
 
 type TaskValues = Partial<typeof tasks.$inferInsert>;
@@ -212,7 +151,7 @@ function keepsPause(from: Status, to: Status): boolean {
 /**
  * Every status change goes through here, in a transaction that holds the task's lock, so the columns that depend
  * on the status cannot drift apart: the open question (only while it waits in Needs me), the run's start, a proposal
- * (only a user starts it), a pause, the position.
+ * (only a user starts it), a pause, a start time (only while it waits in Todo), the position.
  */
 async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promise<TaskRow> {
   const to = change.to ?? task.status;
@@ -231,6 +170,7 @@ async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promis
     values.borrowed = false;
   }
   if (to !== 'running') values.runStartedAt = null;
+  if (to !== 'todo') values.notBefore = null;
   const place = change.place ?? (moved ? 'bottom' : undefined);
   if (typeof place === 'number') values.position = place;
   else if (place !== undefined) values.position = await edgePosition(tx, to, place);
@@ -239,6 +179,9 @@ async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promis
     .set({ ...values, ...change.set })
     .where(eq(tasks.id, task.id))
     .returning();
+  // A schedule's pending occurrence that leaves Todo, or is closed there, makes room for the next one.
+  const leftTodo = task.status === 'todo' && (to !== 'todo' || (row!.closed && !task.closed));
+  if (leftTodo && task.scheduleId !== null) await completeOccurrence(tx, task.id, task.scheduleId, now);
   return row!;
 }
 
@@ -254,6 +197,11 @@ export async function updateTask(db: Db, id: string, patch: TaskPatch): Promise<
     if (patch.workdir !== undefined) set.workdir = patch.workdir;
     if (patch.next !== undefined) set.next = patch.next;
     if (patch.head !== undefined) set.head = patch.head;
+    if (patch.notBefore instanceof Date) {
+      if ((patch.status ?? current.status) !== 'todo')
+        throw new AppError('CONFLICT', 'Only a task in Todo can have a start time.');
+      set.notBefore = patch.notBefore;
+    } else if (patch.notBefore === null) set.notBefore = null;
     if (patch.priority !== undefined && patch.priority !== current.priority) set.priority = patch.priority;
     // The worker has read the pause by now; its first update of the run consumes it.
     if (current.status === 'running') set.pausedAt = null;
@@ -268,7 +216,8 @@ export async function updateTask(db: Db, id: string, patch: TaskPatch): Promise<
 
 /**
  * Todo to running for `machine`; the lock lets two machines claim at once and only one win.
- * A resume is pinned to the machine that holds its session, and a proposal is not for a worker to start.
+ * A resume is pinned to the machine that holds its session, a proposal is not for a worker to start, and a delayed
+ * task is not due before its start time.
  * Undefined when the claim is lost.
  */
 export async function claimTask(db: Db, id: string, machine: string): Promise<TaskRow | undefined> {
@@ -278,6 +227,7 @@ export async function claimTask(db: Db, id: string, machine: string): Promise<Ta
       task.status === 'todo' &&
       !task.closed &&
       !task.proposed &&
+      (task.notBefore === null || task.notBefore.getTime() <= Date.now()) &&
       (task.next === 'fresh' || task.sessionId === null || task.machine === null || task.machine === machine);
     return free ? transition(tx, task, { to: 'running', by: 'worker', set: { machine } }) : undefined;
   });
@@ -537,6 +487,21 @@ export async function setPriority(db: Db, taskId: string, priority: Priority, by
     if (task.priority === priority) return task;
     await systemEvent(tx, taskId, `Priority ${task.priority} → ${priority}.`, by);
     return transition(tx, task, { place: 'bottom', by: 'user', set: { priority } });
+  });
+}
+
+/** Sets or clears (null) the start time of a Todo task. */
+export async function setNotBefore(db: Db, taskId: string, notBefore: Date | null, by: string): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    if (task.status !== 'todo') throw new AppError('CONFLICT', `The task is ${task.status}, not in Todo.`);
+    await systemEvent(
+      tx,
+      taskId,
+      notBefore === null ? 'Start time cleared.' : `Start time set to ${notBefore.toISOString()}.`,
+      by,
+    );
+    return transition(tx, task, { by: 'user', set: { notBefore } });
   });
 }
 
