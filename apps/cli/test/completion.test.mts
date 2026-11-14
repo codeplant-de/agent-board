@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import type { TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { SHELLS, renderCompletion, completionModel } from '../src/completion.mts';
 import type { Shell } from '../src/completion.mts';
@@ -62,38 +63,71 @@ function shellExists(shell: string): boolean {
   return spawnSync(shell, ['--version'], { stdio: 'ignore' }).status === 0;
 }
 
-test('the scripts are valid in their shell', (context) => {
+// Without zsh or fish the check cannot run: that is a failure on CI, where the job installs them, and a skip elsewhere.
+function requireShell(shell: string, context: TestContext): boolean {
+  if (shellExists(shell)) return true;
+  if (process.env['CI']) assert.fail(`${shell} is not installed, but CI must run its completion checks`);
+  context.skip(`${shell} is not installed; its script was not checked`);
+  return false;
+}
+
+function writeScript(dir: string, shell: Shell): string {
+  const path = join(dir, shell);
+  writeFileSync(path, script(shell));
+  return path;
+}
+
+test('the bash script is valid bash', () => {
   const dir = mkdtempSync(join(tmpdir(), 'board-completion-test-'));
   try {
-    const file = (shell: Shell): string => {
-      const path = join(dir, shell);
-      writeFileSync(path, script(shell));
-      return path;
-    };
-    assert.equal(spawnSync('bash', ['-n', file('bash')]).status, 0, 'bash -n');
-    if (shellExists('zsh')) assert.equal(spawnSync('zsh', ['-n', file('zsh')]).status, 0, 'zsh -n');
-    else context.diagnostic('zsh is not installed; its script was not checked');
-    if (shellExists('fish'))
-      assert.equal(spawnSync('fish', ['--no-execute', file('fish')]).status, 0, 'fish --no-execute');
-    else context.diagnostic('fish is not installed; its script was not checked');
+    assert.equal(spawnSync('bash', ['-n', writeScript(dir, 'bash')]).status, 0, 'bash -n');
   } finally {
     rmSync(dir, { recursive: true });
   }
 });
 
-// Runs the bash script with a stub `board` that answers __complete, and returns what it offers for a command line.
-function bashOffers(line: string[], current: string): string[] {
+test('the zsh script parses', (context) => {
+  if (!requireShell('zsh', context)) return;
+  const dir = mkdtempSync(join(tmpdir(), 'board-completion-test-'));
+  try {
+    const result = spawnSync('zsh', ['-n', writeScript(dir, 'zsh')], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('the fish script parses', (context) => {
+  if (!requireShell('fish', context)) return;
+  const dir = mkdtempSync(join(tmpdir(), 'board-completion-test-'));
+  try {
+    const result = spawnSync('fish', ['--no-execute', writeScript(dir, 'fish')], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+// How bash splits a command line: at spaces, and at ":" too (COMP_WORDBREAKS), which stays a word of its own.
+function bashWords(words: string[]): string[] {
+  return words.flatMap((word) => (word === '' ? [''] : word.split(/(:)/).filter((piece) => piece !== '')));
+}
+
+// Runs the bash script and returns what it offers after `line` for the word being typed.
+function bashOffers(line: string[], current: string, cwd?: string): string[] {
   const dir = mkdtempSync(join(tmpdir(), 'board-completion-test-'));
   try {
     writeFileSync(join(dir, 'board.bash'), script('bash'));
-    const words = [...line, current].map((word) => `'${word}'`).join(' ');
+    const words = bashWords(['board', ...line, current])
+      .map((word) => `'${word}'`)
+      .join(' ');
     const program = `
 board() { if [ "$1" = __complete ] && [ "$2" = tasks ]; then printf 'Ab3dEf9x\\tFirst\\nZk7mNp2q\\tSecond\\n'; elif [ "$2" = schedules ]; then printf 'Sc1aBcDe\\tSweep\\n'; fi; }
 source ${join(dir, 'board.bash')}
-COMP_WORDS=(board ${words}); COMP_CWORD=$((\${#COMP_WORDS[@]} - 1))
+COMP_WORDS=(${words}); COMP_CWORD=$((\${#COMP_WORDS[@]} - 1))
 _board
 printf '%s\\n' "\${COMPREPLY[@]}"`;
-    const result = spawnSync('bash', ['-c', program], { encoding: 'utf8' });
+    const result = spawnSync('bash', ['-c', program], { encoding: 'utf8', ...(cwd ? { cwd } : {}) });
     assert.equal(result.status, 0, result.stderr);
     return result.stdout.split('\n').filter((entry) => entry !== '');
   } finally {
@@ -188,4 +222,101 @@ test('board completion rejects an unknown shell', async () => {
     runBoard(['completion', 'powershell'], { env: {} }),
     /'powershell' is invalid for argument 'shell'/,
   );
+});
+
+test('bash completes after a task link and after 09:30, which COMP_WORDS splits at the colon', () => {
+  assert.deepEqual(bashOffers(['move', 'https://board.example/t/Ab3dEf9x'], 'n'), ['needs-me']);
+  assert.deepEqual(bashOffers(['delay', 'Ab3dEf9x', '--at', '09:30'], '--n'), ['--now']);
+  assert.deepEqual(bashOffers(['delay', 'Ab3dEf9x', '--at'], '09:'), [], 'a time is free text: nothing completes');
+});
+
+test('bash offers no task ids after a flag that takes free text, and completes file names with spaces', () => {
+  assert.deepEqual(bashOffers(['delay', 'Ab3dEf9x', '--at'], ''), []);
+  assert.deepEqual(bashOffers(['add', '--title'], ''), []);
+  const dir = mkdtempSync(join(tmpdir(), 'board-completion-test-'));
+  try {
+    writeFileSync(join(dir, 'my token'), 'x');
+    writeFileSync(join(dir, 'other'), 'x');
+    assert.deepEqual(bashOffers(['init', '--token-file'], 'my', dir), ['my token']);
+    assert.deepEqual(bashOffers(['comment', 'Ab3dEf9x', '--file'], 'oth', dir), ['other']);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+// Sources the zsh script with stand-ins for the completion functions, and returns what each call asked for.
+function zshOffers(line: string[]): string[] {
+  const dir = mkdtempSync(join(tmpdir(), 'board-completion-test-'));
+  try {
+    writeFileSync(join(dir, 'board.zsh'), script('zsh'));
+    const words = line.map((word) => `'${word}'`).join(' ');
+    const program = `
+board() { if [[ $1 == __complete && $2 == tasks ]]; then printf 'Ab3dEf9x\\tFirst: one\\nZk7mNp2q\\tSecond\\n'; elif [[ $2 == schedules ]]; then printf 'Sc1aBcDe\\tSweep\\n'; fi }
+_describe() { print -l -- "describe $2"; local name=\${@: -1}; print -l -- "\${(P@)name}" }
+compadd() { shift; print -l -- "$@" }
+_files() { print files }
+compdef() { :; }
+source ${join(dir, 'board.zsh')}
+words=(board ${words}); CURRENT=$#words
+_board`;
+    const result = spawnSync('zsh', ['-c', program], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.split('\n').filter((entry) => entry !== '');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+}
+
+test('the zsh script completes ids, statuses, schedule actions and files', (context) => {
+  if (!requireShell('zsh', context)) return;
+  assert.deepEqual(zshOffers(['show', '']), ['describe ids', 'Ab3dEf9x:First: one', 'Zk7mNp2q:Second']);
+  assert.deepEqual(zshOffers(['move', 'Ab3dEf9x', '']), ['backlog', 'todo', 'running', 'needs-me', 'done']);
+  assert.deepEqual(zshOffers(['schedules', '']), ['pause', 'resume', 'rm']);
+  assert.equal(zshOffers(['schedules', 'rm', ''])[0], 'describe ids');
+  assert.deepEqual(zshOffers(['schedules', 'stop', '']), [], 'the id of an unknown action is not offered');
+  assert.deepEqual(zshOffers(['tasks', '--status', '']), ['backlog', 'todo', 'running', 'needs-me', 'done']);
+  assert.deepEqual(zshOffers(['init', '--token-file', '']), ['files']);
+  assert.deepEqual(zshOffers(['delay', 'Ab3dEf9x', '--at', '']), []);
+  assert.ok(zshOffers(['tasks', '--']).includes('--status'));
+});
+
+// Loads the fish script with a stub `board` and returns what `complete -C` offers for the line.
+function fishOffers(line: string): string[] {
+  const dir = mkdtempSync(join(tmpdir(), 'board-completion-test-'));
+  try {
+    writeFileSync(join(dir, 'board.fish'), script('fish'));
+    const functions = spawnSync('sh', ['-c', 'd=$(dirname "$(command -v fish)"); echo "$d/../share/fish/functions"'], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    const program = `
+set fish_function_path $fish_function_path ${functions}
+function board
+  test "$argv[1]" = __complete; or return
+  if test "$argv[2]" = tasks
+    printf 'Ab3dEf9x\\tFirst\\nZk7mNp2q\\tSecond\\n'
+  else
+    printf 'Sc1aBcDe\\tSweep\\n'
+  end
+end
+source ${join(dir, 'board.fish')}
+complete -C '${line}'`;
+    const result = spawnSync('fish', ['-c', program], { encoding: 'utf8', cwd: dir });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.split('\n').filter((entry) => entry !== '');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+}
+
+test('the fish script completes ids, statuses, schedule actions and files, and nothing after a free-text flag', (context) => {
+  if (!requireShell('fish', context)) return;
+  assert.deepEqual(fishOffers('board show '), ['Ab3dEf9x\tFirst', 'Zk7mNp2q\tSecond']);
+  assert.deepEqual(fishOffers('board move Ab3dEf9x ').sort(), ['backlog', 'done', 'needs-me', 'running', 'todo']);
+  assert.deepEqual(fishOffers('board schedules '), ['pause', 'resume', 'rm']);
+  assert.deepEqual(fishOffers('board schedules rm '), ['Sc1aBcDe\tSweep']);
+  assert.deepEqual(fishOffers('board delay Ab3dEf9x --at '), []);
+  assert.deepEqual(fishOffers('board add --title '), []);
+  assert.deepEqual(fishOffers('board add --parent '), ['Ab3dEf9x\tFirst', 'Zk7mNp2q\tSecond']);
+  assert.deepEqual(fishOffers('board init --token-file board.fi'), ['board.fish']);
+  assert.deepEqual(fishOffers('board comment Ab3dEf9x '), []);
 });

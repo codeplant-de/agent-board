@@ -40,6 +40,10 @@ jobs:
             exit 1
           fi
 
+      # The completion tests parse the zsh and fish scripts with the real shells and fail without them on CI.
+      - name: Install zsh and fish
+        run: sudo apt-get update && sudo apt-get install -y zsh fish
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 

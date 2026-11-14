@@ -740,9 +740,11 @@ Set this machine up for the board: write web.json (the board's URL), env (the
 machine token, mode 600) and, if it is missing, config.json (from the example,
 with this machine's name). Then run the checks of `board doctor`.
 
-Without flags it asks. For a script give --url and --token-file (a token on the
-command line would land in the shell history); --machine defaults to the host
-name. A file that exists is kept unless --force, which copies it to
+Without flags it asks. For a script give --url and --token-file: the token never
+goes on the command line, where it would land in the shell history. The file
+must be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board
+init --url … --token-file /dev/stdin`. --machine defaults to the host name. A
+file that exists is kept unless --force, which copies it to
 <name>.bak-<timestamp> first; config.json is never replaced.
 
 Not available inside a board run.
@@ -756,7 +758,7 @@ Options:
 
 Examples:
   board init
-  board init --url https://board.example.com --token-file ~/token --machine laptop
+  printf %s "$TOKEN" | board init --url https://board.example.com --token-file /dev/stdin --machine laptop
 ```
 
 #### board doctor
@@ -797,10 +799,14 @@ systemd and flock.
 The services run this CLI with the node that ran `board setup`. --print shows
 the units and changes nothing; --enable also enables and starts the timers. When
 an installed unit differs from what it writes, the differing lines are shown.
-Not available inside a board run.
+When this checkout is not the one the installed ~/.local/bin/board runs from (a
+worktree, a scratch copy), it refuses unless --force, so it cannot take over the
+live timers. Not available inside a board run.
 
 Options:
   --enable    also enable and start the timers
+  --force     install although this checkout is not the one the installed board
+              runs from
   --print     print the units and change nothing
   -h, --help  display help for command
 

@@ -24,6 +24,8 @@ function machine(
     exists: (path) => present.has(path),
     isDirectory: (path) => dirs.has(path),
     which: (program) => `/usr/bin/${program}`,
+    whichInUnits: (program) => `/usr/bin/${program}`,
+    home: '/home/me',
     systemctl: async () => 0,
     verifyServer: async () => undefined,
     ...overrides,
@@ -69,7 +71,7 @@ test('a worker machine in order passes every check', async () => {
 
 test('a board-only machine has warnings, not failures, for config.json, tools and units', async () => {
   const { [`${CONFIG_DIR}/config.json`]: _config, ...boardOnly } = GOOD;
-  const results = await runChecks(machine(boardOnly, { which: () => undefined }));
+  const results = await runChecks(machine(boardOnly, { which: () => undefined, whichInUnits: () => undefined }));
   const found = levels(results);
   assert.equal(found['config.json'], 'warn');
   assert.equal(found['tool claude'], 'warn');
@@ -114,7 +116,7 @@ test('the server check tells unreachable, unauthorised and a contract mismatch a
         }),
       )
     ).find((result) => result.name === 'server');
-  const unauthorised = await run(new BackendError('version: bad token', 401));
+  const unauthorised = await run(new BackendError('version: bad token', 401, true));
   assert.match(unauthorised?.message ?? '', /refused the token/);
   const older = await run(
     new BackendError(
@@ -152,6 +154,7 @@ test('with units installed a missing tool or a vanished program fails; a disable
       {
         exists: (path) => present.has(path),
         which: (program) => (program === 'gh' ? undefined : `/usr/bin/${program}`),
+        whichInUnits: (program) => (program === 'gh' ? undefined : `/usr/bin/${program}`),
         systemctl: async (args) => (args.includes('is-enabled') ? 1 : 0),
       },
     ),
@@ -179,4 +182,81 @@ test('a result prints as one line with its hint under it', () => {
   assert.equal(formatResult({ name: 'x', level: 'ok', message: 'fine' }), '✓ x: fine');
   assert.equal(formatResult({ name: 'x', level: 'fail', message: 'bad', hint: 'fix it' }), '✗ x: bad\n    → fix it');
   assert.equal(formatResult({ name: 'x', level: 'warn', message: 'hm' }), '! x: hm');
+});
+
+test('a 401 or 404 that is not the API answering (a login proxy) is not "refused" or "older"', async () => {
+  const run = async (error: Error): Promise<CheckResult | undefined> =>
+    (
+      await runChecks(
+        machine(GOOD, {
+          verifyServer: async () => {
+            throw error;
+          },
+        }),
+      )
+    ).find((result) => result.name === 'server');
+  const proxy401 = await run(
+    new BackendError('version: the server answered 401 without JSON (is /api/machine routed past the login?)', 401),
+  );
+  assert.doesNotMatch(proxy401?.message ?? '', /refused the token/);
+  assert.match(proxy401?.message ?? '', /without JSON/);
+  const proxy404 = await run(
+    new BackendError('version: the server answered 404 without JSON (is /api/machine routed past the login?)', 404),
+  );
+  assert.match(proxy404?.message ?? '', /without JSON/);
+  assert.match(proxy404?.hint ?? '', /check the URL/);
+});
+
+// The unit file of the checkout that shipped before `board setup` (apps/cli/systemd/agent-board-dispatch.service at 6e89da6^).
+const OLD_UNIT = `[Unit]
+Description=agent-board dispatcher: one tick
+
+[Service]
+Type=oneshot
+# bin/_node finds Node; PATH is for flock, gh, claude and systemd-run.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# bin/dispatch takes the lock itself; exit 75 means another tick holds it, which is not a failure.
+ExecStart=%h/workspace/agent-board/apps/cli/bin/dispatch
+SuccessExitStatus=75
+TimeoutStartSec=110
+`;
+
+test('an old-style unit whose %h path no longer exists fails, and passes while the checkout is there', async () => {
+  const oldUnits = {
+    [`${UNIT_DIR}/agent-board-dispatch.service`]: { text: OLD_UNIT },
+    [`${UNIT_DIR}/agent-board-dispatch.timer`]: { text: '[Timer]\n' },
+  };
+  const gone = await runChecks(machine({ ...GOOD, ...oldUnits }));
+  const failed = gone.find((result) => result.name === 'agent-board-dispatch.service command');
+  assert.equal(failed?.level, 'fail');
+  assert.match(failed?.message ?? '', /\/home\/me\/workspace\/agent-board\/apps\/cli\/bin\/dispatch no longer exists/);
+  const present = new Set([
+    ...Object.keys(GOOD),
+    ...Object.keys(oldUnits),
+    CONFIG_DIR,
+    UNIT_DIR,
+    '/home/me/workspace/agent-board/apps/cli/bin/dispatch',
+  ]);
+  const there = await runChecks(machine({ ...GOOD, ...oldUnits }, { exists: (path) => present.has(path) }));
+  assert.equal(levels(there)['agent-board-dispatch.service command'], 'ok');
+});
+
+test('a tool on the shell PATH but not on the units PATH is a failure that says where it is', async () => {
+  const units = unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch']);
+  const results = await runChecks(
+    machine(
+      { ...GOOD, ...units },
+      {
+        which: (program) => (program === 'claude' ? '/home/me/.nvm/bin/claude' : `/usr/bin/${program}`),
+        whichInUnits: (program) => (program === 'claude' ? undefined : `/usr/bin/${program}`),
+      },
+    ),
+  );
+  const claude = results.find((result) => result.name === 'tool claude');
+  assert.equal(claude?.level, 'fail');
+  assert.match(
+    claude?.message ?? '',
+    /\/home\/me\/\.nvm\/bin\/claude, on your shell's PATH but not on the units' \(\/home\/me\/\.local\/bin:/,
+  );
+  assert.match(claude?.hint ?? '', /ln -s \/home\/me\/\.nvm\/bin\/claude ~\/\.local\/bin\/claude/);
 });

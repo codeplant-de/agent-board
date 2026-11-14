@@ -29,10 +29,13 @@ const AGENT_BOARD_TOKEN_PREFIX = 'abm_';
 export class BackendError extends Error {
   // The HTTP status of the server's answer, when there was one.
   status: number | undefined;
+  // Whether the status came in a JSON answer of the machine API; a login page or a proxy has a status too, and means something else.
+  fromApi: boolean;
 
-  constructor(message: string, status?: number) {
+  constructor(message: string, status?: number, fromApi = false) {
     super(message);
     this.status = status;
+    this.fromApi = fromApi;
   }
 }
 
@@ -43,7 +46,7 @@ export interface WebConfig {
 
 // The board's URL as web.json and `board init` accept it.
 export function checkBoardUrl(url: unknown): string {
-  if (typeof url !== 'string' || !/^https?:\/\/[^\s/]+/.test(url))
+  if (typeof url !== 'string' || /\s/.test(url) || !/^https?:\/\/[^/]+/.test(url))
     throw new ConfigError("web.json: url must be the board's http(s) URL");
   // Plain http only to this machine: the token must not cross a network in the clear.
   if (url.startsWith('http://') && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/.test(url)) {
@@ -128,7 +131,7 @@ export async function callServer(
   if (!response.ok) {
     const reason =
       isRecord(payload) && typeof payload['error'] === 'string' ? payload['error'] : `HTTP ${response.status}`;
-    throw new BackendError(`${command}: ${oneLine(reason, 200)}`, response.status);
+    throw new BackendError(`${command}: ${oneLine(reason, 200)}`, response.status, true);
   }
   if (!isRecord(payload) || !('result' in payload)) throw new BackendError(`${command}: the answer has no result`);
   return payload['result'];
@@ -149,7 +152,7 @@ export async function verifyContract(config: WebConfig, fetcher?: Fetch, timeout
     served = parseVersion(await callServer(config, 'version', {}, fetcher, timeoutMs));
   } catch (error) {
     // A server from before the version command.
-    if (error instanceof BackendError && error.status === 404) {
+    if (error instanceof BackendError && error.status === 404 && error.fromApi) {
       throw new BackendError(
         `the board server is older than this CLI: it does not know the version command; the CLI needs contract ${CONTRACT_VERSION}; update the board`,
         404,
