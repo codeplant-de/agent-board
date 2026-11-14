@@ -3,15 +3,15 @@ import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { schedules, tasks } from './db/schema';
 import { buildServer } from './server';
-import { issueToken } from './services/machines';
 import { archiveStaleDone } from './services/tasks';
-import { caller, question, testConfig, useTestDb } from './test/helpers';
+import { asOwner, caller, question, testConfig, useTestDb } from './test/helpers';
 
-const { db } = useTestDb();
+const { db, admin } = useTestDb();
 
 async function setup() {
   const app = await buildServer(testConfig, db);
-  const tokens = { laptop: await issueToken(db, 'laptop'), workstation: await issueToken(db, 'workstation') };
+  const issue = async (name: string) => (await caller(db).machines.issue({ name })).token;
+  const tokens = { laptop: await issue('laptop'), workstation: await issue('workstation') };
   const call = async (machine: keyof typeof tokens, command: string, body: Record<string, unknown> = {}) => {
     const res = await app.inject({
       method: 'POST',
@@ -50,7 +50,7 @@ describe('machine API', () => {
   it('answers the contract version it speaks', async () => {
     const { status, json } = await ctx.call('laptop', 'version');
     expect(status).toBe(200);
-    expect(json.result).toEqual({ contract: CONTRACT_VERSION });
+    expect(json.result).toEqual({ contract: CONTRACT_VERSION, owner: 'jascha', keyId: null });
   });
 
   it('the UI needs a signed-in user in an allowed group; Remote-* headers do not open the machine API', async () => {
@@ -67,6 +67,12 @@ describe('machine API', () => {
       headers: { 'remote-user': 'jascha', 'remote-groups': 'work,admins' },
     });
     expect(admin.statusCode).toBe(200);
+    const mixedCase = await ctx.app.inject({
+      method: 'GET',
+      url: '/trpc/me',
+      headers: { 'remote-user': 'Jascha', 'remote-groups': 'admins' },
+    });
+    expect(mixedCase.json().result.data.username).toBe('jascha');
     const spoof = await ctx.app.inject({
       method: 'POST',
       url: '/api/machine/list-tasks',
@@ -521,7 +527,7 @@ describe('transcripts', () => {
     await ui.tasks.done({ id: stale.id });
     await ui.tasks.done({ id: fresh.id });
     const idle = (id: string, days: number) =>
-      db
+      admin
         .update(tasks)
         .set({ updatedAt: new Date(Date.now() - days * 24 * 60 * 60_000) })
         .where(eq(tasks.id, id));
@@ -529,7 +535,7 @@ describe('transcripts', () => {
     await idle(fresh.id, 27);
     await idle(running.id, 29);
     const { deleteOldTranscripts } = await import('./services/transcripts');
-    expect(await deleteOldTranscripts(db)).toBe(1);
+    expect(await asOwner(db, 'jascha', (tx) => deleteOldTranscripts(tx))).toBe(1);
     expect(await ui.transcript.runs({ id: stale.id })).toHaveLength(0);
     expect(await ui.transcript.runs({ id: fresh.id })).toHaveLength(1);
     expect(await ui.transcript.runs({ id: running.id })).toHaveLength(1);
@@ -552,11 +558,11 @@ describe('transcripts', () => {
     const { deleteOldTranscripts } = await import('./services/transcripts');
     const { tasks } = await import('./db/schema');
     const { eq } = await import('drizzle-orm');
-    await db
+    await admin
       .update(tasks)
       .set({ closedAt: new Date(Date.now() - 15 * 24 * 60 * 60_000) })
       .where(eq(tasks.id, old.id));
-    expect(await deleteOldTranscripts(db)).toBe(1);
+    expect(await asOwner(db, 'jascha', (tx) => deleteOldTranscripts(tx))).toBe(1);
     expect(await ui.transcript.runs({ id: old.id })).toHaveLength(0);
     expect(await ui.transcript.runs({ id: recent.id })).toHaveLength(1); // closed today: kept
     expect(await ui.transcript.runs({ id: open.id })).toHaveLength(1);
@@ -589,9 +595,9 @@ describe('proposals', () => {
     );
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
     // Even a proposal that somehow sits in Todo is not claimable.
-    await db.update(tasks).set({ status: 'todo' }).where(eq(tasks.id, id));
+    await admin.update(tasks).set({ status: 'todo' }).where(eq(tasks.id, id));
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
-    await db.update(tasks).set({ status: 'needs-me' }).where(eq(tasks.id, id));
+    await admin.update(tasks).set({ status: 'needs-me' }).where(eq(tasks.id, id));
     const started = await caller(db).tasks.move({ id, status: 'todo' });
     expect(started).toMatchObject({ status: 'todo', proposed: false });
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(200);
@@ -684,7 +690,7 @@ describe('taking back a stuck task', () => {
     return task.id;
   }
   const quietFor = (id: string, ms: number) =>
-    db
+    admin
       .update(tasks)
       .set({ lastActiveAt: new Date(Date.now() - ms) })
       .where(eq(tasks.id, id));
@@ -735,7 +741,7 @@ describe('fail', () => {
     const ui = caller(db);
     const task = await ui.tasks.create({ title: 't', input: 'do it' });
     await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
-    await db.update(tasks).set({ closed: true }).where(eq(tasks.id, task.id));
+    await admin.update(tasks).set({ closed: true }).where(eq(tasks.id, task.id));
     expect((await ctx.call('laptop', 'fail', { id: task.id, body: 'x' })).json.result).toMatchObject({
       applied: false,
       task: { status: 'running' },
@@ -801,7 +807,7 @@ describe('update-task expect', () => {
 
 describe('Done archival', () => {
   const idle = (id: string, days: number) =>
-    db
+    admin
       .update(tasks)
       .set({ updatedAt: new Date(Date.now() - days * 24 * 60 * 60_000) })
       .where(eq(tasks.id, id));
@@ -816,15 +822,15 @@ describe('Done archival', () => {
     await idle(old.id, 15);
     await idle(recent.id, 13);
     await idle(waiting.id, 30);
-    expect(await archiveStaleDone(db)).toBe(1);
+    expect(await asOwner(db, 'jascha', (tx) => archiveStaleDone(tx))).toBe(1);
     const closed = (await ui.tasks.get({ id: old.id })).task;
     expect(closed).toMatchObject({ closed: true, status: 'done' });
     expect((await ui.tasks.get({ id: old.id })).thread.at(-1)?.text).toBe('Closed after 14 days in Done.');
     expect((await ui.tasks.get({ id: recent.id })).task.closed).toBe(false);
     expect((await ui.tasks.get({ id: waiting.id })).task.closed).toBe(false);
-    expect(await archiveStaleDone(db)).toBe(0);
+    expect(await asOwner(db, 'jascha', (tx) => archiveStaleDone(tx))).toBe(0);
     // Its transcripts now go after the usual retention.
-    expect((await db.select().from(tasks).where(eq(tasks.id, old.id)))[0]?.closedAt).not.toBeNull();
+    expect((await admin.select().from(tasks).where(eq(tasks.id, old.id)))[0]?.closedAt).not.toBeNull();
   });
 
   it('leaves intake tasks open, so a re-requested review is not blocked', async () => {
@@ -832,9 +838,9 @@ describe('Done archival', () => {
       body: { title: 'review', input: '/review-pr x', createdBy: 'intake' },
     });
     const id = added.json.result.task.id;
-    await db.update(tasks).set({ status: 'done' }).where(eq(tasks.id, id));
+    await admin.update(tasks).set({ status: 'done' }).where(eq(tasks.id, id));
     await idle(id, 40);
-    expect(await archiveStaleDone(db)).toBe(0);
+    expect(await asOwner(db, 'jascha', (tx) => archiveStaleDone(tx))).toBe(0);
     expect((await caller(db).tasks.get({ id })).task.closed).toBe(false);
   });
 });
@@ -847,7 +853,7 @@ describe('delayed tasks', () => {
     const ui = caller(db);
     const { id } = await ui.tasks.create({ input: 'later', when: { at: soon() } });
     expect((await claim(id)).status).toBe(409);
-    await db
+    await admin
       .update(tasks)
       .set({ notBefore: new Date(Date.now() - 1000) })
       .where(eq(tasks.id, id));
@@ -915,7 +921,7 @@ describe('delayed tasks', () => {
     const ui = caller(db);
     const { id } = await ui.tasks.create({ input: 'a', when: { at: soon() } });
     await ui.tasks.move({ id, status: 'backlog' });
-    expect((await db.select().from(tasks).where(eq(tasks.id, id)))[0]?.notBefore).toBeNull();
+    expect((await admin.select().from(tasks).where(eq(tasks.id, id)))[0]?.notBefore).toBeNull();
     await ui.tasks.move({ id, status: 'todo' });
     expect((await ui.tasks.get({ id })).task.notBefore).toBeNull();
     const second = await ui.tasks.create({ input: 'b', when: { at: soon() } });
@@ -942,7 +948,7 @@ describe('delayed tasks', () => {
     await ui.tasks.create({ title: 'normal', input: 'a' });
     const titles = async () => (await ui.tasks.list()).map((t) => t.title);
     expect(await titles()).toEqual(['normal', 'low', 'early', 'late']);
-    await db
+    await admin
       .update(tasks)
       .set({ notBefore: new Date(Date.now() - 1000) })
       .where(eq(tasks.title, 'early'));
@@ -956,9 +962,9 @@ describe('schedules', () => {
   const addSchedule = (body: Record<string, unknown>) =>
     ctx.call('laptop', 'add-schedule', { body: { title: 'Sweep', input: '/sweep', everyMs: hour, ...body } });
   const scheduled = (scheduleId: string) =>
-    db.select().from(tasks).where(eq(tasks.scheduleId, scheduleId)).orderBy(tasks.createdAt);
+    admin.select().from(tasks).where(eq(tasks.scheduleId, scheduleId)).orderBy(tasks.createdAt);
   const makeDue = (id: string) =>
-    db
+    admin
       .update(tasks)
       .set({ notBefore: new Date(Date.now() - 1000) })
       .where(eq(tasks.id, id));
@@ -1099,7 +1105,7 @@ describe('schedules', () => {
     const ui = caller(db);
     const { json } = await addSchedule({});
     const id = json.result.schedule.id;
-    await db.update(tasks).set({ sessionId: 'ran' }).where(eq(tasks.id, json.result.task.id));
+    await admin.update(tasks).set({ sessionId: 'ran' }).where(eq(tasks.id, json.result.task.id));
     await ui.schedules.setPaused({ id, paused: true });
     expect(await scheduled(id)).toHaveLength(1);
     await ui.tasks.setClosed({ id: json.result.task.id, closed: true });
@@ -1151,9 +1157,9 @@ describe('schedules', () => {
     await claim(json.result.task.id);
     const removed = await ctx.call('laptop', 'remove-schedule', { id });
     expect(removed.status).toBe(200);
-    const left = await db.select().from(tasks);
+    const left = await admin.select().from(tasks);
     expect(left.map((t) => [t.id, t.scheduleId])).toEqual([[json.result.task.id, null]]);
-    expect(await db.select().from(schedules)).toEqual([]);
+    expect(await admin.select().from(schedules)).toEqual([]);
     expect((await ctx.call('laptop', 'remove-schedule', { id })).status).toBe(404);
   });
 
@@ -1176,8 +1182,8 @@ describe('schedules', () => {
       (await addSchedule({ startAt: new Date(Date.now() + 2 * hour).toISOString(), until: new Date().toISOString() }))
         .status,
     ).toBe(400);
-    expect(await db.select().from(schedules)).toHaveLength(1);
-    expect(await db.select().from(tasks)).toHaveLength(1);
+    expect(await admin.select().from(schedules)).toHaveLength(1);
+    expect(await admin.select().from(tasks)).toHaveLength(1);
   });
 
   it('a cron schedule starts at the first match from its start time', async () => {

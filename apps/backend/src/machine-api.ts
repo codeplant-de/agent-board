@@ -22,8 +22,10 @@ import {
 } from '@agent-board/shared';
 import type { FastifyInstance } from 'fastify';
 import type { Config } from './config';
-import type { Db } from './db/client';
+import type { Db, DbOrTx } from './db/client';
+import { withOwner } from './db/scope';
 import { AppError } from './services/errors';
+import { getKeys } from './services/keys';
 import { machineForToken } from './services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
 import { appendTranscript } from './services/transcripts';
@@ -66,17 +68,20 @@ function parsed<T>(parse: () => T): T {
   }
 }
 
+type MachineIdentity = NonNullable<Awaited<ReturnType<typeof machineForToken>>>;
+
 export async function handleMachineCall(
-  db: Db,
+  db: DbOrTx,
   config: Config,
-  machine: string,
+  identity: MachineIdentity,
   command: string,
   body: Record<string, unknown>,
 ): Promise<unknown> {
+  const machine = identity.name;
   const task = (row: Parameters<typeof toTask>[0]) => toTask(row, config.publicUrl);
   switch (command) {
     case 'version':
-      return { contract: CONTRACT_VERSION };
+      return { contract: CONTRACT_VERSION, owner: identity.owner, keyId: (await getKeys(db))?.keyId ?? null };
     case 'list-tasks':
       return (await listTasks(db, { all: body['all'] === true })).map(task);
     case 'get-task':
@@ -176,6 +181,10 @@ export function registerMachineApi(app: FastifyInstance, db: Db, config: Config)
     const machine = token ? await machineForToken(db, token) : null;
     if (!machine) throw new AppError('UNAUTHORIZED', 'unknown or revoked machine token');
     const body = isRecord(req.body) ? req.body : {};
-    return { result: await handleMachineCall(db, config, machine, req.params.command, body) };
+    return {
+      result: await withOwner(db, machine.owner, (tx) =>
+        handleMachineCall(tx, config, machine, req.params.command, body),
+      ),
+    };
   });
 }
