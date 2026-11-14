@@ -282,9 +282,16 @@ test('a task that moved on since the listing is not reported or notified', async
 test('a task that is not due yet is left alone: no claim, no log line', async () => {
   const waiting = task({ id: 'w1', input: '/selftest go', notBefore: new Date(NOW.getTime() + 60_000) });
   const due = task({ id: 'd1', input: '/selftest go', notBefore: new Date(NOW.getTime() - 60_000) });
-  const { deps, started, backend, logs } = setup([waiting, due, todo('t1')]);
+  const waitingThere = task({
+    id: 'w2',
+    input: '/selftest go',
+    machine: 'there',
+    workdir: '/x',
+    notBefore: new Date(NOW.getTime() + 60_000),
+  });
+  const { deps, started, backend, logs } = setup([waiting, waitingThere, due, todo('t1')]);
   await runDispatch(deps);
   assert.deepEqual(started, ['d1', 't1']);
   assert.ok(!backend.writes.some((w) => w.includes('w1')));
-  assert.ok(!logs.some((line) => line.includes('w1')));
+  assert.ok(!logs.some((line) => line.includes('w1') || line.includes('w2')));
 });

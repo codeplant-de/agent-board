@@ -78,14 +78,15 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
       log(`SKIP ${task.id} its last worker is still stopping`);
       continue;
     }
+    // Not due yet; the board refuses the claim too, this only saves the attempt every tick. Checked before
+    // notServableHere so no other machine logs a SKIP line for every waiting card on every tick.
+    if (task.notBefore !== null && task.notBefore > deps.now()) continue;
     // Another machine may have the checkout, the directory or the session.
     const elsewhere = notServableHere(task, config.machine, config.repos);
     if (elsewhere !== undefined) {
       log(`SKIP ${task.id} ${elsewhere}`);
       continue;
     }
-    // Not due yet; the board refuses the claim too, this only saves the attempt every tick.
-    if (task.notBefore !== null && task.notBefore > deps.now()) continue;
     candidates.push(task);
   }
 

@@ -222,6 +222,16 @@ test('board schedules lists id, rule, next run, runs left, state and title', asy
   assert.match(printed[3] ?? '', /^ {2}s3 {2}every 2h {2}next - {2}0 left {2}ended {2}Done$/);
 });
 
+test('board schedules shows until instead of forever, and now for a card that is due', async () => {
+  const { printed, context } = schedulesContext([
+    schedule({ id: 's1', until: new Date('2027-06-01T12:00:00Z') }),
+    schedule({ id: 's2', nextRunAt: null }),
+  ]);
+  await schedules(context, []);
+  assert.match(printed[1] ?? '', /^ {2}s1 {2}every 2h {2}next .* {2}until \d{4}-\d{2}-\d{2} \d{2}:\d{2} {2}- {2}/);
+  assert.match(printed[2] ?? '', /^ {2}s2 {2}every 2h {2}next now {2}forever {2}- {2}/);
+});
+
 test('board schedules pause, resume and rm act on one schedule', async () => {
   const { backend, printed, context } = schedulesContext([schedule({ id: 's1' })]);
   await schedules(context, ['pause', 's1']);
