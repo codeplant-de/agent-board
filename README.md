@@ -7,7 +7,7 @@ Three parts, one repo (pnpm workspace):
 | Part | Where it runs | What it does |
 | --- | --- | --- |
 | `apps/backend` and `apps/frontend` | board.codeplant.de (k3s, behind Authelia) | The board: tasks, threads, questions, the buttons. Postgres is the only state. |
-| `apps/cli` | each worker machine (laptop, workstation) | systemd timers: `dispatch` claims tasks and starts `claude -p` workers, `intake` turns review requests into tasks. `board` is the command the agent uses to report. |
+| `apps/cli` | each worker machine (laptop, workstation) | systemd units: `dispatch` claims tasks and starts `claude -p` workers, `intake` turns review requests into tasks, `listen` starts a dispatch tick the moment the board changes. `board` is the command the agent uses to report. |
 | `packages/shared` | both | The backend contract and the question schema. No dependencies; the CLI runs it from source. |
 
 The CLI talks to the board directly, over HTTPS with a machine token: the [backend contract](#backend-contract).
@@ -75,7 +75,7 @@ Dragging a card moves it the way the matching button would, minus the reply. Int
 
 ## Two machines
 
-Every worker machine runs its own timers against the same board, under the name `machine` in its config.json (default: the host name).
+Every worker machine runs its own timers and its own listener against the same board, under the name `machine` in its config.json (default: the host name). Every machine holds its own event stream, so a change reaches all of them at once and they race to claim; `claim-task` is atomic, so the losers move on, as they do with two timers.
 
 - A claim is atomic on the server: of two machines claiming a task at once, one wins, and the other moves on to the next task.
 - A machine skips a todo task it cannot serve, so the other one can take it: a task scheduled on the other machine (its directory is there), a resume whose session lives on the other machine, or an intake review of a repository it has no checkout of.
@@ -149,7 +149,7 @@ board setup --enable
 board doctor
 ```
 
-`install.sh` needs `gh`, logged in (the repository is private). It downloads the newest `cli-v*` release for this platform, checks it against `SHA256SUMS` and installs it as `~/.local/bin/board` (`BOARD_INSTALL_DIR` chooses another directory). Set up encryption in the browser first (see [Encryption](#encryption)), and copy your data key from the **Settings** page. `board init` asks for the board's URL, the token (create one for this machine on the board's **Settings** page; it is not shown), the data key (not shown either) and the machine name (at a prompt paste one line: the bare value, or its own `AGENT_BOARD_TOKEN=…` or `AGENT_BOARD_DATA_KEY=…` line as the Settings page offers it; a file or a pipe given with `--token-file` or `--data-key-file` can hold both lines), and writes `~/.config/agent-board/web.json`, `env` (mode 600, token and data key; a file with any other mode is refused) and, if it is missing, `config.json` from `apps/cli/config.example.json`; edit `repos` there to this machine's checkouts. For a script: `board init --url https://board.codeplant.de --token-file <file> --data-key-file <file> --machine <name>`; a secret never goes on the command line, and a file can be `/dev/stdin` for one of them (a pipe). An `env` that has the token but no data key (a machine from before encryption) is completed without `--force`: `board init` asks for the missing value only. A file that exists is kept unless `--force`, which copies it to `<name>.bak-<timestamp>` first and keeps the secrets you do not give again. `board setup` writes the dispatch and intake services and timers into `~/.config/systemd/user` as copies and reloads systemd; `--enable` also enables and starts the timers, and `--print` only shows the units. `board doctor` checks the whole machine: Node (checkout only), config, token, server and contract version, the worker tools and the units.
+`install.sh` needs `gh`, logged in (the repository is private). It downloads the newest `cli-v*` release for this platform, checks it against `SHA256SUMS` and installs it as `~/.local/bin/board` (`BOARD_INSTALL_DIR` chooses another directory). Set up encryption in the browser first (see [Encryption](#encryption)), and copy your data key from the **Settings** page. `board init` asks for the board's URL, the token (create one for this machine on the board's **Settings** page; it is not shown), the data key (not shown either) and the machine name (at a prompt paste one line: the bare value, or its own `AGENT_BOARD_TOKEN=…` or `AGENT_BOARD_DATA_KEY=…` line as the Settings page offers it; a file or a pipe given with `--token-file` or `--data-key-file` can hold both lines), and writes `~/.config/agent-board/web.json`, `env` (mode 600, token and data key; a file with any other mode is refused) and, if it is missing, `config.json` from `apps/cli/config.example.json`; edit `repos` there to this machine's checkouts. For a script: `board init --url https://board.codeplant.de --token-file <file> --data-key-file <file> --machine <name>`; a secret never goes on the command line, and a file can be `/dev/stdin` for one of them (a pipe). An `env` that has the token but no data key (a machine from before encryption) is completed without `--force`: `board init` asks for the missing value only. A file that exists is kept unless `--force`, which copies it to `<name>.bak-<timestamp>` first and keeps the secrets you do not give again. `board setup` writes the dispatch and intake services and timers and the listener service (`agent-board-listen.service`) into `~/.config/systemd/user` as copies and reloads systemd; `--enable` also enables and starts the timers and the listener, and `--print` only shows the units. The listener holds a stream to the board and runs a dispatch tick about a second after a task, an answer or a drag to Todo; the 2-minute timer stays as the fallback for what no event announces (a delayed task coming due, the stale sweep, taking back a borrowed slot, an event missed while the stream was down). Its log is `journalctl --user -u agent-board-listen`. `board doctor` checks the whole machine: Node (checkout only), config, token, server and contract version, the worker tools and the units.
 
 The credentials file `env` holds two lines, the token and the data key: `AGENT_BOARD_TOKEN=abm_...` and `AGENT_BOARD_DATA_KEY=abk1_...`. The data key is the same on every machine and never leaves your machines and browser. The CLI refuses to start without it, with a different key than the board's, or before the board has a key; `board doctor` checks all three.
 
@@ -163,7 +163,7 @@ Needs Node 24+, pnpm, and for a worker the tools above. `pnpm install` in the re
 
 `apps/cli/build.sh` compiles the binaries (needs Bun, pinned in `mise.toml`) into `apps/cli/dist` with a `SHA256SUMS`; `pnpm --filter @agent-board/cli test:binary` builds one for this host and runs it the way a worker machine would. A release is a tag `cli-v<version>` matching `apps/cli/package.json`; `.github/workflows/release-cli.yml` builds, tests and publishes it.
 
-User timers only run while you are logged in. For runs after logout: `loginctl enable-linger $USER`. `board completion bash|zsh|fish` prints a shell completion script, see [Commands](#commands).
+User timers and the listener only run while you are logged in. For runs after logout: `loginctl enable-linger $USER`. `board completion bash|zsh|fish` prints a shell completion script, see [Commands](#commands).
 
 ### Upgrading
 
@@ -173,13 +173,15 @@ The CLI checks the server's contract version once per process and refuses to run
 
 **Contract 6 (encryption) moves data, so it has its own sequence: follow [Cutover to encryption](#cutover-to-encryption) from its first step, in its order.** It stops the timers and takes the dump before anything is deployed, and it holds the CLI release, the keys, the re-encryption and the restart. The list below is the general order for a contract bump that needs no such cutover:
 
-1. Stop the dispatch and intake timers on every worker machine.
+1. Stop the dispatch and intake timers and the listener on every worker machine: `systemctl --user stop agent-board-dispatch.timer agent-board-intake.timer agent-board-listen.service`.
 2. Take a dump of the database, your way back if a migration has to be undone.
 3. Deploy or restart the server; migrations run on start.
-4. Release the CLI: once the change is on `main`, tag the commit `cli-v<version>` (the version in `apps/cli/package.json`; `cli-v0.3.0` is the contract-5 build, `0.4.0` is contract 6) and push the tag. The release workflow builds and publishes the binaries, so that `board self-update` has something to fetch before any machine is switched. `board self-update --check` on a machine shows it.
+4. Release the CLI: once the change is on `main`, tag the commit `cli-v<version>` (the version in `apps/cli/package.json`; `cli-v0.3.0` is the contract-5 build, `0.4.0` is contract 6, `0.5.0` is contract 7) and push the tag. The release workflow builds and publishes the binaries, so that `board self-update` has something to fetch before any machine is switched. `board self-update --check` on a machine shows it.
 5. On each machine: update the CLI: `board self-update` for a release binary (it needs `gh`; `--check` only reports), or for a checkout `git pull`, `pnpm install` and `apps/cli/install.sh`. A checkout that only pulls cannot resolve new dependencies, and then `board`, dispatch, intake and every run's hook fail. Then `board setup` once if the units were written by an older version, and `board doctor`.
 6. In an existing `config.json`, narrow `Bash(board *)` in `intake.allowedTools` to the forms in `config.example.json`, and add `Bash(board internal *)` to `intake.disallowedTools`. The old `backend` key is ignored; remove it if you like.
-7. Start the timers again.
+7. Start the timers and the listener again: `systemctl --user start agent-board-dispatch.timer agent-board-intake.timer agent-board-listen.service`.
+
+The listener checks the contract each time it connects. On a mismatch it logs which side is older and exits, and systemd restarts it every 10 seconds until the CLI matches, so a machine updated late needs no hand. After updating a checkout, `systemctl --user restart agent-board-listen` loads the new code at once; otherwise it does at its next reconnect or mismatch. A release binary replaced by `board self-update` is the same. Contract 7 is a plain bump: it adds the event stream and moves no data. It is CLI version 0.5.0 (`cli-v0.5.0`).
 
 ## Cutover to encryption
 
@@ -336,9 +338,19 @@ The server refuses a sealed field that is not an envelope (400) or that is longe
 
 ## Backend contract
 
-The spec between the CLI and the board, contract version 6. The CLI calls the board's machine API from its own process (`apps/cli/src/backend.mts` over HTTP, `apps/cli/src/sealing.mts` for the encryption); `apps/backend/src/machine-api.ts` serves it. Nothing else implements it. Everything below describes the wire, where sealed fields hold envelopes; the CLI's own `Backend` interface (`packages/shared/src/contract.mts`) is the plaintext view of it.
+The spec between the CLI and the board, contract version 7. The CLI calls the board's machine API from its own process (`apps/cli/src/backend.mts` over HTTP, `apps/cli/src/sealing.mts` for the encryption); `apps/backend/src/machine-api.ts` serves it. Nothing else implements it. Everything below describes the wire, where sealed fields hold envelopes; the CLI's own `Backend` interface (`packages/shared/src/contract.mts`) is the plaintext view of it.
 
 `POST <url>/api/machine/<command>` with `Authorization: Bearer <machine token>` and a JSON body `{"id"?, "all"?, "machine"?, "author"?, "body"?}`: `id` is the task, `body` is the command's payload (JSON, with the sealed values). The answer is `{"result": ...}` with status 200, or `{"error": "one line"}` with a non-200 status. The token names the machine; it never appears in an error message. A call times out after 45 seconds.
+
+### Events
+
+`GET <url>/api/machine/events` with the same bearer token is a stream of server-sent events (`content-type: text/event-stream`, `cache-control: no-cache`, `x-accel-buffering: no`). A missing, unknown or revoked token is a 401 JSON error before any stream starts. It says "look at the board again" and carries no data; the CLI then reads with `list-tasks` as always.
+
+- On connect the server sends the comment `: connected`, and every 25 seconds `: ping`. At each ping it checks the token again and ends the stream when it was revoked. The CLI treats 60 seconds without a byte as a dead connection.
+- `event: tasks` with an empty `data:` follows a committed change to a task or a schedule: any write command except the ones below, and any change to a task or schedule from the UI. A failed or rolled back call sends nothing.
+- `heartbeat` and `transcript` send nothing (every running task sends them every 15 seconds, and they change no dispatch decision), nor do the reads (`version`, `list-tasks`, `get-task`, `read-notes`, `list-schedules`) or the UI's changes to machines and keys. Nothing is sent when the hourly cleanup closes old Done tasks or deletes old transcripts; the timer covers those.
+- Changes of one owner are held back 500 ms and sent as one event, so a burst gives one. An event reaches only the streams of tokens that belong to the same owner.
+- The signal lives in the backend process, which is enough for one replica. A stream that was down misses events; the CLI runs one tick after every connect.
 
 ### Rules
 
@@ -346,7 +358,7 @@ The spec between the CLI and the board, contract version 6. The CLI calls the bo
 - A write is visible to the next read.
 - The server refuses an unsafe id or machine name with 400 and writes nothing; the CLI refuses it before it sends anything.
 - `claim-task` answers 409 when the task is not free for this machine ("lost"). The CLI treats that as an answer and moves on to the next task; every other non-200 answer is a failure.
-- The CLI sends `version` once per process, before its first other call, and stops when the server's `contract` differs from its own (6), saying which side is older. It then derives its keys for the `owner` the server names, and stops when the board has no data key yet (`keyId: null`: set up encryption in the browser first) or its key's id differs from `keyId`.
+- The CLI sends `version` once per process, before its first other call, and stops when the server's `contract` differs from its own (7), saying which side is older. It then derives its keys for the `owner` the server names, and stops when the board has no data key yet (`keyId: null`: set up encryption in the browser first) or its key's id differs from `keyId`.
 - A sealed value comes back verbatim. The core parses `agent-board: started <iso>` notes (the start marker) and the first line of a review task's `input` (the PR URL) after opening them; the PR head is the `head` field, a blind index.
 - A task an agent proposed (`createdBy: agent`) is the user's to start: the server refuses `update-task` with a new status and loses `claim-task` for it, whoever asks. The user starts it in the browser, which moves it into Todo with its prompt sealed again for the creator `user`; the board then stores that prompt and sets `createdBy` to `user`. The core never runs a task whose `createdBy` is `agent`.
 - The board sends no link to a task. The CLI builds links itself from the `url` of its `web.json`.
@@ -446,7 +458,7 @@ A schedule always has at most one pending occurrence, a task in Todo with `sched
 
 | Command | Request | `result` |
 | --- | --- | --- |
-| `version` | - | `{"contract": 6, "owner": "<username>", "keyId": "<16 hex>" or null}` (the user whose board the token works on, which the keys are derived for, and the fingerprint of that user's data key; null before they set up encryption) |
+| `version` | - | `{"contract": 7, "owner": "<username>", "keyId": "<16 hex>" or null}` (the user whose board the token works on, which the keys are derived for, and the fingerprint of that user's data key; null before they set up encryption) |
 | `list-tasks` | `all?` | `[Task, ...]` in priority order |
 | `get-task` | `id` | `Task` |
 | `add-task` | `body`: `{"id", "title", "input", "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "head"?, "notBefore"?}` | `{"task": Task, "created": bool}` |
