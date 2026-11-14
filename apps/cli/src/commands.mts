@@ -45,6 +45,7 @@ import { runHook } from './hook.mts';
 import { resolveScheduleId, resolveTaskId } from './ids.mts';
 import { plainLine } from './terminal.mts';
 import { intakeMain } from './intake.mts';
+import { listenMain } from './listen.mts';
 import { addScheduleOptions } from './schedule.mts';
 import type { ScheduleFlags } from './schedule.mts';
 import { cliVersion } from './version.mts';
@@ -652,7 +653,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .command('internal', { hidden: true })
     .description('What the dispatcher, the timers and a run call; not for typing')
     .action(() => {
-      throw new UsageError('internal needs dispatch, intake, worker or hook');
+      throw new UsageError('internal needs dispatch, intake, listen, worker or hook');
     });
   const refuseInternalInRun = (): void => {
     notInRun('board internal is not available inside a board run');
@@ -670,6 +671,13 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       return intakeMain({ dryRun: contextOf(command).dryRun });
     },
   );
+  internal
+    .command('listen')
+    .description('Run a dispatch tick when the board says tasks changed')
+    .action(() => {
+      refuseInternalInRun();
+      return listenMain();
+    });
   internal
     .command('worker')
     .description('Run one task')
