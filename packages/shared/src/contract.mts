@@ -6,7 +6,7 @@ import { isKeyId } from './keys.mts';
 import type { Answer, Question } from './questions.mts';
 import type { TranscriptBatch, WireTranscriptBatch } from './transcript.mts';
 
-export const CONTRACT_VERSION = 6;
+export const CONTRACT_VERSION = 7;
 
 export const STATUSES = ['backlog', 'todo', 'running', 'needs-me', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
