@@ -3,6 +3,7 @@ import { SystemError } from './system.mts';
 import { BackendError, dryRunBackend, loadWebConfig } from './backend.mts';
 import { ConfigError, getPaths, loadConfig } from './config.mts';
 import type { Config } from './config.mts';
+import { taskLink } from './links.mts';
 import { createSealedBackend } from './sealing.mts';
 import type { Backend } from '@agent-board/shared';
 import { wantsColor } from './style.mts';
@@ -14,6 +15,11 @@ export interface Context {
   print: (line: string) => void;
   // Whether output may carry colour.
   color?: boolean;
+}
+
+/** What the commands that print or send a link to a task need: that link, from this machine's own web.json and the task's id. */
+export interface LinkingContext extends Context {
+  taskLink: (taskId: string) => string;
 }
 
 export function print(line: string): void {
@@ -30,7 +36,7 @@ export interface ContextOptions {
 }
 
 // The config is read on first use, so a command that never needs it works without a config.json.
-export function buildContext(dryRun: boolean, options: ContextOptions = {}): Context {
+export function buildContext(dryRun: boolean, options: ContextOptions = {}): LinkingContext {
   const paths = getPaths();
   // The dry-run wrapper goes outside the sealing one, so it prints plaintext and reads what the sealing backend opens.
   const backend = createSealedBackend({
@@ -38,6 +44,7 @@ export function buildContext(dryRun: boolean, options: ContextOptions = {}): Con
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
   });
   let config: Config | undefined;
+  let boardUrl: string | undefined;
   const out = options.print ?? print;
   return {
     get config() {
@@ -48,6 +55,8 @@ export function buildContext(dryRun: boolean, options: ContextOptions = {}): Con
     dryRun,
     print: out,
     color: wantsColor(process.stdout, process.env),
+    // From this machine's own web.json, never from the server.
+    taskLink: (taskId) => taskLink((boardUrl ??= loadWebConfig(paths.configDir).url), taskId),
   };
 }
 

@@ -1,13 +1,13 @@
 import { sql } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { testDatabaseUrl } from '../test/global-setup';
-import { createDb, migrationsFolder, runMigrations, type Db } from './client';
+import { migrationsBefore, removeFolder } from '../test/scratch';
+import { createDb, runMigrations, type Db } from './client';
 
-const SCRATCH = 'board_migration_scratch';
+// Named after the test database and unique per run, so two suites at once never drop each other's scratch database.
+const SCRATCH = `${new URL(testDatabaseUrl()).pathname.slice(1).replace(/[^A-Za-z0-9_]/g, '_')}_migration_${randomBytes(4).toString('hex')}`;
 
 const scratchUrl = (): string => {
   const url = new URL(testDatabaseUrl());
@@ -15,19 +15,23 @@ const scratchUrl = (): string => {
   return url.toString();
 };
 
-/** A copy of the migrations folder that stops before the migration whose tag ends with `suffix`. */
-function foldersBefore(suffix: string): string {
-  const folder = mkdtempSync(path.join(tmpdir(), 'board-migrations-'));
-  cpSync(migrationsFolder(), folder, { recursive: true });
-  const journalPath = path.join(folder, 'meta', '_journal.json');
-  const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as { entries: { tag: string }[] };
-  journal.entries = journal.entries.slice(
-    0,
-    journal.entries.findIndex(({ tag }) => tag.endsWith(suffix)),
-  );
-  writeFileSync(journalPath, JSON.stringify(journal));
-  return folder;
+/** The pool of a scratch database that the test later drops by force: a connection it kills is no failure. */
+function scratchDb(options: { backfillOwner?: string } = {}): ReturnType<typeof createDb> {
+  const scratch = createDb(scratchUrl(), options);
+  scratch.pool.on('error', () => undefined);
+  return scratch;
 }
+
+// These tests are about the migrations up to 0013, with plain text in the rows; the sealed-content constraints of a later release would refuse it.
+let currentFolder: string | undefined;
+afterAll(() => {
+  if (currentFolder !== undefined) removeFolder(currentFolder);
+});
+
+const migrateToCurrent = async (db: Db): Promise<void> => {
+  currentFolder ??= migrationsBefore('_sealed_content_constraints');
+  await migrate(db, { migrationsFolder: currentFolder });
+};
 
 describe('the tenancy migration on a database that already has rows', () => {
   const admin = createDb(testDatabaseUrl());
@@ -38,8 +42,8 @@ describe('the tenancy migration on a database that already has rows', () => {
     if (old) await old.pool.end();
     await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH} with (force)`));
     await admin.db.execute(sql.raw(`create database ${SCRATCH}`));
-    folder ??= foldersBefore('_tenancy');
-    old = createDb(scratchUrl());
+    folder ??= migrationsBefore('_tenancy');
+    old = scratchDb();
     await migrate(old.db, { migrationsFolder: folder });
     await old.db.execute(sql`insert into task (id, title, input, position) values ('t1', 'old', 'x', 0)`);
     await old.db.execute(sql`insert into note (id, task_id, author, kind) values ('n1', 't1', 'user', 'comment')`);
@@ -56,14 +60,14 @@ describe('the tenancy migration on a database that already has rows', () => {
     await old.pool.end();
     await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH} with (force)`));
     await admin.pool.end();
-    rmSync(folder, { recursive: true, force: true });
+    removeFolder(folder);
   });
 
   const owners = async (db: Db, table: string) =>
     (await db.execute<{ owner: string }>(sql`select owner from ${sql.identifier(table)}`)).rows.map((r) => r.owner);
 
   it('fails and changes nothing without BACKFILL_OWNER', async () => {
-    const run = createDb(scratchUrl());
+    const run = scratchDb();
     try {
       await expect(runMigrations(run.db)).rejects.toThrow(/BACKFILL_OWNER/);
       const { rows } = await run.db.execute(
@@ -76,9 +80,9 @@ describe('the tenancy migration on a database that already has rows', () => {
   });
 
   it.each(['alice', 'corp\\jane', 'jane doe'])('gives every existing row to BACKFILL_OWNER %j', async (owner) => {
-    const run = createDb(scratchUrl(), { backfillOwner: owner });
+    const run = scratchDb({ backfillOwner: owner });
     try {
-      await runMigrations(run.db);
+      await migrateToCurrent(run.db);
       for (const table of ['task', 'note', 'machine', 'transcript_run', 'transcript_event'])
         expect(await owners(run.db, table), table).toEqual([owner]);
       const users = await run.db.execute<{ username: string }>(sql`select username from app_user`);
@@ -101,8 +105,8 @@ describe('the encrypted content migration on a database that already has rows', 
     if (old) await old.pool.end();
     await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH} with (force)`));
     await admin.db.execute(sql.raw(`create database ${SCRATCH}`));
-    folder ??= foldersBefore('_encrypted_content');
-    old = createDb(scratchUrl());
+    folder ??= migrationsBefore('_encrypted_content');
+    old = scratchDb();
     await migrate(old.db, { migrationsFolder: folder });
     await old.db.execute(sql`insert into app_user (username) values ('alice')`);
     await old.db.execute(
@@ -125,7 +129,7 @@ describe('the encrypted content migration on a database that already has rows', 
     await old.pool.end();
     await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH} with (force)`));
     await admin.pool.end();
-    rmSync(folder, { recursive: true, force: true });
+    removeFolder(folder);
   });
 
   const columnType = async (table: string, column: string) =>
@@ -137,7 +141,7 @@ describe('the encrypted content migration on a database that already has rows', 
 
   it('keeps questions, answers and event data as their JSON text, adds the preview and drops the labels', async () => {
     expect(await columnType('note', 'questions')).toBe('jsonb');
-    await runMigrations(old.db);
+    await migrateToCurrent(old.db);
     for (const [table, column] of [
       ['note', 'questions'],
       ['note', 'answers'],
@@ -172,7 +176,7 @@ describe('the encrypted content migration on a database that already has rows', 
   });
 
   it('accepts the author "server" afterwards', async () => {
-    await runMigrations(old.db);
+    await migrateToCurrent(old.db);
     await old.db.execute(
       sql`insert into note (owner, id, task_id, author, kind, body) values ('alice', 'n4', 't1', 'server', 'event', 'Marked done.')`,
     );

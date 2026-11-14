@@ -27,6 +27,20 @@ describe('ThreadItem', () => {
   it('shows a system event as text', () => {
     renderNote(note({ author: 'system', kind: 'event', text: 'Marked done.' }));
     expect(screen.getByText(/Marked done\./)).toBeInTheDocument();
+    expect(screen.queryByTestId('board-event')).not.toBeInTheDocument();
+  });
+
+  it('sets an event of the board server apart from the notes of the user’s machines', () => {
+    renderNote(note({ author: 'server', kind: 'event', text: 'Marked done.' }));
+    const event = screen.getByTestId('board-event');
+    expect(event).toHaveTextContent('Board');
+    expect(event).toHaveTextContent('Marked done.');
+    expect(event.querySelector('[title]')?.getAttribute('title')).toMatch(/board server itself/);
+  });
+
+  it('says why a note whose id the board repeated is not shown', () => {
+    renderNote(note({ unreadable: true, duplicateId: true, text: '' }));
+    expect(screen.getByText(/several notes with this id/)).toBeInTheDocument();
   });
 
   it.each(['agent', 'user', 'system'] as const)(

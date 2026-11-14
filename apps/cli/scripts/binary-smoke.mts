@@ -29,6 +29,7 @@ import {
   deriveKeys,
   encodeDataKey,
   generateDataKey,
+  noteBinding,
   open,
   seal,
 } from '@agent-board/shared';
@@ -151,7 +152,9 @@ async function storedNotes(): Promise<string[]> {
   for (const request of requests.filter((entry) => entry.command === 'add-note')) {
     const { id, body } = JSON.parse(request.body) as { id: string; body: { body: string } };
     assert.ok(body.body.startsWith('abe1.'), 'a note must reach the server sealed');
-    notes.push(await open(KEYS, 'note.body', id, body.body));
+    // A note is bound to its task, author and kind.
+    const binding = noteBinding('note.body', id, 'agent', 'comment');
+    notes.push(await open(KEYS, binding.field, binding.context, body.body));
   }
   return notes;
 }

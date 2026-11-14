@@ -1,5 +1,6 @@
 import {
   ContractError,
+  isSafeMachineName,
   isSafeTaskId,
   parseKeyId,
   parseKeySlots,
@@ -92,9 +93,9 @@ export interface WireThreadNote extends WireNote {
 
 export type { LastNote };
 
-function boardTask(row: TaskRow, publicUrl: string): WireBoardTask {
+function boardTask(row: TaskRow): WireBoardTask {
   return {
-    ...toTask(row, publicUrl),
+    ...toTask(row),
     proposed: row.proposed,
     parentId: row.parentId,
     createdAt: row.createdAt,
@@ -112,7 +113,7 @@ const tasksRouter = router({
       const rows = await listTasksWithLastNote(ctx.db, { all: input.closed });
       return rows
         .filter(({ row }) => row.closed === input.closed)
-        .map(({ row, lastNote }) => ({ ...boardTask(row, ctx.config.publicUrl), lastNote }));
+        .map(({ row, lastNote }) => ({ ...boardTask(row), lastNote }));
     }),
 
   get: procedure.input(z.object({ id })).query(async ({ ctx, input }) => {
@@ -121,17 +122,21 @@ const tasksRouter = router({
     const related = await ctx.db.select().from(tasks).where(eq(tasks.parentId, input.id)).orderBy(asc(tasks.createdAt));
     const parent = row.parentId ? await getTask(ctx.db, row.parentId).catch(() => null) : null;
     return {
-      task: boardTask(row, ctx.config.publicUrl),
+      task: boardTask(row),
       thread,
-      followUps: related.map((r) => boardTask(r, ctx.config.publicUrl)),
-      parent: parent ? boardTask(parent, ctx.config.publicUrl) : null,
+      followUps: related.map((r) => boardTask(r)),
+      parent: parent ? boardTask(parent) : null,
     };
   }),
 
-  /** A sealed prompt with its sealed title; it runs in the default directory of whichever machine takes it. */
+  /**
+   * A sealed prompt with its sealed title; it runs in the default directory of whichever machine takes it. `id` is the
+   * task's, or the schedule's when `when` repeats (its occurrences get ids of the server's): the fields are sealed against it.
+   */
   create: procedure
     .input(
       z.object({
+        id,
         title: sealed('title', 'title'),
         input: sealed('input', 'input'),
         priority: priority.default('normal'),
@@ -142,6 +147,7 @@ const tasksRouter = router({
       const { title, when } = input;
       if (typeof when === 'object' && ('every' in when || 'cron' in when)) {
         const { task } = await addSchedule(ctx.db, {
+          id: input.id,
           title,
           input: input.input,
           priority: input.priority,
@@ -150,9 +156,10 @@ const tasksRouter = router({
           ...(when.times ? { times: when.times } : {}),
           ...(when.until ? { until: when.until } : {}),
         });
-        return boardTask(task, ctx.config.publicUrl);
+        return boardTask(task);
       }
       const { row } = await addTask(ctx.db, {
+        id: input.id,
         title,
         input: input.input,
         priority: input.priority,
@@ -160,7 +167,7 @@ const tasksRouter = router({
         notBefore: typeof when === 'string' ? undefined : when.at,
         createdBy: 'user',
       });
-      return boardTask(row, ctx.config.publicUrl);
+      return boardTask(row);
     }),
 
   answer: procedure
@@ -181,7 +188,6 @@ const tasksRouter = router({
           message: input.message,
           by: ctx.username,
         }),
-        ctx.config.publicUrl,
       ),
     ),
 
@@ -190,50 +196,46 @@ const tasksRouter = router({
     .mutation(async ({ ctx, input }) =>
       boardTask(
         await reply(ctx.db, { taskId: input.id, message: input.message, resume: input.resume, by: ctx.username }),
-        ctx.config.publicUrl,
       ),
     ),
 
   done: procedure
     .input(z.object({ id }))
-    .mutation(async ({ ctx, input }) =>
-      boardTask(await markDone(ctx.db, input.id, ctx.username), ctx.config.publicUrl),
-    ),
+    .mutation(async ({ ctx, input }) => boardTask(await markDone(ctx.db, input.id, ctx.username))),
 
   rerun: procedure
     .input(z.object({ id }))
-    .mutation(async ({ ctx, input }) =>
-      boardTask(await rerunFresh(ctx.db, input.id, ctx.username), ctx.config.publicUrl),
-    ),
+    .mutation(async ({ ctx, input }) => boardTask(await rerunFresh(ctx.db, input.id, ctx.username))),
 
   setPriority: procedure
     .input(z.object({ id, priority }))
-    .mutation(async ({ ctx, input }) =>
-      boardTask(await setPriority(ctx.db, input.id, input.priority, ctx.username), ctx.config.publicUrl),
-    ),
+    .mutation(async ({ ctx, input }) => boardTask(await setPriority(ctx.db, input.id, input.priority, ctx.username))),
 
   /** Delays a Todo task until `notBefore`; null makes it claimable now. */
   setNotBefore: procedure
     .input(z.object({ id, notBefore: z.coerce.date().nullable() }))
-    .mutation(async ({ ctx, input }) =>
-      boardTask(await setNotBefore(ctx.db, input.id, input.notBefore, ctx.username), ctx.config.publicUrl),
-    ),
+    .mutation(async ({ ctx, input }) => boardTask(await setNotBefore(ctx.db, input.id, input.notBefore, ctx.username))),
 
   /** A running task whose agent has been quiet too long: its worker is gone, so the task goes to Needs me. */
   takeBack: procedure
     .input(z.object({ id }))
-    .mutation(async ({ ctx, input }) =>
-      boardTask(await takeBack(ctx.db, input.id, ctx.username), ctx.config.publicUrl),
-    ),
+    .mutation(async ({ ctx, input }) => boardTask(await takeBack(ctx.db, input.id, ctx.username))),
 
   setClosed: procedure
     .input(z.object({ id, closed: z.boolean() }))
-    .mutation(async ({ ctx, input }) =>
-      boardTask(await setClosed(ctx.db, input.id, input.closed, ctx.username), ctx.config.publicUrl),
-    ),
+    .mutation(async ({ ctx, input }) => boardTask(await setClosed(ctx.db, input.id, input.closed, ctx.username))),
 
   move: procedure
-    .input(z.object({ id, status, beforeId: id.optional(), afterId: id.optional() }))
+    .input(
+      z.object({
+        id,
+        status,
+        beforeId: id.optional(),
+        afterId: id.optional(),
+        /** Into Todo, an agent's proposal needs its prompt sealed again as the user's. */
+        startInput: sealed('input', 'prompt').optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) =>
       boardTask(
         await moveTask(ctx.db, {
@@ -241,9 +243,9 @@ const tasksRouter = router({
           status: input.status,
           beforeId: input.beforeId,
           afterId: input.afterId,
+          startInput: input.startInput,
           by: ctx.username,
         }),
-        ctx.config.publicUrl,
       ),
     ),
 });
@@ -260,7 +262,7 @@ const machinesRouter = router({
   list: procedure.query(({ ctx }) => listMachines(ctx.db)),
   /** Returns the token once; only its hash is stored. */
   issue: procedure
-    .input(z.object({ name: z.string().min(1).max(64) }))
+    .input(z.object({ name: z.string().refine(isSafeMachineName, 'not a machine name the workers accept') }))
     .mutation(async ({ ctx, input }) => ({ token: await issueToken(ctx.db, input.name) })),
   revoke: procedure
     .input(z.object({ name: z.string().min(1) }))

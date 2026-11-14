@@ -5,6 +5,7 @@ import {
   logLine,
   MAX_BATCH_EVENTS,
   MAX_OUTPUT_CHARS,
+  MAX_TEXT_CHARS,
   parseWireTranscriptBatch,
   StreamCondenser,
   toolSummary,
@@ -149,4 +150,59 @@ test('the server refuses plaintext data and plaintext output, and checks the out
   assert.throws(() => parseWireTranscriptBatch(withEvents({ ...note, output: OUTPUT })), /only a tool result/);
   assert.throws(() => parseWireTranscriptBatch(withEvents({ ...note, outputSize: 3 })), /only a tool result/);
   assert.throws(() => parseWireTranscriptBatch(withEvents({ ...note, parent: 5 })), /parent/);
+});
+
+// The board refuses an event whose sealed data passes this, and a worker cannot get past a refused event: so no stream may
+// produce one.
+const DATA_LIMIT = 1024 * 1024;
+const sealedBytes = (event: unknown): number => new TextEncoder().encode(JSON.stringify(event)).length;
+
+test('every string of an event is bounded, so its sealed data stays under the board limit', () => {
+  const huge = 'x'.repeat(1_500_000);
+  // The worst case for the JSON size: control characters become six-character escapes, astral ones are two code units.
+  const nasty = '\u0001'.repeat(MAX_TEXT_CHARS * 2);
+  const stream: unknown[] = [
+    {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: nasty },
+          { type: 'thinking', thinking: nasty },
+        ],
+      },
+    },
+    {
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: huge, name: huge, input: { command: nasty } }] },
+    },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: huge, content: huge }] } },
+    { type: 'system', subtype: 'task_notification', summary: huge, status: huge, tool_use_id: huge },
+    `not json at all ${huge}`,
+    {
+      type: 'result',
+      result: nasty,
+      is_error: false,
+      permission_denials: Array.from({ length: 500 }, () => ({ tool_name: 'Write', tool_input: { content: nasty } })),
+    },
+  ];
+  const condenser = new StreamCondenser(() => at);
+  const events = stream.flatMap((line) => condenser.line(typeof line === 'string' ? line : JSON.stringify(line)));
+  assert.equal(events.length, 7);
+  for (const event of events) {
+    const { output, ...data } = event.kind === 'tool_result' ? event : { ...event, output: '' };
+    assert.ok(sealedBytes(data) < DATA_LIMIT, `${event.kind} event is ${sealedBytes(data)} bytes`);
+    assert.ok(output.length <= MAX_OUTPUT_CHARS + 100);
+    if (event.parent !== null) assert.ok(event.parent.length <= 256);
+  }
+  const result = events.find((event) => event.kind === 'result');
+  assert.ok(result?.kind === 'result' && result.denials.length === 21 && result.text.length < MAX_TEXT_CHARS + 100);
+  assert.match(result.denials.at(-1) ?? '', /and 480 more denials/);
+});
+
+test('text within the bound is kept as it is', () => {
+  const condenser = new StreamCondenser(() => at);
+  const [event] = condenser.line(
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'x'.repeat(MAX_TEXT_CHARS) }] } }),
+  );
+  assert.ok(event?.kind === 'text' && event.text.length === MAX_TEXT_CHARS);
 });

@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { isSafeTaskId } from '@agent-board/shared';
 import { unitName } from './decide.mts';
 import { selfCommand } from './self.mts';
 
@@ -96,6 +97,8 @@ export function createSystem(input: { dryRun: boolean; print: (line: string) => 
       await run('systemctl', ['--user', 'stop', unit]).catch(() => undefined);
     },
     async startWorker(taskId) {
+      // The id becomes a unit name and an argument, so only the safe shape goes in, whoever named it.
+      if (!isSafeTaskId(taskId)) throw new SystemError(`"${taskId.slice(0, 40)}" is not a task id`);
       const unit = unitName(taskId);
       // A transient unit does not inherit this environment, so pass on what the worker needs.
       const args = ['--user', '--quiet', '--collect', `--unit=${unit}`, '--setenv=PATH', '--setenv=HOME'];

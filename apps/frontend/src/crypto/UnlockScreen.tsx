@@ -18,7 +18,7 @@ import { useState } from 'react';
 import { errorMessage, useTRPC } from '../lib/trpc';
 import { PRODUCTION_KDF, KeyError, type KdfParams } from './kdf';
 import { replacePassphrase, unlockKeys, type Secret, type StoredKey } from './keySlots';
-import { PASSPHRASE_ADVICE, passphraseProblem } from './passphrase';
+import { PASSPHRASE_ADVICE, passphraseProblem, samePassphrase } from './passphrase';
 
 interface Props {
   owner: string;
@@ -94,8 +94,8 @@ function RecoveryForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const problem = passphrase === '' ? null : passphraseProblem(passphrase);
-  const mismatch = again !== '' && again !== passphrase;
-  const ready = recoveryKey.trim() !== '' && passphrase !== '' && problem === null && again === passphrase;
+  const mismatch = again !== '' && !samePassphrase(again, passphrase);
+  const ready = recoveryKey.trim() !== '' && passphrase !== '' && problem === null && samePassphrase(again, passphrase);
   const submit = async () => {
     if (!ready || busy) return;
     setBusy(true);

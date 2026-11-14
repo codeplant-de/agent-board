@@ -88,6 +88,11 @@ export interface TranscriptBatch {
 // A tool result past this is cut, with a note; the full one stays in the session file on the machine.
 export const MAX_OUTPUT_CHARS = 256 * 1024;
 const MAX_INPUT_CHARS = 64 * 1024;
+// The agent's own words, a note and a result text are cut like a tool input; a denial and an id are short by nature.
+export const MAX_TEXT_CHARS = 64 * 1024;
+const MAX_DENIAL_CHARS = 2 * 1024;
+const MAX_DENIALS = 20;
+const MAX_ID_CHARS = 256;
 
 export class TranscriptError extends Error {}
 
@@ -113,6 +118,33 @@ function resultText(content: unknown): string {
           : JSON.stringify(block),
     )
     .join('\n');
+}
+
+const capId = (id: string | null): string | null => (id === null ? null : id.slice(0, MAX_ID_CHARS));
+
+// Every string of an event is bounded, so that its sealed JSON stays under the board's limit for `tr.data` whatever the
+// stream holds: one event past it would be refused for good.
+function capBody(body: TranscriptEventBody): TranscriptEventBody {
+  switch (body.kind) {
+    case 'text':
+    case 'note':
+      return { ...body, text: cap(body.text, MAX_TEXT_CHARS) };
+    case 'thinking':
+      return { ...body, text: cap(body.text, MAX_TEXT_CHARS) };
+    case 'tool_use':
+      return { ...body, toolUseId: body.toolUseId.slice(0, MAX_ID_CHARS), name: body.name.slice(0, MAX_ID_CHARS) };
+    case 'tool_result':
+      return { ...body, toolUseId: body.toolUseId.slice(0, MAX_ID_CHARS) };
+    case 'result':
+      return {
+        ...body,
+        text: cap(body.text, MAX_TEXT_CHARS),
+        denials: [
+          ...body.denials.slice(0, MAX_DENIALS).map((denial) => cap(denial, MAX_DENIAL_CHARS)),
+          ...(body.denials.length > MAX_DENIALS ? [`… and ${body.denials.length - MAX_DENIALS} more denials`] : []),
+        ],
+      };
+  }
 }
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -232,7 +264,12 @@ export class StreamCondenser {
   }
 
   private make(parent: string | null, body: TranscriptEventBody): TranscriptEvent {
-    return { seq: this.seq++, at: this.now().toISOString(), parent, ...body } as TranscriptEvent;
+    return {
+      seq: this.seq++,
+      at: this.now().toISOString(),
+      parent: capId(parent),
+      ...capBody(body),
+    } as TranscriptEvent;
   }
 }
 

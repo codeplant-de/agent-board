@@ -90,4 +90,8 @@ test('AskUserQuestion becomes a board question, with the recommended option flag
     JSON.parse(askedDecision('t1', 'board down')).hookSpecificOutput.permissionDecisionReason,
     /board down.*board comment t1/,
   );
+  // An error text from the server stays one bounded line.
+  const reason = JSON.parse(askedDecision('t1', `ask: error\n${'x'.repeat(2000)}`)).hookSpecificOutput
+    .permissionDecisionReason as string;
+  assert.ok(reason.length < 800 && !reason.includes('\n'));
 });

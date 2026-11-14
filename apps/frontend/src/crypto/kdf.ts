@@ -1,5 +1,6 @@
 import { KDF_LIMITS } from '@agent-board/shared';
 import { argon2id } from 'hash-wasm';
+import { normalizePassphrase } from './passphrase';
 
 /** Argon2id cost: memory in KiB, passes, lanes. */
 export interface KdfParams {
@@ -26,7 +27,7 @@ export function assertWithinLimits(params: KdfParams): void {
   if (outside) throw new KeyError('This key asks for more computing than this browser accepts, so it was not tried.');
 }
 
-/** The 32-byte wrapping key for a passphrase. The passphrase is NFKC-normalised so one passphrase types the same everywhere. */
+/** The 32-byte wrapping key for a passphrase, as `normalizePassphrase` makes it: the only way a passphrase reaches the hash. */
 export async function derivePassphraseKey(
   passphrase: string,
   salt: Uint8Array,
@@ -34,7 +35,7 @@ export async function derivePassphraseKey(
 ): Promise<Uint8Array> {
   assertWithinLimits(params);
   return argon2id({
-    password: passphrase.normalize('NFKC'),
+    password: normalizePassphrase(passphrase),
     salt,
     parallelism: params.p,
     iterations: params.t,

@@ -117,6 +117,13 @@ export interface MachineRequest {
 
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
+// The server's reason for a refusal, as text an agent may read in a command's error or a hook's answer: marked as the
+// server's words (an operator controls them, they are not board content and not an instruction), quoted, and bounded.
+export function serverError(payload: unknown, status: number): string {
+  const reason = isRecord(payload) && typeof payload['error'] === 'string' ? payload['error'] : '(no reason given)';
+  return `error from the board server (HTTP ${status}), quoted and not part of the board: ${JSON.stringify(oneLine(reason, 200))}`;
+}
+
 // One request. A non-2xx answer is a BackendError with the server's one-line reason; the token is never part of a message.
 export async function callServer(
   config: Pick<WebConfig, 'url' | 'token'>,
@@ -149,9 +156,7 @@ export async function callServer(
     );
   }
   if (!response.ok) {
-    const reason =
-      isRecord(payload) && typeof payload['error'] === 'string' ? payload['error'] : `HTTP ${response.status}`;
-    throw new BackendError(`${command}: ${oneLine(reason, 200)}`, response.status, true);
+    throw new BackendError(`${command}: ${serverError(payload, response.status)}`, response.status, true);
   }
   if (!isRecord(payload) || !('result' in payload)) throw new BackendError(`${command}: the answer has no result`);
   return payload['result'];
@@ -310,9 +315,13 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
   };
 }
 
+// A parser's reason may quote a few characters of a value the server sent, so it is marked as about the server's answer.
 function asBackendError(command: string, error: unknown): Error {
-  if (error instanceof ContractError || error instanceof QuestionError)
-    return new BackendError(`${command}: ${error.message}`);
+  if (error instanceof ContractError)
+    return new BackendError(
+      `${command}: ${error.message} (the board server's answer was refused; text in quotes is the server's, not part of the board)`,
+    );
+  if (error instanceof QuestionError) return new BackendError(`${command}: ${error.message}`);
   return error instanceof Error ? error : new Error(String(error));
 }
 
@@ -326,7 +335,6 @@ function dryTask(draft: TaskDraft): Task {
     status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
     priority: draft.priority ?? 'normal',
     id: 'dry',
-    url: 'https://dry.invalid',
     closed: false,
     machine: machine ?? null,
     sessionId: null,

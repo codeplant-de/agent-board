@@ -43,11 +43,21 @@ function formatSize(chars: number | null | undefined): string {
 }
 
 /** A tool call with its result: one line, expanded on click; the output loads only then. */
-function ToolCall({ runId, use, result }: { runId: string; use: ToolUse; result: ToolResult | undefined }) {
+function ToolCall({
+  taskId,
+  runId,
+  use,
+  result,
+}: {
+  taskId: string;
+  runId: string;
+  use: ToolUse;
+  result: ToolResult | undefined;
+}) {
   const trpc = useTRPC();
   const [open, setOpen] = useState(false);
   const output = useQuery({
-    ...trpc.transcript.output.queryOptions({ runId, seq: result?.seq ?? -1 }),
+    ...trpc.transcript.output.queryOptions({ taskId, runId, seq: result?.seq ?? -1 }),
     enabled: open && result !== undefined && (result.outputSize ?? 0) > 0,
   });
   const status =
@@ -110,7 +120,17 @@ function ToolCall({ runId, use, result }: { runId: string; use: ToolUse; result:
   );
 }
 
-function EventRow({ runId, event, results }: { runId: string; event: Event; results: Map<string, ToolResult> }) {
+function EventRow({
+  taskId,
+  runId,
+  event,
+  results,
+}: {
+  taskId: string;
+  runId: string;
+  event: Event;
+  results: Map<string, ToolResult>;
+}) {
   const [thinkingOpen, setThinkingOpen] = useState(false);
   switch (event.kind) {
     case 'text':
@@ -141,7 +161,7 @@ function EventRow({ runId, event, results }: { runId: string; event: Event; resu
         </Box>
       );
     case 'tool_use':
-      return <ToolCall runId={runId} use={event} result={results.get(event.toolUseId)} />;
+      return <ToolCall taskId={taskId} runId={runId} use={event} result={results.get(event.toolUseId)} />;
     case 'tool_result':
       // Shown with its call.
       return null;
@@ -222,12 +242,12 @@ export function TranscriptDrawer({
   // The events of a run are kept per run and extended: a refetch asks only for what follows the last seq it has.
   const client = useTRPCClient();
   const queryClient = useQueryClient();
-  const eventsKey = trpc.transcript.events.queryKey({ runId: selected ?? '' });
+  const eventsKey = trpc.transcript.events.queryKey({ taskId, runId: selected ?? '' });
   const events = useQuery({
     queryKey: eventsKey,
     queryFn: () =>
       loadEventsAfter(queryClient.getQueryData<Event[]>(eventsKey) ?? [], (afterSeq) =>
-        client.transcript.events.query({ runId: selected ?? '', afterSeq }),
+        client.transcript.events.query({ taskId, runId: selected ?? '', afterSeq }),
       ),
     structuralSharing: false,
     enabled: opened && selected !== null,
@@ -313,7 +333,7 @@ export function TranscriptDrawer({
                     subagent
                   </Text>
                 )}
-                <EventRow runId={selected ?? ''} event={event} results={results} />
+                <EventRow taskId={taskId} runId={selected ?? ''} event={event} results={results} />
               </Box>
             ))}
             {live && newest && (

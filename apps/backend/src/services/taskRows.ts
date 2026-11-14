@@ -32,10 +32,13 @@ export async function getTask(db: DbOrTx, id: string): Promise<TaskRow> {
   return row;
 }
 
-/** New task at the bottom of its status. A known dedupe key returns the existing task instead. */
+/**
+ * New task at the bottom of its status. A known dedupe key returns the existing task instead. The id is the caller's (a client
+ * seals the task's fields against it, the server makes one for a schedule's occurrence); one that is taken, by anyone, is a conflict.
+ */
 export async function insertTask(
   tx: DbOrTx,
-  draft: WireTaskDraft,
+  draft: Omit<WireTaskDraft, 'id'> & { id?: string },
   extra: { scheduleId?: string } = {},
 ): Promise<{ row: TaskRow; created: boolean }> {
   // A follow-up is as pressing as the task it came from, unless its creator says otherwise.
@@ -48,7 +51,7 @@ export async function insertTask(
   const [row] = await tx
     .insert(tasks)
     .values({
-      id: newId(),
+      id: draft.id ?? newId(),
       title: draft.title,
       input: draft.input,
       machine: draft.machine ?? null,
@@ -64,14 +67,13 @@ export async function insertTask(
       createdBy: draft.createdBy ?? 'user',
       proposed,
     })
-    .onConflictDoNothing({ target: [tasks.owner, tasks.dedupeKey] })
+    .onConflictDoNothing()
     .returning();
   if (row) return { row, created: true };
-  const [existing] = await tx
-    .select()
-    .from(tasks)
-    .where(eq(tasks.dedupeKey, draft.dedupeKey ?? ''));
-  if (!existing) throw new AppError('CONFLICT', 'the task was created and removed at once; try again');
+  // Nothing was inserted: the dedupe key is known, or the id is taken. A taken id reads the same whoever holds it.
+  const [existing] =
+    draft.dedupeKey === undefined ? [] : await tx.select().from(tasks).where(eq(tasks.dedupeKey, draft.dedupeKey));
+  if (!existing) throw new AppError('CONFLICT', 'that task id is already taken');
   return { row: existing, created: false };
 }
 

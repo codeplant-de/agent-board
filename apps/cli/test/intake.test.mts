@@ -26,7 +26,7 @@ function pr(n: number, overrides: Partial<LivePr> = {}): LivePr {
 const taskFor = (n: number, status: Status, head = 'aaaaaaa1') =>
   task({ id: `c${n}`, status, createdBy: 'intake', input: `/review-pr ${url(n)} --auto`, head });
 const plan = (prs: LivePr[], tasks = [] as ReturnType<typeof task>[]) =>
-  planIntake({ prs, tasks, repos: Object.keys(CONFIG.repos), now: NOW }).map((a) =>
+  planIntake({ prs, tasks, repos: Object.keys(CONFIG.repos), now: NOW, headIndex: (sha) => sha }).map((a) =>
     a.kind === 'skip' ? `skip:${a.reason}` : a.kind === 'close' ? `close:${a.task.id}` : a.kind,
   );
 
@@ -331,6 +331,7 @@ test('intake logs an unreadable PR and neither creates nor closes a task for it'
       tasks: [taskFor(1, 'todo')],
       repos: Object.keys(CONFIG.repos),
       now: NOW,
+      headIndex: (sha) => sha,
     }),
     [],
   );
@@ -394,4 +395,42 @@ test("only a done intake task without a head comes back; a done task of the user
     plan([pr(1, { headCommittedAt: new Date(NOW.getTime() - 60_000) })], [{ ...taskFor(1, 'done'), head: null }]),
     ['skip:listed again, not settled'],
   );
+});
+
+test('heads are compared as blind indexes: the board holds no sha, and an unmoved head is not requeued', async () => {
+  const index = (sha: string) => `abh1.index-of-${sha}`;
+  const prs = [pr(1, { headSha: 'bbbbbbb1' }), pr(2, { headSha: 'ccccccc2' })];
+  const tasks = [taskFor(1, 'needs-me', index('bbbbbbb1')), taskFor(2, 'needs-me', index('aaaaaaa1'))];
+  const actions = planIntake({
+    prs,
+    tasks,
+    repos: Object.keys(CONFIG.repos),
+    now: NOW,
+    headIndex: index,
+  }).map((a) => (a.kind === 'skip' ? `skip:${a.reason}` : a.kind));
+  assert.deepEqual(actions, ['skip:task exists', 'requeue']);
+});
+
+test('a requeue seals the new prompt as intake’s own and stores the head through the backend’s index', async () => {
+  const backend = fakeBackend([taskFor(1, 'needs-me')]);
+  const patches: unknown[] = [];
+  const update = backend.updateTask.bind(backend);
+  backend.updateTask = async (id, patch) => (patches.push(patch), update(id, patch));
+  backend.indexHead = async (sha) => `abh1.${sha}`;
+  await runIntake({
+    backend,
+    config: CONFIG,
+    dryRun: false,
+    print: () => undefined,
+    github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+    now: () => NOW,
+  });
+  assert.deepEqual(patches[0], {
+    status: 'todo',
+    input: `/review-pr ${url(1)} --auto`,
+    head: 'bbbbbbb1',
+    next: 'fresh',
+    seal: { createdBy: 'intake', scheduleId: null },
+    expect: 'needs-me',
+  });
 });

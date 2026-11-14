@@ -27,13 +27,13 @@ async function waitUntilGone(pid: number, timeoutMs: number): Promise<boolean> {
   return isGone(pid);
 }
 
-const QUIET: Watch = { everyMs: 50, tick: async () => ({ kind: 'continue' }) };
+const QUIET: Watch = { everyMs: 50, tick: async () => ({ kind: 'continue' }), settled: async () => undefined };
 
 process.env['AGENT_BOARD_STATE_DIR'] = mkdtempSync(join(tmpdir(), 'agent-board-state-'));
 
 test('a finished process reports its exit code and writes its log', async () => {
   const result = await runProcess(
-    { command: 'sh', args: ['-c', 'echo hello; exit 3'], cwd: tmpdir() },
+    { command: 'sh', args: ['-c', 'echo hello; exit 3'], prompt: '', cwd: tmpdir() },
     'proc1',
     {},
     QUIET,
@@ -46,11 +46,12 @@ test('a process the watch stops is ended with everything it started', async () =
   const pidFile = join(mkdtempSync(join(tmpdir(), 'agent-board-pid-')), 'child.pid');
   const started = Date.now();
   const result = await runProcess(
-    { command: 'sh', args: ['-c', `sleep 30 & echo $! > ${pidFile}; wait`], cwd: tmpdir() },
+    { command: 'sh', args: ['-c', `sleep 30 & echo $! > ${pidFile}; wait`], prompt: '', cwd: tmpdir() },
     'proc2',
     {},
     {
       everyMs: 100,
+      settled: async () => undefined,
       tick: async () =>
         Date.now() - started > 400 ? { kind: 'stop', why: 'inactive', message: 'quiet' } : { kind: 'continue' },
     },
@@ -62,9 +63,30 @@ test('a process the watch stops is ended with everything it started', async () =
   assert.ok(await waitUntilGone(grandchild, 3_000), 'the grandchild must be dead');
 });
 
+test('the prompt arrives on stdin and adds nothing to the arguments, even when it reads like an option', async () => {
+  const prompt = '--mcp-config={"mcpServers":{}}\n- fix the flaky login test';
+  await runProcess(
+    { command: 'sh', args: ['-c', 'echo "$#"; cat', 'sh'], prompt, cwd: tmpdir() },
+    'proc-prompt',
+    {},
+    QUIET,
+  );
+  assert.equal(readFileSync(logPath('proc-prompt'), 'utf8'), `0\n${prompt}\n`);
+});
+
+test('a process that never reads its prompt does not break the worker', async () => {
+  const result = await runProcess(
+    { command: 'sh', args: ['-c', 'exit 0'], prompt: 'x'.repeat(1_000_000), cwd: tmpdir() },
+    'proc-noread',
+    {},
+    QUIET,
+  );
+  assert.equal(result.exitCode, 0);
+});
+
 test('a missing command rejects', async () => {
   await assert.rejects(
-    runProcess({ command: 'no-such-command-xyz', args: [], cwd: tmpdir() }, 'proc3', {}, QUIET),
+    runProcess({ command: 'no-such-command-xyz', args: [], prompt: '', cwd: tmpdir() }, 'proc3', {}, QUIET),
     /could not start/,
   );
 });
@@ -72,7 +94,7 @@ test('a missing command rejects', async () => {
 test('extra environment reaches the process, and the rest of the environment stays', async () => {
   process.env['AGENT_BOARD_TEST_KEPT'] = 'kept';
   await runProcess(
-    { command: 'sh', args: ['-c', 'echo $AGENT_BOARD_TEST_EXTRA $AGENT_BOARD_TEST_KEPT'], cwd: tmpdir() },
+    { command: 'sh', args: ['-c', 'echo $AGENT_BOARD_TEST_EXTRA $AGENT_BOARD_TEST_KEPT'], prompt: '', cwd: tmpdir() },
     'proc4',
     { AGENT_BOARD_TEST_EXTRA: 'extra' },
     QUIET,
@@ -83,7 +105,7 @@ test('extra environment reaches the process, and the rest of the environment sta
 test('stdout goes line by line through onLine into the log; stderr goes straight in', async () => {
   const seen: string[] = [];
   await runProcess(
-    { command: 'sh', args: ['-c', "printf 'one\\ntwo\\nlast'; echo oops >&2"], cwd: tmpdir() },
+    { command: 'sh', args: ['-c', "printf 'one\\ntwo\\nlast'; echo oops >&2"], prompt: '', cwd: tmpdir() },
     'proc5',
     {},
     QUIET,

@@ -23,7 +23,7 @@ import {
 } from './board.mts';
 import type { AddFlags, DelayFlags, TasksFlags } from './board.mts';
 import { buildContext, readStdin, ReportedFailure, UsageError } from './cli.mts';
-import type { Context, ContextOptions } from './cli.mts';
+import type { ContextOptions, LinkingContext } from './cli.mts';
 import { verifyContract } from './backend.mts';
 import { completionModel, renderCompletion, SHELLS } from './completion.mts';
 import type { Shell } from './completion.mts';
@@ -52,7 +52,7 @@ import { workerMain } from './worker.mts';
 export interface ProgramOptions {
   env?: Record<string, string | undefined>;
   // The context of a command; tests hand over a fake backend.
-  context?: (dryRun: boolean, options: ContextOptions) => Context;
+  context?: (dryRun: boolean, options: ContextOptions) => LinkingContext;
   readStdin?: () => Promise<string>;
   writeOut?: (text: string) => void;
   writeErr?: (text: string) => void;
@@ -129,7 +129,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
 
   // `strictConfig`: the command binds work to this machine's name, which needs a config.json to mean anything.
   // `json`: stdout holds the JSON document alone, so every other line goes to stderr.
-  const contextOf = (command: Command, { strictConfig = false, json = false } = {}): Context => {
+  const contextOf = (command: Command, { strictConfig = false, json = false } = {}): LinkingContext => {
     const dryRun =
       program.opts<{ dryRun?: boolean }>().dryRun === true || command.opts<{ dryRun?: boolean }>().dryRun === true;
     return makeContext(dryRun, {
@@ -139,7 +139,8 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   };
   const writeJson = (value: unknown): void => writeOut(`${JSON.stringify(value, null, 2)}\n`);
   const inRun = Boolean(env['AGENT_BOARD_TASK']);
-  const taskIdOf = (context: Context, arg: string): Promise<string> => resolveTaskId(context.backend, arg, { inRun });
+  const taskIdOf = (context: LinkingContext, arg: string): Promise<string> =>
+    resolveTaskId(context.backend, arg, { inRun });
   // `readable`: the command lists tasks, notes or schedules, whose values this machine may be unable to decrypt.
   const jsonOptionReadable = (command: Command): Command => jsonOption(command, { readable: true });
   const jsonOption = (command: Command, { readable = false } = {}): Command =>
@@ -337,7 +338,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     const context = contextOf(command, { strictConfig: true, json: flags.json === true });
     const parent = flags.parent === undefined ? undefined : await taskIdOf(context, flags.parent);
     const task = await add(context, { ...flags, ...(parent === undefined ? {} : { parent }) });
-    if (flags.json) writeJson({ id: task.id, url: task.url });
+    if (flags.json) writeJson({ id: task.id, url: context.taskLink(task.id) });
   });
 
   const schedule = program
@@ -378,14 +379,17 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         throw new UsageError(
           'the prompt ends in --dry-run: put --dry-run before the prompt (board schedule --dry-run <prompt...>), or put -- before a prompt that really ends in it',
         );
-      const task = await scheduleCommand(
-        contextOf(command, { strictConfig: true, json: flags.json === true }),
-        flags,
-        words,
-      );
+      const context = contextOf(command, { strictConfig: true, json: flags.json === true });
+      const task = await scheduleCommand(context, flags, words);
       if (flags.json)
         writeJson(
-          task ? { id: task.id, url: task.url, ...(task.scheduleId ? { scheduleId: task.scheduleId } : {}) } : null,
+          task
+            ? {
+                id: task.id,
+                url: context.taskLink(task.id),
+                ...(task.scheduleId ? { scheduleId: task.scheduleId } : {}),
+              }
+            : null,
         );
     });
 

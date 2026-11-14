@@ -1,11 +1,12 @@
-import { CONTRACT_VERSION, TAKE_BACK_AFTER_MS } from '@agent-board/shared';
+import { CONTRACT_VERSION, inputBinding, sealFields, sealNote, TAKE_BACK_AFTER_MS } from '@agent-board/shared';
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { schedules, tasks } from './db/schema';
 import { buildServer } from './server';
 import { archiveStaleDone } from './services/tasks';
 import { plainMachine, plainUi, type MachineAnswer } from './test/client';
-import { asOwner, caller, question, testConfig, useTestDb } from './test/helpers';
+import { sealed } from './test/sealed';
+import { asOwner, caller, question, SESSION, sessionNamed, testConfig, useTestDb } from './test/helpers';
 
 const { db, admin } = useTestDb();
 
@@ -100,7 +101,7 @@ describe('machine API', () => {
     expect(task).toMatchObject({
       status: 'todo',
       input: pr,
-      head: 'abc1234',
+      head: await sealed.headIndex('abc1234'),
       machine: null,
       sessionId: null,
       next: 'fresh',
@@ -108,14 +109,18 @@ describe('machine API', () => {
       runStartedAt: null,
       paused: false,
     });
-    expect(task.url).toBe(`https://board.test/t/${task.id}`);
-    expect(task.id).toMatch(/^[A-Za-z0-9]{8}$/);
+    // The board sends no link of its own: the CLI builds every link from its web.json and the id.
+    expect(task).not.toHaveProperty('url');
+    expect(task.id).toMatch(/^[A-Za-z0-9]{12}$/);
 
     const list = await ctx.call('laptop', 'list-tasks');
     expect(list.json.result.map((t: { id: string }) => t.id)).toEqual([task.id]);
 
-    const updated = await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: 's1', next: 'fresh' } });
-    expect(updated.json.result.sessionId).toBe('s1');
+    const updated = await ctx.call('laptop', 'update-task', {
+      id: task.id,
+      body: { sessionId: SESSION, next: 'fresh' },
+    });
+    expect(updated.json.result.sessionId).toBe(SESSION);
 
     await ctx.call('laptop', 'add-note', { id: task.id, body: 'Review started' });
     await ctx.call('laptop', 'add-note', { id: task.id, author: 'system', body: 'agent-board: started x' });
@@ -166,7 +171,7 @@ describe('machine API', () => {
     const { json } = await ctx.call('laptop', 'add-task', { body: { title: 't', labels: ['review-pr'] } });
     const id = json.result.task.id;
     await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' });
-    await ctx.call('laptop', 'update-task', { id, body: { sessionId: 'sess-1' } });
+    await ctx.call('laptop', 'update-task', { id, body: { sessionId: SESSION } });
     expect((await ctx.call('laptop', 'ask', { id, body: { questions: [question] } })).status).toBe(200);
 
     const asked = (await ctx.call('laptop', 'get-task', { id })).json.result;
@@ -271,7 +276,7 @@ describe('board UI', () => {
     expect(before.task).toMatchObject({ proposed: true, status: 'needs-me', parentId: parent.id });
     expect((await ui.tasks.get({ id: parent.id })).followUps.map((t) => t.id)).toEqual([id]);
     const started = await ui.tasks.move({ id, status: 'todo' });
-    expect(started).toMatchObject({ proposed: false, status: 'todo' });
+    expect(started).toMatchObject({ proposed: false, status: 'todo', createdBy: 'user', input: 'do Y' });
   });
 
   it('drag and drop places a task between its neighbours', async () => {
@@ -289,7 +294,7 @@ describe('board UI', () => {
     const ui = plainUi(db);
     const task = await ui.tasks.create({ title: 't', input: 'do it' });
     await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
-    await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: 's' } });
+    await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: SESSION } });
     await ctx.call('laptop', 'ask', { id: task.id, body: [question] });
     const rerun = await ui.tasks.rerun({ id: task.id });
     expect(rerun).toMatchObject({ status: 'todo', next: 'fresh', sessionId: null, openQuestion: false });
@@ -393,10 +398,11 @@ describe('priority', () => {
 });
 
 describe('lanes, liveness and pausing', () => {
+  let sessions = 0;
   async function running(title: string, priority: 'urgent' | 'high' | 'normal' | 'low' = 'normal') {
     const task = await plainUi(db).tasks.create({ title, input: 'do it', priority });
     await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
-    await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: `s-${title}` } });
+    await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: sessionNamed((sessions += 1)) } });
     return task.id;
   }
 
@@ -490,14 +496,19 @@ describe('transcripts', () => {
     const [run] = await ui.transcript.runs({ id: task.id });
     expect(run).toMatchObject({ id: 'run-0001-aaaa', machine: 'laptop', eventCount: 4, sessionId: 'sess' });
     expect(run?.lastEventAt.toISOString()).toBe(at(9));
-    const listed = await ui.transcript.events({ runId: 'run-0001-aaaa' });
+    const listed = await ui.transcript.events({ taskId: task.id, runId: 'run-0001-aaaa' });
     expect(listed.map((e) => e.kind)).toEqual(['note', 'tool_use', 'tool_result', 'text']);
     expect(listed[2]).toMatchObject({ outputSize: 11 });
     expect(listed[2]).not.toHaveProperty('output');
-    expect((await ui.transcript.events({ runId: 'run-0001-aaaa', afterSeq: 2 })).map((e) => e.seq)).toEqual([3]);
-    expect(await ui.transcript.output({ runId: 'run-0001-aaaa', seq: 2 })).toBe('a.txt\nb.txt');
+    expect(
+      (await ui.transcript.events({ taskId: task.id, runId: 'run-0001-aaaa', afterSeq: 2 })).map((e) => e.seq),
+    ).toEqual([3]);
+    expect(await ui.transcript.output({ taskId: task.id, runId: 'run-0001-aaaa', seq: 2 })).toBe('a.txt\nb.txt');
     const other = await ui.tasks.create({ input: '/other' });
     expect((await ctx.call('laptop', 'transcript', { id: other.id, body })).status).toBe(400);
+    // The server may show the run under another task, but its events are sealed for this one and do not open there.
+    await expect(ui.transcript.events({ taskId: other.id, runId: 'run-0001-aaaa' })).rejects.toThrow();
+    await expect(ui.transcript.output({ taskId: other.id, runId: 'run-0001-aaaa', seq: 2 })).rejects.toThrow();
     expect((await ctx.call('laptop', 'transcript', { id: task.id, body: { ...body, runId: '../x' } })).status).toBe(
       400,
     );
@@ -589,17 +600,61 @@ describe('proposals', () => {
       expect(refused.status).toBe(403);
     }
     // Other fields are fine, and so is staying put.
-    expect((await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me', sessionId: 's' } })).status).toBe(
-      200,
-    );
+    expect(
+      (await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me', sessionId: SESSION } })).status,
+    ).toBe(200);
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
     // Even a proposal that somehow sits in Todo is not claimable.
     await admin.update(tasks).set({ status: 'todo' }).where(eq(tasks.id, id));
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
     await admin.update(tasks).set({ status: 'needs-me' }).where(eq(tasks.id, id));
     const started = await plainUi(db).tasks.move({ id, status: 'todo' });
-    expect(started).toMatchObject({ status: 'todo', proposed: false });
+    expect(started).toMatchObject({ status: 'todo', proposed: false, createdBy: 'user' });
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(200);
+  });
+
+  it('starting a proposal is the user’s sealed act: the prompt sealed again for the creator "user", and nothing else starts it', async () => {
+    const ui = plainUi(db);
+    const { id } = await propose({ input: 'do Y' });
+    const raw = ui.raw;
+    // Without the prompt sealed again, a move into Todo is refused, and so is every other way into Todo.
+    await expect(raw.tasks.move({ id, status: 'todo' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(
+      raw.tasks.reply({
+        id,
+        message: await sealNote(sealed.seal, { taskId: id, author: 'user', kind: 'comment' }, 'go'),
+        resume: true,
+      }),
+    ).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    await expect(raw.tasks.rerun({ id })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await raw.tasks.done({ id });
+    await expect(raw.tasks.move({ id, status: 'todo' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await raw.tasks.setClosed({ id, closed: true });
+    await raw.tasks.setClosed({ id, closed: false });
+    expect(await ui.tasks.get({ id })).toMatchObject({ task: { proposed: true, createdBy: 'agent' } });
+    // A prompt that is not an envelope is no start.
+    await expect(raw.tasks.move({ id, status: 'todo', startInput: 'do Y' })).rejects.toThrow();
+    // A prompt sealed for the creator agent is accepted by the server, which cannot tell: the worker will not open it as a user's.
+    const [stored] = await admin.select().from(tasks).where(eq(tasks.id, id));
+    const sealedAsAgent = stored!.input;
+    await raw.tasks.move({ id, status: 'todo', startInput: sealedAsAgent });
+    const [started] = await admin.select().from(tasks).where(eq(tasks.id, id));
+    expect(started).toMatchObject({ createdBy: 'user', proposed: false, status: 'todo' });
+    expect(
+      await sealed.open(inputBinding({ kind: 'task', id, createdBy: 'user', scheduleId: null }), started!.input),
+    ).toBeUndefined();
+    // The server cannot tell, so it claims; the worker finds the prompt unreadable as a user's and refuses it.
+    const claimed = await ctx.raw('laptop', 'claim-task', { id, machine: 'laptop' });
+    expect(claimed.status).toBe(200);
+    expect(claimed.json.result.createdBy).toBe('user');
+  });
+
+  it('a task that names an agent as its creator is not claimable even when it is no longer marked proposed', async () => {
+    const { id } = await propose();
+    await admin.update(tasks).set({ status: 'todo', proposed: false }).where(eq(tasks.id, id));
+    expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
   });
 
   it('a proposal cannot ask a question, so answering never starts it', async () => {
@@ -618,7 +673,7 @@ describe('transitions', () => {
     const ui = plainUi(db);
     const task = await ui.tasks.create({ title: 't', input: 'do it' });
     await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
-    if (options.session ?? true) await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: 's' } });
+    if (options.session ?? true) await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: SESSION } });
     await ctx.call('laptop', 'ask', { id: task.id, body: { questions: [question] } });
     expect((await ui.tasks.get({ id: task.id })).task.openQuestion).toBe(true);
     return task.id;
@@ -638,7 +693,7 @@ describe('transitions', () => {
     const id = await asking();
     const before = (await ui.tasks.get({ id })).task;
     const moved = await ui.tasks.move({ id, status: 'todo' });
-    expect(moved).toMatchObject({ status: 'todo', openQuestion: false, next: before.next, sessionId: 's' });
+    expect(moved).toMatchObject({ status: 'todo', openQuestion: false, next: before.next, sessionId: SESSION });
   });
 
   it('an intake requeue with a fresh run and a re-run drop the open question', async () => {
@@ -748,16 +803,25 @@ describe('fail', () => {
 });
 
 describe('head', () => {
-  it('is set by a draft, changed and cleared by a patch, and checked', async () => {
+  it('is a blind index: set by a draft, changed and cleared by a patch, and a plain sha is refused', async () => {
     const added = await ctx.call('laptop', 'add-task', { body: { title: 't', input: pr, head: 'abc1234' } });
     const id = added.json.result.task.id;
-    expect(added.json.result.task.head).toBe('abc1234');
+    expect(added.json.result.task.head).toBe(await sealed.headIndex('abc1234'));
     expect((await ctx.call('laptop', 'update-task', { id, body: { head: 'def56789ab' } })).json.result.head).toBe(
-      'def56789ab',
+      await sealed.headIndex('def56789ab'),
     );
     expect((await ctx.call('laptop', 'update-task', { id, body: { head: null } })).json.result.head).toBeNull();
-    expect((await ctx.call('laptop', 'update-task', { id, body: { head: 'nothex!' } })).status).toBe(400);
-    expect((await ctx.call('laptop', 'add-task', { body: { title: 't', head: 'abc' } })).status).toBe(400);
+    const draft = {
+      id: 'plain-head-1',
+      ...(await sealFields(
+        sealed.seal,
+        { kind: 'task', id: 'plain-head-1', createdBy: 'user', scheduleId: null },
+        { title: 't', input: 'x' },
+      )),
+    };
+    expect((await ctx.raw('laptop', 'update-task', { id, body: { head: 'abc1234' } })).status).toBe(400);
+    expect((await ctx.raw('laptop', 'update-task', { id, body: { head: 'nothex!' } })).status).toBe(400);
+    expect((await ctx.raw('laptop', 'add-task', { body: { ...draft, head: 'abc1234' } })).status).toBe(400);
   });
 
   it('is cleared together with a status change', async () => {
@@ -1156,7 +1220,7 @@ describe('schedules', () => {
     const removed = await ctx.call('laptop', 'remove-schedule', { id });
     expect(removed.status).toBe(200);
     const left = await admin.select().from(tasks);
-    expect(left.map((t) => [t.id, t.scheduleId])).toEqual([[json.result.task.id, null]]);
+    expect(left.map((t) => [t.id, t.scheduleId])).toEqual([[json.result.task.id, id]]);
     expect(await admin.select().from(schedules)).toEqual([]);
     expect((await ctx.call('laptop', 'remove-schedule', { id })).status).toBe(404);
   });

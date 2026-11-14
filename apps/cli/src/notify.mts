@@ -12,6 +12,7 @@ function slackLink(url: string, label: string): string {
   return `<${safeUrl}|${escapeSlack(label)}>`;
 }
 
+// The link is the CLI's own (`taskLink`), never a url from the board server.
 export function slackText(task: { title: string; url: string }, text: string): string {
   return `${slackLink(task.url, task.title)}\n${escapeSlack(text)}`;
 }

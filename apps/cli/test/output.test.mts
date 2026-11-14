@@ -7,16 +7,16 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { formatTasks } from '../src/board.mts';
 import { UsageError } from '../src/cli.mts';
-import type { Context } from '../src/cli.mts';
+import type { LinkingContext } from '../src/cli.mts';
 import { runBoard } from '../src/commands.mts';
 import type { ProgramOptions } from '../src/commands.mts';
 import { haikuDuplicateCheck } from '../src/schedule.mts';
 import { createStyle, wantsColor } from '../src/style.mts';
-import { CONFIG, fakeBackend, note, schedule, task } from './helpers.mts';
+import { CONFIG, fakeBackend, linkTo, note, schedule, task } from './helpers.mts';
 
 const ID = 'Zt0Test1';
 
-function setup(overrides: Partial<Context> = {}) {
+function setup(overrides: Partial<LinkingContext> = {}) {
   const backend = fakeBackend([
     task({ id: ID, title: 'Fix the thing', priority: 'high', status: 'needs-me' }),
     task({ id: 'Ab3dEf9x', title: 'Another', status: 'todo' }),
@@ -40,6 +40,7 @@ function setup(overrides: Partial<Context> = {}) {
         config: CONFIG,
         backend,
         dryRun,
+        taskLink: linkTo,
         print: contextOptions.print ?? ((line) => printed.push(line)),
         ...overrides,
       }),
@@ -128,7 +129,7 @@ test('--json puts only the document on stdout', async () => {
 
   out.length = 0;
   await go(['schedule', '--json', '--new', 'Do', 'it']);
-  assert.deepEqual(JSON.parse(out.join('')), { id: 'new', url: 'https://tasks.example/new' });
+  assert.deepEqual(JSON.parse(out.join('')), { id: 'new', url: 'https://board.test/t/new' });
   assert.match(err.join(''), /scheduled new/);
   assert.deepEqual(printed, []);
   assert.equal(out.join('').trim().startsWith('{'), true);
@@ -144,7 +145,7 @@ test('add --json prints {id, url} and keeps the human line off stdout', async ()
   } finally {
     rmSync(dir, { recursive: true });
   }
-  assert.deepEqual(JSON.parse(out.join('')), { id: 'p1234567', url: 'https://tasks.example/p1234567' });
+  assert.deepEqual(JSON.parse(out.join('')), { id: 'p1234567', url: 'https://board.test/t/p1234567' });
   assert.match(err.join(''), /proposed p1234567/);
 });
 
@@ -152,7 +153,10 @@ test('comment and move confirm in one line; move names the task link', async () 
   const { printed, calls, go } = setup();
   await go(['comment', ID, 'some', 'text']);
   await go(['move', ID, 'Needs', 'me']);
-  assert.deepEqual(printed, [`commented on ${ID}`, `moved ${ID} to needs-me  https://tasks.example/${ID}`]);
+  assert.deepEqual(printed, [
+    `commented on ${ID}  https://board.test/t/${ID}`,
+    `moved ${ID} to needs-me  https://board.test/t/${ID}`,
+  ]);
   assert.deepEqual(calls, [], 'a full id and a confirmation cost no extra request');
 });
 
@@ -195,7 +199,7 @@ test('schedule --json prints scheduleId for a repeat', async () => {
   await go(['schedule', '--json', '--every', '2h', 'Do', 'it']);
   assert.deepEqual(JSON.parse(out.join('')), {
     id: 'pending',
-    url: 'https://tasks.example/pending',
+    url: 'https://board.test/t/pending',
     scheduleId: 'sched',
   });
 });
@@ -232,8 +236,8 @@ test('notify and ask confirm after the Slack post', async () => {
     await go(['notify', ID, 'hello']);
     await go(['ask', ID, '--file', join(dir, 'q.json')]);
     assert.deepEqual(printed, [
-      `notified about ${ID}  https://tasks.example/${ID}`,
-      `asked 1 question on ${ID}, now in needs-me  https://tasks.example/${ID}`,
+      `notified about ${ID}  https://board.test/t/${ID}`,
+      `asked 1 question on ${ID}, now in needs-me  https://board.test/t/${ID}`,
     ]);
   } finally {
     server.close();

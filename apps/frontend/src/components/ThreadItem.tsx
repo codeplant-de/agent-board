@@ -1,6 +1,6 @@
 import { formatAnswers, UNREADABLE_TEXT, type Question } from '@agent-board/shared';
 import { Badge, Group, Paper, Spoiler, Stack, Text, ThemeIcon } from '@mantine/core';
-import { IconCircleDot, IconLockOff, IconMessageQuestion, IconRobot, IconUser } from '@tabler/icons-react';
+import { IconCircleDot, IconLockOff, IconMessageQuestion, IconRobot, IconServer, IconUser } from '@tabler/icons-react';
 import { answerTo, questionsAnswered } from '../lib/answers';
 import { ago, stamp } from '../lib/time';
 import type { ThreadNote } from '../lib/trpc';
@@ -26,7 +26,7 @@ function Meta({ who, by, at }: { who: string; by: string | null; at: Date }) {
 
 /** A note this browser could not open: never shown as what anyone wrote. */
 function UnreadableNote({ note }: { note: ThreadNote }) {
-  const who = note.author === 'user' ? 'You' : note.author === 'agent' ? 'Agent' : 'System';
+  const who = { user: 'You', agent: 'Agent', system: 'System', server: 'Board', unknown: 'Unknown' }[note.author];
   return (
     <Paper withBorder p="sm" style={{ borderStyle: 'dashed' }}>
       <Group gap="xs" mb={6}>
@@ -36,7 +36,7 @@ function UnreadableNote({ note }: { note: ThreadNote }) {
         <Meta who={who} by={note.by} at={new Date(note.createdAt)} />
       </Group>
       <Text size="sm" c="dimmed" fs="italic">
-        {UNREADABLE_TEXT}
+        {note.duplicateId ? 'The board sent several notes with this id, so none of them is shown.' : UNREADABLE_TEXT}
       </Text>
     </Paper>
   );
@@ -99,9 +99,38 @@ interface Props {
   thread: ThreadNote[];
 }
 
+/**
+ * An event the board server wrote itself, one of its fixed texts: set apart from the notes of your machines, which can
+ * say anything and are shown as "system" notes.
+ */
+function BoardEvent({ note }: { note: ThreadNote }) {
+  const at = new Date(note.createdAt);
+  return (
+    <Group gap="xs" wrap="nowrap" align="center" px="xs" data-testid="board-event">
+      <IconServer size={14} color="var(--mantine-color-blue-6)" style={{ flexShrink: 0 }} />
+      <Badge
+        size="xs"
+        variant="light"
+        color="blue"
+        tt="none"
+        title="Written by the board server itself, not by your machines or you"
+      >
+        Board
+      </Badge>
+      <Text size="xs" c="blue.8">
+        {note.text}{' '}
+        <Text span size="xs" c="dimmed" title={stamp(at)}>
+          · {ago(at)}
+        </Text>
+      </Text>
+    </Group>
+  );
+}
+
 export function ThreadItem({ note, thread }: Props) {
   const at = new Date(note.createdAt);
   if (note.unreadable) return <UnreadableNote note={note} />;
+  if (note.author === 'server') return <BoardEvent note={note} />;
   if (note.author === 'system') {
     const [raw = '', ...rest] = note.text.trim().split('\n');
     const more = rest.join('\n').trim();
@@ -163,7 +192,7 @@ export function ThreadItem({ note, thread }: Props) {
   }
 
   const fromUser = note.author === 'user';
-  const questions = note.kind === 'answer' ? questionsAnswered(thread, note) : undefined;
+  const questions = note.kind === 'answer' ? questionsAnswered(note) : undefined;
   return (
     <Paper
       withBorder

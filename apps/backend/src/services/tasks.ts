@@ -1,6 +1,8 @@
 import {
+  formatServerEvent,
   PRIORITIES,
   TAKE_BACK_AFTER_MS,
+  type ServerEvent,
   type Heartbeat,
   type Priority,
   type Status,
@@ -21,14 +23,13 @@ import { edgePosition, getTask, insertTask, lockTask, newId } from './taskRows';
 
 export { getTask, newId };
 
-export function toTask(row: TaskRow, publicUrl: string): WireTask {
+export function toTask(row: TaskRow): WireTask {
   return {
     id: row.id,
     title: row.title,
     input: row.input,
     status: row.status,
     priority: row.priority,
-    url: `${publicUrl}/t/${row.id}`,
     closed: row.closed,
     machine: row.machine,
     sessionId: row.sessionId,
@@ -142,6 +143,8 @@ interface Transition {
   place?: 'top' | 'bottom' | number;
   /** Only a user starts a proposal. */
   by: 'worker' | 'user';
+  /** The user's start of an agent's proposal: its prompt, sealed again for the creator "user". Nothing else takes a proposal into Todo. */
+  start?: { input: string };
   /** Columns on top of what the invariants set; they win. */
   set?: TaskValues;
 }
@@ -154,18 +157,25 @@ function keepsPause(from: Status, to: Status): boolean {
 /**
  * Every status change goes through here, in a transaction that holds the task's lock, so the columns that depend
  * on the status cannot drift apart: the open question (only while it waits in Needs me), the run's start, a proposal
- * (only a user starts it), a pause, a start time (only while it waits in Todo), the position.
+ * (only a user starts it, with its prompt sealed again as theirs), a pause, a start time (only while it waits in Todo), the
+ * position.
  */
 async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promise<TaskRow> {
   const to = change.to ?? task.status;
   const moved = to !== task.status;
   if (change.by === 'worker' && moved && task.proposed)
     throw new AppError('FORBIDDEN', 'An agent proposed this task; only you start it.');
+  if (task.proposed && to === 'todo' && change.start === undefined)
+    throw new AppError('FORBIDDEN', 'An agent proposed this task; start it first.');
   const now = new Date();
   const values: TaskValues = { status: to, updatedAt: now };
   if (to !== 'needs-me') values.openQuestionNoteId = null;
   if (!keepsPause(task.status, to)) values.pausedAt = null;
-  if (change.by === 'user' && to === 'todo') values.proposed = false;
+  if (change.start !== undefined) {
+    values.input = change.start.input;
+    values.createdBy = 'user';
+    values.proposed = false;
+  }
   if (to === 'running' && task.status !== 'running') {
     values.runStartedAt = now;
     values.lastActiveAt = now;
@@ -219,8 +229,8 @@ export async function updateTask(db: DbOrTx, id: string, patch: WireTaskPatch): 
 
 /**
  * Todo to running for `machine`; the lock lets two machines claim at once and only one win.
- * A resume is pinned to the machine that holds its session, a proposal is not for a worker to start, and a delayed
- * task is not due before its start time.
+ * A resume is pinned to the machine that holds its session, a proposal (a task that still names an agent as its creator) is
+ * not for a worker to start, and a delayed task is not due before its start time.
  * Undefined when the claim is lost.
  */
 export async function claimTask(db: DbOrTx, id: string, machine: string): Promise<TaskRow | undefined> {
@@ -230,6 +240,7 @@ export async function claimTask(db: DbOrTx, id: string, machine: string): Promis
       task.status === 'todo' &&
       !task.closed &&
       !task.proposed &&
+      task.createdBy !== 'agent' &&
       (task.notBefore === null || task.notBefore.getTime() <= Date.now()) &&
       (task.next === 'fresh' || task.sessionId === null || task.machine === null || task.machine === machine);
     return free ? transition(tx, task, { to: 'running', by: 'worker', set: { machine } }) : undefined;
@@ -373,8 +384,8 @@ async function continueTask(tx: DbOrTx, task: TaskRow): Promise<TaskRow> {
 }
 
 /** An event the server writes itself, in plain text: it must never repeat anything the client sealed. */
-async function systemEvent(tx: DbOrTx, taskId: string, body: string, by: string | null): Promise<void> {
-  await addNote(tx, taskId, { author: 'server', kind: 'event', body, by });
+async function systemEvent(tx: DbOrTx, taskId: string, event: ServerEvent, by: string | null): Promise<void> {
+  await addNote(tx, taskId, { author: 'server', kind: 'event', body: formatServerEvent(event), by });
 }
 
 /** A system event the client wrote, sealed like any other client text. */
@@ -386,7 +397,7 @@ export async function markDone(db: DbOrTx, taskId: string, by: string): Promise<
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     requireNotRunning(task);
-    await systemEvent(tx, taskId, 'Marked done.', by);
+    await systemEvent(tx, taskId, { type: 'done' }, by);
     return transition(tx, task, { to: 'done', place: 'top', by: 'user' });
   });
 }
@@ -396,7 +407,7 @@ export async function rerunFresh(db: DbOrTx, taskId: string, by: string): Promis
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     requireNotRunning(task);
-    await systemEvent(tx, taskId, 'Queued for a fresh run.', by);
+    await systemEvent(tx, taskId, { type: 'rerun' }, by);
     return transition(tx, task, {
       to: 'todo',
       place: 'bottom',
@@ -411,7 +422,7 @@ export async function setClosed(db: DbOrTx, taskId: string, closed: boolean, by:
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (closed) requireNotRunning(task);
-    await systemEvent(tx, taskId, closed ? 'Closed.' : 'Reopened.', by);
+    await systemEvent(tx, taskId, { type: closed ? 'closed' : 'reopened' }, by);
     return closeOrReopen(tx, task, closed);
   });
 }
@@ -419,7 +430,7 @@ export async function setClosed(db: DbOrTx, taskId: string, closed: boolean, by:
 function closeOrReopen(tx: DbOrTx, task: TaskRow, closed: boolean): Promise<TaskRow> {
   return transition(tx, task, {
     by: 'user',
-    set: { closed, closedAt: closed ? new Date() : null, proposed: closed ? task.proposed : false },
+    set: { closed, closedAt: closed ? new Date() : null },
   });
 }
 
@@ -446,7 +457,7 @@ export async function archiveStaleDone(db: DbOrTx, now: Date = new Date()): Prom
       // Someone may have touched it since the listing.
       const task = await lockTask(tx, id);
       if (task.status !== 'done' || task.closed || task.createdBy === 'intake' || task.updatedAt >= cutoff) return;
-      await systemEvent(tx, id, `Closed after ${DONE_ARCHIVE_DAYS} days in Done.`, null);
+      await systemEvent(tx, id, { type: 'archived', days: DONE_ARCHIVE_DAYS }, null);
       await closeOrReopen(tx, task, true);
       closed += 1;
     });
@@ -456,11 +467,12 @@ export async function archiveStaleDone(db: DbOrTx, now: Date = new Date()): Prom
 
 /**
  * Drag and drop: into `status`, between `afterId` (above) and `beforeId` (below), or at the bottom.
- * Nobody but a worker moves a task into or out of Running.
+ * Nobody but a worker moves a task into or out of Running. An agent's proposal enters Todo only with `startInput`, its prompt
+ * sealed again as the user's: the board stores it and takes the proposal's creator to be the user's from then on.
  */
 export async function moveTask(
   db: DbOrTx,
-  input: { taskId: string; status: Status; beforeId?: string; afterId?: string; by: string },
+  input: { taskId: string; status: Status; beforeId?: string; afterId?: string; startInput?: string; by: string },
 ): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, input.taskId);
@@ -488,14 +500,27 @@ export async function moveTask(
     else if (upper !== undefined) position = upper + 1;
     else position = await edgePosition(tx, input.status, 'bottom');
     if (task.status !== input.status) {
-      await systemEvent(tx, task.id, `Moved from ${task.status} to ${input.status}.`, input.by);
+      await systemEvent(tx, task.id, { type: 'moved', from: task.status, to: input.status }, input.by);
     }
     if (task.priority !== priority) {
-      await systemEvent(tx, task.id, `Priority ${task.priority} → ${priority}.`, input.by);
+      await systemEvent(tx, task.id, { type: 'priority', from: task.priority, to: priority }, input.by);
     }
-    // Into Todo it behaves like "Send & continue" without a reply: it starts a proposal and drops the open question,
-    // and a task with a session keeps its `next` (a resume with nothing to say starts fresh).
-    return transition(tx, task, { to: input.status, place: position, by: 'user', set: { priority } });
+    // Into Todo it behaves like "Send & continue" without a reply: it drops the open question, and a task with a session keeps
+    // its `next` (a resume with nothing to say starts fresh).
+    let start: { input: string } | undefined;
+    if (task.proposed && input.status === 'todo') {
+      if (input.startInput === undefined)
+        throw new AppError('BAD_REQUEST', 'Starting an agent’s proposal needs its prompt sealed again as yours.');
+      requireSealed(input.startInput, 'the prompt');
+      start = { input: input.startInput };
+    }
+    return transition(tx, task, {
+      to: input.status,
+      place: position,
+      by: 'user',
+      set: { priority },
+      ...(start && { start }),
+    });
   });
 }
 
@@ -516,7 +541,7 @@ export async function setPriority(db: DbOrTx, taskId: string, priority: Priority
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (task.priority === priority) return task;
-    await systemEvent(tx, taskId, `Priority ${task.priority} → ${priority}.`, by);
+    await systemEvent(tx, taskId, { type: 'priority', from: task.priority, to: priority }, by);
     return transition(tx, task, { place: 'bottom', by: 'user', set: { priority } });
   });
 }
@@ -529,7 +554,7 @@ export async function setNotBefore(db: DbOrTx, taskId: string, notBefore: Date |
     await systemEvent(
       tx,
       taskId,
-      notBefore === null ? 'Start time cleared.' : `Start time set to ${notBefore.toISOString()}.`,
+      notBefore === null ? { type: 'start-cleared' } : { type: 'start-set', at: notBefore },
       by,
     );
     return transition(tx, task, { by: 'user', set: { notBefore } });
@@ -592,12 +617,7 @@ export async function takeBack(db: DbOrTx, taskId: string, by: string, now: Date
         'CONFLICT',
         `The agent was active ${Math.floor(quietMs / 60_000)} min ago. A task can be taken back after ${TAKE_BACK_AFTER_MS / 60_000} quiet minutes.`,
       );
-    await systemEvent(
-      tx,
-      taskId,
-      `Taken back from ${task.machine ?? 'its worker'}: no sign of life for ${TAKE_BACK_AFTER_MS / 60_000} minutes.`,
-      by,
-    );
+    await systemEvent(tx, taskId, { type: 'taken-back', machine: task.machine }, by);
     return transition(tx, task, { to: 'needs-me', by: 'user' });
   });
 }

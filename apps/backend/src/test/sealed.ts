@@ -2,12 +2,12 @@ import {
   blindIndex,
   deriveKeys,
   generateDataKey,
-  notePreview,
   open,
   seal,
-  type Answer,
+  type Binding,
   type Keys,
-  type Question,
+  type Opener,
+  type Sealer,
 } from '@agent-board/shared';
 
 /** Plaintext that tests put into sealed fields: none of it may ever reach a database column. */
@@ -24,6 +24,7 @@ export const MARKERS = [
   'MARKER-tooluse-3b92',
   'MARKER-output-e7c1',
   'MARKER-pr-5f48',
+  'MARKER-head-2d97',
 ];
 
 const keysByOwner = new Map<string, Promise<Keys>>();
@@ -38,48 +39,35 @@ export function keysFor(owner = 'jascha'): Promise<Keys> {
   return keys;
 }
 
-/** Seals and opens every field of a user's content with the field's own context, as a client does. */
+/** Makes `owner` use this data key for the rest of the test file, as when a test seals with a key it also hands to the CLI. */
+export function useDataKey(owner: string, dataKey: Uint8Array): void {
+  keysByOwner.set(owner, deriveKeys(dataKey, owner, { index: true }));
+}
+
+/**
+ * What a client has in hand: a way to seal and open one value under a binding, with the user's key. Everything above that
+ * (which binding a field gets, what may be opened) is `@agent-board/shared`, the code the CLI and the browser run.
+ */
 export function sealerFor(owner = 'jascha') {
-  const sealed = async (field: Parameters<typeof seal>[1], context: string, text: string) =>
-    seal(await keysFor(owner), field, context, text);
-  const opened = async (field: Parameters<typeof open>[1], context: string, envelope: string) =>
-    open(await keysFor(owner), field, context, envelope);
+  const sealer: Sealer = async ({ field, context }, text) => seal(await keysFor(owner), field, context, text);
+  const opener: Opener = async ({ field, context }, envelope) => {
+    try {
+      return await open(await keysFor(owner), field, context, envelope);
+    } catch {
+      return undefined;
+    }
+  };
   return {
-    title: (text: string) => sealed('title', '', text),
-    input: (text: string) => sealed('input', '', text),
-    workdir: (text: string) => sealed('workdir', '', text),
-    noteBody: (taskId: string, text: string) => sealed('note.body', taskId, text),
-    notePreview: (taskId: string, text: string) => sealed('note.preview', taskId, text),
-    questions: (taskId: string, questions: Question[]) => sealed('note.questions', taskId, JSON.stringify(questions)),
-    answers: (taskId: string, answers: Answer[]) => sealed('note.answers', taskId, JSON.stringify(answers)),
-    trData: (runId: string, seq: number, data: unknown) => sealed('tr.data', `${runId}:${seq}`, JSON.stringify(data)),
-    trOutput: (runId: string, seq: number, output: string) => sealed('tr.output', `${runId}:${seq}`, output),
-    dedupeKey: async (url: string) => blindIndex(await keysFor(owner), url),
-    /** A note as the clients send it: sealed text and, for a note with text, its sealed preview. */
-    note: async (taskId: string, text: string) => {
-      const preview = notePreview(text);
-      return {
-        body: await sealed('note.body', taskId, text),
-        ...(preview === null ? {} : { preview: await sealed('note.preview', taskId, preview) }),
-      };
-    },
-    open: {
-      title: (envelope: string) => opened('title', '', envelope),
-      input: (envelope: string) => opened('input', '', envelope),
-      workdir: (envelope: string) => opened('workdir', '', envelope),
-      noteBody: (taskId: string, envelope: string) => opened('note.body', taskId, envelope),
-      notePreview: (taskId: string, envelope: string) => opened('note.preview', taskId, envelope),
-      questions: async (taskId: string, envelope: string) =>
-        JSON.parse(await opened('note.questions', taskId, envelope)) as Question[],
-      answers: async (taskId: string, envelope: string) =>
-        JSON.parse(await opened('note.answers', taskId, envelope)) as Answer[],
-      trData: async (runId: string, seq: number, envelope: string) =>
-        JSON.parse(await opened('tr.data', `${runId}:${seq}`, envelope)) as Record<string, unknown>,
-      trOutput: (runId: string, seq: number, envelope: string) => opened('tr.output', `${runId}:${seq}`, envelope),
-    },
+    seal: sealer,
+    open: opener,
+    /** Opens under exactly this binding, or throws. */
+    openStrict: async ({ field, context }: Binding, envelope: string) =>
+      open(await keysFor(owner), field, context, envelope),
+    blind: async (value: string) => blindIndex(await keysFor(owner), value),
+    headIndex: async (sha: string) => blindIndex(await keysFor(owner), `head:${sha}`),
   };
 }
 
-export type Sealer = ReturnType<typeof sealerFor>;
+export type Sealing = ReturnType<typeof sealerFor>;
 
 export const sealed = sealerFor();

@@ -13,8 +13,6 @@ export interface Config {
   appDatabaseUrl: string;
   /** Owner for rows that predate tenancy; read only by the migration that adds owners. */
   backfillOwner: string | null;
-  /** Where people open the board; task URLs are <publicUrl>/t/<id>. */
-  publicUrl: string;
   /** Authelia groups that may use the board. */
   allowedGroups: string[];
   /** Local development only: act as this user instead of reading Authelia headers. */
@@ -27,8 +25,6 @@ export function loadConfig(): Config {
   if (devAuthUser && nodeEnv === 'production') {
     throw new Error('DEV_AUTH_USER must not be set in production');
   }
-  const publicUrl = requireEnv('PUBLIC_URL').replace(/\/+$/, '');
-  if (!/^https?:\/\/[^\s<>|]+$/.test(publicUrl)) throw new Error('PUBLIC_URL must be an http(s) URL');
   const backfillOwner = process.env.BACKFILL_OWNER?.trim().toLowerCase() || null;
   return {
     nodeEnv,
@@ -36,7 +32,6 @@ export function loadConfig(): Config {
     databaseUrl: requireEnv('DATABASE_URL'),
     appDatabaseUrl: requireEnv('APP_DATABASE_URL'),
     backfillOwner,
-    publicUrl,
     allowedGroups: (process.env.ALLOWED_GROUPS ?? 'admins')
       .split(',')
       .map((g) => g.trim())
