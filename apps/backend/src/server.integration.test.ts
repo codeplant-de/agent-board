@@ -495,14 +495,19 @@ describe('transcripts', () => {
     const [run] = await ui.transcript.runs({ id: task.id });
     expect(run).toMatchObject({ id: 'run-0001-aaaa', machine: 'laptop', eventCount: 4, sessionId: 'sess' });
     expect(run?.lastEventAt.toISOString()).toBe(at(9));
-    const listed = await ui.transcript.events({ runId: 'run-0001-aaaa' });
+    const listed = await ui.transcript.events({ taskId: task.id, runId: 'run-0001-aaaa' });
     expect(listed.map((e) => e.kind)).toEqual(['note', 'tool_use', 'tool_result', 'text']);
     expect(listed[2]).toMatchObject({ outputSize: 11 });
     expect(listed[2]).not.toHaveProperty('output');
-    expect((await ui.transcript.events({ runId: 'run-0001-aaaa', afterSeq: 2 })).map((e) => e.seq)).toEqual([3]);
-    expect(await ui.transcript.output({ runId: 'run-0001-aaaa', seq: 2 })).toBe('a.txt\nb.txt');
+    expect(
+      (await ui.transcript.events({ taskId: task.id, runId: 'run-0001-aaaa', afterSeq: 2 })).map((e) => e.seq),
+    ).toEqual([3]);
+    expect(await ui.transcript.output({ taskId: task.id, runId: 'run-0001-aaaa', seq: 2 })).toBe('a.txt\nb.txt');
     const other = await ui.tasks.create({ input: '/other' });
     expect((await ctx.call('laptop', 'transcript', { id: other.id, body })).status).toBe(400);
+    // The server may show the run under another task, but its events are sealed for this one and do not open there.
+    await expect(ui.transcript.events({ taskId: other.id, runId: 'run-0001-aaaa' })).rejects.toThrow();
+    await expect(ui.transcript.output({ taskId: other.id, runId: 'run-0001-aaaa', seq: 2 })).rejects.toThrow();
     expect((await ctx.call('laptop', 'transcript', { id: task.id, body: { ...body, runId: '../x' } })).status).toBe(
       400,
     );

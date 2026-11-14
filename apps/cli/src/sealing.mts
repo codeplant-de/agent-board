@@ -2,13 +2,14 @@
 // seals what the rest of the CLI sends and opens what it receives, so `Backend` stays plaintext. The rules of what is sealed
 // under which binding live in `packages/shared/src/sealing.mts`, which the browser uses too.
 import {
-  blindIndex,
   ContractError,
+  dedupeKeyIndex,
   isSafeWorkdir,
   newTaskId,
   open,
   openFields,
   openNote,
+  headIndex,
   QuestionError,
   seal,
   sealChecked,
@@ -142,8 +143,8 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       ...rest,
       id,
       ...sealed,
-      ...(dedupeKey === undefined ? {} : { dedupeKey: await blindIndex(keysNow, dedupeKey) }),
-      ...(head === undefined ? {} : { head: await blindIndex(keysNow, `head:${head}`) }),
+      ...(dedupeKey === undefined ? {} : { dedupeKey: await dedupeKeyIndex(keysNow, dedupeKey) }),
+      ...(head === undefined ? {} : { head: await headIndex(keysNow, head) }),
     };
   };
 
@@ -167,13 +168,13 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       ...rest,
       ...sealed,
       ...(workdir === null ? { workdir: null } : {}),
-      ...(head === undefined ? {} : { head: head === null ? null : await blindIndex(await getKeys(), `head:${head}`) }),
+      ...(head === undefined ? {} : { head: head === null ? null : await headIndex(await getKeys(), head) }),
     };
   };
 
-  const sealEvent = async (runId: string, event: TranscriptEvent): Promise<WireTranscriptEvent> => {
+  const sealEvent = async (taskId: string, runId: string, event: TranscriptEvent): Promise<WireTranscriptEvent> => {
     const { seq, at, kind, parent } = event;
-    const dataBinding = transcriptBinding('tr.data', runId, seq);
+    const dataBinding = transcriptBinding('tr.data', taskId, runId, seq);
     if (event.kind !== 'tool_result')
       return {
         seq,
@@ -191,7 +192,7 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       data: await sealChecked(sealer, dataBinding, JSON.stringify(rest), `event ${seq}`),
       output: await sealChecked(
         sealer,
-        transcriptBinding('tr.output', runId, seq),
+        transcriptBinding('tr.output', taskId, runId, seq),
         output,
         `the output of event ${seq}`,
       ),
@@ -235,7 +236,7 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     },
     async transcript(id, batch: TranscriptBatch) {
       const events = await checked('transcript', () =>
-        Promise.all(batch.events.map((event) => sealEvent(batch.runId, event))),
+        Promise.all(batch.events.map((event) => sealEvent(id, batch.runId, event))),
       );
       await inner.transcript(id, { ...batch, events });
     },
@@ -260,7 +261,7 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     listSchedules: async () => openedAll(await inner.listSchedules(), openSchedule),
     updateSchedule: async (id, patch) => opened(await inner.updateSchedule(id, patch), openSchedule),
     removeSchedule: (id) => inner.removeSchedule(id),
-    indexHead: async (sha) => blindIndex(await getKeys(), `head:${sha}`),
+    indexHead: async (sha) => headIndex(await getKeys(), sha),
   };
 }
 

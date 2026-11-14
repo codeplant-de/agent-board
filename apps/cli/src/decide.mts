@@ -382,7 +382,11 @@ function failed(input: { exitCode: number | null; signal: string | null }): Outc
 
 export interface Invocation {
   command: string;
+  // Options only, and never the prompt: `claude` would read a prompt that starts with a dash as an option, and some options
+  // start things (`--mcp-config`) before any permission applies.
   args: string[];
+  // The prompt, from the board (a sealed prompt, a reply). It reaches `claude` on stdin, which is only ever text.
+  prompt: string;
   cwd: string;
 }
 
@@ -456,12 +460,12 @@ export function buildInvocation(input: {
   // One argument each, so an id can never be read as a flag of its own.
   const session =
     input.run.kind === 'fresh' ? `--session-id=${input.run.sessionId}` : `--resume=${input.run.sessionId}`;
-  // Prompt first: --allowedTools and --disallowedTools take every following argument.
-  const args = [
-    '-p',
+  const promptText =
     input.run.kind === 'fresh'
       ? [prompt, input.run.thread].filter((part) => part !== undefined).join('\n\n')
-      : input.run.prompt,
+      : input.run.prompt;
+  const args = [
+    '-p',
     session,
     // Every event as a JSON line: the worker keeps a readable log and sends the transcript to the board.
     '--output-format',
@@ -477,7 +481,7 @@ export function buildInvocation(input: {
     // As if the user ran it: their settings (user, project, local) and auto mode, which lets safe actions through and
     // refuses risky ones. Headless, a refusal cannot become a prompt; it shows in the log.
     args.push('--permission-mode', 'auto');
-    return { ok: true, invocation: { command: 'claude', args, cwd } };
+    return { ok: true, invocation: { command: 'claude', args, prompt: promptText, cwd } };
   }
   // Intake runs unattended on PR text nobody chose to read: only the user's own settings, and only what intake allows.
   const missing = pluginPlaceholders([...intake.allowedTools, ...intake.disallowedTools]).filter(
@@ -490,10 +494,19 @@ export function buildInvocation(input: {
     };
   }
   const expand = (rule: string): string => expandRule(rule, input.home, input.pluginRoots);
+  const allowed = intake.allowedTools.map(expand);
+  const disallowed = intake.disallowedTools.map(expand);
+  // The two lists take every following argument that does not start with `-`: a rule that does would read as an option.
+  const optionLike = [...allowed, ...disallowed].find((rule) => rule.startsWith('-'));
+  if (optionLike !== undefined)
+    return {
+      ok: false,
+      reason: `An intake tool rule starts with "-" and would be read as an option: ${optionLike.slice(0, 40)}`,
+    };
   args.push('--permission-mode', 'dontAsk', '--setting-sources', 'user');
-  if (intake.allowedTools.length > 0) args.push('--allowedTools', ...intake.allowedTools.map(expand));
-  if (intake.disallowedTools.length > 0) args.push('--disallowedTools', ...intake.disallowedTools.map(expand));
-  return { ok: true, invocation: { command: 'claude', args, cwd } };
+  if (allowed.length > 0) args.push('--allowedTools', ...allowed);
+  if (disallowed.length > 0) args.push('--disallowedTools', ...disallowed);
+  return { ok: true, invocation: { command: 'claude', args, prompt: promptText, cwd } };
 }
 
 // Events as the board takes them: batches of at most `maxEvents` events and about `maxBytes` of JSON, so a backlog

@@ -8,7 +8,7 @@
 //   input          <origin>:<creator>
 //   workdir        <origin>, or for a scheduled task also task:<id>:schedule:<scheduleId> (the worker's rewrite)
 //   note.*         note:<taskId>:<author>:<kind>
-//   tr.*           <runId>:<seq>
+//   tr.*           <taskId>:<runId>:<seq>
 //
 // <origin> is task:<id> for a task, schedule:<id> for a schedule and for a task that is an occurrence of one (the server
 // copies the schedule's ciphertext into it); <creator> is who made the task: intake, user or agent.
@@ -18,7 +18,8 @@
 // unreadable value is never replaced by a looser reading.
 import { ContractError, isSafeWorkdir, notePreview, SEALED_LIMITS, UNREADABLE_TITLE } from './contract.mts';
 import type { NoteKind, TaskCreator, UnreadableField, WireNoteAuthor, WireNoteInput } from './contract.mts';
-import type { Field } from './crypto.mts';
+import { blindIndex } from './crypto.mts';
+import type { Field, Keys } from './crypto.mts';
 import { isServerEventText } from './events.mts';
 import { parseAnswers, parseQuestions, QuestionError } from './questions.mts';
 import type { Answer, Question } from './questions.mts';
@@ -82,9 +83,15 @@ const NOTE_PAIRS: Record<Exclude<WireNoteAuthor, 'server'>, readonly NoteKind[]>
   user: ['comment', 'answer'],
 };
 
-export const transcriptBinding = (field: 'tr.data' | 'tr.output', runId: string, seq: number): Binding => ({
+/** A transcript event is bound to its task as well as its run, so the server cannot show one task's run under another. */
+export const transcriptBinding = (
+  field: 'tr.data' | 'tr.output',
+  taskId: string,
+  runId: string,
+  seq: number,
+): Binding => ({
   field,
-  context: `${runId}:${seq}`,
+  context: `${taskId}:${runId}:${seq}`,
 });
 
 const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
@@ -97,6 +104,12 @@ export async function sealChecked(seal: Sealer, binding: Binding, plaintext: str
     throw new ContractError(`${what} is too long: ${size} bytes of UTF-8, and the board takes at most ${limit}`);
   return seal(binding, plaintext);
 }
+
+/** A task's `dedupeKey` as the board stores it: the blind index of the key itself (the PR URL, for intake). */
+export const dedupeKeyIndex = (keys: Keys, key: string): Promise<string> => blindIndex(keys, key);
+
+/** A task's `head` as the board stores it: the blind index of `head:<sha>`, which is what intake compares with. */
+export const headIndex = (keys: Keys, sha: string): Promise<string> => blindIndex(keys, `head:${sha}`);
 
 export interface SealedFields {
   title: string;

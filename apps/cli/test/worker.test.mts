@@ -4,6 +4,7 @@ import { MAX_BATCH_EVENTS } from '@agent-board/shared';
 import type { Task } from '@agent-board/shared';
 import { BackendError } from '../src/backend.mts';
 import { START_MARKER } from '../src/decide.mts';
+import type { Invocation } from '../src/decide.mts';
 import { runWorker } from '../src/worker.mts';
 import type { RunResult, WorkerDeps } from '../src/worker.mts';
 import { CONFIG, fakeBackend, fakeRunFiles, fakeSessions, note, OTHER_SESSION, SESSION, task } from './helpers.mts';
@@ -173,15 +174,16 @@ test('a run another machine took over is left alone: no workdir, no failure', as
 
 test('a fresh skill run gets a new session, stored on the task before the run', async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null }, true);
-  const args: string[][] = [];
+  const runs: Invocation[] = [];
   deps.run = async (invocation) => {
-    args.push(invocation.args);
+    runs.push(invocation);
     assert.ok(backend.writes.includes(`session w1: ${SESSION}`), 'stored before the run');
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
   };
   await runWorker(deps, 'w1');
-  assert.deepEqual(args[0]?.slice(0, 3), ['-p', '/selftest go', `--session-id=${SESSION}`]);
+  assert.deepEqual(runs[0]?.args.slice(0, 2), ['-p', `--session-id=${SESSION}`]);
+  assert.equal(runs[0]?.prompt, '/selftest go');
 });
 
 test("a resume runs the stored session with the user's reply and uses the resume up", async () => {
@@ -192,15 +194,15 @@ test("a resume runs the stored session with the user's reply and uses the resume
     note('Done, one question', new Date('2026-11-13T10:00:00Z')),
     note('please also check X', new Date('2026-11-13T10:05:00Z'), { author: 'user' }),
   ]);
-  const args: string[][] = [];
+  const runs: Invocation[] = [];
   deps.run = async (invocation) => {
-    args.push(invocation.args);
+    runs.push(invocation);
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
   };
   await runWorker(deps, 'w1');
-  assert.equal(args[0]?.[2], `--resume=${SESSION}`);
-  assert.match(args[0]?.[1] ?? '', /please also check X/);
+  assert.equal(runs[0]?.args[1], `--resume=${SESSION}`);
+  assert.match(runs[0]?.prompt ?? '', /please also check X/);
   assert.ok(backend.writes.includes('next w1: fresh'));
   assert.ok(!backend.writes.some((w) => w.startsWith('session w1')));
 });
@@ -471,7 +473,7 @@ test("a fresh run's prompt carries the user's message and points at the thread",
   ]);
   let prompt = '';
   deps.run = async (invocation) => {
-    prompt = invocation.args[1] ?? '';
+    prompt = invocation.prompt;
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
   };
@@ -489,7 +491,7 @@ test("a worker that finds the task paused tells the agent, from the task's flag"
   deps.sessions.record('w1', SESSION);
   let prompt = '';
   deps.run = async (invocation) => {
-    prompt = invocation.args[1] ?? '';
+    prompt = invocation.prompt;
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
   };

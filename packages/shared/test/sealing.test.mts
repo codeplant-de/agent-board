@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ContractError } from '../src/contract.mts';
-import { deriveKeys, open, seal } from '../src/crypto.mts';
+import { blindIndex, deriveKeys, open, seal } from '../src/crypto.mts';
 import type { Keys } from '../src/crypto.mts';
 import {
+  dedupeKeyIndex,
+  headIndex,
   noteBinding,
   openFields,
   openNote,
@@ -16,6 +18,7 @@ import {
   sealQuestions,
   sealWorkdir,
   titleBinding,
+  transcriptBinding,
   workdirOpenBindings,
 } from '../src/sealing.mts';
 import type { Binding, Opener, RowRef, Sealer, WireNoteParts } from '../src/sealing.mts';
@@ -437,4 +440,33 @@ test('sealing refuses what the board would refuse, naming the limit', async () =
     sealFields(seals, userTask, { title: 't', input: 'i', workdir: '/'.repeat(4097) }),
     /the directory is too long/,
   );
+});
+
+test('the stored dedupe key and head are blind indexes of the key and of head:<sha>', async () => {
+  const url = 'https://github.com/o/r/pull/1';
+  assert.equal(await dedupeKeyIndex(keys, url), await blindIndex(keys, url));
+  assert.equal(await headIndex(keys, 'abc123'), await blindIndex(keys, 'head:abc123'));
+  assert.notEqual(await headIndex(keys, 'abc123'), await dedupeKeyIndex(keys, 'abc123'));
+});
+
+const RUN = '11111111-aaaa-4aaa-8aaa-111111111111';
+
+test('known-answer: a transcript event opens under its task, run and sequence number', async () => {
+  const data = 'abe1.41a9it27kArzh97nq7H4NTPlpXLDYc1ucYiB1Vh_9xUXkswkylx-I9JhV0vkf4QHhTWJkxTgA1X5yqKM6lgn';
+  const output = 'abe1.kwlCXU7DClOZRHM4ZqomruF8wHsviA4tHEQGu1s2_1Gg';
+  assert.equal(transcriptBinding('tr.data', TASK, RUN, 3).context, `${TASK}:${RUN}:3`);
+  assert.equal(await opens(transcriptBinding('tr.data', TASK, RUN, 3), data), '{"kind":"note","seq":3,"text":"hi"}');
+  assert.equal(await opens(transcriptBinding('tr.output', TASK, RUN, 3), output), 'a.txt');
+});
+
+test('a transcript event of one task does not open under another task, run or position', async () => {
+  const sealed = await seal(keys, 'tr.data', transcriptBinding('tr.data', TASK, RUN, 3).context, '{}');
+  assert.equal(await opens(transcriptBinding('tr.data', TASK, RUN, 3), sealed), '{}');
+  for (const other of [
+    transcriptBinding('tr.data', 'Zz9dEf9x', RUN, 3),
+    transcriptBinding('tr.data', TASK, 'other-run-id', 3),
+    transcriptBinding('tr.data', TASK, RUN, 4),
+    transcriptBinding('tr.output', TASK, RUN, 3),
+  ])
+    assert.equal(await opens(other, sealed), undefined);
 });

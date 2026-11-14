@@ -1,0 +1,191 @@
+import { sql } from 'drizzle-orm';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { asOwner, useTestDb } from '../test/helpers';
+import { migrationsBefore, removeFolder, scratchDatabase } from '../test/scratch';
+import { createDb, runMigrations, type Tx } from './client';
+import { SEALED_COLUMNS } from './sealedColumns';
+
+const constraintNames = sql.join(
+  SEALED_COLUMNS.map(({ constraint }) => sql`${constraint}`),
+  sql`, `,
+);
+
+const ENVELOPE = `abe1.${'A'.repeat(40)}`;
+const BLIND_INDEX = `abh1.${'A'.repeat(43)}`;
+
+/** The check constraint a refused statement names, or undefined when it was accepted. */
+async function refusedBy(attempt: () => Promise<unknown>): Promise<string | undefined> {
+  try {
+    await attempt();
+  } catch (error) {
+    const cause = (error as { cause?: { constraint?: string } }).cause;
+    return cause?.constraint ?? 'refused for another reason';
+  }
+  return undefined;
+}
+
+describe('the sealed-content constraints (migration 0014)', () => {
+  const scratch = scratchDatabase('constraints');
+  const folders: string[] = [];
+  const pools: ReturnType<typeof createDb>[] = [];
+
+  const open = (): ReturnType<typeof createDb> => {
+    const connection = createDb(scratch.adminUrl);
+    pools.push(connection);
+    return connection;
+  };
+
+  beforeEach(async () => {
+    await Promise.all(pools.splice(0).map(({ pool }) => pool.end()));
+    await scratch.recreate();
+  });
+
+  afterAll(async () => {
+    await Promise.all(pools.splice(0).map(({ pool }) => pool.end()));
+    await scratch.drop();
+    folders.forEach(removeFolder);
+  });
+
+  it('passes on an empty database, with every constraint validated', async () => {
+    const { db } = open();
+    await runMigrations(db);
+    const { rows } = await db.execute<{ conname: string; convalidated: boolean }>(
+      sql`select conname, convalidated from pg_constraint where conname in (${constraintNames})`,
+    );
+    expect(rows).toHaveLength(SEALED_COLUMNS.length);
+    expect(rows.every((row) => row.convalidated)).toBe(true);
+  });
+
+  it('stops while plain text remains, names the script and the columns, and changes nothing', async () => {
+    const before = migrationsBefore('_sealed_content_constraints');
+    folders.push(before);
+    const { db } = open();
+    await migrate(db, { migrationsFolder: before });
+    await db.execute(sql`insert into app_user (username) values ('alice')`);
+    await db.execute(
+      sql`insert into task (id, owner, title, input, position) values ('t1', 'alice', 'plain', 'plain', 0)`,
+    );
+    await db.execute(
+      sql`insert into note (id, owner, task_id, author, kind, body) values ('n1', 'alice', 't1', 'user', 'comment', 'plain')`,
+    );
+    const failure = await runMigrations(db).then(
+      () => undefined,
+      (error: unknown) => error as { cause?: { message?: string } },
+    );
+    expect(failure?.cause?.message).toMatch(
+      /Plain text is still stored in sealed columns: .*note\.body \(1 rows\).*task\.title \(1 rows\).*task\.input \(1 rows\)\. Run the re-encryption script first \(pnpm --filter @agent-board\/backend reencrypt/,
+    );
+    const { rows } = await db.execute<{ n: number }>(
+      sql`select count(*)::int as n from pg_constraint where conname in (${constraintNames})`,
+    );
+    expect(rows[0]?.n).toBe(0);
+    const applied = await db.execute<{ n: number }>(sql`select count(*)::int as n from drizzle.__drizzle_migrations`);
+    expect(applied.rows[0]?.n).toBe(14);
+  });
+});
+
+describe('what the application role can store afterwards', () => {
+  const { db, admin } = useTestDb();
+  const clear = () => admin.execute(sql`truncate app_user, note, task, schedule restart identity cascade`);
+  const as = <T>(fn: (tx: Tx) => Promise<T>): Promise<T> => asOwner(db, 'alice', fn);
+
+  const task = (
+    tx: Tx,
+    o: {
+      title?: string;
+      input?: string;
+      workdir?: string | null;
+      dedupeKey?: string | null;
+      head?: string | null;
+    } = {},
+  ) =>
+    tx.execute(sql`
+      insert into task (id, title, input, workdir, dedupe_key, head, position)
+      values ('t1', ${o.title ?? ENVELOPE}, ${o.input ?? ENVELOPE}, ${o.workdir ?? null}, ${o.dedupeKey ?? null}, ${o.head ?? null}, 0)`);
+  const schedule = (tx: Tx, o: { title?: string; input?: string; workdir?: string | null } = {}) =>
+    tx.execute(sql`
+      insert into schedule (id, title, input, workdir, every_ms, anchor_at)
+      values ('s1', ${o.title ?? ENVELOPE}, ${o.input ?? ENVELOPE}, ${o.workdir ?? null}, 1000, now())`);
+  const note = async (
+    tx: Tx,
+    o: {
+      author?: string;
+      kind?: string;
+      body?: string;
+      preview?: string | null;
+      questions?: string | null;
+      answers?: string | null;
+    } = {},
+  ) => {
+    await task(tx);
+    await tx.execute(sql`
+      insert into note (id, task_id, author, kind, body, preview, questions, answers)
+      values ('n1', 't1', ${o.author ?? 'agent'}::note_author, ${o.kind ?? 'comment'}::note_kind, ${o.body ?? ENVELOPE},
+        ${o.preview ?? null}, ${o.questions ?? null}, ${o.answers ?? null})`);
+  };
+  const event = async (tx: Tx, o: { data?: string; output?: string | null } = {}) => {
+    await task(tx);
+    await tx.execute(sql`
+      insert into transcript_run (id, task_id, machine, started_at, last_event_at) values ('r1', 't1', 'laptop', now(), now())`);
+    await tx.execute(sql`
+      insert into transcript_event (run_id, seq, at, kind, data, output)
+      values ('r1', 0, now(), 'note', ${o.data ?? ENVELOPE}, ${o.output ?? null})`);
+  };
+
+  const plaintextCases: [string, string, (tx: Tx) => Promise<unknown>][] = [
+    ['task_title_sealed', 'a plain task title', (tx) => task(tx, { title: 'plain' })],
+    ['task_input_sealed', 'a plain prompt', (tx) => task(tx, { input: 'plain' })],
+    ['task_input_sealed', 'an empty prompt', (tx) => task(tx, { input: '' })],
+    ['task_workdir_sealed', 'a plain directory', (tx) => task(tx, { workdir: '/home/a' })],
+    ['task_dedupe_key_blind', 'a plain dedupe key', (tx) => task(tx, { dedupeKey: 'https://github.com/o/r/pull/1' })],
+    ['task_head_blind', 'a plain head', (tx) => task(tx, { head: 'abcdef1' })],
+    ['task_head_blind', 'an envelope as a head', (tx) => task(tx, { head: ENVELOPE })],
+    ['task_title_sealed', 'a too short envelope', (tx) => task(tx, { title: 'abe1.AAAA' })],
+    ['task_title_sealed', 'an envelope with a line break', (tx) => task(tx, { title: `${ENVELOPE}\n` })],
+    ['schedule_title_sealed', 'a plain schedule title', (tx) => schedule(tx, { title: 'plain' })],
+    ['schedule_input_sealed', 'a plain schedule prompt', (tx) => schedule(tx, { input: 'plain' })],
+    ['schedule_workdir_sealed', 'a plain schedule directory', (tx) => schedule(tx, { workdir: '/w' })],
+    ['note_body_sealed', 'a plain agent comment', (tx) => note(tx, { body: 'plain' })],
+    [
+      'note_body_sealed',
+      'a plain system event',
+      (tx) => note(tx, { author: 'system', kind: 'event', body: 'Closed.' }),
+    ],
+    [
+      'note_body_sealed',
+      'a plain server comment',
+      (tx) => note(tx, { author: 'server', kind: 'comment', body: 'Closed.' }),
+    ],
+    ['note_body_sealed', 'a plain empty body', (tx) => note(tx, { body: '' })],
+    ['note_preview_sealed', 'a plain preview', (tx) => note(tx, { preview: 'plain' })],
+    ['note_questions_sealed', 'plain questions', (tx) => note(tx, { kind: 'question', questions: '[]' })],
+    ['note_answers_sealed', 'plain answers', (tx) => note(tx, { author: 'user', kind: 'answer', answers: '[]' })],
+    ['transcript_event_data_sealed', 'plain event data', (tx) => event(tx, { data: '{"kind":"note"}' })],
+    ['transcript_event_output_sealed', 'a plain tool output', (tx) => event(tx, { output: 'plain' })],
+    ['transcript_event_output_sealed', 'an empty tool output', (tx) => event(tx, { output: '' })],
+  ];
+
+  it.each(plaintextCases)('refuses (%s): %s', async (constraint, _what, attempt) => {
+    expect(await refusedBy(() => as(attempt))).toBe(constraint);
+  });
+
+  it('covers every sealed column', () => {
+    expect(new Set(plaintextCases.map(([constraint]) => constraint))).toEqual(
+      new Set(SEALED_COLUMNS.map((column) => column.constraint)),
+    );
+  });
+
+  it('accepts sealed values, null where a column may be empty, and the server events in plain text', async () => {
+    await as(async (tx) => {
+      await task(tx, { workdir: ENVELOPE, dedupeKey: BLIND_INDEX, head: BLIND_INDEX });
+      await schedule(tx, { workdir: ENVELOPE });
+    });
+    await clear();
+    await as(async (tx) => note(tx, { preview: ENVELOPE, questions: ENVELOPE, answers: ENVELOPE }));
+    await clear();
+    await as(async (tx) => note(tx, { author: 'server', kind: 'event', body: 'Marked done.' }));
+    await clear();
+    await as(async (tx) => event(tx, { output: ENVELOPE }));
+  });
+});
