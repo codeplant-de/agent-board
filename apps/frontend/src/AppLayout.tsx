@@ -3,6 +3,7 @@ import { useHotkeys } from '@mantine/hooks';
 import {
   IconArchive,
   IconLayoutKanban,
+  IconLock,
   IconMoon,
   IconPlus,
   IconRepeat,
@@ -11,6 +12,7 @@ import {
 } from '@tabler/icons-react';
 import { useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { useLock } from './crypto/KeyContext';
 import { NewTaskModal } from './components/NewTaskModal';
 
 const NAV = [
@@ -23,6 +25,7 @@ const NAV = [
 export function AppLayout() {
   const [creating, setCreating] = useState(false);
   const { colorScheme, toggleColorScheme } = useMantineColorScheme();
+  const lock = useLock();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const active = (to: string) =>
@@ -65,6 +68,13 @@ export function AppLayout() {
                 {colorScheme === 'dark' ? <IconSun size={18} /> : <IconMoon size={18} />}
               </ActionIcon>
             </Tooltip>
+            {lock && (
+              <Tooltip label="Lock">
+                <ActionIcon variant="default" size="lg" onClick={() => void lock()} aria-label="Lock">
+                  <IconLock size={18} />
+                </ActionIcon>
+              </Tooltip>
+            )}
             <Tooltip label="New task (c)">
               <Button leftSection={<IconPlus size={16} />} onClick={() => setCreating(true)}>
                 New task

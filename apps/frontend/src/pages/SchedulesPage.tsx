@@ -5,9 +5,7 @@ import { IconPlayerPause, IconPlayerPlay, IconTrash } from '@tabler/icons-react'
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ago, stamp } from '../lib/time';
-import { errorMessage, POLL_MS, useTRPC, type RouterOutputs } from '../lib/trpc';
-
-type ScheduleRow = RouterOutputs['schedules']['list'][number];
+import { errorMessage, POLL_MS, useTRPC, type Schedule as ScheduleRow } from '../lib/trpc';
 
 function ScheduleActions({ schedule }: { schedule: ScheduleRow }) {
   const trpc = useTRPC();
