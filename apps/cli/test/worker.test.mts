@@ -394,7 +394,11 @@ test("an intake run gets the variables intake names from the checkout's settings
   };
   await runWorker(deps, 'w1');
   assert.deepEqual(read, ['/work/cosuno']);
-  assert.deepEqual(env, { CIRCLECI_TOKEN: 'ci-secret', AGENT_BOARD_TASK: 'w1' });
+  assert.deepEqual(env, {
+    CIRCLECI_TOKEN: 'ci-secret',
+    AGENT_BOARD_TASK: 'w1',
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
+  });
   assert.ok(calls.some((c) => c.includes("not in the checkout's settings: SHORTCUT_API_TOKEN")));
   assert.ok(!calls.some((c) => c.includes('ci-secret')), 'values never reach the log');
 });
@@ -410,7 +414,7 @@ test("a scheduled run loads the checkout's settings itself: no variables are cop
     return { exitCode: 0, signal: null };
   };
   await runWorker(deps, 'w1');
-  assert.deepEqual(env, { AGENT_BOARD_TASK: 'w1' });
+  assert.deepEqual(env, { AGENT_BOARD_TASK: 'w1', CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' });
 });
 
 test("an intake run gets the MCP servers intake names from the checkout's .mcp.json", async () => {
@@ -470,6 +474,32 @@ test("the agent's environment names the task, so `board schedule` can refuse ins
   };
   await runWorker(deps, 'w1');
   assert.equal(env['AGENT_BOARD_TASK'], 'w1');
+});
+
+test('every run waits for background work: print mode would otherwise stop it 10 minutes after the last turn', async () => {
+  for (const intake of [false, true]) {
+    const { deps, backend } = setup({ exitCode: 0, signal: null });
+    if (intake) {
+      deps.config = {
+        ...CONFIG,
+        intake: { ...CONFIG.intake, env: ['CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', 'AGENT_BOARD_TASK'] },
+      };
+      deps.settingsEnv = () => ({ CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '600000', AGENT_BOARD_TASK: 'other' });
+      Object.assign(backend.tasks[0]!, {
+        createdBy: 'intake',
+        input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
+      });
+    }
+    let env: Record<string, string> = {};
+    deps.run = async (_invocation, _taskId, runEnv) => {
+      env = runEnv;
+      backend.tasks[0]!.status = 'needs-me';
+      return { exitCode: 0, signal: null };
+    };
+    await runWorker(deps, 'w1');
+    assert.equal(env['CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS'], '0');
+    assert.equal(env['AGENT_BOARD_TASK'], 'w1');
+  }
 });
 
 test("a fresh run's prompt carries the user's message and points at the thread", async () => {

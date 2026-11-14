@@ -191,6 +191,10 @@ test("the board's rules tell the agent to ask through the board, and an intake r
   );
 });
 
+test("the board's rules tell the agent not to end its turn while background work runs", () => {
+  assert.match(boardRules(task({ id: 'abc' })), /Do not end your turn while a background agent .* in the foreground/s);
+});
+
 test('long text is tailed', () => {
   assert.equal(tail('abcdef', 4), '…def');
 });
