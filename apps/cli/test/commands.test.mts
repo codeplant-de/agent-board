@@ -1,0 +1,297 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { UsageError } from '../src/cli.mts';
+import type { Context } from '../src/cli.mts';
+import { runBoard } from '../src/commands.mts';
+import type { ProgramOptions } from '../src/commands.mts';
+import { CONFIG, fakeBackend, task } from './helpers.mts';
+
+const ID = 'Zt0Test1';
+
+interface Run {
+  backend: ReturnType<typeof fakeBackend>;
+  printed: string[];
+  out: string[];
+  err: string[];
+  dryRuns: boolean[];
+  go: (argv: string[], overrides?: ProgramOptions) => Promise<void>;
+}
+
+function setup(): Run {
+  const backend = fakeBackend([task({ id: ID })]);
+  const printed: string[] = [];
+  const out: string[] = [];
+  const err: string[] = [];
+  const dryRuns: boolean[] = [];
+  const context = (dryRun: boolean): Context => {
+    dryRuns.push(dryRun);
+    return { config: CONFIG, backend, dryRun, print: (line) => printed.push(line) };
+  };
+  const go = (argv: string[], overrides: ProgramOptions = {}) =>
+    runBoard(argv, {
+      env: {},
+      context,
+      writeOut: (text) => out.push(text),
+      writeErr: (text) => err.push(text),
+      ...overrides,
+    });
+  return { backend, printed, out, err, dryRuns, go };
+}
+
+test('a comment is every word after the task, flags and --dry-run included', async () => {
+  const { backend, dryRuns, go } = setup();
+  await go(['comment', ID, 'some', 'text', 'with', '--dashes', 'and', '--dry-run', 'inside']);
+  assert.deepEqual(backend.writes, [`note ${ID}: some text with --dashes and --dry-run inside`]);
+  assert.deepEqual(dryRuns, [false]);
+});
+
+test('--dry-run works before the command and among its flags', async () => {
+  const { dryRuns, go } = setup();
+  await go(['--dry-run', 'tasks']);
+  await go(['tasks', '--dry-run']);
+  await go(['comment', '--dry-run', ID, 'text']);
+  await go(['move', ID, '--dry-run', 'todo']);
+  assert.deepEqual(dryRuns, [true, true, true, true]);
+});
+
+test('a comment reads stdin for - and a file in /tmp for --file', async () => {
+  const { backend, go } = setup();
+  await go(['comment', ID, '-'], { readStdin: async () => ' from stdin\n' });
+  const dir = mkdtempSync('/tmp/board-commands-test-');
+  try {
+    writeFileSync(join(dir, 'note.md'), 'from a file\n');
+    await go(['comment', ID, '--file', join(dir, 'note.md')]);
+    await assert.rejects(go(['comment', ID, '--file']), UsageError);
+    await assert.rejects(go(['comment', ID, '--file', join(dir, 'note.md'), 'extra']), UsageError);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+  assert.deepEqual(backend.writes, [`note ${ID}: from stdin`, `note ${ID}: from a file`]);
+});
+
+test('notify reads stdin for - too, and an empty comment is refused', async () => {
+  const { go } = setup();
+  await assert.rejects(go(['comment', ID]), /the text is missing/);
+  await assert.rejects(go(['notify', ID]), /missing required argument 'text'/);
+});
+
+test('move takes the status as one word, two words or a quoted phrase, and never reads stdin', async () => {
+  const { backend, go } = setup();
+  await go(['move', ID, 'Needs', 'me']);
+  await go(['move', ID, 'needs-me']);
+  await go(['move', ID, 'Needs me']);
+  assert.deepEqual(backend.writes, [
+    `status ${ID} -> needs-me`,
+    `status ${ID} -> needs-me`,
+    `status ${ID} -> needs-me`,
+  ]);
+  await assert.rejects(go(['move', ID, '-'], { readStdin: async () => 'todo' }), /unknown status "-"/);
+  await assert.rejects(go(['move', ID, 'Someday']), UsageError);
+});
+
+test('schedule: a prompt after -- may start with dashes, and everything after the first word is prompt', async () => {
+  const { backend, go } = setup();
+  await go(['schedule', '--new', '--priority', 'high', '--', '--weird', 'prompt']);
+  await go(['schedule', '--new', '/review-pr', 'https://github.com/o/r/pull/1', '--auto']);
+  await go(['schedule', '--new', '--title=With equals', 'Look', 'at', '--hold']);
+  assert.deepEqual(backend.writes, [
+    'create --weird prompt | --weird prompt | ',
+    'create /review-pr https://github.com/o/r/pull/1 --auto | /review-pr https://github.com/o/r/pull/1 --auto | ',
+    'create With equals | Look at --hold | ',
+  ]);
+});
+
+test('schedule: an unknown flag before the prompt fails, and says how to start a prompt with dashes', async () => {
+  const { backend, go } = setup();
+  await assert.rejects(go(['schedule', '--hodl', 'x']), (error: Error) => {
+    assert.ok(error instanceof UsageError);
+    assert.match(error.message, /unknown option '--hodl'/);
+    assert.match(error.message, /Did you mean --hold\?/);
+    assert.ok(error.details.some((line) => line.includes('put -- before it')));
+    return true;
+  });
+  assert.deepEqual(backend.writes, []);
+});
+
+test('a usage error carries the usage of its own command', async () => {
+  const { go } = setup();
+  await assert.rejects(go(['comment', ID]), (error: Error) => {
+    assert.ok(error instanceof UsageError);
+    assert.equal(error.details[0], 'usage: board comment [options] <task> <text...|-|--file <path>>');
+    assert.equal(error.details[1], 'Run "board help comment" for the details.');
+    return true;
+  });
+  await assert.rejects(go(['taks']), (error: Error) => {
+    assert.ok(error instanceof UsageError);
+    assert.match(error.message, /unknown command 'taks'\n\(Did you mean tasks\?\)/);
+    assert.deepEqual(error.details, ['usage: board <command> [options]', 'Run "board help" for the commands.']);
+    return true;
+  });
+  await assert.rejects(go(['tasks', 'extra']), /too many arguments/);
+});
+
+test('help and version print and end normally, help of a command lists flags and examples', async () => {
+  const { out, go } = setup();
+  const printed = async (argv: string[], overrides?: ProgramOptions): Promise<string> => {
+    out.length = 0;
+    await go(argv, overrides);
+    return out.join('');
+  };
+  const overview = await printed([]);
+  assert.equal(await printed(['--help']), overview);
+  assert.equal(await printed(['help']), overview);
+  assert.match(overview, /Tasks:[\s\S]*Scheduling:[\s\S]*Setup:/);
+  assert.doesNotMatch(overview, /internal/);
+  const help = await printed(['help', 'schedule']);
+  assert.equal(await printed(['schedule', '--help']), help);
+  assert.match(help, /Usage: board schedule/);
+  assert.match(help, /--every <duration>/);
+  assert.match(help, /Examples:/);
+  assert.equal(await printed(['--version'], { version: '1.2.3-dev' }), 'board 1.2.3-dev (contract 5)\n');
+});
+
+test('help text inside a comment is text, not a request for help', async () => {
+  const { backend, out, go } = setup();
+  await go(['comment', ID, 'see', '--help', 'and', '-h']);
+  assert.deepEqual(out, []);
+  assert.deepEqual(backend.writes, [`note ${ID}: see --help and -h`]);
+});
+
+test('tasks, show, comment and move need no config file', async () => {
+  const backend = fakeBackend([task({ id: ID })]);
+  const context = (): Context => ({
+    get config(): never {
+      throw new Error('the config was read');
+    },
+    backend,
+    dryRun: false,
+    print: () => undefined,
+  });
+  for (const argv of [['tasks'], ['show', ID], ['comment', ID, 'hi'], ['move', ID, 'done']])
+    await runBoard(argv, { env: {}, context });
+});
+
+test('internal commands are refused inside a run', async () => {
+  const env = { AGENT_BOARD_TASK: ID };
+  for (const argv of [
+    ['internal', 'dispatch'],
+    ['internal', 'intake'],
+    ['internal', 'worker', ID],
+  ])
+    await assert.rejects(runBoard(argv, { env }), /not available inside a board run/, argv.join(' '));
+});
+
+// The invocations agents use today: the run rules and the hook's messages in the source, and the selftest skills.
+function boardCommands(): string[] {
+  const sources = [
+    readFileSync(new URL('../src/decide.mts', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/hook.mts', import.meta.url), 'utf8'),
+    ...readdirSync(new URL('./skills/', import.meta.url)).map((name) =>
+      readFileSync(new URL(`./skills/${name}/SKILL.md`, import.meta.url), 'utf8'),
+    ),
+  ];
+  // The sources quote commands in template literals, so their backticks are escaped.
+  const spans = sources.flatMap((source) =>
+    [...source.matchAll(/\\?`(board [^`\\]+)\\?`/g)].map((match) => match[1] ?? ''),
+  );
+  return [...new Set(spans)].filter(
+    (span) => !/^board (comment|move|ask|add|show|notify|tasks)$|^board internal /.test(span),
+  );
+}
+
+function words(command: string, files: { questions: string; prompt: string }): string[] {
+  const concrete = command
+    .replaceAll('${task.id}', ID)
+    .replaceAll('${taskId}', ID)
+    .replaceAll('<task>', ID)
+    .replace(/<path>/g, files.prompt)
+    .replace(/\/tmp\/pr-[^/]*-questions\.json/, files.questions)
+    .replace(/<[^>]*>/g, 'x');
+  return [...concrete.matchAll(/"([^"]*)"|(\S+)/g)].map((match) => match[1] ?? match[2] ?? '').slice(1);
+}
+
+test('every board command in the run rules, the hook messages and the selftest skills parses', async () => {
+  const dir = mkdtempSync('/tmp/board-commands-test-');
+  const questions = join(dir, 'pr-questions.json');
+  const prompt = join(dir, 'prompt.md');
+  writeFileSync(
+    questions,
+    JSON.stringify({
+      questions: [
+        {
+          header: 'Color',
+          question: 'Which?',
+          multiSelect: false,
+          options: [
+            { label: 'Red', description: '' },
+            { label: 'Blue', description: '' },
+          ],
+        },
+      ],
+    }),
+  );
+  writeFileSync(prompt, 'do the thing');
+  try {
+    const commands = boardCommands();
+    assert.ok(commands.length >= 8, `found ${commands.length} commands`);
+    const verbs = new Set<string>();
+    for (const command of commands) {
+      const { backend, go } = setup();
+      const argv = words(command, { questions, prompt });
+      verbs.add(argv[0] ?? '');
+      await go(argv).catch((error: unknown) => {
+        throw new Error(`"${command}" does not parse: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      const action = backend.writes[0] ?? '';
+      const expected: Record<string, RegExp> = {
+        comment: /^note Zt0Test1: /,
+        move: /^status Zt0Test1 -> needs-me$/,
+        ask: /^ask Zt0Test1: Color$/,
+        add: /^create .* \| do the thing \| $/,
+      };
+      const verb = argv[0] ?? '';
+      if (verb in expected) assert.match(action, expected[verb] as RegExp, command);
+      else assert.deepEqual(backend.writes, [], command);
+    }
+    for (const verb of ['comment', 'move', 'ask', 'add', 'show'])
+      assert.ok(verbs.has(verb), `no ${verb} command found in the sources`);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('ask and add keep their flag shapes', async () => {
+  const dir = mkdtempSync('/tmp/board-commands-test-');
+  const questions = join(dir, 'q.json');
+  writeFileSync(
+    questions,
+    JSON.stringify({
+      questions: [
+        {
+          header: 'Q',
+          question: 'Which?',
+          multiSelect: false,
+          options: [
+            { label: 'A', description: '' },
+            { label: 'B', description: '' },
+          ],
+        },
+      ],
+    }),
+  );
+  writeFileSync(join(dir, 'p.md'), 'follow up');
+  try {
+    const { backend, go } = setup();
+    await go(['ask', ID, '--file', questions]);
+    await go(['ask', ID, `--file=${questions}`]);
+    await go(['add', '--file', join(dir, 'p.md'), '--title', 'Fix it', '--parent', ID, '--priority', 'low']);
+    await assert.rejects(go(['ask', ID]), /required option '--file <path>' not specified/);
+    await assert.rejects(go(['add', '--title', 't']), /required option '--file <path>' not specified/);
+    await assert.rejects(go(['add', '--title', 't', '--file', '/tmp/x', '--label', 'l']), /unknown option '--label'/);
+    assert.deepEqual(backend.writes, [`ask ${ID}: Q`, `ask ${ID}: Q`, 'create Fix it | follow up | ']);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});

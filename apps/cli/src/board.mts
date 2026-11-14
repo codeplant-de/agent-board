@@ -1,32 +1,6 @@
-#!/usr/bin/env node
-/**
- *   board comment <task> <text>   add a note (long text is fine; `-` reads the text from stdin)
- *   board comment <task> --file <path>   add a note from a file in /tmp
- *   board move <task> <status>    move a task to the bottom of a status (backlog, todo, running, needs-me, done)
- *   board notify <task> <text>    Slack message with the task link
- *   board tasks                   open tasks per status
- *   board ask <task> --file <path>      ask the user 1-4 questions (JSON in /tmp) and move the task to needs-me
- *   board show <task>             the task and its thread as markdown
- *   board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>"]
- *                  [--times <n> | --until <time>] [--new] <prompt...>
- *                                 a task from a prompt, run in this directory on this machine; checks for duplicates first;
- *                                 --in (30m, 2h, 1d, 1h30m) or --at (2027-01-01T12:00, 2027-01-01, 09:30) keeps it in Todo until then;
- *                                 --every (2h) or --cron ("0 9 * * 1-5", 5 fields, in this machine's time zone) repeats it from
- *                                 the first run (--in/--at, default now), for --times runs or until --until, else forever
- *                                 (not inside a board run: there, propose follow-up work with `board add`)
- *   board schedules               list the repeating schedules
- *   board schedules pause|resume|rm <id>
- *                                 pause (drops the waiting run), resume or delete a schedule (not inside a board run)
- *   board delay <task> (--in <dur> | --at <time> | --now)
- *                                 delay a task in Todo until then, or with --now make it due at once
- *   board add --title <t> --file <path> [--parent <task>] [--priority urgent|high|normal|low]
- *                                 propose a follow-up task (the file is its prompt); it waits in needs-me until the user starts it
- *
- * <task> is the task id the backend gives. Add --dry-run to print writes.
- */
 import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { buildContext, readStdin, rejectExtraArgs, runMain, takeFlag, UsageError } from './cli.mts';
+import { UsageError } from './cli.mts';
 import type { Context } from './cli.mts';
 import { BackendError } from './backend.mts';
 import {
@@ -45,10 +19,7 @@ import {
 import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
 import { postSlack, slackText } from './notify.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
-import type { Choice } from './schedule.mts';
-
-const USAGE =
-  'usage: board comment <task> <text|--file path> | move <task> <status> | notify <task> <text> | ask <task> --file <path> | show <task> | schedule [--priority <p>] [--title <t>] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>"] [--times <n> | --until <time>] [--new] <prompt...> | schedules [pause|resume|rm <id>] | delay <task> (--in <dur> | --at <time> | --now) | add --title <t> --file <path> [--parent <task>] [--priority <p>] | tasks';
+import type { Choice, ScheduleFlags } from './schedule.mts';
 
 const NOTE_FILE_DIR = '/tmp/';
 const NOTE_FILE_MAX_BYTES = 1024 * 1024;
@@ -82,7 +53,7 @@ export function parseStatus(name: string): Status {
   return normalised;
 }
 
-async function notify(context: Context, id: string, text: string): Promise<void> {
+export async function notify(context: Context, id: string, text: string): Promise<void> {
   const message = slackText(await context.backend.getTask(id), text);
   if (context.dryRun) return context.print(`DRY slack ${message.replaceAll('\n', ' | ')}`);
   await postSlack(context.config.slackWebhookFile, message);
@@ -100,7 +71,7 @@ export async function tasks(context: Context): Promise<void> {
   }
 }
 
-async function ask(context: Context, id: string, path: string): Promise<void> {
+export async function ask(context: Context, id: string, path: string): Promise<void> {
   let questions;
   try {
     questions = parseQuestions(JSON.parse(readNoteFile(path)));
@@ -144,45 +115,37 @@ export function renderThread(task: Task, notes: Note[]): string {
   return lines.join('\n');
 }
 
-async function show(context: Context, id: string): Promise<void> {
+export async function show(context: Context, id: string): Promise<void> {
   const [task, notes] = await Promise.all([context.backend.getTask(id), context.backend.readNotes(id)]);
   context.print(renderThread(task, notes));
 }
 
-// `add --title <t> --file <path> [--parent <task>] [--priority <p>]`, flags in any order.
-export function parseAddArgs(args: string[]): {
+export interface AddFlags {
+  title?: string;
+  file?: string;
+  parent?: string;
+  priority?: string;
+}
+
+export function parseAddFlags(flags: AddFlags): {
   title: string;
   file: string;
   parent: string | undefined;
   priority: Priority | undefined;
 } {
-  const values = new Map<string, string>();
-  for (let index = 0; index < args.length; index += 2) {
-    const flag = args[index];
-    const value = args[index + 1];
-    if (
-      !flag ||
-      !['--title', '--file', '--parent', '--priority'].includes(flag) ||
-      value === undefined ||
-      values.has(flag)
-    )
-      throw new UsageError(USAGE);
-    values.set(flag, value);
-  }
-  const title = values.get('--title')?.trim();
-  const file = values.get('--file');
-  const parent = values.get('--parent');
-  if (!title || !file) throw new UsageError(USAGE);
+  const title = flags.title?.trim();
+  const { file, parent, priority } = flags;
+  if (!title) throw new UsageError('--title needs a title');
+  if (!file) throw new UsageError('--file is required');
   if (parent !== undefined && !isSafeTaskId(parent)) throw new UsageError(`"${parent.slice(0, 40)}" is not a task id`);
-  const priority = values.get('--priority');
   if (priority !== undefined && !isPriority(priority))
     throw new UsageError(`unknown priority "${priority.slice(0, 20)}"; use one of ${PRIORITIES.join(', ')}`);
   return { title, file, parent, priority };
 }
 
 // The board puts a proposal in Needs me itself, so no status is sent.
-export async function add(context: Context, args: string[]): Promise<void> {
-  const { title, file, parent, priority } = parseAddArgs(args);
+export async function add(context: Context, flags: AddFlags): Promise<void> {
+  const { title, file, parent, priority } = parseAddFlags(flags);
   // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
   // proposing agent works, on this machine.
   const draft = {
@@ -209,18 +172,25 @@ export async function move(context: Context, id: string, status: Status): Promis
   }
 }
 
-// `delay <task> (--in <dur> | --at <time> | --now)`: the start time to set, or null to clear it.
-export function parseDelayArgs(args: string[], now: Date = new Date()): Date | null {
-  const [flag, value, ...extra] = args;
-  if (flag === '--now' && value === undefined) return null;
-  if ((flag !== '--in' && flag !== '--at') || value === undefined || extra.length > 0) throw new UsageError(USAGE);
-  const start = parseStart(flag === '--in' ? { delay: value } : { at: value }, now);
-  if (start === undefined) throw new UsageError(USAGE);
+export interface DelayFlags {
+  in?: string;
+  at?: string;
+  now?: boolean;
+}
+
+// The start time to set, or null to clear it; exactly one of the three flags.
+export function parseDelayFlags(flags: DelayFlags, now: Date = new Date()): Date | null {
+  const { in: delayText, at, now: dueNow } = flags;
+  if ([delayText, at, dueNow].filter((flag) => flag !== undefined && flag !== false).length !== 1)
+    throw new UsageError('give exactly one of --in, --at or --now');
+  if (dueNow) return null;
+  const start = parseStart(delayText === undefined ? { at } : { delay: delayText }, now);
+  if (start === undefined) throw new UsageError('give exactly one of --in, --at or --now');
   return start;
 }
 
-export async function delay(context: Context, id: string, args: string[]): Promise<void> {
-  const notBefore = parseDelayArgs(args);
+export async function delay(context: Context, id: string, flags: DelayFlags): Promise<void> {
+  const notBefore = parseDelayFlags(flags);
   await context.backend.updateTask(id, { notBefore, expect: 'todo' });
   context.print(notBefore === null ? `${id} is due now` : `${id} starts ${localTime(notBefore)}`);
 }
@@ -254,7 +224,7 @@ export async function schedules(context: Context, args: string[]): Promise<void>
     return;
   }
   if ((action !== 'pause' && action !== 'resume' && action !== 'rm') || id === undefined || extra.length > 0)
-    throw new UsageError(USAGE);
+    throw new UsageError('schedules takes nothing, or pause, resume or rm and a schedule id');
   if (action === 'rm') {
     await context.backend.removeSchedule(id);
     return context.print(`removed ${id}`);
@@ -281,7 +251,8 @@ async function chooseInTerminal(): Promise<Choice> {
   }
 }
 
-async function scheduleCommand(context: Context, args: string[]): Promise<void> {
+export async function scheduleCommand(context: Context, flags: ScheduleFlags, words: string[]): Promise<void> {
+  const args = parseScheduleArgs(flags, words);
   await schedule(
     {
       backend: context.backend,
@@ -292,65 +263,6 @@ async function scheduleCommand(context: Context, args: string[]): Promise<void> 
       check: haikuDuplicateCheck(context.print),
       choose: process.stdin.isTTY && process.stdout.isTTY ? chooseInTerminal : undefined,
     },
-    parseScheduleArgs(args),
+    args,
   );
 }
-
-export async function main(argv: string[], env: Record<string, string | undefined> = process.env): Promise<void> {
-  const args = [...argv];
-  const dryRun = takeFlag(args, '--dry-run');
-  if (args[0] === 'add') return add(buildContext(dryRun), args.slice(1));
-  if (args[0] === 'schedule') {
-    // A run's agent works on untrusted text; a task it schedules would run with the user's full permissions.
-    if (env['AGENT_BOARD_TASK'])
-      throw new UsageError(
-        'board schedule is not available inside a board run; use `board add` to propose follow-up work',
-      );
-    return scheduleCommand(buildContext(dryRun), args.slice(1));
-  }
-  if (args[0] === 'schedules') {
-    if (args[1] !== undefined && env['AGENT_BOARD_TASK'])
-      throw new UsageError('board schedules changes are not available inside a board run');
-    return schedules(buildContext(dryRun), args.slice(1));
-  }
-  const [command, id, ...rest] = args;
-  if (!command || command.startsWith('--') || id?.startsWith('--')) throw new UsageError(USAGE);
-  if (command === 'tasks' && (id !== undefined || rest.length > 0)) rejectExtraArgs([id ?? '', ...rest], USAGE);
-  const context = buildContext(dryRun);
-  if (command === 'show') {
-    if (!id || rest.length > 0) throw new UsageError(USAGE);
-    return show(context, id);
-  }
-  if (command === 'delay') {
-    if (!id) throw new UsageError(USAGE);
-    return delay(context, id, rest);
-  }
-  if (command === 'ask') {
-    if (!id || rest.length !== 2 || rest[0] !== '--file') throw new UsageError(USAGE);
-    return ask(context, id, rest[1] ?? '');
-  }
-  const fromFile = command === 'comment' && rest[0] === '--file';
-  if (fromFile && rest.length !== 2) throw new UsageError(USAGE);
-  const text = fromFile
-    ? readNoteFile(rest[1] ?? '')
-    : rest.join(' ') === '-'
-      ? (await readStdin()).trim()
-      : rest.join(' ');
-  switch (command) {
-    case 'comment':
-      if (!id || !text) throw new UsageError(USAGE);
-      return context.backend.addNote(id, text);
-    case 'notify':
-      if (!id || !text) throw new UsageError(USAGE);
-      return notify(context, id, text);
-    case 'move':
-      if (!id || !text) throw new UsageError(USAGE);
-      return move(context, id, parseStatus(text));
-    case 'tasks':
-      return tasks(context);
-    default:
-      throw new UsageError(USAGE);
-  }
-}
-
-if (import.meta.main) await runMain(() => main(process.argv.slice(2)));

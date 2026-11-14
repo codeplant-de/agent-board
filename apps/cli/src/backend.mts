@@ -149,7 +149,7 @@ export function createWebBackend(options: WebBackendOptions): Backend {
         );
       if (served > CONTRACT_VERSION)
         throw new BackendError(
-          `this CLI is older than the board server: it speaks contract ${CONTRACT_VERSION}, the server has ${served}; update the CLI checkout`,
+          `this CLI is older than the board server: it speaks contract ${CONTRACT_VERSION}, the server has ${served}; run "board self-update" (or pull the checkout)`,
         );
       return config;
     })();
