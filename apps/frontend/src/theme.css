@@ -126,3 +126,55 @@ body {
 .task-card:hover {
   border-color: var(--mantine-color-indigo-4);
 }
+
+/* The board: one column on a phone, two on a tablet, five on a wide screen. */
+.board {
+  display: grid;
+  gap: var(--mantine-spacing-md);
+  grid-template-columns: minmax(0, 1fr);
+}
+.board-cell {
+  min-width: 0;
+}
+@media (min-width: 48em) {
+  .board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+/* On a wide screen Backlog and Done take a third of a middle column. Hovering one, dragging a card over
+   it or tabbing into it widens it to a middle column's width, floating over its neighbor: Backlog to the
+   right, Done to the left. Its content keeps the full width throughout and is clipped while collapsed,
+   so cards don't reflow on hover. */
+@media (min-width: 75em) {
+  .board {
+    grid-template-columns: minmax(0, 1fr) repeat(3, minmax(0, 3fr)) minmax(0, 1fr);
+  }
+  .board-cell[data-collapsible='true'] {
+    position: relative;
+    container-type: inline-size;
+  }
+  .board-cell[data-collapsible='true'] .board-column {
+    position: relative;
+    width: 100cqw;
+    overflow: hidden;
+    transition:
+      width 150ms ease,
+      margin-left 150ms ease,
+      box-shadow 150ms ease;
+  }
+  .board-cell[data-collapsible='true'] .board-column-content {
+    /* A middle column's width less the column's padding and border. */
+    width: calc(300cqw - 2 * var(--mantine-spacing-sm) - 2px);
+  }
+  .board-cell[data-collapsible='true']:is(:hover, :has(:focus-visible)) .board-column,
+  .board-cell[data-collapsible='true'] .board-column[data-over='true'] {
+    z-index: 2;
+    width: 300cqw;
+    box-shadow: var(--mantine-shadow-lg);
+    transition-delay: 80ms;
+  }
+  .board-cell[data-status='done']:is(:hover, :has(:focus-visible)) .board-column,
+  .board-cell[data-status='done'] .board-column[data-over='true'] {
+    margin-left: -200cqw;
+  }
+}
