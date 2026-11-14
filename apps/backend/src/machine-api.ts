@@ -33,6 +33,7 @@ import {
   addNote,
   addTask,
   ask,
+  attachSession,
   claimTask,
   failTask,
   getTask,
@@ -86,6 +87,8 @@ export async function handleMachineCall(
       return (await listTasks(db, { all: body['all'] === true })).map(task);
     case 'get-task':
       return task(await getTask(db, taskId(body)));
+    case 'attach-session':
+      return task(await attachSession(db, taskId(body), machine));
     case 'add-task': {
       const draft = parsed(() => parseWireTaskDraft(body['body']));
       const { row, created } = await addTask(db, draft);

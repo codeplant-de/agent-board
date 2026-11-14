@@ -141,6 +141,7 @@ describe('what the database holds, after a scenario run by the real clients', ()
       seal: { createdBy: 'user', scheduleId: null },
     });
     await cli.ask(id, [{ ...question, header: 'Scope', question: QUESTION }]);
+    expect(await cli.attachSession(id)).toEqual({ sessionId: SESSION, workdir: `/${WORKDIR}/sub` });
     const { thread } = await fetchQuery<any>(trpc.tasks.get.queryOptions({ id }));
     const asked = thread.find((note: { kind: string }) => note.kind === 'question');
     await mutate(trpc.tasks.answer.mutationOptions(), {

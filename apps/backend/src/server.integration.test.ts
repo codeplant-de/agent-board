@@ -167,6 +167,31 @@ describe('machine API', () => {
     expect(winner.status).toBe('running');
   });
 
+  it('hands a session to the machine that ran the task, and to no other', async () => {
+    const { json } = await ctx.call('laptop', 'add-task', { body: { title: 't', labels: ['review-pr'] } });
+    const id = json.result.task.id;
+    expect((await ctx.call('laptop', 'attach-session', { id })).status).toBe(409);
+    await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' });
+    const running = await ctx.call('laptop', 'attach-session', { id });
+    expect(running).toMatchObject({ status: 409, json: { error: expect.stringMatching(/running.*Transcript/) } });
+    await ctx.call('laptop', 'update-task', { id, body: { workdir: '/home/me/repo' } });
+    await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me' } });
+    const noSession = await ctx.call('laptop', 'attach-session', { id });
+    expect(noSession).toMatchObject({ status: 409, json: { error: 'the task has no session' } });
+    await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' });
+    await ctx.call('laptop', 'update-task', { id, body: { sessionId: SESSION } });
+    await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me' } });
+    const handed = await ctx.call('laptop', 'attach-session', { id });
+    expect(handed.status).toBe(200);
+    expect(handed.json.result).toMatchObject({ id, sessionId: SESSION, workdir: '/home/me/repo' });
+    const other = await ctx.call('workstation', 'attach-session', { id });
+    expect(other).toMatchObject({
+      status: 403,
+      json: { error: 'the session lives on laptop, not on workstation' },
+    });
+    expect((await ctx.call('laptop', 'attach-session', { id: 'abcdefgh' })).status).toBe(404);
+  });
+
   it('ask → answer → resume is pinned to the machine that holds the session', async () => {
     const { json } = await ctx.call('laptop', 'add-task', { body: { title: 't', labels: ['review-pr'] } });
     const id = json.result.task.id;

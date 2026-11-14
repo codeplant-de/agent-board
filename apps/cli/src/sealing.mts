@@ -210,6 +210,11 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
   return {
     listTasks: async (options) => openedAll(await inner.listTasks(options), openTask),
     getTask: async (id) => opened(await inner.getTask(id), openTask),
+    async attachSession(id) {
+      const { sessionId, workdir } = await opened(await inner.attachSession(id), openTask);
+      if (sessionId === null) throw invalid('attach-session', 'the answer has no session');
+      return { sessionId, workdir };
+    },
     async addTask(draft) {
       const { task, created } = await inner.addTask(await sealDraft(draft));
       return { task: await opened(task, openTask), created };

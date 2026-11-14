@@ -1,6 +1,8 @@
-import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { constants as osConstants } from 'node:os';
 import { createInterface } from 'node:readline/promises';
-import { UsageError } from './cli.mts';
+import { ReportedFailure, UsageError } from './cli.mts';
 import type { Context, LinkingContext } from './cli.mts';
 import { BackendError } from './backend.mts';
 import {
@@ -20,6 +22,7 @@ import {
 import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
 import { postSlack, slackText } from './notify.mts';
 import { createStyle } from './style.mts';
+import { SystemError } from './system.mts';
 import { plainLine, plainText } from './terminal.mts';
 import type { Style } from './style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
@@ -177,6 +180,7 @@ export function renderThread(task: Task, notes: Note[]): string {
     `# ${task.title}`,
     '',
     `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(', ') || '-'}`,
+    ...(task.sessionId ? [`session: ${task.sessionId} · ${task.machine ?? '-'}:${task.workdir ?? '-'}`] : []),
     '',
     '## Input',
     '',
@@ -209,6 +213,70 @@ export async function readThread(context: Context, id: string): Promise<{ task: 
 export async function show(context: Context, id: string): Promise<void> {
   const { task, notes } = await readThread(context, id);
   context.print(renderThread(task, notes));
+}
+
+// Runs a program with the terminal and resolves with its exit status; tests replace it.
+export type Spawner = (command: string, args: string[], options: { cwd: string }) => Promise<number>;
+
+export const spawnInteractive: Spawner = (command, args, { cwd }) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd, stdio: 'inherit' });
+    child.on('error', (error: NodeJS.ErrnoException) =>
+      reject(
+        error.code === 'ENOENT'
+          ? new SystemError(`${command} is not on the PATH: install Claude Code to attach to a session`)
+          : error,
+      ),
+    );
+    child.on('close', (code, signal) => resolve(code ?? 128 + (signal ? (osConstants.signals[signal] ?? 0) : 0)));
+  });
+
+export interface AttachFlags {
+  fork?: boolean;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+// Opens the task's Claude session interactively, where it lives. The board decides who may: only the machine whose token
+// ran the task gets the session. A non-zero status of claude is the command's own.
+export async function attach(
+  context: Context,
+  id: string,
+  flags: AttachFlags = {},
+  spawnClaude: Spawner = spawnInteractive,
+): Promise<void> {
+  const { sessionId, workdir } = await context.backend.attachSession(id).catch((error: unknown) => {
+    if (error instanceof BackendError && error.fromApi && (error.status === 409 || error.status === 403))
+      throw new UsageError(error.message);
+    // attach-session came without a contract bump, so a board server from before it answers with an unknown command.
+    if (
+      error instanceof BackendError &&
+      error.fromApi &&
+      error.status === 404 &&
+      error.message.includes('unknown command')
+    )
+      throw new BackendError('the board server does not know attach-session yet: update the board server', 404, true);
+    throw error;
+  });
+  if (!workdir || !isDirectory(workdir))
+    throw new UsageError(
+      workdir
+        ? `the directory of ${id} is not there: ${plainLine(workdir)}`
+        : `the directory of ${id} is unknown: it could not be read`,
+    );
+  const args = ['--resume', sessionId, ...(flags.fork ? ['--fork-session'] : [])];
+  if (context.dryRun) {
+    context.print(`DRY claude ${args.join(' ')}  (in ${plainLine(workdir)})`);
+    return;
+  }
+  const exitCode = await spawnClaude('claude', args, { cwd: workdir });
+  if (exitCode !== 0) throw new ReportedFailure(`claude exited with code ${exitCode}`, exitCode);
 }
 
 export interface AddFlags {
