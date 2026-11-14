@@ -21,7 +21,10 @@ function foldersBeforeTenancy(): string {
   cpSync(migrationsFolder(), folder, { recursive: true });
   const journalPath = path.join(folder, 'meta', '_journal.json');
   const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as { entries: { tag: string }[] };
-  journal.entries = journal.entries.filter(({ tag }) => !tag.endsWith('_tenancy'));
+  journal.entries = journal.entries.slice(
+    0,
+    journal.entries.findIndex(({ tag }) => tag.endsWith('_tenancy')),
+  );
   writeFileSync(journalPath, JSON.stringify(journal));
   return folder;
 }

@@ -333,7 +333,7 @@ A schedule always has at most one pending occurrence, a task in Todo with `sched
 
 | Command | Request | `result` |
 | --- | --- | --- |
-| `version` | - | `{"contract": 5, "owner": "<username>"}` (the user whose board the token works on) |
+| `version` | - | `{"contract": 5, "owner": "<username>", "keyId": "<16 hex>" or null}` (the user whose board the token works on, and the fingerprint of that user's data key; null before they set up encryption. An older CLI ignores the extra fields) |
 | `list-tasks` | `all?` | `[Task, ...]` in priority order |
 | `get-task` | `id` | `Task` |
 | `add-task` | `body`: `{"title", "input"?, "labels"?, "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "head"?, "notBefore"?}` | `{"task": Task, "created": bool}` |

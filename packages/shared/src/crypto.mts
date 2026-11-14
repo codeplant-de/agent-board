@@ -203,3 +203,10 @@ export async function unwrapDataKey(wrappingKey: Uint8Array, wrapped: string): P
   if (plain.length !== KEY_BYTES) throw new CryptoError('the wrapped data key has the wrong length');
   return plain;
 }
+
+/** Structural check for `wrapDataKey`'s output: the prefix, the base64url alphabet and the exact length of a wrapped 32-byte key. */
+export function isWrappedKey(value: string): boolean {
+  if (!value.startsWith(WRAPPED_PREFIX)) return false;
+  const body = value.slice(WRAPPED_PREFIX.length);
+  return BASE64URL.test(body) && body.length === Math.ceil(((NONCE_BYTES + KEY_BYTES + TAG_BYTES) * 4) / 3);
+}
