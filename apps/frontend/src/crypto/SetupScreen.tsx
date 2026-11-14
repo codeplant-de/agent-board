@@ -20,7 +20,7 @@ import { useState } from 'react';
 import { useTRPC } from '../lib/trpc';
 import { PRODUCTION_KDF, type KdfParams } from './kdf';
 import { createKeySetup } from './keySlots';
-import { PASSPHRASE_ADVICE, passphraseProblem } from './passphrase';
+import { PASSPHRASE_ADVICE, passphraseProblem, samePassphrase } from './passphrase';
 import { recoveryGroups, sameRecoveryText } from './recoveryKey';
 
 // Which groups of the recovery key the person types back (1-based), to show they have a copy they can read.
@@ -44,8 +44,8 @@ function PassphraseStep({ owner, kdf, onReady }: { owner: string; kdf: KdfParams
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const problem = passphrase === '' ? null : passphraseProblem(passphrase);
-  const mismatch = again !== '' && again !== passphrase;
-  const ready = passphrase !== '' && problem === null && again === passphrase;
+  const mismatch = again !== '' && !samePassphrase(again, passphrase);
+  const ready = passphrase !== '' && problem === null && samePassphrase(again, passphrase);
   const submit = async () => {
     if (!ready || busy) return;
     setBusy(true);

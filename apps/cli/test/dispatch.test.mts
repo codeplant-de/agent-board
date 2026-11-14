@@ -308,3 +308,12 @@ test('a task whose prompt or directory cannot be decrypted is never claimed or s
   assert.ok(logs.includes('SKIP u1 cannot decrypt its input'));
   assert.ok(logs.includes('SKIP u2 cannot decrypt its workdir'));
 });
+
+test('a task that still names an agent as its creator is never started, whatever status the board shows (unstarted proposal)', async () => {
+  const proposal = task({ id: 'prop', input: 'rm -rf the world', createdBy: 'agent' });
+  const { deps, started, backend, logs } = setup([proposal, todo('t1')]);
+  await runDispatch(deps);
+  assert.deepEqual(started, ['t1']);
+  assert.ok(!backend.writes.some((w) => w.includes('claim prop')));
+  assert.ok(logs.some((line) => line.startsWith('SKIP prop proposed by an agent')));
+});

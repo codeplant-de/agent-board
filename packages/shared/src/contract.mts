@@ -2,6 +2,7 @@
 import { envelopeLength, isBlindIndex, isEnvelope } from './crypto.mts';
 import type { Field } from './crypto.mts';
 import { isRecord } from './guards.mts';
+import { isKeyId } from './keys.mts';
 import type { Answer, Question } from './questions.mts';
 import type { TranscriptBatch, WireTranscriptBatch } from './transcript.mts';
 
@@ -59,7 +60,6 @@ export interface Task {
   labels: string[];
   status: Status;
   priority: Priority;
-  url: string;
   closed: boolean;
   // The machine that claimed the task last; a resume runs only there, because the Claude session lives on it.
   machine: string | null;
@@ -73,7 +73,8 @@ export interface Task {
   head: string | null;
   // The last question the agent asked has no answer yet.
   openQuestion: boolean;
-  // Who made it. Intake's tasks run with intake's narrow permissions; the others as the user.
+  // Who made it. Intake's tasks run with intake's narrow permissions; the others as the user. "agent" is a proposal the user has
+  // not started: nothing runs it. Starting it makes it "user" (the client seals the prompt again for that creator).
   createdBy: TaskCreator;
   // While it runs: the lane of the machine that runs it, whether that lane borrowed it, and the agent's last tool call.
   lane: string | null;
@@ -389,8 +390,9 @@ export function newTaskId(): string {
   return id;
 }
 
-// The source of the machine-name pattern: the server events of `events.mts` match names with it too.
-export const MACHINE_NAME_PATTERN = '[A-Za-z0-9][A-Za-z0-9_.-]{0,63}';
+// The source of the machine-name pattern: the server events of `events.mts` match names with it too. 32 characters hold a
+// host name or a name someone picks for a machine, and are too short to carry a sentence in an event text.
+export const MACHINE_NAME_PATTERN = '[A-Za-z0-9][A-Za-z0-9_.-]{0,31}';
 const MACHINE_NAME = new RegExp(`^${MACHINE_NAME_PATTERN}$`);
 
 // A machine name travels in argv and is shown in the UI.
@@ -406,11 +408,6 @@ export function hasControlCharacter(text: string): boolean {
     const code = char.charCodeAt(0);
     return code < 0x20 || code === 0x7f;
   });
-}
-
-// The url lands inside a Slack link, where `<`, `>` and `|` end the link early.
-export function isSafeTaskUrl(url: string): boolean {
-  return url.length <= 2048 && /^https?:\/\/[^\s<>|]+$/.test(url) && !hasControlCharacter(url);
 }
 
 // The id of a Claude session, which the worker hands to `claude --resume`: only a UUID, so it can never read as a flag.
@@ -432,6 +429,28 @@ export function isSafeNoteId(id: string): boolean {
 function isPlainLine(value: string, max: number): boolean {
   return value.length <= max && !hasControlCharacter(value);
 }
+
+const CRON_FIELD = /^(?:[0-9*/,#?\-LW]|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|sun|mon|tue|wed|thu|fri|sat)+$/i;
+
+/** A 5-field cron expression: its fields hold only digits, the cron symbols and month and day abbreviations, so it cannot carry a sentence. */
+export function isCronExpression(value: string): boolean {
+  const fields = value.trim().split(/ +/);
+  return value.length <= 100 && fields.length === 5 && fields.every((field) => CRON_FIELD.test(field));
+}
+
+/** An IANA time zone name this runtime knows; anything else (a sentence without spaces included) is not one. */
+export function isTimeZoneName(value: string): boolean {
+  if (!/^[A-Za-z0-9_+\-/]{1,64}$/.test(value)) return false;
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// What a client shows where a value from the server is not of the shape the contract allows for it.
+export const INVALID_VALUE = '(invalid)';
 
 function oneOf<T extends string>(values: readonly T[]): (value: unknown) => value is T {
   return (value: unknown): value is T => values.some((candidate) => candidate === value);
@@ -546,9 +565,6 @@ function safeId(id: string, what: string): string {
 export function parseWireTask(value: unknown): WireTask {
   const obj = record(value, 'task');
   const id = safeId(string(obj, 'id', 'task'), 'task id');
-  const url = string(obj, 'url', 'task');
-  if (!isSafeTaskUrl(url))
-    throw new ContractError(`task url ${quoted(url)} must be an http(s) URL without spaces, <, > or |`);
   const machine = nullableString(obj, 'machine', 'task');
   if (machine !== null && !isSafeMachineName(machine))
     throw new ContractError(`task machine ${quoted(machine)} is not a safe name`);
@@ -560,7 +576,6 @@ export function parseWireTask(value: unknown): WireTask {
     input: string(obj, 'input', 'task'),
     status: member(obj, 'status', 'task', STATUSES),
     priority: member(obj, 'priority', 'task', PRIORITIES),
-    url,
     closed: boolean(obj, 'closed', 'task'),
     machine,
     sessionId: sessionId(nullableString(obj, 'sessionId', 'task'), 'task'),
@@ -601,8 +616,8 @@ export function parseWireSchedule(value: unknown): WireSchedule {
   const timezone = nullableString(obj, 'timezone', 'schedule');
   if ((everyMs === null) === (cron === null)) throw new ContractError('schedule needs exactly one of everyMs and cron');
   if (cron !== null && timezone === null) throw new ContractError('schedule.timezone is required with cron');
-  if (cron !== null && !isPlainLine(cron, 200)) throw new ContractError('schedule.cron is not a cron expression');
-  if (timezone !== null && !/^[A-Za-z0-9_+\-/]{1,64}$/.test(timezone))
+  if (cron !== null && !isCronExpression(cron)) throw new ContractError('schedule.cron is not a cron expression');
+  if (timezone !== null && !isTimeZoneName(timezone))
     throw new ContractError('schedule.timezone is not a time zone name');
   const machine = nullableString(obj, 'machine', 'schedule');
   if (machine !== null && !isSafeMachineName(machine))
@@ -696,7 +711,9 @@ export function parseVersionIdentity(value: unknown): { owner: string; keyId: st
   const obj = record(value, 'version');
   const owner = string(obj, 'owner', 'version');
   if (owner === '' || !isPlainLine(owner, 256)) throw new ContractError('version.owner is not a user name');
-  return { owner, keyId: nullableString(obj, 'keyId', 'version') };
+  const keyId = obj['keyId'];
+  if (keyId !== null && !isKeyId(keyId)) throw new ContractError('version.keyId is not a key id');
+  return { owner, keyId };
 }
 
 // What the server checks of every request: the shape, the sealed fields being envelopes, and nothing about their content.

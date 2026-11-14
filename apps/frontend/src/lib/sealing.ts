@@ -2,19 +2,21 @@ import {
   ContractError,
   defaultTitle,
   newTaskId,
-  openNote,
   QuestionError,
   sealAnswers,
   sealFields,
+  sealInput,
   sealNote,
   type Answer,
   type Keys,
   type Priority,
+  type Question,
   type RowRef,
+  type TaskCreator,
+  type UnreadableField,
 } from '@agent-board/shared';
 import { sealerFor } from './contexts';
-import { openerFor } from './opening';
-import type { RouterInputs, RouterOutputs } from './wire';
+import type { RouterInputs } from './wire';
 
 export class InputError extends Error {}
 
@@ -71,25 +73,42 @@ export async function sealReply(keys: Keys, taskId: string, message: string): Pr
 }
 
 /**
- * The answers checked against the questions they answer (opened from the question note as it stands on the board now), then
- * sealed together with those questions, so that what the agent is told comes from the answer alone.
+ * The answers checked against `questions`, then sealed together with them, so that what the agent is told comes from the answer
+ * alone. `questions` are exactly the ones the panel showed (opened from the question note on screen), never ones fetched again
+ * at submit time, which the board could have changed in between.
  */
 export async function sealAnswer(
   keys: Keys,
-  options: { id: string; questionNoteId: string; answers: Answer[]; message: string },
-  thread: RouterOutputs['tasks']['get']['thread'],
+  options: { id: string; questionNoteId: string; questions: Question[]; answers: Answer[]; message: string },
 ): Promise<RouterInputs['tasks']['answer']> {
-  const { id, questionNoteId, message } = options;
-  const unreadable = new InputError('This question cannot be read, so it cannot be answered here.');
-  const wire = thread.find((note) => note.id === questionNoteId);
-  const asked = wire === undefined ? undefined : await openNote(openerFor(keys), id, wire);
-  if (asked === undefined || asked.unreadable || asked.questions === undefined || wire?.kind !== 'question')
-    throw unreadable;
+  const { id, questionNoteId, questions, message } = options;
   const text = message.trim();
   return {
     id,
     questionNoteId,
-    answers: await checked(() => sealAnswers(sealerFor(keys), id, asked.questions ?? [], options.answers)),
+    answers: await checked(() => sealAnswers(sealerFor(keys), id, questions, options.answers)),
     message: await checked(() => sealNote(sealerFor(keys), { taskId: id, author: 'user', kind: 'answer' }, text)),
   };
+}
+
+/** What starting an agent's proposal needs of the proposal as the page shows it. */
+export interface Proposal {
+  id: string;
+  input: string;
+  createdBy: TaskCreator;
+  scheduleId: string | null;
+  unreadable: UnreadableField[];
+}
+
+/**
+ * Starting a proposal is the user's sealed act: its prompt, as the page showed it, sealed again for the creator "user", which is
+ * the only thing a worker runs with the user's permissions. Throws when the prompt could not be read, since sealing the
+ * placeholder would start something else.
+ */
+export async function sealStart(keys: Keys, proposal: Proposal): Promise<string> {
+  if (proposal.createdBy !== 'agent') throw new InputError('Only a task an agent proposed is started this way.');
+  if (proposal.unreadable.includes('input'))
+    throw new InputError('This proposal’s prompt cannot be read, so it cannot be started here.');
+  const row: RowRef = { kind: 'task', id: proposal.id, createdBy: 'user', scheduleId: proposal.scheduleId };
+  return checked(() => sealInput(sealerFor(keys), row, proposal.input));
 }

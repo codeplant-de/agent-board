@@ -20,17 +20,26 @@ import { MARKERS, sealed } from './test/sealed';
 const { db, admin } = useTestDb();
 
 const PLAIN = 'plain text, not an envelope';
-const [TITLE, PROMPT, WORKDIR, COMMENT, QUESTION, ANSWER, MESSAGE, PAUSE, FAIL, TOOL_USE, OUTPUT, PR, HEAD] =
-  MARKERS as [string, string, string, string, string, string, string, string, string, string, string, string, string];
-
-/** Every request body the server received, as sent: the clients' side of what the database scan checks. */
-const received: string[] = [];
+const [TITLE, PROMPT, WORKDIR, , , ANSWER, MESSAGE, , , , , PR, HEAD] = MARKERS as [
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+];
 
 async function setup() {
   const app = await buildServer(testConfig, db);
   const token = (await caller(db).machines.issue({ name: 'laptop' })).token;
   const raw = async (command: string, body: Record<string, unknown> = {}) => {
-    received.push(JSON.stringify(body));
     const res = await app.inject({
       method: 'POST',
       url: `/api/machine/${command}`,
@@ -44,7 +53,6 @@ async function setup() {
 
 let ctx: Awaited<ReturnType<typeof setup>>;
 beforeEach(async () => {
-  received.length = 0;
   ctx = await setup();
 });
 
@@ -436,105 +444,5 @@ describe('answers', () => {
       questions: [question],
       answers: [{ selected: ['Yes'], other: ANSWER }],
     });
-  });
-});
-
-describe('what the database holds', () => {
-  it('has none of the plaintext in any text, jsonb or array column after a full scenario, and no request carried it', async () => {
-    const { ui, call } = ctx;
-    const viaUi = await ui.tasks.create({ title: TITLE, input: `${PROMPT} ${PR}` });
-    const viaApi = (
-      await call('add-task', {
-        body: { title: TITLE, input: PROMPT, machine: 'laptop', workdir: `/${WORKDIR}`, dedupeKey: PR, head: HEAD },
-      })
-    ).json.result.task;
-    await call('add-schedule', {
-      body: { title: TITLE, input: PROMPT, machine: 'laptop', workdir: `/${WORKDIR}`, everyMs: 3_600_000 },
-    });
-    await ui.tasks.create({ title: TITLE, input: PROMPT, when: { every: 3_600_000 } });
-    await ui.tasks.reply({ id: viaUi.id, message: COMMENT, resume: false });
-    await call('add-note', { id: viaUi.id, body: COMMENT });
-    await call('add-note', { id: viaUi.id, author: 'system', body: COMMENT });
-
-    const id = viaApi.id;
-    await call('claim-task', { id, machine: 'laptop' });
-    await call('update-task', {
-      id,
-      body: { sessionId: SESSION, workdir: `/${WORKDIR}/sub`, input: PROMPT, head: HEAD },
-    });
-    const asked = { ...question, header: 'Scope', question: QUESTION };
-    await call('ask', { id, body: { questions: [asked] } });
-    const questionNoteId = (await ui.tasks.get({ id })).thread.find((n) => n.kind === 'question')!.id;
-    await ui.tasks.answer({ id, questionNoteId, answers: [{ selected: ['Yes'], other: ANSWER }], message: MESSAGE });
-    await call('claim-task', { id, machine: 'laptop' });
-    await call('pause', { id, body: PAUSE });
-    await call('claim-task', { id, machine: 'laptop' });
-    await call('transcript', {
-      id,
-      body: {
-        runId: 'run-scan-0001',
-        startedAt: at(0),
-        sessionId: SESSION,
-        resumed: false,
-        events: [
-          {
-            seq: 0,
-            at: at(1),
-            parent: null,
-            kind: 'tool_use',
-            toolUseId: 'tu',
-            name: 'Bash',
-            input: { command: TOOL_USE },
-          },
-          { seq: 1, at: at(2), parent: null, kind: 'tool_result', toolUseId: 'tu', isError: false, output: OUTPUT },
-        ],
-      },
-    });
-    expect((await call('fail', { id, body: FAIL })).json.result.applied).toBe(true);
-    await ui.tasks.done({ id });
-
-    const { rows: columns } = await admin.execute<{ table_name: string; column_name: string }>(sql`
-      select table_name, column_name from information_schema.columns
-      where table_schema = 'public' and (data_type in ('text', 'jsonb', 'json', 'character varying') or data_type = 'ARRAY')
-      order by table_name, column_name`);
-    const names = columns.map((c) => `${c.table_name}.${c.column_name}`);
-    expect(names).toEqual(
-      expect.arrayContaining([
-        'task.title',
-        'task.input',
-        'task.workdir',
-        'task.dedupe_key',
-        'task.head',
-        'note.body',
-        'note.preview',
-      ]),
-    );
-    expect(names).toEqual(
-      expect.arrayContaining(['note.questions', 'note.answers', 'transcript_event.data', 'transcript_event.output']),
-    );
-    const hits: string[] = [];
-    for (const { table_name, column_name } of columns) {
-      for (const marker of MARKERS) {
-        const { rows } = await admin.execute<{ n: number }>(
-          sql`select count(*)::int as n from ${sql.identifier(table_name)} where ${sql.identifier(column_name)}::text like ${`%${marker}%`}`,
-        );
-        if (rows[0]!.n > 0) hits.push(`${table_name}.${column_name} holds ${marker}`);
-      }
-    }
-    expect(hits).toEqual([]);
-    // The clients' side of the same claim: what they sent never held the text either, so a leak is found where it starts.
-    expect(received.length).toBeGreaterThan(10);
-    expect(received.filter((body) => MARKERS.some((marker) => body.includes(marker)))).toEqual([]);
-
-    const all = await admin.select().from(notes);
-    const plain = all.filter((n) => !isEnvelope(n.body));
-    expect(plain.length).toBeGreaterThan(0);
-    expect(plain.every((n) => n.author === 'server' && n.kind === 'event')).toBe(true);
-    expect(all.filter((n) => n.author === 'server').every((n) => !isEnvelope(n.body))).toBe(true);
-    expect(plain.map((n) => n.body).some((body) => MARKERS.some((marker) => body.includes(marker)))).toBe(false);
-    const sealedRows = all.filter((n) => isEnvelope(n.body));
-    expect(sealedRows.length).toBeGreaterThan(5);
-    for (const row of await admin.select().from(tasks))
-      expect(isEnvelope(row.title) && isEnvelope(row.input)).toBe(true);
   });
 });

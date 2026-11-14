@@ -15,17 +15,27 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
+import { INVALID_VALUE, type Keys } from '@agent-board/shared';
 import { modals } from '@mantine/modals';
 import { notifications } from '@mantine/notifications';
 import { IconCheck, IconCopy, IconKey } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { KeyError } from '../crypto/kdf';
-import { exportDataKey, replacePassphrase } from '../crypto/keySlots';
-import { PASSPHRASE_ADVICE, passphraseProblem } from '../crypto/passphrase';
+import { exportDataKey, replacePassphrase, type StoredKey } from '../crypto/keySlots';
+import { useKeys } from '../crypto/KeyContext';
+import { PASSPHRASE_ADVICE, passphraseProblem, samePassphrase } from '../crypto/passphrase';
 import { PassphraseModal } from '../crypto/PassphraseModal';
 import { ago } from '../lib/time';
 import { errorMessage, useTRPC } from '../lib/trpc';
+
+/**
+ * The slots the board stores, read as the key this browser is using: the owner and key id are the browser's, not the ones the
+ * board reports, so a key that unwraps is shown or re-wrapped only when it is the one in use.
+ */
+function asHeld(stored: StoredKey, keys: Keys): StoredKey {
+  return { ...stored, keyId: keys.keyId };
+}
 
 interface Enrolment {
   name: string;
@@ -43,7 +53,7 @@ function Machines() {
   const machines = useQuery(trpc.machines.list.queryOptions());
   const issue = useMutation(trpc.machines.issue.mutationOptions());
   const revoke = useMutation(trpc.machines.revoke.mutationOptions());
-  const me = useQuery(trpc.me.queryOptions());
+  const keys = useKeys();
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
   const [issued, setIssued] = useState<Enrolment | null>(null);
@@ -52,8 +62,8 @@ function Machines() {
   // The passphrase is checked before a token is issued, so a wrong one leaves the machine's old token alone.
   const enrol = async (passphrase: string) => {
     const stored = await queryClient.fetchQuery(trpc.keys.get.queryOptions());
-    if (!asking || !me.data || !stored) throw new KeyError('The key is not available. Reload the page.');
-    const dataKey = await exportDataKey({ owner: me.data.username, stored, passphrase });
+    if (!asking || !keys || !stored) throw new KeyError('The key is not available. Reload the page.');
+    const dataKey = await exportDataKey({ owner: keys.owner, stored: asHeld(stored, keys), passphrase });
     const token = asking.issuing ? (await issue.mutateAsync({ name: asking.name })).token : null;
     setIssued({ name: asking.name, token, dataKey });
     setName('');
@@ -157,7 +167,7 @@ function Machines() {
                   </Text>
                 </Table.Td>
                 <Table.Td>
-                  <Group gap="xs" justify="flex-end">
+                  <Group gap="xs" justify="flex-end" display={m.name === INVALID_VALUE ? 'none' : undefined}>
                     <Button size="xs" variant="default" onClick={() => issueFor(m.name)}>
                       New token
                     </Button>
@@ -212,7 +222,7 @@ function Machines() {
 function Encryption() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const me = useQuery(trpc.me.queryOptions());
+  const keys = useKeys();
   const replaceSlots = useMutation(trpc.keys.replaceSlots.mutationOptions());
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -220,8 +230,8 @@ function Encryption() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const problem = next === '' ? null : passphraseProblem(next);
-  const mismatch = again !== '' && again !== next;
-  const ready = current !== '' && next !== '' && problem === null && again === next;
+  const mismatch = again !== '' && !samePassphrase(again, next);
+  const ready = current !== '' && next !== '' && problem === null && samePassphrase(again, next);
 
   const change = async () => {
     if (!ready || busy) return;
@@ -229,14 +239,14 @@ function Encryption() {
     setError(null);
     try {
       const stored = await queryClient.fetchQuery(trpc.keys.get.queryOptions());
-      if (!me.data || !stored) throw new KeyError('The key is not available. Reload the page.');
+      if (!keys || !stored) throw new KeyError('The key is not available. Reload the page.');
       const { slots } = await replacePassphrase({
-        owner: me.data.username,
-        stored,
+        owner: keys.owner,
+        stored: asHeld(stored, keys),
         secret: { kind: 'passphrase', passphrase: current },
         newPassphrase: next,
       });
-      await replaceSlots.mutateAsync({ keyId: stored.keyId, slots });
+      await replaceSlots.mutateAsync({ keyId: keys.keyId, slots });
       setCurrent('');
       setNext('');
       setAgain('');
@@ -255,10 +265,10 @@ function Encryption() {
           <Title order={5}>Encryption</Title>
           <Text size="sm" c="dimmed">
             Your board is encrypted with a key only you hold
-            {me.data?.keyId ? (
+            {keys ? (
               <>
                 {' '}
-                (key id <Code>{me.data.keyId}</Code>)
+                (key id <Code>{keys.keyId}</Code>)
               </>
             ) : null}
             . {PASSPHRASE_ADVICE}

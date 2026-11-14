@@ -1,11 +1,12 @@
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { KeyGate } from './KeyGate';
 import { createKeySetup } from './keySlots';
 import { createMemoryKeyStore } from './keyStore';
-import { useKeys } from './KeyContext';
+import { useKeys, useLock } from './KeyContext';
 import type { Keys } from '@agent-board/shared';
 
 vi.mock('../lib/trpc', () => ({
@@ -34,8 +35,18 @@ beforeAll(async () => {
   }));
 });
 
+function LockButton() {
+  const lock = useLock();
+  return <button onClick={() => void lock?.()}>lock</button>;
+}
+
 function renderGate(me: { username: string; keyId: string | null }, store = createMemoryKeyStore(keys)) {
-  render(
+  renderGateWith(me, store);
+  return store;
+}
+
+function renderGateWith(me: { username: string; keyId: string | null }, store = createMemoryKeyStore(keys)) {
+  const view = render(
     <MantineProvider>
       <QueryClientProvider client={new QueryClient()}>
         <KeyGate me={me} store={store}>
@@ -44,12 +55,12 @@ function renderGate(me: { username: string; keyId: string | null }, store = crea
       </QueryClientProvider>
     </MantineProvider>,
   );
-  return store;
+  return { store, unmount: view.unmount };
 }
 
 describe('KeyGate', () => {
   it('sets up encryption when the board has no key', async () => {
-    renderGate({ username: 'jascha', keyId: null });
+    renderGate({ username: 'jascha', keyId: null }, createMemoryKeyStore());
     expect(await screen.findByText('Set up encryption')).toBeInTheDocument();
   });
 
@@ -63,15 +74,64 @@ describe('KeyGate', () => {
     expect(await screen.findByText('Unlock the board')).toBeInTheDocument();
   });
 
-  it('ignores and deletes a stored key of another user', async () => {
-    const store = renderGate({ username: 'someone-else', keyId: keys.keyId });
-    expect(await screen.findByText('Unlock the board')).toBeInTheDocument();
+  it('blocks, and keeps the key, when the board says it has no key but this browser holds one (a faked key reset)', async () => {
+    const store = renderGate({ username: 'jascha', keyId: null });
+    expect(await screen.findByText('The board’s record of your key changed')).toBeInTheDocument();
+    expect(screen.queryByText('Set up encryption')).not.toBeInTheDocument();
+    expect(screen.queryByText('unlocked as jascha')).not.toBeInTheDocument();
+    expect(screen.getByText(/Do not set up a new key unless you reset the board yourself/)).toBeInTheDocument();
+    expect(await store.load()).toMatchObject({ owner: 'jascha', keyId: keys.keyId });
+  });
+
+  it('blocks, and keeps the key, for another key id or another user', async () => {
+    for (const me of [
+      { username: 'jascha', keyId: '0123456789abcdef' },
+      { username: 'someone-else', keyId: keys.keyId },
+    ]) {
+      const { unmount, store } = renderGateWith(me);
+      expect(await screen.findByText('The board’s record of your key changed')).toBeInTheDocument();
+      expect(await store.load()).toMatchObject({ keyId: keys.keyId });
+      unmount();
+    }
+  });
+
+  it('forgets the key only after FORGET is typed, and then offers setup', async () => {
+    const store = renderGate({ username: 'jascha', keyId: null });
+    const forget = await screen.findByRole('button', { name: 'Forget this browser’s key' });
+    expect(forget).toBeDisabled();
+    await userEvent.type(screen.getByLabelText(/type FORGET/), 'forget');
+    expect(forget).toBeDisabled();
+    await userEvent.clear(screen.getByLabelText(/type FORGET/));
+    await userEvent.type(screen.getByLabelText(/type FORGET/), 'FORGET');
+    await userEvent.click(forget);
+    expect(await screen.findByText('Set up encryption')).toBeInTheDocument();
     expect(await store.load()).toBeUndefined();
   });
 
-  it('ignores and deletes a stored key with another key id', async () => {
-    const store = renderGate({ username: 'jascha', keyId: '0123456789abcdef' });
+  it('Lock clears the cached queries and the mutations, whose variables hold what was sent', async () => {
+    const queryClient = new QueryClient();
+    const tasksKey = [['tasks', 'list'], { type: 'query' }];
+    const meKey = [['me'], { type: 'query' }];
+    queryClient.setQueryData(tasksKey, [{ title: 'secret title' }]);
+    queryClient.setQueryData(meKey, { username: 'jascha' });
+    await queryClient
+      .getMutationCache()
+      .build(queryClient, { mutationFn: async () => 'x' })
+      .execute({ message: 'secret' });
+    expect(queryClient.getMutationCache().getAll()).toHaveLength(1);
+    render(
+      <MantineProvider>
+        <QueryClientProvider client={queryClient}>
+          <KeyGate me={{ username: 'jascha', keyId: keys.keyId }} store={createMemoryKeyStore(keys)}>
+            <LockButton />
+          </KeyGate>
+        </QueryClientProvider>
+      </MantineProvider>,
+    );
+    await userEvent.click(await screen.findByRole('button', { name: 'lock' }));
     expect(await screen.findByText('Unlock the board')).toBeInTheDocument();
-    expect(await store.load()).toBeUndefined();
+    expect(queryClient.getQueryData(tasksKey)).toBeUndefined();
+    expect(queryClient.getQueryData(meKey)).toBeDefined();
+    expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
   });
 });

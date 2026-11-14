@@ -1,4 +1,4 @@
-import { CONTRACT_VERSION, sealFields, TAKE_BACK_AFTER_MS } from '@agent-board/shared';
+import { CONTRACT_VERSION, inputBinding, sealFields, sealNote, TAKE_BACK_AFTER_MS } from '@agent-board/shared';
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { schedules, tasks } from './db/schema';
@@ -109,7 +109,8 @@ describe('machine API', () => {
       runStartedAt: null,
       paused: false,
     });
-    expect(task.url).toBe(`https://board.test/t/${task.id}`);
+    // The board sends no link of its own: the CLI builds every link from its web.json and the id.
+    expect(task).not.toHaveProperty('url');
     expect(task.id).toMatch(/^[A-Za-z0-9]{12}$/);
 
     const list = await ctx.call('laptop', 'list-tasks');
@@ -275,7 +276,7 @@ describe('board UI', () => {
     expect(before.task).toMatchObject({ proposed: true, status: 'needs-me', parentId: parent.id });
     expect((await ui.tasks.get({ id: parent.id })).followUps.map((t) => t.id)).toEqual([id]);
     const started = await ui.tasks.move({ id, status: 'todo' });
-    expect(started).toMatchObject({ proposed: false, status: 'todo' });
+    expect(started).toMatchObject({ proposed: false, status: 'todo', createdBy: 'user', input: 'do Y' });
   });
 
   it('drag and drop places a task between its neighbours', async () => {
@@ -608,8 +609,52 @@ describe('proposals', () => {
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
     await admin.update(tasks).set({ status: 'needs-me' }).where(eq(tasks.id, id));
     const started = await plainUi(db).tasks.move({ id, status: 'todo' });
-    expect(started).toMatchObject({ status: 'todo', proposed: false });
+    expect(started).toMatchObject({ status: 'todo', proposed: false, createdBy: 'user' });
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(200);
+  });
+
+  it('starting a proposal is the user’s sealed act: the prompt sealed again for the creator "user", and nothing else starts it', async () => {
+    const ui = plainUi(db);
+    const { id } = await propose({ input: 'do Y' });
+    const raw = ui.raw;
+    // Without the prompt sealed again, a move into Todo is refused, and so is every other way into Todo.
+    await expect(raw.tasks.move({ id, status: 'todo' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(
+      raw.tasks.reply({
+        id,
+        message: await sealNote(sealed.seal, { taskId: id, author: 'user', kind: 'comment' }, 'go'),
+        resume: true,
+      }),
+    ).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    await expect(raw.tasks.rerun({ id })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await raw.tasks.done({ id });
+    await expect(raw.tasks.move({ id, status: 'todo' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await raw.tasks.setClosed({ id, closed: true });
+    await raw.tasks.setClosed({ id, closed: false });
+    expect(await ui.tasks.get({ id })).toMatchObject({ task: { proposed: true, createdBy: 'agent' } });
+    // A prompt that is not an envelope is no start.
+    await expect(raw.tasks.move({ id, status: 'todo', startInput: 'do Y' })).rejects.toThrow();
+    // A prompt sealed for the creator agent is accepted by the server, which cannot tell: the worker will not open it as a user's.
+    const [stored] = await admin.select().from(tasks).where(eq(tasks.id, id));
+    const sealedAsAgent = stored!.input;
+    await raw.tasks.move({ id, status: 'todo', startInput: sealedAsAgent });
+    const [started] = await admin.select().from(tasks).where(eq(tasks.id, id));
+    expect(started).toMatchObject({ createdBy: 'user', proposed: false, status: 'todo' });
+    expect(
+      await sealed.open(inputBinding({ kind: 'task', id, createdBy: 'user', scheduleId: null }), started!.input),
+    ).toBeUndefined();
+    // The server cannot tell, so it claims; the worker finds the prompt unreadable as a user's and refuses it.
+    const claimed = await ctx.raw('laptop', 'claim-task', { id, machine: 'laptop' });
+    expect(claimed.status).toBe(200);
+    expect(claimed.json.result.createdBy).toBe('user');
+  });
+
+  it('a task that names an agent as its creator is not claimable even when it is no longer marked proposed', async () => {
+    const { id } = await propose();
+    await admin.update(tasks).set({ status: 'todo', proposed: false }).where(eq(tasks.id, id));
+    expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
   });
 
   it('a proposal cannot ask a question, so answering never starts it', async () => {

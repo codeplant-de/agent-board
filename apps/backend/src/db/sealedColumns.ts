@@ -1,7 +1,8 @@
 /**
- * What the database holds a sealed column to (migration 0014): an `abe1.` envelope, or for a blind index an `abh1.` value, of
- * the shape the encryption module makes. `[.]` rather than an escaped dot keeps the SQL free of backslashes. Only the clients
- * can tell whether a value opens, but plain text cannot get in.
+ * What a sealed column holds: an `abe1.` envelope, or for a blind index an `abh1.` value, of the shape the encryption module
+ * makes. The re-encryption script counts the values that are not, and a later release's migration makes the database refuse
+ * them. `[.]` rather than an escaped dot keeps the SQL free of backslashes. Only the clients can tell whether a value opens,
+ * but plain text cannot get in.
  */
 export const ENVELOPE_PATTERN = '^abe1[.][A-Za-z0-9_-]{38,}$';
 export const BLIND_INDEX_PATTERN = '^abh1[.][A-Za-z0-9_-]{43}$';
@@ -10,22 +11,10 @@ export interface SealedColumn {
   table: string;
   column: string;
   kind: 'envelope' | 'blind-index';
-  /** The name of the check constraint of migration 0014. */
-  constraint: string;
 }
 
-const envelope = (table: string, column: string): SealedColumn => ({
-  table,
-  column,
-  kind: 'envelope',
-  constraint: `${table}_${column}_sealed`,
-});
-const blindIndex = (table: string, column: string): SealedColumn => ({
-  table,
-  column,
-  kind: 'blind-index',
-  constraint: `${table}_${column}_blind`,
-});
+const envelope = (table: string, column: string): SealedColumn => ({ table, column, kind: 'envelope' });
+const blindIndex = (table: string, column: string): SealedColumn => ({ table, column, kind: 'blind-index' });
 
 export const SEALED_COLUMNS: readonly SealedColumn[] = [
   envelope('task', 'title'),

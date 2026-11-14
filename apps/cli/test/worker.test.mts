@@ -4,7 +4,7 @@ import { MAX_BATCH_EVENTS } from '@agent-board/shared';
 import type { Task } from '@agent-board/shared';
 import { BackendError } from '../src/backend.mts';
 import { START_MARKER } from '../src/decide.mts';
-import type { Invocation } from '../src/decide.mts';
+import type { Invocation, Supervision } from '../src/decide.mts';
 import { runWorker } from '../src/worker.mts';
 import type { RunResult, WorkerDeps } from '../src/worker.mts';
 import { CONFIG, fakeBackend, fakeRunFiles, fakeSessions, note, OTHER_SESSION, SESSION, task } from './helpers.mts';
@@ -326,6 +326,7 @@ test("the run's stream becomes readable log lines and a transcript sent with eac
       ),
     );
     await watch.tick();
+    await watch.settled();
     logged.push(
       onLine(
         JSON.stringify({
@@ -357,6 +358,7 @@ test('a transcript batch the board refused is sent again with the next one', asy
   deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
     onLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'first' }] } }));
     await watch.tick();
+    await watch.settled();
     onLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'second' }] } }));
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
@@ -533,6 +535,7 @@ test("a backlog is sent in batches of at most the board's limit, and a refused o
     for (let n = 0; n < MAX_BATCH_EVENTS + 10; n++)
       onLine(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `t${n}` }] } }));
     await watch.tick();
+    await watch.settled();
     assert.deepEqual(sizes, [], 'the first batch was refused, nothing else went out');
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
@@ -695,6 +698,7 @@ test('an event the board refuses for good is dropped alone, and never holds the 
   deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
     for (const text of ['a', 'b', 'too big for the board', 'c']) onLine(textEvent(text));
     await watch.tick();
+    await watch.settled();
     onLine(textEvent('d'));
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
@@ -715,12 +719,115 @@ test('an event the board refused for a passing reason waits, in order, with ever
   deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
     onLine(textEvent('a'));
     await watch.tick();
+    await watch.settled();
     onLine(textEvent('b'));
     down = false;
     await watch.tick();
+    await watch.settled();
     backend.tasks[0]!.status = 'needs-me';
     return { exitCode: 0, signal: null };
   };
   await runWorker(deps, 'w1');
   assert.deepEqual(stored, ['a', 'b']);
+});
+
+test('a worker refuses a task whose creator is an agent, as the board lists it as Todo (unstarted proposal)', async () => {
+  const { deps, backend, notes } = setup({ exitCode: 0, signal: null });
+  Object.assign(backend.tasks[0]!, { createdBy: 'agent', input: 'rm -rf the world' });
+  let ran = false;
+  deps.run = async () => {
+    ran = true;
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.equal(ran, false);
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('you have not started it')));
+  assert.equal(notes.length, 1);
+});
+
+test('a session that a fresh run abandoned is not resumed, even when the board still names it (Re-run fresh)', async () => {
+  const run = setup({ exitCode: 0, signal: null });
+  Object.assign(run.backend.tasks[0]!, { next: 'resume', sessionId: SESSION, machine: 'here' });
+  run.deps.sessions.record('w1', SESSION);
+  run.deps.sessions.record('w1', OTHER_SESSION);
+  run.backend.notes.set('w1', [
+    note('asked', new Date('2026-11-13T10:00:00Z')),
+    note('go on', new Date('2026-11-13T10:05:00Z'), { author: 'user' }),
+  ]);
+  let ran = false;
+  run.deps.run = async () => {
+    ran = true;
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(run.deps, 'w1');
+  assert.equal(ran, false);
+  assert.ok(run.backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('did not start for this task')));
+});
+
+// The board is the other side of every call the worker makes: it may refuse, hold an answer for as long as the client waits, or
+// answer slowly on purpose. None of that may keep the worker from checking the run's own limits.
+function stalledRun(options: { quietSince: Date; now: Date }) {
+  const run = setup({ exitCode: 0, signal: null });
+  const { deps, backend } = run;
+  deps.now = () => options.now;
+  (deps.files as ReturnType<typeof fakeRunFiles>).touchAlive('w1', options.quietSince);
+  const decisions: Supervision[] = [];
+  deps.run = async (_invocation, _taskId, _env, watch, onLine) => {
+    for (let n = 0; n < 1000; n += 1) onLine(textEvent(`t${n}`));
+    decisions.push(await watch.tick());
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  return { ...run, decisions };
+}
+
+test('a board that never answers a transcript upload or a heartbeat cannot hold back the run’s limits (stalled supervision)', async () => {
+  const now = new Date('2026-11-14T12:00:00Z');
+  const { deps, backend, decisions } = stalledRun({ quietSince: new Date(now.getTime() - 20 * 60_000), now });
+  let uploads = 0;
+  const never = new Promise<never>(() => undefined);
+  backend.transcript = async () => {
+    uploads += 1;
+    return never;
+  };
+  backend.heartbeat = async () => never;
+  // The run ends only when the test lets it; the hanging calls are still open then.
+  const ended = Promise.race([
+    runWorker(deps, 'w1').then(() => 'ended'),
+    new Promise<string>((resolve) => setTimeout(() => resolve('waiting'), 300)),
+  ]);
+  assert.equal(
+    await ended,
+    'waiting',
+    'the end of the run waits for the hanging upload, which is bounded in the real client',
+  );
+  assert.equal(decisions.length, 1, 'the tick answered without waiting for the board');
+  assert.deepEqual(decisions[0], {
+    kind: 'stop',
+    why: 'inactive',
+    message: 'Stopped: the agent made no tool call for 15 minutes.',
+  });
+  assert.equal(uploads, 1);
+});
+
+test('a board that refuses every transcript batch costs a bounded number of calls per pass, never the limits (2N-1 calls)', async () => {
+  const now = new Date('2026-11-14T12:00:00Z');
+  const { deps, backend, decisions } = stalledRun({ quietSince: new Date(now.getTime() - 20 * 60_000), now });
+  let calls = 0;
+  backend.transcript = async () => {
+    calls += 1;
+    throw new BackendError('transcript: refused', 400);
+  };
+  let afterTick = -1;
+  const inner = deps.run;
+  deps.run = async (invocation, taskId, env, watch, onLine) => {
+    const result = await inner(invocation, taskId, env, watch, onLine);
+    await watch.settled();
+    afterTick = calls;
+    return result;
+  };
+  await runWorker(deps, 'w1');
+  assert.equal(decisions[0]?.kind, 'stop');
+  assert.ok(afterTick >= 1 && afterTick <= 24, `${afterTick} calls in one pass`);
+  assert.ok(calls <= 48, `${calls} calls in all, the end of the run included`);
 });

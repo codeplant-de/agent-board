@@ -239,6 +239,8 @@ export interface ScheduleDeps {
   // The IANA zone a cron expression is read in.
   timezone: string;
   print: (line: string) => void;
+  // The link to a task, built from this machine's own board URL.
+  link: (taskId: string) => string;
   check: DuplicateCheck;
   // Asks in the terminal; undefined when there is none (a script), which creates the task with a warning.
   choose: ((duplicate: Duplicate, task: Task) => Promise<Choice>) | undefined;
@@ -259,7 +261,7 @@ async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<T
   });
   const end = args.times ? `, ${args.times} runs` : args.until ? `, until ${localTime(args.until)}` : '';
   deps.print(
-    `scheduled repeat ${schedule.id}: ${describeRule(schedule)}${end}; first run ${localTime(task.notBefore ?? new Date())} ${task.url}`,
+    `scheduled repeat ${schedule.id}: ${describeRule(schedule)}${end}; first run ${localTime(task.notBefore ?? new Date())} ${deps.link(task.id)}`,
   );
   return task;
 }
@@ -283,13 +285,15 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
       if (choice === 'requeue') {
         if (existing.status === 'todo' && args.notBefore) {
           const delayed = await backend.updateTask(existing.id, { notBefore: args.notBefore, expect: 'todo' });
-          deps.print(`${existing.id} is already queued, now starts ${localTime(args.notBefore)}: ${delayed.url}`);
+          deps.print(
+            `${existing.id} is already queued, now starts ${localTime(args.notBefore)}: ${deps.link(delayed.id)}`,
+          );
           return delayed;
         }
         if (existing.status === 'todo' || existing.status === 'running') {
           const note = args.notBefore ? '; the start time was not applied' : '';
           deps.print(
-            `${existing.id} is already ${existing.status === 'todo' ? 'queued' : 'running'}${note}: ${existing.url}`,
+            `${existing.id} is already ${existing.status === 'todo' ? 'queued' : 'running'}${note}: ${deps.link(existing.id)}`,
           );
           return existing;
         }
@@ -302,7 +306,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
           author: 'system',
         });
         deps.print(
-          `requeued ${requeued.id} ${requeued.url}${requeued.notBefore ? `, starts ${localTime(requeued.notBefore)}` : ''}`,
+          `requeued ${requeued.id} ${deps.link(requeued.id)}${requeued.notBefore ? `, starts ${localTime(requeued.notBefore)}` : ''}`,
         );
         return requeued;
       }
@@ -320,6 +324,8 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     ...(args.priority ? { priority: args.priority } : {}),
   });
   if (warning) await backend.addNote(task.id, warning, { author: 'system' });
-  deps.print(`scheduled ${task.id} ${task.url}${task.notBefore ? `, starts ${localTime(task.notBefore)}` : ''}`);
+  deps.print(
+    `scheduled ${task.id} ${deps.link(task.id)}${task.notBefore ? `, starts ${localTime(task.notBefore)}` : ''}`,
+  );
   return task;
 }

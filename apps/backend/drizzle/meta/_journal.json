@@ -99,13 +99,6 @@
       "when": 1794675286222,
       "tag": "0013_encrypted_content",
       "breakpoints": true
-    },
-    {
-      "idx": 14,
-      "version": "7",
-      "when": 1794677439656,
-      "tag": "0014_sealed_content_constraints",
-      "breakpoints": true
     }
   ]
 }

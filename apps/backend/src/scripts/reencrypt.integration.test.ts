@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createSealedBackend } from '../../../cli/src/sealing.mts';
 import { planIntake, runIntake } from '../../../cli/src/intake.mts';
 import { CONFIG } from '../../../cli/test/helpers.mts';
-import { createDb, migrationsFolder, type Db } from '../db/client';
+import { createDb, type Db } from '../db/client';
 import { buildServer } from '../server';
 import { caller, testConfig } from '../test/helpers';
 import { plainUi } from '../test/client';
@@ -109,6 +109,8 @@ async function legacySeed(db: Db): Promise<void> {
     parentId: 't1plain1',
     proposed: true,
   });
+  // A proposal the user started before this change: its creator stayed "agent" and only `proposed = false` says so.
+  await task({ id: 't8start1', title: 'Started proposal', input: 'do it now', createdBy: 'agent', proposed: false });
   await task({ id: 't7mixed', title: halfSealedTitle, input: 'The prompt is still plain' });
 
   const note = (n: {
@@ -311,7 +313,7 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     summary = await run({ dryRun: true });
     expect(await snapshot()).toBe(before);
     expect(summary.dryRun).toBe(true);
-    expect(summary.columns['task.title']).toEqual({ converted: 6, alreadySealed: 1, leftPlain: 0 });
+    expect(summary.columns['task.title']).toEqual({ converted: 7, alreadySealed: 1, leftPlain: 0 });
     expect(summary.columns['transcript_event.output']?.converted).toBe(4);
   });
 
@@ -319,8 +321,8 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     const real = await run();
     expect(real.columns).toEqual(summary.columns);
     expect(real.columns).toMatchObject({
-      'task.title': { converted: 6, alreadySealed: 1 },
-      'task.input': { converted: 7, alreadySealed: 0 },
+      'task.title': { converted: 7, alreadySealed: 1 },
+      'task.input': { converted: 8, alreadySealed: 0 },
       'task.workdir': { converted: 2 },
       'task.dedupe_key': { converted: 1 },
       'task.head': { converted: 1 },
@@ -335,6 +337,7 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     expect(real.notices).toMatchObject({
       'tasks that are occurrences of a schedule that no longer exists (sealed for the schedule id they name)': 1,
       'answer notes without usable questions, made comments of the user': 3,
+      'proposals the user had started (now created by the user, as a started proposal is)': 1,
     });
     expect(await plaintextCounts(client, 'all')).toEqual({});
     expect(real.tables['transcript_event']?.rows).toBe(25);
@@ -384,7 +387,7 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     });
     const tasks = await backend.listTasks({ all: true });
     expect(tasks.map((task) => task.id).sort()).toEqual(
-      ['t1plain1', 't2intake', 't3occur1', 't4orphan', 't5empty', 't6agent', 't7mixed'].sort(),
+      ['t1plain1', 't2intake', 't3occur1', 't4orphan', 't5empty', 't6agent', 't7mixed', 't8start1'].sort(),
     );
     expect(tasks.filter((task) => task.unreadable.length > 0)).toEqual([]);
     const byId = Object.fromEntries(tasks.map((task) => [task.id, task]));
@@ -398,6 +401,9 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     expect(byId['t4orphan']).toMatchObject({ title: 'Sweep of a deleted schedule', scheduleId: 'gone0001' });
     expect(byId['t5empty']).toMatchObject({ title: '', input: '', workdir: null });
     expect(byId['t7mixed']).toMatchObject({ title: 'Half sealed', input: 'The prompt is still plain' });
+    // A proposal still waiting stays the agent's, and no worker runs it; one the user had started is the user's now.
+    expect(byId['t6agent']).toMatchObject({ createdBy: 'agent', input: 'do it' });
+    expect(byId['t8start1']).toMatchObject({ createdBy: 'user', input: 'do it now', unreadable: [] });
     expect(byId['t2intake']?.head).toBe(await backend.indexHead(SHA));
 
     const schedules = await backend.listSchedules();
@@ -467,7 +473,7 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
   it('is read by the browser code: lists, threads, previews, transcripts, nothing unreadable', async () => {
     const ui = plainUi(app.db, OWNER);
     const list = await ui.tasks.list();
-    expect(list).toHaveLength(7);
+    expect(list).toHaveLength(8);
     const previews = Object.fromEntries(list.map((task) => [task.id, task.lastNote]));
     expect(previews['t1plain1']).toBeTruthy();
     for (const { id } of list) {
@@ -491,7 +497,7 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     const again = await run();
     expect(await snapshot()).toBe(before);
     for (const [column, { converted }] of Object.entries(again.columns)) expect(converted, column).toBe(0);
-    expect(again.columns['task.title']?.alreadySealed).toBe(7);
+    expect(again.columns['task.title']?.alreadySealed).toBe(8);
     expect(Object.values(again.tables).every((table) => table.changed === 0)).toBe(true);
     expect(Object.keys(again.notices)).toEqual([expect.stringMatching(/schedule that no longer exists/)]);
   });
@@ -499,14 +505,5 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
   it('leaves the rows of the other user as they were', async () => {
     const [bob] = await rows<{ title: string }>(`select title from task where owner = 'bob'`);
     expect(bob?.title).toMatch(/^abe1\./);
-  });
-
-  it('lets the constraints migration pass afterwards, and the constraints are validated', async () => {
-    await migrate(admin.db, { migrationsFolder: migrationsFolder() });
-    const constraints = await rows<{ conname: string; convalidated: boolean }>(
-      `select conname, convalidated from pg_constraint where conname like '%\\_sealed' or conname like '%\\_blind'`,
-    );
-    expect(constraints).toHaveLength(14);
-    expect(constraints.every((constraint) => constraint.convalidated)).toBe(true);
   });
 });

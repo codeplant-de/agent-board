@@ -215,6 +215,17 @@ export function unreadableForRun(task: Task): UnreadableField[] {
   return task.unreadable.filter((field) => field !== 'title');
 }
 
+/**
+ * Why this task is never run, whatever the board says, or undefined. An agent's proposal is the user's to start: starting it seals
+ * its prompt again as the user's (creator "user"), so a task that still names the agent as its creator was not started by the
+ * user, and its prompt must never get the user's permissions.
+ */
+export function neverRun(task: Task): string | undefined {
+  return task.createdBy === 'agent'
+    ? 'An agent proposed this task and you have not started it: a worker only runs what you started or your own machines created.'
+    : undefined;
+}
+
 // A task with its own directory runs only on the machine it was scheduled on (intake's tasks have none of their own).
 export function pinnedMachine(task: Task): string | undefined {
   if (task.next === 'resume' && task.sessionId !== null && task.machine !== null) return task.machine;
@@ -427,6 +438,8 @@ export function buildInvocation(input: {
   const { task, intake } = input;
   const fromIntake = task.createdBy === 'intake';
   const prompt = task.input.trim();
+  const refused = neverRun(task);
+  if (refused !== undefined) return { ok: false, reason: refused };
   if (input.run.kind === 'blocked') return { ok: false, reason: input.run.reason };
   if (input.run.kind === 'fresh' && prompt === '') return { ok: false, reason: 'The task has no prompt.' };
   if (!isSessionId(input.run.sessionId)) return { ok: false, reason: 'The session id is not a UUID.' };
