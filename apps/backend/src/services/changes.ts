@@ -36,6 +36,10 @@ export class Changes {
     };
   }
 
+  listenerCount(owner: string): number {
+    return this.emitter.listenerCount(this.eventName(owner));
+  }
+
   close(): void {
     this.timers.forEach(clearTimeout);
     this.timers.clear();

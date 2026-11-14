@@ -221,6 +221,8 @@ export function registerMachineApi(
   app.get('/api/machine/events', async (req, reply) => {
     const { identity, token } = await authenticate(db, req);
     reply.hijack();
+    // The client may have left while the token was being looked up; its `close` event is gone by now.
+    if (req.raw.destroyed) return;
     const res = reply.raw;
     res.writeHead(200, {
       'content-type': 'text/event-stream',

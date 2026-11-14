@@ -42,10 +42,12 @@ const STATUS: Record<AppErrorCode, number> = {
 export interface ServerOptions extends Partial<MachineApiOptions> {
   /** How long writes of one owner are held back to give one event; tests shorten it. */
   debounceMs?: number;
+  /** Tests hand in their own to look at it. */
+  changes?: Changes;
 }
 
 export async function buildServer(config: Config, root: Db, options: ServerOptions = {}) {
-  const changes = new Changes(options.debounceMs ?? CHANGES_DEBOUNCE_MS);
+  const changes = options.changes ?? new Changes(options.debounceMs ?? CHANGES_DEBOUNCE_MS);
   const app = Fastify({
     logger: config.nodeEnv === 'test' ? false : { level: 'info' },
     // A transcript batch can carry a few large tool results.
