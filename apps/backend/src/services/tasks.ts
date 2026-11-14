@@ -13,7 +13,7 @@ import {
   type TaskPatch,
 } from '@agent-board/shared';
 import { and, asc, desc, eq, lt, ne, sql } from 'drizzle-orm';
-import type { Db, DbOrTx } from '../db/client';
+import type { DbOrTx } from '../db/client';
 import { notes, tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
 import { DONE_ARCHIVE_DAYS, daysBefore } from './retention';
@@ -126,7 +126,7 @@ export async function listTasksWithLastNote(
 }
 
 /** New task at the bottom of its status. A known dedupe key returns the existing task instead. */
-export async function addTask(db: Db, draft: TaskDraft): Promise<{ row: TaskRow; created: boolean }> {
+export async function addTask(db: DbOrTx, draft: TaskDraft): Promise<{ row: TaskRow; created: boolean }> {
   return db.transaction((tx) => insertTask(tx, draft));
 }
 
@@ -186,7 +186,7 @@ async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promis
 }
 
 /** A status or priority change puts the task at the bottom of its new place. */
-export async function updateTask(db: Db, id: string, patch: TaskPatch): Promise<TaskRow> {
+export async function updateTask(db: DbOrTx, id: string, patch: TaskPatch): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const current = await lockTask(tx, id);
     if (patch.expect !== undefined && patch.expect !== current.status)
@@ -220,7 +220,7 @@ export async function updateTask(db: Db, id: string, patch: TaskPatch): Promise<
  * task is not due before its start time.
  * Undefined when the claim is lost.
  */
-export async function claimTask(db: Db, id: string, machine: string): Promise<TaskRow | undefined> {
+export async function claimTask(db: DbOrTx, id: string, machine: string): Promise<TaskRow | undefined> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, id);
     const free =
@@ -266,7 +266,7 @@ export async function addNote(
 }
 
 /** The agent's question: a question note, and the task waits in needs-me for the answer. */
-export async function ask(db: Db, taskId: string, questions: Question[], by: string): Promise<NoteRow> {
+export async function ask(db: DbOrTx, taskId: string, questions: Question[], by: string): Promise<NoteRow> {
   return db.transaction(async (tx) => {
     const current = await lockTask(tx, taskId);
     // Answering a question starts the task as the user, so a proposal cannot ask one.
@@ -291,7 +291,7 @@ function requireNotRunning(task: TaskRow): void {
  * run resumes the agent's session with it.
  */
 export async function answer(
-  db: Db,
+  db: DbOrTx,
   input: { taskId: string; questionNoteId: string; answers: unknown; message: string; by: string },
 ): Promise<TaskRow> {
   return db.transaction(async (tx) => {
@@ -321,7 +321,7 @@ export async function answer(
 
 /** A user comment; with `resume` it also sends the task back to the agent. */
 export async function reply(
-  db: Db,
+  db: DbOrTx,
   input: { taskId: string; message: string; resume: boolean; by: string },
 ): Promise<TaskRow> {
   const message = input.message.trim();
@@ -351,7 +351,7 @@ async function systemEvent(tx: DbOrTx, taskId: string, body: string, by: string 
   await addNote(tx, taskId, { author: 'system', kind: 'event', body, by });
 }
 
-export async function markDone(db: Db, taskId: string, by: string): Promise<TaskRow> {
+export async function markDone(db: DbOrTx, taskId: string, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     requireNotRunning(task);
@@ -361,7 +361,7 @@ export async function markDone(db: Db, taskId: string, by: string): Promise<Task
 }
 
 /** Start over: a new session on whichever machine claims it first. */
-export async function rerunFresh(db: Db, taskId: string, by: string): Promise<TaskRow> {
+export async function rerunFresh(db: DbOrTx, taskId: string, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     requireNotRunning(task);
@@ -376,7 +376,7 @@ export async function rerunFresh(db: Db, taskId: string, by: string): Promise<Ta
 }
 
 /** Closing takes a task out of the workflow; it stays readable and can be reopened. */
-export async function setClosed(db: Db, taskId: string, closed: boolean, by: string): Promise<TaskRow> {
+export async function setClosed(db: DbOrTx, taskId: string, closed: boolean, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (closed) requireNotRunning(task);
@@ -396,7 +396,7 @@ function closeOrReopen(tx: DbOrTx, task: TaskRow, closed: boolean): Promise<Task
  * Closes what has sat untouched in Done for the archive period. Returns how many tasks it closed.
  * Intake's tasks stay open: intake reads a closed task as "never again", which would block a re-requested review.
  */
-export async function archiveStaleDone(db: Db, now: Date = new Date()): Promise<number> {
+export async function archiveStaleDone(db: DbOrTx, now: Date = new Date()): Promise<number> {
   const cutoff = daysBefore(now, DONE_ARCHIVE_DAYS);
   const stale = await db
     .select({ id: tasks.id })
@@ -428,7 +428,7 @@ export async function archiveStaleDone(db: Db, now: Date = new Date()): Promise<
  * Nobody but a worker moves a task into or out of Running.
  */
 export async function moveTask(
-  db: Db,
+  db: DbOrTx,
   input: { taskId: string; status: Status; beforeId?: string; afterId?: string; by: string },
 ): Promise<TaskRow> {
   return db.transaction(async (tx) => {
@@ -481,7 +481,7 @@ export function droppedPriority(own: Priority, above: Priority | undefined, belo
 }
 
 /** A new priority from the UI: the task goes to the bottom of its new band. */
-export async function setPriority(db: Db, taskId: string, priority: Priority, by: string): Promise<TaskRow> {
+export async function setPriority(db: DbOrTx, taskId: string, priority: Priority, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (task.priority === priority) return task;
@@ -491,7 +491,7 @@ export async function setPriority(db: Db, taskId: string, priority: Priority, by
 }
 
 /** Sets or clears (null) the start time of a Todo task. */
-export async function setNotBefore(db: Db, taskId: string, notBefore: Date | null, by: string): Promise<TaskRow> {
+export async function setNotBefore(db: DbOrTx, taskId: string, notBefore: Date | null, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (task.status !== 'todo') throw new AppError('CONFLICT', `The task is ${task.status}, not in Todo.`);
@@ -506,7 +506,7 @@ export async function setNotBefore(db: Db, taskId: string, notBefore: Date | nul
 }
 
 /** The agent of a running task made a tool call. A task that stopped running in between is left alone. */
-export async function heartbeat(db: Db, taskId: string, beat: Heartbeat): Promise<void> {
+export async function heartbeat(db: DbOrTx, taskId: string, beat: Heartbeat): Promise<void> {
   await getTask(db, taskId);
   await db
     .update(tasks)
@@ -518,7 +518,7 @@ export async function heartbeat(db: Db, taskId: string, beat: Heartbeat): Promis
  * A worker gave up the task's slot for its own lane's work. Back to Todo, ahead of new work (resumes come first),
  * and resumed in its session on the same machine.
  */
-export async function pause(db: Db, taskId: string, note: string, by: string): Promise<TaskRow> {
+export async function pause(db: DbOrTx, taskId: string, note: string, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (task.status !== 'running') throw new AppError('CONFLICT', `the task is ${task.status}, not running`);
@@ -534,7 +534,7 @@ export async function pause(db: Db, taskId: string, note: string, by: string): P
 
 /** A run failed: while the task still runs, the reason goes into its thread and it waits in Needs me. Otherwise nothing changes. */
 export async function failTask(
-  db: Db,
+  db: DbOrTx,
   taskId: string,
   text: string,
   by: string,
@@ -551,7 +551,7 @@ export async function failTask(
  * A running task whose agent has been quiet for the limit has lost its worker (the machine is off, the process
  * died): only that machine could end the run, so the user may take the task back, into Needs me.
  */
-export async function takeBack(db: Db, taskId: string, by: string, now: Date = new Date()): Promise<TaskRow> {
+export async function takeBack(db: DbOrTx, taskId: string, by: string, now: Date = new Date()): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (task.status !== 'running') throw new AppError('CONFLICT', 'The task is not running.');

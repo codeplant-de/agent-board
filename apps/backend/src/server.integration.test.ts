@@ -67,6 +67,12 @@ describe('machine API', () => {
       headers: { 'remote-user': 'jascha', 'remote-groups': 'work,admins' },
     });
     expect(admin.statusCode).toBe(200);
+    const mixedCase = await ctx.app.inject({
+      method: 'GET',
+      url: '/trpc/me',
+      headers: { 'remote-user': 'Jascha', 'remote-groups': 'admins' },
+    });
+    expect(mixedCase.json().result.data.username).toBe('jascha');
     const spoof = await ctx.app.inject({
       method: 'POST',
       url: '/api/machine/list-tasks',

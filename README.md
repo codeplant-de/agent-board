@@ -201,7 +201,8 @@ Environment of the backend:
 
 | Variable | Meaning |
 | --- | --- |
-| `DATABASE_URL` | Postgres. |
+| `DATABASE_URL` | Postgres, as a superuser or as the schema owner with CREATEROLE. Used only at start to create the app role and run migrations, then closed. |
+| `APP_DATABASE_URL` | The same database as `board_app`, the unprivileged role that serves every request (no superuser, no BYPASSRLS). It must be `board_app`; the backend creates it with this URL's password, or resets the password, on start, and refuses to start if the role is privileged. |
 | `PUBLIC_URL` | Where people open the board; task URLs are `<PUBLIC_URL>/t/<id>` (Slack links use them). |
 | `ALLOWED_GROUPS` | Authelia groups that may use the UI, comma-separated. Default `admins`. |
 | `DEV_AUTH_USER` | Local development only: act as this user without Authelia. The backend refuses to start with it in production. |

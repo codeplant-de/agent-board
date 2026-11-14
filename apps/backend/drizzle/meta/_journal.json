@@ -71,6 +71,13 @@
       "when": 1794658229792,
       "tag": "0009_schedules",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794661829792,
+      "tag": "0010_app_role",
+      "breakpoints": true
     }
   ]
 }
