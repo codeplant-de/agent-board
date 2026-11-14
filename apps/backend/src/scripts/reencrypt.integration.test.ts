@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createSealedBackend } from '../../../cli/src/sealing.mts';
 import { planIntake, runIntake } from '../../../cli/src/intake.mts';
 import { CONFIG } from '../../../cli/test/helpers.mts';
-import { createDb, type Db } from '../db/client';
+import { createDb, migrationsFolder, type Db } from '../db/client';
 import { buildServer } from '../server';
 import { caller, testConfig } from '../test/helpers';
 import { plainUi } from '../test/client';
@@ -642,5 +642,14 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
   it('leaves the rows of the other user as they were', async () => {
     const [bob] = await rows<{ title: string }>(`select title from task where owner = 'bob'`);
     expect(bob?.title).toMatch(/^abe1\./);
+  });
+
+  it('lets the constraints migration pass afterwards, and the constraints are validated', async () => {
+    await migrate(admin.db, { migrationsFolder: migrationsFolder() });
+    const constraints = await rows<{ conname: string; convalidated: boolean }>(
+      `select conname, convalidated from pg_constraint where conname like '%\\_sealed' or conname like '%\\_blind'`,
+    );
+    expect(constraints).toHaveLength(14);
+    expect(constraints.every((constraint) => constraint.convalidated)).toBe(true);
   });
 });
