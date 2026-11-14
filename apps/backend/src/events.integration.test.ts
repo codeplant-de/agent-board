@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { request } from 'node:http';
+import { sql } from 'drizzle-orm';
 import { buildServer } from './server';
+import { Changes } from './services/changes';
 import { plainMachine } from './test/client';
 import { caller, testConfig, useTestDb } from './test/helpers';
 
-const { db } = useTestDb();
+const { db, admin } = useTestDb();
 
 const DEBOUNCE_MS = 60;
 /** Long enough for a debounced event to have arrived, if one was coming. */
@@ -13,10 +16,12 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 type Server = Awaited<ReturnType<typeof buildServer>>;
 let app: Server;
 let url: string;
+let changes: Changes;
 const streams: AbortController[] = [];
 
 beforeEach(async () => {
-  app = await buildServer(testConfig, db, { debounceMs: DEBOUNCE_MS, pingMs: 100 });
+  changes = new Changes(DEBOUNCE_MS);
+  app = await buildServer(testConfig, db, { changes, pingMs: 100 });
   url = await app.listen({ port: 0, host: '127.0.0.1' });
 });
 
@@ -175,5 +180,35 @@ describe('GET /api/machine/events', () => {
     expect(stream.isEnded()).toBe(false);
     await caller(db).machines.revoke({ name: 'laptop' });
     await stream.waitFor(() => stream.isEnded());
+  });
+
+  it('stops a stream when its client leaves, also when it left while the token was being looked up', async () => {
+    const token = await issue('laptop');
+    const stream = await openStream(token);
+    await stream.waitFor(() => stream.text().includes(': connected'));
+    expect(changes.listenerCount('jascha')).toBe(1);
+    streams.splice(0).forEach((controller) => controller.abort());
+    await vi.waitFor(() => expect(changes.listenerCount('jascha')).toBe(0), { timeout: 3000 });
+
+    // The sighting of the token waits for this row lock, so the request is stuck in authentication.
+    await admin.transaction(async (tx) => {
+      await tx.execute(sql`update machine set name = name where name = 'laptop'`);
+      const req = request(`${url}/api/machine/events`, { headers: { authorization: `Bearer ${token}` } });
+      req.on('error', () => undefined);
+      req.end();
+      await sleep(200);
+      req.destroy();
+      await sleep(200);
+    });
+    await sleep(300);
+    expect(changes.listenerCount('jascha')).toBe(0);
+  });
+
+  it('closing the server ends the open streams', async () => {
+    const stream = await openStream(await issue('laptop'));
+    await stream.waitFor(() => stream.text().includes(': connected'));
+    await app.close();
+    await stream.waitFor(() => stream.isEnded());
+    expect(changes.listenerCount('jascha')).toBe(0);
   });
 });
