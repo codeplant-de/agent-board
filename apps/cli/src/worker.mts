@@ -179,10 +179,12 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     await backend.updateTask(task.id, { workdir: plan.invocation.cwd, seal: sealing });
 
   // Intake loads only the user's settings; the tokens and endpoints it is allowed come from the checkout's.
-  let env: Record<string, string> = { AGENT_BOARD_TASK: taskId };
+  // Print mode kills background work 10 minutes after the last turn; 0 waits for it, and the heartbeat and stop handling still bound the run.
+  const fixedEnv = { AGENT_BOARD_TASK: taskId, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' };
+  let env: Record<string, string> = fixedEnv;
   if (fromIntake && config.intake.env.length > 0) {
     const picked = pickEnv(deps.settingsEnv(plan.invocation.cwd), config.intake.env);
-    env = { ...picked.env, ...env };
+    env = { ...picked.env, ...fixedEnv };
     if (picked.missing.length > 0)
       deps.appendLog(taskId, `not in the checkout's settings: ${picked.missing.join(', ')}`);
   }

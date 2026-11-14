@@ -411,6 +411,7 @@ export function boardRules(task: Task): string {
     `- AskUserQuestion is not available in this headless run. Wherever you would use it, also where a skill says to: write the same questions with the Write tool to /tmp/pr-${task.id}-questions.json as {"questions": [{"header": "<at most 16 chars>", "question": "...", "multiSelect": false, "options": [{"label": "...", "description": "...", "recommended": true}, ...]}]} (1 to 4 questions, 2 to 4 options each, at most one recommended), run \`board ask ${task.id} --file /tmp/pr-${task.id}-questions.json\`, then end your turn. The user answers on the board, and you are resumed in this session with the answers.`,
     `- When the work is done, post a short summary with \`board comment\`, then \`board move ${task.id} needs-me\`.`,
     `- To suggest follow-up work, write it to a file in /tmp and run \`board add --title "<title>" --file <path> --parent ${task.id}\`; the user starts it.`,
+    '- Do not end your turn while a background agent or background command you started is still running: this run ends when your turn does. Run subagents in the foreground, or wait for their result before ending your turn.',
     '- If a tool call is refused with "Pause requested", post a one-line status with `board comment` and end your turn; you will be resumed here.',
     ...(task.createdBy === 'intake'
       ? [
