@@ -4,9 +4,9 @@ import { parseQuestions, parseAnswers } from './questions.mts';
 import type { Answer, Question } from './questions.mts';
 import type { TranscriptBatch } from './transcript.mts';
 
-export const CONTRACT_VERSION = 4;
+export const CONTRACT_VERSION = 5;
 
-export const STATUSES = ['todo', 'running', 'needs-me', 'done'] as const;
+export const STATUSES = ['backlog', 'todo', 'running', 'needs-me', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
 
 // What the next run of a task does: start over, or resume the Claude session of the last run with the user's reply.

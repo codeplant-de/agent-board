@@ -25,6 +25,7 @@ import { procedure, router } from './trpc';
 const id = z.string().refine(isSafeTaskId, 'not a task id');
 const status = z.enum(STATUSES);
 const priority = z.enum(PRIORITIES);
+const createStatus = { now: 'todo', backlog: 'backlog', hold: 'needs-me' } as const;
 
 /** What the board needs of a task beyond the contract's fields. */
 export interface BoardTask extends Task {
@@ -83,7 +84,7 @@ const tasksRouter = router({
         title: z.string().trim().max(300).default(''),
         input: z.string().trim().min(1, 'Write a prompt first').max(200_000),
         priority: priority.default('normal'),
-        start: z.boolean().default(true),
+        when: z.enum(['now', 'backlog', 'hold']).default('now'),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -92,7 +93,7 @@ const tasksRouter = router({
         input: input.input,
         labels: [],
         priority: input.priority,
-        status: input.start ? 'todo' : 'needs-me',
+        status: createStatus[input.when],
         createdBy: 'user',
       });
       return boardTask(row, ctx.config.publicUrl);

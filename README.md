@@ -14,7 +14,7 @@ The CLI talks to the board directly, over HTTPS with a machine token: the [backe
 
 ## Tasks
 
-Four statuses: `todo`, `running`, `needs-me`, `done`. Four priorities: `urgent`, `high`, `normal` (the default), `low`. Every column lists its tasks by priority, then in the order you dragged them into, and workers take Todo from the top, so an urgent task runs before anything else that waits. Dropping a card among tasks of another priority gives it their priority; the task page has a picker for it. A task is a **prompt**, written as you would type it into Claude Code: `/review-pr 17741`, `/grill the plan in docs/x.md`, or plain instructions. The worker runs it as written. The slash command it starts with, if any, is the task's skill: it picks the [lane](#lanes) and is shown as the task's label.
+Five statuses: `backlog`, `todo`, `running`, `needs-me`, `done`. `backlog` is the first column: parked cards that no worker takes until you move them to Todo. Four priorities: `urgent`, `high`, `normal` (the default), `low`. Every column lists its tasks by priority, then in the order you dragged them into, and workers take Todo from the top, so an urgent task runs before anything else that waits. Dropping a card among tasks of another priority gives it their priority; the task page has a picker for it. A task is a **prompt**, written as you would type it into Claude Code: `/review-pr 17741`, `/grill the plan in docs/x.md`, or plain instructions. The worker runs it as written. The slash command it starts with, if any, is the task's skill: it picks the [lane](#lanes) and is shown as the task's label.
 
 A run ends in `needs-me`: with a report, with a question, or, when it fails, times out or its worker disappears, with the reason and the end of the log. Nothing moves on until you press a button.
 
@@ -26,7 +26,7 @@ board schedule --priority high /review-pr cosuno/cosuno#17741 --auto
 board schedule "Find out why the bidder export is slow and propose a fix"
 ```
 
-`board schedule [--priority p] [--title t] [--hold] [--new] <prompt...>` makes a task of the prompt, bound to this machine and the directory you run it in, and prints its URL. The board's flags come first; everything from the first other word on is the prompt, flags included (`--auto` above goes to the skill). The title defaults to the prompt's first line; `--hold` lands it in `needs-me` instead of Todo.
+`board schedule [--priority p] [--title t] [--hold | --backlog] [--new] <prompt...>` makes a task of the prompt, bound to this machine and the directory you run it in, and prints its URL. The board's flags come first; everything from the first other word on is the prompt, flags included (`--auto` above goes to the skill). The title defaults to the prompt's first line; `--hold` lands it in `needs-me` instead of Todo, `--backlog` in `backlog` (the two cannot be combined). When the duplicate check offers to requeue an existing task, the same flags pick where it goes.
 
 Before it creates the task, a Haiku call (a few seconds, under a cent) checks whether an open task already covers the same work. On a likely match it asks in the terminal: requeue that task (a fresh run), create a new one anyway, or abort. Without a terminal it creates the task with a note naming the likely duplicate. `--new` skips the check.
 
@@ -192,7 +192,7 @@ The cluster side (namespace, Postgres, Deployments, IngressRoutes, Authelia rule
 
 ## Backend contract
 
-The spec between the CLI and the board, contract version 4. The CLI calls the board's machine API from its own process (`apps/cli/src/backend.mts`); `apps/backend/src/machine-api.ts` serves it. Nothing else implements it.
+The spec between the CLI and the board, contract version 5. The CLI calls the board's machine API from its own process (`apps/cli/src/backend.mts`); `apps/backend/src/machine-api.ts` serves it. Nothing else implements it.
 
 `POST <url>/api/machine/<command>` with `Authorization: Bearer <machine token>` and a JSON body `{"id"?, "all"?, "machine"?, "author"?, "body"?}`: `id` is the task, `body` is the command's payload (JSON, or the text of a note). The answer is `{"result": ...}` with status 200, or `{"error": "one line"}` with a non-200 status. The token names the machine; it never appears in an error message. A call times out after 45 seconds.
 
@@ -202,7 +202,7 @@ The spec between the CLI and the board, contract version 4. The CLI calls the bo
 - A write is visible to the next read.
 - The server refuses an unsafe id or machine name with 400 and writes nothing; the CLI refuses it before it sends anything.
 - `claim-task` answers 409 when the task is not free for this machine ("lost"). The CLI treats that as an answer and moves on to the next task; every other non-200 answer is a failure.
-- The CLI sends `version` once per process, before its first other call, and stops when the server's `contract` differs from its own (4), saying which side is older.
+- The CLI sends `version` once per process, before its first other call, and stops when the server's `contract` differs from its own (5), saying which side is older.
 - `input` comes back verbatim, and a note with its text intact. The core parses `agent-board: started <iso>` notes (the start marker) and the first line of a review task's `input` (the PR URL); the PR head is the `head` field.
 - A task an agent proposed (`createdBy: agent`) is the user's to start: the server refuses `update-task` with a new status and loses `claim-task` for it, whoever asks.
 - The core never writes to a task that is `closed`. A worker that finds its task closed after the run, or running again with another `runStartedAt` than it started with (taken back and run on another machine), drops its result. Any other outcome is judged on the task's `status` after the run: anything but `running` counts as reported (the agent reported, you answered while it was still ending its turn, or the task was taken back). A todo task whose worker unit is still active is not started again until the unit is gone.
@@ -243,7 +243,7 @@ All twenty fields are required.
 | `input` | What to work on. |
 | `labels` | For display: the skill the prompt starts with, unless the creator gave others. |
 | `createdBy` | `intake`, `user` or `agent`. Intake's tasks run with intake's narrow permissions and in the PR's checkout. |
-| `status` | One of `todo`, `running`, `needs-me`, `done`. |
+| `status` | One of `backlog`, `todo`, `running`, `needs-me`, `done`. |
 | `priority` | One of `urgent`, `high`, `normal`, `low`. |
 | `url` | Link to the task for a human. It must match `^https?://` and hold no whitespace, `<`, `>` or `|` (it goes into a Slack link). |
 | `closed` | `true` for a task out of the workflow. Closed tasks are only listed with `all`; the core never starts, requeues or writes to one. |
@@ -273,7 +273,7 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 
 | Command | Request | `result` |
 | --- | --- | --- |
-| `version` | - | `{"contract": 4}` |
+| `version` | - | `{"contract": 5}` |
 | `list-tasks` | `all?` | `[Task, ...]` in priority order |
 | `get-task` | `id` | `Task` |
 | `add-task` | `body`: `{"title", "input"?, "labels"?, "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "head"?}` | `{"task": Task, "created": bool}` |
@@ -290,7 +290,7 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 - `version`: see the rules above.
 - `add-task`: `input` defaults to `""`, `labels` to the skill the prompt starts with, `status` to `todo`, `priority` to the parent's with a `parentId` and to `normal` without, `createdBy` (`intake`, `user`, `agent`) to `user`. `machine` and `workdir` come together and pin the task there. The new task goes to the bottom of its status. With a `dedupeKey` that a task already has, nothing is created: the answer is that task with `created: false`. `createdBy: agent` makes the task a proposal: it lands in `needs-me` whatever `status` the draft names. `head` is 7 to 40 hex characters.
 - `update-task`: at least one key; unknown keys are a failure. A status or priority change puts the task at the bottom of its new place. A status change of a proposal is refused with 403. Leaving `needs-me` for `todo` or `done` clears `openQuestion`. `head` is 7 to 40 hex characters, or `null` to clear it. `expect` is a status and not a change: when the task's status differs under the update's lock, nothing is written and the answer is 409 (intake uses it, so a close or requeue planned from an earlier listing cannot hit a task a dispatcher claimed since). It does not count as a key.
-- `claim-task`: `todo` to `running` for the machine, at the bottom of running, in one atomic step. Lost when the task is not in `todo`, or when it is a resume (`next: resume` with a session) pinned to another machine. A token claims for its own machine only. Lost for a proposal. Sets `runStartedAt`; `paused` stays as it is.
+- `claim-task`: `todo` to `running` for the machine, at the bottom of running, in one atomic step. Lost when the task is not in `todo` (a `backlog` task is never claimed), or when it is a resume (`next: resume` with a session) pinned to another machine. A token claims for its own machine only. Lost for a proposal. Sets `runStartedAt`; `paused` stays as it is.
 - `add-note`: author `agent` makes a `comment`, `system` an `event`. An empty text is a failure.
 - `heartbeat`: sets `lastActiveAt` to now with the lane, on a running task only; on any other it changes nothing.
 - `transcript`: appends a run's condensed events (see `packages/shared/src/transcript.mts`; at most 5000 per call, each with an integer `seq` from 0 and a parseable `at`, or the call fails with 400); an event already stored (same run and `seq`) stays as it is, so a retried batch is harmless.
@@ -330,7 +330,7 @@ board tasks                     open tasks per status
 board show <task>               the task and its thread as markdown (what a skill reads)
 board comment <task> <text>     add a note; `-` reads the text from stdin
 board comment <task> --file <p> add a note from a file in /tmp (what the reviewer uses)
-board schedule [--priority p] [--title t] [--hold] [--new] <prompt...>
+board schedule [--priority p] [--title t] [--hold | --backlog] [--new] <prompt...>
                                 a task from a prompt, run here on this machine; checks for duplicates first; refused inside a run
 board ask <task> --file <p>     ask the user 1-4 questions (JSON in /tmp); moves the task to needs-me and notifies Slack
 board add --title <t> --file <p> [--parent <task>] [--priority <p>]
@@ -341,7 +341,7 @@ dispatch                        one dispatcher tick
 intake                          review requests to tasks
 ```
 
-`<status>` is `todo`, `running`, `needs-me` or `done`; "Todo", "Running", "Needs me" and "Done" work too. `dispatch`, `intake` and `board` take `--dry-run`: reads happen, every write and process start is printed as `DRY ...`. An unknown argument is a usage error. The question file of `board ask` is `{"questions": [{"header", "question", "multiSelect", "options": [{"label", "description", "recommended"?}]}]}`; like `--file` of `board comment`, it is read only from a regular file in `/tmp`, without following a link.
+`<status>` is `backlog`, `todo`, `running`, `needs-me` or `done`; "Backlog", "Todo", "Running", "Needs me" and "Done" work too. `dispatch`, `intake` and `board` take `--dry-run`: reads happen, every write and process start is printed as `DRY ...`. An unknown argument is a usage error. The question file of `board ask` is `{"questions": [{"header", "question", "multiSelect", "options": [{"label", "description", "recommended"?}]}]}`; like `--file` of `board comment`, it is read only from a regular file in `/tmp`, without following a link.
 
 `apps/cli/bin/dispatch` and `apps/cli/bin/intake` take their own lock (`$XDG_RUNTIME_DIR/agent-board-{dispatch,intake}.lock`), so a run by hand cannot overlap a timer run. When the lock is held they exit 75 without output.
 
@@ -357,7 +357,7 @@ Worker, per task: a task with `next: resume`, a session, and a user reply or a p
 
 Intake, per run: search the repos in `repos` for open, non-draft PRs that request your review, then create one task per PR URL (the dedupe key), checked against every task, closed ones included. One `gh api graphql` call per page covers all repos. A PR without an author (a deleted account) is listed as `ghost`. A PR whose data cannot be read is logged as `WARN skipped <url>` and its task is left alone; a result without a URL fails the run. A failed GitHub search or backend listing changes nothing and exits non-zero.
 
-- A PR whose head moved and whose last commit is at least ten minutes old sends its task from `needs-me` or `done` back to `todo` with `next: fresh`. A failed task stays in `needs-me` until the head moves.
+- A PR whose head moved and whose last commit is at least ten minutes old sends its task from `needs-me` or `done` back to `todo` (a task parked in `backlog` stays there) with `next: fresh`. A failed task stays in `needs-me` until the head moves.
 - A task still waiting in Todo for a PR that no longer appears (merged, closed, draft, or no longer asking for your review) is moved to `done` with a note, and its `head` is cleared in the same update.
 - A PR that is listed again with the same head brings such a task back: a settled PR whose intake task is `done` without a head is queued again the same way. A task you marked done keeps its head and stays done.
 

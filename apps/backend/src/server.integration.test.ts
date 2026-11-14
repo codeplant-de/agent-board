@@ -198,7 +198,7 @@ describe('board UI', () => {
   it('a reply with resume goes to the top of Todo; without a session it runs fresh', async () => {
     const ui = caller(db);
     const first = await ui.tasks.create({ title: 'first', input: 'do it' });
-    const second = await ui.tasks.create({ title: 'second', input: 'Find out X', start: false });
+    const second = await ui.tasks.create({ title: 'second', input: 'Find out X', when: 'hold' });
     expect(second.status).toBe('needs-me');
     await expect(ui.tasks.reply({ id: second.id, message: '  ', resume: true })).rejects.toThrow(/Write something/);
     const replied = await ui.tasks.reply({ id: second.id, message: 'go', resume: true });
@@ -206,6 +206,32 @@ describe('board UI', () => {
     const todo = (await ui.tasks.list()).filter((t) => t.status === 'todo').map((t) => t.title);
     expect(todo).toEqual(['second', 'first']);
     expect(first.status).toBe('todo');
+  });
+
+  it('creates a task in Todo, Backlog or Needs me by `when`', async () => {
+    const ui = caller(db);
+    expect((await ui.tasks.create({ input: 'a' })).status).toBe('todo');
+    expect((await ui.tasks.create({ input: 'b', when: 'now' })).status).toBe('todo');
+    expect((await ui.tasks.create({ input: 'c', when: 'backlog' })).status).toBe('backlog');
+    expect((await ui.tasks.create({ input: 'd', when: 'hold' })).status).toBe('needs-me');
+  });
+
+  it('a Backlog task cannot be claimed; moving it to Todo makes it claimable and back parks it', async () => {
+    const ui = caller(db);
+    const { id } = await ui.tasks.create({ input: 'later', when: 'backlog' });
+    expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
+    expect(await ui.tasks.move({ id, status: 'todo' })).toMatchObject({ status: 'todo' });
+    expect(await ui.tasks.move({ id, status: 'backlog' })).toMatchObject({ status: 'backlog' });
+    expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
+    await ui.tasks.move({ id, status: 'todo' });
+    expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(200);
+  });
+
+  it('lists Backlog before Todo', async () => {
+    const ui = caller(db);
+    await ui.tasks.create({ title: 'todo', input: 'a' });
+    await ui.tasks.create({ title: 'parked', input: 'b', when: 'backlog' });
+    expect((await ui.tasks.list()).map((t) => t.title)).toEqual(['parked', 'todo']);
   });
 
   it('a running task cannot be answered, moved or closed from the UI', async () => {
@@ -314,7 +340,7 @@ describe('priority', () => {
     const ui = caller(db);
     await ui.tasks.create({ title: 'urgent', input: 'do it', priority: 'urgent' });
     await ui.tasks.create({ title: 'normal-old', input: 'do it' });
-    const waiting = await ui.tasks.create({ title: 'replied', input: 'do it', start: false });
+    const waiting = await ui.tasks.create({ title: 'replied', input: 'do it', when: 'hold' });
     await ui.tasks.reply({ id: waiting.id, message: 'go', resume: true });
     expect(titles(await ui.tasks.list())).toEqual(['urgent', 'replied', 'normal-old']);
   });
@@ -482,9 +508,9 @@ describe('transcripts', () => {
 
   it('transcripts of open tasks untouched in Done for 28 days are deleted, others stay', async () => {
     const ui = caller(db);
-    const stale = await ui.tasks.create({ input: '/stale', start: false });
-    const fresh = await ui.tasks.create({ input: '/fresh', start: false });
-    const running = await ui.tasks.create({ input: '/running', start: false });
+    const stale = await ui.tasks.create({ input: '/stale', when: 'hold' });
+    const fresh = await ui.tasks.create({ input: '/fresh', when: 'hold' });
+    const running = await ui.tasks.create({ input: '/running', when: 'hold' });
     for (const [task, run] of [
       [stale, 'run-stale-001'],
       [fresh, 'run-fresh-001'],
@@ -782,9 +808,9 @@ describe('Done archival', () => {
 
   it('closes tasks untouched in Done for 14 days, with a note, and nothing else', async () => {
     const ui = caller(db);
-    const old = await ui.tasks.create({ title: 'old', input: 'do it', start: false });
-    const recent = await ui.tasks.create({ title: 'recent', input: 'do it', start: false });
-    const waiting = await ui.tasks.create({ title: 'waiting', input: 'do it', start: false });
+    const old = await ui.tasks.create({ title: 'old', input: 'do it', when: 'hold' });
+    const recent = await ui.tasks.create({ title: 'recent', input: 'do it', when: 'hold' });
+    const waiting = await ui.tasks.create({ title: 'waiting', input: 'do it', when: 'hold' });
     await ui.tasks.done({ id: old.id });
     await ui.tasks.done({ id: recent.id });
     await idle(old.id, 15);

@@ -1,5 +1,5 @@
 import { PRIORITIES, type Priority } from '@agent-board/shared';
-import { Button, Checkbox, Code, Group, Modal, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
+import { Button, Code, Group, Modal, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -7,13 +7,16 @@ import { PRIORITY_LABEL } from '../lib/priority';
 import { useTRPC } from '../lib/trpc';
 import { MarkdownEditor } from './MarkdownEditor';
 
+const WHEN_LABEL = { now: 'Now', backlog: 'Backlog', hold: 'Needs me' } as const;
+type When = keyof typeof WHEN_LABEL;
+
 /** A prompt, as you would type it into Claude Code. `board schedule` does the same from a terminal, in its directory. */
 export function NewTaskModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const trpc = useTRPC();
   const navigate = useNavigate();
   const [title, setTitle] = useState('');
   const [input, setInput] = useState('');
-  const [start, setStart] = useState(true);
+  const [when, setWhen] = useState<When>('now');
   const [priority, setPriority] = useState<Priority>('normal');
   const create = useMutation(trpc.tasks.create.mutationOptions());
 
@@ -21,7 +24,7 @@ export function NewTaskModal({ opened, onClose }: { opened: boolean; onClose: ()
   const submit = () => {
     if (!ready || create.isPending) return;
     create.mutate(
-      { title, input, start, priority },
+      { title, input, when, priority },
       {
         onSuccess: (task) => {
           setTitle('');
@@ -67,13 +70,18 @@ export function NewTaskModal({ opened, onClose }: { opened: boolean; onClose: ()
             data={PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABEL[p] }))}
           />
         </div>
-        <Group justify="space-between">
-          <Checkbox
-            label="Queue it now"
-            description="Otherwise it waits in Needs me"
-            checked={start}
-            onChange={(e) => setStart(e.currentTarget.checked)}
+        <div>
+          <Text size="sm" fw={500} mb={4}>
+            When
+          </Text>
+          <SegmentedControl
+            fullWidth
+            value={when}
+            onChange={(value) => setWhen(value as When)}
+            data={Object.entries(WHEN_LABEL).map(([value, label]) => ({ value, label }))}
           />
+        </div>
+        <Group justify="flex-end">
           <Button onClick={submit} disabled={!ready} loading={create.isPending}>
             Create
           </Button>

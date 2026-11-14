@@ -2,12 +2,12 @@
 /**
  *   board comment <task> <text>   add a note (long text is fine; `-` reads the text from stdin)
  *   board comment <task> --file <path>   add a note from a file in /tmp
- *   board move <task> <status>    move a task to the bottom of a status (todo, running, needs-me, done)
+ *   board move <task> <status>    move a task to the bottom of a status (backlog, todo, running, needs-me, done)
  *   board notify <task> <text>    Slack message with the task link
  *   board tasks                   open tasks per status
  *   board ask <task> --file <path>      ask the user 1-4 questions (JSON in /tmp) and move the task to needs-me
  *   board show <task>             the task and its thread as markdown
- *   board schedule [--priority p] [--title t] [--hold] [--new] <prompt...>
+ *   board schedule [--priority p] [--title t] [--hold | --backlog] [--new] <prompt...>
  *                                 a task from a prompt, run in this directory on this machine; checks for duplicates first
  *                                 (not inside a board run: there, propose follow-up work with `board add`)
  *   board add --title <t> --file <path> [--parent <task>] [--priority urgent|high|normal|low]
@@ -37,7 +37,7 @@ import { haikuDuplicateCheck, parseScheduleArgs, schedule } from './schedule.mts
 import type { Choice } from './schedule.mts';
 
 const USAGE =
-  'usage: board comment <task> <text|--file path> | move <task> <status> | notify <task> <text> | ask <task> --file <path> | show <task> | schedule [--priority <p>] [--title <t>] [--hold] [--new] <prompt...> | add --title <t> --file <path> [--parent <task>] [--priority <p>] | tasks';
+  'usage: board comment <task> <text|--file path> | move <task> <status> | notify <task> <text> | ask <task> --file <path> | show <task> | schedule [--priority <p>] [--title <t>] [--hold | --backlog] [--new] <prompt...> | add --title <t> --file <path> [--parent <task>] [--priority <p>] | tasks';
 
 const NOTE_FILE_DIR = '/tmp/';
 const NOTE_FILE_MAX_BYTES = 1024 * 1024;

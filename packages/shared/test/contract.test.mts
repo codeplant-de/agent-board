@@ -70,6 +70,8 @@ test('a draft takes the dedupe key, parent and creator; unknown keys fail', () =
     parentId: 'abc',
     createdBy: 'agent',
   });
+  assert.equal(parseDraft({ title: 't', status: 'backlog' }).status, 'backlog');
+  assert.deepEqual(parsePatch({ status: 'backlog' }), { status: 'backlog' });
   assert.throws(() => parseDraft({ title: 't', rank: 1 }), ContractError);
   assert.equal(parseDraft({ title: 't', priority: 'high' }).priority, 'high');
   assert.equal(

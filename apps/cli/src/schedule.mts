@@ -1,12 +1,13 @@
-// `board schedule [--priority p] [--title t] [--hold] [--new] <prompt...>`: a task from a prompt, written as you would
+// `board schedule [--priority p] [--title t] [--hold | --backlog] [--new] <prompt...>`: a task from a prompt, written as you would
 // type it into Claude Code, bound to this machine and the directory it was scheduled from. Before it creates one, a
 // quick Haiku call checks whether an open task already covers it.
 import { execFile } from 'node:child_process';
 import { defaultTitle, isPriority, isRecord, PRIORITIES } from '@agent-board/shared';
-import type { Backend, Priority, Task } from '@agent-board/shared';
+import type { Backend, Priority, Status, Task } from '@agent-board/shared';
 import { UsageError } from './cli.mts';
 
-export const SCHEDULE_USAGE = 'usage: board schedule [--priority <p>] [--title <t>] [--hold] [--new] <prompt...>';
+export const SCHEDULE_USAGE =
+  'usage: board schedule [--priority <p>] [--title <t>] [--hold | --backlog] [--new] <prompt...>';
 
 export interface ScheduleArgs {
   prompt: string;
@@ -14,13 +15,22 @@ export interface ScheduleArgs {
   title: string | undefined;
   // Waits in Needs me instead of Todo.
   hold: boolean;
+  // Parked in Backlog instead of Todo.
+  backlog: boolean;
   // Skips the duplicate check.
   forceNew: boolean;
 }
 
 // The board's flags come first; everything from the first other word on is the prompt, flags included (`--auto`).
 export function parseScheduleArgs(args: string[]): ScheduleArgs {
-  const result: ScheduleArgs = { prompt: '', priority: undefined, title: undefined, hold: false, forceNew: false };
+  const result: ScheduleArgs = {
+    prompt: '',
+    priority: undefined,
+    title: undefined,
+    hold: false,
+    backlog: false,
+    forceNew: false,
+  };
   let index = 0;
   for (; index < args.length; index++) {
     const arg = args[index];
@@ -29,6 +39,7 @@ export function parseScheduleArgs(args: string[]): ScheduleArgs {
       break;
     }
     if (arg === '--hold') result.hold = true;
+    else if (arg === '--backlog') result.backlog = true;
     else if (arg === '--new') result.forceNew = true;
     else if (arg === '--priority' || arg === '--title') {
       const value = args[++index];
@@ -38,9 +49,15 @@ export function parseScheduleArgs(args: string[]): ScheduleArgs {
       else throw new UsageError(`unknown priority "${value.slice(0, 20)}"; use one of ${PRIORITIES.join(', ')}`);
     } else break;
   }
+  if (result.hold && result.backlog) throw new UsageError('--hold and --backlog cannot be combined');
   result.prompt = args.slice(index).join(' ').trim();
   if (result.prompt === '') throw new UsageError(SCHEDULE_USAGE);
   return result;
+}
+
+function startStatus(args: Pick<ScheduleArgs, 'hold' | 'backlog'>): Status {
+  if (args.hold) return 'needs-me';
+  return args.backlog ? 'backlog' : 'todo';
 }
 
 export interface Duplicate {
@@ -154,7 +171,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
           return existing;
         }
         const requeued = await backend.updateTask(existing.id, {
-          status: args.hold ? 'needs-me' : 'todo',
+          status: startStatus(args),
           next: 'fresh',
         });
         await backend.addNote(existing.id, `Scheduled again from ${deps.machine}:${deps.workdir}.`, {
@@ -170,7 +187,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     title: args.title || defaultTitle(args.prompt),
     input: args.prompt,
     labels: [],
-    status: args.hold ? 'needs-me' : 'todo',
+    status: startStatus(args),
     createdBy: 'user',
     machine: deps.machine,
     workdir: deps.workdir,

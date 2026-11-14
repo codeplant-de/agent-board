@@ -56,6 +56,10 @@ test('a moved, settled head requeues a task from Needs me or Done only', () => {
   assert.deepEqual(plan([pr(1)], [taskFor(1, 'running')]), ['skip:head moved, task is running']);
 });
 
+test('a task parked in Backlog is left alone when its PR gets a new push', () => {
+  assert.deepEqual(plan([pr(1)], [taskFor(1, 'backlog')]), ['skip:head moved, task is backlog']);
+});
+
 test('a failed task stays put while its head is unchanged, and is retried when the head moves', () => {
   assert.deepEqual(plan([pr(1, { headSha: 'aaaaaaa1' })], [taskFor(1, 'needs-me')]), ['skip:task exists']);
   assert.deepEqual(plan([pr(1)], [taskFor(1, 'needs-me')]), ['requeue']);
