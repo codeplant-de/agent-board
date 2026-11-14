@@ -121,12 +121,27 @@ test('the server check tells unreachable, unauthorised and a contract mismatch a
     ).find((result) => result.name === 'server');
   const unauthorised = await run(new BackendError('version: bad token', 401, true));
   assert.match(unauthorised?.message ?? '', /refused the token/);
-  const older = await run(
+  const serverOlder = await run(
+    Object.assign(new BackendError('the board server is older than this CLI: it speaks contract 4, the CLI needs 6'), {
+      contractMismatch: 'server-older' as const,
+    }),
+  );
+  assert.match(serverOlder?.hint ?? '', /update the board server/);
+  const cliOlder = await run(
+    Object.assign(new BackendError('this CLI is older than the board server: it speaks contract 6, the server has 7'), {
+      contractMismatch: 'cli-older' as const,
+    }),
+  );
+  assert.match(cliOlder?.hint ?? '', /update this CLI: "board self-update"/);
+  // Words the server wrote must not pick the hint.
+  const quoted = await run(
     new BackendError(
-      'the board server is older than this CLI: it speaks contract 4, the CLI needs 5; update the board',
+      'get-task: error from the board server (HTTP 500): "this CLI is older than the board server"',
+      500,
+      true,
     ),
   );
-  assert.match(older?.hint ?? '', /update the older side/);
+  assert.match(quoted?.hint ?? '', /check the URL/);
   const unreachable = await run(new BackendError('cannot reach https://board.example.com: fetch failed'));
   assert.match(unreachable?.hint ?? '', /check the URL/);
   assert.equal(levels(await runChecks(machine(GOOD)))['server'], 'ok');
@@ -328,4 +343,13 @@ test('a board with no key yet says so even when env has no key either, and the h
     other.find((result) => result.name === 'board key')?.hint ?? '',
     /board init --force": it keeps the URL and the token/,
   );
+});
+
+test('a config.json with a machine name past 32 characters gets the way out as its hint', async () => {
+  const results = await runChecks(
+    machine({ ...GOOD, [`${CONFIG_DIR}/config.json`]: { text: JSON.stringify({ machine: 'm'.repeat(40) }) } }),
+  );
+  const config = results.find((result) => result.name === 'config.json');
+  assert.equal(config?.level, 'fail');
+  assert.match(config?.hint ?? '', /at most 32 characters.*new token for the new name.*tied to its machine name/);
 });

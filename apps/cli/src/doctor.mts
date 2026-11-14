@@ -249,13 +249,16 @@ const checkServer: Check = async (deps) => {
           'create a new machine token on the board\'s Settings page and run "board init --force": it keeps the URL and the data key unless you give them again, and asks for the token',
         ),
       ];
-    if (/older than/.test(message))
+    // Which update hint to show comes from the two contract numbers, never from text the server wrote.
+    if (error instanceof BackendError && error.contractMismatch !== undefined)
       return [
         problem(
           'server',
           'fail',
           message,
-          'update the older side: the board server, or the CLI ("board self-update" for a binary; "git pull" and "pnpm install" for a checkout)',
+          error.contractMismatch === 'server-older'
+            ? "update the board server to this CLI's contract"
+            : 'update this CLI: "board self-update" for a binary; "git pull" and "pnpm install" in the checkout for a checkout',
         ),
       ];
     return [problem('server', 'fail', message, 'check the URL in web.json and that the board is up')];
@@ -285,7 +288,9 @@ const checkConfig: Check = ({ configDir, readText }) => {
         'config.json',
         'fail',
         `${path}: ${message}`,
-        'fix the file; "board init --force" does not replace it, config.example.json shows the shape',
+        /machine must be/.test(message)
+          ? 'shorten "machine" to at most 32 characters, create a new token for the new name on the Settings page (a token is tied to its machine name) and run "board init --force" to store it'
+          : 'fix the file; "board init --force" does not replace it, config.example.json shows the shape',
       ),
     ];
   }

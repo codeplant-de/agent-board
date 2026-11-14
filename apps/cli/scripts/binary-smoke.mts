@@ -103,7 +103,11 @@ let mode: Mode = 'normal';
 // How long list-tasks takes to answer: long enough to replace the binary while a tick waits for it.
 let listDelayMs = 0;
 const requests: { command: string; body: string }[] = [];
-const todo = await wireTask({ id: 'Ab3dEf9x', title: 'Fix the thing', status: 'todo' });
+// The board no longer sends a link, but a hostile one still says what a link of its own would be.
+const todo = {
+  ...(await wireTask({ id: 'Ab3dEf9x', title: 'Fix the thing', status: 'todo' })),
+  url: 'https://evil.example/t/Ab3dEf9x',
+};
 // A task sealed with another data key: this machine can open its title but not its prompt, or neither.
 const otherKeys = await deriveKeys(generateDataKey(), OWNER);
 const foreign = {
@@ -278,12 +282,12 @@ await check('comment --file reads a file in /tmp, and refuses a link to a file o
     const note = join(dir, 'note.md');
     writeFileSync(note, 'from a file\n');
     requests.length = 0;
-    const ok = await board(['comment', 'Ab3dEf9x', '--file', note], config());
+    const ok = await board(['comment', 'Ab3dEf9x', '--file', note], config({ webUrl: `${url}/board` }));
     assert.equal(ok.code, 0, ok.stderr);
     assert.deepEqual(await storedNotes(), ['from a file']);
     assert.equal(
       ok.stdout.trim(),
-      `commented on Ab3dEf9x  ${url}/t/Ab3dEf9x`,
+      `commented on Ab3dEf9x  ${url}/board/t/Ab3dEf9x`,
       'the link is built from web.json, not sent by the board',
     );
     const secret = join(outside, 'secret');

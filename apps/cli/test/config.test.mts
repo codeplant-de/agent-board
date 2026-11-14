@@ -95,3 +95,11 @@ test('a missing config.json is the defaults only when the command allows it; any
     rmSync(dir, { recursive: true });
   }
 });
+
+test('a machine name longer than 32 characters, valid before contract 6, says so and what to do', () => {
+  assert.throws(
+    () => parseConfig({ machine: 'm'.repeat(40) }),
+    /machine must be a name of .* at most 32 characters .*create a new token for the new name/,
+  );
+  assert.equal(parseConfig({ machine: 'm'.repeat(32) }).machine, 'm'.repeat(32));
+});

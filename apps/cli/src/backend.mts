@@ -36,12 +36,20 @@ export class BackendError extends Error {
   status: number | undefined;
   // Whether the status came in a JSON answer of the machine API; a login page or a proxy has a status too, and means something else.
   fromApi: boolean;
+  // Set when the contract numbers differ, from those numbers and nothing the server wrote: which side is the older one.
+  contractMismatch: 'cli-older' | 'server-older' | undefined;
 
   constructor(message: string, status?: number, fromApi = false) {
     super(message);
     this.status = status;
     this.fromApi = fromApi;
   }
+}
+
+function mismatch(kind: 'cli-older' | 'server-older', message: string, status?: number): BackendError {
+  const error = new BackendError(message, status);
+  error.contractMismatch = kind;
+  return error;
 }
 
 export interface WebConfig {
@@ -194,7 +202,8 @@ export async function verifyContract(
   } catch (error) {
     // A server from before the version command.
     if (error instanceof BackendError && error.status === 404 && error.fromApi) {
-      throw new BackendError(
+      throw mismatch(
+        'server-older',
         `the board server is older than this CLI: it does not know the version command; the CLI needs contract ${CONTRACT_VERSION}; update the board server`,
         404,
       );
@@ -202,11 +211,13 @@ export async function verifyContract(
     throw asBackendError('version', error);
   }
   if (served < CONTRACT_VERSION)
-    throw new BackendError(
+    throw mismatch(
+      'server-older',
       `the board server is older than this CLI: it speaks contract ${served}, the CLI needs ${CONTRACT_VERSION}; update the board server`,
     );
   if (served > CONTRACT_VERSION)
-    throw new BackendError(
+    throw mismatch(
+      'cli-older',
       `this CLI is older than the board server: it speaks contract ${CONTRACT_VERSION}, the server has ${served}; ${updateCliHint()}`,
     );
   try {

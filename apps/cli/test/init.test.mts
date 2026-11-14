@@ -680,7 +680,7 @@ test('an env backup is never wider than 600', async () => {
   }
 });
 
-test('the Settings page copies env lines: a file or an answer may hold NAME=value, either one or both', async () => {
+test('the Settings page copies env lines: a file may hold both; a prompt takes one line, bare or NAME=value', async () => {
   const dir = tempDir();
   try {
     // The data key line alone, for --data-key-file; the token bare.
@@ -703,11 +703,7 @@ test('the Settings page copies env lines: a file or an answer may hold NAME=valu
       dataKeyFile: keyFile(dir, BOTH_LINES('abm_other'), 'both3'),
     });
     assert.match(readFileSync(join(dir, 'd', 'env'), 'utf8'), /^AGENT_BOARD_TOKEN=abm_own\n/);
-    // At a terminal: a pasted pair answers the key question too, a pasted key line answers its own.
-    const pair = clackLike({ text: ['https://board.example.com', 'm'], secret: [BOTH_LINES(TOKEN)] });
-    await init(deps(join(dir, 'e'), { interactive: true, prompts: pair }), {});
-    assert.equal(pair.asked.filter((message) => message.includes('key')).length, 0, 'the key is not asked for again');
-    assert.equal(readFileSync(join(dir, 'e', 'env'), 'utf8'), ENV_TEXT);
+    // At a terminal each prompt takes one line, which is the bare value or its own NAME=value line.
     const lines = clackLike({
       text: ['https://board.example.com', 'm'],
       secret: [`AGENT_BOARD_TOKEN=${TOKEN}`, `AGENT_BOARD_DATA_KEY=${KEY_TEXT}`],
@@ -784,6 +780,63 @@ test('--force keeps the current URL when none is given, and replaces it, after a
     assert.deepEqual(JSON.parse(readFileSync(join(configDir, 'web.json'), 'utf8')), {
       url: 'https://board.example.com',
     });
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a prompt answered with the other value’s line names what it wants, and nothing is written', async () => {
+  const dir = tempDir();
+  try {
+    const wrongToken = clackLike({
+      text: ['https://board.example.com', 'm'],
+      secret: [`AGENT_BOARD_DATA_KEY=${KEY_TEXT}`],
+    });
+    await assert.rejects(
+      init(deps(join(dir, 'a'), { interactive: true, prompts: wrongToken }), {}),
+      /prompt validation: that is the AGENT_BOARD_DATA_KEY line; this question wants the machine token/,
+    );
+    const wrongKey = clackLike({
+      text: ['https://board.example.com', 'm'],
+      secret: [TOKEN, `AGENT_BOARD_TOKEN=${TOKEN}`],
+    });
+    await assert.rejects(
+      init(deps(join(dir, 'b'), { interactive: true, prompts: wrongKey }), {}),
+      /prompt validation: that is the AGENT_BOARD_TOKEN line; this question wants the data key/,
+    );
+    assert.throws(() => readdirSync(join(dir, 'a')));
+    assert.throws(() => readdirSync(join(dir, 'b')));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a secret path with a leading space, quotes or export is normalised, and never echoed in "file missing"', async () => {
+  const dir = tempDir();
+  try {
+    const key = KEY_TEXT;
+    for (const given of [` ${key}`, `"${key}"`, `export ${key}`, `'${key}'`]) {
+      await assert.rejects(
+        init(deps(join(dir, 'cfg')), { ...CONFIG_ARGS, tokenFile: tokenFile(dir), dataKeyFile: given }),
+        (error: Error) => {
+          assert.match(error.message, /^--data-key-file takes the path of a file, not the secret itself$/);
+          assert.ok(!error.message.includes(key));
+          return true;
+        },
+      );
+    }
+    // A secret inside a longer path: the error does not show the path.
+    await assert.rejects(
+      init(deps(join(dir, 'cfg')), { ...CONFIG_ARGS, tokenFile: `/tmp/x/${TOKEN}`, dataKeyFile: keyFile(dir) }),
+      (error: Error) => !error.message.includes(TOKEN) && /no such file/.test(error.message),
+    );
+    // A real path with the shell's habits around it works.
+    await init(deps(join(dir, 'ok')), {
+      ...CONFIG_ARGS,
+      tokenFile: `  "${tokenFile(dir)}"`,
+      dataKeyFile: `export ${keyFile(dir)}`,
+    });
+    assert.equal(readFileSync(join(dir, 'ok', 'env'), 'utf8'), ENV_TEXT);
   } finally {
     rmSync(dir, { recursive: true });
   }

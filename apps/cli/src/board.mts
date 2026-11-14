@@ -20,6 +20,7 @@ import {
 import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
 import { postSlack, slackText } from './notify.mts';
 import { createStyle } from './style.mts';
+import { plainLine, plainText } from './terminal.mts';
 import type { Style } from './style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
 import type { Choice, ScheduleFlags } from './schedule.mts';
@@ -107,13 +108,13 @@ export function formatTasks(found: Task[], flags: TasksFlags, style: Style): str
     return [
       style.bold(`${status} (${inStatus.length})`),
       ...inStatus.map((task) => {
-        const labels = task.labels.length > 0 ? `  [${task.labels.join(',')}]` : '';
+        const labels = task.labels.length > 0 ? `  [${plainLine(task.labels.join(','))}]` : '';
         const hints = [
           task.notBefore ? `starts ${localTime(task.notBefore)}` : undefined,
           task.closed ? 'closed' : undefined,
           task.unreadable.length > 0 ? `cannot decrypt: ${task.unreadable.join(', ')}` : undefined,
         ].filter((hint) => hint !== undefined);
-        return `  ${task.id.padEnd(idWidth)}  ${task.priority.padEnd(priorityWidth)}  ${task.title}${labels}${hints.length > 0 ? style.dim(`  (${hints.join(', ')})`) : ''}`;
+        return `  ${task.id.padEnd(idWidth)}  ${task.priority.padEnd(priorityWidth)}  ${plainLine(task.title)}${labels}${hints.length > 0 ? style.dim(`  (${hints.join(', ')})`) : ''}`;
       }),
     ];
   });
@@ -196,7 +197,8 @@ export function renderThread(task: Task, notes: Note[]): string {
     if (note.unreadable) lines.push(UNREADABLE_TEXT);
     else if (note.text.trim() !== '') lines.push(note.text.trim());
   }
-  return lines.join('\n');
+  // The thread is text from the board's writers, questions and answers included.
+  return plainText(lines.join('\n'));
 }
 
 export async function readThread(context: Context, id: string): Promise<{ task: Task; notes: Note[] }> {
@@ -301,7 +303,7 @@ export function formatSchedule(schedule: Schedule): string {
     `next ${nextRun(schedule)}`,
     left !== null ? `${left} left` : schedule.until ? `until ${localTime(schedule.until)}` : 'forever',
     state,
-    schedule.title,
+    plainLine(schedule.title),
     ...(schedule.unreadable.length > 0 ? [`(cannot decrypt: ${schedule.unreadable.join(', ')})`] : []),
   ].join('  ');
 }

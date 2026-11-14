@@ -248,7 +248,7 @@ test('notify and ask confirm after the Slack post', async () => {
 test('commands resolve a task prefix or link, and inside a run take the id as typed', async () => {
   const { backend, calls, go } = setup();
   await go(['comment', 'ab3d', 'hi']);
-  await go(['move', 'https://board.example/t/Ab3dEf9x', 'done']);
+  await go(['move', 'https://board.test/t/Ab3dEf9x', 'done']);
   await go(['show', 'zt0']);
   assert.deepEqual(backend.writes.slice(0, 2), ['note Ab3dEf9x: hi', 'status Ab3dEf9x -> done']);
   assert.equal(calls.filter((call) => call === 'listTasks').length, 2);

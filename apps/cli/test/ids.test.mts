@@ -53,12 +53,46 @@ test('an ambiguous prefix lists the candidates, an unknown or too short one is r
   await assert.rejects(resolveTaskId(backend, 'Ab', OUT), /too short/);
 });
 
-test('a task link yields its id whatever its origin: the board builds links from its public URL', async () => {
+const OUT_LINKS = { inRun: false, boardLinkPrefix: () => 'https://board.example/t/' };
+
+test('a task link counts only when it starts with this machine’s board URL', async () => {
   const { backend, calls } = setup();
-  assert.equal(await resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x', OUT), 'Ab3dEf9x');
-  assert.equal(await resolveTaskId(backend, 'http://localhost:5173/t/Ab3dEf9x/', OUT), 'Ab3dEf9x');
-  await assert.rejects(resolveTaskId(backend, 'https://board.example/schedules', OUT), /not a task link/);
-  await assert.rejects(resolveTaskId(backend, 'https://board.example/t/a/b', OUT), /not a task link/);
+  assert.equal(await resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x', OUT_LINKS), 'Ab3dEf9x');
+  assert.equal(await resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x/', OUT_LINKS), 'Ab3dEf9x');
+  // A board under a path, as web.json may name it.
+  const under = { inRun: false, boardLinkPrefix: () => 'https://example.com/board/t/' };
+  assert.equal(await resolveTaskId(backend, 'https://example.com/board/t/Zk7mNp2q', under), 'Zk7mNp2q');
+  // Another board with the same ids (a restored dump on localhost): refused, naming both URLs.
+  await assert.rejects(resolveTaskId(backend, 'http://localhost:5173/t/Ab3dEf9x', OUT_LINKS), (error: Error) => {
+    assert.ok(error instanceof UsageError);
+    assert.match(
+      error.message,
+      /"http:\/\/localhost:5173\/t\/Ab3dEf9x" is not a link of this board: this machine's board is https:\/\/board\.example,/,
+    );
+    return true;
+  });
+  await assert.rejects(
+    resolveTaskId(backend, 'https://board.example.evil.test/t/Ab3dEf9x', OUT_LINKS),
+    /not a link of this board/,
+  );
+  await assert.rejects(
+    resolveTaskId(backend, 'https://board.example/schedules', OUT_LINKS),
+    /not a link of this board/,
+  );
+  await assert.rejects(resolveTaskId(backend, 'https://board.example/t/a/b', OUT_LINKS), /not a task link/);
+  await assert.rejects(
+    resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x', { inRun: false }),
+    /not a link of this board/,
+  );
+  await assert.rejects(
+    resolveTaskId(backend, 'https://board.example/t/Ab3dEf9x', {
+      inRun: false,
+      boardLinkPrefix: () => {
+        throw new Error('no web.json');
+      },
+    }),
+    /web\.json is unreadable/,
+  );
   assert.deepEqual(calls, []);
 });
 
