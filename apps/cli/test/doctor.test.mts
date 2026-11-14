@@ -196,6 +196,35 @@ test('a missing unit file of an installed pair is a failure', async () => {
   assert.equal(missing?.level, 'fail');
 });
 
+test('the listener unit is checked like the timers, but a missing or stopped one only warns', async () => {
+  const units = unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch']);
+  const listen = `${UNIT_DIR}/agent-board-listen.service`;
+  const listener = (results: CheckResult[]) => results.filter((result) => result.name.includes('agent-board-listen'));
+
+  const missing = listener(await runChecks(machine({ ...GOOD, ...units }, { exists: (path) => path !== listen })));
+  assert.deepEqual(levels(missing), { 'unit agent-board-listen.service': 'warn' });
+  assert.match(missing[0]?.hint ?? '', /board setup/);
+
+  const running = await runChecks(machine({ ...GOOD, ...units }, { exists: () => true }));
+  assert.deepEqual(levels(listener(running)), {
+    'unit agent-board-listen.service': 'ok',
+    'agent-board-listen.service command': 'ok',
+    'agent-board-listen.service state': 'ok',
+  });
+
+  const stopped = await runChecks(
+    machine(
+      { ...GOOD, ...units },
+      { exists: () => true, systemctl: async (args) => (args.at(-1) === 'agent-board-listen.service' ? 1 : 0) },
+    ),
+  );
+  assert.equal(levels(stopped)['agent-board-listen.service state'], 'warn');
+  assert.equal(hasFailure(stopped), false);
+
+  const vanished = await runChecks(machine({ ...GOOD, ...units }, { exists: (path) => path !== '/usr/bin/node' }));
+  assert.equal(levels(vanished)['agent-board-listen.service command'], 'fail');
+});
+
 test('a result prints as one line with its hint under it', () => {
   assert.equal(formatResult({ name: 'x', level: 'ok', message: 'fine' }), '✓ x: fine');
   assert.equal(formatResult({ name: 'x', level: 'fail', message: 'bad', hint: 'fix it' }), '✗ x: bad\n    → fix it');

@@ -15,6 +15,9 @@ export const UNIT_PATH = '%h/.local/bin:/usr/local/bin:/usr/bin:/bin';
 export const UNIT_NAMES = ['dispatch', 'intake'] as const;
 export type UnitName = (typeof UNIT_NAMES)[number];
 
+// The listener is a service without a timer: it holds the board's event stream and starts dispatch ticks.
+export const LISTEN_SERVICE = 'agent-board-listen.service';
+
 // Exit 75 is `flock -E 75`: another tick holds the lock, which is not a failure.
 const UNITS: Record<
   UnitName,
@@ -69,11 +72,11 @@ export interface RenderInput {
   // The absolute path of flock.
   flock: string;
   // The command that runs `internal <name>`.
-  command: (name: UnitName) => string[];
+  command: (name: UnitName | 'listen') => string[];
 }
 
 export function renderUnits({ flock, command }: RenderInput): UnitFile[] {
-  return UNIT_NAMES.flatMap((name) => {
+  const timed = UNIT_NAMES.flatMap((name) => {
     const unit = UNITS[name];
     // %t is the runtime directory, where bin/dispatch and bin/intake keep the same lock files.
     const execStart = [
@@ -116,13 +119,34 @@ WantedBy=timers.target
       },
     ];
   });
+  const listen: UnitFile = {
+    file: LISTEN_SERVICE,
+    text: `[Unit]
+Description=agent-board listener: dispatch as soon as the board says tasks changed
+# The listener exits on a contract mismatch until the CLI is updated; systemd must keep restarting it, not give up.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# PATH is for the gh, claude and systemd-run that the dispatch ticks it starts use.
+Environment=PATH=${UNIT_PATH}
+ExecStart=${command('listen').map(quoteExecArg).join(' ')}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+`,
+  };
+  return [...timed, listen];
 }
 
 export function unitDirectory(env: Record<string, string | undefined>): string {
   return join(env['XDG_CONFIG_HOME'] || join(homedir(), '.config'), 'systemd', 'user');
 }
 
-export const ENABLE_COMMAND = 'systemctl --user enable --now agent-board-dispatch.timer agent-board-intake.timer';
+const ENABLE_UNITS = [...UNIT_NAMES.map((name) => `agent-board-${name}.timer`), LISTEN_SERVICE];
+export const ENABLE_COMMAND = `systemctl --user enable --now ${ENABLE_UNITS.join(' ')}`;
 
 export interface SetupFlags {
   enable?: boolean;
@@ -139,8 +163,8 @@ export interface SetupDeps {
   command: RenderInput['command'];
   // A sentence when this tree is not the one the installed `board` runs from, else undefined.
   treeProblem?: () => string | undefined;
-  // Whether a timer is already enabled (a read-only systemctl call), to leave out the hint to enable it.
-  timerEnabled?: (timer: string) => Promise<boolean>;
+  // Whether a timer or service is already enabled (a read-only systemctl call), to leave out the hint to enable it.
+  unitEnabled?: (unit: string) => Promise<boolean>;
   run: (program: string, args: string[]) => Promise<void>;
   print: (line: string) => void;
 }
@@ -250,19 +274,14 @@ export async function setup(deps: SetupDeps, flags: SetupFlags): Promise<void> {
   }
   await deps.run('systemctl', ['--user', 'daemon-reload']);
   if (flags.enable) {
-    await deps.run('systemctl', [
-      '--user',
-      'enable',
-      '--now',
-      'agent-board-dispatch.timer',
-      'agent-board-intake.timer',
-    ]);
-    deps.print('enabled and started the dispatch and intake timers');
+    await deps.run('systemctl', ['--user', 'enable', '--now', ...ENABLE_UNITS]);
+    deps.print('enabled and started the dispatch and intake timers and the listener');
   } else {
-    const enabled = await Promise.all(
-      UNIT_NAMES.map((name) => deps.timerEnabled?.(`agent-board-${name}.timer`) ?? Promise.resolve(false)),
-    );
-    if (enabled.every(Boolean)) deps.print('the timers are enabled already; the next tick runs the new units');
-    else deps.print(`Enable the timers when you are ready:\n  ${ENABLE_COMMAND}`);
+    const enabled = await Promise.all(ENABLE_UNITS.map((unit) => deps.unitEnabled?.(unit) ?? Promise.resolve(false)));
+    if (enabled.every(Boolean))
+      deps.print(
+        'the timers and the listener are enabled already; the next tick runs the new units, and the listener once it is restarted: systemctl --user restart agent-board-listen',
+      );
+    else deps.print(`Enable the timers and the listener when you are ready:\n  ${ENABLE_COMMAND}`);
   }
 }

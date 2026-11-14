@@ -543,8 +543,8 @@ Setup:
   init                      write web.json, env and config.json for this machine
   doctor                    check this machine: config, token, server, worker
                             tools and units
-  setup                     install the dispatch and intake timers as systemd
-                            user units
+  setup                     install the dispatch and intake timers and the
+                            listener as systemd user units
   self-update               replace this binary with the newest release
   completion <shell>        print a shell completion script
   help [command]            show the help of a command
@@ -937,8 +937,8 @@ Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600
 or 400, token, data key), the board (reachable, token accepted, contract
 version, and whether it has a data key and this machine holds the same one),
 config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl
-and the installed units with their timers. The worker checks only warn on a
-machine with no unit installed.
+and the installed units with their timers and the listener. The worker checks
+only warn on a machine with no unit installed.
 
 Options:
   --json      print JSON on stdout instead of text
@@ -955,21 +955,24 @@ Examples:
 Usage: board setup [options]
 
 Install this machine as a worker: write the dispatch and intake services and
-timers into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies,
-run `systemctl --user daemon-reload` and print the line that enables the timers.
-Run it again after moving the binary or the checkout, or upgrading Node. It
-needs Linux with systemd and flock.
+timers and the listener service into ~/.config/systemd/user (or
+$XDG_CONFIG_HOME/systemd/user) as copies, run `systemctl --user daemon-reload`
+and print the line that enables them. The listener holds a stream to the board
+and starts a dispatch tick within a second of a change; the timers stay as the
+fallback. Run it again after moving the binary or the checkout, or upgrading
+Node. It needs Linux with systemd and flock.
 
 The services run this CLI the way `board setup` was started: the binary, or the
 checkout with its Node. --print shows the units and changes nothing; --enable
-also enables and starts the timers. When an installed unit differs from what it
-writes, the differing lines are shown. It refuses unless --force when this
-checkout is not the one the installed ~/.local/bin/board runs from (a worktree,
-a scratch copy), or when a binary runs from the temp directory, so it cannot
-take over the live timers. Not available inside a board run.
+also enables and starts the timers and the listener. When an installed unit
+differs from what it writes, the differing lines are shown. It refuses unless
+--force when this checkout is not the one the installed ~/.local/bin/board runs
+from (a worktree, a scratch copy), or when a binary runs from the temp
+directory, so it cannot take over the live timers. Not available inside a board
+run.
 
 Options:
-  --enable    also enable and start the timers
+  --enable    also enable and start the timers and the listener
   --force     install although this checkout is not the installed one, or the
               binary runs from the temp directory
   --print     print the units and change nothing
