@@ -18,7 +18,7 @@ export const testConfig: Config = {
 export function useTestDb(): { db: Db } {
   const handle = createDb(testDatabaseUrl());
   beforeEach(async () => {
-    await handle.db.execute(sql`truncate note, task, machine restart identity cascade`);
+    await handle.db.execute(sql`truncate note, task, schedule, machine restart identity cascade`);
   });
   afterAll(() => handle.pool.end());
   return { db: handle.db };

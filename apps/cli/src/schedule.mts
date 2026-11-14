@@ -1,10 +1,12 @@
-// `board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...>`: a task from a prompt, written as you would
-// type it into Claude Code, bound to this machine and the directory it was scheduled from. Before it creates one, a
-// quick Haiku call checks whether an open task already covers it.
+// `board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
+// [--times <n> | --until <time>] [--new] <prompt...>`: a task from a prompt, written as you would type it into Claude Code,
+// bound to this machine and the directory it was scheduled from. Before it creates one, a quick Haiku call checks whether
+// an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead.
 import { execFile } from 'node:child_process';
 import {
   ContractError,
   defaultTitle,
+  describeRule,
   isPriority,
   isRecord,
   parseDuration,
@@ -15,7 +17,7 @@ import type { Backend, Priority, Status, Task } from '@agent-board/shared';
 import { UsageError } from './cli.mts';
 
 export const SCHEDULE_USAGE =
-  'usage: board schedule [--priority <p>] [--title <t>] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...>';
+  'usage: board schedule [--priority <p>] [--title <t>] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>"] [--times <n> | --until <time>] [--new] <prompt...>';
 
 export interface ScheduleArgs {
   prompt: string;
@@ -25,8 +27,13 @@ export interface ScheduleArgs {
   hold: boolean;
   // Parked in Backlog instead of Todo.
   backlog: boolean;
-  // Waits in Todo until then (`--in`, `--at`).
+  // Waits in Todo until then (`--in`, `--at`); with a repeat, the first run.
   notBefore: Date | undefined;
+  // A repeat: the interval in ms (`--every`) or a 5-field cron expression (`--cron`), ending after `times` runs or at `until`.
+  every: number | undefined;
+  cron: string | undefined;
+  times: number | undefined;
+  until: Date | undefined;
   // Skips the duplicate check.
   forceNew: boolean;
 }
@@ -40,10 +47,17 @@ export function parseScheduleArgs(args: string[], now: Date = new Date()): Sched
     hold: false,
     backlog: false,
     notBefore: undefined,
+    every: undefined,
+    cron: undefined,
+    times: undefined,
+    until: undefined,
     forceNew: false,
   };
   let delay: string | undefined;
   let at: string | undefined;
+  let times: string | undefined;
+  let until: string | undefined;
+  let every: string | undefined;
   let index = 0;
   for (; index < args.length; index++) {
     const arg = args[index];
@@ -54,11 +68,18 @@ export function parseScheduleArgs(args: string[], now: Date = new Date()): Sched
     if (arg === '--hold') result.hold = true;
     else if (arg === '--backlog') result.backlog = true;
     else if (arg === '--new') result.forceNew = true;
-    else if (arg === '--in' || arg === '--at') {
+    else if (arg === '--in' || arg === '--at' || arg === '--every' || arg === '--cron') {
       const value = args[++index];
       if (value === undefined) throw new UsageError(SCHEDULE_USAGE);
       if (arg === '--in') delay = value;
-      else at = value;
+      else if (arg === '--at') at = value;
+      else if (arg === '--every') every = value;
+      else result.cron = value.trim();
+    } else if (arg === '--times' || arg === '--until') {
+      const value = args[++index];
+      if (value === undefined) throw new UsageError(SCHEDULE_USAGE);
+      if (arg === '--times') times = value;
+      else until = value;
     } else if (arg === '--priority' || arg === '--title') {
       const value = args[++index];
       if (value === undefined) throw new UsageError(SCHEDULE_USAGE);
@@ -71,7 +92,27 @@ export function parseScheduleArgs(args: string[], now: Date = new Date()): Sched
   if (delay !== undefined && at !== undefined) throw new UsageError('--in and --at cannot be combined');
   if ((delay !== undefined || at !== undefined) && (result.hold || result.backlog))
     throw new UsageError('--in and --at queue the task in Todo; they cannot be combined with --hold or --backlog');
+  if (every !== undefined && result.cron !== undefined) throw new UsageError('--every and --cron cannot be combined');
+  const repeats = every !== undefined || result.cron !== undefined;
+  if (!repeats && (times !== undefined || until !== undefined))
+    throw new UsageError('--times and --until end a repeat; add --every or --cron');
+  if (repeats && (result.hold || result.backlog))
+    throw new UsageError('--every and --cron queue tasks in Todo; they cannot be combined with --hold or --backlog');
+  if (times !== undefined && until !== undefined) throw new UsageError('--times and --until cannot be combined');
   result.notBefore = parseStart({ delay, at }, now);
+  if (every !== undefined) result.every = parseInterval(every);
+  if (result.cron !== undefined && result.cron.split(/\s+/).length !== 5)
+    throw new UsageError(
+      `--cron takes 5 fields (minute hour day month weekday), such as "0 9 * * 1-5"; got "${result.cron.slice(0, 60)}"`,
+    );
+  if (times !== undefined) {
+    if (!/^[1-9]\d{0,5}$/.test(times))
+      throw new UsageError(`--times takes a positive whole number; got "${times.slice(0, 20)}"`);
+    result.times = Number(times);
+  }
+  result.until = parseStart({ at: until }, now);
+  if (result.until !== undefined && result.until.getTime() < (result.notBefore ?? now).getTime())
+    throw new UsageError('--until is before the first run');
   result.prompt = args.slice(index).join(' ').trim();
   if (result.prompt === '') throw new UsageError(SCHEDULE_USAGE);
   return result;
@@ -85,6 +126,15 @@ export function parseStart(
   try {
     if (flags.delay !== undefined) return new Date(now.getTime() + parseDuration(flags.delay));
     return flags.at === undefined ? undefined : parseWhen(flags.at, now);
+  } catch (error) {
+    if (error instanceof ContractError) throw new UsageError(error.message);
+    throw error;
+  }
+}
+
+function parseInterval(text: string): number {
+  try {
+    return parseDuration(text);
   } catch (error) {
     if (error instanceof ContractError) throw new UsageError(error.message);
     throw error;
@@ -186,14 +236,37 @@ export interface ScheduleDeps {
   backend: Backend;
   machine: string;
   workdir: string;
+  // The IANA zone a cron expression is read in.
+  timezone: string;
   print: (line: string) => void;
   check: DuplicateCheck;
   // Asks in the terminal; undefined when there is none (a script), which creates the task with a warning.
   choose: ((duplicate: Duplicate, task: Task) => Promise<Choice>) | undefined;
 }
 
+// A recurring prompt resembles its own earlier runs, so a repeat skips the duplicate check.
+async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<Task> {
+  const { schedule, task } = await deps.backend.addSchedule({
+    title: args.title || defaultTitle(args.prompt),
+    input: args.prompt,
+    machine: deps.machine,
+    workdir: deps.workdir,
+    ...(args.priority ? { priority: args.priority } : {}),
+    ...(args.every !== undefined ? { everyMs: args.every } : { cron: args.cron ?? '', timezone: deps.timezone }),
+    ...(args.notBefore ? { startAt: args.notBefore } : {}),
+    ...(args.times ? { times: args.times } : {}),
+    ...(args.until ? { until: args.until } : {}),
+  });
+  const end = args.times ? `, ${args.times} runs` : args.until ? `, until ${localTime(args.until)}` : '';
+  deps.print(
+    `scheduled repeat ${schedule.id}: ${describeRule(schedule)}${end}; first run ${localTime(task.notBefore ?? new Date())} ${task.url}`,
+  );
+  return task;
+}
+
 export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<Task | undefined> {
   const { backend } = deps;
+  if (args.every !== undefined || args.cron !== undefined) return scheduleRepeat(deps, args);
   let warning: string | undefined;
   if (!args.forceNew) {
     const open = (await backend.listTasks()).filter((task) => task.status !== 'done');
@@ -207,8 +280,16 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
         return undefined;
       }
       if (choice === 'requeue') {
+        if (existing.status === 'todo' && args.notBefore) {
+          const delayed = await backend.updateTask(existing.id, { notBefore: args.notBefore, expect: 'todo' });
+          deps.print(`${existing.id} is already queued, now starts ${localTime(args.notBefore)}: ${delayed.url}`);
+          return delayed;
+        }
         if (existing.status === 'todo' || existing.status === 'running') {
-          deps.print(`${existing.id} is already ${existing.status === 'todo' ? 'queued' : 'running'}: ${existing.url}`);
+          const note = args.notBefore ? '; the start time was not applied' : '';
+          deps.print(
+            `${existing.id} is already ${existing.status === 'todo' ? 'queued' : 'running'}${note}: ${existing.url}`,
+          );
           return existing;
         }
         const requeued = await backend.updateTask(existing.id, {

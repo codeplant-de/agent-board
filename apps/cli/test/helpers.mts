@@ -1,7 +1,7 @@
 import type { Config } from '../src/config.mts';
 import type { RunFiles, RunRecord } from '../src/runtime.mts';
 import { BackendError } from '../src/backend.mts';
-import type { Backend, Note, Task } from '@agent-board/shared';
+import type { Backend, Note, Schedule, Task } from '@agent-board/shared';
 
 export function task(overrides: Partial<Task> & { id: string }): Task {
   return {
@@ -25,6 +25,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     runStartedAt: null,
     paused: false,
     notBefore: null,
+    scheduleId: null,
     ...overrides,
   };
 }
@@ -48,8 +49,31 @@ export const CONFIG: Config = {
   repos: { 'cosuno/cosuno': '/work/cosuno' },
 };
 
+export function schedule(overrides: Partial<Schedule> & { id: string }): Schedule {
+  return {
+    title: `schedule ${overrides.id}`,
+    input: '/sweep',
+    priority: 'normal',
+    machine: null,
+    workdir: null,
+    everyMs: 7_200_000,
+    cron: null,
+    timezone: null,
+    anchorAt: new Date('2027-01-01T08:00:00Z'),
+    nextRunAt: new Date('2027-01-01T08:00:00Z'),
+    remaining: null,
+    until: null,
+    paused: false,
+    ended: false,
+    occurrenceTaskId: 'pending',
+    createdAt: new Date('2026-11-14T10:00:00Z'),
+    ...overrides,
+  };
+}
+
 export interface FakeBackend extends Backend {
   tasks: Task[];
+  schedules: Schedule[];
   notes: Map<string, Note[]>;
   writes: string[];
   // Claims of these ids are lost, as if another machine got there first.
@@ -72,6 +96,7 @@ export function note(text: string, createdAt: Date, overrides: Partial<Note> = {
 export function fakeBackend(tasks: Task[]): FakeBackend {
   const state: FakeBackend = {
     tasks,
+    schedules: [],
     notes: new Map(),
     writes: [],
     lostClaims: [],
@@ -167,6 +192,48 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     },
     async readNotes(id) {
       return state.notes.get(id) ?? [];
+    },
+    async addSchedule(draft) {
+      state.writes.push(
+        `add-schedule ${draft.title} | ${draft.input} | ${draft.everyMs ?? `${draft.cron} ${draft.timezone}`}` +
+          `${draft.startAt ? ` | start ${draft.startAt.toISOString()}` : ''}${draft.times ? ` | times ${draft.times}` : ''}` +
+          `${draft.until ? ` | until ${draft.until.toISOString()}` : ''}${draft.machine ? ` | ${draft.machine}:${draft.workdir}` : ''}`,
+      );
+      const pending = task({
+        id: 'pending',
+        title: draft.title,
+        input: draft.input,
+        machine: draft.machine ?? null,
+        workdir: draft.workdir ?? null,
+        notBefore: draft.startAt ?? new Date('2027-01-01T08:00:00Z'),
+        scheduleId: 'sched',
+      });
+      const added = schedule({
+        id: 'sched',
+        title: draft.title,
+        input: draft.input,
+        everyMs: draft.everyMs ?? null,
+        cron: draft.cron ?? null,
+        timezone: draft.timezone ?? null,
+        nextRunAt: pending.notBefore,
+        remaining: draft.times === undefined ? null : draft.times - 1,
+      });
+      state.schedules.push(added);
+      return { schedule: added, task: pending };
+    },
+    async listSchedules() {
+      return state.schedules.map((s) => ({ ...s }));
+    },
+    async updateSchedule(id, patch) {
+      state.writes.push(`${patch.paused ? 'pause' : 'resume'}-schedule ${id}`);
+      const found = state.schedules.find((s) => s.id === id);
+      if (!found) throw new BackendError(`no schedule ${id}`, 404);
+      Object.assign(found, patch);
+      return { ...found };
+    },
+    async removeSchedule(id) {
+      state.writes.push(`remove-schedule ${id}`);
+      state.schedules = state.schedules.filter((s) => s.id !== id);
     },
   };
   return state;

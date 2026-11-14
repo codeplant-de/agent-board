@@ -6,6 +6,7 @@ import {
   IconMessageQuestion,
   IconPlayerPause,
   IconPlayerTrackNext,
+  IconRepeat,
   IconSparkles,
 } from '@tabler/icons-react';
 import { startsIn } from '../lib/startsIn';
@@ -16,7 +17,7 @@ import { PriorityBadge } from './PriorityPicker';
 
 /**
  * What sets a task apart at a glance: its priority (unless normal), an open question, a proposal, a pending
- * resume, a start time still ahead, where it runs.
+ * resume, a start time still ahead, a repeating schedule, where it runs.
  */
 export function TaskBadges({
   task,
@@ -52,6 +53,17 @@ export function TaskBadges({
           title={stamp(task.notBefore)}
         >
           {waiting}
+        </Badge>
+      )}
+      {task.scheduleId !== null && (
+        <Badge
+          size="sm"
+          color="cyan"
+          variant="light"
+          leftSection={<IconRepeat size={12} />}
+          title="Made by a repeating schedule"
+        >
+          Repeat
         </Badge>
       )}
       {task.status === 'todo' && task.paused && (

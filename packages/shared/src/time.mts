@@ -1,5 +1,6 @@
 // Durations and points in time as people type them: `board schedule --in 1h30m`, `--at 09:00`, the form's date field.
 import { ContractError } from './contract.mts';
+import type { Schedule } from './contract.mts';
 
 const UNIT_MS = { w: 7 * 86_400_000, d: 86_400_000, h: 3_600_000, m: 60_000 } as const;
 const UNITS = ['w', 'd', 'h', 'm'] as const;
@@ -26,6 +27,17 @@ export function formatDuration(ms: number): string {
     return count > 0 ? [`${count}${unit}`] : [];
   });
   return parts.length > 0 ? parts.join(' ') : '0m';
+}
+
+// "every 2h" or "cron 0 9 * * 1-5 (Europe/Berlin)".
+export function describeRule(schedule: Pick<Schedule, 'everyMs' | 'cron' | 'timezone'>): string {
+  if (schedule.everyMs !== null) return `every ${formatDuration(schedule.everyMs)}`;
+  return `cron ${schedule.cron ?? ''} (${schedule.timezone ?? ''})`;
+}
+
+// Runs the schedule still has, the pending one included; null: forever.
+export function runsLeft(schedule: Pick<Schedule, 'remaining' | 'occurrenceTaskId'>): number | null {
+  return schedule.remaining === null ? null : schedule.remaining + (schedule.occurrenceTaskId === null ? 0 : 1);
 }
 
 function localDate(

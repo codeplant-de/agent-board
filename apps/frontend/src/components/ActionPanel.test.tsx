@@ -2,6 +2,7 @@ import { MantineProvider } from '@mantine/core';
 import { ModalsProvider } from '@mantine/modals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardTask, ThreadNote } from '../lib/trpc';
@@ -58,6 +59,7 @@ function running(overrides: Partial<BoardTask>): BoardTask {
     runStartedAt: minutesAgo(30),
     paused: false,
     notBefore: null,
+    scheduleId: null,
     proposed: false,
     parentId: null,
     createdAt: minutesAgo(60),
@@ -68,13 +70,15 @@ function running(overrides: Partial<BoardTask>): BoardTask {
 
 function renderPanel(task: BoardTask, thread: ThreadNote[] = []) {
   return render(
-    <MantineProvider>
-      <ModalsProvider>
-        <QueryClientProvider client={new QueryClient()}>
-          <ActionPanel task={task} thread={thread} />
-        </QueryClientProvider>
-      </ModalsProvider>
-    </MantineProvider>,
+    <MemoryRouter>
+      <MantineProvider>
+        <ModalsProvider>
+          <QueryClientProvider client={new QueryClient()}>
+            <ActionPanel task={task} thread={thread} />
+          </QueryClientProvider>
+        </ModalsProvider>
+      </MantineProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -148,6 +152,19 @@ describe('ActionPanel of a delayed task', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Run now' }));
     await waitFor(() => expect(setNotBefore).toHaveBeenCalled());
     expect(setNotBefore.mock.calls[0]?.[0]).toEqual({ id: 'abc12345', notBefore: null });
+  });
+
+  it('says a waiting card of a schedule is its next run, with a link to the Schedules page', () => {
+    const notBefore = new Date(Date.now() + 3_600_000).toISOString();
+    renderPanel(running({ status: 'todo', sessionId: null, notBefore, scheduleId: 'sch1' }), []);
+    expect(screen.getByText(/the next run of a repeating schedule/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Schedules' })).toHaveAttribute('href', '/schedules');
+  });
+
+  it('does not call an ordinary delayed card a schedule run', () => {
+    const notBefore = new Date(Date.now() + 3_600_000).toISOString();
+    renderPanel(running({ status: 'todo', sessionId: null, notBefore }), []);
+    expect(screen.queryByText(/repeating schedule/)).not.toBeInTheDocument();
   });
 
   it('shows neither once the task is due', () => {

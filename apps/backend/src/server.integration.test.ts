@@ -1,7 +1,7 @@
 import { CONTRACT_VERSION, TAKE_BACK_AFTER_MS } from '@agent-board/shared';
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { tasks } from './db/schema';
+import { schedules, tasks } from './db/schema';
 import { buildServer } from './server';
 import { issueToken } from './services/machines';
 import { archiveStaleDone } from './services/tasks';
@@ -947,5 +947,226 @@ describe('delayed tasks', () => {
       .set({ notBefore: new Date(Date.now() - 1000) })
       .where(eq(tasks.title, 'early'));
     expect(await titles()).toEqual(['early', 'normal', 'low', 'late']);
+  });
+});
+
+describe('schedules', () => {
+  const hour = 3_600_000;
+  const claim = (id: string) => ctx.call('laptop', 'claim-task', { id, machine: 'laptop' });
+  const addSchedule = (body: Record<string, unknown>) =>
+    ctx.call('laptop', 'add-schedule', { body: { title: 'Sweep', input: '/sweep', everyMs: hour, ...body } });
+  const scheduled = (scheduleId: string) =>
+    db.select().from(tasks).where(eq(tasks.scheduleId, scheduleId)).orderBy(tasks.createdAt);
+  const makeDue = (id: string) =>
+    db
+      .update(tasks)
+      .set({ notBefore: new Date(Date.now() - 1000) })
+      .where(eq(tasks.id, id));
+  const listed = async () => (await ctx.call('laptop', 'list-schedules')).json.result as any[];
+
+  it('adding a schedule creates one waiting Todo card, pinned like the schedule', async () => {
+    const startAt = new Date(Date.now() + 2 * hour);
+    const { status, json } = await addSchedule({
+      startAt: startAt.toISOString(),
+      priority: 'high',
+      machine: 'laptop',
+      workdir: '/work/x',
+    });
+    expect(status).toBe(200);
+    expect(json.result.task).toMatchObject({
+      status: 'todo',
+      title: 'Sweep',
+      input: '/sweep',
+      priority: 'high',
+      createdBy: 'user',
+      machine: 'laptop',
+      workdir: '/work/x',
+      notBefore: startAt.toISOString(),
+      scheduleId: json.result.schedule.id,
+    });
+    expect(json.result.schedule).toMatchObject({
+      everyMs: hour,
+      remaining: null,
+      paused: false,
+      ended: false,
+      nextRunAt: startAt.toISOString(),
+      occurrenceTaskId: json.result.task.id,
+    });
+    expect(await scheduled(json.result.schedule.id)).toHaveLength(1);
+    expect(await listed()).toHaveLength(1);
+  });
+
+  it('claiming the pending card creates the next one on the grid and counts down the runs', async () => {
+    const { json } = await addSchedule({ times: 3 });
+    const first = json.result.task;
+    const anchor = new Date(first.notBefore).getTime();
+    expect((await claim(first.id)).status).toBe(200);
+    const [, second, ...rest] = await scheduled(json.result.schedule.id);
+    expect(rest).toEqual([]);
+    expect(second?.notBefore?.getTime()).toBe(anchor + hour);
+    expect(second?.status).toBe('todo');
+    expect((await listed())[0]).toMatchObject({ remaining: 1, occurrenceTaskId: second?.id });
+  });
+
+  it('times 2 gives exactly two cards and then the schedule has ended', async () => {
+    const { json } = await addSchedule({ times: 2 });
+    const id = json.result.schedule.id;
+    await claim(json.result.task.id);
+    const second = (await scheduled(id))[1]!;
+    expect((await claim(second.id)).status).toBe(409);
+    await makeDue(second.id);
+    expect((await claim(second.id)).status).toBe(200);
+    expect(await scheduled(id)).toHaveLength(2);
+    expect((await listed())[0]).toMatchObject({ ended: true, nextRunAt: null, occurrenceTaskId: null, remaining: 0 });
+  });
+
+  it('skips the runs missed while nothing claimed the card', async () => {
+    const anchor = Date.now() - 5.5 * hour;
+    const { json } = await addSchedule({ startAt: new Date(anchor).toISOString() });
+    expect((await claim(json.result.task.id)).status).toBe(200);
+    const all = await scheduled(json.result.schedule.id);
+    expect(all).toHaveLength(2);
+    expect(all[1]?.notBefore?.getTime()).toBe(anchor + 6 * hour);
+  });
+
+  it('until ends the schedule when the next run would lie after it', async () => {
+    const { json } = await addSchedule({ until: new Date(Date.now() + hour / 2).toISOString() });
+    await claim(json.result.task.id);
+    expect(await scheduled(json.result.schedule.id)).toHaveLength(1);
+    expect((await listed())[0]).toMatchObject({ ended: true, occurrenceTaskId: null });
+  });
+
+  it('closing or moving the pending card skips that run and creates the next', async () => {
+    const ui = caller(db);
+    const { json } = await addSchedule({});
+    const id = json.result.schedule.id;
+    await ui.tasks.setClosed({ id: json.result.task.id, closed: true });
+    const second = (await scheduled(id))[1]!;
+    expect(second.notBefore?.getTime()).toBe(new Date(json.result.task.notBefore).getTime() + hour);
+    await ui.tasks.move({ id: second.id, status: 'backlog' });
+    const all = await scheduled(id);
+    expect(all).toHaveLength(3);
+    expect((await listed())[0]?.occurrenceTaskId).toBe(all[2]?.id);
+  });
+
+  it('a former occurrence that is queued again does not create another card', async () => {
+    const { json } = await addSchedule({});
+    const id = json.result.schedule.id;
+    await claim(json.result.task.id);
+    expect(await scheduled(id)).toHaveLength(2);
+    await ctx.call('laptop', 'pause', { id: json.result.task.id, body: 'making room' });
+    expect((await claim(json.result.task.id)).status).toBe(200);
+    await ctx.call('laptop', 'pause', { id: json.result.task.id, body: 'again' });
+    await caller(db).tasks.rerun({ id: json.result.task.id });
+    expect(await scheduled(id)).toHaveLength(2);
+  });
+
+  it('two claims at once leave one next card', async () => {
+    const { json } = await addSchedule({});
+    const results = await Promise.all([claim(json.result.task.id), claim(json.result.task.id)]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(await scheduled(json.result.schedule.id)).toHaveLength(2);
+  });
+
+  it('pausing removes the pending card, resuming creates the next from now', async () => {
+    const ui = caller(db);
+    const { json } = await addSchedule({ times: 3, startAt: new Date(Date.now() + hour).toISOString() });
+    const id = json.result.schedule.id;
+    const paused = await ctx.call('laptop', 'update-schedule', { id, body: { paused: true } });
+    expect(paused.json.result).toMatchObject({ paused: true, nextRunAt: null, occurrenceTaskId: null, remaining: 3 });
+    expect(await scheduled(id)).toHaveLength(0);
+    expect((await ctx.call('laptop', 'get-task', { id: json.result.task.id })).status).toBe(404);
+    const resumed = await ui.schedules.setPaused({ id, paused: false });
+    expect(resumed).toMatchObject({ paused: false, remaining: 2 });
+    expect(resumed.nextRunAt).not.toBeNull();
+    expect(await scheduled(id)).toHaveLength(1);
+  });
+
+  it('a paused schedule creates nothing when its pending card leaves Todo', async () => {
+    const ui = caller(db);
+    const { json } = await addSchedule({});
+    const id = json.result.schedule.id;
+    await db.update(tasks).set({ sessionId: 'ran' }).where(eq(tasks.id, json.result.task.id));
+    await ui.schedules.setPaused({ id, paused: true });
+    expect(await scheduled(id)).toHaveLength(1);
+    await ui.tasks.setClosed({ id: json.result.task.id, closed: true });
+    expect(await scheduled(id)).toHaveLength(1);
+    expect((await listed())[0]).toMatchObject({ paused: true, occurrenceTaskId: null });
+    await ui.schedules.setPaused({ id, paused: false });
+    expect(await scheduled(id)).toHaveLength(2);
+  });
+
+  it('removing a schedule deletes its pending card and leaves the cards that ran', async () => {
+    const { json } = await addSchedule({});
+    const id = json.result.schedule.id;
+    await claim(json.result.task.id);
+    const removed = await ctx.call('laptop', 'remove-schedule', { id });
+    expect(removed.status).toBe(200);
+    const left = await db.select().from(tasks);
+    expect(left.map((t) => [t.id, t.scheduleId])).toEqual([[json.result.task.id, null]]);
+    expect(await db.select().from(schedules)).toEqual([]);
+    expect((await ctx.call('laptop', 'remove-schedule', { id })).status).toBe(404);
+  });
+
+  it('rejects what it cannot run', async () => {
+    const cron = (pattern: string, timezone = 'Europe/Berlin') =>
+      ctx.call('laptop', 'add-schedule', { body: { title: 't', input: 'x', cron: pattern, timezone } });
+    expect((await cron('0 9 * * 1-5')).status).toBe(200);
+    for (const bad of ['*/5 * * * * *', 'every day', '0 9 * *', '61 * * * *']) {
+      const answer = await cron(bad);
+      expect(answer.status, bad).toBe(400);
+      expect(answer.json.error).toMatch(/cron/);
+    }
+    const zone = await cron('0 9 * * *', 'Mars/Base');
+    expect(zone.status).toBe(400);
+    expect(zone.json.error).toMatch(/time zone/);
+    expect((await addSchedule({ everyMs: 1000 })).status).toBe(400);
+    expect((await addSchedule({ cron: '0 9 * * *', timezone: 'UTC' })).status).toBe(400);
+    expect((await addSchedule({ times: 2, until: new Date(Date.now() + hour).toISOString() })).status).toBe(400);
+    expect(
+      (await addSchedule({ startAt: new Date(Date.now() + 2 * hour).toISOString(), until: new Date().toISOString() }))
+        .status,
+    ).toBe(400);
+    expect(await db.select().from(schedules)).toHaveLength(1);
+    expect(await db.select().from(tasks)).toHaveLength(1);
+  });
+
+  it('a cron schedule starts at the first match from its start time', async () => {
+    const startAt = new Date(Date.now() + 3 * hour);
+    const { json } = await ctx.call('laptop', 'add-schedule', {
+      body: { title: 't', input: 'x', cron: '*/15 * * * *', timezone: 'UTC', startAt: startAt.toISOString() },
+    });
+    const first = new Date(json.result.task.notBefore);
+    expect(first.getTime()).toBeGreaterThanOrEqual(startAt.getTime());
+    expect(first.getTime() - startAt.getTime()).toBeLessThan(15 * 60_000);
+    expect(first.getUTCMinutes() % 15).toBe(0);
+  });
+
+  it('tasks.create makes a schedule from a repeat and returns its pending card', async () => {
+    const ui = caller(db);
+    const task = await ui.tasks.create({ input: 'weekly', when: { every: 7 * 24 * hour, times: 2 } });
+    expect(task).toMatchObject({ status: 'todo', scheduleId: expect.any(String), notBefore: expect.any(Date) });
+    const [schedule] = await ui.schedules.list();
+    expect(schedule).toMatchObject({ everyMs: 7 * 24 * hour, remaining: 1, occurrenceTaskId: task.id });
+    const cron = await ui.tasks.create({
+      input: 'mornings',
+      when: { cron: '0 9 * * 1-5', timezone: 'Europe/Berlin', at: new Date(Date.now() + hour) },
+    });
+    expect(cron.scheduleId).not.toBeNull();
+    await expect(ui.tasks.create({ input: 'x', when: { cron: 'nope', timezone: 'UTC' } })).rejects.toThrow(/cron/);
+    await expect(ui.tasks.create({ input: 'x', when: { every: 1000 } })).rejects.toThrow();
+    await expect(
+      ui.tasks.create({ input: 'x', when: { every: hour, times: 2, until: new Date(Date.now() + 5 * hour) } }),
+    ).rejects.toThrow(/not both/);
+  });
+
+  it('schedules.setPaused and schedules.remove work the schedule from the page', async () => {
+    const ui = caller(db);
+    const task = await ui.tasks.create({ input: 'weekly', when: { every: hour } });
+    const [schedule] = await ui.schedules.list();
+    expect(await ui.schedules.setPaused({ id: schedule!.id, paused: true })).toMatchObject({ paused: true });
+    await ui.schedules.remove({ id: schedule!.id });
+    expect(await ui.schedules.list()).toEqual([]);
+    await expect(ui.tasks.get({ id: task.id })).rejects.toThrow();
   });
 });

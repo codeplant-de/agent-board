@@ -68,6 +68,8 @@ export interface Task {
   paused: boolean;
   // Todo only: no worker may claim the task before this time. Cleared when the task leaves Todo.
   notBefore: Date | null;
+  // The schedule this task is an occurrence of; set by the server, never by a draft or a patch.
+  scheduleId: string | null;
 }
 
 export interface Heartbeat {
@@ -122,6 +124,63 @@ export interface TaskPatch {
   expect?: Status;
 }
 
+// A rule that produces delayed Todo tasks. It always has one pending occurrence: a task in Todo with `notBefore` at the
+// next run time. The next one is created when that task leaves Todo (claimed, moved or closed), so a run that was missed
+// while nothing claimed it is not repeated, and closing the pending task skips that run.
+export interface Schedule {
+  id: string;
+  title: string;
+  input: string;
+  priority: Priority;
+  // Pins the occurrences to a machine and the directory they run in there.
+  machine: string | null;
+  workdir: string | null;
+  // The rule: an interval on the grid `anchorAt + k * everyMs`, or a 5-field cron expression in `timezone`.
+  everyMs: number | null;
+  cron: string | null;
+  timezone: string | null;
+  // The first run of an interval; the earliest a cron expression matches.
+  anchorAt: Date;
+  // The pending occurrence's start time; null while paused (usually) or ended.
+  nextRunAt: Date | null;
+  // Occurrences still to be created after the pending one; null: forever.
+  remaining: number | null;
+  // No occurrence starts after this time.
+  until: Date | null;
+  paused: boolean;
+  ended: boolean;
+  // The pending occurrence.
+  occurrenceTaskId: string | null;
+  createdAt: Date;
+}
+
+export interface ScheduleDraft {
+  title: string;
+  input: string;
+  priority?: Priority;
+  machine?: string;
+  workdir?: string;
+  // Exactly one of `everyMs` and `cron`; a cron expression needs its `timezone` (IANA name).
+  everyMs?: number;
+  cron?: string;
+  timezone?: string;
+  // The first run (interval) or the time to match from (cron). Default: now.
+  startAt?: Date;
+  // The number of occurrences in all; at most one of `times` and `until`. Default: forever.
+  times?: number;
+  until?: Date;
+}
+
+export interface SchedulePatch {
+  paused: boolean;
+}
+
+export interface AddScheduleResult {
+  schedule: Schedule;
+  // The pending occurrence.
+  task: Task;
+}
+
 export interface AddTaskResult {
   task: Task;
   created: boolean;
@@ -155,6 +214,13 @@ export interface Backend {
   transcript(id: string, batch: TranscriptBatch): Promise<void>;
   // Oldest first.
   readNotes(id: string): Promise<Note[]>;
+  // Creates the schedule and its first occurrence; the server rejects a cron expression it cannot read.
+  addSchedule(draft: ScheduleDraft): Promise<AddScheduleResult>;
+  listSchedules(): Promise<Schedule[]>;
+  // Pausing removes the pending occurrence if it never ran; resuming creates the next one.
+  updateSchedule(id: string, patch: SchedulePatch): Promise<Schedule>;
+  // Removes a schedule and its never-run pending occurrence; tasks that ran keep their history.
+  removeSchedule(id: string): Promise<void>;
 }
 
 export class ContractError extends Error {}
@@ -217,6 +283,17 @@ function date(obj: Record<string, unknown>, key: string, what: string): Date {
   const value = nullableDate(obj, key, what);
   if (value === null) throw new ContractError(`${what}.${key} must be a date`);
   return value;
+}
+
+function positiveInt(obj: Record<string, unknown>, key: string, what: string): number {
+  const value = obj[key];
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
+    throw new ContractError(`${what}.${key} must be a positive integer`);
+  return value;
+}
+
+function nullablePositiveInt(obj: Record<string, unknown>, key: string, what: string): number | null {
+  return obj[key] === null ? null : positiveInt(obj, key, what);
 }
 
 function boolean(obj: Record<string, unknown>, key: string, what: string): boolean {
@@ -287,6 +364,7 @@ export function parseTask(value: unknown): Task {
     runStartedAt: nullableDate(obj, 'runStartedAt', 'task'),
     paused: boolean(obj, 'paused', 'task'),
     notBefore: nullableDate(obj, 'notBefore', 'task'),
+    scheduleId: obj['scheduleId'] === null ? null : safeId(string(obj, 'scheduleId', 'task'), 'task scheduleId'),
   };
 }
 
@@ -303,6 +381,61 @@ export function parseAddTaskResult(value: unknown): AddTaskResult {
 export function parseFailResult(value: unknown): FailResult {
   const obj = record(value, 'fail result');
   return { applied: boolean(obj, 'applied', 'fail result'), task: parseTask(obj['task']) };
+}
+
+export function parseSchedule(value: unknown): Schedule {
+  const obj = record(value, 'schedule');
+  const everyMs = nullablePositiveInt(obj, 'everyMs', 'schedule');
+  const cron = nullableString(obj, 'cron', 'schedule');
+  const timezone = nullableString(obj, 'timezone', 'schedule');
+  if ((everyMs === null) === (cron === null)) throw new ContractError('schedule needs exactly one of everyMs and cron');
+  if (cron !== null && timezone === null) throw new ContractError('schedule.timezone is required with cron');
+  const machine = nullableString(obj, 'machine', 'schedule');
+  if (machine !== null && !isSafeMachineName(machine))
+    throw new ContractError(`schedule machine "${machine.slice(0, 40)}" is not a safe name`);
+  return {
+    id: safeId(string(obj, 'id', 'schedule'), 'schedule id'),
+    title: string(obj, 'title', 'schedule'),
+    input: string(obj, 'input', 'schedule'),
+    priority: member(obj, 'priority', 'schedule', PRIORITIES),
+    machine,
+    workdir: nullableString(obj, 'workdir', 'schedule'),
+    everyMs,
+    cron,
+    timezone,
+    anchorAt: date(obj, 'anchorAt', 'schedule'),
+    nextRunAt: nullableDate(obj, 'nextRunAt', 'schedule'),
+    remaining: obj['remaining'] === 0 ? 0 : nullablePositiveInt(obj, 'remaining', 'schedule'),
+    until: nullableDate(obj, 'until', 'schedule'),
+    paused: boolean(obj, 'paused', 'schedule'),
+    ended: boolean(obj, 'ended', 'schedule'),
+    occurrenceTaskId:
+      obj['occurrenceTaskId'] === null
+        ? null
+        : safeId(string(obj, 'occurrenceTaskId', 'schedule'), 'schedule occurrenceTaskId'),
+    createdAt: date(obj, 'createdAt', 'schedule'),
+  };
+}
+
+export function parseSchedules(value: unknown): Schedule[] {
+  if (!Array.isArray(value)) throw new ContractError('expected a JSON array of schedules');
+  return value.map(parseSchedule);
+}
+
+export function parseAddScheduleResult(value: unknown): AddScheduleResult {
+  const obj = record(value, 'add-schedule result');
+  return { schedule: parseSchedule(obj['schedule']), task: parseTask(obj['task']) };
+}
+
+// The JSON form of a schedule, as the machine API sends it.
+export function serializeSchedule(schedule: Schedule): Record<string, unknown> {
+  return {
+    ...schedule,
+    anchorAt: schedule.anchorAt.toISOString(),
+    nextRunAt: schedule.nextRunAt?.toISOString() ?? null,
+    until: schedule.until?.toISOString() ?? null,
+    createdAt: schedule.createdAt.toISOString(),
+  };
 }
 
 export function parseNote(value: unknown): Note {
@@ -394,6 +527,53 @@ export function parseDraft(value: unknown): TaskDraft {
   if ((draft.machine === undefined) !== (draft.workdir === undefined))
     throw new ContractError('draft.machine and draft.workdir go together');
   return draft;
+}
+
+// Body of add-schedule. `title`, `input` and one rule are required.
+export function parseScheduleDraft(value: unknown): ScheduleDraft {
+  const obj = record(value, 'schedule draft');
+  rejectUnknownKeys(
+    obj,
+    ['title', 'input', 'priority', 'machine', 'workdir', 'everyMs', 'cron', 'timezone', 'startAt', 'times', 'until'],
+    'schedule draft',
+  );
+  const what = 'schedule draft';
+  const title = string(obj, 'title', what);
+  if (title.trim() === '') throw new ContractError('schedule draft.title must not be empty');
+  const input = string(obj, 'input', what);
+  if (input.trim() === '') throw new ContractError('schedule draft.input must not be empty');
+  const draft: ScheduleDraft = { title, input };
+  if ('priority' in obj) draft.priority = member(obj, 'priority', what, PRIORITIES);
+  if ('machine' in obj) {
+    draft.machine = string(obj, 'machine', what);
+    if (!isSafeMachineName(draft.machine)) throw new ContractError('schedule draft.machine is not a safe name');
+  }
+  if ('workdir' in obj) {
+    draft.workdir = string(obj, 'workdir', what);
+    if (!draft.workdir.startsWith('/')) throw new ContractError('schedule draft.workdir must be an absolute path');
+  }
+  if ((draft.machine === undefined) !== (draft.workdir === undefined))
+    throw new ContractError('schedule draft.machine and schedule draft.workdir go together');
+  if ('everyMs' in obj === 'cron' in obj) throw new ContractError('a schedule needs exactly one of everyMs and cron');
+  if ('everyMs' in obj) draft.everyMs = positiveInt(obj, 'everyMs', what);
+  if ('cron' in obj) {
+    draft.cron = string(obj, 'cron', what);
+    draft.timezone = string(obj, 'timezone', what);
+    if (draft.timezone === '') throw new ContractError('schedule draft.timezone must not be empty');
+  } else if ('timezone' in obj) throw new ContractError('schedule draft.timezone only goes with cron');
+  if ('startAt' in obj) draft.startAt = date(obj, 'startAt', what);
+  if ('times' in obj) draft.times = positiveInt(obj, 'times', what);
+  if ('until' in obj) draft.until = date(obj, 'until', what);
+  if ('times' in obj && 'until' in obj)
+    throw new ContractError('schedule draft.times and schedule draft.until exclude each other');
+  return draft;
+}
+
+// Body of update-schedule.
+export function parseSchedulePatch(value: unknown): SchedulePatch {
+  const obj = record(value, 'schedule patch');
+  rejectUnknownKeys(obj, ['paused'], 'schedule patch');
+  return { paused: boolean(obj, 'paused', 'schedule patch') };
 }
 
 // Body of update-task. At least one key.

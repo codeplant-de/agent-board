@@ -7,10 +7,16 @@
  *   board tasks                   open tasks per status
  *   board ask <task> --file <path>      ask the user 1-4 questions (JSON in /tmp) and move the task to needs-me
  *   board show <task>             the task and its thread as markdown
- *   board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...>
+ *   board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>"]
+ *                  [--times <n> | --until <time>] [--new] <prompt...>
  *                                 a task from a prompt, run in this directory on this machine; checks for duplicates first;
- *                                 --in (30m, 2h, 1d, 1h30m) or --at (2027-01-01T12:00, 2027-01-01, 09:30) keeps it in Todo until then
+ *                                 --in (30m, 2h, 1d, 1h30m) or --at (2027-01-01T12:00, 2027-01-01, 09:30) keeps it in Todo until then;
+ *                                 --every (2h) or --cron ("0 9 * * 1-5", 5 fields, in this machine's time zone) repeats it from
+ *                                 the first run (--in/--at, default now), for --times runs or until --until, else forever
  *                                 (not inside a board run: there, propose follow-up work with `board add`)
+ *   board schedules               list the repeating schedules
+ *   board schedules pause|resume|rm <id>
+ *                                 pause (drops the waiting run), resume or delete a schedule (not inside a board run)
  *   board delay <task> (--in <dur> | --at <time> | --now)
  *                                 delay a task in Todo until then, or with --now make it due at once
  *   board add --title <t> --file <path> [--parent <task>] [--priority urgent|high|normal|low]
@@ -25,6 +31,7 @@ import type { Context } from './cli.mts';
 import { BackendError } from './backend.mts';
 import {
   formatAnswers,
+  describeRule,
   formatQuestions,
   isPriority,
   isSafeTaskId,
@@ -32,15 +39,16 @@ import {
   parseQuestions,
   PRIORITIES,
   QuestionError,
+  runsLeft,
   STATUSES,
 } from '@agent-board/shared';
-import type { Note, Priority, Status, Task } from '@agent-board/shared';
+import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
 import { postSlack, slackText } from './notify.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
 import type { Choice } from './schedule.mts';
 
 const USAGE =
-  'usage: board comment <task> <text|--file path> | move <task> <status> | notify <task> <text> | ask <task> --file <path> | show <task> | schedule [--priority <p>] [--title <t>] [--hold | --backlog] [--in <dur> | --at <time>] [--new] <prompt...> | delay <task> (--in <dur> | --at <time> | --now) | add --title <t> --file <path> [--parent <task>] [--priority <p>] | tasks';
+  'usage: board comment <task> <text|--file path> | move <task> <status> | notify <task> <text> | ask <task> --file <path> | show <task> | schedule [--priority <p>] [--title <t>] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>"] [--times <n> | --until <time>] [--new] <prompt...> | schedules [pause|resume|rm <id>] | delay <task> (--in <dur> | --at <time> | --now) | add --title <t> --file <path> [--parent <task>] [--priority <p>] | tasks';
 
 const NOTE_FILE_DIR = '/tmp/';
 const NOTE_FILE_MAX_BYTES = 1024 * 1024;
@@ -217,6 +225,42 @@ export async function delay(context: Context, id: string, args: string[]): Promi
   context.print(notBefore === null ? `${id} is due now` : `${id} starts ${localTime(notBefore)}`);
 }
 
+// `  <id>  every 2h  next 2027-01-01 10:00  3 left  paused  <title>`
+export function formatSchedule(schedule: Schedule): string {
+  const left = runsLeft(schedule);
+  const state = schedule.ended ? 'ended' : schedule.paused ? 'paused' : '-';
+  return [
+    schedule.id,
+    describeRule(schedule),
+    `next ${schedule.nextRunAt ? localTime(schedule.nextRunAt) : '-'}`,
+    left === null ? 'forever' : `${left} left`,
+    state,
+    schedule.title,
+  ].join('  ');
+}
+
+export async function schedules(context: Context, args: string[]): Promise<void> {
+  const [action, id, ...extra] = args;
+  if (action === undefined) {
+    const all = await context.backend.listSchedules();
+    context.print(`schedules (${all.length})`);
+    for (const schedule of all) context.print(`  ${formatSchedule(schedule)}`);
+    return;
+  }
+  if ((action !== 'pause' && action !== 'resume' && action !== 'rm') || id === undefined || extra.length > 0)
+    throw new UsageError(USAGE);
+  if (action === 'rm') {
+    await context.backend.removeSchedule(id);
+    return context.print(`removed ${id}`);
+  }
+  const schedule = await context.backend.updateSchedule(id, { paused: action === 'pause' });
+  context.print(
+    action === 'pause'
+      ? `paused ${id}`
+      : `resumed ${id}${schedule.nextRunAt ? `, next run ${localTime(schedule.nextRunAt)}` : ''}`,
+  );
+}
+
 async function chooseInTerminal(): Promise<Choice> {
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -237,6 +281,7 @@ async function scheduleCommand(context: Context, args: string[]): Promise<void> 
       backend: context.backend,
       machine: context.config.machine,
       workdir: realpathSync(process.cwd()),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       print: context.print,
       check: haikuDuplicateCheck(context.print),
       choose: process.stdin.isTTY && process.stdout.isTTY ? chooseInTerminal : undefined,
@@ -256,6 +301,11 @@ export async function main(argv: string[], env: Record<string, string | undefine
         'board schedule is not available inside a board run; use `board add` to propose follow-up work',
       );
     return scheduleCommand(buildContext(dryRun), args.slice(1));
+  }
+  if (args[0] === 'schedules') {
+    if (args[1] !== undefined && env['AGENT_BOARD_TASK'])
+      throw new UsageError('board schedules changes are not available inside a board run');
+    return schedules(buildContext(dryRun), args.slice(1));
   }
   const [command, id, ...rest] = args;
   if (!command || command.startsWith('--') || id?.startsWith('--')) throw new UsageError(USAGE);
