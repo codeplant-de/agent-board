@@ -1,0 +1,15 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+.idea
+*.iml
+.DS_Store
+.env
+**/.env
+**/.env.*
+apps/backend/.data
+*.log
+coverage
+**/*.tsbuildinfo
