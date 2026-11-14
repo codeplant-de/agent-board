@@ -3,6 +3,7 @@ import { SystemError } from './system.mts';
 import { BackendError, dryRunBackend, loadWebConfig } from './backend.mts';
 import { ConfigError, getPaths, loadConfig } from './config.mts';
 import type { Config } from './config.mts';
+import { taskLink } from './links.mts';
 import { createSealedBackend } from './sealing.mts';
 import type { Backend } from '@agent-board/shared';
 
@@ -13,16 +14,28 @@ export interface Context {
   print: (line: string) => void;
 }
 
+/** What the commands that print or send a link to a task need: that link, from this machine's own web.json and the task's id. */
+export interface LinkingContext extends Context {
+  taskLink: (taskId: string) => string;
+}
+
 export function print(line: string): void {
   console.log(line);
 }
 
-export function buildContext(dryRun: boolean): Context {
+export function buildContext(dryRun: boolean): LinkingContext {
   const paths = getPaths();
   const config = loadConfig(paths.configFile);
   // The dry-run wrapper goes outside the sealing one, so it prints plaintext and reads what the sealing backend opens.
   const backend = createSealedBackend({ loadConfig: () => loadWebConfig(paths.configDir) });
-  return { config, backend: dryRun ? dryRunBackend(backend, print) : backend, dryRun, print };
+  let boardUrl: string | undefined;
+  return {
+    config,
+    backend: dryRun ? dryRunBackend(backend, print) : backend,
+    dryRun,
+    print,
+    taskLink: (taskId) => taskLink((boardUrl ??= loadWebConfig(paths.configDir).url), taskId),
+  };
 }
 
 // Expected failures end as one line on stderr, not a stack trace.

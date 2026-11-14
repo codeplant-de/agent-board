@@ -104,6 +104,8 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
   const waiting = startsIn(task.notBefore, now) !== undefined;
   const [message, setMessage] = useState('');
   const openQuestion = task.openQuestion ? thread.findLast((n) => n.kind === 'question') : undefined;
+  // An agent's proposal: only starting it, which seals its prompt again as yours, lets a worker run it.
+  const isProposal = task.createdBy === 'agent';
 
   if (task.closed) {
     return (
@@ -147,14 +149,15 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
   }
 
   // A proposal waits for the user to start it, even with a question on it: the alert below comes first.
-  if (openQuestion?.questions && !task.proposed) {
+  if (openQuestion?.questions && !isProposal) {
+    const questions = openQuestion.questions;
     return (
       <QuestionPanel
         key={openQuestion.id}
-        questions={openQuestion.questions}
+        questions={questions}
         submitting={actions.answer.isPending}
         onSubmit={(answers, note) =>
-          actions.answer.mutate({ id: task.id, questionNoteId: openQuestion.id, answers, message: note })
+          actions.answer.mutate({ id: task.id, questionNoteId: openQuestion.id, questions, answers, message: note })
         }
       />
     );
@@ -169,7 +172,7 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
             <Button
               size="xs"
               leftSection={<IconPlayerPlay size={14} />}
-              onClick={() => actions.move.mutate({ id: task.id, status: 'todo' })}
+              onClick={() => actions.move.mutate({ id: task.id, status: 'todo', task })}
               loading={actions.move.isPending}
             >
               Move to Todo
@@ -223,7 +226,7 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
   }
 
   const send = () => {
-    if (!message.trim()) return;
+    if (!message.trim() || isProposal) return;
     actions.reply.mutate({ id: task.id, message, resume: true }, { onSuccess: () => setMessage('') });
   };
   const confirmRerun = () =>
@@ -239,7 +242,7 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
   return (
     <Paper withBorder p="md">
       <Stack>
-        {task.proposed && (
+        {isProposal && (
           <Alert color="grape" variant="light" icon={<IconSparkles size={18} />} title="Proposed by an agent">
             <Group justify="space-between">
               <Text size="sm">Nothing runs until you start it.</Text>
@@ -248,7 +251,8 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
                   size="xs"
                   color="grape"
                   leftSection={<IconPlayerPlay size={14} />}
-                  onClick={() => actions.move.mutate({ id: task.id, status: 'todo' })}
+                  onClick={() => actions.move.mutate({ id: task.id, status: 'todo', task })}
+                  loading={actions.move.isPending}
                 >
                   Start
                 </Button>
@@ -288,7 +292,7 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
                 </Button>
               </Menu.Target>
               <Menu.Dropdown>
-                <Menu.Item leftSection={<IconRefresh size={14} />} onClick={confirmRerun}>
+                <Menu.Item leftSection={<IconRefresh size={14} />} onClick={confirmRerun} disabled={isProposal}>
                   Re-run fresh
                 </Menu.Item>
                 <Menu.Item
@@ -317,8 +321,9 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
             <Button
               leftSection={<IconPlayerPlay size={16} />}
               onClick={send}
-              disabled={!message.trim()}
+              disabled={!message.trim() || isProposal}
               loading={actions.reply.isPending}
+              title={isProposal ? 'Start the proposal first' : undefined}
             >
               {task.sessionId ? 'Send & continue' : 'Send & run'}
             </Button>

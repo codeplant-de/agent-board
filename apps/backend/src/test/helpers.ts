@@ -13,7 +13,6 @@ export const testConfig: Config = {
   databaseUrl: testDatabaseUrl(),
   appDatabaseUrl: testAppDatabaseUrl(),
   backfillOwner: null,
-  publicUrl: 'https://board.test',
   allowedGroups: ['admins'],
   devAuthUser: null,
 };
@@ -41,7 +40,7 @@ export function caller(root: Db, username = 'jascha') {
   return appRouter.createCaller({ root, config: testConfig, username });
 }
 
-/** A value of the shape of an envelope, for rows a test inserts directly: the database refuses anything else in a sealed column. */
+/** A value of the shape of an envelope, for rows a test inserts directly: the sealed-content constraints of a later release refuse anything else. */
 export const SEALED = `abe1.${'A'.repeat(40)}`;
 
 export const question = {

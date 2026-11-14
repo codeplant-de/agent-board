@@ -87,22 +87,32 @@ export function createMemoryKeyStore(initial?: Keys): KeyStore {
   };
 }
 
-/** The stored keys when they belong to this user and this key id; any other entry is deleted. */
-export async function loadUsableKeys(
+/** What this browser holds, set against what the board says about the user. */
+export type StoredKeysCheck =
+  | { kind: 'none' }
+  | { kind: 'usable'; keys: Keys }
+  // The browser holds keys, and the board reports no key, another key id or another user. Nothing is deleted: that would be what
+  // a board wants that is walking the user into setting up a second key while their machines keep the first.
+  | { kind: 'changed'; held: { owner: string; keyId: string } };
+
+/**
+ * The stored keys when they are this user's and have the key id the board reports. An entry that is not is kept and reported
+ * as `changed`; only an entry that is damaged (not keys at all) is dropped.
+ */
+export async function inspectStoredKeys(
   store: KeyStore,
   me: { username: string; keyId: string | null },
-): Promise<Keys | undefined> {
+): Promise<StoredKeysCheck> {
   const stored = await store.load();
-  if (stored === undefined) return undefined;
-  const usable =
-    me.keyId !== null &&
-    stored.owner === me.username &&
-    stored.keyId === me.keyId &&
-    isCryptoKey(stored.enc) &&
-    isCryptoKey(stored.transcript);
-  if (!usable) {
+  if (stored === undefined) return { kind: 'none' };
+  if (!isCryptoKey(stored.enc) || !isCryptoKey(stored.transcript)) {
     await store.clear();
-    return undefined;
+    return { kind: 'none' };
   }
-  return { owner: stored.owner, keyId: stored.keyId, enc: stored.enc, transcript: stored.transcript };
+  if (me.keyId === null || stored.owner !== me.username || stored.keyId !== me.keyId)
+    return { kind: 'changed', held: { owner: stored.owner, keyId: stored.keyId } };
+  return {
+    kind: 'usable',
+    keys: { owner: stored.owner, keyId: stored.keyId, enc: stored.enc, transcript: stored.transcript },
+  };
 }

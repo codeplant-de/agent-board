@@ -261,9 +261,13 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
   };
 }
 
+// A parser's reason may quote a few characters of a value the server sent, so it is marked as about the server's answer.
 function asBackendError(command: string, error: unknown): Error {
-  if (error instanceof ContractError || error instanceof QuestionError)
-    return new BackendError(`${command}: ${error.message}`);
+  if (error instanceof ContractError)
+    return new BackendError(
+      `${command}: ${error.message} (the board server's answer was refused; text in quotes is the server's, not part of the board)`,
+    );
+  if (error instanceof QuestionError) return new BackendError(`${command}: ${error.message}`);
   return error instanceof Error ? error : new Error(String(error));
 }
 
@@ -277,7 +281,6 @@ function dryTask(draft: TaskDraft): Task {
     status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
     priority: draft.priority ?? 'normal',
     id: 'dry',
-    url: 'https://dry.invalid',
     closed: false,
     machine: machine ?? null,
     sessionId: null,

@@ -13,7 +13,6 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     labels: [],
     status: 'todo',
     priority: 'normal',
-    url: `https://tasks.example/${overrides.id}`,
     closed: false,
     machine: null,
     sessionId: null,
@@ -320,7 +319,11 @@ export function fakeSessions(known: [string, string][] = []): FakeSessions {
   return {
     recorded,
     has: (taskId, sessionId) => recorded.some(([id, session]) => id === taskId && session === sessionId.toLowerCase()),
-    record: (taskId, sessionId) => void recorded.push([taskId, sessionId.toLowerCase()]),
+    record: (taskId, sessionId) => {
+      for (let index = recorded.length - 1; index >= 0; index -= 1)
+        if (recorded[index]?.[0] === taskId) recorded.splice(index, 1);
+      recorded.push([taskId, sessionId.toLowerCase()]);
+    },
   };
 }
 

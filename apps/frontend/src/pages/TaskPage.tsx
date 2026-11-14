@@ -133,6 +133,20 @@ export function TaskPage() {
           )}
         </Stack>
 
+        {task.invalid.length > 0 && (
+          <Alert
+            color="orange"
+            variant="light"
+            icon={<IconLockOff size={18} />}
+            title="The board sent unexpected values"
+          >
+            <Text size="sm">
+              The board sent {task.invalid.join(', ')} for this task in a form it does not use, so neutral values are
+              shown instead. Treat this task with care.
+            </Text>
+          </Alert>
+        )}
+
         {task.unreadable.length > 0 && (
           <Alert
             color="orange"
@@ -188,8 +202,8 @@ export function TaskPage() {
               No activity yet.
             </Text>
           )}
-          {thread.map((note) => (
-            <ThreadItem key={note.id} note={note} thread={thread} />
+          {thread.map((note, index) => (
+            <ThreadItem key={index} note={note} thread={thread} />
           ))}
         </Stack>
 

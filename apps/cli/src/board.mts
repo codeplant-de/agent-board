@@ -27,7 +27,7 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { buildContext, readStdin, rejectExtraArgs, runMain, takeFlag, UsageError } from './cli.mts';
-import type { Context } from './cli.mts';
+import type { Context, LinkingContext } from './cli.mts';
 import { BackendError } from './backend.mts';
 import {
   formatAnswers,
@@ -83,8 +83,9 @@ export function parseStatus(name: string): Status {
   return normalised;
 }
 
-async function notify(context: Context, id: string, text: string): Promise<void> {
-  const message = slackText(await context.backend.getTask(id), text);
+async function notify(context: LinkingContext, id: string, text: string): Promise<void> {
+  const task = await context.backend.getTask(id);
+  const message = slackText({ title: task.title, url: context.taskLink(task.id) }, text);
   if (context.dryRun) return context.print(`DRY slack ${message.replaceAll('\n', ' | ')}`);
   await postSlack(context.config.slackWebhookFile, message);
 }
@@ -101,7 +102,7 @@ export async function tasks(context: Context): Promise<void> {
   }
 }
 
-async function ask(context: Context, id: string, path: string): Promise<void> {
+async function ask(context: LinkingContext, id: string, path: string): Promise<void> {
   let questions;
   try {
     questions = parseQuestions(JSON.parse(readNoteFile(path)));
@@ -126,7 +127,7 @@ export function renderThread(task: Task, notes: Note[]): string {
   const lines = [
     `# ${task.title}`,
     '',
-    `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(', ') || '-'} · ${task.url}`,
+    `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(', ') || '-'}`,
     '',
     '## Input',
     '',
@@ -135,6 +136,12 @@ export function renderThread(task: Task, notes: Note[]): string {
     '## Thread',
   ];
   for (const note of [...notes].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())) {
+    // The server's own events are plain text from a fixed list, shown as the server's and not as a note of the thread.
+    if (note.author === 'server') {
+      lines.push('', `### from the board server, not board content · ${note.createdAt.toISOString()}`, '');
+      lines.push(note.unreadable ? UNREADABLE_TEXT : note.text.trim());
+      continue;
+    }
     lines.push('', `### ${note.author} ${note.kind} · ${note.createdAt.toISOString()}`, '');
     if (note.kind === 'question' && note.questions) lines.push(formatQuestions(note.questions));
     if (note.kind === 'answer' && !note.unreadable) lines.push(formatAnswers(note.questions, note.answers ?? []));
@@ -181,7 +188,7 @@ export function parseAddArgs(args: string[]): {
 }
 
 // The board puts a proposal in Needs me itself, so no status is sent.
-export async function add(context: Context, args: string[]): Promise<void> {
+export async function add(context: LinkingContext, args: string[]): Promise<void> {
   const { title, file, parent, priority } = parseAddArgs(args);
   // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
   // proposing agent works, on this machine.
@@ -195,7 +202,7 @@ export async function add(context: Context, args: string[]): Promise<void> {
     ...(priority ? { priority } : {}),
   };
   const { task } = await context.backend.addTask(draft);
-  context.print(`proposed ${task.id} ${task.url}`);
+  context.print(`proposed ${task.id} ${context.taskLink(task.id)}`);
 }
 
 export async function move(context: Context, id: string, status: Status): Promise<void> {
@@ -280,7 +287,7 @@ async function chooseInTerminal(): Promise<Choice> {
   }
 }
 
-async function scheduleCommand(context: Context, args: string[]): Promise<void> {
+async function scheduleCommand(context: LinkingContext, args: string[]): Promise<void> {
   await schedule(
     {
       backend: context.backend,
@@ -288,6 +295,7 @@ async function scheduleCommand(context: Context, args: string[]): Promise<void> 
       workdir: realpathSync(process.cwd()),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       print: context.print,
+      link: context.taskLink,
       check: haikuDuplicateCheck(context.print),
       choose: process.stdin.isTTY && process.stdout.isTTY ? chooseInTerminal : undefined,
     },

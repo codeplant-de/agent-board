@@ -270,6 +270,7 @@ interface TaskRecord extends Record<string, unknown> {
   dedupe_key: string | null;
   head: string | null;
   created_by: TaskCreator;
+  proposed: boolean;
   schedule_id: string | null;
   machine: string | null;
   lane: string | null;
@@ -283,7 +284,7 @@ async function convertTasks(ctx: Context, scheduleIds: Set<string>): Promise<voi
     (after) =>
       query(
         ctx,
-        `select id, title, input, workdir, dedupe_key, head, created_by, schedule_id, machine, lane, session_id
+        `select id, title, input, workdir, dedupe_key, head, created_by, proposed, schedule_id, machine, lane, session_id
          from task where owner = $1 and ($2::text is null or id > $2) order by id limit $3`,
         [ctx.owner, after?.id ?? null, ctx.batchSize],
       ),
@@ -306,9 +307,16 @@ async function convertTasks(ctx: Context, scheduleIds: Set<string>): Promise<voi
           'tasks that are occurrences of a schedule that no longer exists (sealed for the schedule id they name)',
         );
 
+      // Before this change a started proposal stayed `created_by = 'agent'`; the only thing that told it from one still waiting
+      // was `proposed = false`. The board is still trusted at cutover, so that is the user starting it: the task is the user's
+      // from now on, as a proposal started afterwards becomes one.
+      const startedProposal = task.created_by === 'agent' && !task.proposed;
+      if (startedProposal)
+        notice(ctx, 'proposals the user had started (now created by the user, as a started proposal is)');
+      const createdBy: TaskCreator = startedProposal ? 'user' : task.created_by;
       // An occurrence is bound to its schedule's id, whether or not that schedule still exists: the clients decide from the
       // row alone, and `schedule_id` is a plain reference that stays when the schedule goes.
-      const row: RowRef = { kind: 'task', id: task.id, createdBy: task.created_by, scheduleId: task.schedule_id };
+      const row: RowRef = { kind: 'task', id: task.id, createdBy, scheduleId: task.schedule_id };
       const title = await sealColumn(ctx, 'task.title', name, task.title, titleBinding(row));
       const input = await sealColumn(ctx, 'task.input', name, task.input, inputBinding(row));
       const workdir =
@@ -323,18 +331,20 @@ async function convertTasks(ctx: Context, scheduleIds: Set<string>): Promise<voi
         task.head === null
           ? null
           : await indexColumn(ctx, 'task.head', task.head, (plain) => headIndex(ctx.keys, plain));
-      const values = [title, input, workdir, dedupeKey, head];
-      if (same(values, [task.title, task.input, task.workdir, task.dedupe_key, task.head])) return undefined;
+      const values = [title, input, workdir, dedupeKey, head, createdBy];
+      if (same(values, [task.title, task.input, task.workdir, task.dedupe_key, task.head, task.created_by]))
+        return undefined;
       return { key: [task.id], values };
     },
     async (rows) => {
       const { rows: stored } = await ctx.client.query<{ id: string; v: Value[] }>(
-        `update task t set title = v.title, input = v.input, workdir = v.workdir, dedupe_key = v.dedupe_key, head = v.head
-         from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
-           as v(id, title, input, workdir, dedupe_key, head)
+        `update task t set title = v.title, input = v.input, workdir = v.workdir, dedupe_key = v.dedupe_key, head = v.head,
+           created_by = v.created_by::task_creator
+         from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[])
+           as v(id, title, input, workdir, dedupe_key, head, created_by)
          where t.owner = $1 and t.id = v.id
-         returning t.id, array[t.title, t.input, t.workdir, t.dedupe_key, t.head] as v`,
-        [ctx.owner, ...columnsOf(rows, 6)],
+         returning t.id, array[t.title, t.input, t.workdir, t.dedupe_key, t.head, t.created_by::text] as v`,
+        [ctx.owner, ...columnsOf(rows, 7)],
       );
       return stored.map(({ id, v }) => [id, ...v]);
     },
@@ -681,7 +691,7 @@ async function convertEvents(ctx: Context): Promise<void> {
 
 // The checks around the conversion.
 
-/** How many values of each sealed column are not of the shape the constraints of migration 0014 require. */
+/** How many values of each sealed column are not of the shape a sealed column holds (what the later constraints migration checks). */
 export async function plaintextCounts(
   client: pg.Client,
   scope: { exceptOwner: string } | 'all',

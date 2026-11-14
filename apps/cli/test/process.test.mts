@@ -27,7 +27,7 @@ async function waitUntilGone(pid: number, timeoutMs: number): Promise<boolean> {
   return isGone(pid);
 }
 
-const QUIET: Watch = { everyMs: 50, tick: async () => ({ kind: 'continue' }) };
+const QUIET: Watch = { everyMs: 50, tick: async () => ({ kind: 'continue' }), settled: async () => undefined };
 
 process.env['AGENT_BOARD_STATE_DIR'] = mkdtempSync(join(tmpdir(), 'agent-board-state-'));
 
@@ -51,6 +51,7 @@ test('a process the watch stops is ended with everything it started', async () =
     {},
     {
       everyMs: 100,
+      settled: async () => undefined,
       tick: async () =>
         Date.now() - started > 400 ? { kind: 'stop', why: 'inactive', message: 'quiet' } : { kind: 'continue' },
     },

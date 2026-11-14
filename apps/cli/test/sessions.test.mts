@@ -43,13 +43,23 @@ test('only UUIDs and safe task ids go in or out, and a damaged record reads as e
   });
 });
 
-test('only the newest sessions of a task are kept', () => {
+test('a fresh run abandons every earlier session of the task: only the current one may be resumed (Re-run fresh)', () => {
   withDir((dir) => {
     const store = createSessionStore(dir);
-    const id = (n: number) => `33333333-3333-4333-8333-${String(n).padStart(12, '0')}`;
-    for (let n = 0; n < 60; n++) store.record('t1', id(n));
-    assert.equal(store.has('t1', id(0)), false);
-    assert.equal(store.has('t1', id(59)), true);
-    assert.ok(readFileSync(join(dir, 't1'), 'utf8').split('\n').filter(Boolean).length <= 50);
+    store.record('t1', SESSION);
+    store.record('t1', OTHER_SESSION);
+    assert.equal(store.has('t1', OTHER_SESSION), true);
+    assert.equal(store.has('t1', SESSION), false);
+    assert.equal(readFileSync(join(dir, 't1'), 'utf8'), `${OTHER_SESSION}\n`);
+  });
+});
+
+test('a record from before only the current session was kept still resumes its newest session alone', () => {
+  withDir((dir) => {
+    const store = createSessionStore(dir);
+    store.record('t1', SESSION);
+    writeFileSync(join(dir, 't1'), `${SESSION}\n${OTHER_SESSION}\n`);
+    assert.equal(store.has('t1', OTHER_SESSION), true);
+    assert.equal(store.has('t1', SESSION), false);
   });
 });

@@ -23,14 +23,13 @@ import { edgePosition, getTask, insertTask, lockTask, newId } from './taskRows';
 
 export { getTask, newId };
 
-export function toTask(row: TaskRow, publicUrl: string): WireTask {
+export function toTask(row: TaskRow): WireTask {
   return {
     id: row.id,
     title: row.title,
     input: row.input,
     status: row.status,
     priority: row.priority,
-    url: `${publicUrl}/t/${row.id}`,
     closed: row.closed,
     machine: row.machine,
     sessionId: row.sessionId,
@@ -144,6 +143,8 @@ interface Transition {
   place?: 'top' | 'bottom' | number;
   /** Only a user starts a proposal. */
   by: 'worker' | 'user';
+  /** The user's start of an agent's proposal: its prompt, sealed again for the creator "user". Nothing else takes a proposal into Todo. */
+  start?: { input: string };
   /** Columns on top of what the invariants set; they win. */
   set?: TaskValues;
 }
@@ -156,18 +157,25 @@ function keepsPause(from: Status, to: Status): boolean {
 /**
  * Every status change goes through here, in a transaction that holds the task's lock, so the columns that depend
  * on the status cannot drift apart: the open question (only while it waits in Needs me), the run's start, a proposal
- * (only a user starts it), a pause, a start time (only while it waits in Todo), the position.
+ * (only a user starts it, with its prompt sealed again as theirs), a pause, a start time (only while it waits in Todo), the
+ * position.
  */
 async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promise<TaskRow> {
   const to = change.to ?? task.status;
   const moved = to !== task.status;
   if (change.by === 'worker' && moved && task.proposed)
     throw new AppError('FORBIDDEN', 'An agent proposed this task; only you start it.');
+  if (task.proposed && to === 'todo' && change.start === undefined)
+    throw new AppError('FORBIDDEN', 'An agent proposed this task; start it first.');
   const now = new Date();
   const values: TaskValues = { status: to, updatedAt: now };
   if (to !== 'needs-me') values.openQuestionNoteId = null;
   if (!keepsPause(task.status, to)) values.pausedAt = null;
-  if (change.by === 'user' && to === 'todo') values.proposed = false;
+  if (change.start !== undefined) {
+    values.input = change.start.input;
+    values.createdBy = 'user';
+    values.proposed = false;
+  }
   if (to === 'running' && task.status !== 'running') {
     values.runStartedAt = now;
     values.lastActiveAt = now;
@@ -221,8 +229,8 @@ export async function updateTask(db: DbOrTx, id: string, patch: WireTaskPatch): 
 
 /**
  * Todo to running for `machine`; the lock lets two machines claim at once and only one win.
- * A resume is pinned to the machine that holds its session, a proposal is not for a worker to start, and a delayed
- * task is not due before its start time.
+ * A resume is pinned to the machine that holds its session, a proposal (a task that still names an agent as its creator) is
+ * not for a worker to start, and a delayed task is not due before its start time.
  * Undefined when the claim is lost.
  */
 export async function claimTask(db: DbOrTx, id: string, machine: string): Promise<TaskRow | undefined> {
@@ -232,6 +240,7 @@ export async function claimTask(db: DbOrTx, id: string, machine: string): Promis
       task.status === 'todo' &&
       !task.closed &&
       !task.proposed &&
+      task.createdBy !== 'agent' &&
       (task.notBefore === null || task.notBefore.getTime() <= Date.now()) &&
       (task.next === 'fresh' || task.sessionId === null || task.machine === null || task.machine === machine);
     return free ? transition(tx, task, { to: 'running', by: 'worker', set: { machine } }) : undefined;
@@ -421,7 +430,7 @@ export async function setClosed(db: DbOrTx, taskId: string, closed: boolean, by:
 function closeOrReopen(tx: DbOrTx, task: TaskRow, closed: boolean): Promise<TaskRow> {
   return transition(tx, task, {
     by: 'user',
-    set: { closed, closedAt: closed ? new Date() : null, proposed: closed ? task.proposed : false },
+    set: { closed, closedAt: closed ? new Date() : null },
   });
 }
 
@@ -458,11 +467,12 @@ export async function archiveStaleDone(db: DbOrTx, now: Date = new Date()): Prom
 
 /**
  * Drag and drop: into `status`, between `afterId` (above) and `beforeId` (below), or at the bottom.
- * Nobody but a worker moves a task into or out of Running.
+ * Nobody but a worker moves a task into or out of Running. An agent's proposal enters Todo only with `startInput`, its prompt
+ * sealed again as the user's: the board stores it and takes the proposal's creator to be the user's from then on.
  */
 export async function moveTask(
   db: DbOrTx,
-  input: { taskId: string; status: Status; beforeId?: string; afterId?: string; by: string },
+  input: { taskId: string; status: Status; beforeId?: string; afterId?: string; startInput?: string; by: string },
 ): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, input.taskId);
@@ -495,9 +505,22 @@ export async function moveTask(
     if (task.priority !== priority) {
       await systemEvent(tx, task.id, { type: 'priority', from: task.priority, to: priority }, input.by);
     }
-    // Into Todo it behaves like "Send & continue" without a reply: it starts a proposal and drops the open question,
-    // and a task with a session keeps its `next` (a resume with nothing to say starts fresh).
-    return transition(tx, task, { to: input.status, place: position, by: 'user', set: { priority } });
+    // Into Todo it behaves like "Send & continue" without a reply: it drops the open question, and a task with a session keeps
+    // its `next` (a resume with nothing to say starts fresh).
+    let start: { input: string } | undefined;
+    if (task.proposed && input.status === 'todo') {
+      if (input.startInput === undefined)
+        throw new AppError('BAD_REQUEST', 'Starting an agent’s proposal needs its prompt sealed again as yours.');
+      requireSealed(input.startInput, 'the prompt');
+      start = { input: input.startInput };
+    }
+    return transition(tx, task, {
+      to: input.status,
+      place: position,
+      by: 'user',
+      set: { priority },
+      ...(start && { start }),
+    });
   });
 }
 

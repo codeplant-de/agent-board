@@ -6,6 +6,7 @@ import type { Keys } from '../src/crypto.mts';
 import {
   dedupeKeyIndex,
   headIndex,
+  inputBinding,
   noteBinding,
   openFields,
   openNote,
@@ -42,6 +43,7 @@ const opener =
   };
 const seals = sealer(keys);
 const opens = opener(keys);
+const opensUnrecorded = opens;
 
 const TASK = 'Ab3dEf9x';
 const SCHEDULE = 'Sc3dEf9x';
@@ -106,7 +108,19 @@ const VECTORS = {
   },
 };
 
+const PREVIEW_TEXT = {
+  agent: 'Found two issues.',
+  system: 'agent-board: started 2026-11-14T10:00:00.000Z (x, laptop)',
+  answerNote: 'thanks',
+};
+
 test('known-answer: every field of a task, an intake task, a schedule, an occurrence and every note opens under its binding', async () => {
+  const opened = new Set<string>();
+  const opens: Opener = async (binding, value) => {
+    const text = await opensUnrecorded(binding, value);
+    if (text !== undefined) opened.add(value);
+    return text;
+  };
   assert.deepEqual(await openFields(opens, userTask, VECTORS.task), {
     title: 'Fix the build',
     input: 'Fix the build on main',
@@ -172,20 +186,32 @@ test('known-answer: every field of a task, an intake task, a schedule, an occurr
       answers: [{ selected: ['Yes'], other: 'and the seed' }],
     },
   );
-  assert.deepEqual(await openPreview(opens, TASK, { author: 'user', kind: 'comment', preview: VECTORS.user.preview }), {
-    text: 'Please also check the docs.',
-    unreadable: false,
-  });
+  for (const [author, kind, preview, text] of [
+    ['user', 'comment', VECTORS.user.preview, 'Please also check the docs.'],
+    ['agent', 'comment', VECTORS.agent.preview, PREVIEW_TEXT.agent],
+    ['system', 'event', VECTORS.system.preview, PREVIEW_TEXT.system],
+    ['user', 'answer', VECTORS.answerNote.preview, PREVIEW_TEXT.answerNote],
+  ] as const)
+    assert.deepEqual(await openPreview(opens, TASK, { author, kind, preview }), { text, unreadable: false }, author);
+  // No vector is left unopened: a vector that stops opening, or one that is never tried, fails here.
+  const leaves = (value: unknown): string[] =>
+    typeof value === 'string' ? [value] : Object.values(value as object).flatMap(leaves);
+  assert.deepEqual(
+    leaves(VECTORS).filter((vector) => !opened.has(vector)),
+    [],
+  );
 });
 
 test('known-answer: the contexts are exactly the table in the README', async () => {
   const contexts: [Binding, string][] = [
     [titleBinding(userTask), 'task:Ab3dEf9x'],
+    [titleBinding({ ...userTask, createdBy: 'agent' }), 'task:Ab3dEf9x'],
     [titleBinding(occurrence), 'schedule:Sc3dEf9x'],
     [titleBinding(schedule), 'schedule:Sc3dEf9x'],
     [workdirOpenBindings(userTask)[0]!, 'task:Ab3dEf9x'],
     [workdirOpenBindings(occurrence)[0]!, 'schedule:Sc3dEf9x'],
     [workdirOpenBindings(occurrence)[1]!, 'task:Oc3dEf9x:schedule:Sc3dEf9x'],
+    [inputBinding({ ...userTask, createdBy: 'agent' }), 'task:Ab3dEf9x:agent'],
     [noteBinding('note.body', TASK, 'agent', 'comment'), 'note:Ab3dEf9x:agent:comment'],
     [noteBinding('note.answers', TASK, 'user', 'answer'), 'note:Ab3dEf9x:user:answer'],
   ];

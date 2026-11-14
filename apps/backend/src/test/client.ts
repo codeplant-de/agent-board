@@ -289,7 +289,16 @@ export function plainUi(db: Db, owner = 'jascha') {
       setNotBefore: mutation(raw.tasks.setNotBefore),
       takeBack: mutation(raw.tasks.takeBack),
       setClosed: mutation(raw.tasks.setClosed),
-      move: mutation(raw.tasks.move),
+      // As the browser does: an agent's proposal enters Todo with its prompt sealed again for the creator "user".
+      move: async (input: Parameters<Raw['tasks']['move']>[0]) => {
+        const { startInput: _given, ...rest } = input;
+        const { task } = await raw.tasks.get({ id: input.id });
+        if (task.createdBy !== 'agent' || input.status !== 'todo') return openTask(await raw.tasks.move(rest));
+        const proposal = await openTask(task);
+        const row: RowRef = { kind: 'task', id: task.id, createdBy: 'user', scheduleId: task.scheduleId };
+        const startInput = await sealInput(sealing.seal, row, proposal.input);
+        return openTask(await raw.tasks.move({ ...rest, startInput }));
+      },
     },
     schedules: {
       list: async () => Promise.all((await raw.schedules.list()).map(openSchedule)),

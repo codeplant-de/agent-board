@@ -112,7 +112,7 @@ if (import.meta.main) {
                 postSlack(
                   context.config.slackWebhookFile,
                   slackText(
-                    task,
+                    { title: task.title, url: context.taskLink(task.id) },
                     `Question: ${first}${questions && questions.length > 1 ? ` (+${questions.length - 1} more)` : ''}`,
                   ),
                 ),

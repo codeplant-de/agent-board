@@ -22,7 +22,7 @@ function scratchDb(options: { backfillOwner?: string } = {}): ReturnType<typeof 
   return scratch;
 }
 
-// These tests are about the migrations up to 0013, with plain text in the rows; the sealed-content constraints would refuse it.
+// These tests are about the migrations up to 0013, with plain text in the rows; the sealed-content constraints of a later release would refuse it.
 let currentFolder: string | undefined;
 afterAll(() => {
   if (currentFolder !== undefined) removeFolder(currentFolder);

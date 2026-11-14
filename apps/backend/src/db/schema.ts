@@ -19,7 +19,6 @@ import {
   type AnyPgColumn,
   type PgTableExtraConfigValue,
 } from 'drizzle-orm/pg-core';
-import { BLIND_INDEX_PATTERN, ENVELOPE_PATTERN } from './sealedColumns';
 
 export const taskStatus = pgEnum('task_status', ['backlog', 'todo', 'running', 'needs-me', 'done']);
 /** Declared highest first, so ordering by the enum puts urgent on top. */
@@ -83,9 +82,6 @@ const ownerFk = (
   onDelete: 'set null' | 'cascade',
 ) => foreignKey({ name, columns, foreignColumns }).onDelete(onDelete);
 
-const isEnvelope = (column: AnyPgColumn) => sql`${column} ~ ${sql.raw(`'${ENVELOPE_PATTERN}'`)}`;
-const isBlindIndex = (column: AnyPgColumn) => sql`${column} ~ ${sql.raw(`'${BLIND_INDEX_PATTERN}'`)}`;
-
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
 
 export const tasks = pgTable(
@@ -132,17 +128,12 @@ export const tasks = pgTable(
      * stays when the schedule is deleted.
      */
     scheduleId: text('schedule_id'),
-    /** Proposed by an agent and not started by the user yet. */
+    /** Proposed by an agent and not started by the user yet; starting it takes this off and makes `created_by` the user, with the prompt sealed again for that creator. */
     proposed: boolean('proposed').notNull().default(false),
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t): PgTableExtraConfigValue[] => [
-    check('task_title_sealed', isEnvelope(t.title)),
-    check('task_input_sealed', isEnvelope(t.input)),
-    check('task_workdir_sealed', isEnvelope(t.workdir)),
-    check('task_dedupe_key_blind', isBlindIndex(t.dedupeKey)),
-    check('task_head_blind', isBlindIndex(t.head)),
     unique('task_owner_dedupe_key_unique').on(t.owner, t.dedupeKey),
     index('task_status_priority_position_idx').on(t.owner, t.status, t.priority, t.position),
     unique('task_owner_id_unique').on(t.owner, t.id),
@@ -179,9 +170,6 @@ export const schedules = pgTable(
     createdAt: createdAt(),
   },
   (t): PgTableExtraConfigValue[] => [
-    check('schedule_title_sealed', isEnvelope(t.title)),
-    check('schedule_input_sealed', isEnvelope(t.input)),
-    check('schedule_workdir_sealed', isEnvelope(t.workdir)),
     unique('schedule_owner_id_unique').on(t.owner, t.id),
     ownerFk('schedule_occurrence_task_fk', [t.owner, t.occurrenceTaskId], [tasks.owner, tasks.id], 'set null'),
     tenant(),
@@ -209,10 +197,6 @@ export const notes = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    check('note_body_sealed', sql`(${t.author}::text = 'server' and ${t.kind} = 'event') or ${isEnvelope(t.body)}`),
-    check('note_preview_sealed', isEnvelope(t.preview)),
-    check('note_questions_sealed', isEnvelope(t.questions)),
-    check('note_answers_sealed', isEnvelope(t.answers)),
     index('note_task_created_idx').on(t.taskId, t.createdAt),
     ownerFk('note_task_fk', [t.owner, t.taskId], [tasks.owner, tasks.id], 'cascade'),
     tenant(),
@@ -275,8 +259,6 @@ export const transcriptEvents = pgTable(
     outputSize: integer('output_size'),
   },
   (t) => [
-    check('transcript_event_data_sealed', isEnvelope(t.data)),
-    check('transcript_event_output_sealed', isEnvelope(t.output)),
     // With the owner, so a colliding (run, seq) of another user is not visible as a duplicate-key error.
     primaryKey({ columns: [t.owner, t.runId, t.seq] }),
     ownerFk('transcript_event_run_fk', [t.owner, t.runId], [transcriptRuns.owner, transcriptRuns.id], 'cascade'),

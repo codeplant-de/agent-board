@@ -20,6 +20,7 @@ import {
   decideOutcome,
   isPermanentRefusal,
   isRunOver,
+  neverRun,
   ownLane,
   PLUGIN_MARKETPLACE,
   planRun,
@@ -47,10 +48,14 @@ export interface RunResult {
   stopped?: Exclude<Supervision, { kind: 'continue' }>;
 }
 
-// Called every `everyMs` while the process runs; a stop decision ends it (SIGTERM, then SIGKILL).
+// Called every `everyMs` while the process runs; a stop decision ends it (SIGTERM, then SIGKILL). A tick decides from the
+// clock and the run's own files alone: the calls to the board it starts (liveness, transcript) run on their own, so a board
+// that is slow, down or hostile cannot hold the run's limits back.
 export interface Watch {
   everyMs: number;
   tick: () => Promise<Supervision>;
+  // Resolves when the calls to the board that earlier ticks started are done.
+  settled: () => Promise<void>;
 }
 
 // How long a run may take to stop by itself after a pause was asked for.
@@ -59,6 +64,10 @@ const PAUSE_GRACE_MINUTES = 5;
 const HEARTBEAT_EVERY_MS = 15_000;
 // Events waiting for the board past this are dropped from the front: the board is down, the run goes on.
 const MAX_PENDING_EVENTS = 20_000;
+// What one upload pass may spend on the board: calls, counting the halving of a refused batch, and time. What is left goes
+// with the next pass.
+const MAX_UPLOAD_CALLS = 24;
+const MAX_UPLOAD_MS = 60_000;
 
 export interface WorkerDeps extends Context {
   // `env` is added to the process's environment: the secrets of the invocation's masked variables.
@@ -111,6 +120,9 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     return fail(
       `The task's ${unreadable.join(' and ')} could not be decrypted with this machine's data key, so it was not run. Check AGENT_BOARD_DATA_KEY against the board's Settings page.`,
     );
+
+  const refused = neverRun(task);
+  if (refused !== undefined) return fail(refused);
 
   const fromIntake = task.createdBy === 'intake';
   // What a new directory is sealed against: the task's own creator and schedule, as the board has them.
@@ -206,8 +218,10 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       events,
     });
   // Sends `events`; returns the ones to try again later (all, or none). A batch the board refuses for good is halved until the
-  // event it cannot take is alone and dropped, so one bad event never holds the transcript back.
-  const sendEvents = async (events: TranscriptEvent[]): Promise<TranscriptEvent[]> => {
+  // event it cannot take is alone and dropped, so one bad event never holds the transcript back. `spend` says whether this pass
+  // may make another call.
+  const sendEvents = async (events: TranscriptEvent[], spend: () => boolean): Promise<TranscriptEvent[]> => {
+    if (!spend()) return events;
     try {
       await post(events);
       return [];
@@ -222,28 +236,53 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
         return [];
       }
       const middle = Math.ceil(events.length / 2);
-      const firstBack = await sendEvents(events.slice(0, middle));
+      const firstBack = await sendEvents(events.slice(0, middle), spend);
       if (firstBack.length > 0) return [...firstBack, ...events.slice(middle)];
-      return sendEvents(events.slice(middle));
+      return sendEvents(events.slice(middle), spend);
     }
   };
   const upload = async (): Promise<void> => {
     const batches = splitBatches(pending);
     pending = [];
+    const passStarted = deps.now().getTime();
+    let calls = 0;
+    const spend = (): boolean => {
+      if (calls >= MAX_UPLOAD_CALLS || deps.now().getTime() - passStarted > MAX_UPLOAD_MS) return false;
+      calls += 1;
+      return true;
+    };
     for (const [index, events] of batches.entries()) {
-      const back = await sendEvents(events);
+      const back = await sendEvents(events, spend);
       if (back.length > 0) {
-        // What could not go out, and the batches after it, go again with the next check.
+        // What could not go out, and the batches after it, go again with the next pass.
         pending = [...back, ...batches.slice(index + 1).flat(), ...pending].slice(-MAX_PENDING_EVENTS);
         return;
       }
     }
   };
-  // One upload at a time, in order: a call that finds one in flight waits for it, then sends what has come in since.
-  let uploading: Promise<void> = Promise.resolve();
-  const sendTranscript = (): Promise<void> => {
-    uploading = uploading.then(upload);
+  // One upload at a time. A tick that finds one in flight leaves what has come in since to the next pass.
+  let uploading: Promise<void> | undefined;
+  const startUpload = (): Promise<void> => {
+    uploading ??= upload()
+      .catch((error: unknown) => {
+        deps.appendLog(taskId, `transcript upload failed: ${error instanceof Error ? error.message : String(error)}`);
+      })
+      .finally(() => {
+        uploading = undefined;
+      });
     return uploading;
+  };
+  // The end of the run: what is in flight, then what is left, each pass bounded like any other.
+  const flushTranscript = async (): Promise<void> => {
+    await uploading;
+    await startUpload();
+  };
+  let beating: Promise<void> | undefined;
+  const startBeat = (): Promise<void> => {
+    beating ??= beat().finally(() => {
+      beating = undefined;
+    });
+    return beating;
   };
   const onLine = (line: string): string | undefined => {
     const events = condenser.line(line);
@@ -255,8 +294,8 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   const watch: Watch = {
     everyMs: deps.watchEveryMs,
     tick: async () => {
-      await beat();
-      await sendTranscript();
+      void startBeat();
+      void startUpload();
       return supervise({
         now: deps.now(),
         startedAt,
@@ -265,6 +304,9 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
         limits: config,
         pauseGraceMinutes: PAUSE_GRACE_MINUTES,
       });
+    },
+    settled: async () => {
+      await Promise.all([beating, uploading]);
     },
   };
 
@@ -275,14 +317,14 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   }
   let result: RunResult;
   try {
-    await beat();
+    void startBeat();
     result = await deps.run(plan.invocation, taskId, env, watch, onLine);
   } catch (error) {
     files.clear(taskId);
     if (run.kind === 'fresh') await backend.updateTask(task.id, { sessionId: null });
     return fail(error instanceof Error ? error.message : String(error));
   }
-  await sendTranscript();
+  await flushTranscript();
   if (result.stopped) deps.appendLog(taskId, result.stopped.message);
   const pauseRequested = files.pauseRequestedAt(taskId) !== undefined;
   const endedIn = files.lastCwd(taskId);
@@ -414,7 +456,11 @@ if (import.meta.main) {
       ...context,
       run: runProcess,
       logTail: readLogTail,
-      notify: (task, text) => postSlack(context.config.slackWebhookFile, slackText(task, text)),
+      notify: (task, text) =>
+        postSlack(
+          context.config.slackWebhookFile,
+          slackText({ title: task.title, url: context.taskLink(task.id) }, text),
+        ),
       resetLog,
       appendLog,
       pluginPath: resolvePluginPath,

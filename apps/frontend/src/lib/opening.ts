@@ -1,5 +1,10 @@
 import {
+  ContractError,
+  INVALID_VALUE,
   isEnvelope,
+  isPriority,
+  isSafeNoteId,
+  isSessionId,
   openFields,
   openNote,
   openPreview,
@@ -14,9 +19,17 @@ import {
   type Question,
   type TranscriptEventView,
   type UnreadableField,
-  type WireNoteAuthor,
 } from '@agent-board/shared';
 import { openAs } from './contexts';
+import {
+  checkNoteShapes,
+  checkTaskShapes,
+  safeId,
+  safeNullableId,
+  shownName,
+  shownRule,
+  type ShownAuthor,
+} from './shapes';
 import type { RouterOutputs } from './wire';
 
 type WireBoardTask = RouterOutputs['tasks']['get']['task'];
@@ -33,11 +46,16 @@ interface SealedFields {
 }
 
 export type BoardTask = Omit<WireBoardTask, keyof SealedFields> &
-  SealedFields & { labels: string[]; unreadable: UnreadableField[] };
+  SealedFields & {
+    labels: string[];
+    unreadable: UnreadableField[];
+    // The clear fields the board sent in a shape it does not promise; they are shown as neutral values.
+    invalid: string[];
+  };
 
 export interface LastNote {
   kind: NoteKind;
-  author: WireNoteAuthor;
+  author: ShownAuthor;
   text: string;
   createdAt: string;
   unreadable: boolean;
@@ -49,11 +67,13 @@ export interface ThreadNote {
   id: string;
   text: string;
   createdAt: string;
-  author: WireNoteAuthor;
+  author: ShownAuthor;
   kind: NoteKind;
   by: string | null;
   // The text, the questions or the answers could not be opened: never show the note as the user's or the agent's words.
   unreadable: boolean;
+  // The board sent several notes with this id, so none of them is shown.
+  duplicateId?: boolean;
   questions?: Question[];
   answers?: Answer[];
   questionNoteId?: string;
@@ -67,6 +87,8 @@ export interface TaskDetail {
 }
 
 export type Schedule = Omit<WireSchedule, keyof SealedFields> & SealedFields & { unreadable: UnreadableField[] };
+export type TranscriptRun = RouterOutputs['transcript']['runs'][number];
+export type Machine = RouterOutputs['machines']['list'][number];
 
 // One envelope always opens to the same text, so the 5 s polls of every task's prompt decrypt only what is new. Transcript
 // values are large and opened once on demand, so they are not kept.
@@ -95,14 +117,40 @@ export const openerFor =
     tryOpen(keys, binding, value);
 
 export async function openBoardTask(keys: Keys, wire: WireBoardTask): Promise<BoardTask> {
-  const row = { kind: 'task', id: wire.id, createdBy: wire.createdBy, scheduleId: wire.scheduleId } as const;
+  const { invalid, ...shapes } = checkTaskShapes(wire);
+  const row = { kind: 'task', id: wire.id, createdBy: shapes.createdBy, scheduleId: shapes.scheduleId } as const;
   const fields = await openFields(openerFor(keys), row, wire);
-  return { ...wire, ...fields, labels: taskLabels({ input: fields.input, createdBy: wire.createdBy }) };
+  return {
+    ...wire,
+    ...shapes,
+    ...fields,
+    labels: taskLabels({ input: fields.input, createdBy: shapes.createdBy }),
+    invalid,
+  };
 }
 
 async function openLastNote(keys: Keys, taskId: string, wire: WireLastNote): Promise<LastNote> {
-  const { text, unreadable } = await openPreview(openerFor(keys), taskId, wire);
-  return { kind: wire.kind, createdAt: wire.createdAt, author: wire.author, text: text ?? UNREADABLE_TEXT, unreadable };
+  const shapes = checkNoteShapes({ id: 'last', author: wire.author, kind: wire.kind, by: null });
+  if (shapes.author === 'unknown' || !shapes.ok)
+    return {
+      kind: shapes.kind,
+      createdAt: wire.createdAt,
+      author: shapes.author,
+      text: UNREADABLE_TEXT,
+      unreadable: true,
+    };
+  const { text, unreadable } = await openPreview(openerFor(keys), taskId, {
+    author: shapes.author,
+    kind: shapes.kind,
+    preview: wire.preview,
+  });
+  return {
+    kind: shapes.kind,
+    createdAt: wire.createdAt,
+    author: shapes.author,
+    text: text ?? UNREADABLE_TEXT,
+    unreadable,
+  };
 }
 
 export async function openListedTasks(keys: Keys, wire: WireListedTask[]): Promise<ListedTask[]> {
@@ -117,20 +165,33 @@ export async function openListedTasks(keys: Keys, wire: WireListedTask[]): Promi
   );
 }
 
-async function openThreadNote(keys: Keys, taskId: string, wire: WireThreadNote): Promise<ThreadNote> {
-  const opened = await openNote(openerFor(keys), taskId, wire);
-  return {
-    id: wire.id,
-    createdAt: wire.createdAt,
-    kind: wire.kind,
-    by: wire.by,
-    ...opened,
-    ...(wire.questionNoteId !== undefined ? { questionNoteId: wire.questionNoteId } : {}),
-  };
+async function openThreadNote(
+  keys: Keys,
+  taskId: string,
+  wire: WireThreadNote,
+  duplicate: boolean,
+): Promise<ThreadNote> {
+  const shapes = checkNoteShapes(wire);
+  const base = { id: shapes.id, createdAt: wire.createdAt, kind: shapes.kind, by: shapes.by };
+  const unreadable = { ...base, author: shapes.author, text: '', unreadable: true };
+  if (duplicate) return { ...unreadable, duplicateId: true };
+  if (!shapes.ok || shapes.author === 'unknown') return unreadable;
+  const opened = await openNote(openerFor(keys), taskId, { ...wire, author: shapes.author, kind: shapes.kind });
+  const questionNoteId =
+    wire.questionNoteId !== undefined && isSafeNoteId(wire.questionNoteId)
+      ? { questionNoteId: wire.questionNoteId }
+      : {};
+  return { ...base, ...opened, ...questionNoteId };
 }
 
+/**
+ * A thread as it is shown. Notes of one id are one note, so a board that sends the same id twice (to put an earlier question
+ * where the open one is, say) gets none of them shown: every note with a repeated id is unreadable.
+ */
 export async function openThread(keys: Keys, taskId: string, wire: WireThreadNote[]): Promise<ThreadNote[]> {
-  return Promise.all(wire.map((note) => openThreadNote(keys, taskId, note)));
+  const counts = new Map<string, number>();
+  for (const note of wire) counts.set(note.id, (counts.get(note.id) ?? 0) + 1);
+  return Promise.all(wire.map((note) => openThreadNote(keys, taskId, note, (counts.get(note.id) ?? 0) > 1)));
 }
 
 export async function openTaskDetail(keys: Keys, wire: RouterOutputs['tasks']['get']): Promise<TaskDetail> {
@@ -144,11 +205,37 @@ export async function openTaskDetail(keys: Keys, wire: RouterOutputs['tasks']['g
 }
 
 export async function openSchedule(keys: Keys, wire: WireSchedule): Promise<Schedule> {
-  return { ...wire, ...(await openFields(openerFor(keys), { kind: 'schedule', id: wire.id }, wire)) };
+  const id = safeId(wire.id, 'schedule id');
+  const fields = await openFields(openerFor(keys), { kind: 'schedule', id }, wire);
+  return {
+    ...wire,
+    ...fields,
+    id,
+    priority: isPriority(wire.priority) ? wire.priority : 'normal',
+    machine: shownName(wire.machine),
+    ...shownRule(wire),
+    occurrenceTaskId: safeNullableId(wire.occurrenceTaskId, 'occurrence id'),
+  };
 }
 
 export async function openSchedules(keys: Keys, wire: WireSchedule[]): Promise<Schedule[]> {
   return Promise.all(wire.map((schedule) => openSchedule(keys, schedule)));
+}
+
+/** The runs of a task: ids are what the events are asked for, so a bad one refuses the reply; a machine name or session that is not of its shape shows as neutral. */
+export function openRuns(wire: RouterOutputs['transcript']['runs']): TranscriptRun[] {
+  return wire.map((run) => {
+    if (!isSafeNoteId(run.id)) throw new ContractError('The board sent a run id that is not an id.');
+    return {
+      ...run,
+      machine: shownName(run.machine) ?? INVALID_VALUE,
+      sessionId: run.sessionId !== null && isSessionId(run.sessionId) ? run.sessionId : null,
+    };
+  });
+}
+
+export function openMachines(wire: RouterOutputs['machines']['list']): Machine[] {
+  return wire.map((machine) => ({ ...machine, name: shownName(machine.name) ?? INVALID_VALUE }));
 }
 
 /** An event that cannot be opened becomes a note saying so, so the rest of the run still reads. */
@@ -167,7 +254,8 @@ export async function openEvent(
   } catch {
     // Falls through to the placeholder.
   }
-  return { seq: wire.seq, at: wire.at, parent: wire.parent, kind: 'note', text: UNREADABLE_TEXT, outputSize: null };
+  const parent = wire.parent !== null && isSafeNoteId(wire.parent) ? wire.parent : null;
+  return { seq: wire.seq, at: wire.at, parent, kind: 'note', text: UNREADABLE_TEXT, outputSize: null };
 }
 
 export async function openEvents(
