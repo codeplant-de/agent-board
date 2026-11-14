@@ -1,4 +1,18 @@
-import { Anchor, Badge, Breadcrumbs, Button, Center, Container, Group, Loader, Paper, Spoiler, Stack, Text, Title } from '@mantine/core';
+import {
+  Anchor,
+  Badge,
+  Breadcrumbs,
+  Button,
+  Center,
+  Container,
+  Group,
+  Loader,
+  Paper,
+  Spoiler,
+  Stack,
+  Text,
+  Title,
+} from '@mantine/core';
 import { IconBrandGithub, IconCornerDownRight, IconTerminal2 } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
@@ -69,26 +83,47 @@ export function TaskPage() {
           <Title order={3}>{task.title}</Title>
           <Group gap="xs">
             <Badge color={STATUS_COLOR[task.status]}>{task.closed ? 'Closed' : STATUS_LABEL[task.status]}</Badge>
-            <PriorityPicker value={task.priority} onChange={(priority) => setPriority.mutate({ id: task.id, priority })} />
+            <PriorityPicker
+              value={task.priority}
+              onChange={(priority) => setPriority.mutate({ id: task.id, priority })}
+            />
             <TaskBadges task={task} withPriority={false} />
             <Text size="xs" c="dimmed" title={stamp(task.createdAt)}>
               created by {task.createdBy} {ago(task.createdAt)}
             </Text>
           </Group>
           {task.workdir && (
-            <Text size="xs" c="dimmed" ff="monospace" title="Where the task's session last worked; a resume starts here">
+            <Text
+              size="xs"
+              c="dimmed"
+              ff="monospace"
+              title="Where the task's session last worked; a resume starts here"
+            >
               {task.machine ? `${task.machine}:` : ''}
               {task.workdir}
             </Text>
           )}
           <Group gap="xs">
-            <Button variant="default" size="xs" leftSection={<IconTerminal2 size={14} />} onClick={() => setTranscriptOpen(true)}>
+            <Button
+              variant="default"
+              size="xs"
+              leftSection={<IconTerminal2 size={14} />}
+              onClick={() => setTranscriptOpen(true)}
+            >
               Transcript
             </Button>
           </Group>
           {pr && (
             <Group>
-              <Button component="a" href={pr} target="_blank" rel="noopener noreferrer" variant="default" size="xs" leftSection={<IconBrandGithub size={14} />}>
+              <Button
+                component="a"
+                href={pr}
+                target="_blank"
+                rel="noopener noreferrer"
+                variant="default"
+                size="xs"
+                leftSection={<IconBrandGithub size={14} />}
+              >
                 {pr.replace('https://github.com/', '')}
               </Button>
             </Group>
@@ -141,7 +176,12 @@ export function TaskPage() {
           ))}
         </Stack>
 
-        <TranscriptDrawer taskId={task.id} opened={transcriptOpen} onClose={() => setTranscriptOpen(false)} live={task.status === 'running'} />
+        <TranscriptDrawer
+          taskId={task.id}
+          opened={transcriptOpen}
+          onClose={() => setTranscriptOpen(false)}
+          live={task.status === 'running'}
+        />
 
         <div ref={bottom}>
           <ActionPanel task={task} thread={thread} />

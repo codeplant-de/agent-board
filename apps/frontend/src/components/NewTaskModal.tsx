@@ -47,8 +47,8 @@ export function NewTaskModal({ opened, onClose }: { opened: boolean; onClose: ()
           placeholder={'/review-pr 17741\n\nor any instruction, as you would type it into Claude Code'}
         />
         <Text size="xs" c="dimmed" mt={-8}>
-          A leading <Code>/skill</Code> picks the lane. It runs in the default directory of whichever machine takes it; to run it in a
-          particular directory, use <Code>board schedule</Code> there.
+          A leading <Code>/skill</Code> picks the lane. It runs in the default directory of whichever machine takes it;
+          to run it in a particular directory, use <Code>board schedule</Code> there.
         </Text>
         <TextInput
           label="Title"

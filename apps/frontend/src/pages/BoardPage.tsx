@@ -27,7 +27,11 @@ export function BoardPage() {
   const trpc = useTRPC();
   const tasks = useQuery({ ...trpc.tasks.list.queryOptions(), refetchInterval: POLL_MS });
   const ids = (tasks.data ?? []).map((t) => t.id);
-  const activity = useQuery({ ...trpc.tasks.activity.queryOptions({ ids }), enabled: ids.length > 0, refetchInterval: POLL_MS });
+  const activity = useQuery({
+    ...trpc.tasks.activity.queryOptions({ ids }),
+    enabled: ids.length > 0,
+    refetchInterval: POLL_MS,
+  });
   const move = useMutation(trpc.tasks.move.mutationOptions());
   const [dragId, setDragId] = useState<string | null>(null);
   const [over, setOver] = useState<DropTarget | null>(null);
@@ -58,7 +62,11 @@ export function BoardPage() {
             className="board-column"
             data-over={dragId !== null && over?.status === status && canDrop(status)}
             bg="var(--mantine-color-default-hover)"
-            style={status === 'needs-me' && column.length > 0 ? { borderTop: '3px solid var(--mantine-color-orange-5)' } : undefined}
+            style={
+              status === 'needs-me' && column.length > 0
+                ? { borderTop: '3px solid var(--mantine-color-orange-5)' }
+                : undefined
+            }
             onDragOver={(event: DragEvent) => {
               if (!dragId || !canDrop(status)) return;
               event.preventDefault();

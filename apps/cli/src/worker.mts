@@ -5,32 +5,41 @@
  * no tool call for inactivityMinutes, or a run longer than maxRunHours, stops it; a pause request that the
  * agent does not follow within a few minutes stops it too. It passes the agent's liveness on to the board.
  */
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { statSync, writeSync } from "node:fs";
-import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
-import { buildContext, print, rejectExtraArgs, runMain, UsageError } from "./cli.mts";
-import type { Context } from "./cli.mts";
-import { isSafeTaskId } from "@agent-board/shared";
-import { logLine, StreamCondenser } from "@agent-board/shared";
-import type { Task, TranscriptEvent } from "@agent-board/shared";
-import { buildInvocation, decideOutcome, ownLane, PAUSE_MARKER, PLUGIN_MARKETPLACE, planRun, pluginPlaceholders, supervise } from "./decide.mts";
-import { pickEnv, readMcpServers, readSettingsEnv } from "./settings-env.mts";
-import type { Invocation, Supervision } from "./decide.mts";
-import { createRunFiles } from "./runtime.mts";
-import type { RunFiles } from "./runtime.mts";
-import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from "./logs.mts";
-import { resolvePluginPath } from "./plugins.mts";
-import { postSlack, slackText } from "./notify.mts";
-import { sendToNeedsMe } from "./report.mts";
-import { fence } from "./text.mts";
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { statSync, writeSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { buildContext, print, rejectExtraArgs, runMain, UsageError } from './cli.mts';
+import type { Context } from './cli.mts';
+import { isSafeTaskId } from '@agent-board/shared';
+import { logLine, StreamCondenser } from '@agent-board/shared';
+import type { Task, TranscriptEvent } from '@agent-board/shared';
+import {
+  buildInvocation,
+  decideOutcome,
+  ownLane,
+  PAUSE_MARKER,
+  PLUGIN_MARKETPLACE,
+  planRun,
+  pluginPlaceholders,
+  supervise,
+} from './decide.mts';
+import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
+import type { Invocation, Supervision } from './decide.mts';
+import { createRunFiles } from './runtime.mts';
+import type { RunFiles } from './runtime.mts';
+import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from './logs.mts';
+import { resolvePluginPath } from './plugins.mts';
+import { postSlack, slackText } from './notify.mts';
+import { sendToNeedsMe } from './report.mts';
+import { fence } from './text.mts';
 
 export interface RunResult {
   exitCode: number | null;
   signal: string | null;
   // Set when the watch stopped the run.
-  stopped?: Exclude<Supervision, { kind: "continue" }>;
+  stopped?: Exclude<Supervision, { kind: 'continue' }>;
 }
 
 // Called every `everyMs` while the process runs; a stop decision ends it (SIGTERM, then SIGKILL).
@@ -49,7 +58,13 @@ const MAX_PENDING_EVENTS = 20_000;
 export interface WorkerDeps extends Context {
   // `env` is added to the process's environment: the secrets of the invocation's masked variables.
   // `onLine` gets each line the process prints and returns what goes into the log for it (nothing when undefined).
-  run: (invocation: Invocation, taskId: string, env: Record<string, string>, watch: Watch, onLine: (line: string) => string | undefined) => Promise<RunResult>;
+  run: (
+    invocation: Invocation,
+    taskId: string,
+    env: Record<string, string>,
+    watch: Watch,
+    onLine: (line: string) => string | undefined,
+  ) => Promise<RunResult>;
   logTail: (taskId: string) => string;
   notify: (task: Task, text: string) => Promise<void>;
   resetLog: (taskId: string) => void;
@@ -83,9 +98,11 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     await report(reason);
   };
 
-  const fromIntake = task.createdBy === "intake";
+  const fromIntake = task.createdBy === 'intake';
   const pluginRoots: Record<string, string> = {};
-  for (const name of fromIntake ? pluginPlaceholders([...config.intake.allowedTools, ...config.intake.disallowedTools]) : []) {
+  for (const name of fromIntake
+    ? pluginPlaceholders([...config.intake.allowedTools, ...config.intake.disallowedTools])
+    : []) {
     try {
       pluginRoots[name] = deps.pluginPath(`${name}@${PLUGIN_MARKETPLACE}`);
     } catch (error) {
@@ -93,9 +110,12 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     }
   }
   const run = planRun(task, await backend.readNotes(task.id), deps.newSessionId);
-  deps.appendLog(taskId, run.kind === "resume" ? `resuming session ${run.sessionId}` : `new session ${run.sessionId}`);
+  deps.appendLog(taskId, run.kind === 'resume' ? `resuming session ${run.sessionId}` : `new session ${run.sessionId}`);
   // Stored before the run: a reply that comes after a failed run still finds the session. The resume is used up either way.
-  await backend.updateTask(task.id, run.kind === "fresh" ? { sessionId: run.sessionId, next: "fresh" } : { next: "fresh" });
+  await backend.updateTask(
+    task.id,
+    run.kind === 'fresh' ? { sessionId: run.sessionId, next: 'fresh' } : { next: 'fresh' },
+  );
   const plan = buildInvocation({
     run,
     hookCommand: deps.hookCommand(deps.files.dir, taskId),
@@ -111,14 +131,16 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   // Intake's MCP servers come from the checkout's .mcp.json: intake does not load the settings that switch them on.
   if (fromIntake && config.intake.mcpServers.length > 0) {
     const servers = deps.mcpServers(plan.invocation.cwd, config.intake.mcpServers);
-    if (servers.missing.length > 0) deps.appendLog(taskId, `not in the checkout's .mcp.json: ${servers.missing.join(", ")}`);
-    if (Object.keys(servers.config.mcpServers).length > 0) plan.invocation.args.push("--mcp-config", JSON.stringify(servers.config));
+    if (servers.missing.length > 0)
+      deps.appendLog(taskId, `not in the checkout's .mcp.json: ${servers.missing.join(', ')}`);
+    if (Object.keys(servers.config.mcpServers).length > 0)
+      plan.invocation.args.push('--mcp-config', JSON.stringify(servers.config));
   }
   if (!deps.dirExists(plan.invocation.cwd)) {
     const own = task.workdir === plan.invocation.cwd;
     return fail(
       own
-        ? `This task's directory is gone: ${plan.invocation.cwd}. Recreate it to run there, or use Re-run fresh to start over${task.createdBy === "intake" ? "" : " in the default directory"}.`
+        ? `This task's directory is gone: ${plan.invocation.cwd}. Recreate it to run there, or use Re-run fresh to start over${task.createdBy === 'intake' ? '' : ' in the default directory'}.`
         : `The working directory does not exist: ${plan.invocation.cwd}`,
     );
   }
@@ -131,13 +153,17 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   if (fromIntake && config.intake.env.length > 0) {
     const picked = pickEnv(deps.settingsEnv(plan.invocation.cwd), config.intake.env);
     env = picked.env;
-    if (picked.missing.length > 0) deps.appendLog(taskId, `not in the checkout's settings: ${picked.missing.join(", ")}`);
+    if (picked.missing.length > 0)
+      deps.appendLog(taskId, `not in the checkout's settings: ${picked.missing.join(', ')}`);
   }
-
 
   const files = deps.files;
   // The dispatcher wrote the lane before it started this worker; a run started without one counts as the first lane's own.
-  const record = files.readRun(taskId) ?? { lane: config.lanes[0]?.name ?? "default", borrowed: false, startedAt: deps.now() };
+  const record = files.readRun(taskId) ?? {
+    lane: config.lanes[0]?.name ?? 'default',
+    borrowed: false,
+    startedAt: deps.now(),
+  };
   const startedAt = deps.now();
   let lastBeat = 0;
   let lastSeen: number | undefined;
@@ -162,7 +188,13 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     const events = pending;
     pending = [];
     try {
-      await backend.transcript(task.id, { runId, startedAt: startedAt.toISOString(), sessionId: run.sessionId, resumed: run.kind === "resume", events });
+      await backend.transcript(task.id, {
+        runId,
+        startedAt: startedAt.toISOString(),
+        sessionId: run.sessionId,
+        resumed: run.kind === 'resume',
+        events,
+      });
     } catch (error) {
       pending = [...events, ...pending].slice(-MAX_PENDING_EVENTS);
       deps.appendLog(taskId, `transcript upload failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -175,7 +207,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     pending.push(...events);
     if (pending.length > MAX_PENDING_EVENTS) pending = pending.slice(-MAX_PENDING_EVENTS);
     const text = events.map(logLine).filter((part) => part !== undefined);
-    return text.length > 0 ? text.join("\n") : undefined;
+    return text.length > 0 ? text.join('\n') : undefined;
   };
   const watch: Watch = {
     everyMs: deps.watchEveryMs,
@@ -220,15 +252,19 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     signal: result.signal,
     stopped: result.stopped,
     pauseRequested,
-    reported: after.status === "needs-me" || after.status === "done",
+    reported: after.status === 'needs-me' || after.status === 'done',
   });
-  if (outcome.kind === "ok") return;
-  if (outcome.kind === "paused") {
-    if (after.status === "running") await backend.pause(task.id, `${PAUSE_MARKER} ${config.machine}: its ${record.lane} lane needed the slot for its own work. Resumes next, on ${config.machine}.`);
+  if (outcome.kind === 'ok') return;
+  if (outcome.kind === 'paused') {
+    if (after.status === 'running')
+      await backend.pause(
+        task.id,
+        `${PAUSE_MARKER} ${config.machine}: its ${record.lane} lane needed the slot for its own work. Resumes next, on ${config.machine}.`,
+      );
     return;
   }
-  const why = outcome.kind === "failed" ? outcome.reason : "The worker finished without reporting on the task.";
-  await report(`${why}\n\nEnd of the log:\n${fence(deps.logTail(taskId) || "(empty)")}`);
+  const why = outcome.kind === 'failed' ? outcome.reason : 'The worker finished without reporting on the task.';
+  await report(`${why}\n\nEnd of the log:\n${fence(deps.logTail(taskId) || '(empty)')}`);
 }
 
 export function runProcess(
@@ -244,25 +280,25 @@ export function runProcess(
     // straight into the log.
     const child = spawn(invocation.command, invocation.args, {
       cwd: invocation.cwd,
-      stdio: ["ignore", "pipe", fd],
+      stdio: ['ignore', 'pipe', fd],
       detached: true,
       env: { ...process.env, ...env },
     });
-    let buffered = "";
+    let buffered = '';
     const emit = (line: string): void => {
       const text = onLine(line);
       if (text !== undefined) writeSync(fd, `${text}\n`);
     };
-    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+    child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
       buffered += chunk;
-      let newline = buffered.indexOf("\n");
+      let newline = buffered.indexOf('\n');
       while (newline !== -1) {
         emit(buffered.slice(0, newline));
         buffered = buffered.slice(newline + 1);
-        newline = buffered.indexOf("\n");
+        newline = buffered.indexOf('\n');
       }
     });
-    let stopped: RunResult["stopped"];
+    let stopped: RunResult['stopped'];
     const killGroup = (signal: NodeJS.Signals): void => {
       try {
         if (child.pid) process.kill(-child.pid, signal);
@@ -277,10 +313,10 @@ export function runProcess(
       watch
         .tick()
         .then((decision) => {
-          if (decision.kind === "continue" || stopped) return;
+          if (decision.kind === 'continue' || stopped) return;
           stopped = decision;
-          killGroup("SIGTERM");
-          setTimeout(() => killGroup("SIGKILL"), 10_000).unref();
+          killGroup('SIGTERM');
+          setTimeout(() => killGroup('SIGKILL'), 10_000).unref();
         })
         .catch(() => undefined)
         .finally(() => {
@@ -293,33 +329,32 @@ export function runProcess(
       if (finished) return false;
       finished = true;
       clearInterval(timer);
-      if (buffered !== "") emit(buffered);
+      if (buffered !== '') emit(buffered);
       closeLog(fd);
       return true;
     };
-    child.on("error", (error) => {
+    child.on('error', (error) => {
       if (!finish()) return;
       reject(new Error(`could not start ${invocation.command}: ${error.message}`));
     });
-    child.on("close", (exitCode, signal) => {
+    child.on('close', (exitCode, signal) => {
       if (!finish()) return;
       resolve(stopped ? { exitCode, signal, stopped } : { exitCode, signal });
     });
   });
 }
 
-const HOOK_BIN = fileURLToPath(new URL("../bin/agent-hook", import.meta.url));
+const HOOK_BIN = fileURLToPath(new URL('../bin/agent-hook', import.meta.url));
 
 // Hook commands run through a shell.
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-
 if (import.meta.main) {
   await runMain(async () => {
     const [taskId, ...extra] = process.argv.slice(2);
-    const usage = "usage: worker <task>";
+    const usage = 'usage: worker <task>';
     if (!taskId || !isSafeTaskId(taskId)) throw new UsageError(usage);
     rejectExtraArgs(extra, usage);
     const context = buildContext(false);

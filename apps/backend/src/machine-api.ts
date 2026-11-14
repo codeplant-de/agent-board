@@ -75,15 +75,20 @@ export async function handleMachineCall(
       return { task: task(row), created };
     }
     case 'update-task':
-      return task(await updateTask(db, taskId(body), parsed(() => parsePatch(body['body']))));
+      return task(
+        await updateTask(
+          db,
+          taskId(body),
+          parsed(() => parsePatch(body['body'])),
+        ),
+      );
     case 'claim-task': {
       const id = taskId(body);
       const asMachine = body['machine'];
       if (typeof asMachine !== 'string' || !isSafeMachineName(asMachine))
         throw new AppError('BAD_REQUEST', 'machine is required');
       // A token claims for its own machine only.
-      if (asMachine !== machine)
-        throw new AppError('FORBIDDEN', `this token belongs to ${machine}, not ${asMachine}`);
+      if (asMachine !== machine) throw new AppError('FORBIDDEN', `this token belongs to ${machine}, not ${asMachine}`);
       const row = await claimTask(db, id, machine);
       if (!row) throw new AppError('CONFLICT', 'the task is not free for this machine');
       return task(row);
@@ -92,7 +97,12 @@ export async function handleMachineCall(
       const text = body['body'];
       if (typeof text !== 'string' || text.trim() === '') throw new AppError('BAD_REQUEST', 'note text is empty');
       const author = body['author'] === 'system' ? 'system' : 'agent';
-      await addNote(db, taskId(body), { author, kind: author === 'system' ? 'event' : 'comment', body: text, by: machine });
+      await addNote(db, taskId(body), {
+        author,
+        kind: author === 'system' ? 'event' : 'comment',
+        body: text,
+        by: machine,
+      });
       return null;
     }
     case 'ask': {
@@ -101,7 +111,11 @@ export async function handleMachineCall(
       return null;
     }
     case 'heartbeat':
-      await heartbeat(db, taskId(body), parsed(() => parseHeartbeat(body['body'])));
+      await heartbeat(
+        db,
+        taskId(body),
+        parsed(() => parseHeartbeat(body['body'])),
+      );
       return null;
     case 'pause': {
       const note = body['body'];
@@ -109,7 +123,12 @@ export async function handleMachineCall(
       return task(await pause(db, taskId(body), note.trim(), machine));
     }
     case 'transcript':
-      await appendTranscript(db, taskId(body), machine, parsed(() => parseTranscriptBatch(body['body'])));
+      await appendTranscript(
+        db,
+        taskId(body),
+        machine,
+        parsed(() => parseTranscriptBatch(body['body'])),
+      );
       return null;
     case 'read-notes':
       return (await readNotes(db, taskId(body))).map((row) => serializeNote(toNote(row)));

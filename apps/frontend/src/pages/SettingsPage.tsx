@@ -1,4 +1,19 @@
-import { ActionIcon, Alert, Badge, Button, Code, CopyButton, Group, Paper, Stack, Table, Text, TextInput, Title, Tooltip } from '@mantine/core';
+import {
+  ActionIcon,
+  Alert,
+  Badge,
+  Button,
+  Code,
+  CopyButton,
+  Group,
+  Paper,
+  Stack,
+  Table,
+  Text,
+  TextInput,
+  Title,
+  Tooltip,
+} from '@mantine/core';
 import { modals } from '@mantine/modals';
 import { IconCheck, IconCopy, IconKey } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -15,7 +30,15 @@ function Machines() {
   const [issued, setIssued] = useState<{ name: string; token: string } | null>(null);
 
   const create = (target: string) =>
-    issue.mutate({ name: target }, { onSuccess: ({ token }) => { setIssued({ name: target, token }); setName(''); } });
+    issue.mutate(
+      { name: target },
+      {
+        onSuccess: ({ token }) => {
+          setIssued({ name: target, token });
+          setName('');
+        },
+      },
+    );
 
   return (
     <Paper withBorder p="md">
@@ -23,12 +46,18 @@ function Machines() {
         <div>
           <Title order={5}>Worker machines</Title>
           <Text size="sm" c="dimmed">
-            Each machine that runs <Code>dispatch</Code> and <Code>intake</Code> gets a token. Its name must match <Code>machine</Code> in its config.json
-            (default: the host name).
+            Each machine that runs <Code>dispatch</Code> and <Code>intake</Code> gets a token. Its name must match{' '}
+            <Code>machine</Code> in its config.json (default: the host name).
           </Text>
         </div>
         {issued && (
-          <Alert color="teal" icon={<IconKey size={18} />} title={`Token for ${issued.name}, shown once`} withCloseButton onClose={() => setIssued(null)}>
+          <Alert
+            color="teal"
+            icon={<IconKey size={18} />}
+            title={`Token for ${issued.name}, shown once`}
+            withCloseButton
+            onClose={() => setIssued(null)}
+          >
             <Stack gap="xs">
               <Text size="sm">
                 Put it in <Code>~/.config/agent-board/env</Code> (mode 600) on that machine:
@@ -89,7 +118,9 @@ function Machines() {
                         onClick={() =>
                           modals.openConfirmModal({
                             title: `Revoke ${m.name}?`,
-                            children: <Text size="sm">Its dispatcher and intake stop working until it gets a new token.</Text>,
+                            children: (
+                              <Text size="sm">Its dispatcher and intake stop working until it gets a new token.</Text>
+                            ),
                             labels: { confirm: 'Revoke', cancel: 'Cancel' },
                             confirmProps: { color: 'red' },
                             onConfirm: () => revoke.mutate({ name: m.name }),
@@ -106,7 +137,13 @@ function Machines() {
           </Table.Tbody>
         </Table>
         <Group align="flex-end">
-          <TextInput label="Add a machine" placeholder="laptop" value={name} onChange={(e) => setName(e.currentTarget.value)} style={{ flex: 1 }} />
+          <TextInput
+            label="Add a machine"
+            placeholder="laptop"
+            value={name}
+            onChange={(e) => setName(e.currentTarget.value)}
+            style={{ flex: 1 }}
+          />
           <Button onClick={() => create(name.trim())} disabled={!name.trim()} loading={issue.isPending}>
             Create token
           </Button>

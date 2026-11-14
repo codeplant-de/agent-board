@@ -35,12 +35,19 @@ function useActions(id: string) {
 function CommentOnly({ actions, hint }: { actions: ReturnType<typeof useActions>; hint: string }) {
   const [message, setMessage] = useState('');
   const send = () =>
-    message.trim() && actions.reply.mutate({ id: actions.id, message, resume: false }, { onSuccess: () => setMessage('') });
+    message.trim() &&
+    actions.reply.mutate({ id: actions.id, message, resume: false }, { onSuccess: () => setMessage('') });
   return (
     <Stack gap="xs">
       <MarkdownEditor value={message} onChange={setMessage} minRows={2} onSubmit={send} placeholder={hint} />
       <Group justify="flex-end">
-        <Button variant="default" leftSection={<IconMessage size={16} />} onClick={send} disabled={!message.trim()} loading={actions.reply.isPending}>
+        <Button
+          variant="default"
+          leftSection={<IconMessage size={16} />}
+          onClick={send}
+          disabled={!message.trim()}
+          loading={actions.reply.isPending}
+        >
           Comment
         </Button>
       </Group>
@@ -56,7 +63,9 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
   const actions = useActions(task.id);
   const [message, setMessage] = useState('');
   const openQuestion = task.openQuestion ? thread.findLast((n) => n.kind === 'question') : undefined;
-  const startedAt = thread.findLast((n) => n.author === 'system' && n.text.startsWith('agent-board: started'))?.createdAt;
+  const startedAt = thread.findLast(
+    (n) => n.author === 'system' && n.text.startsWith('agent-board: started'),
+  )?.createdAt;
 
   if (task.closed) {
     return (
@@ -65,7 +74,11 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
           <Text size="sm" c="dimmed">
             This task is closed. Workers ignore it.
           </Text>
-          <Button variant="default" leftSection={<IconArchiveOff size={16} />} onClick={() => actions.close.mutate({ id: task.id, closed: false })}>
+          <Button
+            variant="default"
+            leftSection={<IconArchiveOff size={16} />}
+            onClick={() => actions.close.mutate({ id: task.id, closed: false })}
+          >
             Reopen
           </Button>
         </Group>
@@ -84,8 +97,8 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
               {task.lane ? ` in the ${task.lane} lane${task.borrowed ? ' (borrowed)' : ''}` : ''}
               {startedAt ? ` since ${ago(startedAt)}` : ''}
               {' · '}
-              <LivenessText span size="sm" lastActiveAt={task.lastActiveAt} />
-              . It reports back here when it is done or has a question.
+              <LivenessText span size="sm" lastActiveAt={task.lastActiveAt} />. It reports back here when it is done or
+              has a question.
             </Text>
           </Group>
           <CommentOnly actions={actions} hint="Leave a note for later (does not reach the running agent)" />
@@ -100,7 +113,9 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
         key={openQuestion.id}
         questions={openQuestion.questions}
         submitting={actions.answer.isPending}
-        onSubmit={(answers, note) => actions.answer.mutate({ id: task.id, questionNoteId: openQuestion.id, answers, message: note })}
+        onSubmit={(answers, note) =>
+          actions.answer.mutate({ id: task.id, questionNoteId: openQuestion.id, answers, message: note })
+        }
       />
     );
   }
@@ -128,7 +143,9 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
   const confirmRerun = () =>
     modals.openConfirmModal({
       title: 'Re-run from scratch?',
-      children: <Text size="sm">The next run starts a new session and does not see the earlier one, only this thread.</Text>,
+      children: (
+        <Text size="sm">The next run starts a new session and does not see the earlier one, only this thread.</Text>
+      ),
       labels: { confirm: 'Re-run', cancel: 'Cancel' },
       onConfirm: () => actions.rerun.mutate({ id: task.id }),
     });
@@ -141,7 +158,12 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
             <Group justify="space-between">
               <Text size="sm">Nothing runs until you start it.</Text>
               <Group gap="xs">
-                <Button size="xs" color="grape" leftSection={<IconPlayerPlay size={14} />} onClick={() => actions.move.mutate({ id: task.id, status: 'todo' })}>
+                <Button
+                  size="xs"
+                  color="grape"
+                  leftSection={<IconPlayerPlay size={14} />}
+                  onClick={() => actions.move.mutate({ id: task.id, status: 'todo' })}
+                >
                   Start
                 </Button>
                 <Button size="xs" variant="default" onClick={() => actions.close.mutate({ id: task.id, closed: true })}>
@@ -156,11 +178,21 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
           onChange={setMessage}
           minRows={3}
           onSubmit={send}
-          placeholder={task.sessionId ? 'Steer the agent: a follow-up, a correction, a new instruction…' : 'Instructions for the run…'}
+          placeholder={
+            task.sessionId
+              ? 'Steer the agent: a follow-up, a correction, a new instruction…'
+              : 'Instructions for the run…'
+          }
         />
         <Group justify="space-between" wrap="wrap">
           <Group gap="xs">
-            <Button variant="default" leftSection={<IconCheck size={16} />} onClick={() => actions.done.mutate({ id: task.id })} disabled={task.status === 'done'} loading={actions.done.isPending}>
+            <Button
+              variant="default"
+              leftSection={<IconCheck size={16} />}
+              onClick={() => actions.done.mutate({ id: task.id })}
+              disabled={task.status === 'done'}
+              loading={actions.done.isPending}
+            >
               Mark done
             </Button>
             <Menu position="top-start">
@@ -173,10 +205,20 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
                 <Menu.Item leftSection={<IconRefresh size={14} />} onClick={confirmRerun}>
                   Re-run fresh
                 </Menu.Item>
-                <Menu.Item leftSection={<IconMessage size={14} />} disabled={!message.trim()} onClick={() => actions.reply.mutate({ id: task.id, message, resume: false }, { onSuccess: () => setMessage('') })}>
+                <Menu.Item
+                  leftSection={<IconMessage size={14} />}
+                  disabled={!message.trim()}
+                  onClick={() =>
+                    actions.reply.mutate({ id: task.id, message, resume: false }, { onSuccess: () => setMessage('') })
+                  }
+                >
                   Comment without continuing
                 </Menu.Item>
-                <Menu.Item leftSection={<IconArchive size={14} />} color="red" onClick={() => actions.close.mutate({ id: task.id, closed: true })}>
+                <Menu.Item
+                  leftSection={<IconArchive size={14} />}
+                  color="red"
+                  onClick={() => actions.close.mutate({ id: task.id, closed: true })}
+                >
                   Close
                 </Menu.Item>
               </Menu.Dropdown>
@@ -186,7 +228,12 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
             <Text size="xs" c="dimmed" visibleFrom="sm">
               <Kbd size="xs">⌘</Kbd>+<Kbd size="xs">Enter</Kbd>
             </Text>
-            <Button leftSection={<IconPlayerPlay size={16} />} onClick={send} disabled={!message.trim()} loading={actions.reply.isPending}>
+            <Button
+              leftSection={<IconPlayerPlay size={16} />}
+              onClick={send}
+              disabled={!message.trim()}
+              loading={actions.reply.isPending}
+            >
               {task.sessionId ? 'Send & continue' : 'Send & run'}
             </Button>
           </Group>

@@ -51,7 +51,9 @@ export async function appendTranscript(db: Db, taskId: string, machine: string, 
       .update(transcriptRuns)
       .set({
         eventCount: sql`${transcriptRuns.eventCount} + ${inserted.length}`,
-        ...(last ? { lastEventAt: sql`greatest(${transcriptRuns.lastEventAt}, ${new Date(last).toISOString()}::timestamptz)` } : {}),
+        ...(last
+          ? { lastEventAt: sql`greatest(${transcriptRuns.lastEventAt}, ${new Date(last).toISOString()}::timestamptz)` }
+          : {}),
       })
       .where(eq(transcriptRuns.id, batch.runId));
   });
@@ -93,6 +95,9 @@ export async function deleteOldTranscripts(db: Db, now: Date = new Date()): Prom
     .select({ id: tasks.id })
     .from(tasks)
     .where(and(eq(tasks.closed, true), lt(sql`coalesce(${tasks.closedAt}, ${tasks.updatedAt})`, cutoff)));
-  const gone = await db.delete(transcriptRuns).where(inArray(transcriptRuns.taskId, old)).returning({ id: transcriptRuns.id });
+  const gone = await db
+    .delete(transcriptRuns)
+    .where(inArray(transcriptRuns.taskId, old))
+    .returning({ id: transcriptRuns.id });
   return gone.length;
 }
