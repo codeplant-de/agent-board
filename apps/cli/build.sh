@@ -6,11 +6,14 @@ cd "$(dirname "$0")"
 version=$(node -p "require('./package.json').version")
 targets=${*:-linux-x64 linux-arm64 darwin-arm64}
 out=${DIST_DIR:-$PWD/dist}
-rm -rf "$out"
 mkdir -p "$out"
+# Only what a build makes: DIST_DIR may be a directory with other things in it.
+rm -f "$out"/board-* "$out/SHA256SUMS"
 for target in $targets; do
+  # linux-x64 is the baseline build, which runs on x86 CPUs without AVX2.
+  case "$target" in linux-x64) bun_target=bun-linux-x64-baseline ;; *) bun_target="bun-$target" ;; esac
   # A binary must not pick up a .env or bunfig.toml from whatever directory it is run in.
-  bun build src/main.mts --compile --target="bun-$target" \
+  bun build src/main.mts --compile --target="$bun_target" \
     --no-compile-autoload-dotenv --no-compile-autoload-bunfig \
     --define "BOARD_VERSION=\"$version\"" --outfile "$out/board-$target"
 done

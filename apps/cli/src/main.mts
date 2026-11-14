@@ -1,10 +1,11 @@
-import { runMain } from './cli.mts';
+import { keepLoopbackOffProxy, runMain } from './cli.mts';
 import { runBoard } from './commands.mts';
 
-// `board tasks | head` closes the pipe; that is not an error.
+keepLoopbackOffProxy(process.env);
+
+// `board tasks | head` closes the pipe: the rest of the output is dropped and the command ends with its own exit code.
 process.stdout.on('error', (error: NodeJS.ErrnoException) => {
-  if (error.code === 'EPIPE') process.exit(0);
-  throw error;
+  if (error.code !== 'EPIPE' && error.code !== 'ERR_STREAM_DESTROYED') throw error;
 });
 
 const args = process.argv.slice(2);

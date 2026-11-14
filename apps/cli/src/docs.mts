@@ -18,7 +18,8 @@ export function renderCommandsDoc(): string {
   const program = buildProgram({ env: {}, version: 'docs' });
   const help = program.createHelp();
   const groups = new Map<string, Command[]>();
-  for (const command of help.visibleCommands(program)) {
+  // `help` is a command of commander's own; its overview line is in the block above.
+  for (const command of help.visibleCommands(program).filter((candidate) => candidate.name() !== 'help')) {
     const heading = command.helpGroup() || 'Commands:';
     groups.set(heading, [...(groups.get(heading) ?? []), command]);
   }

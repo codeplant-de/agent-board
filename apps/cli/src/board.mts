@@ -33,7 +33,7 @@ export function readNoteFile(path: string, platform: string = process.platform):
   // The check below reads /proc/self/fd; no other system has a way to see where an open descriptor really points.
   if (platform !== 'linux')
     throw new UsageError(
-      `reading a note file needs Linux; on ${platform} give the text as arguments, or - to read it from stdin`,
+      `reading a file needs Linux: on ${platform} "board ask" and "board add" are not available, and "board comment" takes its text as arguments, or - to read it from stdin`,
     );
   let fd: number;
   try {

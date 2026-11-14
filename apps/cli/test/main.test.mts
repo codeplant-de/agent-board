@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { task } from './helpers.mts';
+import { keepLoopbackOffProxy } from '../src/cli.mts';
 
 const BIN = fileURLToPath(new URL('../bin/', import.meta.url));
 
@@ -242,6 +243,87 @@ test('init reads the token from a pipe with --token-file /dev/stdin, and writes 
     assert.equal(readFileSync(join(dir, 'env'), 'utf8'), 'AGENT_BOARD_TOKEN=abm_piped\n');
     assert.equal(statSync(join(dir, 'env')).mode & 0o777, 0o600);
     assert.ok(!result.stdout.includes('abm_piped'));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('loopback goes on NO_PROXY, after what is there, once', () => {
+  const env: Record<string, string | undefined> = { NO_PROXY: 'internal.example, localhost' };
+  keepLoopbackOffProxy(env);
+  keepLoopbackOffProxy(env);
+  assert.equal(env['NO_PROXY'], 'internal.example,localhost,127.0.0.1,[::1],::1');
+  assert.equal(env['no_proxy'], 'localhost,127.0.0.1,[::1],::1');
+});
+
+test('a board on loopback is never sent through a proxy, even when node is told to use one', async () => {
+  const dir = emptyConfigDir();
+  const proxied: string[] = [];
+  const proxy = createServer((request, response) => {
+    proxied.push(`${request.method} ${request.url} ${request.headers.authorization ?? ''}`);
+    response.writeHead(502).end();
+  });
+  const board = createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      const command = request.url?.split('/').pop();
+      response.end(
+        JSON.stringify({
+          result: command === 'version' ? { contract: 5 } : [task({ id: 'Ab3dEf9x', title: 'Fix the thing' })],
+        }),
+      );
+    });
+  });
+  await Promise.all(
+    [proxy, board].map((server) => new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))),
+  );
+  try {
+    writeFileSync(
+      join(dir, 'web.json'),
+      JSON.stringify({ url: `http://127.0.0.1:${(board.address() as AddressInfo).port}` }),
+    );
+    writeFileSync(join(dir, 'env'), 'AGENT_BOARD_TOKEN=abm_secret\n', { mode: 0o600 });
+    const proxyUrl = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+    const result = await run('board', ['tasks'], dir, {
+      NODE_USE_ENV_PROXY: '1',
+      HTTP_PROXY: proxyUrl,
+      http_proxy: proxyUrl,
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Fix the thing/);
+    assert.deepEqual(proxied, []);
+  } finally {
+    proxy.close();
+    board.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+// The reader of a pipe that closes at once: the output is dropped, and the exit code is still the command's own.
+function throughClosedPipe(args: string, dir: string): Promise<{ code: string; stderr: string }> {
+  return new Promise((resolve) => {
+    execFile(
+      'bash',
+      ['-c', `"$BOARD" ${args} 2>"$ERR" | head -c0; echo "\${PIPESTATUS[0]}"`],
+      {
+        env: {
+          ...process.env,
+          AGENT_BOARD_CONFIG_DIR: dir,
+          AGENT_BOARD_TASK: '',
+          BOARD: join(BIN, 'board'),
+          ERR: join(dir, 'stderr'),
+        },
+      },
+      (_error, stdout) => resolve({ code: stdout.trim(), stderr: readFileSync(join(dir, 'stderr'), 'utf8') }),
+    );
+  });
+}
+
+test('a closed pipe drops the output and keeps the exit code: doctor | head keeps 1, help | head stays 0', async () => {
+  const dir = emptyConfigDir();
+  try {
+    assert.deepEqual(await throughClosedPipe('doctor', dir), { code: '1', stderr: '' });
+    assert.deepEqual(await throughClosedPipe('help', dir), { code: '0', stderr: '' });
   } finally {
     rmSync(dir, { recursive: true });
   }

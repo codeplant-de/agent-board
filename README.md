@@ -138,7 +138,7 @@ Claude Code itself (2.1.323) also restores a session's worktree when it is resum
 
 ## Install
 
-The `board` command and the worker (`dispatch`, `intake`, `worker`) are one program. A released build is a single binary per platform (Linux x64 and arm64, macOS arm64) and needs no Node; a worker machine needs Linux with systemd, `flock`, `systemd-run`, `gh` (logged in) and `claude` (logged in). On macOS only the `board` commands run, not the worker.
+The `board` command and the worker (`dispatch`, `intake`, `worker`) are one program. A released build is a single binary per platform (Linux x64 and arm64, macOS arm64) and needs no Node; a worker machine needs Linux with systemd, `flock`, `systemd-run`, `gh` (logged in) and `claude` (logged in). On macOS only the `board` commands run, not the worker, and `board ask` and `board add` are not available (they read their file through `/proc`); `board comment` takes its text as arguments or `-` for stdin.
 
 ### From a release
 
@@ -151,11 +151,13 @@ board doctor
 
 `install.sh` needs `gh`, logged in (the repository is private). It downloads the newest `cli-v*` release for this platform, checks it against `SHA256SUMS` and installs it as `~/.local/bin/board` (`BOARD_INSTALL_DIR` chooses another directory). `board init` asks for the board's URL, the token (create one for this machine on the board's **Settings** page; it is not shown) and the machine name, and writes `~/.config/agent-board/web.json`, `env` (mode 600; a file with any other mode is refused) and, if it is missing, `config.json` from `apps/cli/config.example.json`; edit `repos` there to this machine's checkouts. For a script: `board init --url https://board.codeplant.de --token-file <file> --machine <name>`. A file that exists is kept unless `--force`, which copies it to `<name>.bak-<timestamp>` first. `board setup` writes the dispatch and intake services and timers into `~/.config/systemd/user` as copies and reloads systemd; `--enable` also enables and starts the timers, and `--print` only shows the units. `board doctor` checks the whole machine: Node (checkout only), config, token, server and contract version, the worker tools and the units.
 
+The checksum catches a broken or partial download. It is not a signature: anyone who can write releases of this repository can replace the binary and `SHA256SUMS` together, so the trust is in who has write access to the repository.
+
 The units run the installed binary under `flock`: `<board> internal dispatch|intake`. Run `board setup` again after moving the binary. A board-only machine needs just `board init`.
 
 ### From a checkout (development)
 
-Needs Node 24+, pnpm, and for a worker the tools above. `pnpm install` in the repo (the CLI depends on `commander` and `@clack/prompts`, and imports `@agent-board/shared` through the workspace link, so every machine needs this install, again after each pull). Then `apps/cli/install.sh`: it links `board` into `~/.local/bin` and `apps/cli/bin/.node` to a Node 24+ binary (`NODE=` chooses one; it is a real binary, not a mise shim, which does not resolve a version outside a project directory), and runs `board setup`. Continue with `board init` and `board doctor` as above. The units then run `<node> <checkout>/apps/cli/src/main.mts internal dispatch|intake`, with the Node that ran `board setup`; run `install.sh` or `board setup` again after moving the checkout or upgrading Node (`board doctor` flags a unit whose Node or checkout has gone).
+Needs Node 24+, pnpm, and for a worker the tools above. `pnpm install` in the repo (the CLI depends on `commander` and `@clack/prompts`, and imports `@agent-board/shared` through the workspace link, so every machine needs this install, again after each pull). Then `apps/cli/install.sh`: it links `board` into `~/.local/bin` and `apps/cli/bin/.node` to a Node 24+ binary (`NODE=` chooses one; it is a real binary, not a mise shim, which does not resolve a version outside a project directory), and runs `board setup`. Continue with `board init` and `board doctor` as above, then enable the timers with `board setup --enable` (or run `apps/cli/install.sh --enable` instead of the plain `install.sh`). The units then run `<node> <checkout>/apps/cli/src/main.mts internal dispatch|intake`, with the Node that ran `board setup`; run `install.sh` or `board setup` again after moving the checkout or upgrading Node (`board doctor` flags a unit whose Node or checkout has gone).
 
 `apps/cli/build.sh` compiles the binaries (needs Bun, pinned in `mise.toml`) into `apps/cli/dist` with a `SHA256SUMS`; `pnpm --filter @agent-board/cli test:binary` builds one for this host and runs it the way a worker machine would. A release is a tag `cli-v<version>` matching `apps/cli/package.json`; `.github/workflows/release-cli.yml` builds, tests and publishes it.
 
@@ -388,6 +390,8 @@ A missing allowed tool in an intake review shows up as a failed run: the log say
 
 `<task>` is a task id; outside a run it can also be a link to the task on the board or the start of an id (3 or more characters, unique). `--json` prints tasks, threads and schedules as JSON for scripts. `--dry-run` reads everything and prints every write as `DRY ...` instead of doing it. A usage error exits 2, any other failure 1. `dispatch` and `intake` are `board internal dispatch|intake`, started by the timers; the wrappers `apps/cli/bin/dispatch` and `apps/cli/bin/intake` of a checkout take their own lock (`$XDG_RUNTIME_DIR/agent-board-{dispatch,intake}.lock`, the one the units use), so a run by hand cannot overlap a timer run. When the lock is held they exit 75 without output.
 
+A file given with `--file` (`comment`, `ask`, `add`) is read only from a regular file in `/tmp`, without following a link, and only on Linux.
+
 The reference below is generated from the program (`pnpm --filter @agent-board/cli docs`), as `board help <command>` shows it.
 
 <!-- commands:start -->
@@ -464,8 +468,8 @@ Print a task and its thread (input, questions, answers and notes) as markdown. A
 resumed run reads this first. With --json, print the task and its notes as JSON.
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters, case-insensitive; it must be unique). Inside a board run only
-the full id is accepted.
+id (3+ characters; an exact-case match wins, else case does not matter; it must
+be unique). Inside a board run only the full id is accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
@@ -492,8 +496,8 @@ or not, and is never read as a flag.
 from a regular file in /tmp, for long text.
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters, case-insensitive; it must be unique). Inside a board run only
-the full id is accepted.
+id (3+ characters; an exact-case match wins, else case does not matter; it must
+be unique). Inside a board run only the full id is accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
@@ -520,8 +524,8 @@ Move a task to the bottom of a status: backlog, todo, running, needs-me, done.
 "Backlog", "Todo", "Running", "Needs me" and "Done" work too.
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters, case-insensitive; it must be unique). Inside a board run only
-the full id is accepted.
+id (3+ characters; an exact-case match wins, else case does not matter; it must
+be unique). Inside a board run only the full id is accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
@@ -546,8 +550,8 @@ Send a Slack message with the task link. The text is every word after the task;
 `-` reads it from stdin.
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters, case-insensitive; it must be unique). Inside a board run only
-the full id is accepted.
+id (3+ characters; an exact-case match wins, else case does not matter; it must
+be unique). Inside a board run only the full id is accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
@@ -574,8 +578,8 @@ The questions are JSON in a regular file in /tmp: {"questions": [{"header",
 "recommended"?}]}]}
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters, case-insensitive; it must be unique). Inside a board run only
-the full id is accepted.
+id (3+ characters; an exact-case match wins, else case does not matter; it must
+be unique). Inside a board run only the full id is accepted.
 
 Arguments:
   task           the task: its id, a board task link or the start of its id
@@ -599,8 +603,8 @@ user starts it, and runs in this directory on this machine. With --json, print
 {"id", "url"} on stdout.
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters, case-insensitive; it must be unique). Inside a board run only
-the full id is accepted.
+id (3+ characters; an exact-case match wins, else case does not matter; it must
+be unique). Inside a board run only the full id is accepted.
 
 Options:
   --title <title>        the task's title
@@ -710,8 +714,8 @@ Delay a task in Todo until then, or with --now make it due at once. Give exactly
 one of --in, --at and --now.
 
 <task> can be the full id, a link to the task on this board, or the start of the
-id (3+ characters, case-insensitive; it must be unique). Inside a board run only
-the full id is accepted.
+id (3+ characters; an exact-case match wins, else case does not matter; it must
+be unique). Inside a board run only the full id is accepted.
 
 Arguments:
   task             the task: its id, a board task link or the start of its id
@@ -770,11 +774,11 @@ Check this machine, read-only, one line per check: ✓ passes, ✗ fails (with a
 fix), ! is a warning. Exit 1 if any check fails; warnings alone exit 0. The
 token is never printed.
 
-Checks: Node 24+, the config directory, web.json, env (mode 600 or 400, token),
-the board (reachable, token accepted, contract version), config.json, and for a
-worker machine claude, gh, flock, systemd-run, systemctl and the installed units
-with their timers. The worker checks only warn on a machine with no unit
-installed.
+Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600
+or 400, token), the board (reachable, token accepted, contract version),
+config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl
+and the installed units with their timers. The worker checks only warn on a
+machine with no unit installed.
 
 Options:
   --json      print JSON on stdout instead of text
@@ -793,20 +797,21 @@ Usage: board setup [options]
 Install this machine as a worker: write the dispatch and intake services and
 timers into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies,
 run `systemctl --user daemon-reload` and print the line that enables the timers.
-Run it again after moving the checkout or upgrading Node. It needs Linux with
-systemd and flock.
+Run it again after moving the binary or the checkout, or upgrading Node. It
+needs Linux with systemd and flock.
 
-The services run this CLI with the node that ran `board setup`. --print shows
-the units and changes nothing; --enable also enables and starts the timers. When
-an installed unit differs from what it writes, the differing lines are shown.
-When this checkout is not the one the installed ~/.local/bin/board runs from (a
-worktree, a scratch copy), it refuses unless --force, so it cannot take over the
-live timers. Not available inside a board run.
+The services run this CLI the way `board setup` was started: the binary, or the
+checkout with its Node. --print shows the units and changes nothing; --enable
+also enables and starts the timers. When an installed unit differs from what it
+writes, the differing lines are shown. It refuses unless --force when this
+checkout is not the one the installed ~/.local/bin/board runs from (a worktree,
+a scratch copy), or when a binary runs from the temp directory, so it cannot
+take over the live timers. Not available inside a board run.
 
 Options:
   --enable    also enable and start the timers
-  --force     install although this checkout is not the one the installed board
-              runs from
+  --force     install although this checkout is not the installed one, or the
+              binary runs from the temp directory
   --print     print the units and change nothing
   -h, --help  display help for command
 
@@ -861,14 +866,6 @@ Options:
 Examples:
   board completion bash
   eval "$(board completion zsh)"
-```
-
-#### board help
-
-```
-Usage: help [command]
-
-show the help of a command
 ```
 
 <!-- commands:end -->

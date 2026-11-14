@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   lstatSync,
   mkdirSync,
+  realpathSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -284,4 +285,10 @@ test('the tree check compares this checkout with where the installed board resol
   } finally {
     rmSync(dir, { recursive: true });
   }
+});
+
+test('a binary run from the temp directory is not installed without --force; one elsewhere is', () => {
+  const inTemp = join(realpathSync(tmpdir()), 'download', 'board');
+  assert.match(treeProblem({}, { compiled: true, execPath: inTemp }) ?? '', /runs from .*in the temp directory/);
+  assert.equal(treeProblem({}, { compiled: true, execPath: '/home/me/.local/bin/board' }), undefined);
 });

@@ -32,7 +32,7 @@ import { formatResult, hasFailure, realDoctorDeps, runChecks } from './doctor.mt
 import type { CheckResult, DoctorDeps } from './doctor.mts';
 import { clackPrompts, init } from './init.mts';
 import type { InitFlags, Prompts } from './init.mts';
-import { isCompiledBinary } from './self.mts';
+import { EXEC_PATH, isCompiledBinary } from './self.mts';
 import { realGh, selfUpdate } from './self-update.mts';
 import type { SelfUpdateFlags } from './self-update.mts';
 import { SystemError } from './system.mts';
@@ -80,7 +80,7 @@ const SETUP = 'Setup:';
 const STATUS_LIST = STATUSES.join(', ');
 const TASK_ARGUMENT = 'the task: its id, a board task link or the start of its id';
 const ID_NOTE =
-  '<task> can be the full id, a link to the task on this board, or the start of the id (3+ characters, case-insensitive; it must be unique). Inside a board run only the full id is accepted.';
+  '<task> can be the full id, a link to the task on this board, or the start of the id (3+ characters; an exact-case match wins, else case does not matter; it must be unique). Inside a board run only the full id is accepted.';
 
 // `comment <task> [text...]` in the overview, without commander's `[options]` and without the long usage of `comment`.
 function overviewTerm(command: Command): string {
@@ -522,7 +522,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       .description(
         paragraphs(
           'Check this machine, read-only, one line per check: ✓ passes, ✗ fails (with a fix), ! is a warning. Exit 1 if any check fails; warnings alone exit 0. The token is never printed.',
-          'Checks: Node 24+, the config directory, web.json, env (mode 600 or 400, token), the board (reachable, token accepted, contract version), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers. The worker checks only warn on a machine with no unit installed.',
+          'Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600 or 400, token), the board (reachable, token accepted, contract version), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers. The worker checks only warn on a machine with no unit installed.',
         ),
       )
       .addHelpText('after', examples('board doctor', 'board doctor --json')),
@@ -536,12 +536,15 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .summary('install the dispatch and intake timers as systemd user units')
     .description(
       paragraphs(
-        'Install this machine as a worker: write the dispatch and intake services and timers into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies, run `systemctl --user daemon-reload` and print the line that enables the timers. Run it again after moving the checkout or upgrading Node. It needs Linux with systemd and flock.',
-        'The services run this CLI with the node that ran `board setup`. --print shows the units and changes nothing; --enable also enables and starts the timers. When an installed unit differs from what it writes, the differing lines are shown. When this checkout is not the one the installed ~/.local/bin/board runs from (a worktree, a scratch copy), it refuses unless --force, so it cannot take over the live timers. Not available inside a board run.',
+        'Install this machine as a worker: write the dispatch and intake services and timers into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies, run `systemctl --user daemon-reload` and print the line that enables the timers. Run it again after moving the binary or the checkout, or upgrading Node. It needs Linux with systemd and flock.',
+        'The services run this CLI the way `board setup` was started: the binary, or the checkout with its Node. --print shows the units and changes nothing; --enable also enables and starts the timers. When an installed unit differs from what it writes, the differing lines are shown. It refuses unless --force when this checkout is not the one the installed ~/.local/bin/board runs from (a worktree, a scratch copy), or when a binary runs from the temp directory, so it cannot take over the live timers. Not available inside a board run.',
       ),
     )
     .option('--enable', 'also enable and start the timers')
-    .option('--force', 'install although this checkout is not the one the installed board runs from')
+    .option(
+      '--force',
+      'install although this checkout is not the installed one, or the binary runs from the temp directory',
+    )
     .option('--print', 'print the units and change nothing')
     .addHelpText('after', examples('board setup', 'board setup --print', 'board setup --enable'))
     .action(async (flags: SetupFlags) => {
@@ -567,7 +570,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         {
           compiled: isCompiledBinary(),
           version: releaseVersion(),
-          execPath: process.execPath,
+          execPath: EXEC_PATH,
           platform: options.platform ?? process.platform,
           arch: process.arch,
           gh: options.gh ?? realGh(env),
