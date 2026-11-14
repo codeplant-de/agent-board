@@ -5,7 +5,7 @@ import type { ServerIdentity, WebConfig } from './backend.mts';
 import { ConfigError, isSafeMode, parseConfig } from './config.mts';
 import { decodeDataKey } from '@agent-board/shared';
 import { parseEnv } from './env-file.mts';
-import { parseExecStart, UNIT_NAMES, UNIT_PATH, whichOnPath } from './setup.mts';
+import { LISTEN_SERVICE, parseExecStart, UNIT_NAMES, UNIT_PATH, whichOnPath } from './setup.mts';
 
 export type Level = 'ok' | 'fail' | 'warn';
 
@@ -294,12 +294,35 @@ const checkConfig: Check = ({ configDir, readText }) => {
   }
 };
 
-const TOOLS = ['claude', 'gh', 'flock', 'systemd-run', 'systemctl'];
+// Absolute paths in a unit's ExecStart that are not systemd specifiers must still exist: a moved checkout or a removed Node breaks the unit quietly.
+function checkCommand(deps: DoctorDeps, service: string): CheckResult[] {
+  const text = deps.readText(join(deps.unitDir, service));
+  const args = text === undefined ? undefined : parseExecStart(text);
+  if (args === undefined) return [];
+  // %h is the home directory; what is left with a % (the lock in %t) is not a program.
+  const paths = args
+    .map((arg) => arg.replaceAll('%h', () => deps.home))
+    .filter((arg) => arg.startsWith('/') && !arg.includes('%'));
+  const missing = paths.filter((path) => !deps.exists(path));
+  return [
+    missing.length === 0
+      ? ok(`${service} command`, 'its programs exist')
+      : problem(
+          `${service} command`,
+          'fail',
+          `${missing.join(', ')} no longer exists`,
+          'run "board setup" again from the installed CLI',
+        ),
+  ];
+}
+
+const TOOLS = ['claude', 'gh', 'flock', 'timeout', 'systemd-run', 'systemctl'];
 
 function installedUnits(deps: DoctorDeps): string[] {
-  return UNIT_NAMES.flatMap((name) => [`agent-board-${name}.service`, `agent-board-${name}.timer`]).filter((file) =>
-    deps.exists(join(deps.unitDir, file)),
-  );
+  return [
+    ...UNIT_NAMES.flatMap((name) => [`agent-board-${name}.service`, `agent-board-${name}.timer`]),
+    LISTEN_SERVICE,
+  ].filter((file) => deps.exists(join(deps.unitDir, file)));
 }
 
 // A worker machine's tools and units: a warning on a machine that has installed no unit, a failure on one that has.
@@ -343,26 +366,7 @@ const checkWorker: Check = async (deps) => {
         results.push(problem(`unit ${file}`, 'fail', `${join(deps.unitDir, file)} is missing`, 'run "board setup"'));
       else results.push(ok(`unit ${file}`, 'installed'));
     }
-    const text = deps.readText(join(deps.unitDir, service));
-    const args = text === undefined ? undefined : parseExecStart(text);
-    if (args !== undefined) {
-      // Absolute paths that are not systemd specifiers must still exist: a moved checkout or a removed Node breaks the unit quietly.
-      // %h is the home directory; what is left with a % (the lock in %t) is not a program.
-      const paths = args
-        .map((arg) => arg.replaceAll('%h', () => deps.home))
-        .filter((arg) => arg.startsWith('/') && !arg.includes('%'));
-      const missing = paths.filter((path) => !deps.exists(path));
-      results.push(
-        missing.length === 0
-          ? ok(`${service} command`, 'its programs exist')
-          : problem(
-              `${service} command`,
-              'fail',
-              `${missing.join(', ')} no longer exists`,
-              'run "board setup" again from the installed CLI',
-            ),
-      );
-    }
+    results.push(...checkCommand(deps, service));
     if (installed.includes(timer)) {
       const enabled = (await deps.systemctl(['--user', 'is-enabled', timer])) === 0;
       const active = (await deps.systemctl(['--user', 'is-active', timer])) === 0;
@@ -378,8 +382,36 @@ const checkWorker: Check = async (deps) => {
       );
     }
   }
+  results.push(...(await checkListener(deps, installed)));
   return results;
 };
+
+// The listener is an addition to the timers, which do the same work every 2 minutes: a missing or stopped one only warns.
+async function checkListener(deps: DoctorDeps, installed: string[]): Promise<CheckResult[]> {
+  if (!installed.includes(LISTEN_SERVICE))
+    return [
+      problem(
+        `unit ${LISTEN_SERVICE}`,
+        'warn',
+        'not installed: new tasks wait for the next timer tick',
+        'run "board setup" to install it',
+      ),
+    ];
+  const enabled = (await deps.systemctl(['--user', 'is-enabled', LISTEN_SERVICE])) === 0;
+  const active = (await deps.systemctl(['--user', 'is-active', LISTEN_SERVICE])) === 0;
+  return [
+    ok(`unit ${LISTEN_SERVICE}`, 'installed'),
+    ...checkCommand(deps, LISTEN_SERVICE),
+    enabled && active
+      ? ok(`${LISTEN_SERVICE} state`, 'enabled and active')
+      : problem(
+          `${LISTEN_SERVICE} state`,
+          'warn',
+          `${enabled ? 'enabled' : 'not enabled'}, ${active ? 'active' : 'not active'}`,
+          `systemctl --user enable --now ${LISTEN_SERVICE}`,
+        ),
+  ];
+}
 
 const CHECKS: Check[] = [checkNode, checkConfigDir, checkWeb, checkEnv, checkServer, checkConfig, checkWorker];
 

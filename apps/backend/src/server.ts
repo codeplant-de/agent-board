@@ -2,7 +2,8 @@ import { fastifyTRPCPlugin, type FastifyTRPCPluginOptions } from '@trpc/server/a
 import Fastify, { type FastifyRequest } from 'fastify';
 import type { Config } from './config';
 import type { Db } from './db/client';
-import { registerMachineApi } from './machine-api';
+import { registerMachineApi, type MachineApiOptions } from './machine-api';
+import { Changes, CHANGES_DEBOUNCE_MS } from './services/changes';
 import { AppError, type AppErrorCode } from './services/errors';
 import { appRouter, type AppRouter } from './trpc/router';
 
@@ -38,7 +39,15 @@ const STATUS: Record<AppErrorCode, number> = {
   CONFLICT: 409,
 };
 
-export async function buildServer(config: Config, root: Db) {
+export interface ServerOptions extends Partial<MachineApiOptions> {
+  /** How long writes of one owner are held back to give one event; tests shorten it. */
+  debounceMs?: number;
+  /** Tests hand in their own to look at it. */
+  changes?: Changes;
+}
+
+export async function buildServer(config: Config, root: Db, options: ServerOptions = {}) {
+  const changes = options.changes ?? new Changes(options.debounceMs ?? CHANGES_DEBOUNCE_MS);
   const app = Fastify({
     logger: config.nodeEnv === 'test' ? false : { level: 'info' },
     // A transcript batch can carry a few large tool results.
@@ -47,6 +56,7 @@ export async function buildServer(config: Config, root: Db) {
   });
 
   app.decorateRequest('username', null);
+  app.addHook('onClose', async () => changes.close());
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof AppError) return reply.status(STATUS[err.code]).send({ error: err.message });
     app.log.error(err);
@@ -63,13 +73,13 @@ export async function buildServer(config: Config, root: Db) {
     if (!req.username) return reply.status(403).send({ error: 'not allowed on this board' });
   });
 
-  registerMachineApi(app, root, config);
+  registerMachineApi(app, root, config, changes, { pingMs: options.pingMs ?? 25_000 });
 
   await app.register(fastifyTRPCPlugin, {
     prefix: '/trpc',
     trpcOptions: {
       router: appRouter,
-      createContext: ({ req }) => ({ root, config, username: req.username! }),
+      createContext: ({ req }) => ({ root, config, changes, username: req.username! }),
       onError: ({ error, path }) => {
         if (error.code === 'INTERNAL_SERVER_ERROR') app.log.error({ err: error, path }, 'tRPC error');
       },

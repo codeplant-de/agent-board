@@ -46,6 +46,7 @@ import { runHook } from './hook.mts';
 import { resolveScheduleId, resolveTaskId } from './ids.mts';
 import { plainLine } from './terminal.mts';
 import { intakeMain } from './intake.mts';
+import { listenMain } from './listen.mts';
 import { addScheduleOptions } from './schedule.mts';
 import type { ScheduleFlags } from './schedule.mts';
 import { cliVersion } from './version.mts';
@@ -497,7 +498,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     ...(options.which ? { which: options.which } : {}),
     ...(options.platform ? { platform: options.platform } : {}),
     ...(options.runSystem ? { run: options.runSystem } : {}),
-    timerEnabled: async (timer) => (await systemctlCode(['--user', 'is-enabled', timer])) === 0,
+    unitEnabled: async (unit) => (await systemctlCode(['--user', 'is-enabled', unit])) === 0,
   });
   const doctorDeps = (): DoctorDeps => {
     const { configDir } = getPaths(env);
@@ -573,7 +574,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       .description(
         paragraphs(
           'Check this machine, read-only, one line per check: ✓ passes, ✗ fails (with a fix), ! is a warning. Exit 1 if any check fails; warnings alone exit 0. The token is never printed.',
-          'Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600 or 400, token, data key), the board (reachable, token accepted, contract version, and whether it has a data key and this machine holds the same one), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers. The worker checks only warn on a machine with no unit installed.',
+          'Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600 or 400, token, data key), the board (reachable, token accepted, contract version, and whether it has a data key and this machine holds the same one), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers and the listener. The worker checks only warn on a machine with no unit installed.',
         ),
       )
       .addHelpText('after', examples('board doctor', 'board doctor --json')),
@@ -584,14 +585,14 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   program
     .command('setup')
     .helpGroup(SETUP)
-    .summary('install the dispatch and intake timers as systemd user units')
+    .summary('install the dispatch and intake timers and the listener as systemd user units')
     .description(
       paragraphs(
-        'Install this machine as a worker: write the dispatch and intake services and timers into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies, run `systemctl --user daemon-reload` and print the line that enables the timers. Run it again after moving the binary or the checkout, or upgrading Node. It needs Linux with systemd and flock.',
-        'The services run this CLI the way `board setup` was started: the binary, or the checkout with its Node. --print shows the units and changes nothing; --enable also enables and starts the timers. When an installed unit differs from what it writes, the differing lines are shown. It refuses unless --force when this checkout is not the one the installed ~/.local/bin/board runs from (a worktree, a scratch copy), or when a binary runs from the temp directory, so it cannot take over the live timers. Not available inside a board run.',
+        'Install this machine as a worker: write the dispatch and intake services and timers and the listener service into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies, run `systemctl --user daemon-reload` and print the line that enables them. The listener holds a stream to the board and starts a dispatch tick within a second of a change; the timers stay as the fallback. Run it again after moving the binary or the checkout, or upgrading Node. It needs Linux with systemd and flock.',
+        'The services run this CLI the way `board setup` was started: the binary, or the checkout with its Node. --print shows the units and changes nothing; --enable also enables and starts the timers and the listener. When an installed unit differs from what it writes, the differing lines are shown. It refuses unless --force when this checkout is not the one the installed ~/.local/bin/board runs from (a worktree, a scratch copy), or when a binary runs from the temp directory, so it cannot take over the live timers. Not available inside a board run.',
       ),
     )
-    .option('--enable', 'also enable and start the timers')
+    .option('--enable', 'also enable and start the timers and the listener')
     .option(
       '--force',
       'install although this checkout is not the installed one, or the binary runs from the temp directory',
@@ -676,7 +677,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .command('internal', { hidden: true })
     .description('What the dispatcher, the timers and a run call; not for typing')
     .action(() => {
-      throw new UsageError('internal needs dispatch, intake, worker or hook');
+      throw new UsageError('internal needs dispatch, intake, listen, worker or hook');
     });
   const refuseInternalInRun = (): void => {
     notInRun('board internal is not available inside a board run');
@@ -694,6 +695,13 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       return intakeMain({ dryRun: contextOf(command).dryRun });
     },
   );
+  internal
+    .command('listen')
+    .description('Run a dispatch tick when the board says tasks changed')
+    .action(() => {
+      refuseInternalInRun();
+      return listenMain();
+    });
   internal
     .command('worker')
     .description('Run one task')

@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
+import { Changes } from '../services/changes';
 import { AppError } from '../services/errors';
 import { testAppDatabaseUrl, testDatabaseUrl } from '../test/global-setup';
 import { SEALED, testConfig, useTestDb } from '../test/helpers';
@@ -80,7 +81,7 @@ describe('request scoping', () => {
       ctx.db.insert(tasks).values({ id: 'committed', title: SEALED, input: SEALED, position: 0 }),
     ),
   });
-  const call = () => probe.createCaller({ root: db, config: testConfig, username: 'jascha' });
+  const call = () => probe.createCaller({ root: db, config: testConfig, changes: new Changes(), username: 'jascha' });
   const ids = async () => (await admin.select({ id: tasks.id }).from(tasks)).map(({ id }) => id);
 
   it('rolls back what a failed procedure wrote, and keeps the mapped error', async () => {
@@ -96,7 +97,7 @@ describe('request scoping', () => {
 
   it('provisions a user only when the request commits', async () => {
     const users = async () => (await admin.select().from(appUsers)).map(({ username }) => username);
-    const carol = probe.createCaller({ root: db, config: testConfig, username: 'carol' });
+    const carol = probe.createCaller({ root: db, config: testConfig, changes: new Changes(), username: 'carol' });
     await expect(carol.writeThenFail()).rejects.toMatchObject({ code: 'CONFLICT' });
     expect(await users()).toEqual([]);
     await carol.owner();
