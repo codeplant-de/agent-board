@@ -1,3 +1,11 @@
 node_modules/
+dist/
+coverage/
 *.log
-bin/.node
+*.tsbuildinfo
+.env
+.env.local
+.idea/
+apps/cli/bin/.node
+apps/frontend/.vite/
+.playwright-mcp/

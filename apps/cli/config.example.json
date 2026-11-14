@@ -1,0 +1,127 @@
+{
+  "backend": {
+    "command": [
+      "~/workspace/agent-board/apps/cli/bin/web-backend"
+    ]
+  },
+  "machine": "laptop",
+  "lanes": {
+    "reviews": {
+      "skills": [
+        "review-pr"
+      ],
+      "slots": 2,
+      "cwd": "~/workspace/cosuno/cosuno"
+    },
+    "general": {
+      "skills": [
+        "*"
+      ],
+      "slots": 3
+    }
+  },
+  "defaultCwd": "~",
+  "pauseAfterMinutes": 5,
+  "inactivityMinutes": 15,
+  "maxRunHours": 6,
+  "slackWebhookFile": "~/.config/watch-review-requests/slack-webhook",
+  "repos": {
+    "cosuno/cosuno": "~/workspace/cosuno/cosuno"
+  },
+  "intake": {
+    "prompt": "/review-pr {url} --auto",
+    "priority": "normal",
+    "allowedTools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Skill",
+      "Agent",
+      "Edit(//tmp/pr-*)",
+      "Bash(board *)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh path *)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh status *)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh read *)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh write *)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh payload * /tmp/pr-*)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh drop *)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh staged *)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh draft *)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh brief *)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh reconcile *)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh corrections * /tmp/pr-*)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh dedup *)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh forget *)",
+      "Bash({pr-review}/skills/review-pr/review-notes.sh auto-result *)",
+      "Bash({pr-review}/skills/draft-review-reference/draft-review.sh validate *)",
+      "Bash({pr-review}/skills/draft-review-reference/draft-review.sh lint *)",
+      "Bash({pr-review}/skills/draft-review-reference/draft-review.sh append *)",
+      "Bash({pr-review}/skills/draft-review-reference/draft-review.sh edit *)",
+      "Bash({pr-review}/skills/draft-review-reference/draft-review.sh remove *)",
+      "Bash({pr-review}/skills/github-reference/pr-comments.sh *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr diff *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh search *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git diff *)",
+      "Bash(git cat-file *)",
+      "Bash(git ls-tree *)",
+      "Bash(git merge-base *)",
+      "Bash(git rev-parse *)",
+      "Bash(git fetch origin *)",
+      "mcp__shortcut__get_story",
+      "AskUserQuestion",
+      "Bash({engineering}/skills/circleci-reference/cci.sh *)",
+      "Bash(bin/replica-psql *)",
+      "mcp__shortcut__get_epic",
+      "mcp__shortcut__list_story_comments"
+    ],
+    "disallowedTools": [
+      "Bash(gh api *)",
+      "Bash(gh pr review *)",
+      "Bash(gh pr comment *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh pr close *)",
+      "Bash(gh pr edit *)",
+      "Bash(gh pr ready *)",
+      "Bash(git push *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git switch *)",
+      "Bash(git worktree *)",
+      "Bash(git log *--output*)",
+      "Bash(git show *--output*)",
+      "Bash(git diff *--output*)",
+      "Bash(git diff *--no-index*)",
+      "Bash(git fetch *:**)",
+      "Bash(git fetch *--up*)",
+      "Bash({pr-review}/skills/draft-review-reference/draft-review.sh create *)",
+      "Bash({pr-review}/skills/draft-review-reference/draft-review.sh replace *)",
+      "Bash({pr-review}/skills/draft-review-reference/draft-review.sh delete *)",
+      "Read(~/.config/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.kube/**)",
+      "Read(~/.docker/**)",
+      "Read(~/.netrc)",
+      "Read(~/.git-credentials)",
+      "Read(~/.npmrc)",
+      "Read(~/.claude/.credentials.json)",
+      "Read(~/.local/share/keyrings/**)",
+      "Read(**/.env*)",
+      "Read(//proc/**)"
+    ],
+    "env": [
+      "CIRCLECI_TOKEN",
+      "SHORTCUT_API_TOKEN",
+      "COSUNO_PROD_REPLICA_ENDPOINT",
+      "COSUNO_STAGING_REPLICA_ENDPOINT"
+    ],
+    "mcpServers": [
+      "shortcut"
+    ]
+  }
+}
