@@ -5,11 +5,12 @@ import {
   logLine,
   MAX_BATCH_EVENTS,
   MAX_OUTPUT_CHARS,
-  parseTranscriptBatch,
+  parseWireTranscriptBatch,
   StreamCondenser,
   toolSummary,
   TranscriptError,
 } from '../src/transcript.mts';
+import { deriveKeys, generateDataKey, seal } from '../src/crypto.mts';
 
 // A real `claude -p --output-format stream-json --verbose` run (Claude Code 2.1.325): thinking, two Bash calls (one
 // failing), a subagent with its own Bash call, and the final result.
@@ -85,44 +86,67 @@ test('tool summaries name what a person looks for', () => {
   assert.equal(toolSummary('Skill', { skill: 'review-pr', args: '17741 --auto' }), 'review-pr 17741 --auto');
 });
 
+const keys = await deriveKeys(generateDataKey(), 'alice');
+const DATA = await seal(keys, 'tr.data', 'run:0', '{"kind":"note","text":"x"}');
+const OUTPUT = await seal(keys, 'tr.output', 'run:1', 'out');
+
+const note = { seq: 0, at: at.toISOString(), parent: null, kind: 'note', data: DATA };
+const result = {
+  seq: 1,
+  at: at.toISOString(),
+  parent: null,
+  kind: 'tool_result',
+  data: DATA,
+  output: OUTPUT,
+  outputSize: 3,
+};
+const batch = {
+  runId: '1b9a7c6e-aaaa',
+  startedAt: at.toISOString(),
+  sessionId: 's',
+  resumed: true,
+  events: [note, result],
+};
+
 test('a batch is checked for shape', () => {
-  const batch = {
-    runId: '1b9a7c6e-aaaa',
-    startedAt: at.toISOString(),
-    sessionId: 's',
-    resumed: true,
-    events: [{ seq: 0, at: at.toISOString(), parent: null, kind: 'note', text: 'x' }],
-  };
-  assert.equal(parseTranscriptBatch(batch).events.length, 1);
-  assert.throws(() => parseTranscriptBatch({ ...batch, runId: '../x' }), TranscriptError);
-  assert.throws(() => parseTranscriptBatch({ ...batch, events: [{ seq: 0, at: 'x', kind: 'weird' }] }), /known kind/);
+  const parsed = parseWireTranscriptBatch(batch);
+  assert.deepEqual(parsed.events, [note, result]);
+  assert.throws(() => parseWireTranscriptBatch({ ...batch, runId: '../x' }), TranscriptError);
+  assert.throws(
+    () => parseWireTranscriptBatch({ ...batch, events: [{ seq: 0, at: 'x', kind: 'weird' }] }),
+    /known kind/,
+  );
 });
 
 test('a batch needs an integer seq from 0, a date and at most the batch limit', () => {
-  const event = { seq: 0, at: at.toISOString(), parent: null, kind: 'note', text: 'x' };
-  const batch = {
-    runId: '1b9a7c6e-aaaa',
-    startedAt: at.toISOString(),
-    sessionId: null,
-    resumed: false,
-    events: [event],
-  };
   for (const bad of [{ seq: -1 }, { seq: 1.5 }, { seq: '1' }, { at: 'soon' }, { at: 5 }]) {
-    assert.throws(() => parseTranscriptBatch({ ...batch, events: [{ ...event, ...bad }] }), TranscriptError);
+    assert.throws(() => parseWireTranscriptBatch({ ...batch, events: [{ ...note, ...bad }] }), TranscriptError);
   }
   assert.equal(
-    parseTranscriptBatch({
+    parseWireTranscriptBatch({
       ...batch,
-      events: Array.from({ length: MAX_BATCH_EVENTS }, (_, seq) => ({ ...event, seq })),
+      events: Array.from({ length: MAX_BATCH_EVENTS }, (_, seq) => ({ ...note, seq })),
     }).events.length,
     MAX_BATCH_EVENTS,
   );
   assert.throws(
     () =>
-      parseTranscriptBatch({
+      parseWireTranscriptBatch({
         ...batch,
-        events: Array.from({ length: MAX_BATCH_EVENTS + 1 }, (_, seq) => ({ ...event, seq })),
+        events: Array.from({ length: MAX_BATCH_EVENTS + 1 }, (_, seq) => ({ ...note, seq })),
       }),
     /at most 5000/,
   );
+});
+
+test('the server refuses plaintext data and plaintext output, and checks the output size it cannot measure', () => {
+  const withEvents = (...events: unknown[]) => ({ ...batch, events });
+  assert.throws(() => parseWireTranscriptBatch(withEvents({ ...note, data: '{"kind":"note"}' })), /must be encrypted/);
+  assert.throws(() => parseWireTranscriptBatch(withEvents({ ...result, output: 'plain output' })), /must be encrypted/);
+  assert.throws(() => parseWireTranscriptBatch(withEvents({ ...result, output: undefined })), /output/);
+  for (const outputSize of [-1, 1.5, '3', null, MAX_OUTPUT_CHARS + 2048])
+    assert.throws(() => parseWireTranscriptBatch(withEvents({ ...result, outputSize })), /outputSize/);
+  assert.throws(() => parseWireTranscriptBatch(withEvents({ ...note, output: OUTPUT })), /only a tool result/);
+  assert.throws(() => parseWireTranscriptBatch(withEvents({ ...note, outputSize: 3 })), /only a tool result/);
+  assert.throws(() => parseWireTranscriptBatch(withEvents({ ...note, parent: 5 })), /parent/);
 });

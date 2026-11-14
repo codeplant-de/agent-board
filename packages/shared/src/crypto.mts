@@ -110,6 +110,11 @@ async function decrypt(
   }
 }
 
+/** The length of the envelope that `seal` makes of `plainBytes` bytes of UTF-8: the prefix, then base64url of nonce, data and tag. */
+export function envelopeLength(plainBytes: number): number {
+  return ENVELOPE_PREFIX.length + Math.ceil(((plainBytes + MIN_ENVELOPE_BYTES) * 4) / 3);
+}
+
 export function isEnvelope(value: string): boolean {
   if (!value.startsWith(ENVELOPE_PREFIX)) return false;
   const body = value.slice(ENVELOPE_PREFIX.length);
@@ -171,6 +176,13 @@ export async function blindIndex(keys: Keys, value: string): Promise<string> {
   if (!keys.index) throw new CryptoError('the index key was not derived; pass { index: true } to deriveKeys');
   const mac = await globalThis.crypto.subtle.sign('HMAC', keys.index, utf8(value));
   return BLIND_PREFIX + toBase64Url(new Uint8Array(mac));
+}
+
+/** Structural check for `blindIndex`'s output: the prefix, then base64url of a 32-byte HMAC. */
+export function isBlindIndex(value: string): boolean {
+  if (!value.startsWith(BLIND_PREFIX)) return false;
+  const body = value.slice(BLIND_PREFIX.length);
+  return BASE64URL.test(body) && body.length === Math.ceil((KEY_BYTES * 4) / 3);
 }
 
 export function encodeDataKey(key: Uint8Array): string {

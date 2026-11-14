@@ -1,10 +1,11 @@
 // The vocabulary shared by the CLI, the server and the UI. The README documents it as the backend contract.
-import { isRecord, isStringList } from './guards.mts';
-import { parseQuestions, parseAnswers } from './questions.mts';
+import { envelopeLength, isBlindIndex, isEnvelope } from './crypto.mts';
+import type { Field } from './crypto.mts';
+import { isRecord } from './guards.mts';
 import type { Answer, Question } from './questions.mts';
-import type { TranscriptBatch } from './transcript.mts';
+import type { TranscriptBatch, WireTranscriptBatch } from './transcript.mts';
 
-export const CONTRACT_VERSION = 5;
+export const CONTRACT_VERSION = 6;
 
 export const STATUSES = ['backlog', 'todo', 'running', 'needs-me', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
@@ -15,6 +16,11 @@ export type NextRun = (typeof NEXT_RUNS)[number];
 
 export const NOTE_AUTHORS = ['agent', 'user', 'system'] as const;
 export type NoteAuthor = (typeof NOTE_AUTHORS)[number];
+
+// On the wire a fourth author exists: "server" marks the events the board server writes itself ("Marked done.") and is
+// the only author whose note body is plain text. Everything else is sealed. The CLI shows a server event as a "system" note.
+export const WIRE_NOTE_AUTHORS = [...NOTE_AUTHORS, 'server'] as const;
+export type WireNoteAuthor = (typeof WIRE_NOTE_AUTHORS)[number];
 
 export const NOTE_KINDS = ['comment', 'question', 'answer', 'event'] as const;
 export type NoteKind = (typeof NOTE_KINDS)[number];
@@ -34,10 +40,21 @@ export const TAKE_BACK_AFTER_MS = 20 * 60_000;
 export const TASK_CREATORS = ['intake', 'user', 'agent'] as const;
 export type TaskCreator = (typeof TASK_CREATORS)[number];
 
+// The sealed fields of a task or schedule a client may find it cannot read.
+export type UnreadableField = 'title' | 'input' | 'workdir';
+
+// What a client shows where it could not open a title or a text. Never used as data: an unreadable input is empty, and
+// the task's `unreadable` list says so.
+export const UNREADABLE_TITLE = '(cannot decrypt this title)';
+export const UNREADABLE_TEXT = '(cannot decrypt this text)';
+
 export interface Task {
   id: string;
+  // The readable fields below hold a placeholder (title), an empty string (input) or null (workdir) when the client could
+  // not open them; `unreadable` names those fields. A task whose input or workdir is unreadable must never be run.
   title: string;
   input: string;
+  // Derived from the prompt and the creator by `taskLabels`; the board does not store them.
   labels: string[];
   status: Status;
   priority: Priority;
@@ -70,6 +87,7 @@ export interface Task {
   notBefore: Date | null;
   // The schedule this task is an occurrence of; set by the server, never by a draft or a patch.
   scheduleId: string | null;
+  unreadable: UnreadableField[];
 }
 
 export interface Heartbeat {
@@ -79,10 +97,13 @@ export interface Heartbeat {
 
 export interface Note {
   id: string;
+  // Empty when `unreadable`.
   text: string;
   createdAt: Date;
   author: NoteAuthor;
   kind: NoteKind;
+  // The text, the questions or the answers could not be opened: the note is not to be used as the user's words.
+  unreadable: boolean;
   // kind "question": what was asked.
   questions?: Question[];
   // kind "answer": one answer per question of the note `questionNoteId`, in order.
@@ -93,12 +114,12 @@ export interface Note {
 export interface TaskDraft {
   title: string;
   input: string;
-  labels: string[];
   // Default: todo. A task an agent proposes is always created in needs-me, whatever it names.
   status?: Status;
   // Default: the parent's priority for a follow-up, otherwise normal.
   priority?: Priority;
-  // Unique per board: a second add-task with the same key returns the first task instead of a new one.
+  // Unique per board: a second add-task with the same key returns the first task instead of a new one. The CLI sends the
+  // blind index of the key, never the key.
   dedupeKey?: string;
   parentId?: string;
   createdBy?: TaskCreator;
@@ -152,6 +173,7 @@ export interface Schedule {
   // The pending occurrence.
   occurrenceTaskId: string | null;
   createdAt: Date;
+  unreadable: UnreadableField[];
 }
 
 export interface ScheduleDraft {
@@ -192,6 +214,7 @@ export interface FailResult {
   task: Task;
 }
 
+/** The plaintext view of the board that the CLI works with; `sealingBackend` makes it from a `WireBackend`. */
 export interface Backend {
   // Open tasks in priority order (first is the top); `all` adds closed ones.
   listTasks(options?: { all?: boolean }): Promise<Task[]>;
@@ -223,6 +246,106 @@ export interface Backend {
   removeSchedule(id: string): Promise<void>;
 }
 
+// What the board server stores and returns: the sealed fields are envelopes (`abe1.…`) it cannot read. Values the server
+// returns may also be legacy plain text from before encryption; only what a client sends is checked to be sealed.
+
+type SealedTaskFields = 'title' | 'input' | 'workdir' | 'labels' | 'unreadable';
+
+export type WireTask = Omit<Task, SealedTaskFields> & { title: string; input: string; workdir: string | null };
+
+export type WireSchedule = Omit<Schedule, 'title' | 'input' | 'workdir' | 'unreadable'> & {
+  title: string;
+  input: string;
+  workdir: string | null;
+};
+
+export interface WireNote {
+  id: string;
+  // Sealed with the field "note.body" and the task id, except on a "server" note, whose body is plain text.
+  body: string;
+  // Sealed "note.preview" (the start of the plain text), or null for a note without text.
+  preview: string | null;
+  createdAt: Date;
+  author: WireNoteAuthor;
+  kind: NoteKind;
+  // kind "question": sealed JSON of the Question list ("note.questions").
+  questions?: string;
+  // kind "answer": sealed JSON of the Answer list ("note.answers").
+  answers?: string;
+  questionNoteId?: string;
+}
+
+// A task draft whose title, input and workdir are sealed and whose dedupeKey is a blind index.
+export type WireTaskDraft = TaskDraft;
+// A task patch whose input and workdir are sealed.
+export type WireTaskPatch = TaskPatch;
+// A schedule draft whose title, input and workdir are sealed.
+export type WireScheduleDraft = ScheduleDraft;
+
+export interface WireNoteInput {
+  // Sealed note text; sealed empty text for a note without any.
+  body: string;
+  preview?: string | null;
+}
+
+export interface WireAsk {
+  // Sealed empty text: a question note carries its content in `questions`.
+  body: string;
+  questions: string;
+}
+
+export interface WireAddTaskResult {
+  task: WireTask;
+  created: boolean;
+}
+
+export interface WireFailResult {
+  applied: boolean;
+  task: WireTask;
+}
+
+export interface WireAddScheduleResult {
+  schedule: WireSchedule;
+  task: WireTask;
+}
+
+/** `Backend` as the server sees it: the same calls with sealed values. */
+export interface WireBackend {
+  listTasks(options?: { all?: boolean }): Promise<WireTask[]>;
+  getTask(id: string): Promise<WireTask>;
+  addTask(draft: WireTaskDraft): Promise<WireAddTaskResult>;
+  updateTask(id: string, patch: WireTaskPatch): Promise<WireTask>;
+  claimTask(id: string, machine: string): Promise<WireTask | undefined>;
+  addNote(id: string, note: WireNoteInput, options?: { author?: 'agent' | 'system' }): Promise<void>;
+  ask(id: string, ask: WireAsk): Promise<void>;
+  heartbeat(id: string, beat: Heartbeat): Promise<void>;
+  pause(id: string, note: WireNoteInput): Promise<WireTask>;
+  fail(id: string, note: WireNoteInput): Promise<WireFailResult>;
+  transcript(id: string, batch: WireTranscriptBatch): Promise<void>;
+  readNotes(id: string): Promise<WireNote[]>;
+  addSchedule(draft: WireScheduleDraft): Promise<WireAddScheduleResult>;
+  listSchedules(): Promise<WireSchedule[]>;
+  updateSchedule(id: string, patch: SchedulePatch): Promise<WireSchedule>;
+  removeSchedule(id: string): Promise<void>;
+}
+
+// How much plaintext each sealed field may hold, in UTF-8 bytes: four times the characters the clients allow. The server
+// cannot count characters in what it cannot read, so it bounds the envelope instead (see `envelopeLength`).
+export const SEALED_LIMITS: Record<Field, number> = {
+  title: 4 * 300,
+  input: 4 * 200_000,
+  workdir: 4096,
+  'note.body': 4 * 100_000,
+  'note.preview': 4 * 300,
+  'note.questions': 256 * 1024,
+  'note.answers': 256 * 1024,
+  'tr.data': 1024 * 1024,
+  'tr.output': 4 * 256 * 1024 + 4096,
+};
+
+// A tool result is cut at 256 KiB characters plus a short note; a client reporting more is lying or broken.
+export const MAX_OUTPUT_SIZE = 256 * 1024 + 1024;
+
 export class ContractError extends Error {}
 
 // "dispatch" and "intake" would make the worker unit agent-board-<id> collide with the tool's own units.
@@ -253,6 +376,21 @@ export const isNoteAuthor = oneOf(NOTE_AUTHORS);
 export const isNoteKind = oneOf(NOTE_KINDS);
 export const isTaskCreator = oneOf(TASK_CREATORS);
 export const isPriority = oneOf(PRIORITIES);
+
+/** The server's one check of a sealed value: it is an envelope and within the field's size limit. */
+export function parseSealed(value: unknown, field: Field, what: string): string {
+  if (typeof value !== 'string') throw new ContractError(`${what} must be a string`);
+  if (!isEnvelope(value)) throw new ContractError(`${what} must be encrypted (an "abe1." value)`);
+  if (value.length > envelopeLength(SEALED_LIMITS[field])) throw new ContractError(`${what} is too long`);
+  return value;
+}
+
+/** A dedupe key is the blind index of the real key, never the key itself. */
+export function parseBlindIndex(value: unknown, what: string): string {
+  if (typeof value !== 'string' || !isBlindIndex(value))
+    throw new ContractError(`${what} must be a blind index ("abh1." value)`);
+  return value;
+}
 
 function record(value: unknown, what: string): Record<string, unknown> {
   if (!isRecord(value)) throw new ContractError(`${what} must be a JSON object`);
@@ -314,12 +452,6 @@ function head(value: unknown, what: string): string {
   return value;
 }
 
-function labels(obj: Record<string, unknown>, what: string): string[] {
-  const value = obj['labels'];
-  if (!isStringList(value)) throw new ContractError(`${what}.labels must be a list of strings`);
-  return value;
-}
-
 function rejectUnknownKeys(obj: Record<string, unknown>, allowed: string[], what: string): void {
   const extra = Object.keys(obj).find((key) => !allowed.includes(key));
   if (extra !== undefined) throw new ContractError(`${what} has an unknown key "${extra}"`);
@@ -333,7 +465,10 @@ function safeId(id: string, what: string): string {
   return id;
 }
 
-export function parseTask(value: unknown): Task {
+// What the server returns is parsed leniently: a sealed field is any string (it may be legacy plain text), and the
+// client decides what it can open.
+
+export function parseWireTask(value: unknown): WireTask {
   const obj = record(value, 'task');
   const id = safeId(string(obj, 'id', 'task'), 'task id');
   const url = string(obj, 'url', 'task');
@@ -346,7 +481,6 @@ export function parseTask(value: unknown): Task {
     id,
     title: string(obj, 'title', 'task'),
     input: string(obj, 'input', 'task'),
-    labels: labels(obj, 'task'),
     status: member(obj, 'status', 'task', STATUSES),
     priority: member(obj, 'priority', 'task', PRIORITIES),
     url,
@@ -368,22 +502,22 @@ export function parseTask(value: unknown): Task {
   };
 }
 
-export function parseTasks(value: unknown): Task[] {
+export function parseWireTasks(value: unknown): WireTask[] {
   if (!Array.isArray(value)) throw new ContractError('expected a JSON array of tasks');
-  return value.map(parseTask);
+  return value.map(parseWireTask);
 }
 
-export function parseAddTaskResult(value: unknown): AddTaskResult {
+export function parseWireAddTaskResult(value: unknown): WireAddTaskResult {
   const obj = record(value, 'add-task result');
-  return { task: parseTask(obj['task']), created: boolean(obj, 'created', 'add-task result') };
+  return { task: parseWireTask(obj['task']), created: boolean(obj, 'created', 'add-task result') };
 }
 
-export function parseFailResult(value: unknown): FailResult {
+export function parseWireFailResult(value: unknown): WireFailResult {
   const obj = record(value, 'fail result');
-  return { applied: boolean(obj, 'applied', 'fail result'), task: parseTask(obj['task']) };
+  return { applied: boolean(obj, 'applied', 'fail result'), task: parseWireTask(obj['task']) };
 }
 
-export function parseSchedule(value: unknown): Schedule {
+export function parseWireSchedule(value: unknown): WireSchedule {
   const obj = record(value, 'schedule');
   const everyMs = nullablePositiveInt(obj, 'everyMs', 'schedule');
   const cron = nullableString(obj, 'cron', 'schedule');
@@ -417,18 +551,18 @@ export function parseSchedule(value: unknown): Schedule {
   };
 }
 
-export function parseSchedules(value: unknown): Schedule[] {
+export function parseWireSchedules(value: unknown): WireSchedule[] {
   if (!Array.isArray(value)) throw new ContractError('expected a JSON array of schedules');
-  return value.map(parseSchedule);
+  return value.map(parseWireSchedule);
 }
 
-export function parseAddScheduleResult(value: unknown): AddScheduleResult {
+export function parseWireAddScheduleResult(value: unknown): WireAddScheduleResult {
   const obj = record(value, 'add-schedule result');
-  return { schedule: parseSchedule(obj['schedule']), task: parseTask(obj['task']) };
+  return { schedule: parseWireSchedule(obj['schedule']), task: parseWireTask(obj['task']) };
 }
 
 // The JSON form of a schedule, as the machine API sends it.
-export function serializeSchedule(schedule: Schedule): Record<string, unknown> {
+export function serializeSchedule(schedule: WireSchedule): Record<string, unknown> {
   return {
     ...schedule,
     anchorAt: schedule.anchorAt.toISOString(),
@@ -438,34 +572,31 @@ export function serializeSchedule(schedule: Schedule): Record<string, unknown> {
   };
 }
 
-export function parseNote(value: unknown): Note {
+export function parseWireNote(value: unknown): WireNote {
   const obj = record(value, 'note');
   const createdAt = new Date(string(obj, 'createdAt', 'note'));
   if (Number.isNaN(createdAt.getTime())) throw new ContractError('note.createdAt is not a date');
-  const note: Note = {
+  const note: WireNote = {
     id: string(obj, 'id', 'note'),
-    text: string(obj, 'text', 'note'),
+    body: string(obj, 'body', 'note'),
+    preview: nullableString(obj, 'preview', 'note'),
     createdAt,
-    author: member(obj, 'author', 'note', NOTE_AUTHORS),
+    author: member(obj, 'author', 'note', WIRE_NOTE_AUTHORS),
     kind: member(obj, 'kind', 'note', NOTE_KINDS),
   };
-  if (note.kind === 'question') note.questions = parseQuestions(obj['questions']);
-  if (note.kind === 'answer') {
-    note.questionNoteId = string(obj, 'questionNoteId', 'note');
-    if (!Array.isArray(obj['answers'])) throw new ContractError('note.answers must be a list');
-    // The answers were checked against their questions when they were given; here only their shape.
-    note.answers = parseAnswers(undefined, obj['answers']);
-  }
+  if (obj['questions'] !== undefined) note.questions = string(obj, 'questions', 'note');
+  if (obj['answers'] !== undefined) note.answers = string(obj, 'answers', 'note');
+  if (obj['questionNoteId'] !== undefined) note.questionNoteId = string(obj, 'questionNoteId', 'note');
   return note;
 }
 
-export function parseNotes(value: unknown): Note[] {
+export function parseWireNotes(value: unknown): WireNote[] {
   if (!Array.isArray(value)) throw new ContractError('expected a JSON array of notes');
-  return value.map(parseNote);
+  return value.map(parseWireNote);
 }
 
 // The JSON form of a note, as `read-notes` sends it.
-export function serializeNote(note: Note): Record<string, unknown> {
+export function serializeWireNote(note: WireNote): Record<string, unknown> {
   return { ...note, createdAt: note.createdAt.toISOString() };
 }
 
@@ -475,15 +606,32 @@ export function parseVersion(value: unknown): number {
   return contract;
 }
 
-// Body of add-task. Only `title` is required.
-export function parseDraft(value: unknown): TaskDraft {
+// The rest of the `version` answer: whose board this is and which data key it expects (null before encryption is set up).
+export function parseVersionIdentity(value: unknown): { owner: string; keyId: string | null } {
+  const obj = record(value, 'version');
+  const owner = string(obj, 'owner', 'version');
+  if (owner === '') throw new ContractError('version.owner must not be empty');
+  return { owner, keyId: nullableString(obj, 'keyId', 'version') };
+}
+
+// What the server checks of every request: the shape, the sealed fields being envelopes, and nothing about their content.
+
+function sealedField(obj: Record<string, unknown>, key: string, what: string, field: Field): string {
+  return parseSealed(obj[key], field, `${what}.${key}`);
+}
+
+function nullableSealedField(obj: Record<string, unknown>, key: string, what: string, field: Field): string | null {
+  return obj[key] === null ? null : sealedField(obj, key, what, field);
+}
+
+// Body of add-task. `title` and `input` are required.
+export function parseWireTaskDraft(value: unknown): WireTaskDraft {
   const obj = record(value, 'draft');
   rejectUnknownKeys(
     obj,
     [
       'title',
       'input',
-      'labels',
       'status',
       'priority',
       'dedupeKey',
@@ -496,29 +644,20 @@ export function parseDraft(value: unknown): TaskDraft {
     ],
     'draft',
   );
-  const title = string(obj, 'title', 'draft');
-  if (title.trim() === '') throw new ContractError('draft.title must not be empty');
-  const draft: TaskDraft = {
-    title,
-    input: 'input' in obj ? string(obj, 'input', 'draft') : '',
-    labels: 'labels' in obj ? labels(obj, 'draft') : [],
+  const draft: WireTaskDraft = {
+    title: sealedField(obj, 'title', 'draft', 'title'),
+    input: sealedField(obj, 'input', 'draft', 'input'),
     status: 'status' in obj ? member(obj, 'status', 'draft', STATUSES) : 'todo',
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', 'draft', PRIORITIES);
-  if ('dedupeKey' in obj) {
-    draft.dedupeKey = string(obj, 'dedupeKey', 'draft');
-    if (draft.dedupeKey === '') throw new ContractError('draft.dedupeKey must not be empty');
-  }
+  if ('dedupeKey' in obj) draft.dedupeKey = parseBlindIndex(obj['dedupeKey'], 'draft.dedupeKey');
   if ('parentId' in obj) draft.parentId = safeId(string(obj, 'parentId', 'draft'), 'draft.parentId');
   if ('createdBy' in obj) draft.createdBy = member(obj, 'createdBy', 'draft', TASK_CREATORS);
   if ('machine' in obj) {
     draft.machine = string(obj, 'machine', 'draft');
     if (!isSafeMachineName(draft.machine)) throw new ContractError('draft.machine is not a safe name');
   }
-  if ('workdir' in obj) {
-    draft.workdir = string(obj, 'workdir', 'draft');
-    if (!draft.workdir.startsWith('/')) throw new ContractError('draft.workdir must be an absolute path');
-  }
+  if ('workdir' in obj) draft.workdir = sealedField(obj, 'workdir', 'draft', 'workdir');
   if ('head' in obj) draft.head = head(obj['head'], 'draft');
   if ('notBefore' in obj) {
     draft.notBefore = date(obj, 'notBefore', 'draft');
@@ -530,7 +669,7 @@ export function parseDraft(value: unknown): TaskDraft {
 }
 
 // Body of add-schedule. `title`, `input` and one rule are required.
-export function parseScheduleDraft(value: unknown): ScheduleDraft {
+export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   const obj = record(value, 'schedule draft');
   rejectUnknownKeys(
     obj,
@@ -538,20 +677,16 @@ export function parseScheduleDraft(value: unknown): ScheduleDraft {
     'schedule draft',
   );
   const what = 'schedule draft';
-  const title = string(obj, 'title', what);
-  if (title.trim() === '') throw new ContractError('schedule draft.title must not be empty');
-  const input = string(obj, 'input', what);
-  if (input.trim() === '') throw new ContractError('schedule draft.input must not be empty');
-  const draft: ScheduleDraft = { title, input };
+  const draft: WireScheduleDraft = {
+    title: sealedField(obj, 'title', what, 'title'),
+    input: sealedField(obj, 'input', what, 'input'),
+  };
   if ('priority' in obj) draft.priority = member(obj, 'priority', what, PRIORITIES);
   if ('machine' in obj) {
     draft.machine = string(obj, 'machine', what);
     if (!isSafeMachineName(draft.machine)) throw new ContractError('schedule draft.machine is not a safe name');
   }
-  if ('workdir' in obj) {
-    draft.workdir = string(obj, 'workdir', what);
-    if (!draft.workdir.startsWith('/')) throw new ContractError('schedule draft.workdir must be an absolute path');
-  }
+  if ('workdir' in obj) draft.workdir = sealedField(obj, 'workdir', what, 'workdir');
   if ((draft.machine === undefined) !== (draft.workdir === undefined))
     throw new ContractError('schedule draft.machine and schedule draft.workdir go together');
   if ('everyMs' in obj === 'cron' in obj) throw new ContractError('a schedule needs exactly one of everyMs and cron');
@@ -577,26 +712,41 @@ export function parseSchedulePatch(value: unknown): SchedulePatch {
 }
 
 // Body of update-task. At least one key.
-export function parsePatch(value: unknown): TaskPatch {
+export function parseWireTaskPatch(value: unknown): WireTaskPatch {
   const obj = record(value, 'patch');
   const keys = ['status', 'priority', 'input', 'sessionId', 'workdir', 'next', 'head', 'notBefore'];
   rejectUnknownKeys(obj, [...keys, 'expect'], 'patch');
   if (!keys.some((key) => key in obj)) throw new ContractError(`patch needs one of ${keys.join(', ')}`);
-  const patch: TaskPatch = {};
+  const patch: WireTaskPatch = {};
   if ('status' in obj) patch.status = member(obj, 'status', 'patch', STATUSES);
   if ('priority' in obj) patch.priority = member(obj, 'priority', 'patch', PRIORITIES);
   if ('expect' in obj) patch.expect = member(obj, 'expect', 'patch', STATUSES);
-  if ('input' in obj) patch.input = string(obj, 'input', 'patch');
+  if ('input' in obj) patch.input = sealedField(obj, 'input', 'patch', 'input');
   if ('sessionId' in obj) patch.sessionId = nullableString(obj, 'sessionId', 'patch');
   if ('next' in obj) patch.next = member(obj, 'next', 'patch', NEXT_RUNS);
   if ('head' in obj) patch.head = obj['head'] === null ? null : head(obj['head'], 'patch');
   if ('notBefore' in obj) patch.notBefore = nullableDate(obj, 'notBefore', 'patch');
-  if ('workdir' in obj) {
-    patch.workdir = nullableString(obj, 'workdir', 'patch');
-    if (patch.workdir !== null && !patch.workdir.startsWith('/'))
-      throw new ContractError('patch.workdir must be an absolute path');
-  }
+  if ('workdir' in obj) patch.workdir = nullableSealedField(obj, 'workdir', 'patch', 'workdir');
   return patch;
+}
+
+// Body of add-note, pause and fail: a sealed text and, optionally, the sealed start of it.
+export function parseWireNoteInput(value: unknown, what: string): WireNoteInput {
+  const obj = record(value, what);
+  rejectUnknownKeys(obj, ['body', 'preview'], what);
+  const input: WireNoteInput = { body: sealedField(obj, 'body', what, 'note.body') };
+  if (obj['preview'] !== undefined) input.preview = nullableSealedField(obj, 'preview', what, 'note.preview');
+  return input;
+}
+
+// Body of ask.
+export function parseWireAsk(value: unknown): WireAsk {
+  const obj = record(value, 'ask');
+  rejectUnknownKeys(obj, ['body', 'questions'], 'ask');
+  return {
+    body: sealedField(obj, 'body', 'ask', 'note.body'),
+    questions: sealedField(obj, 'questions', 'ask', 'note.questions'),
+  };
 }
 
 // Body of heartbeat.
@@ -610,13 +760,34 @@ export function parseHeartbeat(value: unknown): Heartbeat {
 }
 
 // The JSON form of a task, as the machine API sends it.
-export function serializeTask(task: Task): Record<string, unknown> {
+export function serializeTask(task: WireTask): Record<string, unknown> {
   return {
     ...task,
     lastActiveAt: task.lastActiveAt?.toISOString() ?? null,
     runStartedAt: task.runStartedAt?.toISOString() ?? null,
     notBefore: task.notBefore?.toISOString() ?? null,
   };
+}
+
+// The characters of a note's text the board card shows next to the task.
+export const NOTE_PREVIEW_CHARS = 300;
+
+/**
+ * The text a note carries as its sealed preview: the first characters of its text, or null for a note without any text.
+ * Every client-written note with text carries one, so the board lists a task's newest note without opening the thread.
+ */
+export function notePreview(text: string): string | null {
+  return text.trim() === '' ? null : Array.from(text).slice(0, NOTE_PREVIEW_CHARS).join('');
+}
+
+/**
+ * A task's labels, derived from its prompt and creator: the skill the prompt starts with, and "review" for an intake task
+ * whose prompt names none. The board does not store labels.
+ */
+export function taskLabels(task: Pick<Task, 'input' | 'createdBy'>): string[] {
+  const skill = promptSkill(task.input);
+  if (skill !== undefined) return [skill];
+  return task.createdBy === 'intake' ? ['review'] : [];
 }
 
 /**

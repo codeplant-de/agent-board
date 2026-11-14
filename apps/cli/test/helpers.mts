@@ -1,7 +1,8 @@
 import type { Config } from '../src/config.mts';
 import type { RunFiles, RunRecord } from '../src/runtime.mts';
 import { BackendError } from '../src/backend.mts';
-import type { Backend, Note, Schedule, Task } from '@agent-board/shared';
+import { deriveKeys, generateDataKey, seal, taskLabels } from '@agent-board/shared';
+import type { Backend, Note, Schedule, Task, WireSchedule, WireTask } from '@agent-board/shared';
 
 export function task(overrides: Partial<Task> & { id: string }): Task {
   return {
@@ -26,6 +27,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     paused: false,
     notBefore: null,
     scheduleId: null,
+    unreadable: [],
     ...overrides,
   };
 }
@@ -67,6 +69,7 @@ export function schedule(overrides: Partial<Schedule> & { id: string }): Schedul
     ended: false,
     occurrenceTaskId: 'pending',
     createdAt: new Date('2026-11-14T10:00:00Z'),
+    unreadable: [],
     ...overrides,
   };
 }
@@ -89,7 +92,7 @@ let noteCounter = 0;
 // A note as the backend returns it; `author` defaults to the agent.
 export function note(text: string, createdAt: Date, overrides: Partial<Note> = {}): Note {
   noteCounter++;
-  return { id: `n${noteCounter}`, text, createdAt, author: 'agent', kind: 'comment', ...overrides };
+  return { id: `n${noteCounter}`, text, createdAt, author: 'agent', kind: 'comment', unreadable: false, ...overrides };
 }
 
 // In-memory task store; the array order is the priority. Every write lands in `writes` as a short string, so tests assert on what was done.
@@ -110,7 +113,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     },
     async addTask(draft) {
       state.writes.push(
-        `create ${draft.title} | ${draft.input} | ${draft.labels.join(',')}${draft.dedupeKey ? ` | key ${draft.dedupeKey}` : ''}`,
+        `create ${draft.title} | ${draft.input} | ${taskLabels({ input: draft.input, createdBy: draft.createdBy ?? 'user' }).join(',')}${draft.dedupeKey ? ` | key ${draft.dedupeKey}` : ''}`,
       );
       const existing = state.tasks.find(
         (candidate) => draft.dedupeKey !== undefined && parseFirstLine(candidate.input).includes(draft.dedupeKey),
@@ -270,4 +273,30 @@ export function fakeRunFiles(now: () => Date = () => new Date()): FakeRunFiles {
     },
   };
   return files;
+}
+
+// A data key for the tests' board, and the owner the "server" reports.
+export const OWNER = 'alice';
+export const DATA_KEY = generateDataKey();
+export const KEYS = await deriveKeys(DATA_KEY, OWNER, { index: true });
+
+// A task as the server stores it: title, input and workdir sealed with the test key.
+export async function wireTask(overrides: Partial<Task> & { id: string }): Promise<WireTask> {
+  const { labels: _labels, unreadable: _unreadable, title, input, workdir, ...rest } = task(overrides);
+  return {
+    ...rest,
+    title: await seal(KEYS, 'title', '', title),
+    input: await seal(KEYS, 'input', '', input),
+    workdir: workdir === null ? null : await seal(KEYS, 'workdir', '', workdir),
+  };
+}
+
+export async function wireSchedule(overrides: Partial<Schedule> & { id: string }): Promise<WireSchedule> {
+  const { unreadable: _unreadable, title, input, workdir, ...rest } = schedule(overrides);
+  return {
+    ...rest,
+    title: await seal(KEYS, 'title', '', title),
+    input: await seal(KEYS, 'input', '', input),
+    workdir: workdir === null ? null : await seal(KEYS, 'workdir', '', workdir),
+  };
 }

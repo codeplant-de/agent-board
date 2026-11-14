@@ -4,21 +4,25 @@ import { join } from 'node:path';
 import {
   CONTRACT_VERSION,
   ContractError,
+  decodeDataKey,
+  deriveKeys,
   isRecord,
   isSafeMachineName,
   isSafeTaskId,
-  parseAddScheduleResult,
-  parseAddTaskResult,
-  parseFailResult,
-  parseNotes,
-  parseSchedule,
-  parseSchedules,
-  parseTask,
-  parseTasks,
   parseVersion,
+  parseVersionIdentity,
+  parseWireAddScheduleResult,
+  parseWireAddTaskResult,
+  parseWireFailResult,
+  parseWireNotes,
+  parseWireSchedule,
+  parseWireSchedules,
+  parseWireTask,
+  parseWireTasks,
   QuestionError,
+  taskLabels,
 } from '@agent-board/shared';
-import type { Backend, Schedule, Task, TaskDraft } from '@agent-board/shared';
+import type { Backend, Keys, Schedule, Task, TaskDraft, WireBackend } from '@agent-board/shared';
 import { ConfigError } from './config.mts';
 import { loadEnvFile } from './env-file.mts';
 import { oneLine } from './text.mts';
@@ -38,6 +42,8 @@ export class BackendError extends Error {
 export interface WebConfig {
   url: string;
   token: string;
+  // The user's data key: it seals and opens everything the board stores. Never printed.
+  dataKey: Uint8Array;
 }
 
 export function parseWebConfig(raw: unknown, env: Record<string, string>): WebConfig {
@@ -52,7 +58,18 @@ export function parseWebConfig(raw: unknown, env: Record<string, string>): WebCo
   const token = env['AGENT_BOARD_TOKEN'];
   if (!token)
     throw new ConfigError("the credentials file needs AGENT_BOARD_TOKEN (create one on the board's Settings page)");
-  return { url: url.replace(/\/+$/, ''), token };
+  const encodedKey = env['AGENT_BOARD_DATA_KEY'];
+  if (!encodedKey)
+    throw new ConfigError("the credentials file needs AGENT_BOARD_DATA_KEY (copy it from the board's Settings page)");
+  let dataKey: Uint8Array;
+  try {
+    dataKey = decodeDataKey(encodedKey);
+  } catch {
+    throw new ConfigError(
+      "AGENT_BOARD_DATA_KEY is not a data key (abk1_ and 43 more characters): copy it again from the board's Settings page",
+    );
+  }
+  return { url: url.replace(/\/+$/, ''), token, dataKey };
 }
 
 export function loadWebConfig(configDir: string): WebConfig {
@@ -73,7 +90,7 @@ export interface MachineRequest {
   all?: boolean;
   machine?: string;
   author?: string;
-  // The command's payload: JSON for add-task, update-task, add-schedule, update-schedule, ask, heartbeat and transcript; the text for add-note, pause and fail.
+  // The command's payload, JSON: sealed values for add-task, update-task, add-schedule, add-note, ask, pause, fail and transcript.
   body?: unknown;
 }
 
@@ -124,15 +141,27 @@ export interface WebBackendOptions {
   fetch?: Fetch;
 }
 
-export function createWebBackend(options: WebBackendOptions): Backend {
-  // Loads the config and checks the contract version once, before the first real call.
-  let ready: Promise<WebConfig> | undefined;
-  const connect = (): Promise<WebConfig> => {
+// The board over HTTP with sealed values, and the keys of the board it is connected to.
+export interface WebBackend extends WireBackend {
+  keys(): Promise<Keys>;
+}
+
+interface Connection {
+  config: WebConfig;
+  keys: Keys;
+}
+
+export function createWebBackend(options: WebBackendOptions): WebBackend {
+  // Loads the config, checks the contract version and the data key once, before the first real call.
+  let ready: Promise<Connection> | undefined;
+  const connect = (): Promise<Connection> => {
     ready ??= (async () => {
       const config = options.loadConfig();
+      let version: unknown;
       let served: number;
       try {
-        served = parseVersion(await callServer(config, 'version', {}, options.fetch));
+        version = await callServer(config, 'version', {}, options.fetch);
+        served = parseVersion(version);
       } catch (error) {
         // A server from before the version command.
         if (error instanceof BackendError && error.status === 404) {
@@ -151,13 +180,26 @@ export function createWebBackend(options: WebBackendOptions): Backend {
         throw new BackendError(
           `this CLI is older than the board server: it speaks contract ${CONTRACT_VERSION}, the server has ${served}; update the CLI checkout`,
         );
-      return config;
+      let identity: ReturnType<typeof parseVersionIdentity>;
+      try {
+        identity = parseVersionIdentity(version);
+      } catch (error) {
+        throw asBackendError('version', error);
+      }
+      if (identity.keyId === null)
+        throw new BackendError('the board has no data key yet: set up encryption in the browser first');
+      const keys = await deriveKeys(config.dataKey, identity.owner, { index: true });
+      if (keys.keyId !== identity.keyId)
+        throw new BackendError(
+          `this machine holds a different data key (id ${keys.keyId}) than the board's (id ${identity.keyId}): copy the current key from the board's Settings page into AGENT_BOARD_DATA_KEY`,
+        );
+      return { config, keys };
     })();
     return ready;
   };
 
   async function call<T>(command: string, request: MachineRequest, parse: (value: unknown) => T): Promise<T> {
-    const result = await callServer(await connect(), command, request, options.fetch);
+    const result = await callServer((await connect()).config, command, request, options.fetch);
     try {
       return parse(result);
     } catch (error) {
@@ -166,7 +208,7 @@ export function createWebBackend(options: WebBackendOptions): Backend {
   }
 
   const send = async (command: string, request: MachineRequest): Promise<void> => {
-    await callServer(await connect(), command, request, options.fetch);
+    await callServer((await connect()).config, command, request, options.fetch);
   };
 
   const taskId = (id: string): string => {
@@ -180,17 +222,18 @@ export function createWebBackend(options: WebBackendOptions): Backend {
   };
 
   return {
+    keys: async () => (await connect()).keys,
     listTasks: async ({ all = false } = {}) => {
-      const tasks = await call('list-tasks', { all }, parseTasks);
+      const tasks = await call('list-tasks', { all }, parseWireTasks);
       return all ? tasks : tasks.filter((task) => !task.closed);
     },
-    getTask: async (id) => call('get-task', { id: taskId(id) }, parseTask),
-    addTask: async (draft) => call('add-task', { body: draft }, parseAddTaskResult),
-    updateTask: async (id, patch) => call('update-task', { id: taskId(id), body: patch }, parseTask),
+    getTask: async (id) => call('get-task', { id: taskId(id) }, parseWireTask),
+    addTask: async (draft) => call('add-task', { body: draft }, parseWireAddTaskResult),
+    updateTask: async (id, patch) => call('update-task', { id: taskId(id), body: patch }, parseWireTask),
     async claimTask(id, machine) {
       if (!isSafeMachineName(machine)) throw new BackendError(`"${machine.slice(0, 40)}" is not a valid machine name`);
       try {
-        return await call('claim-task', { id: taskId(id), machine }, parseTask);
+        return await call('claim-task', { id: taskId(id), machine }, parseWireTask);
       } catch (error) {
         // A lost claim is an answer, not a failure: the caller moves on to the next task. 404: the card was removed
         // (a paused or deleted schedule's occurrence) after the dispatcher listed it.
@@ -198,16 +241,17 @@ export function createWebBackend(options: WebBackendOptions): Backend {
         throw error;
       }
     },
-    addNote: async (id, text, { author = 'agent' } = {}) => send('add-note', { id: taskId(id), author, body: text }),
-    ask: async (id, questions) => send('ask', { id: taskId(id), body: { questions } }),
+    addNote: async (id, note, { author = 'agent' } = {}) => send('add-note', { id: taskId(id), author, body: note }),
+    ask: async (id, asked) => send('ask', { id: taskId(id), body: asked }),
     heartbeat: async (id, beat) => send('heartbeat', { id: taskId(id), body: beat }),
-    pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseTask),
-    fail: async (id, text) => call('fail', { id: taskId(id), body: text }, parseFailResult),
+    pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
+    fail: async (id, note) => call('fail', { id: taskId(id), body: note }, parseWireFailResult),
     transcript: async (id, batch) => send('transcript', { id: taskId(id), body: batch }),
-    readNotes: async (id) => call('read-notes', { id: taskId(id) }, parseNotes),
-    addSchedule: async (draft) => call('add-schedule', { body: draft }, parseAddScheduleResult),
-    listSchedules: async () => call('list-schedules', {}, parseSchedules),
-    updateSchedule: async (id, patch) => call('update-schedule', { id: scheduleId(id), body: patch }, parseSchedule),
+    readNotes: async (id) => call('read-notes', { id: taskId(id) }, parseWireNotes),
+    addSchedule: async (draft) => call('add-schedule', { body: draft }, parseWireAddScheduleResult),
+    listSchedules: async () => call('list-schedules', {}, parseWireSchedules),
+    updateSchedule: async (id, patch) =>
+      call('update-schedule', { id: scheduleId(id), body: patch }, parseWireSchedule),
     removeSchedule: async (id) => send('remove-schedule', { id: scheduleId(id) }),
   };
 }
@@ -223,6 +267,8 @@ function dryTask(draft: TaskDraft): Task {
   const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, ...fields } = draft;
   return {
     ...fields,
+    labels: taskLabels({ input: draft.input, createdBy: createdBy ?? 'user' }),
+    unreadable: [],
     status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
     priority: draft.priority ?? 'normal',
     id: 'dry',
@@ -258,7 +304,6 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
       const task = dryTask({
         title: draft.title,
         input: draft.input,
-        labels: [],
         ...(draft.priority ? { priority: draft.priority } : {}),
         ...(draft.machine !== undefined && draft.workdir !== undefined
           ? { machine: draft.machine, workdir: draft.workdir }
@@ -284,6 +329,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         ended: false,
         occurrenceTaskId: task.id,
         createdAt: new Date(),
+        unreadable: [],
       };
       return { schedule, task };
     },

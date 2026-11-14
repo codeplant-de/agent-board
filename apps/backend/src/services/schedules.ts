@@ -1,4 +1,4 @@
-import type { Schedule, ScheduleDraft } from '@agent-board/shared';
+import type { WireSchedule, WireScheduleDraft } from '@agent-board/shared';
 import { Cron } from 'croner';
 import { asc, count, eq, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
@@ -38,7 +38,7 @@ function nextMatch(rule: Rule, after: Date, inclusive: boolean): Date | null {
   return cronOf(rule).nextRun(inclusive ? new Date(after.getTime() - 1) : after);
 }
 
-function validRule(draft: Pick<ScheduleDraft, 'everyMs' | 'cron' | 'timezone'>): Rule['everyMs'] {
+function validRule(draft: Pick<WireScheduleDraft, 'everyMs' | 'cron' | 'timezone'>): Rule['everyMs'] {
   if (draft.everyMs !== undefined) {
     if (draft.everyMs < MIN_INTERVAL_MS) throw new AppError('BAD_REQUEST', 'An interval must be at least 1 minute.');
     return draft.everyMs;
@@ -72,7 +72,7 @@ function validRule(draft: Pick<ScheduleDraft, 'everyMs' | 'cron' | 'timezone'>):
 /** A schedule with the start time of its pending occurrence, which only the task knows (a delay changes it). */
 export type ScheduleView = ScheduleRow & { pendingNotBefore: Date | null };
 
-export function toSchedule(row: ScheduleView): Schedule {
+export function toSchedule(row: ScheduleView): WireSchedule {
   return {
     id: row.id,
     title: row.title,
@@ -148,7 +148,6 @@ async function materializeNext(
     {
       title: schedule.title,
       input: schedule.input,
-      labels: [],
       status: 'todo',
       priority: schedule.priority,
       notBefore: at,
@@ -183,7 +182,7 @@ export async function completeOccurrence(tx: DbOrTx, taskId: string, scheduleId:
 /** Creates the schedule and its first occurrence, which waits for the first run. */
 export async function addSchedule(
   db: DbOrTx,
-  draft: ScheduleDraft,
+  draft: WireScheduleDraft,
   now: Date = new Date(),
 ): Promise<{ schedule: ScheduleView; task: TaskRow }> {
   const everyMs = validRule(draft);
@@ -192,7 +191,7 @@ export async function addSchedule(
       .insert(schedules)
       .values({
         id: newId(),
-        title: draft.title.trim(),
+        title: draft.title,
         input: draft.input,
         priority: draft.priority ?? 'normal',
         machine: draft.machine ?? null,

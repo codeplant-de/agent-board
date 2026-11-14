@@ -1,8 +1,9 @@
 import { GitHubError } from './github.mts';
 import { SystemError } from './system.mts';
-import { BackendError, createWebBackend, dryRunBackend, loadWebConfig } from './backend.mts';
+import { BackendError, dryRunBackend, loadWebConfig } from './backend.mts';
 import { ConfigError, getPaths, loadConfig } from './config.mts';
 import type { Config } from './config.mts';
+import { createSealedBackend } from './sealing.mts';
 import type { Backend } from '@agent-board/shared';
 
 export interface Context {
@@ -19,7 +20,8 @@ export function print(line: string): void {
 export function buildContext(dryRun: boolean): Context {
   const paths = getPaths();
   const config = loadConfig(paths.configFile);
-  const backend = createWebBackend({ loadConfig: () => loadWebConfig(paths.configDir) });
+  // The dry-run wrapper goes outside the sealing one, so it prints plaintext and reads what the sealing backend opens.
+  const backend = createSealedBackend({ loadConfig: () => loadWebConfig(paths.configDir) });
   return { config, backend: dryRun ? dryRunBackend(backend, print) : backend, dryRun, print };
 }
 

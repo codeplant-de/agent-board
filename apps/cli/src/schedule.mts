@@ -269,7 +269,8 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
   if (args.every !== undefined || args.cron !== undefined) return scheduleRepeat(deps, args);
   let warning: string | undefined;
   if (!args.forceNew) {
-    const open = (await backend.listTasks()).filter((task) => task.status !== 'done');
+    // A task this machine cannot read says nothing to the check, and the model must not see its placeholder.
+    const open = (await backend.listTasks()).filter((task) => task.status !== 'done' && task.unreadable.length === 0);
     const duplicate = await deps.check(args.prompt, deps.workdir, open);
     const existing = duplicate === undefined ? undefined : open.find((task) => task.id === duplicate.taskId);
     if (duplicate && existing) {
@@ -311,7 +312,6 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
   const { task } = await backend.addTask({
     title: args.title || defaultTitle(args.prompt),
     input: args.prompt,
-    labels: [],
     status: startStatus(args),
     ...(args.notBefore ? { notBefore: args.notBefore } : {}),
     createdBy: 'user',
