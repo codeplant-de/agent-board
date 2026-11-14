@@ -206,7 +206,10 @@ Environment of the backend:
 | `PUBLIC_URL` | Where people open the board; task URLs are `<PUBLIC_URL>/t/<id>` (Slack links use them). |
 | `ALLOWED_GROUPS` | Authelia groups that may use the UI, comma-separated. Default `admins`. |
 | `DEV_AUTH_USER` | Local development only: act as this user without Authelia. The backend refuses to start with it in production. |
+| `BACKFILL_OWNER` | Only for the first start on a database that already has tasks, from before boards were separated: the username that owns them. The migration stops with an error naming this variable when rows exist and it is unset; it is not needed on a fresh database and ignored afterwards. |
 | `PORT` | Default 4000. |
+
+Boards are separated per user: every row belongs to the signed-in user (`Remote-User`, lower-cased), and requests run as the unprivileged `board_app` role with row-level security, so a query only sees its owner's rows even if it forgets a `WHERE`. A machine token belongs to the user who made it on the Settings page, and the machine API works on that user's board. Two users may use the same machine name or dedupe key.
 
 Two ways in:
 
@@ -330,7 +333,7 @@ A schedule always has at most one pending occurrence, a task in Todo with `sched
 
 | Command | Request | `result` |
 | --- | --- | --- |
-| `version` | - | `{"contract": 5}` |
+| `version` | - | `{"contract": 5, "owner": "<username>"}` (the user whose board the token works on) |
 | `list-tasks` | `all?` | `[Task, ...]` in priority order |
 | `get-task` | `id` | `Task` |
 | `add-task` | `body`: `{"title", "input"?, "labels"?, "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "head"?, "notBefore"?}` | `{"task": Task, "created": bool}` |

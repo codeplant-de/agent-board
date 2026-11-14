@@ -4,7 +4,7 @@ import { AppError } from '../services/errors';
 import { testAppDatabaseUrl, testDatabaseUrl } from '../test/global-setup';
 import { testConfig, useTestDb } from '../test/helpers';
 import { procedure, router } from '../trpc/trpc';
-import { tasks } from './schema';
+import { appUsers, tasks } from './schema';
 import { assertUnprivileged, createDb, ensureAppRole } from './client';
 
 const { db, admin } = useTestDb();
@@ -92,6 +92,15 @@ describe('request scoping', () => {
   it('commits what a successful procedure wrote', async () => {
     await call().write();
     expect(await ids()).toEqual(['committed']);
+  });
+
+  it('provisions a user only when the request commits', async () => {
+    const users = async () => (await admin.select().from(appUsers)).map(({ username }) => username);
+    const carol = probe.createCaller({ root: db, config: testConfig, username: 'carol' });
+    await expect(carol.writeThenFail()).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(await users()).toEqual([]);
+    await carol.owner();
+    expect(await users()).toEqual(['carol']);
   });
 
   it('sets app.owner inside the procedure and not on the connection afterwards', async () => {

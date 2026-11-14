@@ -2,6 +2,7 @@ import { initTRPC, TRPCError } from '@trpc/server';
 import { ZodError } from 'zod';
 import type { Config } from '../config';
 import type { Db, Tx } from '../db/client';
+import { appUsers } from '../db/schema';
 import { withOwner } from '../db/scope';
 import { AppError } from '../services/errors';
 
@@ -44,6 +45,8 @@ const scoped = t.middleware(async ({ ctx, next }) => {
   const run = (db: Tx) => next({ ctx: { db, root: undefined } });
   try {
     return await withOwner(ctx.root, ctx.username, async (db) => {
+      // Every board belongs to a row in app_user; the first request of a user creates it.
+      await db.insert(appUsers).values({ username: ctx.username }).onConflictDoNothing();
       const result = await run(db);
       if (!result.ok) throw new Rollback(result);
       return result;

@@ -78,6 +78,13 @@
       "when": 1794661829792,
       "tag": "0010_app_role",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794670957817,
+      "tag": "0011_tenancy",
+      "breakpoints": true
     }
   ]
 }
