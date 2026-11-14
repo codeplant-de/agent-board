@@ -1,11 +1,12 @@
-import { CONTRACT_VERSION, TAKE_BACK_AFTER_MS } from '@agent-board/shared';
+import { CONTRACT_VERSION, sealFields, TAKE_BACK_AFTER_MS } from '@agent-board/shared';
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { schedules, tasks } from './db/schema';
 import { buildServer } from './server';
 import { archiveStaleDone } from './services/tasks';
 import { plainMachine, plainUi, type MachineAnswer } from './test/client';
-import { asOwner, caller, question, testConfig, useTestDb } from './test/helpers';
+import { sealed } from './test/sealed';
+import { asOwner, caller, question, SESSION, sessionNamed, testConfig, useTestDb } from './test/helpers';
 
 const { db, admin } = useTestDb();
 
@@ -100,7 +101,7 @@ describe('machine API', () => {
     expect(task).toMatchObject({
       status: 'todo',
       input: pr,
-      head: 'abc1234',
+      head: await sealed.headIndex('abc1234'),
       machine: null,
       sessionId: null,
       next: 'fresh',
@@ -109,13 +110,16 @@ describe('machine API', () => {
       paused: false,
     });
     expect(task.url).toBe(`https://board.test/t/${task.id}`);
-    expect(task.id).toMatch(/^[A-Za-z0-9]{8}$/);
+    expect(task.id).toMatch(/^[A-Za-z0-9]{12}$/);
 
     const list = await ctx.call('laptop', 'list-tasks');
     expect(list.json.result.map((t: { id: string }) => t.id)).toEqual([task.id]);
 
-    const updated = await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: 's1', next: 'fresh' } });
-    expect(updated.json.result.sessionId).toBe('s1');
+    const updated = await ctx.call('laptop', 'update-task', {
+      id: task.id,
+      body: { sessionId: SESSION, next: 'fresh' },
+    });
+    expect(updated.json.result.sessionId).toBe(SESSION);
 
     await ctx.call('laptop', 'add-note', { id: task.id, body: 'Review started' });
     await ctx.call('laptop', 'add-note', { id: task.id, author: 'system', body: 'agent-board: started x' });
@@ -166,7 +170,7 @@ describe('machine API', () => {
     const { json } = await ctx.call('laptop', 'add-task', { body: { title: 't', labels: ['review-pr'] } });
     const id = json.result.task.id;
     await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' });
-    await ctx.call('laptop', 'update-task', { id, body: { sessionId: 'sess-1' } });
+    await ctx.call('laptop', 'update-task', { id, body: { sessionId: SESSION } });
     expect((await ctx.call('laptop', 'ask', { id, body: { questions: [question] } })).status).toBe(200);
 
     const asked = (await ctx.call('laptop', 'get-task', { id })).json.result;
@@ -289,7 +293,7 @@ describe('board UI', () => {
     const ui = plainUi(db);
     const task = await ui.tasks.create({ title: 't', input: 'do it' });
     await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
-    await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: 's' } });
+    await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: SESSION } });
     await ctx.call('laptop', 'ask', { id: task.id, body: [question] });
     const rerun = await ui.tasks.rerun({ id: task.id });
     expect(rerun).toMatchObject({ status: 'todo', next: 'fresh', sessionId: null, openQuestion: false });
@@ -393,10 +397,11 @@ describe('priority', () => {
 });
 
 describe('lanes, liveness and pausing', () => {
+  let sessions = 0;
   async function running(title: string, priority: 'urgent' | 'high' | 'normal' | 'low' = 'normal') {
     const task = await plainUi(db).tasks.create({ title, input: 'do it', priority });
     await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
-    await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: `s-${title}` } });
+    await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: sessionNamed((sessions += 1)) } });
     return task.id;
   }
 
@@ -589,9 +594,9 @@ describe('proposals', () => {
       expect(refused.status).toBe(403);
     }
     // Other fields are fine, and so is staying put.
-    expect((await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me', sessionId: 's' } })).status).toBe(
-      200,
-    );
+    expect(
+      (await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me', sessionId: SESSION } })).status,
+    ).toBe(200);
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
     // Even a proposal that somehow sits in Todo is not claimable.
     await admin.update(tasks).set({ status: 'todo' }).where(eq(tasks.id, id));
@@ -618,7 +623,7 @@ describe('transitions', () => {
     const ui = plainUi(db);
     const task = await ui.tasks.create({ title: 't', input: 'do it' });
     await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
-    if (options.session ?? true) await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: 's' } });
+    if (options.session ?? true) await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: SESSION } });
     await ctx.call('laptop', 'ask', { id: task.id, body: { questions: [question] } });
     expect((await ui.tasks.get({ id: task.id })).task.openQuestion).toBe(true);
     return task.id;
@@ -638,7 +643,7 @@ describe('transitions', () => {
     const id = await asking();
     const before = (await ui.tasks.get({ id })).task;
     const moved = await ui.tasks.move({ id, status: 'todo' });
-    expect(moved).toMatchObject({ status: 'todo', openQuestion: false, next: before.next, sessionId: 's' });
+    expect(moved).toMatchObject({ status: 'todo', openQuestion: false, next: before.next, sessionId: SESSION });
   });
 
   it('an intake requeue with a fresh run and a re-run drop the open question', async () => {
@@ -748,16 +753,25 @@ describe('fail', () => {
 });
 
 describe('head', () => {
-  it('is set by a draft, changed and cleared by a patch, and checked', async () => {
+  it('is a blind index: set by a draft, changed and cleared by a patch, and a plain sha is refused', async () => {
     const added = await ctx.call('laptop', 'add-task', { body: { title: 't', input: pr, head: 'abc1234' } });
     const id = added.json.result.task.id;
-    expect(added.json.result.task.head).toBe('abc1234');
+    expect(added.json.result.task.head).toBe(await sealed.headIndex('abc1234'));
     expect((await ctx.call('laptop', 'update-task', { id, body: { head: 'def56789ab' } })).json.result.head).toBe(
-      'def56789ab',
+      await sealed.headIndex('def56789ab'),
     );
     expect((await ctx.call('laptop', 'update-task', { id, body: { head: null } })).json.result.head).toBeNull();
-    expect((await ctx.call('laptop', 'update-task', { id, body: { head: 'nothex!' } })).status).toBe(400);
-    expect((await ctx.call('laptop', 'add-task', { body: { title: 't', head: 'abc' } })).status).toBe(400);
+    const draft = {
+      id: 'plain-head-1',
+      ...(await sealFields(
+        sealed.seal,
+        { kind: 'task', id: 'plain-head-1', createdBy: 'user', scheduleId: null },
+        { title: 't', input: 'x' },
+      )),
+    };
+    expect((await ctx.raw('laptop', 'update-task', { id, body: { head: 'abc1234' } })).status).toBe(400);
+    expect((await ctx.raw('laptop', 'update-task', { id, body: { head: 'nothex!' } })).status).toBe(400);
+    expect((await ctx.raw('laptop', 'add-task', { body: { ...draft, head: 'abc1234' } })).status).toBe(400);
   });
 
   it('is cleared together with a status change', async () => {
@@ -1156,7 +1170,7 @@ describe('schedules', () => {
     const removed = await ctx.call('laptop', 'remove-schedule', { id });
     expect(removed.status).toBe(200);
     const left = await admin.select().from(tasks);
-    expect(left.map((t) => [t.id, t.scheduleId])).toEqual([[json.result.task.id, null]]);
+    expect(left.map((t) => [t.id, t.scheduleId])).toEqual([[json.result.task.id, id]]);
     expect(await admin.select().from(schedules)).toEqual([]);
     expect((await ctx.call('laptop', 'remove-schedule', { id })).status).toBe(404);
   });

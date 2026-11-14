@@ -18,7 +18,8 @@ export const NOTE_AUTHORS = ['agent', 'user', 'system'] as const;
 export type NoteAuthor = (typeof NOTE_AUTHORS)[number];
 
 // On the wire a fourth author exists: "server" marks the events the board server writes itself ("Marked done.") and is
-// the only author whose note body is plain text. Everything else is sealed. The CLI shows a server event as a "system" note.
+// the only author whose note body is plain text, and only the fixed texts of `events.mts`. Everything else is sealed.
+// Clients keep the author: a server event is never shown as a "system" note.
 export const WIRE_NOTE_AUTHORS = [...NOTE_AUTHORS, 'server'] as const;
 export type WireNoteAuthor = (typeof WIRE_NOTE_AUTHORS)[number];
 
@@ -67,7 +68,8 @@ export interface Task {
   // The directory that session was in when it last stopped, on `machine`: a worktree it entered, say. A resume starts there.
   workdir: string | null;
   next: NextRun;
-  // The PR head sha (7 to 40 hex characters) the task was made for; intake's review tasks only.
+  // The blind index (`abh1.…`) of the PR head sha the task was made for; intake's review tasks only. The board never holds
+  // the sha itself; `Backend.indexHead` gives the value to compare it with.
   head: string | null;
   // The last question the agent asked has no answer yet.
   openQuestion: boolean;
@@ -100,18 +102,21 @@ export interface Note {
   // Empty when `unreadable`.
   text: string;
   createdAt: Date;
-  author: NoteAuthor;
+  author: WireNoteAuthor;
   kind: NoteKind;
   // The text, the questions or the answers could not be opened: the note is not to be used as the user's words.
   unreadable: boolean;
-  // kind "question": what was asked.
+  // kind "question": what was asked. kind "answer": the questions the user was shown, from the answer's own envelope.
   questions?: Question[];
-  // kind "answer": one answer per question of the note `questionNoteId`, in order.
+  // kind "answer": one answer per question of `questions`, in order.
   answers?: Answer[];
+  // Where the server says the answer belongs; for display only, never used to find the questions.
   questionNoteId?: string;
 }
 
 export interface TaskDraft {
+  // The task's id, chosen by the client because its sealed fields are bound to it; the sealing backend makes one when it is absent.
+  id?: string;
   title: string;
   input: string;
   // Default: todo. A task an agent proposes is always created in needs-me, whatever it names.
@@ -126,19 +131,30 @@ export interface TaskDraft {
   // Pins the task to a machine and the directory it runs in there (where it was scheduled from).
   machine?: string;
   workdir?: string;
+  // The PR head sha; the sealing backend turns it into its blind index.
   head?: string;
   // Only with status todo.
   notBefore?: Date;
 }
 
+// What the writer of a patch knows about the task it seals for, which the contexts of the sealed fields depend on. Never sent.
+export interface PatchSealing {
+  // Who made the task. The writer of a new `input` states it itself (intake: "intake"), never taking it from the board.
+  createdBy: TaskCreator;
+  scheduleId: string | null;
+}
+
 export interface TaskPatch {
   status?: Status;
   priority?: Priority;
+  // `input` and a `workdir` that is not null need `seal`.
   input?: string;
   sessionId?: string | null;
   workdir?: string | null;
   next?: NextRun;
+  // A PR head sha; the sealing backend turns it into its blind index.
   head?: string | null;
+  seal?: PatchSealing;
   // Only on a todo task; null starts the wait over: the task is claimable now.
   notBefore?: Date | null;
   // Applies the patch only while the task has this status; otherwise the server answers 409 and writes nothing.
@@ -177,6 +193,8 @@ export interface Schedule {
 }
 
 export interface ScheduleDraft {
+  // The schedule's id, chosen by the client because its sealed fields are bound to it; the sealing backend makes one when it is absent.
+  id?: string;
   title: string;
   input: string;
   priority?: Priority;
@@ -242,8 +260,10 @@ export interface Backend {
   listSchedules(): Promise<Schedule[]>;
   // Pausing removes the pending occurrence if it never ran; resuming creates the next one.
   updateSchedule(id: string, patch: SchedulePatch): Promise<Schedule>;
-  // Removes a schedule and its never-run pending occurrence; tasks that ran keep their history.
+  // Removes a schedule and its never-run pending occurrence; tasks that ran keep their history and their `scheduleId`.
   removeSchedule(id: string): Promise<void>;
+  // The value `Task.head` has for a PR head sha: the board holds only a blind index of it.
+  indexHead(sha: string): Promise<string>;
 }
 
 // What the board server stores and returns: the sealed fields are envelopes (`abe1.…`) it cannot read. Values the server
@@ -261,7 +281,8 @@ export type WireSchedule = Omit<Schedule, 'title' | 'input' | 'workdir' | 'unrea
 
 export interface WireNote {
   id: string;
-  // Sealed with the field "note.body" and the task id, except on a "server" note, whose body is plain text.
+  // Sealed with the field "note.body", bound to the task, the author and the kind, except on a "server" note, whose body is
+  // plain text from the fixed list of `events.mts`.
   body: string;
   // Sealed "note.preview" (the start of the plain text), or null for a note without text.
   preview: string | null;
@@ -270,17 +291,17 @@ export interface WireNote {
   kind: NoteKind;
   // kind "question": sealed JSON of the Question list ("note.questions").
   questions?: string;
-  // kind "answer": sealed JSON of the Answer list ("note.answers").
+  // kind "answer": sealed JSON of the questions the user was shown and the answers ("note.answers").
   answers?: string;
   questionNoteId?: string;
 }
 
-// A task draft whose title, input and workdir are sealed and whose dedupeKey is a blind index.
-export type WireTaskDraft = TaskDraft;
-// A task patch whose input and workdir are sealed.
-export type WireTaskPatch = TaskPatch;
-// A schedule draft whose title, input and workdir are sealed.
-export type WireScheduleDraft = ScheduleDraft;
+// A task draft with its id; title, input and workdir are sealed, dedupeKey and head are blind indexes.
+export type WireTaskDraft = Omit<TaskDraft, 'id'> & { id: string };
+// A task patch; input and workdir are sealed, head is a blind index.
+export type WireTaskPatch = Omit<TaskPatch, 'seal'>;
+// A schedule draft with its id; title, input and workdir are sealed.
+export type WireScheduleDraft = Omit<ScheduleDraft, 'id'> & { id: string };
 
 export interface WireNoteInput {
   // Sealed note text; sealed empty text for a note without any.
@@ -356,14 +377,60 @@ export function isSafeTaskId(id: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id) && !RESERVED_TASK_IDS.includes(id);
 }
 
+const ID_ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+/** A new task or schedule id: 12 random characters, never a reserved one. The client chooses it, because its sealed fields are bound to it. */
+export function newTaskId(): string {
+  let id = '';
+  while (id.length < 12) {
+    for (const byte of globalThis.crypto.getRandomValues(new Uint8Array(24)))
+      if (byte < ID_ALPHABET.length * 4 && id.length < 12) id += ID_ALPHABET[byte % ID_ALPHABET.length];
+  }
+  return id;
+}
+
+// The source of the machine-name pattern: the server events of `events.mts` match names with it too.
+export const MACHINE_NAME_PATTERN = '[A-Za-z0-9][A-Za-z0-9_.-]{0,63}';
+const MACHINE_NAME = new RegExp(`^${MACHINE_NAME_PATTERN}$`);
+
 // A machine name travels in argv and is shown in the UI.
 export function isSafeMachineName(name: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(name);
+  return MACHINE_NAME.test(name);
+}
+
+export const isSafeLane = isSafeMachineName;
+
+/** Whether a text holds a control character (the C0 ones and DEL): newlines and NULs that a line, a path or an argument must not carry. */
+export function hasControlCharacter(text: string): boolean {
+  return Array.from(text).some((char) => {
+    const code = char.charCodeAt(0);
+    return code < 0x20 || code === 0x7f;
+  });
 }
 
 // The url lands inside a Slack link, where `<`, `>` and `|` end the link early.
 export function isSafeTaskUrl(url: string): boolean {
-  return /^https?:\/\/[^\s<>|]+$/.test(url);
+  return url.length <= 2048 && /^https?:\/\/[^\s<>|]+$/.test(url) && !hasControlCharacter(url);
+}
+
+// The id of a Claude session, which the worker hands to `claude --resume`: only a UUID, so it can never read as a flag.
+export function isSessionId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+// A directory a task runs in: absolute, without control characters, of a length a path can have.
+export function isSafeWorkdir(path: string): boolean {
+  return path.startsWith('/') && path.length <= 4096 && !hasControlCharacter(path);
+}
+
+// The ids of notes and runs the server makes.
+export function isSafeNoteId(id: string): boolean {
+  return /^[A-Za-z0-9_-]{1,64}$/.test(id);
+}
+
+// A text from the server that a parser keeps in clear: one line without control characters, bounded.
+function isPlainLine(value: string, max: number): boolean {
+  return value.length <= max && !hasControlCharacter(value);
 }
 
 function oneOf<T extends string>(values: readonly T[]): (value: unknown) => value is T {
@@ -447,8 +514,16 @@ function member<T extends string>(obj: Record<string, unknown>, key: string, wha
 }
 
 function head(value: unknown, what: string): string {
-  if (typeof value !== 'string' || !/^[0-9a-f]{7,40}$/i.test(value))
-    throw new ContractError(`${what}.head must be 7 to 40 hex characters`);
+  return parseBlindIndex(value, `${what}.head`);
+}
+
+/** What a parser may quote of a value it refuses: bounded and JSON-quoted, so it cannot read as anything else in an error. */
+function quoted(value: string): string {
+  return JSON.stringify(value.slice(0, 40));
+}
+
+function sessionId(value: string | null, what: string): string | null {
+  if (value !== null && !isSessionId(value)) throw new ContractError(`${what}.sessionId must be a UUID or null`);
   return value;
 }
 
@@ -460,7 +535,7 @@ function rejectUnknownKeys(obj: Record<string, unknown>, allowed: string[], what
 function safeId(id: string, what: string): string {
   if (!isSafeTaskId(id))
     throw new ContractError(
-      `${what} "${id.slice(0, 40)}" is not safe (letters, digits, - and _, at most 64, not "dispatch" or "intake")`,
+      `${what} ${quoted(id)} is not safe (letters, digits, - and _, at most 64, not "dispatch" or "intake")`,
     );
   return id;
 }
@@ -473,10 +548,12 @@ export function parseWireTask(value: unknown): WireTask {
   const id = safeId(string(obj, 'id', 'task'), 'task id');
   const url = string(obj, 'url', 'task');
   if (!isSafeTaskUrl(url))
-    throw new ContractError(`task url "${url.slice(0, 40)}" must be an http(s) URL without spaces, <, > or |`);
+    throw new ContractError(`task url ${quoted(url)} must be an http(s) URL without spaces, <, > or |`);
   const machine = nullableString(obj, 'machine', 'task');
   if (machine !== null && !isSafeMachineName(machine))
-    throw new ContractError(`task machine "${machine.slice(0, 40)}" is not a safe name`);
+    throw new ContractError(`task machine ${quoted(machine)} is not a safe name`);
+  const lane = nullableString(obj, 'lane', 'task');
+  if (lane !== null && !isSafeLane(lane)) throw new ContractError(`task lane ${quoted(lane)} is not a safe name`);
   return {
     id,
     title: string(obj, 'title', 'task'),
@@ -486,13 +563,13 @@ export function parseWireTask(value: unknown): WireTask {
     url,
     closed: boolean(obj, 'closed', 'task'),
     machine,
-    sessionId: nullableString(obj, 'sessionId', 'task'),
+    sessionId: sessionId(nullableString(obj, 'sessionId', 'task'), 'task'),
     workdir: nullableString(obj, 'workdir', 'task'),
     next: member(obj, 'next', 'task', NEXT_RUNS),
     head: obj['head'] === null ? null : head(obj['head'], 'task'),
     openQuestion: boolean(obj, 'openQuestion', 'task'),
     createdBy: member(obj, 'createdBy', 'task', TASK_CREATORS),
-    lane: nullableString(obj, 'lane', 'task'),
+    lane,
     borrowed: boolean(obj, 'borrowed', 'task'),
     lastActiveAt: nullableDate(obj, 'lastActiveAt', 'task'),
     runStartedAt: nullableDate(obj, 'runStartedAt', 'task'),
@@ -524,9 +601,12 @@ export function parseWireSchedule(value: unknown): WireSchedule {
   const timezone = nullableString(obj, 'timezone', 'schedule');
   if ((everyMs === null) === (cron === null)) throw new ContractError('schedule needs exactly one of everyMs and cron');
   if (cron !== null && timezone === null) throw new ContractError('schedule.timezone is required with cron');
+  if (cron !== null && !isPlainLine(cron, 200)) throw new ContractError('schedule.cron is not a cron expression');
+  if (timezone !== null && !/^[A-Za-z0-9_+\-/]{1,64}$/.test(timezone))
+    throw new ContractError('schedule.timezone is not a time zone name');
   const machine = nullableString(obj, 'machine', 'schedule');
   if (machine !== null && !isSafeMachineName(machine))
-    throw new ContractError(`schedule machine "${machine.slice(0, 40)}" is not a safe name`);
+    throw new ContractError(`schedule machine ${quoted(machine)} is not a safe name`);
   return {
     id: safeId(string(obj, 'id', 'schedule'), 'schedule id'),
     title: string(obj, 'title', 'schedule'),
@@ -576,8 +656,13 @@ export function parseWireNote(value: unknown): WireNote {
   const obj = record(value, 'note');
   const createdAt = new Date(string(obj, 'createdAt', 'note'));
   if (Number.isNaN(createdAt.getTime())) throw new ContractError('note.createdAt is not a date');
+  const noteId = (key: string): string => {
+    const id = string(obj, key, 'note');
+    if (!isSafeNoteId(id)) throw new ContractError(`note.${key} ${quoted(id)} is not an id`);
+    return id;
+  };
   const note: WireNote = {
-    id: string(obj, 'id', 'note'),
+    id: noteId('id'),
     body: string(obj, 'body', 'note'),
     preview: nullableString(obj, 'preview', 'note'),
     createdAt,
@@ -586,7 +671,7 @@ export function parseWireNote(value: unknown): WireNote {
   };
   if (obj['questions'] !== undefined) note.questions = string(obj, 'questions', 'note');
   if (obj['answers'] !== undefined) note.answers = string(obj, 'answers', 'note');
-  if (obj['questionNoteId'] !== undefined) note.questionNoteId = string(obj, 'questionNoteId', 'note');
+  if (obj['questionNoteId'] !== undefined) note.questionNoteId = noteId('questionNoteId');
   return note;
 }
 
@@ -610,7 +695,7 @@ export function parseVersion(value: unknown): number {
 export function parseVersionIdentity(value: unknown): { owner: string; keyId: string | null } {
   const obj = record(value, 'version');
   const owner = string(obj, 'owner', 'version');
-  if (owner === '') throw new ContractError('version.owner must not be empty');
+  if (owner === '' || !isPlainLine(owner, 256)) throw new ContractError('version.owner is not a user name');
   return { owner, keyId: nullableString(obj, 'keyId', 'version') };
 }
 
@@ -624,12 +709,13 @@ function nullableSealedField(obj: Record<string, unknown>, key: string, what: st
   return obj[key] === null ? null : sealedField(obj, key, what, field);
 }
 
-// Body of add-task. `title` and `input` are required.
+// Body of add-task. `id`, `title` and `input` are required.
 export function parseWireTaskDraft(value: unknown): WireTaskDraft {
   const obj = record(value, 'draft');
   rejectUnknownKeys(
     obj,
     [
+      'id',
       'title',
       'input',
       'status',
@@ -645,6 +731,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
     'draft',
   );
   const draft: WireTaskDraft = {
+    id: safeId(string(obj, 'id', 'draft'), 'draft.id'),
     title: sealedField(obj, 'title', 'draft', 'title'),
     input: sealedField(obj, 'input', 'draft', 'input'),
     status: 'status' in obj ? member(obj, 'status', 'draft', STATUSES) : 'todo',
@@ -668,16 +755,30 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
   return draft;
 }
 
-// Body of add-schedule. `title`, `input` and one rule are required.
+// Body of add-schedule. `id`, `title`, `input` and one rule are required.
 export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   const obj = record(value, 'schedule draft');
   rejectUnknownKeys(
     obj,
-    ['title', 'input', 'priority', 'machine', 'workdir', 'everyMs', 'cron', 'timezone', 'startAt', 'times', 'until'],
+    [
+      'id',
+      'title',
+      'input',
+      'priority',
+      'machine',
+      'workdir',
+      'everyMs',
+      'cron',
+      'timezone',
+      'startAt',
+      'times',
+      'until',
+    ],
     'schedule draft',
   );
   const what = 'schedule draft';
   const draft: WireScheduleDraft = {
+    id: safeId(string(obj, 'id', what), 'schedule draft.id'),
     title: sealedField(obj, 'title', what, 'title'),
     input: sealedField(obj, 'input', what, 'input'),
   };
@@ -722,7 +823,7 @@ export function parseWireTaskPatch(value: unknown): WireTaskPatch {
   if ('priority' in obj) patch.priority = member(obj, 'priority', 'patch', PRIORITIES);
   if ('expect' in obj) patch.expect = member(obj, 'expect', 'patch', STATUSES);
   if ('input' in obj) patch.input = sealedField(obj, 'input', 'patch', 'input');
-  if ('sessionId' in obj) patch.sessionId = nullableString(obj, 'sessionId', 'patch');
+  if ('sessionId' in obj) patch.sessionId = sessionId(nullableString(obj, 'sessionId', 'patch'), 'patch');
   if ('next' in obj) patch.next = member(obj, 'next', 'patch', NEXT_RUNS);
   if ('head' in obj) patch.head = obj['head'] === null ? null : head(obj['head'], 'patch');
   if ('notBefore' in obj) patch.notBefore = nullableDate(obj, 'notBefore', 'patch');

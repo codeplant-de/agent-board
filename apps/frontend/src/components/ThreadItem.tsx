@@ -26,7 +26,7 @@ function Meta({ who, by, at }: { who: string; by: string | null; at: Date }) {
 
 /** A note this browser could not open: never shown as what anyone wrote. */
 function UnreadableNote({ note }: { note: ThreadNote }) {
-  const who = note.author === 'user' ? 'You' : note.author === 'agent' ? 'Agent' : 'System';
+  const who = { user: 'You', agent: 'Agent', system: 'System', server: 'Board' }[note.author];
   return (
     <Paper withBorder p="sm" style={{ borderStyle: 'dashed' }}>
       <Group gap="xs" mb={6}>
@@ -102,11 +102,11 @@ interface Props {
 export function ThreadItem({ note, thread }: Props) {
   const at = new Date(note.createdAt);
   if (note.unreadable) return <UnreadableNote note={note} />;
-  if (note.author === 'system') {
+  if (note.author === 'system' || note.author === 'server') {
     const [raw = '', ...rest] = note.text.trim().split('\n');
     const more = rest.join('\n').trim();
     // The dispatcher's start marker, "agent-board: started <iso> (<label>, <machine>, unit …)", in words.
-    const start = /^agent-board: started \S+ \(([^,]+), ([^,]+),/.exec(raw);
+    const start = note.author === 'system' ? /^agent-board: started \S+ \(([^,]+), ([^,]+),/.exec(raw) : null;
     const first = start ? `Run started on ${start[2]} (${start[1]})` : raw;
     return (
       <Group gap="xs" wrap="nowrap" align="flex-start" px="xs">
@@ -163,7 +163,7 @@ export function ThreadItem({ note, thread }: Props) {
   }
 
   const fromUser = note.author === 'user';
-  const questions = note.kind === 'answer' ? questionsAnswered(thread, note) : undefined;
+  const questions = note.kind === 'answer' ? questionsAnswered(note) : undefined;
   return (
     <Paper
       withBorder

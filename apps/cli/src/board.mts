@@ -123,7 +123,6 @@ async function ask(context: Context, id: string, path: string): Promise<void> {
 }
 
 export function renderThread(task: Task, notes: Note[]): string {
-  const byId = new Map(notes.map((note) => [note.id, note]));
   const lines = [
     `# ${task.title}`,
     '',
@@ -138,8 +137,7 @@ export function renderThread(task: Task, notes: Note[]): string {
   for (const note of [...notes].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())) {
     lines.push('', `### ${note.author} ${note.kind} · ${note.createdAt.toISOString()}`, '');
     if (note.kind === 'question' && note.questions) lines.push(formatQuestions(note.questions));
-    if (note.kind === 'answer')
-      lines.push(formatAnswers(byId.get(note.questionNoteId ?? '')?.questions, note.answers ?? []));
+    if (note.kind === 'answer' && !note.unreadable) lines.push(formatAnswers(note.questions, note.answers ?? []));
     if (note.unreadable) lines.push(UNREADABLE_TEXT);
     else if (note.text.trim() !== '') lines.push(note.text.trim());
   }

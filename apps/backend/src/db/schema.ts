@@ -115,7 +115,7 @@ export const tasks = pgTable(
     pausedAt: timestamp('paused_at', { withTimezone: true }),
     /** Todo only: no worker claims the task before this time. Cleared when the task leaves Todo. */
     notBefore: timestamp('not_before', { withTimezone: true }),
-    /** The PR head sha an intake review was made for. */
+    /** The blind index (abh1.…) of the PR head sha an intake review was made for. */
     head: text('head'),
     /** The question note waiting for an answer, if any. */
     openQuestionNoteId: text('open_question_note_id'),
@@ -123,7 +123,10 @@ export const tasks = pgTable(
     dedupeKey: text('dedupe_key'),
     parentId: text('parent_id'),
     createdBy: taskCreator('created_by').notNull().default('user'),
-    /** The schedule this task is an occurrence of. */
+    /**
+     * The schedule this task is an occurrence of. Not a foreign key: the task's sealed fields are bound to this id, so it
+     * stays when the schedule is deleted.
+     */
     scheduleId: text('schedule_id'),
     /** Proposed by an agent and not started by the user yet. */
     proposed: boolean('proposed').notNull().default(false),
@@ -135,7 +138,6 @@ export const tasks = pgTable(
     index('task_status_priority_position_idx').on(t.owner, t.status, t.priority, t.position),
     unique('task_owner_id_unique').on(t.owner, t.id),
     ownerFk('task_parent_fk', [t.owner, t.parentId], [t.owner, t.id], 'set null'),
-    ownerFk('task_schedule_fk', [t.owner, t.scheduleId], [schedules.owner, schedules.id], 'set null'),
     tenant(),
   ],
 ).enableRLS();

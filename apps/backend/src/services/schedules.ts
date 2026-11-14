@@ -4,7 +4,7 @@ import { asc, count, eq, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
 import { schedules, tasks, transcriptRuns, type ScheduleRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
-import { insertTask, lockTask, newId } from './taskRows';
+import { insertTask, lockTask } from './taskRows';
 
 const MIN_INTERVAL_MS = 60_000;
 
@@ -179,7 +179,10 @@ export async function completeOccurrence(tx: DbOrTx, taskId: string, scheduleId:
   if (schedule?.occurrenceTaskId === taskId) await materializeNext(tx, schedule, now);
 }
 
-/** Creates the schedule and its first occurrence, which waits for the first run. */
+/**
+ * Creates the schedule and its first occurrence, which waits for the first run. The schedule's id is the client's, because the
+ * schedule's sealed fields are bound to it; one that is taken, by anyone, is a conflict.
+ */
 export async function addSchedule(
   db: DbOrTx,
   draft: WireScheduleDraft,
@@ -190,7 +193,7 @@ export async function addSchedule(
     const [inserted] = await tx
       .insert(schedules)
       .values({
-        id: newId(),
+        id: draft.id,
         title: draft.title,
         input: draft.input,
         priority: draft.priority ?? 'normal',
@@ -203,10 +206,12 @@ export async function addSchedule(
         remaining: draft.times ?? null,
         until: draft.until ?? null,
       })
+      .onConflictDoNothing()
       .returning();
-    const task = await materializeNext(tx, inserted!, now);
+    if (!inserted) throw new AppError('CONFLICT', 'that schedule id is already taken');
+    const task = await materializeNext(tx, inserted, now);
     if (!task) throw new AppError('BAD_REQUEST', 'The schedule would never run: nothing matches before its end.');
-    return { schedule: await viewOf(tx, inserted!.id), task };
+    return { schedule: await viewOf(tx, inserted.id), task };
   });
 }
 
@@ -281,7 +286,7 @@ export async function setPaused(
   });
 }
 
-/** Deletes the schedule and its never-run pending occurrence. Tasks that ran stay, no longer linked to it. */
+/** Deletes the schedule and its never-run pending occurrence. Tasks that ran stay, still naming it: their sealed fields are bound to its id. */
 export async function removeSchedule(db: DbOrTx, id: string): Promise<void> {
   await db.transaction(async (tx) => {
     const { pending } = await lockWithOccurrence(tx, id);

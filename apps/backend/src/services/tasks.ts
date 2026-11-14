@@ -1,6 +1,8 @@
 import {
+  formatServerEvent,
   PRIORITIES,
   TAKE_BACK_AFTER_MS,
+  type ServerEvent,
   type Heartbeat,
   type Priority,
   type Status,
@@ -373,8 +375,8 @@ async function continueTask(tx: DbOrTx, task: TaskRow): Promise<TaskRow> {
 }
 
 /** An event the server writes itself, in plain text: it must never repeat anything the client sealed. */
-async function systemEvent(tx: DbOrTx, taskId: string, body: string, by: string | null): Promise<void> {
-  await addNote(tx, taskId, { author: 'server', kind: 'event', body, by });
+async function systemEvent(tx: DbOrTx, taskId: string, event: ServerEvent, by: string | null): Promise<void> {
+  await addNote(tx, taskId, { author: 'server', kind: 'event', body: formatServerEvent(event), by });
 }
 
 /** A system event the client wrote, sealed like any other client text. */
@@ -386,7 +388,7 @@ export async function markDone(db: DbOrTx, taskId: string, by: string): Promise<
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     requireNotRunning(task);
-    await systemEvent(tx, taskId, 'Marked done.', by);
+    await systemEvent(tx, taskId, { type: 'done' }, by);
     return transition(tx, task, { to: 'done', place: 'top', by: 'user' });
   });
 }
@@ -396,7 +398,7 @@ export async function rerunFresh(db: DbOrTx, taskId: string, by: string): Promis
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     requireNotRunning(task);
-    await systemEvent(tx, taskId, 'Queued for a fresh run.', by);
+    await systemEvent(tx, taskId, { type: 'rerun' }, by);
     return transition(tx, task, {
       to: 'todo',
       place: 'bottom',
@@ -411,7 +413,7 @@ export async function setClosed(db: DbOrTx, taskId: string, closed: boolean, by:
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (closed) requireNotRunning(task);
-    await systemEvent(tx, taskId, closed ? 'Closed.' : 'Reopened.', by);
+    await systemEvent(tx, taskId, { type: closed ? 'closed' : 'reopened' }, by);
     return closeOrReopen(tx, task, closed);
   });
 }
@@ -446,7 +448,7 @@ export async function archiveStaleDone(db: DbOrTx, now: Date = new Date()): Prom
       // Someone may have touched it since the listing.
       const task = await lockTask(tx, id);
       if (task.status !== 'done' || task.closed || task.createdBy === 'intake' || task.updatedAt >= cutoff) return;
-      await systemEvent(tx, id, `Closed after ${DONE_ARCHIVE_DAYS} days in Done.`, null);
+      await systemEvent(tx, id, { type: 'archived', days: DONE_ARCHIVE_DAYS }, null);
       await closeOrReopen(tx, task, true);
       closed += 1;
     });
@@ -488,10 +490,10 @@ export async function moveTask(
     else if (upper !== undefined) position = upper + 1;
     else position = await edgePosition(tx, input.status, 'bottom');
     if (task.status !== input.status) {
-      await systemEvent(tx, task.id, `Moved from ${task.status} to ${input.status}.`, input.by);
+      await systemEvent(tx, task.id, { type: 'moved', from: task.status, to: input.status }, input.by);
     }
     if (task.priority !== priority) {
-      await systemEvent(tx, task.id, `Priority ${task.priority} → ${priority}.`, input.by);
+      await systemEvent(tx, task.id, { type: 'priority', from: task.priority, to: priority }, input.by);
     }
     // Into Todo it behaves like "Send & continue" without a reply: it starts a proposal and drops the open question,
     // and a task with a session keeps its `next` (a resume with nothing to say starts fresh).
@@ -516,7 +518,7 @@ export async function setPriority(db: DbOrTx, taskId: string, priority: Priority
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
     if (task.priority === priority) return task;
-    await systemEvent(tx, taskId, `Priority ${task.priority} → ${priority}.`, by);
+    await systemEvent(tx, taskId, { type: 'priority', from: task.priority, to: priority }, by);
     return transition(tx, task, { place: 'bottom', by: 'user', set: { priority } });
   });
 }
@@ -529,7 +531,7 @@ export async function setNotBefore(db: DbOrTx, taskId: string, notBefore: Date |
     await systemEvent(
       tx,
       taskId,
-      notBefore === null ? 'Start time cleared.' : `Start time set to ${notBefore.toISOString()}.`,
+      notBefore === null ? { type: 'start-cleared' } : { type: 'start-set', at: notBefore },
       by,
     );
     return transition(tx, task, { by: 'user', set: { notBefore } });
@@ -592,12 +594,7 @@ export async function takeBack(db: DbOrTx, taskId: string, by: string, now: Date
         'CONFLICT',
         `The agent was active ${Math.floor(quietMs / 60_000)} min ago. A task can be taken back after ${TAKE_BACK_AFTER_MS / 60_000} quiet minutes.`,
       );
-    await systemEvent(
-      tx,
-      taskId,
-      `Taken back from ${task.machine ?? 'its worker'}: no sign of life for ${TAKE_BACK_AFTER_MS / 60_000} minutes.`,
-      by,
-    );
+    await systemEvent(tx, taskId, { type: 'taken-back', machine: task.machine }, by);
     return transition(tx, task, { to: 'needs-me', by: 'user' });
   });
 }

@@ -128,10 +128,14 @@ const tasksRouter = router({
     };
   }),
 
-  /** A sealed prompt with its sealed title; it runs in the default directory of whichever machine takes it. */
+  /**
+   * A sealed prompt with its sealed title; it runs in the default directory of whichever machine takes it. `id` is the
+   * task's, or the schedule's when `when` repeats (its occurrences get ids of the server's): the fields are sealed against it.
+   */
   create: procedure
     .input(
       z.object({
+        id,
         title: sealed('title', 'title'),
         input: sealed('input', 'input'),
         priority: priority.default('normal'),
@@ -142,6 +146,7 @@ const tasksRouter = router({
       const { title, when } = input;
       if (typeof when === 'object' && ('every' in when || 'cron' in when)) {
         const { task } = await addSchedule(ctx.db, {
+          id: input.id,
           title,
           input: input.input,
           priority: input.priority,
@@ -153,6 +158,7 @@ const tasksRouter = router({
         return boardTask(task, ctx.config.publicUrl);
       }
       const { row } = await addTask(ctx.db, {
+        id: input.id,
         title,
         input: input.input,
         priority: input.priority,

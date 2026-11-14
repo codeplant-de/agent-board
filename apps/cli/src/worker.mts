@@ -18,6 +18,7 @@ import type { Task, TranscriptEvent } from '@agent-board/shared';
 import {
   buildInvocation,
   decideOutcome,
+  isPermanentRefusal,
   isRunOver,
   ownLane,
   PLUGIN_MARKETPLACE,
@@ -31,6 +32,8 @@ import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
 import type { Invocation, Supervision } from './decide.mts';
 import { createRunFiles } from './runtime.mts';
 import type { RunFiles } from './runtime.mts';
+import { createSessionStore } from './sessions.mts';
+import type { SessionStore } from './sessions.mts';
 import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from './logs.mts';
 import { resolvePluginPath } from './plugins.mts';
 import { postSlack, slackText } from './notify.mts';
@@ -80,6 +83,8 @@ export interface WorkerDeps extends Context {
   mcpServers: (dir: string, names: string[]) => { config: { mcpServers: Record<string, unknown> }; missing: string[] };
   home: string;
   newSessionId: () => string;
+  // The sessions this machine started, per task: only those are ever resumed.
+  sessions: SessionStore;
   files: RunFiles;
   // The hook command line for a task, given the run directory.
   hookCommand: (runDir: string, taskId: string) => string;
@@ -108,6 +113,8 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     );
 
   const fromIntake = task.createdBy === 'intake';
+  // What a new directory is sealed against: the task's own creator and schedule, as the board has them.
+  const sealing = { createdBy: task.createdBy, scheduleId: task.scheduleId };
   const pluginRoots: Record<string, string> = {};
   for (const name of fromIntake
     ? pluginPlaceholders([...config.intake.allowedTools, ...config.intake.disallowedTools])
@@ -119,12 +126,8 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     }
   }
   const notes = await backend.readNotes(task.id);
-  // What the user wrote reaches the agent as their words, so a comment or answer that cannot be read stops the run.
-  if (notes.some((note) => note.author === 'user' && note.unreadable))
-    return fail(
-      "A comment or answer in this task's thread could not be decrypted with this machine's data key, so it was not run. Check AGENT_BOARD_DATA_KEY, or use Re-run fresh to start over.",
-    );
-  const run = planRun(task, notes, deps.newSessionId);
+  const run = planRun(task, notes, { newSessionId: deps.newSessionId, isOwnSession: deps.sessions.has });
+  if (run.kind === 'blocked') return fail(run.reason);
   deps.appendLog(taskId, run.kind === 'resume' ? `resuming session ${run.sessionId}` : `new session ${run.sessionId}`);
   // The resume is used up whether or not the run gets going. This is also the update that clears the task's `paused`.
   await backend.updateTask(task.id, { next: 'fresh' });
@@ -158,7 +161,8 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   }
   deps.appendLog(taskId, `working directory ${plan.invocation.cwd}`);
   // Bound to the task from now on: it runs here unless the agent moves on (into a worktree, say).
-  if (task.workdir !== plan.invocation.cwd) await backend.updateTask(task.id, { workdir: plan.invocation.cwd });
+  if (task.workdir !== plan.invocation.cwd)
+    await backend.updateTask(task.id, { workdir: plan.invocation.cwd, seal: sealing });
 
   // Intake loads only the user's settings; the tokens and endpoints it is allowed come from the checkout's.
   let env: Record<string, string> = { AGENT_BOARD_TASK: taskId };
@@ -193,22 +197,44 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   const condenser = new StreamCondenser(deps.now);
   const runId = deps.newSessionId();
   let pending: TranscriptEvent[] = [];
+  const post = (events: TranscriptEvent[]): Promise<void> =>
+    backend.transcript(task.id, {
+      runId,
+      startedAt: startedAt.toISOString(),
+      sessionId: run.sessionId,
+      resumed: run.kind === 'resume',
+      events,
+    });
+  // Sends `events`; returns the ones to try again later (all, or none). A batch the board refuses for good is halved until the
+  // event it cannot take is alone and dropped, so one bad event never holds the transcript back.
+  const sendEvents = async (events: TranscriptEvent[]): Promise<TranscriptEvent[]> => {
+    try {
+      await post(events);
+      return [];
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (!isPermanentRefusal(error)) {
+        deps.appendLog(taskId, `transcript upload failed: ${reason}`);
+        return events;
+      }
+      if (events.length === 1) {
+        deps.appendLog(taskId, `transcript event ${events[0]?.seq} was refused and dropped: ${reason}`);
+        return [];
+      }
+      const middle = Math.ceil(events.length / 2);
+      const firstBack = await sendEvents(events.slice(0, middle));
+      if (firstBack.length > 0) return [...firstBack, ...events.slice(middle)];
+      return sendEvents(events.slice(middle));
+    }
+  };
   const upload = async (): Promise<void> => {
     const batches = splitBatches(pending);
     pending = [];
     for (const [index, events] of batches.entries()) {
-      try {
-        await backend.transcript(task.id, {
-          runId,
-          startedAt: startedAt.toISOString(),
-          sessionId: run.sessionId,
-          resumed: run.kind === 'resume',
-          events,
-        });
-      } catch (error) {
-        // The refused batch and the ones after it go out again with the next check.
-        pending = [...batches.slice(index).flat(), ...pending].slice(-MAX_PENDING_EVENTS);
-        deps.appendLog(taskId, `transcript upload failed: ${error instanceof Error ? error.message : String(error)}`);
+      const back = await sendEvents(events);
+      if (back.length > 0) {
+        // What could not go out, and the batches after it, go again with the next check.
+        pending = [...back, ...batches.slice(index + 1).flat(), ...pending].slice(-MAX_PENDING_EVENTS);
         return;
       }
     }
@@ -243,7 +269,10 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   };
 
   // Stored only now that the run is about to start: a reply to a run that never began must not resume its session.
-  if (run.kind === 'fresh') await backend.updateTask(task.id, { sessionId: run.sessionId });
+  if (run.kind === 'fresh') {
+    deps.sessions.record(task.id, run.sessionId);
+    await backend.updateTask(task.id, { sessionId: run.sessionId });
+  }
   let result: RunResult;
   try {
     await beat();
@@ -263,7 +292,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   if (isRunOver(task, after)) return;
   // The session's directory as it stopped: a later resume must start in the same place, worktree included.
   if (endedIn !== undefined && endedIn !== plan.invocation.cwd) {
-    await backend.updateTask(task.id, { workdir: endedIn });
+    await backend.updateTask(task.id, { workdir: endedIn, seal: sealing });
     deps.appendLog(taskId, `the session ended in ${endedIn}`);
   }
   const outcome = decideOutcome({
@@ -391,8 +420,9 @@ if (import.meta.main) {
       mcpServers: readMcpServers,
       home: homedir(),
       newSessionId: randomUUID,
+      sessions: createSessionStore(),
       files: createRunFiles(),
-      hookCommand: (runDir, id) => `${shellQuote(HOOK_BIN)} ${shellQuote(runDir)} ${id}`,
+      hookCommand: (runDir, id) => `${shellQuote(HOOK_BIN)} ${shellQuote(runDir)} ${shellQuote(id)}`,
       now: () => new Date(),
       watchEveryMs: 15_000,
     };

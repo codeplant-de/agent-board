@@ -1,6 +1,16 @@
 import type { IntakeConfig, Lane } from './config.mts';
-import { formatAnswers, MAX_BATCH_EVENTS, parsePrUrl, prUrlIn, promptSkill, shortSkill } from '@agent-board/shared';
+import {
+  formatAnswers,
+  isSafeWorkdir,
+  isSessionId,
+  MAX_BATCH_EVENTS,
+  parsePrUrl,
+  prUrlIn,
+  promptSkill,
+  shortSkill,
+} from '@agent-board/shared';
 import type { Note, Task, TranscriptEvent, UnreadableField } from '@agent-board/shared';
+import { BackendError } from './backend.mts';
 
 // `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives `<plugin>@ccc`, such as {pr-review}.
 const PLUGIN_PLACEHOLDER = /\{([a-z0-9][a-z0-9-]*)\}/g;
@@ -193,6 +203,12 @@ export function expandRule(rule: string, home: string, pluginRoots: Record<strin
     .replace(PLUGIN_PLACEHOLDER, (match, name: string) => pluginRoots[name] ?? match);
 }
 
+// A refusal that sending the same thing again cannot change: a malformed, oversized, unknown or conflicting request. Anything
+// else (no network, a 5xx, a revoked token) is worth another try.
+export function isPermanentRefusal(error: unknown): boolean {
+  return error instanceof BackendError && [400, 404, 409, 413, 422].includes(error.status ?? 0);
+}
+
 // The fields this machine could not open that a run needs: its prompt and the directory it works in. A task listed here must
 // not be started, since an empty prompt or a missing directory would run something else than the user wrote.
 export function unreadableForRun(task: Task): UnreadableField[] {
@@ -218,9 +234,11 @@ export function notServableHere(task: Task, machine: string, repos: Record<strin
   return undefined;
 }
 
-// What the worker starts: a new Claude session, or the task's last one with the user's reply.
+// What the worker starts: a new Claude session, or the task's last one with the user's reply; or why it starts nothing.
 export type RunPlan =
-  { kind: 'fresh'; sessionId: string; thread?: string } | { kind: 'resume'; sessionId: string; prompt: string };
+  | { kind: 'fresh'; sessionId: string; thread?: string }
+  | { kind: 'resume'; sessionId: string; prompt: string }
+  | { kind: 'blocked'; reason: string };
 
 const byTime = (notes: Note[]): Note[] => [...notes].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
@@ -234,11 +252,10 @@ export function userReply(notes: Note[]): Note[] {
   return userNotes(sorted.slice(sorted.findLastIndex((note) => note.author === 'agent') + 1));
 }
 
-// A note as the agent reads it; an answer comes with the questions it answers.
-function noteText(note: Note, notes: Note[]): string {
+// A note as the agent reads it; an answer comes with the questions the user was shown, from its own envelope.
+function noteText(note: Note): string {
   if (note.kind !== 'answer') return note.text.trim();
-  const questions = notes.find((candidate) => candidate.id === note.questionNoteId)?.questions;
-  const answers = formatAnswers(questions, note.answers ?? []);
+  const answers = formatAnswers(note.questions, note.answers ?? []);
   return note.text.trim() === '' ? `Answers:\n${answers}` : `Answers:\n${answers}\n\n${note.text.trim()}`;
 }
 
@@ -251,20 +268,25 @@ function previousRunStart(notes: Note[], before: Date | null): Date | undefined 
   return starts.map((note) => note.createdAt).sort((a, b) => b.getTime() - a.getTime())[0];
 }
 
+// What the user wrote since the previous run started, oldest first: what a fresh run is told of the thread.
+function writtenSincePreviousRun(task: Task, notes: Note[]): Note[] {
+  const lastStart = previousRunStart(notes, task.runStartedAt);
+  return byTime(userNotes(notes.filter((note) => lastStart === undefined || note.createdAt > lastStart)));
+}
+
 /**
  * What a fresh run is told of the thread on top of its prompt: the user's notes since the previous run started, as
  * written, and where to read the rest. Undefined when only the board wrote to the thread.
  */
 export function freshThreadBlock(task: Task, notes: Note[]): string | undefined {
-  if (!notes.some((note) => note.author !== 'system')) return undefined;
-  const lastStart = previousRunStart(notes, task.runStartedAt);
-  const written = byTime(userNotes(notes.filter((note) => lastStart === undefined || note.createdAt > lastStart)));
+  if (!notes.some((note) => note.author !== 'system' && note.author !== 'server')) return undefined;
+  const written = writtenSincePreviousRun(task, notes);
   return [
     ...(written.length > 0
       ? [
           `The user wrote on board task ${task.id} since its last run started:`,
           '',
-          ...written.flatMap((note) => [noteText(note, notes), '']),
+          ...written.flatMap((note) => [noteText(note), '']),
         ]
       : []),
     `The thread holds earlier notes: run \`board show ${task.id}\` first to read it.`,
@@ -281,7 +303,7 @@ export function buildResumePrompt(task: Task, notes: Note[]): string | undefined
   if (reply.length === 0) {
     return [pausedLine, '', CONTINUE_LINE].join('\n');
   }
-  const parts = reply.map((note) => noteText(note, notes));
+  const parts = reply.map((note) => noteText(note));
   return [
     ...(paused ? [pausedLine, ''] : []),
     `The user replied on board task ${task.id}:`,
@@ -291,14 +313,38 @@ export function buildResumePrompt(task: Task, notes: Note[]): string | undefined
   ].join('\n');
 }
 
-// Resume when the user asked for it, a session exists and there is a reply to give it; otherwise start over.
-export function planRun(task: Task, notes: Note[], newSessionId: () => string): RunPlan {
+const UNREADABLE_NOTE_REASON =
+  "A comment or answer in this task's thread could not be decrypted with this machine's data key, and this run would have handed it to the agent, so it was not run. Check AGENT_BOARD_DATA_KEY, or use Re-run fresh: a fresh run starts after this attempt and is not handed the note.";
+
+export interface RunPlanOptions {
+  newSessionId: () => string;
+  // Whether this machine started that Claude session for that task. The board names the session to resume in the clear, so
+  // a session this machine has no record of is never resumed: the id could be another task's, or another conversation.
+  isOwnSession: (taskId: string, sessionId: string) => boolean;
+}
+
+/**
+ * Resume when the user asked for it, a session exists and there is a reply to give it; otherwise start over. A run is blocked
+ * when it would resume a session this machine did not start for the task, or hand the agent a note of the user's that could
+ * not be opened: the agent would act on less than the user wrote.
+ */
+export function planRun(task: Task, notes: Note[], options: RunPlanOptions): RunPlan {
   if (task.next === 'resume' && task.sessionId !== null) {
     const prompt = buildResumePrompt(task, notes);
-    if (prompt !== undefined) return { kind: 'resume', sessionId: task.sessionId, prompt };
+    if (prompt !== undefined) {
+      if (!options.isOwnSession(task.id, task.sessionId))
+        return {
+          kind: 'blocked',
+          reason: `The board asks to resume Claude session ${task.sessionId}, which this machine did not start for this task, so the run was not started. Use Re-run fresh to start over.`,
+        };
+      if (userReply(notes).some((note) => note.unreadable)) return { kind: 'blocked', reason: UNREADABLE_NOTE_REASON };
+      return { kind: 'resume', sessionId: task.sessionId.toLowerCase(), prompt };
+    }
   }
+  if (writtenSincePreviousRun(task, notes).some((note) => note.unreadable))
+    return { kind: 'blocked', reason: UNREADABLE_NOTE_REASON };
   const thread = freshThreadBlock(task, notes);
-  return { kind: 'fresh', sessionId: newSessionId(), ...(thread === undefined ? {} : { thread }) };
+  return { kind: 'fresh', sessionId: options.newSessionId(), ...(thread === undefined ? {} : { thread }) };
 }
 
 /**
@@ -377,7 +423,11 @@ export function buildInvocation(input: {
   const { task, intake } = input;
   const fromIntake = task.createdBy === 'intake';
   const prompt = task.input.trim();
+  if (input.run.kind === 'blocked') return { ok: false, reason: input.run.reason };
   if (input.run.kind === 'fresh' && prompt === '') return { ok: false, reason: 'The task has no prompt.' };
+  if (!isSessionId(input.run.sessionId)) return { ok: false, reason: 'The session id is not a UUID.' };
+  if (task.workdir !== null && !isSafeWorkdir(task.workdir))
+    return { ok: false, reason: 'The task directory is not an absolute path.' };
 
   // Where it runs: a resume where the session stopped; a scheduled task in its own directory; a task whose prompt
   // names a PR in that repo's checkout (an intake review always); else its lane's directory, else the default one.
@@ -403,15 +453,16 @@ export function buildInvocation(input: {
     input.hookCommand === undefined
       ? {}
       : { hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: input.hookCommand }] }] } };
+  // One argument each, so an id can never be read as a flag of its own.
   const session =
-    input.run.kind === 'fresh' ? ['--session-id', input.run.sessionId] : ['--resume', input.run.sessionId];
+    input.run.kind === 'fresh' ? `--session-id=${input.run.sessionId}` : `--resume=${input.run.sessionId}`;
   // Prompt first: --allowedTools and --disallowedTools take every following argument.
   const args = [
     '-p',
     input.run.kind === 'fresh'
       ? [prompt, input.run.thread].filter((part) => part !== undefined).join('\n\n')
       : input.run.prompt,
-    ...session,
+    session,
     // Every event as a JSON line: the worker keeps a readable log and sends the transcript to the board.
     '--output-format',
     'stream-json',

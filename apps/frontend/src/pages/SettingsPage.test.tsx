@@ -7,7 +7,9 @@ import userEvent from '@testing-library/user-event';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createKeySetup } from '../crypto/keySlots';
 import { SettingsPage } from './SettingsPage';
-import { openAs, sealAs, taskFields } from '../lib/contexts';
+import { openAs, sealerFor } from '../lib/contexts';
+
+const TITLE = { field: 'title', context: 'task:abc' } as const;
 
 const issue = vi.hoisted(() => vi.fn(async (_: unknown) => ({ token: 'abm_secret-token' })));
 const machines = vi.hoisted(() => ({
@@ -64,7 +66,7 @@ const shownLine = (name: string): string | undefined =>
 beforeAll(async () => {
   const made = await createKeySetup({ owner: 'jascha', passphrase: PASSPHRASE, kdf: { m: 8192, t: 1, p: 1 } });
   setup = made.setup;
-  sealedByBrowser = await sealAs(made.keys, taskFields().title, 'sealed in the browser');
+  sealedByBrowser = await sealerFor(made.keys)(TITLE, 'sealed in the browser');
 });
 
 beforeEach(() => {
@@ -92,7 +94,7 @@ describe('machine enrolment', () => {
     expect(line).toMatch(/^abk1_/);
     const machineKeys = await deriveKeys(decodeDataKey(line ?? ''), 'jascha');
     expect(machineKeys.keyId).toBe(setup.keyId);
-    expect(await openAs(machineKeys, taskFields().title, sealedByBrowser)).toBe('sealed in the browser');
+    expect(await openAs(machineKeys, TITLE, sealedByBrowser)).toBe('sealed in the browser');
   });
 
   it('issues no token when the passphrase is wrong', async () => {
