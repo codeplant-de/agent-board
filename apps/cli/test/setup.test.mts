@@ -42,6 +42,7 @@ test('the rendered units are the ones the checkout shipped, with the lock path o
     'agent-board-dispatch.timer',
     'agent-board-intake.service',
     'agent-board-intake.timer',
+    'agent-board-listen.service',
   ]);
   assert.equal(
     units['agent-board-dispatch.service'],
@@ -78,6 +79,25 @@ WantedBy=timers.target
     /ExecStart=\/usr\/bin\/flock -n -E 75 %t\/agent-board-intake\.lock .* internal intake\nSuccessExitStatus=75\nTimeoutStartSec=300\n/,
   );
   assert.match(units['agent-board-intake.timer'] ?? '', /OnBootSec=5min\nOnUnitActiveSec=10min\nAccuracySec=30s\n/);
+  assert.equal(
+    units['agent-board-listen.service'],
+    `[Unit]
+Description=agent-board listener: dispatch as soon as the board says tasks changed
+# The listener exits on a contract mismatch until the CLI is updated; systemd must keep restarting it, not give up.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# PATH is for the gh, claude and systemd-run that the dispatch ticks it starts use.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/node/bin/node /opt/board/apps/cli/src/main.mts internal listen
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+`,
+  );
 });
 
 test('arguments with spaces, quotes, % and $ are quoted the way systemd reads them', () => {
@@ -118,7 +138,7 @@ function fixture(overrides: Partial<SetupDeps> = {}) {
   return { dir, unitDir, printed, calls, deps };
 }
 
-test('setup writes four unit copies, reloads systemd and prints the enable line', async () => {
+test('setup writes five unit copies, reloads systemd and prints the enable line', async () => {
   const { dir, unitDir, printed, calls, deps } = fixture();
   try {
     await setup(deps, {});
@@ -127,26 +147,30 @@ test('setup writes four unit copies, reloads systemd and prints the enable line'
       'agent-board-dispatch.timer',
       'agent-board-intake.service',
       'agent-board-intake.timer',
+      'agent-board-listen.service',
     ]);
     assert.deepEqual(calls, ['systemctl --user daemon-reload']);
     assert.ok(printed.some((line) => line.includes(ENABLE_COMMAND)));
-    assert.equal(ENABLE_COMMAND, 'systemctl --user enable --now agent-board-dispatch.timer agent-board-intake.timer');
+    assert.equal(
+      ENABLE_COMMAND,
+      'systemctl --user enable --now agent-board-dispatch.timer agent-board-intake.timer agent-board-listen.service',
+    );
     for (const file of readdirSync(unitDir)) assert.equal(lstatSync(join(unitDir, file)).isSymbolicLink(), false);
     printed.length = 0;
     await setup(deps, {});
-    assert.equal(printed.filter((line) => line.startsWith('unchanged ')).length, 4);
+    assert.equal(printed.filter((line) => line.startsWith('unchanged ')).length, 5);
   } finally {
     rmSync(dir, { recursive: true });
   }
 });
 
-test('setup --enable also enables and starts the timers', async () => {
+test('setup --enable also enables and starts the timers and the listener', async () => {
   const { dir, calls, deps } = fixture();
   try {
     await setup(deps, { enable: true });
     assert.deepEqual(calls, [
       'systemctl --user daemon-reload',
-      'systemctl --user enable --now agent-board-dispatch.timer agent-board-intake.timer',
+      'systemctl --user enable --now agent-board-dispatch.timer agent-board-intake.timer agent-board-listen.service',
     ]);
   } finally {
     rmSync(dir, { recursive: true });
@@ -157,7 +181,7 @@ test('setup --print shows the units and changes nothing', async () => {
   const { dir, unitDir, printed, calls, deps } = fixture();
   try {
     await setup(deps, { print: true });
-    assert.equal(printed.length, 4);
+    assert.equal(printed.length, 5);
     assert.match(printed[0] ?? '', /^# .*agent-board-dispatch\.service\n\[Unit\]/);
     assert.deepEqual(calls, []);
     assert.throws(() => readdirSync(unitDir));
@@ -215,7 +239,7 @@ test('board setup goes through the command line into a temp unit dir and is refu
   };
   try {
     await runBoard(['setup'], options);
-    assert.deepEqual(readdirSync(join(dir, 'xdg', 'systemd', 'user')).length, 4);
+    assert.deepEqual(readdirSync(join(dir, 'xdg', 'systemd', 'user')).length, 5);
     assert.deepEqual(calls, ['systemctl --user daemon-reload']);
     await assert.rejects(
       runBoard(['setup'], { ...options, env: { ...options.env, AGENT_BOARD_TASK: 'Zt0Test1' } }),
@@ -232,18 +256,22 @@ test('the units run with the PATH setup exports, and doctor looks tools up on it
   assert.equal(UNIT_PATH, '%h/.local/bin:/usr/local/bin:/usr/bin:/bin');
 });
 
-test('with both timers enabled already, setup does not tell you to enable them', async () => {
-  const { dir, printed, deps } = fixture({ timerEnabled: async () => true });
-  const partly = fixture({ timerEnabled: async (timer) => timer.includes('dispatch') });
+test('with the timers and the listener enabled already, setup does not tell you to enable them', async () => {
+  const { dir, printed, deps } = fixture({ unitEnabled: async () => true });
+  const partly = fixture({ unitEnabled: async (unit) => unit.includes('dispatch') });
+  const noListener = fixture({ unitEnabled: async (unit) => unit.endsWith('.timer') });
   try {
     await setup(deps, {});
     assert.ok(!printed.some((line) => line.includes('Enable the timers')));
     assert.ok(printed.some((line) => line.includes('enabled already')));
     await setup(partly.deps, {});
     assert.ok(partly.printed.some((line) => line.includes('Enable the timers')));
+    await setup(noListener.deps, {});
+    assert.ok(noListener.printed.some((line) => line.includes('Enable the timers and the listener')));
   } finally {
     rmSync(dir, { recursive: true });
     rmSync(partly.dir, { recursive: true });
+    rmSync(noListener.dir, { recursive: true });
   }
 });
 
@@ -258,7 +286,7 @@ test('setup from a tree that is not the installed one refuses without --force, a
     assert.equal(calls.length, 0, '--print changes nothing and needs no --force');
     await setup(deps, { force: true });
     assert.ok(printed.includes(`warning: ${problem}`));
-    assert.equal(readdirSync(unitDir).length, 4);
+    assert.equal(readdirSync(unitDir).length, 5);
   } finally {
     rmSync(dir, { recursive: true });
   }
