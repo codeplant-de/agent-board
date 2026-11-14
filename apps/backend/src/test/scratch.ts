@@ -44,7 +44,9 @@ export function scratchDatabase(label: string): ScratchDatabase {
     return url.toString();
   };
   const admin = createDb(testDatabaseUrl());
-  const dropSql = sql.raw(`drop database if exists ${name} with (force)`);
+  // Not `with (force)`: callers close their connections first, and Postgres waits for a session that is still on its
+  // way out. Forcing would kill that session, and its last message surfaces in the test run as an unhandled error.
+  const dropSql = sql.raw(`drop database if exists ${name}`);
   return {
     name,
     adminUrl: urlFor(),
