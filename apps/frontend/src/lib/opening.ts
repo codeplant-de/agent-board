@@ -23,6 +23,7 @@ import {
 import { openAs } from './contexts';
 import {
   checkNoteShapes,
+  isCount,
   checkTaskShapes,
   safeId,
   safeNullableId,
@@ -86,9 +87,19 @@ export interface TaskDetail {
   parent: BoardTask | null;
 }
 
-export type Schedule = Omit<WireSchedule, keyof SealedFields> & SealedFields & { unreadable: UnreadableField[] };
-export type TranscriptRun = RouterOutputs['transcript']['runs'][number];
-export type Machine = RouterOutputs['machines']['list'][number];
+export type Schedule = Omit<WireSchedule, keyof SealedFields> &
+  SealedFields & {
+    unreadable: UnreadableField[];
+    // The clear fields the board sent in a shape it does not promise; the page shows a placeholder for them.
+    invalid: string[];
+  };
+// A count the board sent that is not a whole number is null.
+export type TranscriptRun = Omit<RouterOutputs['transcript']['runs'][number], 'eventCount'> & {
+  eventCount: number | null;
+};
+// `name` is what the board sent, kept to send back (a token with a name that does not pass the shape check can still be revoked);
+// `shown` is what the page may print.
+export type Machine = RouterOutputs['machines']['list'][number] & { shown: string };
 
 // One envelope always opens to the same text, so the 5 s polls of every task's prompt decrypt only what is new. Transcript
 // values are large and opened once on demand, so they are not kept.
@@ -207,6 +218,8 @@ export async function openTaskDetail(keys: Keys, wire: RouterOutputs['tasks']['g
 export async function openSchedule(keys: Keys, wire: WireSchedule): Promise<Schedule> {
   const id = safeId(wire.id, 'schedule id');
   const fields = await openFields(openerFor(keys), { kind: 'schedule', id }, wire);
+  const remainingOk = wire.remaining === null || isCount(wire.remaining);
+  const everyOk = wire.everyMs === null || (isCount(wire.everyMs) && wire.everyMs > 0);
   return {
     ...wire,
     ...fields,
@@ -214,6 +227,9 @@ export async function openSchedule(keys: Keys, wire: WireSchedule): Promise<Sche
     priority: isPriority(wire.priority) ? wire.priority : 'normal',
     machine: shownName(wire.machine),
     ...shownRule(wire),
+    remaining: remainingOk ? wire.remaining : null,
+    everyMs: everyOk ? wire.everyMs : null,
+    invalid: [...(remainingOk ? [] : ['remaining']), ...(everyOk ? [] : ['everyMs'])],
     occurrenceTaskId: safeNullableId(wire.occurrenceTaskId, 'occurrence id'),
   };
 }
@@ -229,13 +245,14 @@ export function openRuns(wire: RouterOutputs['transcript']['runs']): TranscriptR
     return {
       ...run,
       machine: shownName(run.machine) ?? INVALID_VALUE,
+      eventCount: isCount(run.eventCount) ? run.eventCount : null,
       sessionId: run.sessionId !== null && isSessionId(run.sessionId) ? run.sessionId : null,
     };
   });
 }
 
 export function openMachines(wire: RouterOutputs['machines']['list']): Machine[] {
-  return wire.map((machine) => ({ ...machine, name: shownName(machine.name) ?? INVALID_VALUE }));
+  return wire.map((machine) => ({ ...machine, shown: shownName(machine.name) ?? INVALID_VALUE }));
 }
 
 /** An event that cannot be opened becomes a note saying so, so the rest of the run still reads. */
@@ -250,7 +267,7 @@ export async function openEvent(
     if (typeof data === 'object' && data !== null && 'kind' in data && 'seq' in data)
       if (data.kind === wire.kind && data.seq === wire.seq)
         // The shape within the sealed JSON is the worker's; only the kind and position are checked against the listing.
-        return { ...data, outputSize: wire.outputSize } as TranscriptEventView;
+        return { ...data, outputSize: isCount(wire.outputSize) ? wire.outputSize : null } as TranscriptEventView;
   } catch {
     // Falls through to the placeholder.
   }

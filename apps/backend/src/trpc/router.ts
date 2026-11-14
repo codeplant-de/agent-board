@@ -1,6 +1,5 @@
 import {
   ContractError,
-  isSafeMachineName,
   isSafeTaskId,
   parseKeyId,
   parseKeySlots,
@@ -262,10 +261,11 @@ const machinesRouter = router({
   list: procedure.query(({ ctx }) => listMachines(ctx.db)),
   /** Returns the token once; only its hash is stored. */
   issue: procedure
-    .input(z.object({ name: z.string().refine(isSafeMachineName, 'not a machine name the workers accept') }))
+    .input(z.object({ name: z.string().min(1).max(256) }))
     .mutation(async ({ ctx, input }) => ({ token: await issueToken(ctx.db, input.name) })),
+  // Any name: a token issued before names were restricted must stay revocable, whatever its name.
   revoke: procedure
-    .input(z.object({ name: z.string().min(1) }))
+    .input(z.object({ name: z.string().min(1).max(256) }))
     .mutation(async ({ ctx, input }) => revokeMachine(ctx.db, input.name)),
 });
 

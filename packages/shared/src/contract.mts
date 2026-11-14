@@ -390,9 +390,12 @@ export function newTaskId(): string {
   return id;
 }
 
-// The source of the machine-name pattern: the server events of `events.mts` match names with it too. 32 characters hold a
-// host name or a name someone picks for a machine, and are too short to carry a sentence in an event text.
-export const MACHINE_NAME_PATTERN = '[A-Za-z0-9][A-Za-z0-9_.-]{0,31}';
+// The source of the machine-name pattern: the server events of `events.mts` match names with it too. The character set carries
+// the protection (no space or punctuation, so a name cannot be a sentence); 64 characters is what every CLI before accepted, so
+// no name that worked stops working, and it holds any host name (63 at most).
+export const MACHINE_NAME_PATTERN = '[A-Za-z0-9][A-Za-z0-9_.-]{0,63}';
+export const MACHINE_NAME_RULE =
+  "1 to 64 characters: letters, digits, '.', '-' and '_', starting with a letter or digit";
 const MACHINE_NAME = new RegExp(`^${MACHINE_NAME_PATTERN}$`);
 
 // A machine name travels in argv and is shown in the UI.
@@ -872,8 +875,7 @@ export function parseHeartbeat(value: unknown): Heartbeat {
   const obj = record(value, 'heartbeat');
   rejectUnknownKeys(obj, ['lane', 'borrowed'], 'heartbeat');
   const lane = string(obj, 'lane', 'heartbeat');
-  if (!isSafeMachineName(lane))
-    throw new ContractError("heartbeat.lane must be a name of letters, digits, '.', '-' and '_'");
+  if (!isSafeMachineName(lane)) throw new ContractError(`heartbeat.lane must be a name of ${MACHINE_NAME_RULE}`);
   return { lane, borrowed: boolean(obj, 'borrowed', 'heartbeat') };
 }
 

@@ -9,9 +9,11 @@ import { KeyProvider } from '../crypto/KeyProvider';
 import { createKeySetup } from '../crypto/keySlots';
 import { SettingsPage } from './SettingsPage';
 import { openAs, sealerFor } from '../lib/contexts';
+import { openMachines } from '../lib/opening';
 
 const TITLE = { field: 'title', context: 'task:abc' } as const;
 
+const revoke = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const issue = vi.hoisted(() => vi.fn(async (_: unknown) => ({ token: 'abm_secret-token' })));
 const machines = vi.hoisted(() => ({
   current: [] as { name: string; lastSeenAt: string | null; revokedAt: string | null }[],
@@ -32,9 +34,11 @@ vi.mock('../lib/trpc', () => ({
       replaceSlots: { mutationOptions: () => ({ mutationFn: async () => null }) },
     },
     machines: {
-      list: { queryOptions: () => ({ queryKey: ['machines'], queryFn: async () => machines.current }) },
+      list: {
+        queryOptions: () => ({ queryKey: ['machines'], queryFn: async () => openMachines(machines.current as never) }),
+      },
       issue: { mutationOptions: () => ({ mutationFn: issue }) },
-      revoke: { mutationOptions: () => ({ mutationFn: async () => null }) },
+      revoke: { mutationOptions: () => ({ mutationFn: revoke }) },
     },
   }),
 }));
@@ -76,6 +80,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   issue.mockClear();
+  revoke.mockClear();
   stored.current = setup;
   machines.current = [{ name: 'laptop', lastSeenAt: null, revokedAt: null }];
 });
@@ -86,6 +91,33 @@ async function askFor(button: string, passphrase: string) {
   await userEvent.type(within(dialog).getByLabelText('Passphrase', { selector: 'input' }), passphrase);
   await userEvent.click(within(dialog).getByRole('button', { name: button }));
 }
+
+describe('a machine whose token carries a name the browser no longer accepts', () => {
+  // Names used to be any 1 to 64 characters. The token still works, so it must stay revocable.
+  const odd = 'old laptop (the 2019 one) with a very long and unusual name that issue once accepted';
+
+  it('is shown as a placeholder, never as text, and can still be revoked under its raw name', async () => {
+    machines.current = [{ name: odd, lastSeenAt: null, revokedAt: null }];
+    renderPage();
+    expect(await screen.findByText('(invalid)')).toBeInTheDocument();
+    expect(screen.queryByText(odd)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'New token' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Show data key' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Revoke' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).not.toContain('old laptop');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }));
+    await waitFor(() => expect(revoke).toHaveBeenCalled());
+    expect(revoke.mock.calls[0]?.[0]).toEqual({ name: odd });
+  });
+
+  it('shows a name of the shape as it is, with every action', async () => {
+    renderPage();
+    expect(await screen.findByText('laptop')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New token' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Revoke' })).toBeInTheDocument();
+  });
+});
 
 describe('machine enrolment', () => {
   it('shows the token and a data key that opens what the browser sealed, after the passphrase', async () => {

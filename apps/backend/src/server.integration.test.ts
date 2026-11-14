@@ -1,5 +1,5 @@
 import { CONTRACT_VERSION, inputBinding, sealFields, sealNote, TAKE_BACK_AFTER_MS } from '@agent-board/shared';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { schedules, tasks } from './db/schema';
 import { buildServer } from './server';
@@ -315,6 +315,36 @@ describe('board UI', () => {
     const listed = await ui.machines.list();
     expect(listed.find((m) => m.name === 'new-box')?.lastSeenAt).not.toBeNull();
     expect(JSON.stringify(listed)).not.toContain('token');
+  });
+});
+
+describe('machine names', () => {
+  it('takes 64 characters of the tight character set, and states the limit when a name is too long', async () => {
+    const ui = plainUi(db);
+    expect((await ui.machines.issue({ name: 'm'.repeat(64) })).token).toMatch(/^abm_/);
+    await expect(ui.machines.issue({ name: 'm'.repeat(65) })).rejects.toThrow(/1 to 64 characters/);
+    await expect(ui.machines.issue({ name: 'old laptop' })).rejects.toThrow(/letters, digits/);
+  });
+
+  it('revokes a token whose name no longer passes the check, which an earlier release accepted', async () => {
+    const ui = plainUi(db);
+    const odd = 'old laptop (2019) with a name that an earlier release accepted';
+    const name = odd.slice(0, 64);
+    const token = 'abm_legacy-token';
+    await admin.execute(
+      sql`insert into machine (owner, name, token_hash) values ('jascha', ${name}, encode(sha256(${token}::bytea), 'hex'))`,
+    );
+    const call = () =>
+      ctx.app.inject({
+        method: 'POST',
+        url: '/api/machine/list-tasks',
+        headers: { authorization: `Bearer ${token}` },
+        payload: {},
+      });
+    expect((await call()).statusCode).toBe(200);
+    await ui.machines.revoke({ name });
+    expect((await call()).statusCode).toBe(401);
+    expect((await ui.machines.list()).find((m) => m.name === name)?.revokedAt).not.toBeNull();
   });
 });
 

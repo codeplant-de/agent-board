@@ -522,6 +522,42 @@ export function buildInvocation(input: {
   return { ok: true, invocation: { command: 'claude', args, prompt: promptText, cwd } };
 }
 
+// The size of one event as it would be sent.
+const eventBytes = (event: TranscriptEvent): number => Buffer.byteLength(JSON.stringify(event));
+
+/**
+ * A transcript backlog held to a count and a size: past either, the oldest tool outputs go first (the event stays, its output
+ * empties), then, when that is not enough, the oldest events. Says how many of each it dropped, so the transcript can note it.
+ */
+export function boundBacklog(
+  events: TranscriptEvent[],
+  { maxEvents, maxBytes }: { maxEvents: number; maxBytes: number },
+): { events: TranscriptEvent[]; droppedOutputs: number; droppedEvents: number } {
+  let kept = events.length > maxEvents ? events.slice(events.length - maxEvents) : events;
+  let droppedEvents = events.length - kept.length;
+  let droppedOutputs = 0;
+  let total = kept.reduce((sum, event) => sum + eventBytes(event), 0);
+  if (total > maxBytes) {
+    kept = kept.map((event) => {
+      if (total <= maxBytes || event.kind !== 'tool_result' || event.output === '') return event;
+      const emptied = { ...event, output: '' };
+      total -= eventBytes(event) - eventBytes(emptied);
+      droppedOutputs += 1;
+      return emptied;
+    });
+  }
+  if (total > maxBytes) {
+    let first = 0;
+    while (first < kept.length && total > maxBytes) {
+      total -= eventBytes(kept[first]!);
+      first += 1;
+    }
+    droppedEvents += first;
+    kept = kept.slice(first);
+  }
+  return { events: kept, droppedOutputs, droppedEvents };
+}
+
 // Events as the board takes them: batches of at most `maxEvents` events and about `maxBytes` of JSON, so a backlog
 // stays under the server's limits. One event larger than `maxBytes` goes alone.
 export function splitBatches(

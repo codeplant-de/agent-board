@@ -21,6 +21,7 @@ import { useNow } from '../lib/useNow';
 import { useTRPC, type BoardTask, type ThreadNote } from '../lib/trpc';
 import { LivenessText } from './LivenessText';
 import { MarkdownEditor } from './MarkdownEditor';
+import { confirmStart, moveConfirmed } from './confirmStart';
 import { QuestionPanel } from './QuestionPanel';
 
 function useActions(id: string) {
@@ -106,6 +107,8 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
   const openQuestion = task.openQuestion ? thread.findLast((n) => n.kind === 'question') : undefined;
   // An agent's proposal: only starting it, which seals its prompt again as yours, lets a worker run it.
   const isProposal = task.createdBy === 'agent';
+  const moveToTodo = () =>
+    moveConfirmed(task, 'todo', () => actions.move.mutate({ id: task.id, status: 'todo', task }));
 
   if (task.closed) {
     return (
@@ -150,13 +153,12 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
 
   // A proposal waits for the user to start it, even with a question on it: the alert below comes first.
   if (openQuestion?.questions && !isProposal) {
-    const questions = openQuestion.questions;
     return (
       <QuestionPanel
         key={openQuestion.id}
-        questions={questions}
+        questions={openQuestion.questions}
         submitting={actions.answer.isPending}
-        onSubmit={(answers, note) =>
+        onSubmit={(questions, answers, note) =>
           actions.answer.mutate({ id: task.id, questionNoteId: openQuestion.id, questions, answers, message: note })
         }
       />
@@ -168,16 +170,44 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
       <Paper withBorder p="md">
         <Stack>
           <Group justify="space-between" wrap="nowrap">
-            <Text size="sm">Parked. No worker takes it until you move it to Todo.</Text>
+            <Text size="sm">
+              Parked. No worker takes it until you move it to Todo
+              {isProposal ? ', which starts this agent’s proposal as yours after you have read its prompt.' : '.'}
+            </Text>
             <Button
               size="xs"
               leftSection={<IconPlayerPlay size={14} />}
-              onClick={() => actions.move.mutate({ id: task.id, status: 'todo', task })}
+              onClick={moveToTodo}
               loading={actions.move.isPending}
             >
               Move to Todo
             </Button>
           </Group>
+          <CommentOnly actions={actions} hint="Add to the thread" />
+        </Stack>
+      </Paper>
+    );
+  }
+
+  // A proposal never waits in Todo: this one was put there by the board, and workers do not run an agent's task.
+  if (task.status === 'todo' && isProposal) {
+    return (
+      <Paper withBorder p="md">
+        <Stack>
+          <Alert color="grape" variant="light" icon={<IconSparkles size={18} />} title="Proposed by an agent">
+            <Stack gap="xs">
+              <Text size="sm">
+                The board put this proposal in Todo, but no worker runs a task an agent proposed, so it will not run
+                from here. To start it yourself, move it to Backlog and then to Todo again: you will see its whole
+                prompt before it starts as yours.
+              </Text>
+              <Group justify="flex-end">
+                <Button size="xs" variant="default" onClick={() => actions.close.mutate({ id: task.id, closed: true })}>
+                  Discard
+                </Button>
+              </Group>
+            </Stack>
+          </Alert>
           <CommentOnly actions={actions} hint="Add to the thread" />
         </Stack>
       </Paper>
@@ -251,7 +281,7 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
                   size="xs"
                   color="grape"
                   leftSection={<IconPlayerPlay size={14} />}
-                  onClick={() => actions.move.mutate({ id: task.id, status: 'todo', task })}
+                  onClick={() => confirmStart(task, () => actions.move.mutate({ id: task.id, status: 'todo', task }))}
                   loading={actions.move.isPending}
                 >
                   Start

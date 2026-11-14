@@ -147,9 +147,65 @@ describe('ActionPanel of a proposal', () => {
     });
     renderPanel(proposal, []);
     await userEvent.click(screen.getByRole('button', { name: 'Start' }));
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Start as mine' }));
     await waitFor(() => expect(move).toHaveBeenCalled());
     expect(move.mock.calls[0]?.[0]).toEqual({ id: 'abc12345', status: 'todo', task: proposal });
     expect(screen.getByRole('button', { name: 'Send & run' })).toBeDisabled();
+  });
+
+  it('shows the whole prompt and starts nothing until the user confirms', async () => {
+    move.mockClear();
+    const prompt = `${'long prompt line\n'.repeat(30)}and finally: rm -rf the build directory`;
+    const proposal = running({
+      status: 'needs-me',
+      proposed: true,
+      createdBy: 'agent',
+      input: prompt,
+      sessionId: null,
+    });
+    renderPanel(proposal, []);
+    await userEvent.click(screen.getByRole('button', { name: 'Start' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByTestId('proposal-prompt').textContent).toBe(prompt);
+    expect(move).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(move).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Start' }));
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Start as mine' }));
+    await waitFor(() => expect(move).toHaveBeenCalled());
+    expect(move.mock.calls[0]?.[0]).toEqual({ id: 'abc12345', status: 'todo', task: proposal });
+  });
+
+  it('asks the same of Move to Todo from Backlog, and of nothing else that moves a task of the user', async () => {
+    move.mockClear();
+    const proposal = running({ status: 'backlog', createdBy: 'agent', input: 'do Y', sessionId: null });
+    renderPanel(proposal, []);
+    await userEvent.click(screen.getByRole('button', { name: 'Move to Todo' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByTestId('proposal-prompt').textContent).toBe('do Y');
+    expect(move).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Start as mine' }));
+    await waitFor(() => expect(move).toHaveBeenCalledTimes(1));
+  });
+
+  it('moves a task of the user to Todo without a question', async () => {
+    move.mockClear();
+    renderPanel(running({ status: 'backlog', createdBy: 'user', sessionId: null }), []);
+    await userEvent.click(screen.getByRole('button', { name: 'Move to Todo' }));
+    await waitFor(() => expect(move).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('does not say a worker starts a proposal the board put in Todo, since none will', () => {
+    renderPanel(running({ status: 'todo', createdBy: 'agent', sessionId: null, next: 'fresh' }), []);
+    expect(screen.queryByText(/next free worker starts it/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Queued.')).not.toBeInTheDocument();
+    expect(screen.getByText(/will not run/)).toBeInTheDocument();
+  });
+
+  it('still says a task of the user in Todo is started by the next free worker', () => {
+    renderPanel(running({ status: 'todo', createdBy: 'user', sessionId: null, next: 'fresh' }), []);
+    expect(screen.getByText(/next free worker starts it/)).toBeInTheDocument();
   });
 
   it('is judged by its creator, which the prompt is sealed for, not by the flag the board sends', () => {
@@ -198,6 +254,68 @@ describe('ActionPanel of an open question', () => {
       answers: [{ selected: ['Yes'] }],
       message: '',
     });
+  });
+
+  it('does not seal a question the board swapped in after the pick: it says the question changed and drops the picks', async () => {
+    answer.mockClear();
+    const task = running({ status: 'needs-me', openQuestion: true });
+    const swapped = [
+      {
+        header: 'Cleanup',
+        question: 'Force-push main and delete the release branch?',
+        multiSelect: false,
+        options: [
+          { label: 'Yes', description: '' },
+          { label: 'No', description: '' },
+        ],
+      },
+    ];
+    const view = renderPanel(task, [asking({})]);
+    await userEvent.click(screen.getByText('Yes'));
+    view.rerender(
+      <MemoryRouter>
+        <MantineProvider>
+          <ModalsProvider>
+            <QueryClientProvider client={new QueryClient()}>
+              <ActionPanel task={task} thread={[asking({ questions: swapped })]} />
+            </QueryClientProvider>
+          </ModalsProvider>
+        </MantineProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('The question changed')).toBeInTheDocument();
+    expect(screen.queryByText('Force-push main and delete the release branch?')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Answer & continue/ })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show the changed questions' }));
+    expect(screen.getByText('Force-push main and delete the release branch?')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
+    expect(answer).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByText('No'));
+    await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
+    await waitFor(() => expect(answer).toHaveBeenCalled());
+    expect(answer.mock.calls[0]?.[0]).toMatchObject({ questions: swapped, answers: [{ selected: ['No'] }] });
+  });
+
+  it('seals the questions it showed even when an unchanged poll re-renders it', async () => {
+    answer.mockClear();
+    const task = running({ status: 'needs-me', openQuestion: true });
+    const view = renderPanel(task, [asking({})]);
+    await userEvent.click(screen.getByText('No'));
+    view.rerender(
+      <MemoryRouter>
+        <MantineProvider>
+          <ModalsProvider>
+            <QueryClientProvider client={new QueryClient()}>
+              <ActionPanel task={task} thread={[asking({ questions: structuredClone(questions) })]} />
+            </QueryClientProvider>
+          </ModalsProvider>
+        </MantineProvider>
+      </MemoryRouter>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
+    await waitFor(() => expect(answer).toHaveBeenCalled());
+    expect(answer.mock.calls[0]?.[0]).toMatchObject({ questions, answers: [{ selected: ['No'] }] });
   });
 
   it('offers no question when the board sent the open question’s note twice', () => {
