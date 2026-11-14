@@ -140,10 +140,14 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   const writeJson = (value: unknown): void => writeOut(`${JSON.stringify(value, null, 2)}\n`);
   const inRun = Boolean(env['AGENT_BOARD_TASK']);
   const taskIdOf = (context: Context, arg: string): Promise<string> => resolveTaskId(context.backend, arg, { inRun });
-  const jsonOption = (command: Command): Command =>
+  // `readable`: the command lists tasks, notes or schedules, whose values this machine may be unable to decrypt.
+  const jsonOptionReadable = (command: Command): Command => jsonOption(command, { readable: true });
+  const jsonOption = (command: Command, { readable = false } = {}): Command =>
     command.option(
       '--json',
-      'print JSON on stdout instead of text; a value this machine cannot decrypt is null there and listed in "unreadable" (text shows "(cannot decrypt this title)")',
+      readable
+        ? 'print JSON on stdout instead of text; a value this machine cannot decrypt is null there and named in "unreadable" (text shows "(cannot decrypt: input)" after the task, and "(cannot decrypt this title)" for a title)'
+        : 'print JSON on stdout instead of text',
     );
   // On the old parser a trailing --dry-run meant a dry run; doing the real thing silently would be the wrong direction.
   const refuseDryRunInText = (words: string[], usage: string): void => {
@@ -169,7 +173,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     command.option('--dry-run', 'read everything, print every write instead of doing it');
 
   dryRunOption(
-    jsonOption(
+    jsonOptionReadable(
       program
         .command('tasks')
         .helpGroup(TASKS)
@@ -188,7 +192,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   });
 
   dryRunOption(
-    jsonOption(
+    jsonOptionReadable(
       program
         .command('show')
         .helpGroup(TASKS)
@@ -386,7 +390,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     });
 
   dryRunOption(
-    jsonOption(
+    jsonOptionReadable(
       program
         .command('schedules')
         .helpGroup(SCHEDULING)
@@ -484,14 +488,20 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .description(
       paragraphs(
         "Set this machine up for the board: write web.json (the board's URL), env (the machine token and the data key, mode 600) and, if it is missing, config.json (from the example, with this machine's name). Then run the checks of `board doctor`.",
-        'Set up encryption in the browser first: init asks for the data key from the board\'s Settings page as well as the token. Without flags it asks. For a script give --url, --token-file and --data-key-file: a secret never goes on the command line, where it would land in the shell history. A secret file must be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board init --url … --token-file /dev/stdin --data-key-file ~/key`; only one of the two can be /dev/stdin. --machine defaults to the host name.',
-        'A file that exists is kept unless --force, which copies it to <name>.bak-<timestamp> first and, for env, keeps the token, the data key and any other line you do not give again. An env that has the token but no data key (or the reverse) is completed without --force: init asks for the missing value only. config.json is never replaced.',
+        'Set up encryption in the browser first: init asks for the data key from the board\'s Settings page as well as the token. The page offers the env lines to copy (`AGENT_BOARD_TOKEN=…`, `AGENT_BOARD_DATA_KEY=…`): paste them as they are, or the bare values; a text or file with both lines answers both questions. Without flags it asks. For a script give --url, --token-file and --data-key-file: a secret never goes on the command line, where it would land in the shell history. A secret file must be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board init --url … --token-file /dev/stdin --data-key-file ~/key`; only one of the two can be /dev/stdin. --machine defaults to the host name.',
+        'A file that exists is kept unless --force, which copies it to <name>.bak-<timestamp> first (an env backup is mode 600 at most) and keeps what you do not give again: the URL, the token, the data key and any other line of env. An env that has the token but no data key (or the reverse) is completed without --force: init asks for the missing value only. config.json is never replaced.',
         'Not available inside a board run.',
       ),
     )
     .option('--url <url>', "the board's URL (https, or http for localhost)")
-    .option('--token-file <path>', 'read the machine token from this file (mode 600 or 400, or a pipe)')
-    .option('--data-key-file <path>', 'read the data key from this file (mode 600 or 400, or a pipe)')
+    .option(
+      '--token-file <path>',
+      'read the machine token from this file: the bare token or the env line(s) the Settings page offers (mode 600 or 400, or a pipe)',
+    )
+    .option(
+      '--data-key-file <path>',
+      'read the data key from this file: the bare key or the env line(s) the Settings page offers (mode 600 or 400, or a pipe)',
+    )
     .option('--machine <name>', "this machine's name on the board (default: the host name)")
     .option('--force', 'replace web.json and env after backing them up')
     .addHelpText(
