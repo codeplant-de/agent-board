@@ -16,7 +16,9 @@ const initial = (questions: Question[]): Draft[] =>
 export const isAnswered = (draft: Draft): boolean => draft.selected.length > 0 || draft.other.trim() !== '';
 
 export function toAnswers(drafts: Draft[]): Answer[] {
-  return drafts.map((d) => (d.other.trim() ? { selected: d.selected, other: d.other.trim() } : { selected: d.selected }));
+  return drafts.map((d) =>
+    d.other.trim() ? { selected: d.selected, other: d.other.trim() } : { selected: d.selected },
+  );
 }
 
 interface Props {
@@ -44,7 +46,9 @@ export function QuestionPanel({ questions, submitting, onSubmit }: Props) {
     if (!question || !draft) return;
     setActive(index);
     if (question.multiSelect) {
-      const selected = draft.selected.includes(label) ? draft.selected.filter((l) => l !== label) : [...draft.selected, label];
+      const selected = draft.selected.includes(label)
+        ? draft.selected.filter((l) => l !== label)
+        : [...draft.selected, label];
       update(index, { selected });
     } else {
       update(index, { selected: [label] });
@@ -89,7 +93,8 @@ export function QuestionPanel({ questions, submitting, onSubmit }: Props) {
               p="xs"
               style={{
                 borderRadius: 'var(--mantine-radius-md)',
-                outline: questions.length > 1 && active === index ? '1px solid var(--mantine-color-indigo-3)' : undefined,
+                outline:
+                  questions.length > 1 && active === index ? '1px solid var(--mantine-color-indigo-3)' : undefined,
               }}
             >
               <Group gap="xs" wrap="nowrap" align="flex-start">
@@ -106,60 +111,75 @@ export function QuestionPanel({ questions, submitting, onSubmit }: Props) {
                   )}
                 </Text>
               </Group>
-              <SimpleGrid cols={{ base: 1, sm: question.options.length > 2 ? 2 : question.options.length }} spacing="xs">
-                  {question.options.map((option, optionIndex) => {
-                    const chosen = draft.selected.includes(option.label);
-                    const Card = question.multiSelect ? Checkbox.Card : Radio.Card;
-                    return (
-                      <Card
-                        key={option.label}
-                        value={option.label}
-                        checked={chosen}
-                        onClick={() => pick(index, option.label)}
-                        radius="md"
-                        p="sm"
-                        style={{
-                          borderColor: chosen ? 'var(--mantine-color-indigo-5)' : undefined,
-                          background: chosen ? 'var(--mantine-color-indigo-light)' : undefined,
-                        }}
-                      >
-                        <Group wrap="nowrap" align="flex-start" gap="sm">
-                          {question.multiSelect ? <Checkbox.Indicator checked={chosen} /> : <Radio.Indicator checked={chosen} />}
-                          <div style={{ flex: 1 }}>
-                            <Group gap={6} justify="space-between" wrap="nowrap">
-                              <Text size="sm" fw={500}>
-                                {option.label}
-                              </Text>
-                              <Group gap={4} wrap="nowrap">
-                                {option.recommended && (
-                                  <Badge size="xs" color="teal" variant="light">
-                                    Recommended
-                                  </Badge>
-                                )}
-                                {active === index && <Kbd size="xs">{optionIndex + 1}</Kbd>}
-                              </Group>
+              <SimpleGrid
+                cols={{ base: 1, sm: question.options.length > 2 ? 2 : question.options.length }}
+                spacing="xs"
+              >
+                {question.options.map((option, optionIndex) => {
+                  const chosen = draft.selected.includes(option.label);
+                  const Card = question.multiSelect ? Checkbox.Card : Radio.Card;
+                  return (
+                    <Card
+                      key={option.label}
+                      value={option.label}
+                      checked={chosen}
+                      onClick={() => pick(index, option.label)}
+                      radius="md"
+                      p="sm"
+                      style={{
+                        borderColor: chosen ? 'var(--mantine-color-indigo-5)' : undefined,
+                        background: chosen ? 'var(--mantine-color-indigo-light)' : undefined,
+                      }}
+                    >
+                      <Group wrap="nowrap" align="flex-start" gap="sm">
+                        {question.multiSelect ? (
+                          <Checkbox.Indicator checked={chosen} />
+                        ) : (
+                          <Radio.Indicator checked={chosen} />
+                        )}
+                        <div style={{ flex: 1 }}>
+                          <Group gap={6} justify="space-between" wrap="nowrap">
+                            <Text size="sm" fw={500}>
+                              {option.label}
+                            </Text>
+                            <Group gap={4} wrap="nowrap">
+                              {option.recommended && (
+                                <Badge size="xs" color="teal" variant="light">
+                                  Recommended
+                                </Badge>
+                              )}
+                              {active === index && <Kbd size="xs">{optionIndex + 1}</Kbd>}
                             </Group>
-                            {option.description && (
-                              <Text size="xs" c="dimmed" mt={2}>
-                                {option.description}
-                              </Text>
-                            )}
-                          </div>
-                        </Group>
-                      </Card>
-                    );
-                  })}
+                          </Group>
+                          {option.description && (
+                            <Text size="xs" c="dimmed" mt={2}>
+                              {option.description}
+                            </Text>
+                          )}
+                        </div>
+                      </Group>
+                    </Card>
+                  );
+                })}
               </SimpleGrid>
               <TextInput
                 size="xs"
-                placeholder={question.multiSelect || draft.selected.length === 0 ? 'Other…' : 'Other… (added to your choice)'}
+                placeholder={
+                  question.multiSelect || draft.selected.length === 0 ? 'Other…' : 'Other… (added to your choice)'
+                }
                 value={draft.other}
                 onChange={(event) => update(index, { other: event.currentTarget.value })}
               />
             </Stack>
           );
         })}
-        <MarkdownEditor value={message} onChange={setMessage} minRows={2} onSubmit={submit} placeholder="Anything else the agent should know (optional)" />
+        <MarkdownEditor
+          value={message}
+          onChange={setMessage}
+          minRows={2}
+          onSubmit={submit}
+          placeholder="Anything else the agent should know (optional)"
+        />
         <Group justify="space-between">
           <Text size="xs" c="dimmed">
             {questions.length > 1 ? 'Number keys pick in the highlighted question. ' : 'Number keys pick an option. '}

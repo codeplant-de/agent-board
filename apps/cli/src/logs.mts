@@ -1,7 +1,7 @@
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { getPaths } from "./config.mts";
-import { tail } from "./text.mts";
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { getPaths } from './config.mts';
+import { tail } from './text.mts';
 
 const TAIL_CHARS = 4000;
 
@@ -11,7 +11,7 @@ export function logPath(taskId: string): string {
 
 // One log per task; a new run replaces the previous one (resetLog), then everything appends. Logs can hold review
 // findings, so owner-only.
-export function openLog(taskId: string, flags: "w" | "a" = "a"): number {
+export function openLog(taskId: string, flags: 'w' | 'a' = 'a'): number {
   const { logDir } = getPaths();
   mkdirSync(logDir, { recursive: true, mode: 0o700 });
   return openSync(logPath(taskId), flags, 0o600);
@@ -19,7 +19,7 @@ export function openLog(taskId: string, flags: "w" | "a" = "a"): number {
 
 // First thing a worker does, so the sweep never shows the log of an earlier run.
 export function resetLog(taskId: string): void {
-  closeSync(openLog(taskId, "w"));
+  closeSync(openLog(taskId, 'w'));
 }
 
 export function appendLog(taskId: string, text: string): void {
@@ -36,8 +36,8 @@ export function closeLog(fd: number): void {
 
 export function readLogTail(taskId: string): string {
   try {
-    return tail(readFileSync(logPath(taskId), "utf8").trim(), TAIL_CHARS);
+    return tail(readFileSync(logPath(taskId), 'utf8').trim(), TAIL_CHARS);
   } catch {
-    return "";
+    return '';
   }
 }

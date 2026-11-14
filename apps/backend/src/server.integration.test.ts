@@ -68,7 +68,13 @@ describe('machine API', () => {
 
   it('round-trips the contract: add, list, update, note, read', async () => {
     const added = await ctx.call('laptop', 'add-task', {
-      body: { title: '#1 PR', input: `${pr}\nhead: abc1234`, labels: ['review-pr'], dedupeKey: pr, createdBy: 'intake' },
+      body: {
+        title: '#1 PR',
+        input: `${pr}\nhead: abc1234`,
+        labels: ['review-pr'],
+        dedupeKey: pr,
+        createdBy: 'intake',
+      },
     });
     expect(added.status).toBe(200);
     const task = added.json.result.task;
@@ -86,7 +92,9 @@ describe('machine API', () => {
     await ctx.call('laptop', 'add-note', { id: task.id, body: 'Review started' });
     await ctx.call('laptop', 'add-note', { id: task.id, author: 'system', body: 'agent-board: started x' });
     const notes = await ctx.call('laptop', 'read-notes', { id: task.id });
-    expect(notes.json.result.map((n: { text: string; author: string; kind: string }) => [n.text, n.author, n.kind])).toEqual([
+    expect(
+      notes.json.result.map((n: { text: string; author: string; kind: string }) => [n.text, n.author, n.kind]),
+    ).toEqual([
       ['Review started', 'agent', 'comment'],
       ['agent-board: started x', 'system', 'event'],
     ]);
@@ -103,7 +111,10 @@ describe('machine API', () => {
 
   it('dedupes intake across machines', async () => {
     const body = { title: '#1', input: pr, labels: ['review-pr'], dedupeKey: pr };
-    const [a, b] = await Promise.all([ctx.call('laptop', 'add-task', { body }), ctx.call('workstation', 'add-task', { body })]);
+    const [a, b] = await Promise.all([
+      ctx.call('laptop', 'add-task', { body }),
+      ctx.call('workstation', 'add-task', { body }),
+    ]);
     const results = [a.json.result, b.json.result];
     expect(results.filter((r) => r.created)).toHaveLength(1);
     expect(results[0].task.id).toBe(results[1].task.id);
@@ -128,7 +139,10 @@ describe('machine API', () => {
     const id = json.result.task.id;
     await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' });
     await ctx.call('laptop', 'update-task', { id, body: { sessionId: 'sess-1' } });
-    const bad = await ctx.call('laptop', 'ask', { id, body: { questions: [{ ...question, options: [question.options[0]] }] } });
+    const bad = await ctx.call('laptop', 'ask', {
+      id,
+      body: { questions: [{ ...question, options: [question.options[0]] }] },
+    });
     expect(bad.status).toBe(400);
     expect((await ctx.call('laptop', 'ask', { id, body: { questions: [question] } })).status).toBe(200);
 
@@ -157,7 +171,12 @@ describe('machine API', () => {
 
     const notes = (await ctx.call('laptop', 'read-notes', { id })).json.result;
     const answer = notes.find((n: { kind: string }) => n.kind === 'answer');
-    expect(answer).toMatchObject({ author: 'user', text: 'thanks', questionNoteId: questionNote.id, answers: [{ selected: ['Yes'], other: 'and the seed' }] });
+    expect(answer).toMatchObject({
+      author: 'user',
+      text: 'thanks',
+      questionNoteId: questionNote.id,
+      answers: [{ selected: ['Yes'], other: 'and the seed' }],
+    });
   });
 });
 
@@ -190,7 +209,14 @@ describe('board UI', () => {
     const ui = caller(db);
     const parent = await ui.tasks.create({ title: 'parent', input: 'do it' });
     const proposed = await ctx.call('laptop', 'add-task', {
-      body: { title: 'follow-up', input: 'do Y', labels: ['research'], status: 'needs-me', createdBy: 'agent', parentId: parent.id },
+      body: {
+        title: 'follow-up',
+        input: 'do Y',
+        labels: ['research'],
+        status: 'needs-me',
+        createdBy: 'agent',
+        parentId: parent.id,
+      },
     });
     const id = proposed.json.result.task.id;
     const before = await ui.tasks.get({ id });
@@ -298,9 +324,20 @@ describe('priority', () => {
   it('follow-ups inherit the parent priority unless the agent sets one', async () => {
     const ui = caller(db);
     const parent = await ui.tasks.create({ title: 'parent', input: 'do it', priority: 'high' });
-    const inherit = await ctx.call('laptop', 'add-task', { body: { title: 'a', labels: ['research'], parentId: parent.id, createdBy: 'agent', status: 'needs-me' } });
+    const inherit = await ctx.call('laptop', 'add-task', {
+      body: { title: 'a', labels: ['research'], parentId: parent.id, createdBy: 'agent', status: 'needs-me' },
+    });
     expect(inherit.json.result.task.priority).toBe('high');
-    const chosen = await ctx.call('laptop', 'add-task', { body: { title: 'b', labels: ['research'], parentId: parent.id, createdBy: 'agent', status: 'needs-me', priority: 'low' } });
+    const chosen = await ctx.call('laptop', 'add-task', {
+      body: {
+        title: 'b',
+        labels: ['research'],
+        parentId: parent.id,
+        createdBy: 'agent',
+        status: 'needs-me',
+        priority: 'low',
+      },
+    });
     expect(chosen.json.result.task.priority).toBe('low');
     const plain = await ctx.call('laptop', 'add-task', { body: { title: 'c', labels: ['research'] } });
     expect(plain.json.result.task.priority).toBe('normal');
@@ -323,7 +360,11 @@ describe('lanes, liveness and pausing', () => {
     expect(task).toMatchObject({ lane: 'implement', borrowed: true });
     expect(Date.now() - new Date(task.lastActiveAt).getTime()).toBeLessThan(5_000);
     await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me' } });
-    expect((await ctx.call('laptop', 'get-task', { id })).json.result).toMatchObject({ lane: null, borrowed: false, lastActiveAt: null });
+    expect((await ctx.call('laptop', 'get-task', { id })).json.result).toMatchObject({
+      lane: null,
+      borrowed: false,
+      lastActiveAt: null,
+    });
     // A late heartbeat from a stopping worker does not bring the run back.
     await ctx.call('laptop', 'heartbeat', { id, body: { lane: 'implement', borrowed: true } });
     expect((await ctx.call('laptop', 'get-task', { id })).json.result.lane).toBeNull();
@@ -333,7 +374,10 @@ describe('lanes, liveness and pausing', () => {
     const ui = caller(db);
     const id = await running('paused', 'low');
     await ui.tasks.create({ title: 'urgent', input: 'do it', priority: 'urgent' });
-    const paused = await ctx.call('laptop', 'pause', { id, body: 'Paused on laptop: the reviews lane needed its slot.' });
+    const paused = await ctx.call('laptop', 'pause', {
+      id,
+      body: 'Paused on laptop: the reviews lane needed its slot.',
+    });
     expect(paused.json.result).toMatchObject({ status: 'todo', next: 'resume', machine: 'laptop' });
     const list = await ui.tasks.list();
     expect(list.filter((t) => t.status === 'todo').map((t) => [t.title, t.paused])).toEqual([
@@ -353,18 +397,32 @@ describe('prompts', () => {
   it('a task is labelled with its skill, titled by its first line, and can be pinned', async () => {
     const ui = caller(db);
     const review = await ui.tasks.create({ input: '/review-pr 17741\nplease look at the migration' });
-    expect(review).toMatchObject({ title: '/review-pr 17741', labels: ['review-pr'], createdBy: 'user', machine: null, workdir: null });
+    expect(review).toMatchObject({
+      title: '/review-pr 17741',
+      labels: ['review-pr'],
+      createdBy: 'user',
+      machine: null,
+      workdir: null,
+    });
     const plain = await ui.tasks.create({ input: 'Find out why the export is slow' });
     expect(plain.labels).toEqual([]);
     await expect(ui.tasks.create({ input: '   ' })).rejects.toThrow(/Write a prompt first/);
-    const pinned = await ctx.call('laptop', 'add-task', { body: { title: 't', input: '/grill', machine: 'laptop', workdir: '/home/me/repo' } });
+    const pinned = await ctx.call('laptop', 'add-task', {
+      body: { title: 't', input: '/grill', machine: 'laptop', workdir: '/home/me/repo' },
+    });
     expect(pinned.json.result.task).toMatchObject({ machine: 'laptop', workdir: '/home/me/repo', labels: ['grill'] });
   });
 });
 
 describe('transcripts', () => {
   const at = (s: number) => new Date(Date.UTC(2026, 10, 13, 12, 0, s)).toISOString();
-  const batch = (runId: string, events: unknown[]) => ({ runId, startedAt: at(0), sessionId: 'sess', resumed: false, events });
+  const batch = (runId: string, events: unknown[]) => ({
+    runId,
+    startedAt: at(0),
+    sessionId: 'sess',
+    resumed: false,
+    events,
+  });
   const events = [
     { seq: 0, at: at(1), parent: null, kind: 'note', text: 'Claude Code 2.1.325' },
     { seq: 1, at: at(2), parent: null, kind: 'tool_use', toolUseId: 'tu1', name: 'Bash', input: { command: 'ls' } },
@@ -377,7 +435,10 @@ describe('transcripts', () => {
     const body = batch('run-0001-aaaa', events);
     expect((await ctx.call('laptop', 'transcript', { id: task.id, body })).status).toBe(200);
     expect((await ctx.call('laptop', 'transcript', { id: task.id, body })).status).toBe(200);
-    await ctx.call('laptop', 'transcript', { id: task.id, body: batch('run-0001-aaaa', [{ seq: 3, at: at(9), parent: null, kind: 'text', text: 'done' }]) });
+    await ctx.call('laptop', 'transcript', {
+      id: task.id,
+      body: batch('run-0001-aaaa', [{ seq: 3, at: at(9), parent: null, kind: 'text', text: 'done' }]),
+    });
     const [run] = await ui.transcript.runs({ id: task.id });
     expect(run).toMatchObject({ id: 'run-0001-aaaa', machine: 'laptop', eventCount: 4, sessionId: 'sess' });
     expect(run?.lastEventAt.toISOString()).toBe(at(9));
@@ -389,7 +450,9 @@ describe('transcripts', () => {
     expect(await ui.transcript.output({ runId: 'run-0001-aaaa', seq: 2 })).toBe('a.txt\nb.txt');
     const other = await ui.tasks.create({ input: '/other' });
     expect((await ctx.call('laptop', 'transcript', { id: other.id, body })).status).toBe(400);
-    expect((await ctx.call('laptop', 'transcript', { id: task.id, body: { ...body, runId: '../x' } })).status).toBe(400);
+    expect((await ctx.call('laptop', 'transcript', { id: task.id, body: { ...body, runId: '../x' } })).status).toBe(
+      400,
+    );
   });
 
   it('transcripts of tasks closed more than 14 days ago are deleted, others stay', async () => {
@@ -397,7 +460,11 @@ describe('transcripts', () => {
     const old = await ui.tasks.create({ input: '/old' });
     const recent = await ui.tasks.create({ input: '/recent' });
     const open = await ui.tasks.create({ input: '/open' });
-    for (const [task, run] of [[old, 'run-old-0001'], [recent, 'run-recent-01'], [open, 'run-open-0001']] as const) {
+    for (const [task, run] of [
+      [old, 'run-old-0001'],
+      [recent, 'run-recent-01'],
+      [open, 'run-open-0001'],
+    ] as const) {
       await ctx.call('laptop', 'transcript', { id: task.id, body: batch(run, events) });
     }
     await ui.tasks.setClosed({ id: old.id, closed: true });
@@ -405,7 +472,10 @@ describe('transcripts', () => {
     const { deleteOldTranscripts } = await import('./services/transcripts');
     const { tasks } = await import('./db/schema');
     const { eq } = await import('drizzle-orm');
-    await db.update(tasks).set({ closedAt: new Date(Date.now() - 15 * 24 * 60 * 60_000) }).where(eq(tasks.id, old.id));
+    await db
+      .update(tasks)
+      .set({ closedAt: new Date(Date.now() - 15 * 24 * 60 * 60_000) })
+      .where(eq(tasks.id, old.id));
     expect(await deleteOldTranscripts(db)).toBe(1);
     expect(await ui.transcript.runs({ id: old.id })).toHaveLength(0);
     expect(await ui.transcript.runs({ id: recent.id })).toHaveLength(1); // closed today: kept

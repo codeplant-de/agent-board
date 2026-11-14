@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { isRecord } from "@agent-board/shared";
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { isRecord } from '@agent-board/shared';
 
 const run = promisify(execFile);
 
@@ -25,28 +25,36 @@ export function parsePrView(url: string, value: unknown): LivePr {
   if (!isRecord(value)) throw new GitHubError(`unreadable gh output for ${url}`);
   const { headRefOid, title, number, isDraft, author, commits } = value;
   const lastCommit = Array.isArray(commits) ? commits.at(-1) : undefined;
-  const committedDate = isRecord(lastCommit) ? lastCommit["committedDate"] : undefined;
+  const committedDate = isRecord(lastCommit) ? lastCommit['committedDate'] : undefined;
   if (
-    typeof headRefOid !== "string" ||
-    typeof title !== "string" ||
-    typeof number !== "number" ||
-    typeof isDraft !== "boolean" ||
+    typeof headRefOid !== 'string' ||
+    typeof title !== 'string' ||
+    typeof number !== 'number' ||
+    typeof isDraft !== 'boolean' ||
     !isRecord(author) ||
-    typeof author["login"] !== "string" ||
-    typeof committedDate !== "string"
+    typeof author['login'] !== 'string' ||
+    typeof committedDate !== 'string'
   ) {
     throw new GitHubError(`unexpected gh output for ${url}`);
   }
-  return { url, title, number, isDraft, author: author["login"], headSha: headRefOid, headCommittedAt: new Date(committedDate) };
+  return {
+    url,
+    title,
+    number,
+    isDraft,
+    author: author['login'],
+    headSha: headRefOid,
+    headCommittedAt: new Date(committedDate),
+  };
 }
 
 async function gh(args: string[]): Promise<unknown> {
   try {
-    const { stdout } = await run("gh", args, { maxBuffer: 32 * 1024 * 1024 });
+    const { stdout } = await run('gh', args, { maxBuffer: 32 * 1024 * 1024 });
     return JSON.parse(stdout);
   } catch (error) {
-    const first = error instanceof Error ? error.message.split("\n")[0] : "unknown error";
-    throw new GitHubError(`gh ${args.slice(0, 2).join(" ")} failed: ${first}`);
+    const first = error instanceof Error ? error.message.split('\n')[0] : 'unknown error';
+    throw new GitHubError(`gh ${args.slice(0, 2).join(' ')} failed: ${first}`);
   }
 }
 
@@ -56,13 +64,30 @@ export function createGitHub(warn: (line: string) => void): GitHub {
     async listReviewRequested(repos) {
       const prs: LivePr[] = [];
       for (const repo of repos) {
-        const found = await gh(["search", "prs", "--review-requested=@me", "--state=open", "--draft=false", "--repo", repo, "--json", "url", "--limit", "50"]);
-        if (!Array.isArray(found)) throw new GitHubError("unreadable gh search output");
+        const found = await gh([
+          'search',
+          'prs',
+          '--review-requested=@me',
+          '--state=open',
+          '--draft=false',
+          '--repo',
+          repo,
+          '--json',
+          'url',
+          '--limit',
+          '50',
+        ]);
+        if (!Array.isArray(found)) throw new GitHubError('unreadable gh search output');
         for (const item of found) {
-          const url = isRecord(item) ? item["url"] : undefined;
-          if (typeof url !== "string") throw new GitHubError("unreadable gh search output");
+          const url = isRecord(item) ? item['url'] : undefined;
+          if (typeof url !== 'string') throw new GitHubError('unreadable gh search output');
           try {
-            prs.push(parsePrView(url, await gh(["pr", "view", url, "--json", "headRefOid,isDraft,title,number,author,commits"])));
+            prs.push(
+              parsePrView(
+                url,
+                await gh(['pr', 'view', url, '--json', 'headRefOid,isDraft,title,number,author,commits']),
+              ),
+            );
           } catch (error) {
             if (!(error instanceof GitHubError)) throw error;
             warn(`WARN skipped ${url}: ${error.message}`);

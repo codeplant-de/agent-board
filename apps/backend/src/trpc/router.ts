@@ -62,21 +62,17 @@ export function defaultTitle(prompt: string): string {
 const threadNote = (row: NoteRow): ThreadNote => ({ ...toNote(row), by: row.by });
 
 const tasksRouter = router({
-  list: procedure.input(z.object({ closed: z.boolean().default(false) }).default({ closed: false })).query(
-    async ({ ctx, input }) => {
+  list: procedure
+    .input(z.object({ closed: z.boolean().default(false) }).default({ closed: false }))
+    .query(async ({ ctx, input }) => {
       const rows = await listTasks(ctx.db, { all: input.closed });
       return rows.filter((row) => row.closed === input.closed).map((row) => boardTask(row, ctx.config.publicUrl));
-    },
-  ),
+    }),
 
   get: procedure.input(z.object({ id })).query(async ({ ctx, input }) => {
     const row = await getTask(ctx.db, input.id);
     const thread = (await readNotes(ctx.db, input.id)).map(threadNote);
-    const related = await ctx.db
-      .select()
-      .from(tasks)
-      .where(eq(tasks.parentId, input.id))
-      .orderBy(asc(tasks.createdAt));
+    const related = await ctx.db.select().from(tasks).where(eq(tasks.parentId, input.id)).orderBy(asc(tasks.createdAt));
     const parent = row.parentId ? await getTask(ctx.db, row.parentId).catch(() => null) : null;
     return {
       task: boardTask(row, ctx.config.publicUrl),
@@ -119,7 +115,13 @@ const tasksRouter = router({
     )
     .mutation(async ({ ctx, input }) =>
       boardTask(
-        await answer(ctx.db, { taskId: input.id, questionNoteId: input.questionNoteId, answers: input.answers, message: input.message, by: ctx.username }),
+        await answer(ctx.db, {
+          taskId: input.id,
+          questionNoteId: input.questionNoteId,
+          answers: input.answers,
+          message: input.message,
+          by: ctx.username,
+        }),
         ctx.config.publicUrl,
       ),
     ),
@@ -135,11 +137,15 @@ const tasksRouter = router({
 
   done: procedure
     .input(z.object({ id }))
-    .mutation(async ({ ctx, input }) => boardTask(await markDone(ctx.db, input.id, ctx.username), ctx.config.publicUrl)),
+    .mutation(async ({ ctx, input }) =>
+      boardTask(await markDone(ctx.db, input.id, ctx.username), ctx.config.publicUrl),
+    ),
 
   rerun: procedure
     .input(z.object({ id }))
-    .mutation(async ({ ctx, input }) => boardTask(await rerunFresh(ctx.db, input.id, ctx.username), ctx.config.publicUrl)),
+    .mutation(async ({ ctx, input }) =>
+      boardTask(await rerunFresh(ctx.db, input.id, ctx.username), ctx.config.publicUrl),
+    ),
 
   setPriority: procedure
     .input(z.object({ id, priority }))
@@ -172,7 +178,13 @@ const tasksRouter = router({
   activity: procedure.input(z.object({ ids: z.array(id).max(500) })).query(async ({ ctx, input }) => {
     if (input.ids.length === 0) return {};
     const rows = await ctx.db
-      .selectDistinctOn([notes.taskId], { taskId: notes.taskId, kind: notes.kind, author: notes.author, body: notes.body, createdAt: notes.createdAt })
+      .selectDistinctOn([notes.taskId], {
+        taskId: notes.taskId,
+        kind: notes.kind,
+        author: notes.author,
+        body: notes.body,
+        createdAt: notes.createdAt,
+      })
       .from(notes)
       .where(inArray(notes.taskId, input.ids))
       .orderBy(notes.taskId, desc(notes.createdAt));

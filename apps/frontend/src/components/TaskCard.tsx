@@ -18,7 +18,11 @@ function activityLine(activity: Activity | undefined, task: BoardTask): string {
       ? 'asked a question'
       : activity.kind === 'answer'
         ? 'answered'
-        : activity.body.replace(/[#*`>_]/g, '').replace(/\s+/g, ' ').trim().slice(0, 90);
+        : activity.body
+            .replace(/[#*`>_]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 90);
   return `${activity.author}: ${text} · ${ago(activity.createdAt)}`;
 }
 
@@ -78,9 +82,7 @@ export function TaskCard({ task, activity, draggable, dragging, onDragStart, onD
           )}
         </Group>
         <TaskBadges task={task} />
-        {task.status === 'running' && (
-          <LivenessText size="xs" lastActiveAt={task.lastActiveAt} />
-        )}
+        {task.status === 'running' && <LivenessText size="xs" lastActiveAt={task.lastActiveAt} />}
         <Text size="xs" c="dimmed" lineClamp={1}>
           {activityLine(activity, task)}
         </Text>

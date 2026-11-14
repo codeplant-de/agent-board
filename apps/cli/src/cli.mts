@@ -1,9 +1,9 @@
-import { GitHubError } from "./github.mts";
-import { SystemError } from "./system.mts";
-import { BackendError, createCliBackend, dryRunBackend } from "./backend.mts";
-import { ConfigError, getPaths, loadConfig } from "./config.mts";
-import type { Config } from "./config.mts";
-import type { Backend } from "@agent-board/shared";
+import { GitHubError } from './github.mts';
+import { SystemError } from './system.mts';
+import { BackendError, createCliBackend, dryRunBackend } from './backend.mts';
+import { ConfigError, getPaths, loadConfig } from './config.mts';
+import type { Config } from './config.mts';
+import type { Backend } from '@agent-board/shared';
 
 export interface Context {
   config: Config;
@@ -28,11 +28,13 @@ export async function runMain(main: () => Promise<void>): Promise<void> {
   try {
     await main();
   } catch (error) {
-    if (error instanceof ConfigError ||
+    if (
+      error instanceof ConfigError ||
       error instanceof BackendError ||
       error instanceof UsageError ||
       error instanceof GitHubError ||
-      error instanceof SystemError) {
+      error instanceof SystemError
+    ) {
       console.error(`agent-board: ${error.message}`);
     } else {
       console.error(`agent-board: unexpected error: ${error instanceof Error ? error.message : String(error)}`);

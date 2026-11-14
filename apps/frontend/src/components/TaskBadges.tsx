@@ -1,5 +1,12 @@
 import { Badge, Group } from '@mantine/core';
-import { IconArrowsExchange, IconDeviceDesktop, IconMessageQuestion, IconPlayerPause, IconPlayerTrackNext, IconSparkles } from '@tabler/icons-react';
+import {
+  IconArrowsExchange,
+  IconDeviceDesktop,
+  IconMessageQuestion,
+  IconPlayerPause,
+  IconPlayerTrackNext,
+  IconSparkles,
+} from '@tabler/icons-react';
 import type { BoardTask } from '../lib/trpc';
 import { PriorityBadge } from './PriorityPicker';
 
@@ -7,7 +14,15 @@ import { PriorityBadge } from './PriorityPicker';
  * What sets a task apart at a glance: its priority (unless normal), an open question, a proposal, a pending
  * resume, where it runs.
  */
-export function TaskBadges({ task, withLabels = true, withPriority = true }: { task: BoardTask; withLabels?: boolean; withPriority?: boolean }) {
+export function TaskBadges({
+  task,
+  withLabels = true,
+  withPriority = true,
+}: {
+  task: BoardTask;
+  withLabels?: boolean;
+  withPriority?: boolean;
+}) {
   return (
     <Group gap={4}>
       {withPriority && task.priority !== 'normal' && <PriorityBadge priority={task.priority} />}
@@ -37,7 +52,14 @@ export function TaskBadges({ task, withLabels = true, withPriority = true }: { t
         </Badge>
       )}
       {task.status === 'running' && task.borrowed && (
-        <Badge size="sm" color="grape" variant="light" tt="none" leftSection={<IconArrowsExchange size={12} />} title="Running in another lane's slot; it may be paused when that lane gets work of its own">
+        <Badge
+          size="sm"
+          color="grape"
+          variant="light"
+          tt="none"
+          leftSection={<IconArrowsExchange size={12} />}
+          title="Running in another lane's slot; it may be paused when that lane gets work of its own"
+        >
           borrowed
         </Badge>
       )}

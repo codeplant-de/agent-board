@@ -1,8 +1,8 @@
 // The vocabulary shared by the core, the server, the UI and every backend. The README documents it as the backend spec.
-import { isRecord } from "./guards.mts";
-import { parseQuestions, parseAnswers } from "./questions.mts";
-import type { Answer, Question } from "./questions.mts";
-import type { TranscriptBatch } from "./transcript.mts";
+import { isRecord } from './guards.mts';
+import { parseQuestions, parseAnswers } from './questions.mts';
+import type { Answer, Question } from './questions.mts';
+import type { TranscriptBatch } from './transcript.mts';
 
 export const CONTRACT_VERSION = 2;
 // A backend exits with this code (EX_USAGE) for a subcommand it does not implement.
@@ -10,25 +10,25 @@ export const UNKNOWN_COMMAND_EXIT = 64;
 // A backend exits with this code (EX_TEMPFAIL) when `claim-task` loses: the task is no longer free for this machine.
 export const CLAIM_LOST_EXIT = 75;
 
-export const STATUSES = ["todo", "running", "needs-me", "done"] as const;
+export const STATUSES = ['todo', 'running', 'needs-me', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
 
 // What the next run of a task does: start over, or resume the Claude session of the last run with the user's reply.
-export const NEXT_RUNS = ["fresh", "resume"] as const;
+export const NEXT_RUNS = ['fresh', 'resume'] as const;
 export type NextRun = (typeof NEXT_RUNS)[number];
 
-export const NOTE_AUTHORS = ["agent", "user", "system"] as const;
+export const NOTE_AUTHORS = ['agent', 'user', 'system'] as const;
 export type NoteAuthor = (typeof NOTE_AUTHORS)[number];
 
-export const NOTE_KINDS = ["comment", "question", "answer", "event"] as const;
+export const NOTE_KINDS = ['comment', 'question', 'answer', 'event'] as const;
 export type NoteKind = (typeof NOTE_KINDS)[number];
 
 // Highest first: a column lists its tasks by priority, then by their manual order, and workers pick up from the top.
-export const PRIORITIES = ["urgent", "high", "normal", "low"] as const;
+export const PRIORITIES = ['urgent', 'high', 'normal', 'low'] as const;
 export type Priority = (typeof PRIORITIES)[number];
-export const DEFAULT_PRIORITY: Priority = "normal";
+export const DEFAULT_PRIORITY: Priority = 'normal';
 
-export const TASK_CREATORS = ["intake", "user", "agent"] as const;
+export const TASK_CREATORS = ['intake', 'user', 'agent'] as const;
 export type TaskCreator = (typeof TASK_CREATORS)[number];
 
 export interface Task {
@@ -113,7 +113,7 @@ export interface Backend {
   updateTask(id: string, patch: TaskPatch): Promise<Task>;
   // Moves a todo task to running for `machine`; undefined when another caller got it first or it is pinned elsewhere.
   claimTask(id: string, machine: string): Promise<Task | undefined>;
-  addNote(id: string, text: string, options?: { author?: "agent" | "system" }): Promise<void>;
+  addNote(id: string, text: string, options?: { author?: 'agent' | 'system' }): Promise<void>;
   // Adds a question note and moves the task to needs-me.
   ask(id: string, questions: Question[]): Promise<void>;
   // The agent of a running task is alive: sets lastActiveAt to now, with the lane it runs in.
@@ -131,7 +131,7 @@ export interface Backend {
 export class ContractError extends Error {}
 
 // "dispatch" and "intake" would make the worker unit agent-board-<id> collide with the tool's own units.
-const RESERVED_TASK_IDS = ["dispatch", "intake"];
+const RESERVED_TASK_IDS = ['dispatch', 'intake'];
 
 // The id ends up in a systemd unit name, a log file name and argv, so the core never trusts a backend's.
 export function isSafeTaskId(id: string): boolean {
@@ -160,7 +160,7 @@ export const isTaskCreator = oneOf(TASK_CREATORS);
 export const isPriority = oneOf(PRIORITIES);
 
 function isStringList(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
 function record(value: unknown, what: string): Record<string, unknown> {
@@ -170,13 +170,13 @@ function record(value: unknown, what: string): Record<string, unknown> {
 
 function string(obj: Record<string, unknown>, key: string, what: string): string {
   const value = obj[key];
-  if (typeof value !== "string") throw new ContractError(`${what}.${key} must be a string`);
+  if (typeof value !== 'string') throw new ContractError(`${what}.${key} must be a string`);
   return value;
 }
 
 function nullableString(obj: Record<string, unknown>, key: string, what: string): string | null {
   const value = obj[key];
-  if (value !== null && typeof value !== "string") throw new ContractError(`${what}.${key} must be a string or null`);
+  if (value !== null && typeof value !== 'string') throw new ContractError(`${what}.${key} must be a string or null`);
   return value;
 }
 
@@ -190,18 +190,18 @@ function nullableDate(obj: Record<string, unknown>, key: string, what: string): 
 
 function boolean(obj: Record<string, unknown>, key: string, what: string): boolean {
   const value = obj[key];
-  if (typeof value !== "boolean") throw new ContractError(`${what}.${key} must be a boolean`);
+  if (typeof value !== 'boolean') throw new ContractError(`${what}.${key} must be a boolean`);
   return value;
 }
 
 function member<T extends string>(obj: Record<string, unknown>, key: string, what: string, values: readonly T[]): T {
   const value = obj[key];
-  if (!oneOf(values)(value)) throw new ContractError(`${what}.${key} must be one of ${values.join(", ")}`);
+  if (!oneOf(values)(value)) throw new ContractError(`${what}.${key} must be one of ${values.join(', ')}`);
   return value;
 }
 
 function labels(obj: Record<string, unknown>, what: string): string[] {
-  const value = obj["labels"];
+  const value = obj['labels'];
   if (!isStringList(value)) throw new ContractError(`${what}.labels must be a list of strings`);
   return value;
 }
@@ -212,71 +212,76 @@ function rejectUnknownKeys(obj: Record<string, unknown>, allowed: string[], what
 }
 
 function safeId(id: string, what: string): string {
-  if (!isSafeTaskId(id)) throw new ContractError(`${what} "${id.slice(0, 40)}" is not safe (letters, digits, - and _, at most 64, not "dispatch" or "intake")`);
+  if (!isSafeTaskId(id))
+    throw new ContractError(
+      `${what} "${id.slice(0, 40)}" is not safe (letters, digits, - and _, at most 64, not "dispatch" or "intake")`,
+    );
   return id;
 }
 
 export function parseTask(value: unknown): Task {
-  const obj = record(value, "task");
-  const id = safeId(string(obj, "id", "task"), "task id");
-  const url = string(obj, "url", "task");
-  if (!isSafeTaskUrl(url)) throw new ContractError(`task url "${url.slice(0, 40)}" must be an http(s) URL without spaces, <, > or |`);
-  const machine = nullableString(obj, "machine", "task");
-  if (machine !== null && !isSafeMachineName(machine)) throw new ContractError(`task machine "${machine.slice(0, 40)}" is not a safe name`);
+  const obj = record(value, 'task');
+  const id = safeId(string(obj, 'id', 'task'), 'task id');
+  const url = string(obj, 'url', 'task');
+  if (!isSafeTaskUrl(url))
+    throw new ContractError(`task url "${url.slice(0, 40)}" must be an http(s) URL without spaces, <, > or |`);
+  const machine = nullableString(obj, 'machine', 'task');
+  if (machine !== null && !isSafeMachineName(machine))
+    throw new ContractError(`task machine "${machine.slice(0, 40)}" is not a safe name`);
   return {
     id,
-    title: string(obj, "title", "task"),
-    input: string(obj, "input", "task"),
-    labels: labels(obj, "task"),
-    status: member(obj, "status", "task", STATUSES),
-    priority: member(obj, "priority", "task", PRIORITIES),
+    title: string(obj, 'title', 'task'),
+    input: string(obj, 'input', 'task'),
+    labels: labels(obj, 'task'),
+    status: member(obj, 'status', 'task', STATUSES),
+    priority: member(obj, 'priority', 'task', PRIORITIES),
     url,
-    closed: boolean(obj, "closed", "task"),
+    closed: boolean(obj, 'closed', 'task'),
     machine,
-    sessionId: nullableString(obj, "sessionId", "task"),
-    workdir: nullableString(obj, "workdir", "task"),
-    next: member(obj, "next", "task", NEXT_RUNS),
-    openQuestion: boolean(obj, "openQuestion", "task"),
-    createdBy: member(obj, "createdBy", "task", TASK_CREATORS),
-    lane: nullableString(obj, "lane", "task"),
-    borrowed: boolean(obj, "borrowed", "task"),
-    lastActiveAt: nullableDate(obj, "lastActiveAt", "task"),
+    sessionId: nullableString(obj, 'sessionId', 'task'),
+    workdir: nullableString(obj, 'workdir', 'task'),
+    next: member(obj, 'next', 'task', NEXT_RUNS),
+    openQuestion: boolean(obj, 'openQuestion', 'task'),
+    createdBy: member(obj, 'createdBy', 'task', TASK_CREATORS),
+    lane: nullableString(obj, 'lane', 'task'),
+    borrowed: boolean(obj, 'borrowed', 'task'),
+    lastActiveAt: nullableDate(obj, 'lastActiveAt', 'task'),
   };
 }
 
 export function parseTasks(value: unknown): Task[] {
-  if (!Array.isArray(value)) throw new ContractError("expected a JSON array of tasks");
+  if (!Array.isArray(value)) throw new ContractError('expected a JSON array of tasks');
   return value.map(parseTask);
 }
 
 export function parseAddTaskResult(value: unknown): AddTaskResult {
-  const obj = record(value, "add-task result");
-  return { task: parseTask(obj["task"]), created: boolean(obj, "created", "add-task result") };
+  const obj = record(value, 'add-task result');
+  return { task: parseTask(obj['task']), created: boolean(obj, 'created', 'add-task result') };
 }
 
 export function parseNote(value: unknown): Note {
-  const obj = record(value, "note");
-  const createdAt = new Date(string(obj, "createdAt", "note"));
-  if (Number.isNaN(createdAt.getTime())) throw new ContractError("note.createdAt is not a date");
+  const obj = record(value, 'note');
+  const createdAt = new Date(string(obj, 'createdAt', 'note'));
+  if (Number.isNaN(createdAt.getTime())) throw new ContractError('note.createdAt is not a date');
   const note: Note = {
-    id: string(obj, "id", "note"),
-    text: string(obj, "text", "note"),
+    id: string(obj, 'id', 'note'),
+    text: string(obj, 'text', 'note'),
     createdAt,
-    author: member(obj, "author", "note", NOTE_AUTHORS),
-    kind: member(obj, "kind", "note", NOTE_KINDS),
+    author: member(obj, 'author', 'note', NOTE_AUTHORS),
+    kind: member(obj, 'kind', 'note', NOTE_KINDS),
   };
-  if (note.kind === "question") note.questions = parseQuestions(obj["questions"]);
-  if (note.kind === "answer") {
-    note.questionNoteId = string(obj, "questionNoteId", "note");
-    if (!Array.isArray(obj["answers"])) throw new ContractError("note.answers must be a list");
+  if (note.kind === 'question') note.questions = parseQuestions(obj['questions']);
+  if (note.kind === 'answer') {
+    note.questionNoteId = string(obj, 'questionNoteId', 'note');
+    if (!Array.isArray(obj['answers'])) throw new ContractError('note.answers must be a list');
     // The answers were checked against their questions when they were given; here only their shape.
-    note.answers = parseAnswers(undefined, obj["answers"]);
+    note.answers = parseAnswers(undefined, obj['answers']);
   }
   return note;
 }
 
 export function parseNotes(value: unknown): Note[] {
-  if (!Array.isArray(value)) throw new ContractError("expected a JSON array of notes");
+  if (!Array.isArray(value)) throw new ContractError('expected a JSON array of notes');
   return value.map(parseNote);
 }
 
@@ -286,74 +291,81 @@ export function serializeNote(note: Note): Record<string, unknown> {
 }
 
 export function parseVersion(value: unknown): number {
-  const contract = record(value, "version")["contract"];
-  if (typeof contract !== "number") throw new ContractError("version.contract must be a number");
+  const contract = record(value, 'version')['contract'];
+  if (typeof contract !== 'number') throw new ContractError('version.contract must be a number');
   return contract;
 }
 
 export function parseSetupResult(value: unknown): string[] {
-  const created = record(value, "setup result")["created"];
-  if (!isStringList(created)) throw new ContractError("setup result.created must be a list of strings");
+  const created = record(value, 'setup result')['created'];
+  if (!isStringList(created)) throw new ContractError('setup result.created must be a list of strings');
   return created;
 }
 
 // Stdin of add-task. Only `title` is required.
 export function parseDraft(value: unknown): TaskDraft {
-  const obj = record(value, "draft");
-  rejectUnknownKeys(obj, ["title", "input", "labels", "status", "priority", "dedupeKey", "parentId", "createdBy", "machine", "workdir"], "draft");
-  const title = string(obj, "title", "draft");
-  if (title.trim() === "") throw new ContractError("draft.title must not be empty");
+  const obj = record(value, 'draft');
+  rejectUnknownKeys(
+    obj,
+    ['title', 'input', 'labels', 'status', 'priority', 'dedupeKey', 'parentId', 'createdBy', 'machine', 'workdir'],
+    'draft',
+  );
+  const title = string(obj, 'title', 'draft');
+  if (title.trim() === '') throw new ContractError('draft.title must not be empty');
   const draft: TaskDraft = {
     title,
-    input: "input" in obj ? string(obj, "input", "draft") : "",
-    labels: "labels" in obj ? labels(obj, "draft") : [],
-    status: "status" in obj ? member(obj, "status", "draft", STATUSES) : "todo",
+    input: 'input' in obj ? string(obj, 'input', 'draft') : '',
+    labels: 'labels' in obj ? labels(obj, 'draft') : [],
+    status: 'status' in obj ? member(obj, 'status', 'draft', STATUSES) : 'todo',
   };
-  if ("priority" in obj) draft.priority = member(obj, "priority", "draft", PRIORITIES);
-  if ("dedupeKey" in obj) {
-    draft.dedupeKey = string(obj, "dedupeKey", "draft");
-    if (draft.dedupeKey === "") throw new ContractError("draft.dedupeKey must not be empty");
+  if ('priority' in obj) draft.priority = member(obj, 'priority', 'draft', PRIORITIES);
+  if ('dedupeKey' in obj) {
+    draft.dedupeKey = string(obj, 'dedupeKey', 'draft');
+    if (draft.dedupeKey === '') throw new ContractError('draft.dedupeKey must not be empty');
   }
-  if ("parentId" in obj) draft.parentId = safeId(string(obj, "parentId", "draft"), "draft.parentId");
-  if ("createdBy" in obj) draft.createdBy = member(obj, "createdBy", "draft", TASK_CREATORS);
-  if ("machine" in obj) {
-    draft.machine = string(obj, "machine", "draft");
-    if (!isSafeMachineName(draft.machine)) throw new ContractError("draft.machine is not a safe name");
+  if ('parentId' in obj) draft.parentId = safeId(string(obj, 'parentId', 'draft'), 'draft.parentId');
+  if ('createdBy' in obj) draft.createdBy = member(obj, 'createdBy', 'draft', TASK_CREATORS);
+  if ('machine' in obj) {
+    draft.machine = string(obj, 'machine', 'draft');
+    if (!isSafeMachineName(draft.machine)) throw new ContractError('draft.machine is not a safe name');
   }
-  if ("workdir" in obj) {
-    draft.workdir = string(obj, "workdir", "draft");
-    if (!draft.workdir.startsWith("/")) throw new ContractError("draft.workdir must be an absolute path");
+  if ('workdir' in obj) {
+    draft.workdir = string(obj, 'workdir', 'draft');
+    if (!draft.workdir.startsWith('/')) throw new ContractError('draft.workdir must be an absolute path');
   }
-  if ((draft.machine === undefined) !== (draft.workdir === undefined)) throw new ContractError("draft.machine and draft.workdir go together");
+  if ((draft.machine === undefined) !== (draft.workdir === undefined))
+    throw new ContractError('draft.machine and draft.workdir go together');
   return draft;
 }
 
 // Stdin of update-task. At least one key.
 export function parsePatch(value: unknown): TaskPatch {
-  const obj = record(value, "patch");
-  const keys = ["status", "priority", "input", "sessionId", "workdir", "next"];
-  rejectUnknownKeys(obj, keys, "patch");
-  if (!keys.some((key) => key in obj)) throw new ContractError(`patch needs one of ${keys.join(", ")}`);
+  const obj = record(value, 'patch');
+  const keys = ['status', 'priority', 'input', 'sessionId', 'workdir', 'next'];
+  rejectUnknownKeys(obj, keys, 'patch');
+  if (!keys.some((key) => key in obj)) throw new ContractError(`patch needs one of ${keys.join(', ')}`);
   const patch: TaskPatch = {};
-  if ("status" in obj) patch.status = member(obj, "status", "patch", STATUSES);
-  if ("priority" in obj) patch.priority = member(obj, "priority", "patch", PRIORITIES);
-  if ("input" in obj) patch.input = string(obj, "input", "patch");
-  if ("sessionId" in obj) patch.sessionId = nullableString(obj, "sessionId", "patch");
-  if ("next" in obj) patch.next = member(obj, "next", "patch", NEXT_RUNS);
-  if ("workdir" in obj) {
-    patch.workdir = nullableString(obj, "workdir", "patch");
-    if (patch.workdir !== null && !patch.workdir.startsWith("/")) throw new ContractError("patch.workdir must be an absolute path");
+  if ('status' in obj) patch.status = member(obj, 'status', 'patch', STATUSES);
+  if ('priority' in obj) patch.priority = member(obj, 'priority', 'patch', PRIORITIES);
+  if ('input' in obj) patch.input = string(obj, 'input', 'patch');
+  if ('sessionId' in obj) patch.sessionId = nullableString(obj, 'sessionId', 'patch');
+  if ('next' in obj) patch.next = member(obj, 'next', 'patch', NEXT_RUNS);
+  if ('workdir' in obj) {
+    patch.workdir = nullableString(obj, 'workdir', 'patch');
+    if (patch.workdir !== null && !patch.workdir.startsWith('/'))
+      throw new ContractError('patch.workdir must be an absolute path');
   }
   return patch;
 }
 
 // Stdin of heartbeat.
 export function parseHeartbeat(value: unknown): Heartbeat {
-  const obj = record(value, "heartbeat");
-  rejectUnknownKeys(obj, ["lane", "borrowed"], "heartbeat");
-  const lane = string(obj, "lane", "heartbeat");
-  if (!isSafeMachineName(lane)) throw new ContractError("heartbeat.lane must be a name of letters, digits, '.', '-' and '_'");
-  return { lane, borrowed: boolean(obj, "borrowed", "heartbeat") };
+  const obj = record(value, 'heartbeat');
+  rejectUnknownKeys(obj, ['lane', 'borrowed'], 'heartbeat');
+  const lane = string(obj, 'lane', 'heartbeat');
+  if (!isSafeMachineName(lane))
+    throw new ContractError("heartbeat.lane must be a name of letters, digits, '.', '-' and '_'");
+  return { lane, borrowed: boolean(obj, 'borrowed', 'heartbeat') };
 }
 
 // The JSON form of a task, as the backend prints it.
@@ -363,7 +375,7 @@ export function serializeTask(task: Task): Record<string, unknown> {
 
 // Stdin of setup.
 export function parseSetupRequest(value: unknown): string[] {
-  return labels(record(value, "setup request"), "setup request");
+  return labels(record(value, 'setup request'), 'setup request');
 }
 
 /**
@@ -376,5 +388,5 @@ export function promptSkill(input: string): string | undefined {
 
 // A skill's name without its plugin: `pr-review:review-pr` → "review-pr".
 export function shortSkill(skill: string): string {
-  return skill.includes(":") ? skill.slice(skill.lastIndexOf(":") + 1) : skill;
+  return skill.includes(':') ? skill.slice(skill.lastIndexOf(':') + 1) : skill;
 }

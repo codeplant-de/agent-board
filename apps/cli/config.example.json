@@ -1,22 +1,16 @@
 {
   "backend": {
-    "command": [
-      "~/workspace/agent-board/apps/cli/bin/web-backend"
-    ]
+    "command": ["~/workspace/agent-board/apps/cli/bin/web-backend"]
   },
   "machine": "laptop",
   "lanes": {
     "reviews": {
-      "skills": [
-        "review-pr"
-      ],
+      "skills": ["review-pr"],
       "slots": 2,
       "cwd": "~/workspace/cosuno/cosuno"
     },
     "general": {
-      "skills": [
-        "*"
-      ],
+      "skills": ["*"],
       "slots": 3
     }
   },
@@ -114,14 +108,7 @@
       "Read(**/.env*)",
       "Read(//proc/**)"
     ],
-    "env": [
-      "CIRCLECI_TOKEN",
-      "SHORTCUT_API_TOKEN",
-      "COSUNO_PROD_REPLICA_ENDPOINT",
-      "COSUNO_STAGING_REPLICA_ENDPOINT"
-    ],
-    "mcpServers": [
-      "shortcut"
-    ]
+    "env": ["CIRCLECI_TOKEN", "SHORTCUT_API_TOKEN", "COSUNO_PROD_REPLICA_ENDPOINT", "COSUNO_STAGING_REPLICA_ENDPOINT"],
+    "mcpServers": ["shortcut"]
   }
 }

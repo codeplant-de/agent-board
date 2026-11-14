@@ -102,10 +102,7 @@ export async function getTask(db: DbOrTx, id: string): Promise<TaskRow> {
 }
 
 /** New task at the bottom of its status. A known dedupe key returns the existing task instead. */
-export async function addTask(
-  db: Db,
-  draft: TaskDraft,
-): Promise<{ row: TaskRow; created: boolean }> {
+export async function addTask(db: Db, draft: TaskDraft): Promise<{ row: TaskRow; created: boolean }> {
   return db.transaction(async (tx) => {
     // A follow-up is as pressing as the task it came from, unless its creator says otherwise.
     const parent = draft.parentId === undefined ? undefined : await getTask(tx, draft.parentId);
@@ -117,7 +114,8 @@ export async function addTask(
         title: draft.title.trim(),
         input: draft.input,
         // A task is labelled with the skill its prompt starts with, unless its creator says otherwise.
-        labels: draft.labels.length > 0 ? draft.labels : [promptSkill(draft.input)].filter((skill) => skill !== undefined),
+        labels:
+          draft.labels.length > 0 ? draft.labels : [promptSkill(draft.input)].filter((skill) => skill !== undefined),
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
         status: draft.status,
@@ -131,7 +129,10 @@ export async function addTask(
       .onConflictDoNothing({ target: tasks.dedupeKey })
       .returning();
     if (row) return { row, created: true };
-    const [existing] = await tx.select().from(tasks).where(eq(tasks.dedupeKey, draft.dedupeKey ?? ''));
+    const [existing] = await tx
+      .select()
+      .from(tasks)
+      .where(eq(tasks.dedupeKey, draft.dedupeKey ?? ''));
     if (!existing) throw new AppError('CONFLICT', 'the task was created and removed at once; try again');
     return { row: existing, created: false };
   });
@@ -242,8 +243,7 @@ export async function ask(db: Db, taskId: string, questions: Question[], by: str
       .set({
         status: 'needs-me',
         openQuestionNoteId: note.id,
-        position:
-          current.status === 'needs-me' ? current.position : await edgePosition(tx, 'needs-me', 'bottom'),
+        position: current.status === 'needs-me' ? current.position : await edgePosition(tx, 'needs-me', 'bottom'),
         updatedAt: new Date(),
       })
       .where(eq(tasks.id, taskId));
@@ -253,11 +253,7 @@ export async function ask(db: Db, taskId: string, questions: Question[], by: str
 
 export async function readNotes(db: DbOrTx, taskId: string): Promise<NoteRow[]> {
   await getTask(db, taskId);
-  return db
-    .select()
-    .from(notes)
-    .where(eq(notes.taskId, taskId))
-    .orderBy(asc(notes.createdAt), asc(notes.id));
+  return db.select().from(notes).where(eq(notes.taskId, taskId)).orderBy(asc(notes.createdAt), asc(notes.id));
 }
 
 /** Creates the labels it does not know yet; with dryRun only names them. */
@@ -276,8 +272,7 @@ export async function setupLabels(db: Db, names: string[], dryRun: boolean): Pro
 }
 
 function requireNotRunning(task: TaskRow): void {
-  if (task.status === 'running')
-    throw new AppError('CONFLICT', 'The task is running. Wait until it reports back.');
+  if (task.status === 'running') throw new AppError('CONFLICT', 'The task is running. Wait until it reports back.');
 }
 
 /**
@@ -405,7 +400,12 @@ export async function setClosed(db: Db, taskId: string, closed: boolean, by: str
     await systemEvent(tx, taskId, closed ? 'Closed.' : 'Reopened.', by);
     const [row] = await tx
       .update(tasks)
-      .set({ closed, closedAt: closed ? new Date() : null, proposed: closed ? task.proposed : false, updatedAt: new Date() })
+      .set({
+        closed,
+        closedAt: closed ? new Date() : null,
+        proposed: closed ? task.proposed : false,
+        updatedAt: new Date(),
+      })
       .where(eq(tasks.id, taskId))
       .returning();
     return row!;

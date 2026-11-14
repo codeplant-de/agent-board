@@ -30,7 +30,10 @@ export const tasks = pgTable(
     id: text('id').primaryKey(),
     title: text('title').notNull(),
     input: text('input').notNull().default(''),
-    labels: text('labels').array().notNull().default(sql`'{}'::text[]`),
+    labels: text('labels')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     status: taskStatus('status').notNull().default('todo'),
     priority: taskPriority('priority').notNull().default('normal'),
     /** Order within a status and priority: lower is higher up. */
