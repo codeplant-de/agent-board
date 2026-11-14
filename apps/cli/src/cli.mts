@@ -66,7 +66,7 @@ export async function runMain(main: () => Promise<void>, prefix = 'agent-board')
     await main();
   } catch (error) {
     if (error instanceof ReportedFailure) {
-      process.exitCode = 1;
+      process.exitCode = error.exitCode;
       return;
     }
     if (
@@ -85,8 +85,15 @@ export async function runMain(main: () => Promise<void>, prefix = 'agent-board')
   }
 }
 
-// A failure whose reason was already printed: it only sets the exit code.
-export class ReportedFailure extends Error {}
+// A failure whose reason was already printed: it only sets the exit code (1, or the status of a program that ran for the user).
+export class ReportedFailure extends Error {
+  exitCode: number;
+
+  constructor(message: string, exitCode = 1) {
+    super(message);
+    this.exitCode = exitCode;
+  }
+}
 
 export class UsageError extends Error {
   // Printed under the message: the command's usage and where to read more.

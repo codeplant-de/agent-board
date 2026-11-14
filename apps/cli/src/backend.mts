@@ -299,6 +299,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       return all ? tasks : tasks.filter((task) => !task.closed);
     },
     getTask: async (id) => call('get-task', { id: taskId(id) }, parseWireTask),
+    attachSession: async (id) => call('attach-session', { id: taskId(id) }, parseWireTask),
     addTask: async (draft) => call('add-task', { body: draft }, parseWireAddTaskResult),
     updateTask: async (id, patch) => call('update-task', { id: taskId(id), body: patch }, parseWireTask),
     async claimTask(id, machine) {

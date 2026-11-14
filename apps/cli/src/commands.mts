@@ -3,6 +3,7 @@ import { homedir, hostname } from 'node:os';
 import { Argument, Command, CommanderError } from 'commander';
 import { CONTRACT_VERSION, STATUSES } from '@agent-board/shared';
 import {
+  attach,
   add,
   ask,
   comment,
@@ -21,7 +22,7 @@ import {
   show,
   tasks,
 } from './board.mts';
-import type { AddFlags, DelayFlags, TasksFlags } from './board.mts';
+import type { AddFlags, AttachFlags, DelayFlags, Spawner, TasksFlags } from './board.mts';
 import { buildContext, readStdin, ReportedFailure, UsageError } from './cli.mts';
 import type { ContextOptions, LinkingContext } from './cli.mts';
 import { verifyContract } from './backend.mts';
@@ -55,6 +56,8 @@ export interface ProgramOptions {
   // The context of a command; tests hand over a fake backend.
   context?: (dryRun: boolean, options: ContextOptions) => LinkingContext;
   readStdin?: () => Promise<string>;
+  // Starts claude for `attach`; tests must not launch the real one.
+  spawnClaude?: Spawner;
   writeOut?: (text: string) => void;
   writeErr?: (text: string) => void;
   version?: string;
@@ -218,6 +221,27 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     if (!flags.json) return show(context, id);
     const { task, notes } = await readThread(context, id);
     writeJson({ task: taskJson(task), notes: notes.map(noteJson) });
+  });
+
+  dryRunOption(
+    program
+      .command('attach')
+      .helpGroup(TASKS)
+      .summary("open a task's Claude session in the terminal")
+      .description(
+        paragraphs(
+          "Run `claude --resume` on the task's session, interactively, in the directory the session ended in. The board hands the session only to the machine whose token ran the task, and not while the task runs: the headless run owns the session, so watch its Transcript on the task page.",
+          'Without --fork, the next resume of the task continues the session with what you did in it. --fork starts a forked session, so the session of the board stays as it was. The exit status is that of claude. Not available inside a board run.',
+          ID_NOTE,
+        ),
+      )
+      .argument('<task>', TASK_ARGUMENT)
+      .option('--fork', "fork the session (claude --fork-session) so the board's session stays as it was")
+      .addHelpText('after', examples('board attach 7sPf438z', 'board attach 7sPf --fork')),
+  ).action(async (arg: string, flags: AttachFlags, command: Command) => {
+    notInRun('board attach is not available inside a board run');
+    const context = contextOf(command);
+    await attach(context, await taskIdOf(context, arg), flags, options.spawnClaude);
   });
 
   dryRunOption(
