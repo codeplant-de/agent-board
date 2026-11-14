@@ -23,7 +23,15 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CONTRACT_VERSION, deriveKeys, encodeDataKey, generateDataKey, open, seal } from '@agent-board/shared';
+import {
+  blindIndex,
+  CONTRACT_VERSION,
+  deriveKeys,
+  encodeDataKey,
+  generateDataKey,
+  open,
+  seal,
+} from '@agent-board/shared';
 import { DATA_KEY, ENV_FILE, KEYS, OWNER, wireTask } from '../test/helpers.mts';
 
 const cliDir = fileURLToPath(new URL('..', import.meta.url));
@@ -52,6 +60,33 @@ writeFileSync(
   join(toolBin, 'systemctl'),
   '#!/bin/sh\ncase "$*" in *is-active*) echo inactive; exit 3 ;; esac\nexit 0\n',
   { mode: 0o755 },
+);
+// A `gh` that lists one review request, so that an intake run reaches the call that computes the blind index.
+const PR_URL = 'https://github.com/o/r/pull/1';
+const searchAnswer = JSON.stringify({
+  data: {
+    search: {
+      pageInfo: { hasNextPage: false },
+      nodes: [
+        {
+          url: PR_URL,
+          title: 'Fix it',
+          number: 1,
+          isDraft: false,
+          headRefOid: 'abc123',
+          author: { login: 'someone' },
+          commits: { nodes: [{ commit: { committedDate: '2026-11-14T10:00:00Z' } }] },
+        },
+      ],
+    },
+  },
+});
+writeFileSync(
+  join(toolBin, 'gh'),
+  `#!/bin/sh\ncase "$1 $2" in "api graphql") cat <<'JSON'\n${searchAnswer}\nJSON\n;; *) exit 1 ;; esac\n`,
+  {
+    mode: 0o755,
+  },
 );
 writeFileSync(join(toolBin, 'systemd-run'), `#!/bin/sh\necho "$*" >> '${systemdRuns}'\n`, { mode: 0o755 });
 const path = `${toolBin}:/usr/bin:/bin`;
@@ -99,6 +134,7 @@ const server = createServer((request: IncomingMessage, response: ServerResponse)
       'list-tasks': fake.tasks,
       'get-task': todo,
       'update-task': todo,
+      'add-task': { task: todo, created: true },
       'claim-task': { ...todo, status: 'running', machine: 'smoke' },
     };
     const reply = (): void => void response.end(JSON.stringify({ result: results[command] ?? null }));
@@ -151,16 +187,31 @@ function board(args: string[], configDir: string, env: Record<string, string> = 
 }
 
 let configCount = 0;
-function config(options: { webUrl?: string; envMode?: number; config?: boolean; dataKey?: Uint8Array } = {}): string {
+function config(
+  options: {
+    webUrl?: string;
+    envMode?: number;
+    config?: boolean;
+    dataKey?: Uint8Array;
+    noKey?: boolean;
+    repos?: boolean;
+  } = {},
+): string {
   const dir = join(root, `cfg${(configCount += 1)}`);
   mkdirSync(dir);
   writeFileSync(join(dir, 'web.json'), JSON.stringify({ url: options.webUrl ?? url }));
-  const env = options.dataKey
-    ? `AGENT_BOARD_TOKEN=abm_smoketoken\nAGENT_BOARD_DATA_KEY=${encodeDataKey(options.dataKey)}\n`
-    : ENV_FILE;
+  const env = options.noKey
+    ? 'AGENT_BOARD_TOKEN=abm_smoketoken\n'
+    : options.dataKey
+      ? `AGENT_BOARD_TOKEN=abm_smoketoken\nAGENT_BOARD_DATA_KEY=${encodeDataKey(options.dataKey)}\n`
+      : ENV_FILE;
   writeFileSync(join(dir, 'env'), env, { mode: options.envMode ?? 0o600 });
   chmodSync(join(dir, 'env'), options.envMode ?? 0o600);
-  if (options.config) writeFileSync(join(dir, 'config.json'), JSON.stringify({ machine: 'smoke' }));
+  if (options.config)
+    writeFileSync(
+      join(dir, 'config.json'),
+      JSON.stringify({ machine: 'smoke', ...(options.repos ? { repos: { 'o/r': '/tmp' } } : {}) }),
+    );
   return dir;
 }
 
@@ -265,7 +316,7 @@ await check('setup --print points ExecStart at this binary', async () => {
 await check('a data key that is not the board’s is refused, naming both key ids and never the key', async () => {
   const wrong = generateDataKey();
   const result = await board(['tasks'], config({ dataKey: wrong }));
-  assert.notEqual(result.code, 0);
+  assert.equal(result.code, 1);
   assert.match(
     result.stderr,
     /this machine holds a different data key \(id [0-9a-f]{16}\) than the board's \(id [0-9a-f]{16}\)/,
@@ -275,9 +326,29 @@ await check('a data key that is not the board’s is refused, naming both key id
 await check('a board without a data key is refused', async () => {
   await withBoard({ keyId: null }, async () => {
     const result = await board(['tasks'], config());
-    assert.notEqual(result.code, 0);
+    assert.equal(result.code, 1);
     assert.match(result.stderr, /the board has no data key yet: set up encryption in the browser first/);
   });
+});
+await check('a machine without a data key in env is refused, saying where to get it', async () => {
+  const result = await board(['tasks'], config({ noKey: true }));
+  assert.equal(result.code, 1);
+  assert.match(
+    result.stderr,
+    /the credentials file needs AGENT_BOARD_DATA_KEY \(copy it from the board's Settings page, then run "board init"\)/,
+  );
+});
+await check('the binary computes the same blind index for a dedupe key as node does', async () => {
+  // Both machines must create a PR's task once: the key is a keyed hash that Bun and Node have to agree on.
+  requests.length = 0;
+  const result = await board(['internal', 'intake'], config({ config: true, repos: true }));
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /INTAKE prs=1 created=1/);
+  const added = requests.find((request) => request.command === 'add-task');
+  assert.ok(added, 'intake sent no add-task');
+  const sent = (JSON.parse(added.body) as { body: { dedupeKey: string } }).body.dedupeKey;
+  assert.equal(sent, await blindIndex(KEYS, PR_URL));
+  assert.ok(!sent.includes('github.com'), 'the PR URL must not reach the server');
 });
 await check('a board of another contract says how to update this binary', async () => {
   await withBoard({ contract: CONTRACT_VERSION + 1 }, async () => {

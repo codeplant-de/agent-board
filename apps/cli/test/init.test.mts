@@ -631,8 +631,159 @@ test('the key checks never print the key: a failing init names the flag, not the
   try {
     await assert.rejects(
       init(deps(join(dir, 'cfg')), { ...CONFIG_ARGS, tokenFile: tokenFile(dir) }),
-      /data key file is needed and there is no terminal to ask: give --data-key-file/,
+      /the data key is needed and there is no terminal to ask: give --data-key-file/,
     );
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+const BOTH_LINES = (token: string): string => `AGENT_BOARD_TOKEN=${token}\nAGENT_BOARD_DATA_KEY=${KEY_TEXT}`;
+
+test('completing a partial env, a secret given by flag wins over the one in env', async () => {
+  const dir = tempDir();
+  const configDir = join(dir, 'cfg');
+  try {
+    await init(deps(configDir), { ...CONFIG_ARGS, tokenFile: tokenFile(dir, 'abm_old'), dataKeyFile: keyFile(dir) });
+    writeFileSync(join(configDir, 'env'), 'AGENT_BOARD_TOKEN=abm_old\n', { mode: 0o600 });
+    await init(deps(configDir), { tokenFile: tokenFile(dir, 'abm_new'), dataKeyFile: keyFile(dir) });
+    assert.equal(
+      readFileSync(join(configDir, 'env'), 'utf8'),
+      `AGENT_BOARD_TOKEN=abm_new\nAGENT_BOARD_DATA_KEY=${KEY_TEXT}\n`,
+    );
+    // Not given: carried over; given but invalid: refused, and nothing changes.
+    writeFileSync(join(configDir, 'env'), 'AGENT_BOARD_TOKEN=abm_old\n', { mode: 0o600 });
+    await assert.rejects(
+      init(deps(configDir), { tokenFile: tokenFile(dir, 'hunter2', 'bad'), dataKeyFile: keyFile(dir) }),
+      /the token: a machine token starts with abm_/,
+    );
+    assert.equal(readFileSync(join(configDir, 'env'), 'utf8'), 'AGENT_BOARD_TOKEN=abm_old\n');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('an env backup is never wider than 600', async () => {
+  const dir = tempDir();
+  const configDir = join(dir, 'cfg');
+  try {
+    mkdirSync(configDir);
+    writeFileSync(join(configDir, 'env'), ENV_TEXT);
+    chmodSync(join(configDir, 'env'), 0o644);
+    writeFileSync(join(configDir, 'web.json'), '{"url": "https://board.example.com"}');
+    await init(deps(configDir), { force: true, machine: 'm', tokenFile: tokenFile(dir), dataKeyFile: keyFile(dir) });
+    const backup = readdirSync(configDir).find((name) => name.startsWith('env.bak-')) ?? '';
+    assert.equal(mode(join(configDir, backup)), 0o600);
+    assert.equal(mode(join(configDir, 'env')), 0o600);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('the Settings page copies env lines: a file or an answer may hold NAME=value, either one or both', async () => {
+  const dir = tempDir();
+  try {
+    // The data key line alone, for --data-key-file; the token bare.
+    await init(deps(join(dir, 'a')), {
+      ...CONFIG_ARGS,
+      tokenFile: tokenFile(dir),
+      dataKeyFile: keyFile(dir, `AGENT_BOARD_DATA_KEY=${KEY_TEXT}`, 'line'),
+    });
+    assert.equal(readFileSync(join(dir, 'a', 'env'), 'utf8'), ENV_TEXT);
+    // Both lines in one token file: the key needs no flag.
+    await init(deps(join(dir, 'b')), { ...CONFIG_ARGS, tokenFile: tokenFile(dir, BOTH_LINES(TOKEN), 'both') });
+    assert.equal(readFileSync(join(dir, 'b', 'env'), 'utf8'), ENV_TEXT);
+    // Both lines in the data key file: the token needs no flag.
+    await init(deps(join(dir, 'c')), { ...CONFIG_ARGS, dataKeyFile: keyFile(dir, BOTH_LINES(TOKEN), 'both2') });
+    assert.equal(readFileSync(join(dir, 'c', 'env'), 'utf8'), ENV_TEXT);
+    // A value for its own flag wins over the one in the other file.
+    await init(deps(join(dir, 'd')), {
+      ...CONFIG_ARGS,
+      tokenFile: tokenFile(dir, 'abm_own', 'own'),
+      dataKeyFile: keyFile(dir, BOTH_LINES('abm_other'), 'both3'),
+    });
+    assert.match(readFileSync(join(dir, 'd', 'env'), 'utf8'), /^AGENT_BOARD_TOKEN=abm_own\n/);
+    // At a terminal: a pasted pair answers the key question too, a pasted key line answers its own.
+    const pair = clackLike({ text: ['https://board.example.com', 'm'], secret: [BOTH_LINES(TOKEN)] });
+    await init(deps(join(dir, 'e'), { interactive: true, prompts: pair }), {});
+    assert.equal(pair.asked.filter((message) => message.includes('key')).length, 0, 'the key is not asked for again');
+    assert.equal(readFileSync(join(dir, 'e', 'env'), 'utf8'), ENV_TEXT);
+    const lines = clackLike({
+      text: ['https://board.example.com', 'm'],
+      secret: [`AGENT_BOARD_TOKEN=${TOKEN}`, `AGENT_BOARD_DATA_KEY=${KEY_TEXT}`],
+    });
+    await init(deps(join(dir, 'f'), { interactive: true, prompts: lines }), {});
+    assert.equal(readFileSync(join(dir, 'f', 'env'), 'utf8'), ENV_TEXT);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a secret given where a file path belongs is refused without being echoed', async () => {
+  const dir = tempDir();
+  try {
+    for (const [flags, secret] of [
+      [{ dataKeyFile: KEY_TEXT, tokenFile: tokenFile(dir) }, KEY_TEXT],
+      [{ tokenFile: TOKEN, dataKeyFile: keyFile(dir) }, TOKEN],
+      [{ dataKeyFile: `AGENT_BOARD_DATA_KEY=${KEY_TEXT}`, tokenFile: tokenFile(dir) }, KEY_TEXT],
+    ] as const) {
+      await assert.rejects(init(deps(join(dir, 'cfg')), { ...CONFIG_ARGS, ...flags }), (error: Error) => {
+        assert.match(error.message, /^--(data-key|token)-file takes the path of a file, not the secret itself$/);
+        assert.ok(!error.message.includes(secret));
+        return true;
+      });
+    }
+    assert.throws(() => readdirSync(join(dir, 'cfg')));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('an env with neither value does not say it asks for only one', async () => {
+  const dir = tempDir();
+  const configDir = join(dir, 'cfg');
+  try {
+    mkdirSync(configDir);
+    writeFileSync(join(configDir, 'env'), 'OTHER=1\n', { mode: 0o600 });
+    const run = deps(configDir);
+    await init(run, { ...CONFIG_ARGS, tokenFile: tokenFile(dir), dataKeyFile: keyFile(dir) });
+    assert.ok(!run.printed.some((line) => line.includes('asking for')));
+    assert.equal(readFileSync(join(configDir, 'env'), 'utf8'), `${ENV_TEXT}OTHER=1\n`);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('--force keeps the current URL when none is given, and replaces it, after a backup, when one is', async () => {
+  const dir = tempDir();
+  const configDir = join(dir, 'cfg');
+  try {
+    await init(deps(configDir), { ...CONFIG_ARGS, tokenFile: tokenFile(dir), dataKeyFile: keyFile(dir) });
+    const kept = deps(configDir);
+    await init(kept, { force: true, dataKeyFile: keyFile(dir) });
+    assert.deepEqual(JSON.parse(readFileSync(join(configDir, 'web.json'), 'utf8')), {
+      url: 'https://board.example.com',
+    });
+    assert.ok(
+      !readdirSync(configDir).some((name) => name.startsWith('web.json.bak-')),
+      'no backup of an unchanged file',
+    );
+    assert.ok(kept.printed.some((line) => line.includes('no --url given')));
+    await init(deps(configDir), { force: true, url: 'https://board.example.com/', dataKeyFile: keyFile(dir) });
+    assert.ok(!readdirSync(configDir).some((name) => name.startsWith('web.json.bak-')), 'the same URL is no change');
+    await init(deps(configDir), { force: true, url: 'https://new.example.com', dataKeyFile: keyFile(dir) });
+    assert.ok(readdirSync(configDir).some((name) => name.startsWith('web.json.bak-')));
+    // Without a web.json there is nothing to keep: --url is needed.
+    rmSync(join(configDir, 'web.json'));
+    await assert.rejects(init(deps(configDir), { force: true }), /the board's URL is needed and there is no terminal/);
+    // At a terminal, Enter keeps the URL.
+    const prompts = clackLike({ text: ['https://board.example.com'], secret: ['', ''] });
+    await init(deps(configDir, { interactive: true, prompts }), { force: true });
+    const enter = clackLike({ text: ['', ''], secret: ['', ''] });
+    await init(deps(configDir, { interactive: true, prompts: enter }), { force: true });
+    assert.deepEqual(JSON.parse(readFileSync(join(configDir, 'web.json'), 'utf8')), {
+      url: 'https://board.example.com',
+    });
   } finally {
     rmSync(dir, { recursive: true });
   }

@@ -151,7 +151,7 @@ function readCredentials({ configDir, readText, mode }: DoctorDeps): {
         'token',
         'fail',
         'AGENT_BOARD_TOKEN is not set in env',
-        'run "board init" (it asks for the missing token) or add it to the env file',
+        'run "board init": it sees the env without a token and asks for the token only',
       ),
     );
   } else {
@@ -175,7 +175,7 @@ function readCredentials({ configDir, readText, mode }: DoctorDeps): {
         'data key',
         'fail',
         'AGENT_BOARD_DATA_KEY is not set in env',
-        'copy the data key from the board\'s Settings page and run "board init" (it asks for the missing key)',
+        'copy the data key from the board\'s Settings page and run "board init": it sees the env without a key and asks for the key only',
       ),
     );
   } else {
@@ -188,7 +188,7 @@ function readCredentials({ configDir, readText, mode }: DoctorDeps): {
           'data key',
           'fail',
           'AGENT_BOARD_DATA_KEY is not a data key (abk1_ and 43 more characters)',
-          'copy it again from the board\'s Settings page and run "board init --force"',
+          'copy it again from the board\'s Settings page and run "board init --force": it keeps the URL and the token unless you give them again, and asks for the key',
         ),
       );
     }
@@ -207,6 +207,17 @@ const checkServer: Check = async (deps) => {
   try {
     const identity = await deps.verifyServer({ url, token });
     const results = [ok('server', `${url} answers, contract matches`)];
+    // A board without a key cannot be matched, whatever env holds: say so first, with the way out.
+    if (identity.keyId === null)
+      return [
+        ...results,
+        problem(
+          'board key',
+          'fail',
+          'the board has no data key yet',
+          'set up encryption in the browser first, then copy the key from the Settings page and run "board init"',
+        ),
+      ];
     if (dataKey === undefined) return results;
     // The board's key and this machine's: derived for the board's owner, compared by id, neither ever printed.
     const checked = await checkDataKey(dataKey, identity);
@@ -217,19 +228,14 @@ const checkServer: Check = async (deps) => {
       ];
     return [
       ...results,
-      checked.problem === 'board-has-no-key'
-        ? problem(
-            'board key',
-            'fail',
-            'the board has no data key yet',
-            'set up encryption in the browser first, then copy the key from the Settings page',
-          )
-        : problem(
-            'board key',
-            'fail',
-            `this machine holds a different data key (id ${checked.mine}) than the board's (id ${checked.boards})`,
-            'copy the current key from the board\'s Settings page and run "board init --force"',
-          ),
+      problem(
+        'board key',
+        'fail',
+        checked.problem === 'board-has-no-key'
+          ? 'the board has no data key yet'
+          : `this machine holds a different data key (id ${checked.mine}) than the board's (id ${checked.boards})`,
+        'copy the current key from the board\'s Settings page and run "board init --force": it keeps the URL and the token unless you give them again, and asks for the key',
+      ),
     ];
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -240,7 +246,7 @@ const checkServer: Check = async (deps) => {
           'server',
           'fail',
           `${url} refused the token`,
-          'create a new machine token on the board\'s Settings page and run "board init --force"',
+          'create a new machine token on the board\'s Settings page and run "board init --force": it keeps the URL and the data key unless you give them again, and asks for the token',
         ),
       ];
     if (/older than/.test(message))

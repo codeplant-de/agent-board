@@ -118,6 +118,37 @@ function readEnvValues(path: string): Record<string, string> | undefined {
 const TOKEN = 'AGENT_BOARD_TOKEN';
 const DATA_KEY = 'AGENT_BOARD_DATA_KEY';
 
+interface Pasted {
+  token?: string;
+  dataKey?: string;
+}
+
+// What a pasted text or a file holds: NAME=value lines (the Settings page copies those, one or both), or a bare value,
+// which is `own`.
+function parsePasted(text: string, own: 'token' | 'dataKey'): Pasted {
+  const lines = parseEnv(text);
+  const token = lines[TOKEN];
+  const dataKey = lines[DATA_KEY];
+  if (token !== undefined || dataKey !== undefined)
+    return { ...(token === undefined ? {} : { token }), ...(dataKey === undefined ? {} : { dataKey }) };
+  const bare = text.trim();
+  return bare === '' ? {} : { [own]: bare };
+}
+
+// A secret typed where a path belongs: refused without echoing it.
+function looksLikeSecret(path: string): boolean {
+  return /^(abk1_|abm_)/.test(path) || /^AGENT_BOARD_[A-Z_]+=/.test(path);
+}
+
+function readWebUrl(path: string): string | undefined {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    return checkBoardUrl(typeof raw === 'object' && raw !== null && 'url' in raw ? raw.url : undefined);
+  } catch {
+    return undefined;
+  }
+}
+
 function backupName(path: string, now: Date): string {
   return `${path}.bak-${now.toISOString().replace(/[:.]/g, '-')}`;
 }
@@ -137,14 +168,16 @@ export async function init(deps: InitDeps, flags: InitFlags): Promise<InitResult
   const result: InitResult = { written: [], skipped: [], backedUp: [] };
 
   // An existing file is kept without --force. config.json holds the user's lanes and repos, so it is always kept.
-  const writeWeb = force || !existsSync(webPath);
+  const webMissing = !existsSync(webPath);
   // An env that exists is replaced whole with --force; without it only a value it lacks is asked for and added.
   const existingEnv = readEnvValues(envPath);
-  const wantToken = force || existingEnv === undefined || !existingEnv[TOKEN];
-  const wantDataKey = force || existingEnv === undefined || !existingEnv[DATA_KEY];
-  const writeEnv = wantToken || wantDataKey;
+  const have = { token: existingEnv?.[TOKEN], dataKey: existingEnv?.[DATA_KEY] };
+  const missing = { token: !have.token, dataKey: !have.dataKey };
+  const writeEnv = force || existingEnv === undefined || missing.token || missing.dataKey;
   const writeConfig = !existsSync(configPath);
-  if (!writeWeb) result.skipped.push(webPath);
+  const kept: string[] = [];
+  if (!writeEnv) kept.push(`kept ${envPath} (it has both values; --force replaces it after a backup)`);
+  if (!writeConfig) kept.push(`kept ${configPath} (config.json is always kept; edit it by hand)`);
   if (!writeEnv) result.skipped.push(envPath);
   if (!writeConfig) result.skipped.push(configPath);
 
@@ -156,16 +189,35 @@ export async function init(deps: InitDeps, flags: InitFlags): Promise<InitResult
     throw new UsageError(`${what}: ${problem}`);
   };
   const files: Pending[] = [];
-  if (writeWeb) {
-    const raw =
+  if (webMissing || force) {
+    // --force keeps the current URL when none is given, as it keeps the secrets.
+    const current = webMissing ? undefined : readWebUrl(webPath);
+    const given =
       flags.url ??
       (deps.interactive
-        ? await deps.prompts.text("The board's URL", { validate: urlProblem })
-        : need('--url', "the board's URL"));
-    const url = raw.trim();
-    const problem = urlProblem(url);
-    if (problem) fail(flags.url === undefined ? "the board's URL" : '--url', problem);
-    files.push({ path: webPath, content: `${JSON.stringify({ url: checkBoardUrl(url) }, null, 2)}\n`, mode: 0o644 });
+        ? await deps.prompts.text("The board's URL", {
+            ...(current === undefined ? {} : { defaultValue: current }),
+            validate: (value) => urlProblem(value.trim() === '' && current !== undefined ? current : value),
+          })
+        : current === undefined
+          ? need('--url', "the board's URL")
+          : undefined);
+    const url = given === undefined ? undefined : given.trim() === '' && current !== undefined ? current : given.trim();
+    if (url !== undefined) {
+      const problem = urlProblem(url);
+      if (problem) fail(flags.url === undefined ? "the board's URL" : '--url', problem);
+    }
+    if (url === undefined || checkBoardUrl(url) === current) {
+      result.skipped.push(webPath);
+      kept.push(
+        `kept ${webPath} (${url === undefined ? 'no --url given' : 'same URL'}; --force keeps the current URL)`,
+      );
+    } else {
+      files.push({ path: webPath, content: `${JSON.stringify({ url: checkBoardUrl(url) }, null, 2)}\n`, mode: 0o644 });
+    }
+  } else {
+    result.skipped.push(webPath);
+    kept.push(`kept ${webPath} (it exists; --force replaces it after a backup)`);
   }
   if (writeEnv) {
     if (flags.tokenFile !== undefined && flags.tokenFile === flags.dataKeyFile)
@@ -177,62 +229,83 @@ export async function init(deps: InitDeps, flags: InitFlags): Promise<InitResult
       STDIN_PATHS.includes(flags.dataKeyFile)
     )
       throw new UsageError('only one of --token-file and --data-key-file can be /dev/stdin');
-    if (!force && existingEnv !== undefined)
+    if (!force && existingEnv !== undefined && missing.token !== missing.dataKey)
       deps.print(
-        `${envPath} has ${wantToken ? 'no token' : 'a token'} and ${wantDataKey ? 'no data key' : 'a data key'}: asking for ${wantToken ? 'the token' : 'the data key'} only`,
+        missing.dataKey
+          ? `${envPath} has a token and no data key: asking for the data key only`
+          : `${envPath} has a data key and no token: asking for the token only`,
       );
-    // What the file keeps when a value is not asked for again: the current one.
-    const current = (name: string): string | undefined => existingEnv?.[name];
-    const secret = async (options: {
-      want: boolean;
-      name: string;
+    // The board's Settings page copies whole env lines, so a file or an answer may hold either value, as NAME=value or
+    // bare, and may hold both: one text then gives both.
+    const fromFile = (flag: string, path: string | undefined, what: string, own: 'token' | 'dataKey'): Pasted => {
+      if (path === undefined) return {};
+      if (looksLikeSecret(path)) throw new UsageError(`${flag} takes the path of a file, not the secret itself`);
+      return parsePasted(readSecret(path, what), own);
+    };
+    const tokenFile = fromFile('--token-file', flags.tokenFile, 'token file', 'token');
+    const keyFile = fromFile('--data-key-file', flags.dataKeyFile, 'data key file', 'dataKey');
+    // A value given for its own flag wins over the same value found in the other file.
+    const supplied: Pasted = {
+      ...((tokenFile.token ?? keyFile.token) ? { token: tokenFile.token ?? keyFile.token } : {}),
+      ...((keyFile.dataKey ?? tokenFile.dataKey) ? { dataKey: keyFile.dataKey ?? tokenFile.dataKey } : {}),
+    } as Pasted;
+    const resolve = async (options: {
+      field: 'token' | 'dataKey';
       flag: string;
-      file: string | undefined;
       what: string;
       message: string;
       problem: (value: string) => string | undefined;
-    }): Promise<string> => {
-      const kept = current(options.name);
-      if (!options.want) return kept ?? '';
-      if (options.file !== undefined) return readSecret(options.file, options.what).trim();
-      // With --force the current value stays when it is not given again.
-      if (!deps.interactive) return kept !== undefined && force ? kept : need(options.flag, options.what);
-      const answer = (
-        await deps.prompts.secret(
-          kept !== undefined && force ? `${options.message} (Enter keeps the current one)` : options.message,
-          {
-            validate: (value) =>
-              value.trim() === '' && kept !== undefined && force ? undefined : options.problem(value),
-          },
-        )
-      ).trim();
-      return answer === '' && kept !== undefined && force ? kept : answer;
+    }): Promise<{ value: string; fresh: boolean }> => {
+      const { field } = options;
+      const given = supplied[field];
+      if (given !== undefined) return { value: given.trim(), fresh: true };
+      const current = have[field];
+      // Missing values are asked for; with --force so are the ones that are there, and the current one stays if not given.
+      if (!(force || missing[field])) return { value: current ?? '', fresh: false };
+      if (!deps.interactive) {
+        if (current !== undefined && force) return { value: current, fresh: false };
+        return need(options.flag, options.what);
+      }
+      const keepable = current !== undefined && force;
+      const answer = await deps.prompts.secret(
+        keepable ? `${options.message} (Enter keeps the current one)` : options.message,
+        {
+          validate: (value) =>
+            value.trim() === '' && keepable ? undefined : options.problem(parsePasted(value, field)[field] ?? ''),
+        },
+      );
+      if (answer.trim() === '' && keepable) return { value: current, fresh: false };
+      const pasted = parsePasted(answer, field);
+      // A pasted pair also answers the other question.
+      const other = field === 'token' ? 'dataKey' : 'token';
+      if (pasted[other] !== undefined && supplied[other] === undefined) supplied[other] = pasted[other];
+      return { value: (pasted[field] ?? '').trim(), fresh: true };
     };
-    const token = await secret({
-      want: wantToken,
-      name: TOKEN,
+    const token = await resolve({
+      field: 'token',
       flag: '--token-file',
-      file: flags.tokenFile,
-      what: 'token file',
+      what: 'the machine token',
       message: 'Machine token (not shown)',
       problem: tokenProblem,
     });
-    const tokenError = wantToken ? tokenProblem(token) : undefined;
-    if (tokenError) fail('the token', tokenError);
-    const dataKey = await secret({
-      want: wantDataKey,
-      name: DATA_KEY,
+    if (token.fresh) {
+      const problem = tokenProblem(token.value);
+      if (problem) fail('the token', problem);
+    }
+    const dataKey = await resolve({
+      field: 'dataKey',
       flag: '--data-key-file',
-      file: flags.dataKeyFile,
-      what: 'data key file',
+      what: 'the data key',
       message: "Data key (not shown; copy it from the board's Settings page)",
       problem: dataKeyProblem,
     });
-    const keyError = wantDataKey ? dataKeyProblem(dataKey) : undefined;
-    if (keyError) fail('the data key', keyError);
+    if (dataKey.fresh) {
+      const problem = dataKeyProblem(dataKey.value);
+      if (problem) fail('the data key', problem);
+    }
     // Everything else the file held stays too.
     const others = Object.entries(existingEnv ?? {}).filter(([name]) => name !== TOKEN && name !== DATA_KEY);
-    const content = [[TOKEN, token], [DATA_KEY, dataKey], ...others]
+    const content = [[TOKEN, token.value], [DATA_KEY, dataKey.value], ...others]
       .map(([name, value]) => `${name}=${value}`)
       .join('\n');
     files.push({ path: envPath, content: `${content}\n`, mode: 0o600 });
@@ -275,7 +348,8 @@ export async function init(deps: InitDeps, flags: InitFlags): Promise<InitResult
       const existing = statSync(file.path, { throwIfNoEntry: false });
       if (existing) {
         const backup = backupName(file.path, deps.now());
-        stage(backup, readFileSync(file.path), existing.mode & 0o777);
+        // An env backup holds the token and the key: never wider than the file is meant to be.
+        stage(backup, readFileSync(file.path), file.path === envPath ? existing.mode & 0o600 : existing.mode & 0o777);
         result.backedUp.push(backup);
       }
       stage(file.path, file.content, file.mode);
@@ -288,11 +362,6 @@ export async function init(deps: InitDeps, flags: InitFlags): Promise<InitResult
 
   for (const path of result.written) deps.print(`wrote ${path}`);
   for (const path of result.backedUp) deps.print(`backed up the old file to ${path}`);
-  for (const path of result.skipped)
-    deps.print(
-      path === configPath
-        ? `kept ${path} (config.json is always kept; edit it by hand)`
-        : `kept ${path} (it exists; --force replaces it after a backup)`,
-    );
+  for (const line of kept) deps.print(line);
   return result;
 }

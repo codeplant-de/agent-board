@@ -307,3 +307,25 @@ test('the board has a key and this machine holds the same one, or the check fail
   assert.ok(!formatResult(mismatch as CheckResult).includes(KEY_TEXT));
   assert.ok(hasFailure(different));
 });
+
+test('a board with no key yet says so even when env has no key either, and the hints fit each case', async () => {
+  const results = await runChecks(
+    machine(
+      { ...GOOD, ...envWith(`AGENT_BOARD_TOKEN=${TOKEN}\n`) },
+      { verifyServer: async () => ({ owner: OWNER, keyId: null }) },
+    ),
+  );
+  const board = results.find((result) => result.name === 'board key');
+  assert.equal(board?.level, 'fail');
+  assert.match(board?.hint ?? '', /set up encryption in the browser first/);
+  assert.match(results.find((result) => result.name === 'data key')?.hint ?? '', /asks for the key only/);
+  const noToken = await runChecks(machine({ ...GOOD, ...envWith(`AGENT_BOARD_DATA_KEY=${KEY_TEXT}\n`) }));
+  assert.match(noToken.find((result) => result.name === 'token')?.hint ?? '', /asks for the token only/);
+  const other = await runChecks(
+    machine(GOOD, { verifyServer: async () => ({ owner: OWNER, keyId: '0123456789abcdef' }) }),
+  );
+  assert.match(
+    other.find((result) => result.name === 'board key')?.hint ?? '',
+    /board init --force": it keeps the URL and the token/,
+  );
+});
