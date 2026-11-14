@@ -1,11 +1,21 @@
 import type { Question } from '@agent-board/shared';
 import type { ThreadNote } from './opening';
 
-/** Every pairing of an opened answer with its questions goes through here. */
+/**
+ * The answer shown with a question: the one the server filed under it, and only when the questions inside the answer are the
+ * ones asked. An answer carries the questions its user was shown, so it can never be passed off as the answer to another.
+ */
 export function answerTo(thread: ThreadNote[], question: ThreadNote): ThreadNote | undefined {
-  return thread.find((note) => note.kind === 'answer' && note.questionNoteId === question.id);
+  const asked = JSON.stringify(question.questions);
+  return thread.find(
+    (note) =>
+      note.kind === 'answer' &&
+      !note.unreadable &&
+      note.questionNoteId === question.id &&
+      JSON.stringify(note.questions) === asked,
+  );
 }
 
-export function questionsAnswered(thread: ThreadNote[], answer: ThreadNote): Question[] | undefined {
-  return thread.find((note) => note.id === answer.questionNoteId)?.questions;
+export function questionsAnswered(answer: ThreadNote): Question[] | undefined {
+  return answer.questions;
 }

@@ -4,10 +4,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { CONTRACT_VERSION } from '@agent-board/shared';
 import { UsageError } from '../src/cli.mts';
-import type { Context } from '../src/cli.mts';
+import type { LinkingContext } from '../src/cli.mts';
 import { runBoard } from '../src/commands.mts';
 import type { ProgramOptions } from '../src/commands.mts';
-import { CONFIG, fakeBackend, task } from './helpers.mts';
+import { CONFIG, fakeBackend, linkTo, task } from './helpers.mts';
 
 const ID = 'Zt0Test1';
 
@@ -26,9 +26,9 @@ function setup(): Run {
   const out: string[] = [];
   const err: string[] = [];
   const dryRuns: boolean[] = [];
-  const context = (dryRun: boolean): Context => {
+  const context = (dryRun: boolean): LinkingContext => {
     dryRuns.push(dryRun);
-    return { config: CONFIG, backend, dryRun, print: (line) => printed.push(line) };
+    return { config: CONFIG, backend, dryRun, taskLink: linkTo, print: (line) => printed.push(line) };
   };
   const go = (argv: string[], overrides: ProgramOptions = {}) =>
     runBoard(argv, {
@@ -165,12 +165,13 @@ test('help text inside a comment is text, not a request for help', async () => {
 
 test('tasks, show, comment and move need no config file', async () => {
   const backend = fakeBackend([task({ id: ID })]);
-  const context = (): Context => ({
+  const context = (): LinkingContext => ({
     get config(): never {
       throw new Error('the config was read');
     },
     backend,
     dryRun: false,
+    taskLink: linkTo,
     print: () => undefined,
   });
   for (const argv of [['tasks'], ['show', ID], ['comment', ID, 'hi'], ['move', ID, 'done']])
@@ -212,9 +213,9 @@ test('schedule and add need a config.json; the other commands fall back to the d
   const dir = mkdtempSync('/tmp/board-commands-test-');
   try {
     writeFileSync(join(dir, 'p.md'), 'follow up');
-    const context = (_dryRun: boolean, { optionalConfig = false } = {}): Context => {
+    const context = (_dryRun: boolean, { optionalConfig = false } = {}): LinkingContext => {
       seen.push(optionalConfig);
-      return { config: CONFIG, backend, dryRun: false, print: () => undefined };
+      return { config: CONFIG, backend, dryRun: false, taskLink: linkTo, print: () => undefined };
     };
     await runBoard(['tasks'], { env: {}, context });
     await runBoard(['schedule', '--new', 'x'], { env: {}, context });

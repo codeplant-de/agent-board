@@ -1,17 +1,22 @@
 import {
+  ContractError,
   defaultTitle,
-  notePreview,
-  parseAnswers,
-  parseQuestions,
+  newTaskId,
   QuestionError,
+  sealAnswers,
+  sealFields,
+  sealInput,
+  sealNote,
   type Answer,
   type Keys,
   type Priority,
   type Question,
+  type RowRef,
+  type TaskCreator,
+  type UnreadableField,
 } from '@agent-board/shared';
-import { noteAnswers, noteBody, notePreviewOf, noteQuestions, sealAs, taskFields } from './contexts';
-import { tryOpen } from './opening';
-import type { RouterInputs, RouterOutputs } from './wire';
+import { sealerFor } from './contexts';
+import type { RouterInputs } from './wire';
 
 export class InputError extends Error {}
 
@@ -25,60 +30,85 @@ export interface NewTask {
   when?: CreateInput['when'];
 }
 
+/** What the shared sealing refuses (a text past the board's limit, answers that do not fit) is something to tell the user. */
+async function checked<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    if (error instanceof ContractError || error instanceof QuestionError) throw new InputError(error.message);
+    throw error;
+  }
+}
+
+const isRepeat = (when: CreateInput['when']): boolean =>
+  typeof when === 'object' && ('every' in when || 'cron' in when);
+
 export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInput> {
   const input = task.input.trim();
   if (input === '') throw new InputError('Write a prompt first');
   const title = (task.title ?? '').trim() || defaultTitle(input);
+  // The id is the task's, or the schedule's for a repeat (its occurrences are the server's): the fields are bound to it.
+  const id = newTaskId();
+  const row: RowRef = isRepeat(task.when)
+    ? { kind: 'schedule', id }
+    : { kind: 'task', id, createdBy: 'user', scheduleId: null };
+  const sealed = await checked(() => sealFields(sealerFor(keys), row, { title, input }));
   return {
-    title: await sealAs(keys, taskFields().title, title),
-    input: await sealAs(keys, taskFields().input, input),
+    id,
+    title: sealed.title,
+    input: sealed.input,
     ...(task.priority === undefined ? {} : { priority: task.priority }),
     ...(task.when === undefined ? {} : { when: task.when }),
   };
 }
 
-export async function sealNote(keys: Keys, taskId: string, text: string): Promise<NoteInput> {
-  const preview = notePreview(text);
-  return {
-    body: await sealAs(keys, noteBody(taskId), text),
-    ...(preview === null ? {} : { preview: await sealAs(keys, notePreviewOf(taskId), preview) }),
-  };
+export async function sealComment(keys: Keys, taskId: string, text: string): Promise<NoteInput> {
+  return checked(() => sealNote(sealerFor(keys), { taskId, author: 'user', kind: 'comment' }, text));
 }
 
 export async function sealReply(keys: Keys, taskId: string, message: string): Promise<NoteInput> {
   const text = message.trim();
   if (text === '') throw new InputError('Write something first.');
-  return sealNote(keys, taskId, text);
+  return sealComment(keys, taskId, text);
 }
 
-/** The answers checked against the questions they answer (found in the opened thread), then sealed. */
+/**
+ * The answers checked against `questions`, then sealed together with them, so that what the agent is told comes from the answer
+ * alone. `questions` are exactly the ones the panel showed (opened from the question note on screen), never ones fetched again
+ * at submit time, which the board could have changed in between.
+ */
 export async function sealAnswer(
   keys: Keys,
-  options: { id: string; questionNoteId: string; answers: Answer[]; message: string },
-  thread: RouterOutputs['tasks']['get']['thread'],
+  options: { id: string; questionNoteId: string; questions: Question[]; answers: Answer[]; message: string },
 ): Promise<RouterInputs['tasks']['answer']> {
-  const { id, questionNoteId, message } = options;
-  const unreadable = new InputError('This question cannot be read, so it cannot be answered here.');
-  const wire = thread.find((note) => note.id === questionNoteId)?.questions;
-  const text = wire === undefined ? undefined : await tryOpen(keys, noteQuestions(id), wire);
-  if (text === undefined) throw unreadable;
-  let questions: Question[];
-  try {
-    questions = parseQuestions(JSON.parse(text));
-  } catch {
-    throw unreadable;
-  }
-  let answers: Answer[];
-  try {
-    answers = parseAnswers(questions, options.answers);
-  } catch (error) {
-    if (error instanceof QuestionError) throw new InputError(error.message);
-    throw error;
-  }
+  const { id, questionNoteId, questions, message } = options;
+  const text = message.trim();
   return {
     id,
     questionNoteId,
-    answers: await sealAs(keys, noteAnswers(id), JSON.stringify(answers)),
-    message: await sealNote(keys, id, message.trim()),
+    answers: await checked(() => sealAnswers(sealerFor(keys), id, questions, options.answers)),
+    message: await checked(() => sealNote(sealerFor(keys), { taskId: id, author: 'user', kind: 'answer' }, text)),
   };
+}
+
+/** What starting an agent's proposal needs of the proposal as the page shows it. */
+export interface Proposal {
+  id: string;
+  input: string;
+  createdBy: TaskCreator;
+  scheduleId: string | null;
+  unreadable: UnreadableField[];
+}
+
+/**
+ * Starting a proposal is the user's sealed act: its prompt, as the page showed it, sealed again for the creator "user", which is
+ * the only thing a worker runs with the user's permissions. Throws when the prompt could not be read, since sealing the
+ * placeholder would start something else.
+ */
+export async function sealStart(keys: Keys, proposal: Proposal): Promise<string> {
+  if (proposal.createdBy !== 'agent') throw new InputError('Only a task an agent proposed is started this way.');
+  if (proposal.unreadable.includes('input'))
+    throw new InputError('This proposal’s prompt cannot be read, so it cannot be started here.');
+  const row: RowRef = { kind: 'task', id: proposal.id, createdBy: 'user', scheduleId: proposal.scheduleId };
+  return checked(() => sealInput(sealerFor(keys), row, proposal.input));
 }

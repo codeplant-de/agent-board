@@ -1,7 +1,17 @@
 import type { Config } from '../src/config.mts';
 import type { RunFiles, RunRecord } from '../src/runtime.mts';
+import type { SessionStore } from '../src/sessions.mts';
 import { BackendError } from '../src/backend.mts';
-import { CONTRACT_VERSION, deriveKeys, encodeDataKey, generateDataKey, seal, taskLabels } from '@agent-board/shared';
+import {
+  CONTRACT_VERSION,
+  deriveKeys,
+  encodeDataKey,
+  generateDataKey,
+  seal,
+  sealFields,
+  taskLabels,
+} from '@agent-board/shared';
+import type { Sealer } from '@agent-board/shared';
 import type { Backend, Note, Schedule, Task, WireSchedule, WireTask } from '@agent-board/shared';
 
 export function task(overrides: Partial<Task> & { id: string }): Task {
@@ -11,7 +21,6 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     labels: [],
     status: 'todo',
     priority: 'normal',
-    url: `https://tasks.example/${overrides.id}`,
     closed: false,
     machine: null,
     sessionId: null,
@@ -238,6 +247,10 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       state.writes.push(`remove-schedule ${id}`);
       state.schedules = state.schedules.filter((s) => s.id !== id);
     },
+    // The fake keeps heads as they are, so a test reads them as written.
+    async indexHead(sha) {
+      return sha;
+    },
   };
   return state;
 }
@@ -280,24 +293,45 @@ export const OWNER = 'alice';
 export const DATA_KEY = generateDataKey();
 export const KEYS = await deriveKeys(DATA_KEY, OWNER, { index: true });
 
-// A task as the server stores it: title, input and workdir sealed with the test key.
+const seals: Sealer = async ({ field, context }, text) => seal(KEYS, field, context, text);
+
+// A task as the server stores it: title, input and workdir sealed with the test key, for the task's own row (an occurrence's
+// for its schedule).
 export async function wireTask(overrides: Partial<Task> & { id: string }): Promise<WireTask> {
   const { labels: _labels, unreadable: _unreadable, title, input, workdir, ...rest } = task(overrides);
-  return {
-    ...rest,
-    title: await seal(KEYS, 'title', '', title),
-    input: await seal(KEYS, 'input', '', input),
-    workdir: workdir === null ? null : await seal(KEYS, 'workdir', '', workdir),
-  };
+  const sealed = await sealFields(
+    seals,
+    { kind: 'task', id: rest.id, createdBy: rest.createdBy, scheduleId: rest.scheduleId },
+    { title, input, workdir: workdir ?? undefined },
+  );
+  return { ...rest, ...sealed, workdir: sealed.workdir ?? null };
 }
 
 export async function wireSchedule(overrides: Partial<Schedule> & { id: string }): Promise<WireSchedule> {
   const { unreadable: _unreadable, title, input, workdir, ...rest } = schedule(overrides);
+  const sealed = await sealFields(
+    seals,
+    { kind: 'schedule', id: rest.id },
+    { title, input, workdir: workdir ?? undefined },
+  );
+  return { ...rest, ...sealed, workdir: sealed.workdir ?? null };
+}
+
+// The sessions a worker has started, in memory.
+export interface FakeSessions extends SessionStore {
+  recorded: [string, string][];
+}
+
+export function fakeSessions(known: [string, string][] = []): FakeSessions {
+  const recorded = [...known];
   return {
-    ...rest,
-    title: await seal(KEYS, 'title', '', title),
-    input: await seal(KEYS, 'input', '', input),
-    workdir: workdir === null ? null : await seal(KEYS, 'workdir', '', workdir),
+    recorded,
+    has: (taskId, sessionId) => recorded.some(([id, session]) => id === taskId && session === sessionId.toLowerCase()),
+    record: (taskId, sessionId) => {
+      for (let index = recorded.length - 1; index >= 0; index -= 1)
+        if (recorded[index]?.[0] === taskId) recorded.splice(index, 1);
+      recorded.push([taskId, sessionId.toLowerCase()]);
+    },
   };
 }
 
@@ -306,3 +340,9 @@ export const ENV_FILE = `AGENT_BOARD_TOKEN=abm_secret\nAGENT_BOARD_DATA_KEY=${en
 
 // What the test board's `version` answers.
 export const VERSION_ANSWER = { contract: CONTRACT_VERSION, owner: OWNER, keyId: KEYS.keyId };
+
+export const SESSION = '11111111-1111-4111-8111-111111111111';
+export const OTHER_SESSION = '22222222-2222-4222-8222-222222222222';
+
+// A task's link as the CLI builds it from the board URL of its own web.json.
+export const linkTo = (id: string): string => `https://board.test/t/${id}`;

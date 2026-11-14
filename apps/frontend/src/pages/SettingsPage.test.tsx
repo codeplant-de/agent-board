@@ -1,13 +1,16 @@
-import { decodeDataKey, deriveKeys, type KeySetup } from '@agent-board/shared';
+import { decodeDataKey, deriveKeys, type KeySetup, type Keys } from '@agent-board/shared';
 import { MantineProvider } from '@mantine/core';
 import { ModalsProvider } from '@mantine/modals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { KeyProvider } from '../crypto/KeyProvider';
 import { createKeySetup } from '../crypto/keySlots';
 import { SettingsPage } from './SettingsPage';
-import { openAs, sealAs, taskFields } from '../lib/contexts';
+import { openAs, sealerFor } from '../lib/contexts';
+
+const TITLE = { field: 'title', context: 'task:abc' } as const;
 
 const issue = vi.hoisted(() => vi.fn(async (_: unknown) => ({ token: 'abm_secret-token' })));
 const machines = vi.hoisted(() => ({
@@ -38,6 +41,7 @@ vi.mock('../lib/trpc', () => ({
 
 const PASSPHRASE = 'correct horse battery staple';
 let setup: KeySetup;
+let held: Keys;
 let sealedByBrowser: string;
 
 function renderPage() {
@@ -45,7 +49,9 @@ function renderPage() {
     <MantineProvider>
       <ModalsProvider>
         <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-          <SettingsPage />
+          <KeyProvider keys={held} lock={async () => undefined}>
+            <SettingsPage />
+          </KeyProvider>
         </QueryClientProvider>
       </ModalsProvider>
     </MantineProvider>,
@@ -64,7 +70,8 @@ const shownLine = (name: string): string | undefined =>
 beforeAll(async () => {
   const made = await createKeySetup({ owner: 'jascha', passphrase: PASSPHRASE, kdf: { m: 8192, t: 1, p: 1 } });
   setup = made.setup;
-  sealedByBrowser = await sealAs(made.keys, taskFields().title, 'sealed in the browser');
+  held = made.keys;
+  sealedByBrowser = await sealerFor(made.keys)(TITLE, 'sealed in the browser');
 });
 
 beforeEach(() => {
@@ -92,7 +99,7 @@ describe('machine enrolment', () => {
     expect(line).toMatch(/^abk1_/);
     const machineKeys = await deriveKeys(decodeDataKey(line ?? ''), 'jascha');
     expect(machineKeys.keyId).toBe(setup.keyId);
-    expect(await openAs(machineKeys, taskFields().title, sealedByBrowser)).toBe('sealed in the browser');
+    expect(await openAs(machineKeys, TITLE, sealedByBrowser)).toBe('sealed in the browser');
   });
 
   it('issues no token when the passphrase is wrong', async () => {
@@ -110,5 +117,24 @@ describe('machine enrolment', () => {
     await waitFor(() => expect(shownLine('AGENT_BOARD_DATA_KEY')).toMatch(/^abk1_/));
     expect(issue).not.toHaveBeenCalled();
     expect(shownLine('AGENT_BOARD_TOKEN')).toBeUndefined();
+  });
+
+  // The board reports the slots and key id it likes. What is shown, or re-wrapped, must be the key this browser uses.
+  it('shows no data key when the slots the board serves open another key than the one in use (a second key)', async () => {
+    const second = await createKeySetup({ owner: 'jascha', passphrase: PASSPHRASE, kdf: { m: 8192, t: 1, p: 1 } });
+    expect(second.setup.keyId).not.toBe(setup.keyId);
+    stored.current = second.setup;
+    renderPage();
+    await askFor('Show data key', PASSPHRASE);
+    expect(await screen.findByText(/does not match the one the board is set up with/)).toBeInTheDocument();
+    expect(shownLine('AGENT_BOARD_DATA_KEY')).toBeUndefined();
+  });
+
+  it('shows the key id this browser uses, not the one the board reports', async () => {
+    const second = await createKeySetup({ owner: 'jascha', passphrase: PASSPHRASE, kdf: { m: 8192, t: 1, p: 1 } });
+    stored.current = second.setup;
+    renderPage();
+    expect(await screen.findByText(held.keyId)).toBeInTheDocument();
+    expect(screen.queryByText(second.setup.keyId)).not.toBeInTheDocument();
   });
 });

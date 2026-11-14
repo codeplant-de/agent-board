@@ -78,7 +78,7 @@ export async function handleMachineCall(
   body: Record<string, unknown>,
 ): Promise<unknown> {
   const machine = identity.name;
-  const task = (row: Parameters<typeof toTask>[0]) => toTask(row, config.publicUrl);
+  const task = toTask;
   switch (command) {
     case 'version':
       return { contract: CONTRACT_VERSION, owner: identity.owner, keyId: (await getKeys(db))?.keyId ?? null };

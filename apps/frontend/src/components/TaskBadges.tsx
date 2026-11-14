@@ -38,7 +38,7 @@ export function TaskBadges({
           Question
         </Badge>
       )}
-      {task.proposed && (
+      {task.createdBy === 'agent' && (
         <Badge size="sm" color="grape" variant="light" leftSection={<IconSparkles size={12} />}>
           Proposed
         </Badge>

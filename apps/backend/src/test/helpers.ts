@@ -13,7 +13,6 @@ export const testConfig: Config = {
   databaseUrl: testDatabaseUrl(),
   appDatabaseUrl: testAppDatabaseUrl(),
   backfillOwner: null,
-  publicUrl: 'https://board.test',
   allowedGroups: ['admins'],
   devAuthUser: null,
 };
@@ -41,6 +40,9 @@ export function caller(root: Db, username = 'jascha') {
   return appRouter.createCaller({ root, config: testConfig, username });
 }
 
+/** A value of the shape of an envelope, for rows a test inserts directly: the sealed-content constraints of a later release refuse anything else. */
+export const SEALED = `abe1.${'A'.repeat(40)}`;
+
 export const question = {
   header: 'Scope',
   question: 'Review the migration too?',
@@ -50,3 +52,7 @@ export const question = {
     { label: 'No', description: 'Skip it' },
   ],
 };
+
+/** Claude session ids, which the board only takes as UUIDs. */
+export const SESSION = '11111111-1111-4111-8111-111111111111';
+export const sessionNamed = (n: number): string => `22222222-2222-4222-8222-${String(n).padStart(12, '0')}`;

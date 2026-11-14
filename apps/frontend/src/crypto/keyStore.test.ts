@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createKeySetup } from './keySlots';
-import { createMemoryKeyStore, loadUsableKeys } from './keyStore';
+import { createMemoryKeyStore, inspectStoredKeys } from './keyStore';
 
 async function keysFor(owner: string) {
   return (await createKeySetup({ owner, passphrase: 'correct horse battery staple', kdf: { m: 8192, t: 1, p: 1 } }))
@@ -11,30 +11,35 @@ describe('key store', () => {
   it('hands back keys that belong to this user and this key id', async () => {
     const keys = await keysFor('jascha');
     const store = createMemoryKeyStore(keys);
-    const usable = await loadUsableKeys(store, { username: 'jascha', keyId: keys.keyId });
-    expect(usable).toMatchObject({ owner: 'jascha', keyId: keys.keyId });
-    expect(usable?.enc).toBe(keys.enc);
+    const check = await inspectStoredKeys(store, { username: 'jascha', keyId: keys.keyId });
+    expect(check).toMatchObject({ kind: 'usable', keys: { owner: 'jascha', keyId: keys.keyId } });
+    expect(check.kind === 'usable' && check.keys.enc).toBe(keys.enc);
   });
 
-  it('discards an entry made for another user', async () => {
+  it('keeps an entry the board no longer matches, and says what it holds (a faked key reset)', async () => {
     const keys = await keysFor('jascha');
-    const store = createMemoryKeyStore(keys);
-    expect(await loadUsableKeys(store, { username: 'someone-else', keyId: keys.keyId })).toBeUndefined();
-    expect(await store.load()).toBeUndefined();
+    for (const me of [
+      { username: 'someone-else', keyId: keys.keyId },
+      { username: 'jascha', keyId: '0123456789abcdef' },
+      { username: 'jascha', keyId: null },
+    ]) {
+      const store = createMemoryKeyStore(keys);
+      expect(await inspectStoredKeys(store, me)).toEqual({
+        kind: 'changed',
+        held: { owner: 'jascha', keyId: keys.keyId },
+      });
+      expect(await store.load(), JSON.stringify(me)).toMatchObject({ owner: 'jascha', keyId: keys.keyId });
+    }
   });
 
-  it('discards an entry for another key id', async () => {
-    const keys = await keysFor('jascha');
-    const store = createMemoryKeyStore(keys);
-    expect(await loadUsableKeys(store, { username: 'jascha', keyId: '0123456789abcdef' })).toBeUndefined();
-    expect(await store.load()).toBeUndefined();
-  });
-
-  it('discards an entry when the board has no key yet', async () => {
-    const keys = await keysFor('jascha');
-    const store = createMemoryKeyStore(keys);
-    expect(await loadUsableKeys(store, { username: 'jascha', keyId: null })).toBeUndefined();
-    expect(await store.load()).toBeUndefined();
+  it('says there is nothing when nothing is stored, and drops an entry that is not keys', async () => {
+    expect(await inspectStoredKeys(createMemoryKeyStore(), { username: 'jascha', keyId: null })).toEqual({
+      kind: 'none',
+    });
+    const damaged = createMemoryKeyStore();
+    await damaged.save({ owner: 'jascha', keyId: 'a'.repeat(16), enc: 'x', transcript: 'y' } as never);
+    expect(await inspectStoredKeys(damaged, { username: 'jascha', keyId: 'a'.repeat(16) })).toEqual({ kind: 'none' });
+    expect(await damaged.load()).toBeUndefined();
   });
 
   it('keeps nothing but the derived keys and ids', async () => {

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { UNREADABLE_TITLE } from '@agent-board/shared';
-import type { Context } from '../src/cli.mts';
+import type { LinkingContext } from '../src/cli.mts';
 import { runBoard } from '../src/commands.mts';
 import { resolveTaskId } from '../src/ids.mts';
-import { CONFIG, fakeBackend, note, schedule, task } from './helpers.mts';
+import { CONFIG, fakeBackend, linkTo, note, schedule, task } from './helpers.mts';
 
 const SEALED_ELSEWHERE = task({
   id: 'Un0pen01',
@@ -29,7 +29,13 @@ function setup() {
   const go = (argv: string[]) =>
     runBoard(argv, {
       env: {},
-      context: (): Context => ({ config: CONFIG, backend, dryRun: false, print: (line) => printed.push(line) }),
+      context: (): LinkingContext => ({
+        config: CONFIG,
+        backend,
+        dryRun: false,
+        taskLink: linkTo,
+        print: (line) => printed.push(line),
+      }),
       writeOut: (text) => out.push(text),
     });
   return { backend, printed, out, go };

@@ -11,6 +11,8 @@ import { ActionPanel } from './ActionPanel';
 
 const takeBack = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const setNotBefore = vi.hoisted(() => vi.fn(async (_: unknown) => null));
+const answer = vi.hoisted(() => vi.fn(async (_: unknown) => null));
+const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 
 vi.mock('../lib/trpc', () => {
   const procedure = (mutationFn: (variables: unknown) => Promise<unknown>) => ({
@@ -20,12 +22,12 @@ vi.mock('../lib/trpc', () => {
   return {
     useTRPC: () => ({
       tasks: {
-        answer: idle,
+        answer: procedure(answer),
         reply: idle,
         done: idle,
         rerun: idle,
         setClosed: idle,
-        move: idle,
+        move: procedure(move),
         takeBack: procedure(takeBack),
         setNotBefore: procedure(setNotBefore),
       },
@@ -44,7 +46,6 @@ function running(overrides: Partial<BoardTask>): BoardTask {
     labels: [],
     status: 'running',
     priority: 'normal',
-    url: 'https://board.test/t/abc12345',
     closed: false,
     machine: 'laptop',
     sessionId: 's',
@@ -61,6 +62,8 @@ function running(overrides: Partial<BoardTask>): BoardTask {
     notBefore: null,
     scheduleId: null,
     proposed: false,
+    invalid: [],
+    unreadable: [],
     parentId: null,
     createdAt: minutesAgo(60),
     updatedAt: minutesAgo(1),
@@ -131,6 +134,77 @@ describe('ActionPanel of a proposal', () => {
     renderPanel(running({ status: 'needs-me', proposed: true, openQuestion: true, createdBy: 'agent' }), [asked]);
     expect(screen.getByText('Proposed by an agent')).toBeInTheDocument();
     expect(screen.queryByText('Go?')).not.toBeInTheDocument();
+  });
+
+  it('starts it with the proposal as shown, so that the prompt can be sealed again as the user’s', async () => {
+    move.mockClear();
+    const proposal = running({
+      status: 'needs-me',
+      proposed: true,
+      createdBy: 'agent',
+      input: 'do Y',
+      sessionId: null,
+    });
+    renderPanel(proposal, []);
+    await userEvent.click(screen.getByRole('button', { name: 'Start' }));
+    await waitFor(() => expect(move).toHaveBeenCalled());
+    expect(move.mock.calls[0]?.[0]).toEqual({ id: 'abc12345', status: 'todo', task: proposal });
+    expect(screen.getByRole('button', { name: 'Send & run' })).toBeDisabled();
+  });
+
+  it('is judged by its creator, which the prompt is sealed for, not by the flag the board sends', () => {
+    renderPanel(running({ status: 'needs-me', proposed: false, createdBy: 'agent' }), []);
+    expect(screen.getByText('Proposed by an agent')).toBeInTheDocument();
+    renderPanel(running({ status: 'needs-me', proposed: true, createdBy: 'user' }), []);
+    expect(screen.getAllByText('Proposed by an agent')).toHaveLength(1);
+  });
+});
+
+describe('ActionPanel of an open question', () => {
+  const questions = [
+    {
+      header: 'Tests',
+      question: 'Add a regression test for the fix?',
+      multiSelect: false,
+      options: [
+        { label: 'Yes', description: '' },
+        { label: 'No', description: '' },
+      ],
+    },
+  ];
+  const asking = (overrides: Partial<ThreadNote>): ThreadNote =>
+    ({
+      id: 'q-new',
+      kind: 'question',
+      author: 'agent',
+      text: '',
+      createdAt: new Date().toISOString(),
+      by: 'laptop',
+      unreadable: false,
+      questions,
+      ...overrides,
+    }) as ThreadNote;
+
+  it('answers with the questions it showed, the ones to be sealed with the answers', async () => {
+    answer.mockClear();
+    renderPanel(running({ status: 'needs-me', openQuestion: true }), [asking({})]);
+    await userEvent.click(screen.getByText('Yes'));
+    await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
+    await waitFor(() => expect(answer).toHaveBeenCalled());
+    expect(answer.mock.calls[0]?.[0]).toEqual({
+      id: 'abc12345',
+      questionNoteId: 'q-new',
+      questions,
+      answers: [{ selected: ['Yes'] }],
+      message: '',
+    });
+  });
+
+  it('offers no question when the board sent the open question’s note twice', () => {
+    const duplicate = asking({ unreadable: true, duplicateId: true, text: '', questions: undefined });
+    renderPanel(running({ status: 'needs-me', openQuestion: true }), [duplicate, duplicate]);
+    expect(screen.queryByRole('button', { name: /Answer & continue/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('Add a regression test for the fix?')).not.toBeInTheDocument();
   });
 });
 

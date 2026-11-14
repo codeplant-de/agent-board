@@ -39,7 +39,7 @@ export function BoardPage() {
     const beforeIndex = over?.beforeId ? column.findIndex((t) => t.id === over.beforeId) : -1;
     const beforeId = beforeIndex >= 0 ? column[beforeIndex]?.id : undefined;
     const afterId = beforeIndex > 0 ? column[beforeIndex - 1]?.id : beforeIndex === -1 ? column.at(-1)?.id : undefined;
-    move.mutate({ id: dragId, status, beforeId, afterId });
+    move.mutate({ id: dragId, status, beforeId, afterId, task: tasks.data?.find((t) => t.id === dragId) });
     setDragId(null);
     setOver(null);
   };

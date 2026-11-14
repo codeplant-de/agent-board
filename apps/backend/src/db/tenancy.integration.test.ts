@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { AppError } from '../services/errors';
 import { testAppDatabaseUrl, testDatabaseUrl } from '../test/global-setup';
-import { testConfig, useTestDb } from '../test/helpers';
+import { SEALED, testConfig, useTestDb } from '../test/helpers';
 import { procedure, router } from '../trpc/trpc';
 import { appUsers, tasks } from './schema';
 import { assertUnprivileged, createDb, ensureAppRole } from './client';
@@ -69,15 +69,15 @@ describe('request scoping', () => {
   const probe = router({
     owner: procedure.query(({ ctx }) => currentOwner(ctx.db)),
     writeThenFail: procedure.mutation(async ({ ctx }) => {
-      await ctx.db.insert(tasks).values({ id: 'rollback1', title: 't', input: 'i', position: 0 });
+      await ctx.db.insert(tasks).values({ id: 'rollback1', title: SEALED, input: SEALED, position: 0 });
       throw new AppError('CONFLICT', 'nope');
     }),
     writeThenCrash: procedure.mutation(async ({ ctx }) => {
-      await ctx.db.insert(tasks).values({ id: 'rollback2', title: 't', input: 'i', position: 0 });
+      await ctx.db.insert(tasks).values({ id: 'rollback2', title: SEALED, input: SEALED, position: 0 });
       throw new Error('boom');
     }),
     write: procedure.mutation(({ ctx }) =>
-      ctx.db.insert(tasks).values({ id: 'committed', title: 't', input: 'i', position: 0 }),
+      ctx.db.insert(tasks).values({ id: 'committed', title: SEALED, input: SEALED, position: 0 }),
     ),
   });
   const call = () => probe.createCaller({ root: db, config: testConfig, username: 'jascha' });

@@ -3,7 +3,8 @@ import { Center, Loader } from '@mantine/core';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useState, type PropsWithChildren } from 'react';
 import { useTRPC } from '../lib/trpc';
-import { createIndexedDbKeyStore, loadUsableKeys, type KeyStore } from './keyStore';
+import { createIndexedDbKeyStore, inspectStoredKeys, type KeyStore, type StoredKeysCheck } from './keyStore';
+import { KeyChangedScreen } from './KeyChangedScreen';
 import { KeyProvider } from './KeyProvider';
 import { SetupScreen } from './SetupScreen';
 import { UnlockScreen } from './UnlockScreen';
@@ -26,20 +27,21 @@ const dropBoard = (queryClient: QueryClient): void =>
   queryClient.removeQueries({ predicate: (query) => isBoardQuery(query.queryKey) });
 
 /**
- * Between the sign-in and the app: no key yet means setup, no usable key in this browser means unlock, and only then the
- * app, with the keys in context. A stored key counts only when it is this user's and has the board's key id.
+ * Between the sign-in and the app: a browser that holds keys the board no longer reports gets a blocking warning, no key yet
+ * means setup, no usable key in this browser means unlock, and only then the app, with the keys in context. A stored key counts
+ * only when it is this user's and has the board's key id.
  */
 export function KeyGate({ me, store = defaultStore, children }: PropsWithChildren<Props>) {
   const queryClient = useQueryClient();
   const trpc = useTRPC();
   const { username, keyId } = me;
   const identity = `${username}\0${keyId ?? ''}`;
-  const [loaded, setLoaded] = useState<{ identity: string; keys: Keys | null }>();
+  const [loaded, setLoaded] = useState<{ identity: string; check: StoredKeysCheck }>();
 
   useEffect(() => {
     let current = true;
-    void loadUsableKeys(store, { username, keyId }).then((keys) => {
-      if (current) setLoaded({ identity, keys: keys ?? null });
+    void inspectStoredKeys(store, { username, keyId }).then((check) => {
+      if (current) setLoaded({ identity, check });
     });
     return () => {
       current = false;
@@ -49,7 +51,7 @@ export function KeyGate({ me, store = defaultStore, children }: PropsWithChildre
   const unlocked = useCallback(
     async (keys: Keys) => {
       await store.save(keys);
-      setLoaded({ identity: `${username}\0${keys.keyId}`, keys });
+      setLoaded({ identity: `${username}\0${keys.keyId}`, check: { kind: 'usable', keys } });
     },
     [store, username],
   );
@@ -60,23 +62,30 @@ export function KeyGate({ me, store = defaultStore, children }: PropsWithChildre
     },
     [unlocked, queryClient, trpc],
   );
+  // Anything the board's answers were opened into or sent from the keys goes: the cached queries and the mutations (their
+  // variables hold the plaintext of what was just sent).
+  const dropAll = useCallback((): void => {
+    dropBoard(queryClient);
+    queryClient.getMutationCache().clear();
+  }, [queryClient]);
   const lock = useCallback(async () => {
     await store.clear();
-    setLoaded({ identity, keys: null });
-    dropBoard(queryClient);
-  }, [store, identity, queryClient]);
+    setLoaded({ identity, check: { kind: 'none' } });
+    dropAll();
+  }, [store, identity, dropAll]);
 
-  if (keyId === null) return <SetupScreen owner={username} onComplete={setUp} />;
-  const keys = loaded?.identity === identity ? loaded.keys : undefined;
-  if (keys === undefined)
+  const check = loaded?.identity === identity ? loaded.check : undefined;
+  if (check === undefined)
     return (
       <Center h="100vh">
         <Loader />
       </Center>
     );
-  if (keys === null) return <UnlockScreen owner={username} onUnlocked={unlocked} />;
+  if (check.kind === 'changed') return <KeyChangedScreen held={check.held} reported={me} onForget={lock} />;
+  if (keyId === null) return <SetupScreen owner={username} onComplete={setUp} />;
+  if (check.kind === 'none') return <UnlockScreen owner={username} onUnlocked={unlocked} />;
   return (
-    <KeyProvider keys={keys} lock={lock}>
+    <KeyProvider keys={check.keys} lock={lock}>
       {children}
     </KeyProvider>
   );
