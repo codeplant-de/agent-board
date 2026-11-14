@@ -16,7 +16,8 @@ export function AppLayout() {
   const { colorScheme, toggleColorScheme } = useMantineColorScheme();
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  const active = (to: string) => (to === '/' ? pathname === '/' || pathname.startsWith('/t/') : pathname.startsWith(to));
+  const active = (to: string) =>
+    to === '/' ? pathname === '/' || pathname.startsWith('/t/') : pathname.startsWith(to);
   useHotkeys([['c', () => setCreating(true)]]);
 
   return (

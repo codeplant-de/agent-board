@@ -1,10 +1,33 @@
 import { toolSummary } from '@agent-board/shared';
-import { Alert, Badge, Box, Code, Collapse, Drawer, Group, Loader, Paper, Select, Stack, Text, UnstyledButton } from '@mantine/core';
-import { IconBrain, IconCheck, IconChevronDown, IconChevronRight, IconCircleDot, IconFlag, IconX } from '@tabler/icons-react';
-import { useQuery } from '@tanstack/react-query';
+import {
+  Alert,
+  Badge,
+  Box,
+  Code,
+  Collapse,
+  Drawer,
+  Group,
+  Loader,
+  Paper,
+  Select,
+  Stack,
+  Text,
+  UnstyledButton,
+} from '@mantine/core';
+import {
+  IconBrain,
+  IconCheck,
+  IconChevronDown,
+  IconChevronRight,
+  IconCircleDot,
+  IconFlag,
+  IconX,
+} from '@tabler/icons-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ago, stamp } from '../lib/time';
-import { useTRPC, type RouterOutputs } from '../lib/trpc';
+import { loadEventsAfter } from '../lib/transcript';
+import { useTRPC, useTRPCClient, type RouterOutputs } from '../lib/trpc';
 import { Markdown } from './Markdown';
 
 type Event = RouterOutputs['transcript']['events'][number];
@@ -23,18 +46,38 @@ function formatSize(chars: number | null | undefined): string {
 function ToolCall({ runId, use, result }: { runId: string; use: ToolUse; result: ToolResult | undefined }) {
   const trpc = useTRPC();
   const [open, setOpen] = useState(false);
-  const output = useQuery({ ...trpc.transcript.output.queryOptions({ runId, seq: result?.seq ?? -1 }), enabled: open && result !== undefined && (result.outputSize ?? 0) > 0 });
-  const status = result === undefined ? <Loader size={12} /> : result.isError ? <IconX size={14} color="var(--mantine-color-red-6)" /> : <IconCheck size={14} color="var(--mantine-color-teal-6)" />;
+  const output = useQuery({
+    ...trpc.transcript.output.queryOptions({ runId, seq: result?.seq ?? -1 }),
+    enabled: open && result !== undefined && (result.outputSize ?? 0) > 0,
+  });
+  const status =
+    result === undefined ? (
+      <Loader size={12} />
+    ) : result.isError ? (
+      <IconX size={14} color="var(--mantine-color-red-6)" />
+    ) : (
+      <IconCheck size={14} color="var(--mantine-color-teal-6)" />
+    );
   return (
     <Box>
       <UnstyledButton onClick={() => setOpen((o) => !o)} w="100%" py={2}>
         <Group gap={6} wrap="nowrap" align="flex-start">
-          {open ? <IconChevronDown size={14} style={{ marginTop: 3, flexShrink: 0 }} /> : <IconChevronRight size={14} style={{ marginTop: 3, flexShrink: 0 }} />}
+          {open ? (
+            <IconChevronDown size={14} style={{ marginTop: 3, flexShrink: 0 }} />
+          ) : (
+            <IconChevronRight size={14} style={{ marginTop: 3, flexShrink: 0 }} />
+          )}
           <Box style={{ flexShrink: 0, marginTop: 2 }}>{status}</Box>
           <Badge size="sm" variant="light" color={result?.isError ? 'red' : 'gray'} tt="none" style={{ flexShrink: 0 }}>
             {use.name}
           </Badge>
-          <Text size="xs" ff="monospace" c={result?.isError ? 'red' : undefined} style={{ overflowWrap: 'anywhere' }} lineClamp={open ? undefined : 1}>
+          <Text
+            size="xs"
+            ff="monospace"
+            c={result?.isError ? 'red' : undefined}
+            style={{ overflowWrap: 'anywhere' }}
+            lineClamp={open ? undefined : 1}
+          >
             {toolSummary(use.name, use.input)}
           </Text>
         </Group>
@@ -48,10 +91,16 @@ function ToolCall({ runId, use, result }: { runId: string; use: ToolUse; result:
             {JSON.stringify(use.input, null, 2)}
           </Code>
           <Text size="xs" c="dimmed">
-            {result === undefined ? 'Waiting for the result…' : `Output · ${formatSize(result.outputSize)}${result.isError ? ' · error' : ''}`}
+            {result === undefined
+              ? 'Waiting for the result…'
+              : `Output · ${formatSize(result.outputSize)}${result.isError ? ' · error' : ''}`}
           </Text>
           {result !== undefined && (result.outputSize ?? 0) > 0 && (
-            <Code block color={result.isError ? 'red' : undefined} style={{ maxHeight: 400, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap' }}>
+            <Code
+              block
+              color={result.isError ? 'red' : undefined}
+              style={{ maxHeight: 400, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap' }}
+            >
               {output.isLoading ? 'Loading…' : (output.data ?? '')}
             </Code>
           )}
@@ -107,14 +156,24 @@ function EventRow({ runId, event, results }: { runId: string; event: Event; resu
       );
     case 'result':
       return (
-        <Paper withBorder p="xs" style={{ borderColor: event.isError ? 'var(--mantine-color-red-5)' : 'var(--mantine-color-teal-5)' }}>
+        <Paper
+          withBorder
+          p="xs"
+          style={{ borderColor: event.isError ? 'var(--mantine-color-red-5)' : 'var(--mantine-color-teal-5)' }}
+        >
           <Group gap={6} mb={4}>
             <IconFlag size={14} />
             <Text size="xs" fw={600}>
               {event.isError ? 'Ended with an error' : 'Result'}
             </Text>
             <Text size="xs" c="dimmed">
-              {[event.turns !== null ? `${event.turns} turns` : '', event.durationMs !== null ? `${Math.round(event.durationMs / 1000)} s` : '', event.costUsd !== null ? `$${event.costUsd.toFixed(2)}` : ''].filter(Boolean).join(' · ')}
+              {[
+                event.turns !== null ? `${event.turns} turns` : '',
+                event.durationMs !== null ? `${Math.round(event.durationMs / 1000)} s` : '',
+                event.costUsd !== null ? `$${event.costUsd.toFixed(2)}` : '',
+              ]
+                .filter(Boolean)
+                .join(' · ')}
             </Text>
           </Group>
           {event.denials.length > 0 && (
@@ -134,21 +193,43 @@ function EventRow({ runId, event, results }: { runId: string; event: Event; resu
   }
 }
 
+// The last batch of a run arrives after the task has already left Running, so polling goes on a little longer.
+const recentlyActive = (lastEventAt: Date | string | undefined) =>
+  lastEventAt !== undefined && Date.now() - new Date(lastEventAt).getTime() < SETTLE_MS;
+
 /** Everything a run did, live while it runs: the agent's text, its tool calls (output on demand), notes and results. */
-export function TranscriptDrawer({ taskId, opened, onClose, live }: { taskId: string; opened: boolean; onClose: () => void; live: boolean }) {
+export function TranscriptDrawer({
+  taskId,
+  opened,
+  onClose,
+  live,
+}: {
+  taskId: string;
+  opened: boolean;
+  onClose: () => void;
+  live: boolean;
+}) {
   const trpc = useTRPC();
-  // The last batch of a run arrives after the task has already left Running, so polling goes on a little longer.
-  const recentlyActive = (lastEventAt: Date | string | undefined) => lastEventAt !== undefined && Date.now() - new Date(lastEventAt).getTime() < SETTLE_MS;
   const runs = useQuery({
     ...trpc.transcript.runs.queryOptions({ id: taskId }),
     enabled: opened,
-    refetchInterval: (query) => (opened && (live || recentlyActive(query.state.data?.[0]?.lastEventAt)) ? LIVE_MS : false),
+    refetchInterval: (query) =>
+      opened && (live || recentlyActive(query.state.data?.[0]?.lastEventAt)) ? LIVE_MS : false,
   });
   const [runId, setRunId] = useState<string | null>(null);
   const selected = runId ?? runs.data?.[0]?.id ?? null;
   const newest = selected !== null && selected === runs.data?.[0]?.id;
+  // The events of a run are kept per run and extended: a refetch asks only for what follows the last seq it has.
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  const eventsKey = trpc.transcript.events.queryKey({ runId: selected ?? '' });
   const events = useQuery({
-    ...trpc.transcript.events.queryOptions({ runId: selected ?? '' }),
+    queryKey: eventsKey,
+    queryFn: () =>
+      loadEventsAfter(queryClient.getQueryData(eventsKey) ?? [], (afterSeq) =>
+        client.transcript.events.query({ runId: selected ?? '', afterSeq }),
+      ),
+    structuralSharing: false,
     enabled: opened && selected !== null,
     refetchInterval: opened && newest && (live || recentlyActive(runs.data?.[0]?.lastEventAt)) ? LIVE_MS : false,
   });
@@ -179,7 +260,14 @@ export function TranscriptDrawer({ taskId, opened, onClose, live }: { taskId: st
 
   const run = runs.data?.find((r) => r.id === selected);
   return (
-    <Drawer opened={opened} onClose={onClose} position="right" size="xl" title="Transcript" styles={{ body: { paddingBottom: 0 } }}>
+    <Drawer
+      opened={opened}
+      onClose={onClose}
+      position="right"
+      size="xl"
+      title="Transcript"
+      styles={{ body: { paddingBottom: 0 } }}
+    >
       <Stack gap="sm">
         {runs.data && runs.data.length > 0 ? (
           <Group justify="space-between" wrap="nowrap">

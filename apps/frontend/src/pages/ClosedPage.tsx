@@ -22,7 +22,12 @@ export function ClosedPage() {
           </Text>
         )}
         {sorted.map((task, index) => (
-          <Group key={task.id} justify="space-between" p="sm" style={{ borderTop: index ? '1px solid var(--mantine-color-default-border)' : undefined }}>
+          <Group
+            key={task.id}
+            justify="space-between"
+            p="sm"
+            style={{ borderTop: index ? '1px solid var(--mantine-color-default-border)' : undefined }}
+          >
             <Anchor component={Link} to={`/t/${task.id}`} size="sm">
               {task.title}
             </Anchor>

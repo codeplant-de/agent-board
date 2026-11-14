@@ -4,9 +4,9 @@
 //   <task>.pause  present while the dispatcher asks the run to give up its slot
 //   <task>.cwd    the agent's working directory at its last tool call (it may have entered a worktree)
 // They live in $XDG_RUNTIME_DIR, private to the user, apart from any checkout.
-import { mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { isRecord } from "@agent-board/shared";
+import { mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { isRecord } from '@agent-board/shared';
 
 export interface RunRecord {
   lane: string;
@@ -31,9 +31,9 @@ export interface RunFiles {
 }
 
 export function runDir(env: NodeJS.ProcessEnv = process.env): string {
-  if (env["AGENT_BOARD_RUN_DIR"]) return env["AGENT_BOARD_RUN_DIR"];
-  const base = env["XDG_RUNTIME_DIR"] ?? `/run/user/${process.getuid?.() ?? 0}`;
-  return join(base, "agent-board");
+  if (env['AGENT_BOARD_RUN_DIR']) return env['AGENT_BOARD_RUN_DIR'];
+  const base = env['XDG_RUNTIME_DIR'] ?? `/run/user/${process.getuid?.() ?? 0}`;
+  return join(base, 'agent-board');
 }
 
 function mtime(path: string): Date | undefined {
@@ -41,7 +41,7 @@ function mtime(path: string): Date | undefined {
 }
 
 export function createRunFiles(dir: string = runDir()): RunFiles {
-  const path = (taskId: string, kind: "run" | "alive" | "pause" | "cwd"): string => join(dir, `${taskId}.${kind}`);
+  const path = (taskId: string, kind: 'run' | 'alive' | 'pause' | 'cwd'): string => join(dir, `${taskId}.${kind}`);
   const ensureDir = (): void => {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   };
@@ -49,47 +49,55 @@ export function createRunFiles(dir: string = runDir()): RunFiles {
     dir,
     writeRun(taskId, record) {
       ensureDir();
-      writeFileSync(path(taskId, "run"), JSON.stringify({ ...record, startedAt: record.startedAt.toISOString() }), { mode: 0o600 });
+      writeFileSync(path(taskId, 'run'), JSON.stringify({ ...record, startedAt: record.startedAt.toISOString() }), {
+        mode: 0o600,
+      });
     },
     readRun(taskId) {
       try {
-        const raw: unknown = JSON.parse(readFileSync(path(taskId, "run"), "utf8"));
-        if (!isRecord(raw) || typeof raw["lane"] !== "string" || typeof raw["borrowed"] !== "boolean" || typeof raw["startedAt"] !== "string") return undefined;
-        return { lane: raw["lane"], borrowed: raw["borrowed"], startedAt: new Date(raw["startedAt"]) };
+        const raw: unknown = JSON.parse(readFileSync(path(taskId, 'run'), 'utf8'));
+        if (
+          !isRecord(raw) ||
+          typeof raw['lane'] !== 'string' ||
+          typeof raw['borrowed'] !== 'boolean' ||
+          typeof raw['startedAt'] !== 'string'
+        )
+          return undefined;
+        return { lane: raw['lane'], borrowed: raw['borrowed'], startedAt: new Date(raw['startedAt']) };
       } catch {
         return undefined;
       }
     },
-    lastActive: (taskId) => mtime(path(taskId, "alive")),
+    lastActive: (taskId) => mtime(path(taskId, 'alive')),
     touchAlive(taskId, at = new Date()) {
       ensureDir();
-      const file = path(taskId, "alive");
+      const file = path(taskId, 'alive');
       try {
         utimesSync(file, at, at);
       } catch {
-        writeFileSync(file, "", { mode: 0o600 });
+        writeFileSync(file, '', { mode: 0o600 });
         utimesSync(file, at, at);
       }
     },
     writeCwd(taskId, cwd) {
       ensureDir();
-      writeFileSync(path(taskId, "cwd"), cwd, { mode: 0o600 });
+      writeFileSync(path(taskId, 'cwd'), cwd, { mode: 0o600 });
     },
     lastCwd(taskId) {
       try {
-        const cwd = readFileSync(path(taskId, "cwd"), "utf8").trim();
-        return cwd.startsWith("/") ? cwd : undefined;
+        const cwd = readFileSync(path(taskId, 'cwd'), 'utf8').trim();
+        return cwd.startsWith('/') ? cwd : undefined;
       } catch {
         return undefined;
       }
     },
     requestPause(taskId) {
       ensureDir();
-      writeFileSync(path(taskId, "pause"), "", { mode: 0o600, flag: "wx" });
+      writeFileSync(path(taskId, 'pause'), '', { mode: 0o600, flag: 'wx' });
     },
-    pauseRequestedAt: (taskId) => mtime(path(taskId, "pause")),
+    pauseRequestedAt: (taskId) => mtime(path(taskId, 'pause')),
     clear(taskId) {
-      for (const kind of ["run", "alive", "pause", "cwd"] as const) rmSync(path(taskId, kind), { force: true });
+      for (const kind of ['run', 'alive', 'pause', 'cwd'] as const) rmSync(path(taskId, kind), { force: true });
     },
   };
 }

@@ -7,10 +7,13 @@ import type { inferRouterInputs, inferRouterOutputs } from '@trpc/server';
 
 export type RouterOutputs = inferRouterOutputs<AppRouter>;
 export type RouterInputs = inferRouterInputs<AppRouter>;
-export type BoardTask = RouterOutputs['tasks']['list'][number];
+export type BoardTask = RouterOutputs['tasks']['get']['task'];
+/** A task on the board: with its newest note. */
+export type ListedTask = RouterOutputs['tasks']['list'][number];
+export type LastNote = NonNullable<ListedTask['lastNote']>;
 export type ThreadNote = RouterOutputs['tasks']['get']['thread'][number];
 
-export const { TRPCProvider, useTRPC } = createTRPCContext<AppRouter>();
+export const { TRPCProvider, useTRPC, useTRPCClient } = createTRPCContext<AppRouter>();
 
 export const errorMessage = (err: unknown): string => {
   if (err instanceof TRPCClientError) {
@@ -29,7 +32,7 @@ export function createClients() {
     defaultOptions: {
       queries: { staleTime: 2_000, refetchOnWindowFocus: true, retry: 1 },
     },
-    // Every write may change the board, the task page and the activity line, so refetch what is on screen.
+    // Every write may change the board, the task page and the cards' last note, so refetch what is on screen.
     mutationCache: new MutationCache({
       onSuccess: (): Promise<void> => queryClient.invalidateQueries(),
       onError: (err) => notifications.show({ color: 'red', title: 'Failed', message: errorMessage(err) }),

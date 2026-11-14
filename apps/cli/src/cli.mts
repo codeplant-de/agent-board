@@ -1,9 +1,9 @@
-import { GitHubError } from "./github.mts";
-import { SystemError } from "./system.mts";
-import { BackendError, createCliBackend, dryRunBackend } from "./backend.mts";
-import { ConfigError, getPaths, loadConfig } from "./config.mts";
-import type { Config } from "./config.mts";
-import type { Backend } from "@agent-board/shared";
+import { GitHubError } from './github.mts';
+import { SystemError } from './system.mts';
+import { BackendError, createWebBackend, dryRunBackend, loadWebConfig } from './backend.mts';
+import { ConfigError, getPaths, loadConfig } from './config.mts';
+import type { Config } from './config.mts';
+import type { Backend } from '@agent-board/shared';
 
 export interface Context {
   config: Config;
@@ -19,7 +19,7 @@ export function print(line: string): void {
 export function buildContext(dryRun: boolean): Context {
   const paths = getPaths();
   const config = loadConfig(paths.configFile);
-  const backend = createCliBackend({ command: config.backendCommand });
+  const backend = createWebBackend({ loadConfig: () => loadWebConfig(paths.configDir) });
   return { config, backend: dryRun ? dryRunBackend(backend, print) : backend, dryRun, print };
 }
 
@@ -28,11 +28,13 @@ export async function runMain(main: () => Promise<void>): Promise<void> {
   try {
     await main();
   } catch (error) {
-    if (error instanceof ConfigError ||
+    if (
+      error instanceof ConfigError ||
       error instanceof BackendError ||
       error instanceof UsageError ||
       error instanceof GitHubError ||
-      error instanceof SystemError) {
+      error instanceof SystemError
+    ) {
       console.error(`agent-board: ${error.message}`);
     } else {
       console.error(`agent-board: unexpected error: ${error instanceof Error ? error.message : String(error)}`);
@@ -42,6 +44,12 @@ export async function runMain(main: () => Promise<void>): Promise<void> {
 }
 
 export class UsageError extends Error {}
+
+export async function readStdin(): Promise<string> {
+  let content = '';
+  for await (const chunk of process.stdin) content += String(chunk);
+  return content;
+}
 
 export function takeFlag(args: string[], flag: string): boolean {
   const index = args.indexOf(flag);

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Copies the units and symlinks the board command into place. Enables nothing and starts nothing.
-# The backend runs from the repo, wherever config.json points; nothing to link for it.
+# The CLI talks to the board over HTTPS (web.json); nothing of the board itself is installed here.
 set -eu
 root=$(dirname "$(readlink -f "$0")")
 mkdir -p "$HOME/.config/systemd/user" "$HOME/.local/bin"

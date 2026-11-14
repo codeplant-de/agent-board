@@ -10,7 +10,7 @@ Three parts, one repo (pnpm workspace):
 | `apps/cli` | each worker machine (laptop, workstation) | systemd timers: `dispatch` claims tasks and starts `claude -p` workers, `intake` turns review requests into tasks. `board` is the command the agent uses to report. |
 | `packages/shared` | both | The backend contract and the question schema. No dependencies; the CLI runs it from source. |
 
-The CLI talks to the board through one configured executable, `apps/cli/bin/web-backend`, which implements the [backend contract](#backend-contract) over HTTPS with a machine token.
+The CLI talks to the board directly, over HTTPS with a machine token: the [backend contract](#backend-contract).
 
 ## Tasks
 
@@ -44,9 +44,12 @@ On the task page you pick options (number keys work), add text where none fits, 
 | Re-run fresh | Back to Todo with a new session; the agent sees the thread, not the old context. |
 | Comment without continuing | A note in the thread, nothing runs. Works while a task runs too. |
 | Close / Reopen | Out of the workflow; workers ignore it, intake never makes a second task for its PR. |
-| Start / Discard | On a task an agent proposed. |
+| Start / Discard | On a task an agent proposed. Dragging it into Todo starts it too. |
+| Take back | On a running task whose agent has been quiet for 20 minutes (the text turns red after 10, but one long command is quiet that long): its worker is gone, say because the machine is off. The task goes to `needs-me` with a note; a worker that is still alive finds it no longer running and drops its result. |
 
-An agent can propose follow-up work with `board add --title <t> --file <path> --parent <task> [--priority <p>]`; the file is the new task's prompt. Without `--priority` a proposal takes its parent's priority; it runs where the proposing agent worked, on that machine. A proposal lands in `needs-me` with a **Proposed** badge and runs only after you press **Start**, so a run that a PR's text turned against you cannot queue work by itself.
+An agent can propose follow-up work with `board add --title <t> --file <path> --parent <task> [--priority <p>]`; the file is the new task's prompt. Without `--priority` a proposal takes its parent's priority; it runs where the proposing agent worked, on that machine. A proposal lands in `needs-me` with a **Proposed** badge and runs only after you press **Start**, so a run that a PR's text turned against you cannot queue work by itself. The server holds that line: whatever status an agent names, its `add-task` lands in `needs-me`; the machine API cannot move a proposal out of `needs-me`, `claim-task` loses on one, and `ask` refuses one (answering a question would start it). Only a signed-in user starts it.
+
+Dragging a card moves it the way the matching button would, minus the reply. Into Todo or Done it drops the open question (the question note stays in the thread); into Todo a task with a session keeps its `next`, and a resume with nothing to answer starts a fresh run. Done tasks nobody touched for 14 days are closed, with a note in the thread; they stay readable under Closed. Intake's tasks are left open: intake treats a closed task as "never again", so closing one would block the PR's next review request.
 
 ## Two machines
 
@@ -54,7 +57,7 @@ Every worker machine runs its own timers against the same board, under the name 
 
 - A claim is atomic on the server: of two machines claiming a task at once, one wins, and the other moves on to the next task.
 - A machine skips a todo task it cannot serve, so the other one can take it: a task scheduled on the other machine (its directory is there), a resume whose session lives on the other machine, or an intake review of a repository it has no checkout of.
-- A machine sweeps only its own running tasks: the worker unit lives where the task was claimed.
+- A machine sweeps only its own running tasks: the worker unit lives where the task was claimed. When that machine is off, you can take the task back from the task page once its agent has been quiet for 20 minutes.
 - Intake runs on both. The PR URL is the task's dedupe key, so both create the same task once.
 
 Tasks only move while a machine with the right setup is on.
@@ -86,7 +89,7 @@ The hook also touches a heartbeat file on every tool call. The worker checks it 
 - no tool call for `inactivityMinutes` (default 15): the run is stopped as stuck and the task goes to `needs-me` with the end of the log. Claude Code caps a foreground Bash call at ten minutes, so a long command does not trip it.
 - a run longer than `maxRunHours` (default 6): stopped, however busy. A guard against an agent looping on tool calls.
 
-The worker passes the heartbeat on to the board every 15 seconds while the agent is active, with the lane. A running card counts the seconds since ("active 12s ago", then "active 1m 5s ago"), amber after 5 quiet minutes, red after 10, and its lane with a "borrowed" badge when it runs in another lane's slot. A command label makes no tool calls; it counts as active while its process runs.
+The worker passes the heartbeat on to the board every 15 seconds while the agent is active, with the lane. A running card counts the seconds since ("active 12s ago", then "active 1m 5s ago"), amber after 5 quiet minutes, red after 10, and its lane with a "borrowed" badge when it runs in another lane's slot.
 
 The heartbeat, pause flag, lane and working directory of a run live in `$XDG_RUNTIME_DIR/agent-board/` (`AGENT_BOARD_RUN_DIR` overrides it), private to your user.
 
@@ -96,7 +99,9 @@ Every run records what it did. The worker starts `claude -p` with `--output-form
 
 On the board, **Transcript** on a task page (or the terminal icon on a card) opens the runs, newest first, live while one runs. Tool calls are one line each; a click shows the input and loads the output. A tool result over 256 KB is cut with a note; the full one stays in the session file on the machine. Claude Code passes thinking on without its text, so a thinking block shows as a marker with its token estimate.
 
-Transcripts can hold whatever the agent saw: file contents, `gh` output, now and then an environment value. They go 14 days after a task is closed (the server checks hourly).
+Transcripts can hold whatever the agent saw: file contents, `gh` output, now and then an environment value. They go 14 days after a task is closed, and 28 days after the last change of an open task in Done, which covers intake's tasks (the server checks hourly). A task of yours untouched in Done is closed after 14 days.
+
+The board loads a run's events in pages of 2000 and afterwards only those after the last one it has, so long runs show in full and a live run costs one small request per poll.
 
 ## Where a task runs
 
@@ -122,7 +127,7 @@ Needs Node 24+, pnpm, `flock`, `systemd-run`, `gh` (logged in) and `claude` (log
 
 3. Write `~/.config/agent-board/web.json`: `{ "url": "https://board.codeplant.de" }`.
 4. Copy `apps/cli/config.example.json` to `~/.config/agent-board/config.json`. Set `machine` to the name you gave the token and `repos` to this machine's checkouts.
-5. `apps/cli/install.sh` copies the units into `~/.config/systemd/user` and symlinks `board` into `~/.local/bin` and the skill into `~/.claude/skills`. Run it again after changing a unit file or moving the repo. It enables and starts nothing.
+5. `apps/cli/install.sh` copies the units into `~/.config/systemd/user`, symlinks `board` into `~/.local/bin`, links `apps/cli/bin/.node` to a Node 24+ binary and reloads systemd. It installs no skill. Run it again after changing a unit file or moving the repo. It enables and starts nothing.
 6. Enable when ready:
 
    ```
@@ -130,9 +135,19 @@ Needs Node 24+, pnpm, `flock`, `systemd-run`, `gh` (logged in) and `claude` (log
    systemctl --user enable --now agent-board-intake.timer
    ```
 
-The units expect the repo at `~/workspace/agent-board`; edit `ExecStart` if it lives elsewhere. `install.sh` links `apps/cli/bin/.node` to a real Node 24+ binary (set `NODE=` to choose one), because a mise shim does not resolve a version outside a project directory. Run it again after a Node upgrade.
+The units expect the repo at `~/workspace/agent-board`; edit `ExecStart` if it lives elsewhere. `bin/.node` is a real binary, not a mise shim, because a shim does not resolve a version outside a project directory; set `NODE=` to choose one. Run `install.sh` again after a Node upgrade.
 
 User timers only run while you are logged in. For runs after logout: `loginctl enable-linger $USER`.
+
+### Upgrading
+
+An older CLI keeps working against a new server (it answers the contract version itself), but its intake would keep writing a `head: <sha>` line into `input`. So, in this order:
+
+1. Stop the dispatch and intake timers on every worker machine.
+2. Deploy or restart the server; migrations run on start.
+3. On each machine: pull the repo and run `apps/cli/install.sh`.
+4. In an existing `config.json`, narrow `Bash(board *)` in `intake.allowedTools` to the forms in `config.example.json`. The old `backend` key is ignored; remove it if you like.
+5. Start the timers again.
 
 ## Config
 
@@ -140,7 +155,6 @@ User timers only run while you are logged in. For runs after logout: `loginctl e
 
 | Key | Meaning |
 | --- | --- |
-| `backend.command` | The backend: an executable and fixed arguments, run without a shell. `~/` is expanded in every element. Normally `~/workspace/agent-board/apps/cli/bin/web-backend`. |
 | `machine` | This machine's name on the board. Default: the host name up to the first dot. Must match the name of its token. |
 | `lanes` | Lane name to `{ "skills": [...], "slots": n }`, see [Lanes](#lanes). Default: `general` with `*` and 3 slots. |
 | `defaultCwd` | Where a task without a directory of its own runs. Default `~`. |
@@ -151,13 +165,13 @@ User timers only run while you are logged in. For runs after logout: `loginctl e
 | `intake` | How intake's reviews run: `prompt` (default `/review-pr {url} --auto`), `priority` (default `normal`), the narrow `allowedTools` and `disallowedTools` they run with, `env`: variables the worker copies from the checkout's `.claude/settings.json` and `settings.local.json` into the run, and `mcpServers`: servers of the checkout's `.mcp.json` it passes with `--mcp-config` (such as `shortcut`, which then uses the login Claude Code already has for it), since intake loads only your user settings. See [What a worker may do](#what-a-worker-may-do). |
 | `repos` | `owner/name` to local checkout. Intake ignores a PR in another repo, and dispatch leaves its task to a machine that has the checkout. |
 
-`web.json` next to it holds the board's `url`; plain `http` is refused except for localhost. The token comes from `env`. Only `web-backend` reads either file.
+`web.json` next to it holds the board's `url`; plain `http` is refused except for localhost. The token comes from `env`. The CLI reads them on its first call to the board, so a command that fails on a usage error needs neither.
 
 Logs: `~/.local/state/agent-board/logs/<task>.log`, one per task, emptied when a worker starts. The worker's own fatal errors are appended to it.
 
 ## The board server
 
-`apps/backend`: Fastify, tRPC for the UI, Drizzle on Postgres; migrations run on start. `apps/frontend`: React, Mantine and TanStack Query, served by Caddy, which proxies `/trpc` and `/api` to the backend. Images: `agent-board-backend` and `agent-board-web` on GHCR, built by `.github/workflows/deploy.yml` on every push to main and rolled out by Flux image automation.
+`apps/backend`: Fastify, tRPC for the UI, Drizzle on Postgres; migrations run on start. `apps/frontend`: React, Mantine and TanStack Query, served by Caddy, which proxies `/trpc` and `/api` to the backend. Images: `agent-board-backend` and `agent-board-web` on GHCR, built by `.github/workflows/ci.yml` on a push to main, only after its typecheck, lint and test job passed (a manual run builds them too), and rolled out by Flux image automation.
 
 Environment of the backend:
 
@@ -178,21 +192,20 @@ The cluster side (namespace, Postgres, Deployments, IngressRoutes, Authelia rule
 
 ## Backend contract
 
-This is the spec between the CLI and the store, version 2. `web-backend` is the one implementation; `apps/cli/test/fixtures/fake-backend.mts` is a small second one that keeps tasks in a JSON file, for the tests. The core runs `<backend.command...> <subcommand> [args]` with an argument list (no shell), a timeout of 60 seconds per call, and kills the backend's process group when it is exceeded (also when its output passes 16 MiB).
+The spec between the CLI and the board, contract version 4. The CLI calls the board's machine API from its own process (`apps/cli/src/backend.mts`); `apps/backend/src/machine-api.ts` serves it. Nothing else implements it.
+
+`POST <url>/api/machine/<command>` with `Authorization: Bearer <machine token>` and a JSON body `{"id"?, "all"?, "machine"?, "author"?, "body"?}`: `id` is the task, `body` is the command's payload (JSON, or the text of a note). The answer is `{"result": ...}` with status 200, or `{"error": "one line"}` with a non-200 status. The token names the machine; it never appears in an error message. A call times out after 45 seconds.
 
 ### Rules
 
-- Free text (a note, a task input, questions) travels on stdin, never in argv. Ids, flags and subcommands are the only arguments.
-- Exit 0 means success. Where a command says it prints JSON, stdout is exactly one JSON value; anything else on stdout is a failure. Diagnostics go to stderr.
-- A non-zero exit is a failure. Print a one-line reason on stderr, first. The core keeps the first 4000 characters of stderr and shows the first 200 of them as one line, so the reason is the first line, and never put secrets in it.
-- Exit 64 means "I do not implement this subcommand". Only `setup` may be missing.
-- Exit 75 from `claim-task` means "lost": the task is not free for this machine. The core moves on to the next task.
-- Every subcommand is atomic under concurrent calls: the dispatcher and intake of several machines, workers and people call at the same time.
+- Every command is atomic under concurrent calls: the dispatcher and intake of several machines, workers and people call at the same time.
 - A write is visible to the next read.
-- A backend refuses an id outside its scope, with a non-zero exit and without writing.
-- The backend loads its own credentials. The core never reads them and passes none on.
-- `input` comes back verbatim, and a note with its text intact. The core parses `agent-board: started <iso>` notes (the start marker) and the `input` of a review task (first line PR URL, then `head: <sha>`).
-- The core never writes to a task that is `closed`. A worker that finds its task closed after the run drops its result. Any other outcome is judged on the task's `status` after the run: `needs-me` or `done` counts as reported.
+- The server refuses an unsafe id or machine name with 400 and writes nothing; the CLI refuses it before it sends anything.
+- `claim-task` answers 409 when the task is not free for this machine ("lost"). The CLI treats that as an answer and moves on to the next task; every other non-200 answer is a failure.
+- The CLI sends `version` once per process, before its first other call, and stops when the server's `contract` differs from its own (4), saying which side is older.
+- `input` comes back verbatim, and a note with its text intact. The core parses `agent-board: started <iso>` notes (the start marker) and the first line of a review task's `input` (the PR URL); the PR head is the `head` field.
+- A task an agent proposed (`createdBy: agent`) is the user's to start: the server refuses `update-task` with a new status and loses `claim-task` for it, whoever asks.
+- The core never writes to a task that is `closed`. A worker that finds its task closed after the run, or running again with another `runStartedAt` than it started with (taken back and run on another machine), drops its result. Any other outcome is judged on the task's `status` after the run: anything but `running` counts as reported (the agent reported, you answered while it was still ending its turn, or the task was taken back). A todo task whose worker unit is still active is not started again until the unit is gone.
 
 ### Task
 
@@ -200,7 +213,7 @@ This is the spec between the CLI and the store, version 2. `web-backend` is the 
 {
   "id": "Ab3dEf9x",
   "title": "#17741 Show postal code (dev)",
-  "input": "https://github.com/cosuno/cosuno/pull/17741\nhead: 56120dc60b",
+  "input": "https://github.com/cosuno/cosuno/pull/17741",
   "labels": ["review-pr"],
   "status": "needs-me",
   "createdBy": "intake",
@@ -211,11 +224,17 @@ This is the spec between the CLI and the store, version 2. `web-backend` is the 
   "sessionId": "591d2ec1-d4ab-4e26-ac04-ed303f8fa44a",
   "workdir": "/home/me/workspace/cosuno/cosuno",
   "next": "fresh",
-  "openQuestion": true
+  "head": "56120dc60b",
+  "openQuestion": true,
+  "lane": null,
+  "borrowed": false,
+  "lastActiveAt": null,
+  "runStartedAt": null,
+  "paused": false
 }
 ```
 
-All seventeen fields are required.
+All twenty fields are required.
 
 | Field | Meaning |
 | --- | --- |
@@ -227,15 +246,18 @@ All seventeen fields are required.
 | `status` | One of `todo`, `running`, `needs-me`, `done`. |
 | `priority` | One of `urgent`, `high`, `normal`, `low`. |
 | `url` | Link to the task for a human. It must match `^https?://` and hold no whitespace, `<`, `>` or `|` (it goes into a Slack link). |
-| `closed` | `true` for a task out of the workflow. Closed tasks are only listed with `--all`; the core never starts, requeues or writes to one. |
+| `closed` | `true` for a task out of the workflow. Closed tasks are only listed with `all`; the core never starts, requeues or writes to one. |
 | `machine` | The machine that claimed it last, or `null`. A resume runs only there. |
 | `sessionId` | The Claude session of the last skill run, or `null`. |
 | `workdir` | The directory that session was in when it last stopped, on `machine`, or `null`. A resume starts there (see [Where a task runs](#where-a-task-runs)). |
 | `next` | `fresh` or `resume`: what the next run does. |
+| `head` | The PR head sha (7 to 40 hex characters) an intake review was made for, or `null`. Intake compares it with the PR's head to see that it moved. |
 | `openQuestion` | The agent's last question has no answer yet. |
 | `lane` | While running: the lane that runs it, from the last heartbeat; otherwise `null`. |
 | `borrowed` | While running: the lane borrowed it; otherwise `false`. |
 | `lastActiveAt` | While running: the last heartbeat, ISO 8601; otherwise `null`. |
+| `runStartedAt` | While running: when the worker claimed it, ISO 8601; otherwise `null`. |
+| `paused` | The last run gave up its slot (`pause`) and the task has not run since. Unlike the board's "Paused" badge, which shows it only in Todo, it stays `true` through the claim, so the worker that resumes the task can tell the agent; the worker's first `update-task` of the run clears it, as does the task leaving Running another way. |
 
 Pickup order is the order of the array that `list-tasks` returns: within a status, the first task is the top. In Todo the store lists resumes (`next: resume`) first, then by `priority`, then by manual order; the lanes pick from that order.
 
@@ -247,43 +269,43 @@ Pickup order is the order of the array that `list-tasks` returns: within a statu
 
 `author` is `agent`, `user` or `system`; `kind` is `comment`, `question`, `answer` or `event`. A question note adds `questions` (the list `ask` took); an answer note adds `questionNoteId` and `answers`, one `{"selected": [labels], "other"?: text}` per question. A resume prompt is built from the `user` notes after the last `agent` note.
 
-### Subcommands
+### Commands
 
-| Call | Stdin | Stdout |
+| Command | Request | `result` |
 | --- | --- | --- |
-| `version` | - | `{"contract": 2}` |
-| `list-tasks [--all]` | - | `[Task, ...]` in priority order |
-| `get-task <id>` | - | `Task` |
-| `add-task` | `{"title", "input"?, "labels"?, "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?}` | `{"task": Task, "created": bool}` |
-| `update-task <id>` | `{"status"?, "priority"?, "input"?, "sessionId"?, "workdir"?, "next"?}` | the updated `Task` |
-| `claim-task <id> --machine <name>` | - | the claimed `Task`, or exit 75 |
-| `add-note <id> [--author agent\|system]` | the note text, verbatim | nothing |
-| `ask <id>` | `{"questions": [...]}` | nothing |
-| `heartbeat <id>` | `{"lane": string, "borrowed": bool}` | nothing |
-| `pause <id>` | the note | the updated `Task` |
-| `transcript <id>` | `{"runId", "startedAt", "sessionId", "resumed", "events": [...]}` | nothing |
-| `read-notes <id>` | - | `[Note, ...]`, oldest first |
-| `setup [--dry-run]` | `{"labels": [...]}` | `{"created": [...]}` |
+| `version` | - | `{"contract": 4}` |
+| `list-tasks` | `all?` | `[Task, ...]` in priority order |
+| `get-task` | `id` | `Task` |
+| `add-task` | `body`: `{"title", "input"?, "labels"?, "status"?, "priority"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "head"?}` | `{"task": Task, "created": bool}` |
+| `update-task` | `id`, `body`: `{"status"?, "priority"?, "input"?, "sessionId"?, "workdir"?, "next"?, "head"?, "expect"?}` | the updated `Task`, or status 409 |
+| `claim-task` | `id`, `machine` | the claimed `Task`, or status 409 |
+| `add-note` | `id`, `author?` (`agent` or `system`), `body`: the note text, verbatim | `null` |
+| `ask` | `id`, `body`: `{"questions": [...]}` | `null` |
+| `heartbeat` | `id`, `body`: `{"lane": string, "borrowed": bool}` | `null` |
+| `pause` | `id`, `body`: the note | the updated `Task` |
+| `fail` | `id`, `body`: the note | `{"applied": bool, "task": Task}` |
+| `transcript` | `id`, `body`: `{"runId", "startedAt", "sessionId", "resumed", "events": [...]}` | `null` |
+| `read-notes` | `id` | `[Note, ...]`, oldest first |
 
-- `version`: the core calls it once per process, before its first real call, and refuses to go on when `contract` is not 2.
-- `add-task`: `input` defaults to `""`, `labels` to `[]`, `status` to `todo`, `priority` to the parent's with a `parentId` and to `normal` without, `createdBy` (`intake`, `user`, `agent`) to `user`, `labels` to the prompt's skill. `machine` and `workdir` come together and pin the task there. The new task goes to the bottom of its status. A label the store does not know is a failure. With a `dedupeKey` that a task already has, nothing is created: the answer is that task with `created: false`. `createdBy: agent` marks the task as a proposal.
-- `update-task`: at least one key; unknown keys are a failure. A status or priority change puts the task at the bottom of its new place.
-- `claim-task`: `todo` to `running` for the machine, at the bottom of running, in one atomic step. Lost when the task is not in `todo`, or when it is a resume (`next: resume` with a session) pinned to another machine.
+- `version`: see the rules above.
+- `add-task`: `input` defaults to `""`, `labels` to the skill the prompt starts with, `status` to `todo`, `priority` to the parent's with a `parentId` and to `normal` without, `createdBy` (`intake`, `user`, `agent`) to `user`. `machine` and `workdir` come together and pin the task there. The new task goes to the bottom of its status. With a `dedupeKey` that a task already has, nothing is created: the answer is that task with `created: false`. `createdBy: agent` makes the task a proposal: it lands in `needs-me` whatever `status` the draft names. `head` is 7 to 40 hex characters.
+- `update-task`: at least one key; unknown keys are a failure. A status or priority change puts the task at the bottom of its new place. A status change of a proposal is refused with 403. Leaving `needs-me` for `todo` or `done` clears `openQuestion`. `head` is 7 to 40 hex characters, or `null` to clear it. `expect` is a status and not a change: when the task's status differs under the update's lock, nothing is written and the answer is 409 (intake uses it, so a close or requeue planned from an earlier listing cannot hit a task a dispatcher claimed since). It does not count as a key.
+- `claim-task`: `todo` to `running` for the machine, at the bottom of running, in one atomic step. Lost when the task is not in `todo`, or when it is a resume (`next: resume` with a session) pinned to another machine. A token claims for its own machine only. Lost for a proposal. Sets `runStartedAt`; `paused` stays as it is.
 - `add-note`: author `agent` makes a `comment`, `system` an `event`. An empty text is a failure.
 - `heartbeat`: sets `lastActiveAt` to now with the lane, on a running task only; on any other it changes nothing.
-- `transcript`: appends a run's condensed events (see `packages/shared/src/transcript.mts`); an event already stored (same run and `seq`) stays as it is, so a retried batch is harmless.
-- `pause`: a running task only. Adds the note as a `system` event, then moves the task to Todo with `next: resume` (`fresh` without a session), at the top.
-- `ask`: validates the questions (1 to 4; a header of at most 16 characters; 2 to 4 options with different labels, at most one `recommended`), adds a question note, and moves the task to `needs-me` with `openQuestion: true`.
-- `setup`: creates one label per name. Idempotent; with `--dry-run` it only names what it would create. Optional, and nothing calls it any more: labels need no setup.
-
-A backend can also be tested without the core: `echo '{"next":"fresh"}' | apps/cli/bin/web-backend update-task <id>`.
+- `transcript`: appends a run's condensed events (see `packages/shared/src/transcript.mts`; at most 5000 per call, each with an integer `seq` from 0 and a parseable `at`, or the call fails with 400); an event already stored (same run and `seq`) stays as it is, so a retried batch is harmless.
+- `pause`: a running task only. Adds the note as a `system` event, then moves the task to Todo with `next: resume` (`fresh` without a session), at the top, and sets `paused`.
+- `fail`: in one step, if the task is still `running` and not closed, adds the text as a `system` event and moves the task to `needs-me`, and answers `applied: true`; otherwise it changes nothing and answers `applied: false` with the task as it is.
+- `ask`: validates the questions (1 to 4; a header of at most 16 characters; 2 to 4 options with different labels, at most one `recommended`), adds a question note, and moves the task to `needs-me` with `openQuestion: true`. Refused with 403 for a proposal.
 
 ## What a worker may do
 
 There is no sandbox. A worker runs `claude` as you, with your home directory, your SSH agent and your `gh` login. How much it may do depends on who made the task:
 
 - **Tasks you made** (`board schedule`, the New task form, and agent proposals once you start them) run as if you ran the prompt in your terminal: all your settings (user, project, local) and `--permission-mode auto`, Claude Code's classifier mode that lets safe actions through and refuses risky ones. Headless, a refusal cannot become a prompt; it shows in the log and usually in the agent's report.
-- **Intake's reviews** run unattended on PR text nobody chose to read, so they get less: `--permission-mode dontAsk` with only `intake.allowedTools` allowed and `intake.disallowedTools` denied on top, and `--setting-sources user`, which keeps a checkout's own `.claude/settings*.json` (its allow rules and tokens) out of the run. The shipped list allows reading, `gh` reads, the pr-review scripts, `board`, CircleCI through the engineering plugin's `cci.sh`, a few Shortcut reads and `bin/replica-psql` (the production and staging read replicas); it cannot push, merge or approve. `intake.env` hands it `CIRCLECI_TOKEN`, `SHORTCUT_API_TOKEN` and the replica endpoints from the checkout's settings, and nothing else from there. A review that a PR's text turns against you can read production data through the replica, and could put it into the pending draft (which you see before submitting) or onto the board.
+- **Intake's reviews** run unattended on PR text nobody chose to read, so they get less: `--permission-mode dontAsk` with only `intake.allowedTools` allowed and `intake.disallowedTools` denied on top, and `--setting-sources user`, which keeps a checkout's own `.claude/settings*.json` (its allow rules and tokens) out of the run. The shipped list allows reading, `gh` reads, the pr-review scripts, `board comment`, `ask`, `add`, `show` and `move <task> needs-me` (it cannot `board schedule` or start work), CircleCI through the engineering plugin's `cci.sh`, a few Shortcut reads and `bin/replica-psql` (the production and staging read replicas); it cannot push, merge or approve. `intake.env` hands it `CIRCLECI_TOKEN`, `SHORTCUT_API_TOKEN` and the replica endpoints from the checkout's settings, and nothing else from there. A review that a PR's text turns against you can read production data through the replica, and could put it into the pending draft (which you see before submitting) or onto the board.
+
+Every run gets `AGENT_BOARD_TASK=<id>` in its environment, and `board schedule` refuses to run while it is set: an agent proposes follow-up work with `board add`, which waits in Needs me until you start it. A config that allows `Bash(board *)` covers `board schedule` and `board move <task> todo`; narrow it to the rules in `config.example.json` (`board comment *`, `board ask *`, `board add *`, `board show *`, `board move * needs-me`), and deny `Bash(board schedule *)`.
 
 Permission rules match the text of a call: they keep an agent on its task, but they are not a security boundary. A PR or story whose text turns the agent against you reaches whatever the run allows and whatever those commands can reach. A dedicated OS user for the workers, with its own checkouts and a narrowly scoped GitHub token, would make that a boundary again; it is not set up yet.
 
@@ -295,9 +317,9 @@ A fresh run is
 claude -p "<prompt>" --session-id <new uuid> --append-system-prompt "<the board's rules>" --settings '<hook>' <permissions>
 ```
 
-in the task's directory (see [Where a task runs](#where-a-task-runs)). The prompt is the task's, as written, without intake's `head:` line. The appended rules tell the agent its task id, to report with `board comment`, to ask with `board ask` instead of AskUserQuestion, to finish with `board move <task> needs-me`, and how to propose follow-ups. The hook is the [heartbeat, pause and question hook](#liveness-and-limits). A resumed run is `claude -p "<your reply>" --resume <session>` with the same flags (see [Ask and resume](#ask-and-resume)).
+in the task's directory (see [Where a task runs](#where-a-task-runs)). The prompt is the task's `input`, as written. The appended rules tell the agent its task id, to report with `board comment`, to ask with `board ask` instead of AskUserQuestion, to finish with `board move <task> needs-me`, and how to propose follow-ups. The hook is the [heartbeat, pause and question hook](#liveness-and-limits). A resumed run is `claude -p "<your reply>" --resume <session>` with the same flags (see [Ask and resume](#ask-and-resume)).
 
-In intake's rules, `Bash(` rules expand `~/` to your home directory and `{<plugin>}` (such as `{pr-review}` or `{engineering}`) to the root Claude Code gives `<plugin>@ccc` as `${CLAUDE_PLUGIN_ROOT}`, resolved when the worker starts: for a marketplace added as a directory (`~/.claude/plugins/known_marketplaces.json`) that is the plugin's `source` in the marketplace's `.claude-plugin/marketplace.json` (Claude Code loads it from the checkout, not from the cache copy), otherwise the `installPath` in `~/.claude/plugins/installed_plugins.json`. A rule must not start with `*` before a script path: a leading `*` matches any command that merely contains the path. If the plugin path cannot be resolved the task goes to `needs-me` with the reason. `Read(...)` rules are passed on unchanged (they take `~/` themselves). Old `labels`, `intakeLabel` and `sandbox` entries in a config are ignored.
+In intake's rules, `Bash(` rules expand `~/` to your home directory and `{<plugin>}` (such as `{pr-review}` or `{engineering}`) to the root Claude Code gives `<plugin>@ccc` as `${CLAUDE_PLUGIN_ROOT}`, resolved when the worker starts: for a marketplace added as a directory (`~/.claude/plugins/known_marketplaces.json`) that is the plugin's `source` in the marketplace's `.claude-plugin/marketplace.json` (Claude Code loads it from the checkout, not from the cache copy), otherwise the `installPath` in `~/.claude/plugins/installed_plugins.json`. A rule must not start with `*` before a script path: a leading `*` matches any command that merely contains the path. If the plugin path cannot be resolved the task goes to `needs-me` with the reason. `Read(...)` rules are passed on unchanged (they take `~/` themselves). Old `backend`, `labels`, `intakeLabel` and `sandbox` entries in a config are ignored.
 
 A missing allowed tool in an intake review shows up as a failed run: the log says what was denied. Add it to `intake.allowedTools`.
 
@@ -309,7 +331,7 @@ board show <task>               the task and its thread as markdown (what a skil
 board comment <task> <text>     add a note; `-` reads the text from stdin
 board comment <task> --file <p> add a note from a file in /tmp (what the reviewer uses)
 board schedule [--priority p] [--title t] [--hold] [--new] <prompt...>
-                                a task from a prompt, run here on this machine; checks for duplicates first
+                                a task from a prompt, run here on this machine; checks for duplicates first; refused inside a run
 board ask <task> --file <p>     ask the user 1-4 questions (JSON in /tmp); moves the task to needs-me and notifies Slack
 board add --title <t> --file <p> [--parent <task>] [--priority <p>]
                                 propose a follow-up task; it waits in needs-me until the user starts it
@@ -327,13 +349,17 @@ intake                          review requests to tasks
 
 Dispatcher, per tick:
 
-1. For each task in `running` claimed by this machine, ask `systemctl --user is-active agent-board-<task>`. A task whose unit is gone moves to `needs-me` with the log tail. So does one whose worker failed to enforce the [limits](#liveness-and-limits) for five minutes past them; its unit is stopped. If `systemctl` gives no known state, or the backend fails, the tick stops before starting anything and exits non-zero.
+1. For each task in `running` claimed by this machine, ask `systemctl --user is-active agent-board-<task>`. A task whose unit is gone moves to `needs-me` with the log tail, timed from the unit's own start (else the task's `runStartedAt`). So does one whose worker failed to enforce the [limits](#liveness-and-limits) for five minutes past them; its unit is stopped. If `systemctl` gives no known state, or the backend fails, the tick stops before starting anything and exits non-zero.
 2. A task this machine cannot serve is skipped (see [Two machines](#two-machines)). The rest are planned into [lanes](#lanes): own work first, then borrowing. Each start is claimed, its lane written to the run directory, then `systemd-run --user --collect --unit agent-board-<task>` starts the worker and a start note names the machine, lane and PID. A lost claim hands its slot to the next task; the first failed start ends the tick's starting.
 3. Lanes whose own work still waits ask one borrowed run each to pause.
 
-Worker, per task: a task with `next: resume`, a session, and a user reply or a pause since the agent last spoke resumes that session with the reply (and "you were paused") as the prompt. Anything else starts a new session, whose id is stored on the task before the run. Either way `next` goes back to `fresh`.
+Worker, per task: a task with `next: resume`, a session, and a user reply or a pause since the agent last spoke resumes that session with the reply (and "you were paused") as the prompt. Anything else starts a new session, whose id is stored on the task once the run is about to start (and cleared again if the process cannot be spawned). A fresh run's prompt is the task's prompt; when the thread already holds notes by you or the agent, it is followed by what you wrote since the previous run started and a line telling the agent to read the thread with `board show <task>`. Either way `next` goes back to `fresh`.
 
-Intake, per run: search each repo in `repos` for open, non-draft PRs that request your review, then create one task per PR URL (the dedupe key), checked against every task, closed ones included. A PR that `gh pr view` cannot read is logged and skipped. A PR whose head moved and whose last commit is at least ten minutes old sends its task from `needs-me` or `done` back to `todo` with `next: fresh`. A failed task stays in `needs-me` until the head moves. A failed GitHub search or backend listing changes nothing and exits non-zero.
+Intake, per run: search the repos in `repos` for open, non-draft PRs that request your review, then create one task per PR URL (the dedupe key), checked against every task, closed ones included. One `gh api graphql` call per page covers all repos. A PR without an author (a deleted account) is listed as `ghost`. A PR whose data cannot be read is logged as `WARN skipped <url>` and its task is left alone; a result without a URL fails the run. A failed GitHub search or backend listing changes nothing and exits non-zero.
+
+- A PR whose head moved and whose last commit is at least ten minutes old sends its task from `needs-me` or `done` back to `todo` with `next: fresh`. A failed task stays in `needs-me` until the head moves.
+- A task still waiting in Todo for a PR that no longer appears (merged, closed, draft, or no longer asking for your review) is moved to `done` with a note, and its `head` is cleared in the same update.
+- A PR that is listed again with the same head brings such a task back: a settled PR whose intake task is `done` without a head is queued again the same way. A task you marked done keeps its head and stays done.
 
 ## Development
 
@@ -342,7 +368,8 @@ docker compose up -d postgres        local Postgres on :54331 (board_dev, board_
 cp apps/backend/.env.example apps/backend/.env
 pnpm dev:backend                     :4000, as DEV_AUTH_USER
 pnpm dev:frontend                    :5173, proxies /trpc and /api
-pnpm typecheck && pnpm test
+pnpm typecheck && pnpm lint && pnpm test
+pnpm format                          Prettier over the repo (`pnpm format:check` in CI)
 pnpm db:generate --name <change>     after editing apps/backend/src/db/schema.ts
 ```
 

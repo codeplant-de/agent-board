@@ -1,5 +1,5 @@
 [Unit]
-Description=agent-board intake: review requests to cards
+Description=agent-board intake: review requests to tasks
 
 [Service]
 Type=oneshot

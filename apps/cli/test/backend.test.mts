@@ -1,259 +1,206 @@
-import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { test } from "node:test";
-import { BackendError, createCliBackend, dryRunBackend } from "../src/backend.mts";
-import { isSafeTaskId } from "@agent-board/shared";
-import type { Backend } from "@agent-board/shared";
-import { fakeBackend, task } from "./helpers.mts";
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { CONTRACT_VERSION, serializeTask } from '@agent-board/shared';
+import { BackendError, callServer, createWebBackend, dryRunBackend, parseWebConfig } from '../src/backend.mts';
+import type { Fetch } from '../src/backend.mts';
+import { task } from './helpers.mts';
 
-const FIXTURE = new URL("./fixtures/fake-backend.mts", import.meta.url).pathname;
+const config = { url: 'https://board.example', token: 'TOKEN-123' };
 
-function setup(mode = "", timeoutMs?: number, maxOutputChars?: number): { backend: Backend; stateFile: string } {
-  const stateFile = join(mkdtempSync(join(tmpdir(), "agent-board-backend-")), "state.json");
-  writeFileSync(stateFile, JSON.stringify({ tasks: [], notes: {}, calls: [] }));
-  process.env["FAKE_BACKEND_FILE"] = stateFile;
-  process.env["FAKE_BACKEND_MODE"] = mode;
-  return { backend: createCliBackend({ command: [process.execPath, FIXTURE], timeoutMs, maxOutputChars }), stateFile };
+interface Seen {
+  command: string;
+  body: Record<string, unknown>;
+  headers: Headers;
 }
 
-function calls(stateFile: string): { argv: string[]; stdin: string }[] {
-  const raw: unknown = JSON.parse(readFileSync(stateFile, "utf8"));
-  return typeof raw === "object" && raw !== null && "calls" in raw && Array.isArray(raw.calls) ? raw.calls : [];
+type Answer =
+  { status?: number; body: unknown } | ((body: Record<string, unknown>) => { status?: number; body: unknown });
+
+// Answers per command, with `version` defaulting to this CLI's own. `seen` lists the requests in order.
+function board(answers: Record<string, Answer>, version: number = CONTRACT_VERSION) {
+  const seen: Seen[] = [];
+  const fetcher: Fetch = async (url, init) => {
+    const command = url.slice(`${config.url}/api/machine/`.length);
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    seen.push({ command, body, headers: new Headers(init.headers) });
+    const answer = command === 'version' ? { body: { result: { contract: version } } } : answers[command];
+    if (answer === undefined)
+      return new Response(JSON.stringify({ error: `unknown command ${command}` }), { status: 404 });
+    const { status = 200, body: payload } = typeof answer === 'function' ? answer(body) : answer;
+    return new Response(typeof payload === 'string' ? payload : JSON.stringify(payload), { status });
+  };
+  return { seen, backend: createWebBackend({ loadConfig: () => config, fetch: fetcher }) };
 }
 
-test("all operations round trip through the CLI", async () => {
-  const { backend } = setup();
-  const { task: created } = await backend.addTask({ title: "PR 1", input: "https://x/1\nhead: abc1234", labels: ["review-pr"], status: "todo" });
-  assert.equal(created.status, "todo");
-  assert.deepEqual((await backend.listTasks()).map((t) => t.id), [created.id]);
-  assert.equal((await backend.getTask(created.id)).input, "https://x/1\nhead: abc1234");
-  const updated = await backend.updateTask(created.id, { status: "running" });
-  assert.equal(updated.status, "running");
-  await backend.addNote(created.id, "first");
-  await backend.addNote(created.id, "second");
-  await backend.addNote(created.id, "third", { author: "system" });
-  const notes = await backend.readNotes(created.id);
-  assert.deepEqual(notes.map((n) => n.text), ["first", "second", "third"]);
-  assert.deepEqual(notes.map((n) => n.author), ["agent", "agent", "system"]);
-  assert.ok(notes[0]?.createdAt instanceof Date);
-  assert.deepEqual(await backend.setup(["review-pr"]), ["list Todo"]);
+const taskJson = (id: string) => serializeTask(task({ id }));
+
+test('the config needs a URL, https away from localhost, and the token', () => {
+  assert.deepEqual(parseWebConfig({ url: 'https://board.example/' }, { AGENT_BOARD_TOKEN: 't' }), {
+    url: 'https://board.example',
+    token: 't',
+  });
+  assert.equal(
+    parseWebConfig({ url: 'http://localhost:4000' }, { AGENT_BOARD_TOKEN: 't' }).url,
+    'http://localhost:4000',
+  );
+  assert.throws(() => parseWebConfig({ url: 'http://board.example' }, { AGENT_BOARD_TOKEN: 't' }), /https/);
+  assert.throws(() => parseWebConfig({ url: 'https://board.example' }, {}), /AGENT_BOARD_TOKEN/);
+  assert.throws(() => parseWebConfig({}, { AGENT_BOARD_TOKEN: 't' }), /url/);
 });
 
-test("closed tasks only come with all", async () => {
-  const { backend, stateFile } = setup();
-  const { task: created } = await backend.addTask({ title: "t", input: "", labels: [], status: "done" });
-  const state = JSON.parse(readFileSync(stateFile, "utf8"));
-  state.tasks[0].closed = true;
-  writeFileSync(stateFile, JSON.stringify(state));
-  assert.deepEqual(await backend.listTasks(), []);
-  assert.deepEqual((await backend.listTasks({ all: true })).map((t) => t.id), [created.id]);
+test('one POST per call with the bearer token; the answer is parsed', async () => {
+  const { seen, backend } = board({ 'get-task': { body: { result: taskJson('abc') } } });
+  const found = await backend.getTask('abc');
+  assert.equal(found.id, 'abc');
+  const call = seen.find((request) => request.command === 'get-task');
+  assert.deepEqual(call?.body, { id: 'abc' });
+  assert.equal(call?.headers.get('authorization'), 'Bearer TOKEN-123');
 });
 
-test("free text travels on stdin, never in argv", async () => {
-  const { backend, stateFile } = setup();
-  const { task: { id } } = await backend.addTask({ title: "SECRET-TITLE", input: "SECRET-INPUT", labels: [], status: "todo" });
-  await backend.addNote(id, "multi\nline $(rm -rf /) note");
-  await backend.updateTask(id, { input: "NEW-INPUT" });
-  const writes = calls(stateFile).filter((call) => ["add-task", "add-note", "update-task"].includes(call.argv[0] ?? ""));
-  assert.equal(writes.length, 3);
-  for (const call of writes) assert.ok(!call.argv.join(" ").match(/SECRET|NEW-INPUT|multi|rm -rf/), call.argv.join(" "));
-  assert.equal(writes[1]?.stdin, "multi\nline $(rm -rf /) note");
-  assert.deepEqual(JSON.parse(writes[2]?.stdin ?? ""), { input: "NEW-INPUT" });
+test('every command sends the body the server expects', async () => {
+  const ok = { body: { result: null } };
+  const { seen, backend } = board({
+    'list-tasks': { body: { result: [taskJson('a')] } },
+    'add-task': { body: { result: { task: taskJson('a'), created: true } } },
+    'update-task': { body: { result: taskJson('a') } },
+    'claim-task': { body: { result: taskJson('a') } },
+    'add-note': ok,
+    heartbeat: ok,
+    pause: { body: { result: taskJson('a') } },
+    fail: { body: { result: { applied: false, task: taskJson('a') } } },
+  });
+  await backend.listTasks({ all: true });
+  await backend.addTask({ title: 't', input: 'i', labels: [], status: 'todo' });
+  await backend.updateTask('a', { next: 'fresh' });
+  await backend.claimTask('a', 'laptop');
+  await backend.addNote('a', 'hi', { author: 'system' });
+  await backend.heartbeat('a', { lane: 'general', borrowed: false });
+  await backend.pause('a', 'why');
+  assert.equal((await backend.fail('a', 'it broke')).applied, false);
+  assert.deepEqual(
+    seen.slice(1).map(({ command, body }) => [command, body]),
+    [
+      ['list-tasks', { all: true }],
+      ['add-task', { body: { title: 't', input: 'i', labels: [], status: 'todo' } }],
+      ['update-task', { id: 'a', body: { next: 'fresh' } }],
+      ['claim-task', { id: 'a', machine: 'laptop' }],
+      ['add-note', { id: 'a', author: 'system', body: 'hi' }],
+      ['heartbeat', { id: 'a', body: { lane: 'general', borrowed: false } }],
+      ['pause', { id: 'a', body: 'why' }],
+      ['fail', { id: 'a', body: 'it broke' }],
+    ],
+  );
 });
 
-test("the contract version is checked once, before the first call", async () => {
-  const { backend, stateFile } = setup();
+test('server errors carry the status and reason, never the token', async () => {
+  const { backend } = board({ 'get-task': { status: 404, body: { error: 'no task abc' } } });
+  await assert.rejects(
+    backend.getTask('abc'),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.status === 404 &&
+      /get-task: no task abc/.test(error.message) &&
+      !error.message.includes('TOKEN'),
+  );
+  const down: Fetch = async () => {
+    throw new Error('ECONNREFUSED');
+  };
+  await assert.rejects(
+    callServer(config, 'get-task', {}, down),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      /cannot reach https:\/\/board.example: ECONNREFUSED/.test(error.message) &&
+      !error.message.includes('TOKEN'),
+  );
+});
+
+test('an answer that is not JSON, or not a task, is a one-line failure', async () => {
+  const { backend } = board({
+    'get-task': { body: '<html>login</html>' },
+    'read-notes': { body: { result: [{ id: 1 }] } },
+  });
+  await assert.rejects(
+    backend.getTask('abc'),
+    (error: unknown) =>
+      error instanceof BackendError && /without JSON/.test(error.message) && !error.message.includes('TOKEN'),
+  );
+  await assert.rejects(
+    backend.readNotes('abc'),
+    (error: unknown) =>
+      error instanceof BackendError && /read-notes: note.createdAt must be a string/.test(error.message),
+  );
+});
+
+test('a lost claim is undefined; other failures still throw', async () => {
+  const lost = board({ 'claim-task': { status: 409, body: { error: 'the task is not free for this machine' } } });
+  assert.equal(await lost.backend.claimTask('abc', 'laptop'), undefined);
+  const forbidden = board({ 'claim-task': { status: 403, body: { error: 'wrong machine' } } });
+  await assert.rejects(forbidden.backend.claimTask('abc', 'laptop'), /wrong machine/);
+});
+
+test('unsafe ids and machine names are refused before any request', async () => {
+  const { seen, backend } = board({});
+  await assert.rejects(backend.getTask('../x'), /not a valid task id/);
+  await assert.rejects(backend.addNote('dispatch', 'x'), /not a valid task id/);
+  await assert.rejects(backend.claimTask('abc', 'a b'), /not a valid machine name/);
+  assert.deepEqual(seen, []);
+});
+
+test('a server on another contract version is refused, saying which side is older', async () => {
+  const older = board({ 'list-tasks': { body: { result: [] } } }, CONTRACT_VERSION - 1);
+  await assert.rejects(
+    older.backend.listTasks(),
+    new RegExp(`server is older than this CLI.*speaks contract ${CONTRACT_VERSION - 1}`),
+  );
+  assert.deepEqual(
+    older.seen.map((request) => request.command),
+    ['version'],
+  );
+  const newer = board({ 'list-tasks': { body: { result: [] } } }, CONTRACT_VERSION + 1);
+  await assert.rejects(newer.backend.listTasks(), /this CLI is older than the board server/);
+});
+
+test('a server without the version command counts as older', async () => {
+  const fetcher: Fetch = async () =>
+    new Response(JSON.stringify({ error: 'unknown command version' }), { status: 404 });
+  const backend = createWebBackend({ loadConfig: () => config, fetch: fetcher });
+  await assert.rejects(backend.listTasks(), /server is older than this CLI/);
+});
+
+test('the version is checked once per process, and the config is loaded only on the first call', async () => {
+  let loads = 0;
+  const commands: string[] = [];
+  const fetcher: Fetch = async (url) => {
+    commands.push(url.slice(`${config.url}/api/machine/`.length));
+    return new Response(JSON.stringify({ result: url.endsWith('/version') ? { contract: CONTRACT_VERSION } : [] }));
+  };
+  const backend = createWebBackend({ loadConfig: () => ((loads += 1), config), fetch: fetcher });
+  assert.equal(loads, 0);
   await backend.listTasks();
-  await backend.listTasks();
-  assert.deepEqual(calls(stateFile).map((call) => call.argv[0]), ["version", "list-tasks", "list-tasks"]);
-  const other = setup("other-version");
-  await assert.rejects(other.backend.listTasks(), /speaks contract 1, this core needs 2/);
+  await backend.listTasks({ all: true });
+  assert.equal(loads, 1);
+  assert.deepEqual(commands, ['version', 'list-tasks', 'list-tasks']);
 });
 
-test("a non-zero exit is a one-line failure with the backend's reason", async () => {
-  const { backend } = setup("fail");
-  await assert.rejects(backend.listTasks(), (error: Error) => error instanceof BackendError && /failed \(exit 3\): the store is locked second line/.test(error.message) && !error.message.includes("\n"));
+test('a missing config fails the first call, not the construction', async () => {
+  const backend = createWebBackend({
+    loadConfig: () => {
+      throw new Error('web.json missing');
+    },
+  });
+  await assert.rejects(backend.listTasks(), /web.json missing/);
 });
 
-test("invalid JSON and a missing field are backend failures", async () => {
-  await assert.rejects(setup("garbage").backend.listTasks(), /list-tasks: output is not valid JSON/);
-  await assert.rejects(setup("missing-field").backend.listTasks(), /task\.\w+ must be/);
-});
-
-test("a backend that hangs is killed at the timeout", async () => {
-  const started = Date.now();
-  await assert.rejects(setup("hang", 400).backend.listTasks(), /timed out after 0.4s/);
-  assert.ok(Date.now() - started < 5_000);
-});
-
-test("a backend that cannot start is a failure", async () => {
-  const backend = createCliBackend({ command: ["no-such-backend-xyz"] });
-  await assert.rejects(backend.listTasks(), /could not start no-such-backend-xyz/);
-});
-
-test("an unsafe task id is rejected, whether the backend returns it or the caller passes it", async () => {
-  await assert.rejects(setup("unsafe-id").backend.listTasks(), /task id "..\/etc" is not safe/);
-  const { backend, stateFile } = setup();
-  for (const id of ["../x", "-flag", "a b", "", "x".repeat(65), "a;b"]) {
-    await assert.rejects(backend.getTask(id), /not a valid task id/);
-    await assert.rejects(backend.addNote(id, "x"), BackendError);
-  }
-  assert.deepEqual(calls(stateFile), [], "nothing reached the backend");
-});
-
-test("a backend without setup is reported as undefined, not an error", async () => {
-  assert.equal(await setup("no-setup").backend.setup([]), undefined);
-});
-
-test("dry run reads through and prints every write instead of making it", async () => {
-  const inner = fakeBackend([task({ id: "a" })]);
-  const printed: string[] = [];
-  const dry = dryRunBackend(inner, (line) => printed.push(line));
-  assert.equal((await dry.getTask("a")).id, "a");
-  assert.equal((await dry.updateTask("a", { status: "running" })).status, "running");
-  await dry.addNote("a", "hello");
-  const { task: created } = await dry.addTask({ title: "t", input: "", labels: [], status: "todo" });
-  assert.equal(created.title, "t");
-  assert.deepEqual(inner.writes, []);
-  assert.match(printed[0] ?? "", /^DRY update-task a \{"status":"running"\}$/);
-  assert.match(printed[1] ?? "", /^DRY add-note a hello$/);
-  assert.match(printed[2] ?? "", /^DRY add-task /);
-});
-
-test("the reason shown is the start of the backend's stderr, not the end", async () => {
-  await assert.rejects(setup("noisy-fail").backend.listTasks(), (error: Error) => /exit 4\): FIRST-LINE-REASON/.test(error.message) && !error.message.includes("LAST-LINE"));
-});
-
-test("a task with a url Slack could misread is refused", async () => {
-  const { backend, stateFile } = setup();
-  const { task: created } = await backend.addTask({ title: "t", input: "", labels: [], status: "todo" });
-  for (const url of ["javascript:alert(1)", "https://x.example/a|b", "https://x.example/<a>", "https://x.example/a b", "", "ftp://x.example/a"]) {
-    const state = JSON.parse(readFileSync(stateFile, "utf8"));
-    state.tasks[0].url = url;
-    writeFileSync(stateFile, JSON.stringify(state));
-    await assert.rejects(backend.getTask(created.id), /task url/, url);
-  }
-});
-
-test("the ids dispatch and intake are refused, they would collide with the tool's own units", async () => {
-  const { backend, stateFile } = setup();
-  for (const id of ["dispatch", "intake"]) await assert.rejects(backend.getTask(id), /not a valid task id/);
-  assert.deepEqual(calls(stateFile), []);
-  assert.equal(isSafeTaskId("dispatcher"), true);
-});
-
-test("concurrent calls on the fake backend lose nothing, and a status change goes to the bottom", async () => {
-  const { backend } = setup();
-  const [first, second] = [(await backend.addTask({ title: "a", input: "", labels: [], status: "todo" })).task, (await backend.addTask({ title: "b", input: "", labels: [], status: "todo" })).task];
-  await Promise.all([
-    ...Array.from({ length: 8 }, (_, i) => backend.addNote(first.id, `note ${i}`)),
-    ...Array.from({ length: 8 }, (_, i) => backend.addTask({ title: `c${i}`, input: "", labels: [], status: "todo" })),
-  ]);
-  assert.equal((await backend.readNotes(first.id)).length, 8);
-  const ids = (await backend.listTasks()).map((t) => t.id);
-  assert.equal(ids.length, 10);
-  assert.equal(new Set(ids).size, 10, "every task got its own id");
-  await backend.updateTask(first.id, { status: "todo" });
-  const after = await backend.listTasks();
-  assert.equal(after.at(-1)?.id, first.id);
-  assert.equal(after[0]?.id, second.id);
-});
-
-test("update-task refuses keys it does not know", () => {
-  const { stateFile } = setup();
-  const created = spawnSync(process.execPath, [FIXTURE, "add-task"], { input: '{"title":"t"}', encoding: "utf8", env: process.env });
-  assert.equal(created.status, 0);
-  const result = spawnSync(process.execPath, [FIXTURE, "update-task", "t1"], { input: '{"title":"renamed"}', encoding: "utf8", env: process.env });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /unknown key "title"/);
-  assert.equal(JSON.parse(readFileSync(stateFile, "utf8")).tasks[0].title, "t");
-});
-
-// A backend that is a shell wrapper around a long-running child (no exec): the wrapper dies at the kill, and the
-// child must go with it.
-function wrapperBackend(body: string): { command: string[]; pidFile: string } {
-  const dir = mkdtempSync(join(tmpdir(), "agent-board-wrapper-"));
-  const pidFile = join(dir, "child.pid");
-  const script = join(dir, "backend");
-  writeFileSync(script, `#!/bin/sh\nsleep 30 &\necho $! > ${pidFile}\n${body}\n`);
-  chmodSync(script, 0o755);
-  return { command: [script], pidFile };
-}
-
-async function assertGone(pidFile: string): Promise<void> {
-  const child = Number(readFileSync(pidFile, "utf8").trim());
-  assert.ok(child > 0);
-  for (let attempt = 0; attempt < 50; attempt++) {
-    try {
-      process.kill(child, 0);
-    } catch {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  assert.fail("the backend's child is still running");
-}
-
-test("a timeout kills the backend's children too, and does not wait for pipes they hold", async () => {
-  const { command, pidFile } = wrapperBackend("wait");
-  const started = Date.now();
-  await assert.rejects(createCliBackend({ command, timeoutMs: 400 }).listTasks(), /timed out after 0.4s/);
-  assert.ok(Date.now() - started < 5_000);
-  await assertGone(pidFile);
-});
-
-test("the output cap kills the backend's children too", async () => {
-  const { command, pidFile } = wrapperBackend("yes x");
-  const started = Date.now();
-  await assert.rejects(createCliBackend({ command, maxOutputChars: 1_000 }).listTasks(), /printed more than 1000 characters/);
-  assert.ok(Date.now() - started < 5_000);
-  await assertGone(pidFile);
-});
-
-test("a backend setup that is only planned writes nothing, and dry run prints the plan", async () => {
-  const { backend, stateFile } = setup();
-  const printed: string[] = [];
-  const dry = dryRunBackend(backend, (line) => printed.push(line));
-  assert.deepEqual(await dry.setup(["review-pr"]), []);
-  assert.deepEqual(printed, ["DRY create list Todo"]);
-  assert.deepEqual(await backend.setup(["review-pr"]), ["list Todo"], "the dry run did not create it");
-  assert.deepEqual(calls(stateFile).map((call) => call.argv.join(" ")).filter((line) => line.startsWith("setup")), ["setup --dry-run", "setup"]);
-  assert.equal(await setup("no-setup").backend.setup([], { dryRun: true }), undefined);
-});
-
-test("a claim moves a todo task to running for the machine, and a lost claim is undefined", async () => {
-  const { backend } = setup();
-  const { task: created } = await backend.addTask({ title: "t", input: "", labels: [], status: "todo" });
-  const claimed = await backend.claimTask(created.id, "laptop");
-  assert.equal(claimed?.status, "running");
-  assert.equal(claimed?.machine, "laptop");
-  assert.equal(await backend.claimTask(created.id, "workstation"), undefined);
-  await assert.rejects(backend.claimTask(created.id, "bad name"), /not a valid machine name/);
-});
-
-test("a second add-task with the same dedupe key returns the first task", async () => {
-  const { backend } = setup();
-  const first = await backend.addTask({ title: "a", input: "", labels: [], status: "todo", dedupeKey: "https://x/1" });
-  const second = await backend.addTask({ title: "b", input: "", labels: [], status: "todo", dedupeKey: "https://x/1" });
-  assert.equal(first.created, true);
-  assert.equal(second.created, false);
-  assert.equal(second.task.id, first.task.id);
-});
-
-test("ask puts a question note on the task and moves it to needs-me", async () => {
-  const { backend, stateFile } = setup();
-  const { task: created } = await backend.addTask({ title: "t", input: "", labels: [], status: "running" });
-  const questions = [{ header: "Scope", question: "Q?", multiSelect: false, options: [{ label: "A", description: "" }, { label: "B", description: "" }] }];
-  await backend.ask(created.id, questions);
-  const after = await backend.getTask(created.id);
-  assert.equal(after.status, "needs-me");
-  assert.equal(after.openQuestion, true);
-  const [question] = await backend.readNotes(created.id);
-  assert.equal(question?.kind, "question");
-  assert.deepEqual(question?.questions, questions);
-  const call = calls(stateFile).find((c) => c.argv[0] === "ask");
-  assert.deepEqual(call?.argv, ["ask", created.id]);
+test('a dry run reads through and prints every write instead of sending it', async () => {
+  const { seen, backend } = board({ 'get-task': { body: { result: taskJson('a') } } });
+  const lines: string[] = [];
+  const dry = dryRunBackend(backend, (line) => lines.push(line));
+  await dry.updateTask('a', { next: 'fresh' });
+  await dry.addNote('a', 'hi', { author: 'system' });
+  assert.equal((await dry.claimTask('a', 'laptop'))?.status, 'running');
+  assert.deepEqual(
+    lines.map((line) => line.split(' ').slice(0, 2).join(' ')),
+    ['DRY update-task', 'DRY add-note', 'DRY claim-task'],
+  );
+  assert.deepEqual([...new Set(seen.map((request) => request.command))], ['version', 'get-task']);
 });
