@@ -14,16 +14,22 @@ export type DbOrTx = Db | Tx;
 /** Backslash and whitespace are special in the libpq `options` string. */
 const escapeOption = (value: string): string => value.replace(/[\\\s]/g, '\\$&');
 
-/** `backfillOwner` becomes the session setting `app.backfill_owner` that the tenancy migration reads. */
+/**
+ * `backfillOwner` becomes the session setting `app.backfill_owner` that the tenancy migration reads.
+ * `onError` hears about idle clients that lost their connection (a Postgres restart, `pg_terminate_backend`). The pool
+ * has already dropped such a client and the next query opens a new one; without a listener the `error` event would
+ * crash the process.
+ */
 export function createDb(
   databaseUrl: string,
-  options: { backfillOwner?: string | null } = {},
+  options: { backfillOwner?: string | null; onError?: (err: Error) => void } = {},
 ): { db: Db; pool: pg.Pool } {
   const pool = new pg.Pool({
     connectionString: databaseUrl,
     max: 10,
     ...(options.backfillOwner ? { options: `-c app.backfill_owner=${escapeOption(options.backfillOwner)}` } : {}),
   });
+  pool.on('error', options.onError ?? ((err) => console.error('idle database client failed:', err)));
   return { db: drizzle({ client: pool, schema }), pool };
 }
 
