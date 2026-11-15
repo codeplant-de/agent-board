@@ -128,6 +128,37 @@ describe('BoardPage drag and drop', () => {
   });
 });
 
+describe('BoardPage drop position', () => {
+  const todo = ['A', 'B', 'C', 'D'].map((id) => task({ id, title: `card ${id}`, status: 'todo', proposed: false }));
+  const cardOf = async (title: string) => (await screen.findByText(title)).closest('a') as HTMLElement;
+  // jsdom gives every card an empty rect at 0, so clientY 0 is the lower half and -1 the upper half.
+  const lowerHalf = { clientY: 0 };
+
+  it('leaves a card in its slot when dropped on the lower half of the card above it', async () => {
+    listed.tasks = todo;
+    renderBoard();
+    const dataTransfer = { effectAllowed: '', dropEffect: '' };
+    fireEvent.dragStart(await cardOf('card C'), { dataTransfer });
+    fireEvent.dragOver(await cardOf('card B'), { dataTransfer, ...lowerHalf });
+    fireEvent.drop(await cardOf('card B'), { dataTransfer });
+    await waitFor(() => expect(move).toHaveBeenCalledTimes(1));
+    expect(move.mock.calls[0]?.[0]).toMatchObject({ id: 'C', beforeId: 'D', afterId: 'B' });
+  });
+
+  it('drops at the bottom after the pointer leaves the cards for the empty space below them', async () => {
+    listed.tasks = todo;
+    renderBoard();
+    const dataTransfer = { effectAllowed: '', dropEffect: '' };
+    fireEvent.dragStart(await cardOf('card A'), { dataTransfer });
+    fireEvent.dragOver(await cardOf('card B'), { dataTransfer, clientY: -1 });
+    fireEvent.dragOver(column('Todo'), { dataTransfer });
+    fireEvent.drop(column('Todo'), { dataTransfer });
+    await waitFor(() => expect(move).toHaveBeenCalledTimes(1));
+    expect(move.mock.calls[0]?.[0]).toMatchObject({ id: 'A', afterId: 'D' });
+    expect(move.mock.calls[0]?.[0]).not.toHaveProperty('beforeId');
+  });
+});
+
 describe('BoardPage layout', () => {
   it('stacks Waiting above Todo in one board cell', async () => {
     listed.tasks = [];
