@@ -27,9 +27,7 @@ import { createRunFiles } from './runtime.mts';
 import type { RunFiles } from './runtime.mts';
 import { createSystem } from './system.mts';
 import type { System } from './system.mts';
-import { postSlack, slackText } from './notify.mts';
 import { readLogTail } from './logs.mts';
-import { sendToNeedsMe } from './report.mts';
 import { fence } from './text.mts';
 import type { CheckResult, WaitCheck, WaitStore } from './waits.mts';
 import { CHECK_TIME_LIMIT_MS, createWaitStore, runCheck } from './waits.mts';
@@ -39,7 +37,6 @@ export interface DispatchDeps extends Context {
   files: RunFiles;
   now: () => Date;
   logTail: (taskId: string) => string;
-  notify: (task: Task, text: string) => Promise<void>;
   waits: WaitStore;
   runCheck: (check: WaitCheck) => Promise<CheckResult>;
 }
@@ -169,7 +166,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     if (!deps.dryRun) files.clear(task.id);
     log(`STALE ${task.id} ${decision.reason}`);
     const tail = deps.logTail(task.id);
-    await sendToNeedsMe(deps, task, `${decision.reason}\n\nEnd of the log:\n${fence(tail || '(empty)')}`);
+    await deps.backend.fail(task.id, `${decision.reason}\n\nEnd of the log:\n${fence(tail || '(empty)')}`);
   }
 
   const { tasks, checks } = await wakeDue(deps, listed);
@@ -248,7 +245,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
       const reason = error instanceof Error ? error.message : String(error);
       log(`START-FAILED ${task.id} ${reason}`);
       if (!deps.dryRun) files.clear(task.id);
-      await sendToNeedsMe(deps, task, `The worker could not be started: ${reason}`);
+      await deps.backend.fail(task.id, `The worker could not be started: ${reason}`);
       // Whatever broke it will break the next start too.
       break;
     }
@@ -312,13 +309,6 @@ export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<voi
       logTail: readLogTail,
       waits: createWaitStore(),
       runCheck: (check) => runCheck(check),
-      notify: async (task, text) => {
-        if (dryRun) return print(`DRY slack ${task.id} ${text}`);
-        await postSlack(
-          context.config.slackWebhookFile,
-          slackText({ title: task.title, url: context.taskLink(task.id) }, text),
-        );
-      },
     }),
   );
 }

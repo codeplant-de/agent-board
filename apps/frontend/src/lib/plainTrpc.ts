@@ -108,6 +108,13 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
           }),
       },
     },
+    slack: {
+      status: raw.slack.status,
+      peekLink: raw.slack.peekLink,
+      confirmLink: raw.slack.confirmLink,
+      unlink: raw.slack.unlink,
+      inbox: { list: raw.slack.inbox.list, remove: raw.slack.inbox.remove },
+    },
     machines: {
       issue: raw.machines.issue,
       revoke: raw.machines.revoke,

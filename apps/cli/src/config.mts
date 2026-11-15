@@ -54,7 +54,6 @@ export interface Config {
   inactivityMinutes: number;
   // A run is stopped after this long however busy it is: a guard against runaways.
   maxRunHours: number;
-  slackWebhookFile: string;
   intake: IntakeConfig;
   repos: Record<string, string>;
 }
@@ -170,8 +169,6 @@ export function parseConfig(raw: unknown): Config {
     repos[repo] = expandHome(dir);
   }
 
-  const webhook = raw['slackWebhookFile'] ?? '~/.config/watch-review-requests/slack-webhook';
-  if (typeof webhook !== 'string') throw new ConfigError('config: slackWebhookFile must be a path');
   const defaultCwd = raw['defaultCwd'] ?? '~';
   if (typeof defaultCwd !== 'string' || !expandHome(defaultCwd).startsWith('/'))
     throw new ConfigError('config: defaultCwd must be an absolute path (or ~/...)');
@@ -188,7 +185,6 @@ export function parseConfig(raw: unknown): Config {
     pauseAfterMinutes: positiveInt(raw, 'pauseAfterMinutes', '', 5),
     inactivityMinutes: positiveInt(raw, 'inactivityMinutes', '', 15),
     maxRunHours: positiveInt(raw, 'maxRunHours', '', 6),
-    slackWebhookFile: expandHome(webhook),
     intake: parseIntake(raw['intake']),
     repos,
   };

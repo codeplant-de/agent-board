@@ -127,6 +127,13 @@
       "when": 1794738067027,
       "tag": "0017_waiting_status",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794756253388,
+      "tag": "0018_slack",
+      "breakpoints": true
     }
   ]
 }
