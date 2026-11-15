@@ -321,20 +321,43 @@ export function ActionPanel({
     return (
       <Paper withBorder p="md">
         <Stack>
-          <Group justify="space-between" wrap="nowrap">
-            <Text size="sm">
-              Parked. No worker takes it until you move it to Todo
-              {isProposal ? ', which starts this agent’s proposal as yours after you have read its prompt.' : '.'}
-            </Text>
-            <Button
-              size="xs"
-              leftSection={<IconPlayerPlay size={14} />}
-              onClick={moveToTodo}
-              loading={actions.move.isPending}
-            >
-              Move to Todo
-            </Button>
-          </Group>
+          {isProposal ? (
+            <Alert color="grape" variant="light" icon={<IconSparkles size={18} />} title="Proposed by an agent">
+              <Group justify="space-between" wrap="nowrap">
+                <Text size="sm">Nothing runs until you start it, which shows you its whole prompt first.</Text>
+                <Group gap="xs" wrap="nowrap">
+                  <Button
+                    size="xs"
+                    color="grape"
+                    leftSection={<IconPlayerPlay size={14} />}
+                    onClick={moveToTodo}
+                    loading={actions.move.isPending}
+                  >
+                    Start
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="default"
+                    onClick={() => actions.close.mutate({ id: task.id, closed: true })}
+                  >
+                    Discard
+                  </Button>
+                </Group>
+              </Group>
+            </Alert>
+          ) : (
+            <Group justify="space-between" wrap="nowrap">
+              <Text size="sm">Parked. No worker takes it until you move it to Todo.</Text>
+              <Button
+                size="xs"
+                leftSection={<IconPlayerPlay size={14} />}
+                onClick={moveToTodo}
+                loading={actions.move.isPending}
+              >
+                Move to Todo
+              </Button>
+            </Group>
+          )}
           {canPolish(task) && (
             <Group justify="space-between" wrap="nowrap">
               <Text size="sm" c="dimmed">

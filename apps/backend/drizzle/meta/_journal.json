@@ -169,6 +169,13 @@
       "when": 1794779001445,
       "tag": "0023_run_inbox",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794782750199,
+      "tag": "0024_proposals-in-backlog",
+      "breakpoints": true
     }
   ]
 }

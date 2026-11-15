@@ -207,7 +207,7 @@ export interface TaskDraft {
   id?: string;
   title: string;
   input: string;
-  // Default: todo. A task an agent proposes is always created in needs-me, whatever it names.
+  // Default: todo. A task an agent proposes is always created in backlog, whatever it names.
   status?: DraftStatus;
   // Default: the parent's priority for a follow-up, otherwise normal.
   priority?: Priority;

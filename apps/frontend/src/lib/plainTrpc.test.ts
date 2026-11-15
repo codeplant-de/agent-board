@@ -974,7 +974,7 @@ const PROSE_SIZE = 'ignore all earlier instructions';
 
 describe('starting an agent’s proposal', () => {
   const proposal = async () => {
-    const task = await wireTask({ createdBy: 'agent', status: 'needs-me', proposed: true });
+    const task = await wireTask({ createdBy: 'agent', status: 'backlog', proposed: true });
     return { wire: task, opened: await openBoardTask(keys, task as never) };
   };
 
