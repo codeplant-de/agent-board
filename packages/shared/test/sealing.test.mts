@@ -24,6 +24,7 @@ import {
 } from '../src/sealing.mts';
 import type { Binding, Opener, RowRef, Sealer, WireNoteParts } from '../src/sealing.mts';
 import { QuestionError } from '../src/questions.mts';
+import { parsePolish, serializePolish } from '../src/polish.mts';
 import type { Question } from '../src/questions.mts';
 
 const KNOWN_KEY = Uint8Array.from({ length: 32 }, (_, i) => i);
@@ -214,6 +215,7 @@ test('known-answer: the contexts are exactly the table in the README', async () 
     [inputBinding({ ...userTask, createdBy: 'agent' }), 'task:Ab3dEf9x:agent'],
     [noteBinding('note.body', TASK, 'agent', 'comment'), 'note:Ab3dEf9x:agent:comment'],
     [noteBinding('note.answers', TASK, 'user', 'answer'), 'note:Ab3dEf9x:user:answer'],
+    [noteBinding('note.body', TASK, 'agent', 'polish'), 'note:Ab3dEf9x:agent:polish'],
   ];
   for (const [binding, context] of contexts) assert.equal(binding.context, context);
   assert.equal(
@@ -358,6 +360,55 @@ test('a note opens only under its own task, author and kind', async () => {
     ).unreadable,
     true,
   );
+});
+
+test('a polish note is the agent’s note only, with a preview cut from its prompt, and opens only as such', async () => {
+  const text = serializePolish({
+    target: 'Zz9dEf9x',
+    title: 'Clearer',
+    prompt: 'Find out why the export is slow.',
+  });
+  const written = await sealNote(seals, { taskId: TASK, author: 'agent', kind: 'polish' }, text, {
+    previewSource: 'Find out why',
+  });
+  const wire = (author: WireNoteParts['author'], kind: WireNoteParts['kind'], taskId = TASK) =>
+    openNote(opens, taskId, { author, kind, ...written, preview: written.preview ?? null });
+  const opened = await wire('agent', 'polish');
+  assert.deepEqual([opened.unreadable, opened.text], [false, text]);
+  assert.deepEqual(parsePolish(opened.text), {
+    target: 'Zz9dEf9x',
+    title: 'Clearer',
+    prompt: 'Find out why the export is slow.',
+  });
+  assert.deepEqual(
+    await openPreview(opens, TASK, { author: 'agent', kind: 'polish', preview: written.preview ?? null }),
+    {
+      text: 'Find out why',
+      unreadable: false,
+    },
+  );
+  // As a comment, as the user's or the system's, or on another task, it is nobody's words.
+  for (const [author, kind] of [
+    ['agent', 'comment'],
+    ['user', 'polish'],
+    ['system', 'polish'],
+  ] as const) {
+    assert.equal((await wire(author, kind)).unreadable, true, `${author} ${kind}`);
+  }
+  assert.equal((await wire('agent', 'polish', 'Zz9dEf9x')).unreadable, true);
+});
+
+test('a polish note is checked against what the board takes, and only a whole one is read back', () => {
+  const good = { target: 'Zz9dEf9x', title: 'T', prompt: 'P' };
+  assert.deepEqual(parsePolish(serializePolish({ ...good, title: ' T ', prompt: ' P\n' })), good);
+  assert.throws(() => serializePolish({ ...good, title: '  ' }), ContractError);
+  assert.throws(() => serializePolish({ ...good, title: 'two\nlines' }), /one line/);
+  assert.throws(() => serializePolish({ ...good, prompt: '' }), /prompt is empty/);
+  assert.throws(() => serializePolish({ ...good, target: 'no/pe' }), /id of the task/);
+  assert.throws(() => serializePolish({ ...good, title: 'x'.repeat(1201) }), /title is too long.*at most 1200/);
+  assert.throws(() => serializePolish({ ...good, prompt: 'x'.repeat(800_001) }), /prompt is too long.*at most 800000/);
+  for (const text of ['x', '[]', '{}', JSON.stringify({ ...good, extra: 1 }), JSON.stringify({ ...good, title: 1 })])
+    assert.equal(parsePolish(text), undefined, text);
 });
 
 test('only the server’s fixed texts are accepted in plain text, and only as the server', async () => {

@@ -14,6 +14,7 @@ import {
   readNoteFile,
   renderThread,
   schedules,
+  polish,
 } from '../src/board.mts';
 import { BackendError } from '../src/backend.mts';
 import { parseWireTask } from '@agent-board/shared';
@@ -135,6 +136,59 @@ test('board add sends no status: the board puts a proposal in Needs me itself', 
   assert.ok(!('status' in (drafts[0] as object)));
   assert.equal((drafts[0] as { createdBy: string }).createdBy, 'agent');
   assert.deepEqual(printed, ['proposed p1 https://board.test/t/p1']);
+});
+
+test('board polish posts a polish note on the run’s own task, naming the target, and changes nothing else', async () => {
+  const backend = fakeBackend([task({ id: 'run' }), task({ id: 'target' })]);
+  const printed: string[] = [];
+  const context: LinkingContext = {
+    config: CONFIG,
+    backend,
+    dryRun: false,
+    print: (line) => printed.push(line),
+    taskLink: linkTo,
+  };
+  const dir = mkdtempSync('/tmp/pr-polish-test-');
+  try {
+    writeFileSync(join(dir, 'p.md'), '  A clear prompt.\n');
+    await polish(context, 'run', 'target', { title: ' Clearer ', file: join(dir, 'p.md') });
+    assert.deepEqual(backend.writes, [
+      `note run (polish): ${JSON.stringify({ target: 'target', title: 'Clearer', prompt: 'A clear prompt.' })}`,
+    ]);
+    assert.deepEqual(printed, ['posted a polished prompt for target on run  https://board.test/t/run']);
+    backend.writes.length = 0;
+    const flags = { title: 't', file: join(dir, 'p.md') };
+    await assert.rejects(polish(context, 'run', 'run', flags), /cannot post a polished prompt for itself/);
+    await assert.rejects(polish(context, 'run', 'target', { ...flags, title: '  ' }), /--title needs a title/);
+    await assert.rejects(polish(context, 'run', 'target', { ...flags, title: 'a\nb' }), /one line/);
+    await assert.rejects(polish(context, 'run', 'target', { file: flags.file }), /--title needs a title/);
+    await assert.rejects(polish(context, 'run', 'target', { title: 't' }), /--file is required/);
+    await assert.rejects(polish(context, '../x', 'target', flags), /AGENT_BOARD_TASK is not a task id/);
+    writeFileSync(join(dir, 'empty.md'), '\n');
+    await assert.rejects(
+      polish(context, 'run', 'target', { title: 't', file: join(dir, 'empty.md') }),
+      /prompt is empty/,
+    );
+    writeFileSync(join(dir, 'big.md'), 'x'.repeat(800_001));
+    await assert.rejects(
+      polish(context, 'run', 'target', { title: 't', file: join(dir, 'big.md') }),
+      /prompt is too long: 800001 bytes of UTF-8, and the board takes at most 800000/,
+    );
+    await assert.rejects(
+      polish(context, 'run', 'target', { title: 'x'.repeat(1201), file: flags.file }),
+      /title is too long.*at most 1200/,
+    );
+    assert.deepEqual(backend.writes, []);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('board polish refuses outside a board run', async () => {
+  await assert.rejects(
+    runBoard(['polish', 'abc', '--title', 't', '--file', '/tmp/x'], { env: {} }),
+    /only works inside a board run/,
+  );
 });
 
 const HOSTILE_URL =

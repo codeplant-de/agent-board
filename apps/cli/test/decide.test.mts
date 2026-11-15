@@ -262,6 +262,22 @@ test('a resume carries the answers and comments given since the agent last spoke
   assert.match(plan.prompt, /board's rules from the start of this session still hold/);
 });
 
+test('the note that keeps a polished prompt’s old text reaches neither a fresh run nor a resume', () => {
+  const kept = makeNote('Prompt before polishing OLD-ROUGH-PROMPT', at(1), { author: 'user', kind: 'event' });
+  const reply = makeNote('go on', at(3), { author: 'user' });
+  const fresh = planRun(task({ id: 'abc', next: 'fresh', sessionId: null }), [kept, reply], options());
+  assert.ok(fresh.kind === 'fresh' && fresh.thread !== undefined);
+  assert.match(fresh.thread, /go on/);
+  assert.doesNotMatch(fresh.thread, /OLD-ROUGH-PROMPT/);
+  const only = planRun(task({ id: 'abc', next: 'fresh', sessionId: null }), [kept], options());
+  assert.ok(only.kind === 'fresh');
+  assert.doesNotMatch(only.thread ?? '', /OLD-ROUGH-PROMPT|The user wrote/);
+  const resumed = planRun(task({ id: 'abc', next: 'resume', sessionId: SESSION }), [kept, reply], options());
+  assert.ok(resumed.kind === 'resume');
+  assert.match(resumed.prompt, /go on/);
+  assert.doesNotMatch(resumed.prompt, /OLD-ROUGH-PROMPT/);
+});
+
 test('a run starts fresh without a resume request, without a session, or without a reply', () => {
   const reply = [questionNote, makeNote('go on', at(2), { author: 'user' })];
   const sessionOf = (plan: ReturnType<typeof planRun>) =>

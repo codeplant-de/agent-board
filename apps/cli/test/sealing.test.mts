@@ -11,7 +11,9 @@ import {
   parseWireTaskDraft,
   parseWireTaskPatch,
   parseWireTranscriptBatch,
+  parsePolish,
   seal,
+  serializePolish,
   UNREADABLE_TITLE,
 } from '@agent-board/shared';
 import type {
@@ -106,7 +108,7 @@ function fakeWire(): FakeWire {
     async addNote(id, note, options) {
       const sent = parseWireNoteInput(JSON.parse(record(state, note)), 'note', { allowSuggestion: true });
       const system = options?.author === 'system';
-      push(state, id, sent, system ? 'system' : 'agent', system ? 'event' : 'comment');
+      push(state, id, sent, system ? 'system' : 'agent', system ? 'event' : (options?.kind ?? 'comment'));
     },
     async ask(id, asked) {
       const sent = parseWireAsk(JSON.parse(record(state, asked)));
@@ -257,6 +259,27 @@ test('a draft is validated before anything is sent: empty title, relative workdi
   await assert.rejects(board.pause('abc', ' '), /note text is empty/);
   await assert.rejects(board.fail('abc', ''), /note text is empty/);
   assert.deepEqual(wire.requests, []);
+});
+
+test('a polish note is sealed as the agent’s polish note, with the start of the prompt as its preview, and read back whole', async () => {
+  const wire = fakeWire();
+  wire.tasks.push(await wireTask({ id: 't1' }));
+  const board = sealingBackend(wire, KEYS);
+  const text = serializePolish({ target: 't2', title: 'MARKER-title', prompt: `MARKER-prompt ${'x'.repeat(500)}` });
+  await board.addNote('t1', text, { kind: 'polish' });
+  const [stored] = wire.notes.get('t1')!;
+  assert.deepEqual([stored?.author, stored?.kind], ['agent', 'polish']);
+  assert.equal(await open(KEYS, 'note.body', 'note:t1:agent:polish', stored!.body), text);
+  assert.equal(
+    await open(KEYS, 'note.preview', 'note:t1:agent:polish', stored!.preview!),
+    `MARKER-prompt ${'x'.repeat(500)}`.slice(0, 300),
+  );
+  const [read] = await board.readNotes('t1');
+  assert.deepEqual([read?.unreadable, read?.kind, parsePolish(read!.text)?.target], [false, 'polish', 't2']);
+  await assert.rejects(
+    board.addNote('t1', text, { author: 'system', kind: 'polish' }),
+    /only an agent writes a polish note/,
+  );
 });
 
 test('notes are sealed for their task, author and kind; the preview is the start of the text, sealed apart', async () => {
