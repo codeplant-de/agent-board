@@ -17,6 +17,7 @@ export const testConfig: Config = {
   allowedGroups: ['admins'],
   devAuthUser: null,
   cliVersion: null,
+  intake: null,
 };
 
 /** `db` is the unprivileged handle that serves requests; `admin` bypasses row-level security. The tables are wiped before each test. */
@@ -24,7 +25,9 @@ export function useTestDb(): { db: Db; admin: Db } {
   const app = createDb(testAppDatabaseUrl());
   const admin = createDb(testDatabaseUrl());
   beforeEach(async () => {
-    await admin.db.execute(sql`truncate app_user, note, task, schedule, machine restart identity cascade`);
+    await admin.db.execute(
+      sql`truncate app_user, note, task, schedule, machine, slack_link_code restart identity cascade`,
+    );
   });
   afterAll(() => Promise.all([app.pool.end(), admin.pool.end()]));
   return { db: app.db, admin: admin.db };

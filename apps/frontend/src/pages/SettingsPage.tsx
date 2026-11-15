@@ -34,6 +34,7 @@ import {
   subscribeToDesktopNotificationsPreference,
   writeDesktopNotificationsPreference,
 } from '../lib/desktopNotifications';
+import { SlackSettings } from '../components/SlackSettings';
 import { ago } from '../lib/time';
 import { errorMessage, useTRPC } from '../lib/trpc';
 
@@ -394,6 +395,7 @@ export function SettingsPage() {
       <Title order={3}>Settings</Title>
       <Machines />
       <DesktopNotifications />
+      <SlackSettings />
       <Encryption />
     </Stack>
   );

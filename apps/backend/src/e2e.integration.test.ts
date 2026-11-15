@@ -13,8 +13,6 @@ import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { renderThread } from '../../cli/src/board.mts';
 import { runDispatch, type DispatchDeps } from '../../cli/src/dispatch.mts';
-import { taskLink } from '../../cli/src/links.mts';
-import { slackText } from '../../cli/src/notify.mts';
 import { createSealedBackend } from '../../cli/src/sealing.mts';
 import { runWorker, type WorkerDeps } from '../../cli/src/worker.mts';
 import { CONFIG, fakeRunFiles, fakeSessions, fakeWaitStore } from '../../cli/test/helpers.mts';
@@ -261,12 +259,6 @@ describe('a task link is the CLI’s own', () => {
     expect(fromServer).not.toHaveProperty('url');
     const shown = renderThread(fromServer, []);
     expect(shown).not.toContain('NOTE_FROM_THE_USER');
-    const message = slackText(
-      { title: fromServer.title, url: taskLink(BOARD_URL, fromServer.id) },
-      'The agent asked a question',
-    );
-    expect(message.split('\n')[0]).toBe(`<${BOARD_URL}/t/${task.id}|Fix the build>`);
-    expect(message).not.toContain('NOTE_FROM_THE_USER');
   });
 });
 
@@ -289,7 +281,6 @@ describe('an agent’s proposal', () => {
     files: fakeRunFiles(),
     now: () => new Date(),
     logTail: () => '',
-    notify: async () => undefined,
     waits: fakeWaitStore(),
     runCheck: async () => ({ exitCode: 1, timedOut: false, output: '' }),
     update: NO_UPDATES,
@@ -304,7 +295,6 @@ describe('an agent’s proposal', () => {
       return { exitCode: 0, signal: null };
     },
     logTail: () => '',
-    notify: async () => undefined,
     resetLog: () => undefined,
     appendLog: () => undefined,
     pluginPath: () => '/p',
@@ -424,7 +414,6 @@ describe('a wait', () => {
       files: fakeRunFiles(),
       now: () => new Date(),
       logTail: () => '',
-      notify: async () => undefined,
       waits,
       update: NO_UPDATES,
       runCheck: async (check) => {
@@ -445,7 +434,6 @@ describe('a wait', () => {
         return { exitCode: 0, signal: null };
       },
       logTail: () => '',
-      notify: async () => undefined,
       resetLog: () => undefined,
       appendLog: () => undefined,
       pluginPath: () => '/p',

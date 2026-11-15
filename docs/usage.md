@@ -46,7 +46,7 @@ The **Schedules** page of the web board lists the schedules: title and prompt, r
 
 ## Ask and resume
 
-Claude Code offers no AskUserQuestion to a headless run (2.1.323, whatever `--tools` says). So the board's rules tell the agent: wherever you would ask with AskUserQuestion, also where a skill says to, write the same questions to a JSON file and run `board ask <task> --file <path>`, then end your turn. The questions land on the board (one to four, each with options, the recommended one marked), the task moves to `needs-me` with a **Question** badge, and Slack gets a message. So an interactive skill works on the board without changes to it. The run's hook would also turn a real AskUserQuestion call into a board question, should a later Claude Code offer the tool headless.
+Claude Code offers no AskUserQuestion to a headless run (2.1.323, whatever `--tools` says). So the board's rules tell the agent: wherever you would ask with AskUserQuestion, also where a skill says to, write the same questions to a JSON file and run `board ask <task> --file <path>`, then end your turn. The questions land on the board (one to four, each with options, the recommended one marked), the task moves to `needs-me` with a **Question** badge. So an interactive skill works on the board without changes to it. The run's hook would also turn a real AskUserQuestion call into a board question, should a later Claude Code offer the tool headless.
 
 On the task page you pick options (number keys work), add text where none fits, and press **Answer & continue**. On a task without a question, write a reply and press **Send & continue**. Both put the task at the top of its priority in Todo with `next: resume`. The next dispatch tick on the machine that ran the session starts `claude -p --resume=<session>` with your reply on stdin, so the agent keeps its context; it resumes only a session that machine started for the task (see [Encryption](encryption.md#encryption)). The other buttons:
 
@@ -90,3 +90,13 @@ and then ends its turn. The board's rules tell it to (an intake review is not to
 - A wait lasts at most 7 days. Only a running task can wait, and nothing else puts a task in Waiting: `board move <task> waiting`, a drag into the column and `add-task` with that status are refused.
 - **You** can end a wait early with **Wake now** on the task page (the thread notes "Wait ended by you."), with **Send & continue** (the agent gets your reply and is told the wait is over), or by dragging the card to Todo. Dragging it anywhere else drops the wait; the next tick of its machine deletes the check.
 - Waits are woken by the machine that ran the task, since the session lives there: a timer on a machine that is off ends when it comes back, or when you wake it.
+
+## Slack
+
+Slack sends you nothing (see [Desktop notifications](#desktop-notifications) for the board's own). What the Slack app gives you is a way in: `/board` in Slack, from an optional [Slack app](operations.md#the-slack-app), puts a task idea in a **From Slack** box above the columns.
+
+1. **Link once.** `/board link` answers, only to you, with a one-time link that works for 15 minutes. Open it while signed in to the board and confirm. The page names the Slack user it would link, so confirm only a link you asked for. One Slack user belongs to one board user. **Settings** shows the linked account and an Unlink button, and `/board unlink` does the same from Slack.
+2. **Send text.** `/board look at the flaky bidder test` (at most 4000 characters) adds an item to your box. Without a link the command answers "run `/board link` first" and stores nothing.
+3. **Turn it into a task or drop it.** **Create task** opens the New task form with the text filled in. Check it and create the task the normal way: your browser seals it, so the task runs as yours. **Dismiss** deletes the item. Items nobody touches are deleted after 30 days.
+
+The text of an item is stored on the server in clear, because the server cannot seal it, and it passed through Slack on the way. Read an item before you create a task from it, since a task runs with your permissions. The box says so too. No worker ever sees an item.

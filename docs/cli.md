@@ -26,7 +26,6 @@ Tasks:
   attach <task>             open a task's Claude session in the terminal
   comment <task> [text...]  add a note to a task
   move <task> <status...>   move a task to the bottom of a status
-  notify <task> <text...>   Slack message with the task link
   ask <task>                ask the user 1-4 questions
   wait <task>               park a running task in Waiting until a time or a
                             check
@@ -212,39 +211,13 @@ Examples:
   board move Ab3 todo
 ```
 
-### board notify
-
-```
-Usage: board notify [options] <task> <text...>
-
-Send a Slack message with the task link. The text is every word after the task;
-`-` reads it from stdin.
-
-<task> can be the full id, a link to the task on this board (as the CLI prints
-it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
-not exactly 8, which counts as a whole older id; an exact-case match wins, else
-case does not matter; it must be unique). Inside a board run only the full id is
-accepted.
-
-Arguments:
-  task        the task: its id, a board task link or the start of its id
-  text        the message
-
-Options:
-  --dry-run   read everything, print every write instead of doing it
-  -h, --help  display help for command
-
-Examples:
-  board notify Ab3dEf9x "needs your decision"
-```
-
 ### board ask
 
 ```
 Usage: board ask [options] <task>
 
-Ask the user 1-4 questions and move the task to needs-me; Slack is told. The
-user answers on the board and the run is resumed with the answers.
+Ask the user 1-4 questions and move the task to needs-me. The user answers on
+the board and the run is resumed with the answers.
 
 The questions are JSON in a regular file in /tmp: {"questions": [{"header",
 "question", "multiSelect", "options": [{"label", "description",

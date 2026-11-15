@@ -38,8 +38,6 @@ import { createSessionStore } from './sessions.mts';
 import type { SessionStore } from './sessions.mts';
 import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from './logs.mts';
 import { resolvePluginPath } from './plugins.mts';
-import { postSlack, slackText } from './notify.mts';
-import { sendToNeedsMe } from './report.mts';
 import { fence } from './text.mts';
 
 export interface RunResult {
@@ -81,7 +79,6 @@ export interface WorkerDeps extends Context {
     onLine: (line: string) => string | undefined,
   ) => Promise<RunResult>;
   logTail: (taskId: string) => string;
-  notify: (task: Task, text: string) => Promise<void>;
   resetLog: (taskId: string) => void;
   appendLog: (taskId: string, text: string) => void;
   // Root of a plugin such as "pr-review@ccc"; throws with the reason when it cannot be resolved.
@@ -109,7 +106,9 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   deps.resetLog(taskId);
   const task = await backend.getTask(taskId);
 
-  const report = (text: string): Promise<void> => sendToNeedsMe(deps, task, text);
+  const report = async (text: string): Promise<void> => {
+    await backend.fail(task.id, text);
+  };
 
   // A failure before the process starts leaves the log empty, so it goes in the log too.
   const fail = async (reason: string): Promise<void> => {
@@ -515,11 +514,6 @@ export async function workerMain(taskId: string): Promise<void> {
     ...context,
     run: runProcess,
     logTail: readLogTail,
-    notify: (task, text) =>
-      postSlack(
-        context.config.slackWebhookFile,
-        slackText({ title: task.title, url: context.taskLink(task.id) }, text),
-      ),
     resetLog,
     appendLog,
     pluginPath: resolvePluginPath,
