@@ -34,6 +34,7 @@ import {
   subscribeToDesktopNotificationsPreference,
   writeDesktopNotificationsPreference,
 } from '../lib/desktopNotifications';
+import { QueryStatus } from '../components/QueryStatus';
 import { SlackSettings } from '../components/SlackSettings';
 import { ago } from '../lib/time';
 import { errorMessage, useTRPC } from '../lib/trpc';
@@ -151,6 +152,7 @@ function Machines() {
             </Stack>
           </Alert>
         )}
+        <QueryStatus query={machines} what="machines" />
         <Table>
           <Table.Thead>
             <Table.Tr>

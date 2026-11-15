@@ -4,8 +4,9 @@ import { modals } from '@mantine/modals';
 import { IconPlayerPause, IconPlayerPlay, IconTrash } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
+import { QueryStatus } from '../components/QueryStatus';
 import { ago, stamp } from '../lib/time';
-import { errorMessage, POLL_MS, useTRPC, type Schedule as ScheduleRow } from '../lib/trpc';
+import { POLL_MS, useTRPC, type Schedule as ScheduleRow } from '../lib/trpc';
 
 function ScheduleActions({ schedule }: { schedule: ScheduleRow }) {
   const trpc = useTRPC();
@@ -129,12 +130,14 @@ export function SchedulesPage() {
         closed. Runs missed while nothing took the card are skipped. Make one with New task, When: Repeating, or{' '}
         <Code>board schedule --every</Code>.
       </Text>
-      {schedules.error && <Text c="red">{errorMessage(schedules.error)}</Text>}
+      <QueryStatus query={schedules} what="schedules" />
       <Paper withBorder style={{ overflowX: 'auto' }}>
         {rows.length === 0 ? (
-          <Text size="sm" c="dimmed" p="md">
-            No schedules yet.
-          </Text>
+          schedules.data !== undefined && (
+            <Text size="sm" c="dimmed" p="md">
+              No schedules yet.
+            </Text>
+          )
         ) : (
           <Table>
             <Table.Thead>

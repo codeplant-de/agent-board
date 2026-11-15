@@ -1,6 +1,7 @@
 import { Anchor, Badge, Group, Paper, Stack, Text, Title } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
+import { QueryStatus } from '../components/QueryStatus';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago } from '../lib/time';
 import { useTRPC } from '../lib/trpc';
@@ -15,8 +16,9 @@ export function ClosedPage() {
       <Text size="sm" c="dimmed">
         Out of the workflow: workers ignore them and intake never makes a second task for the same PR.
       </Text>
+      <QueryStatus query={tasks} what="closed tasks" />
       <Paper withBorder>
-        {sorted.length === 0 && (
+        {sorted.length === 0 && tasks.data !== undefined && (
           <Text size="sm" c="dimmed" p="md">
             Nothing closed.
           </Text>
