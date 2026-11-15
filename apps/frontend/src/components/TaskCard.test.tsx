@@ -1,5 +1,5 @@
 import { MantineProvider } from '@mantine/core';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { ListedTask } from '../lib/trpc';
@@ -11,6 +11,7 @@ const task = (overrides: Partial<ListedTask>): ListedTask =>
     title: 'A task',
     input: 'Fix the bug',
     pr: null,
+    prState: null,
     status: 'needs-me',
     priority: 'normal',
     createdBy: 'user',
@@ -72,5 +73,32 @@ describe('TaskCard pull request icon', () => {
 
   it('is not there for a task without a PR', () => {
     expect(hasPrIcon(renderCard({}).container)).toBe(false);
+  });
+});
+
+describe('TaskCard pull request state', () => {
+  const pr = 'https://github.com/acme/app/pull/2';
+
+  it('shows the merge icon for a merged PR instead of the GitHub mark', () => {
+    const { container } = renderCard({ pr, prState: 'merged' });
+    expect(screen.getByLabelText('PR merged')).toBeInTheDocument();
+    expect(hasPrIcon(container)).toBe(false);
+  });
+
+  it('shows the closed icon for a PR closed without a merge', () => {
+    const { container } = renderCard({ input: `/review-pr ${pr} --auto`, prState: 'closed' });
+    expect(screen.getByLabelText('PR closed')).toBeInTheDocument();
+    expect(hasPrIcon(container)).toBe(false);
+  });
+
+  it.each(['open', null] as const)('keeps the GitHub mark for a PR that is %s', (prState) => {
+    const { container } = renderCard({ pr, prState });
+    expect(hasPrIcon(container)).toBe(true);
+    expect(screen.queryByLabelText(/^PR (merged|closed)$/)).not.toBeInTheDocument();
+  });
+
+  it('shows nothing for a state without a PR', () => {
+    renderCard({ prState: 'merged' });
+    expect(screen.queryByLabelText('PR merged')).not.toBeInTheDocument();
   });
 });

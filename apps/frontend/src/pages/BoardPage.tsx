@@ -1,5 +1,6 @@
-import type { Status } from '@agent-board/shared';
-import { Badge, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
+import { prOf, type Status } from '@agent-board/shared';
+import { Badge, Button, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
+import { IconGitMerge } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState, type DragEvent } from 'react';
 import { moveConfirmed } from '../components/confirmStart';
@@ -30,6 +31,9 @@ interface DropTarget {
 const canDrag = (task: ListedTask) => task.status !== 'running';
 const canDrop = (status: Status) => status !== 'running' && status !== 'waiting';
 
+/** The tasks of a column whose PR has been merged: nothing is left for the user to do on them. */
+const hasMergedPr = (task: ListedTask) => task.prState === 'merged' && prOf(task) !== undefined;
+
 /** The board's cells in order; Waiting sits above Todo in one cell, so a wait never takes a column of its own. */
 const CELLS: Status[][] = [['backlog'], ['waiting', 'todo'], ['running'], ['needs-me'], ['done']];
 
@@ -50,11 +54,17 @@ export function BoardPage() {
   const trpc = useTRPC();
   const tasks = useQuery({ ...trpc.tasks.list.queryOptions(), refetchInterval: POLL_MS });
   const move = useMutation(trpc.tasks.move.mutationOptions());
+  const done = useMutation(trpc.tasks.done.mutationOptions());
   const polish = usePolish();
   const [dragId, setDragId] = useState<string | null>(null);
   const [over, setOver] = useState<DropTarget | null>(null);
 
   const byStatus = (status: Status) => (tasks.data ?? []).filter((t) => t.status === status);
+
+  const moveMergedToDone = async () => {
+    for (const { id } of byStatus('needs-me').filter(hasMergedPr))
+      await done.mutateAsync({ id }).catch(() => undefined);
+  };
 
   const drop = (status: Status) => {
     if (!dragId || !canDrop(status)) return;
@@ -112,6 +122,19 @@ export function BoardPage() {
               {HINT[status]}
             </Text>
           </Group>
+          {status === 'needs-me' && column.some(hasMergedPr) && (
+            <Button
+              size="compact-xs"
+              variant="light"
+              color="grape"
+              mb="xs"
+              leftSection={<IconGitMerge size={14} />}
+              loading={done.isPending}
+              onClick={() => void moveMergedToDone()}
+            >
+              Move merged to Done ({column.filter(hasMergedPr).length})
+            </Button>
+          )}
           <ScrollArea.Autosize mah={scrollMaxHeight(status, byStatus('waiting').length === 0)} offsetScrollbars>
             <Stack gap="xs" mih={status === 'waiting' ? undefined : 60}>
               {column.map((task) => (

@@ -600,7 +600,10 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
       config: CONFIG,
       dryRun: false,
       print: (line) => lines.push(line),
-      github: { listReviewRequested: async () => listing },
+      github: {
+        listReviewRequested: async () => listing,
+        prStates: async () => ({ states: new Map(), unreadable: [] }),
+      },
       now: () => new Date(),
     });
     expect(lines).toContain('SKIP #17 task exists');

@@ -19,6 +19,7 @@ import {
   parseWireNote,
   parseWireNoteInput,
   parseWirePr,
+  parseWirePrState,
   parseWireSchedule,
   parseWireScheduleDraft,
   parseWireNotes,
@@ -68,6 +69,7 @@ const task = {
   sessionId: null,
   workdir: null,
   pr: null,
+  prState: null,
   next: 'fresh',
   head: null,
   openQuestion: false,
@@ -121,6 +123,12 @@ test('a task has a sealed PR or none, and a server that does not know the field 
   assert.throws(() => parseWirePr({ pr: 'https://github.com/o/r/pull/1' }), /pr.pr must be encrypted/);
   assert.throws(() => parseWirePr({ pr: PR, extra: 1 }), /unknown key "extra"/);
   assert.throws(() => parseWirePr({}), /pr/);
+  assert.equal(parseWireTask(task).prState, null);
+  assert.equal(parseWireTask({ ...task, prState: 'merged' }).prState, 'merged');
+  assert.throws(() => parseWireTask({ ...task, prState: 'draft' }), /prState must be one of open, merged, closed/);
+  assert.deepEqual(parseWirePrState({ prState: 'closed' }), { prState: 'closed' });
+  assert.throws(() => parseWirePrState({ prState: null }), /prState.prState must be one of/);
+  assert.throws(() => parseWirePrState({ prState: 'open', extra: 1 }), /unknown key "extra"/);
   assert.equal(SEALED_LIMITS.pr, 1024);
 });
 

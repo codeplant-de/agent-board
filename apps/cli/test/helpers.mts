@@ -31,6 +31,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     sessionId: null,
     workdir: null,
     pr: null,
+    prState: null,
     next: 'fresh',
     head: null,
     openQuestion: false,
@@ -220,6 +221,12 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       const found = state.tasks.find((t) => t.id === id);
       if (!found) throw new BackendError(`set-pr: no task ${id}`, 404, true);
       found.pr = url;
+    },
+    async setPrState(id, prState) {
+      state.writes.push(`prState ${id} ${prState}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`set-pr-state: no task ${id}`, 404, true);
+      found.prState = prState;
     },
     async heartbeat(id, beat) {
       state.writes.push(`heartbeat ${id} ${beat.lane}${beat.borrowed ? ' borrowed' : ''}`);
@@ -448,3 +455,6 @@ export function fakeWaitStore(initial: Record<string, WaitCheck> = {}): WaitStor
     list: () => [...checks.keys()],
   };
 }
+
+// The GitHub half that looks up PR states, for a test that is about something else: it knows no PR.
+export const NO_PR_STATES = { prStates: async () => ({ states: new Map(), unreadable: [] }) };

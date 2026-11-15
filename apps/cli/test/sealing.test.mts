@@ -124,6 +124,12 @@ function fakeWire(): FakeWire {
         { pr: sent.pr },
       );
     },
+    async setPrState(id, body) {
+      Object.assign(
+        state.tasks.find((t) => t.id === id)!,
+        { prState: body.prState },
+      );
+    },
     async pause(id, note) {
       push(state, id, parseWireNoteInput(JSON.parse(record(state, note)), 'note'), 'system', 'event');
       return state.tasks.find((t) => t.id === id)!;
@@ -864,4 +870,13 @@ test('a PR that is not a GitHub pull request URL is refused before sealing', asy
   await assert.rejects(board.setPr('t1', 'https://github.com/acme/repo/issues/3'), /set-pr: the pull request must be/);
   assert.equal(wire.requests.length, 0);
   assert.equal(wire.tasks[0]!.pr, null);
+});
+
+test('the state of a PR goes to the board in clear, as it is', async () => {
+  const wire = fakeWire();
+  wire.tasks.push(await wireTask({ id: 't1' }));
+  const board = sealingBackend(wire, KEYS);
+  await board.setPrState('t1', 'merged');
+  assert.equal(wire.tasks[0]!.prState, 'merged');
+  assert.equal((await board.getTask('t1')).prState, 'merged');
 });

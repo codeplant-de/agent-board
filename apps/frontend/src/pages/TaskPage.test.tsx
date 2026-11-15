@@ -1,6 +1,6 @@
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BoardTask } from '../lib/trpc';
@@ -32,6 +32,7 @@ const task = (overrides: Partial<BoardTask>): BoardTask =>
     title: 'A task',
     input: 'Fix the bug',
     pr: null,
+    prState: null,
     status: 'needs-me',
     priority: 'normal',
     createdBy: 'user',
@@ -102,5 +103,21 @@ describe('TaskPage pull request link', () => {
     renderPage({});
     await screen.findByText('A task');
     expect(screen.queryByRole('link', { name: /acme/ })).not.toBeInTheDocument();
+  });
+
+  it('shows the state of the PR next to its link, only for the PR the state is about', async () => {
+    renderPage({
+      input: '/review-pr https://github.com/acme/app/pull/1 --auto',
+      pr: 'https://github.com/acme/app/pull/2',
+      prState: 'merged',
+    });
+    const [first, second] = await screen.findAllByRole('link', { name: /acme\/app\/pull\/\d+$/ });
+    expect(within(first!).getByLabelText('PR merged')).toBeInTheDocument();
+    expect(within(second!).queryByLabelText('PR merged')).not.toBeInTheDocument();
+  });
+
+  it('shows a closed PR as closed', async () => {
+    renderPage({ pr: 'https://github.com/acme/app/pull/2', prState: 'closed' });
+    expect(await screen.findByLabelText('PR closed')).toBeInTheDocument();
   });
 });
