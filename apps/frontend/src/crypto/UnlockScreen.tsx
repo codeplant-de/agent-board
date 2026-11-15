@@ -1,4 +1,4 @@
-import type { Keys } from '@agent-board/shared';
+import type { KeySetup, Keys } from '@agent-board/shared';
 import {
   Anchor,
   Button,
@@ -17,7 +17,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { errorMessage, useTRPC } from '../lib/trpc';
 import { PRODUCTION_KDF, KeyError, type KdfParams } from './kdf';
-import { replacePassphrase, unlockKeys, type Secret, type StoredKey } from './keySlots';
+import { replacePassphrase, unlockKeys, type Secret } from './keySlots';
 import { PASSPHRASE_ADVICE, passphraseProblem, samePassphrase } from './passphrase';
 
 interface Props {
@@ -34,7 +34,7 @@ function PassphraseForm({
   onUnlocked,
 }: {
   owner: string;
-  stored: StoredKey;
+  stored: KeySetup;
   onUnlocked: Props['onUnlocked'];
 }) {
   const [passphrase, setPassphrase] = useState('');
@@ -82,7 +82,7 @@ function RecoveryForm({
   onUnlocked,
 }: {
   owner: string;
-  stored: StoredKey;
+  stored: KeySetup;
   kdf: KdfParams;
   onUnlocked: Props['onUnlocked'];
 }) {

@@ -17,11 +17,11 @@
 // everything here is the rules around them. A value that does not open under exactly its binding is unreadable, and an
 // unreadable value is never replaced by a looser reading.
 import {
+  checkSealedSize,
   ContractError,
   isSafeWorkdir,
   NOTE_SUGGESTION_CHARS,
   notePreview,
-  SEALED_LIMITS,
   UNREADABLE_TITLE,
 } from './contract.mts';
 import type { NoteKind, TaskCreator, UnreadableField, WireNoteAuthor, WireNoteInput } from './contract.mts';
@@ -101,14 +101,9 @@ export const transcriptBinding = (
   context: `${taskId}:${runId}:${seq}`,
 });
 
-const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
-
 /** Seals a value, after checking it fits what the board takes for the field; the error names the limit. */
 export async function sealChecked(seal: Sealer, binding: Binding, plaintext: string, what: string): Promise<string> {
-  const limit = SEALED_LIMITS[binding.field];
-  const size = utf8Bytes(plaintext);
-  if (size > limit)
-    throw new ContractError(`${what} is too long: ${size} bytes of UTF-8, and the board takes at most ${limit}`);
+  checkSealedSize(binding.field, plaintext, what);
   return seal(binding, plaintext);
 }
 

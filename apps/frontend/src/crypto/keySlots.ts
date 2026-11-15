@@ -2,7 +2,9 @@ import {
   CryptoError,
   deriveKeys,
   encodeDataKey,
+  fromBase64Url,
   generateDataKey,
+  toBase64Url,
   unwrapDataKey,
   wrapDataKey,
   type KeySetup,
@@ -10,7 +12,6 @@ import {
   type Keys,
   type PassphraseSlot,
 } from '@agent-board/shared';
-import { fromBase64Url, toBase64Url } from './base64url';
 import {
   assertWithinLimits,
   derivePassphraseKey,
@@ -23,8 +24,6 @@ import {
 import { formatRecoveryKey, parseRecoveryKey } from './recoveryKey';
 
 export type Secret = { kind: 'passphrase'; passphrase: string } | { kind: 'recovery'; recoveryKey: string };
-
-export type StoredKey = KeySetup;
 
 const randomBytes = (length: number): Uint8Array => globalThis.crypto.getRandomValues(new Uint8Array(length));
 
@@ -111,7 +110,7 @@ export async function createKeySetup(options: {
   }
 }
 
-export async function unlockKeys(options: { owner: string; stored: StoredKey; secret: Secret }): Promise<Keys> {
+export async function unlockKeys(options: { owner: string; stored: KeySetup; secret: Secret }): Promise<Keys> {
   const { owner, stored, secret } = options;
   const dataKey = await openDataKey(stored.slots, secret);
   try {
@@ -127,7 +126,7 @@ export async function unlockKeys(options: { owner: string; stored: StoredKey; se
  */
 export async function replacePassphrase(options: {
   owner: string;
-  stored: StoredKey;
+  stored: KeySetup;
   secret: Secret;
   newPassphrase: string;
   kdf?: KdfParams;
@@ -143,11 +142,7 @@ export async function replacePassphrase(options: {
   }
 }
 
-export async function exportDataKey(options: {
-  owner: string;
-  stored: StoredKey;
-  passphrase: string;
-}): Promise<string> {
+export async function exportDataKey(options: { owner: string; stored: KeySetup; passphrase: string }): Promise<string> {
   const { owner, stored, passphrase } = options;
   const dataKey = await openDataKey(stored.slots, { kind: 'passphrase', passphrase });
   try {

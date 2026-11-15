@@ -1,7 +1,7 @@
 import { formatAnswers, UNREADABLE_TEXT, type Question } from '@agent-board/shared';
 import { Badge, Group, Paper, Spoiler, Stack, Text, ThemeIcon } from '@mantine/core';
 import { IconCircleDot, IconLockOff, IconMessageQuestion, IconRobot, IconServer, IconUser } from '@tabler/icons-react';
-import { answerTo, questionsAnswered } from '../lib/answers';
+import { answerTo } from '../lib/answers';
 import { ago, stamp } from '../lib/time';
 import type { ThreadNote } from '../lib/trpc';
 import { Markdown } from './Markdown';
@@ -192,7 +192,7 @@ export function ThreadItem({ note, thread }: Props) {
   }
 
   const fromUser = note.author === 'user';
-  const questions = note.kind === 'answer' ? questionsAnswered(note) : undefined;
+  const questions = note.kind === 'answer' ? note.questions : undefined;
   return (
     <Paper
       withBorder

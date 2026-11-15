@@ -1,6 +1,6 @@
 // A polish note: the agent's proposal for a backlog task's new title and prompt, written on its own task's thread. The
 // user applies it in the browser, which seals the text as theirs; nothing here ever changes a task.
-import { ContractError, isSafeTaskId, SEALED_LIMITS } from './contract.mts';
+import { checkSealedSize, ContractError, isSafeTaskId } from './contract.mts';
 import { isRecord } from './guards.mts';
 
 export interface Polish {
@@ -8,14 +8,6 @@ export interface Polish {
   target: string;
   title: string;
   prompt: string;
-}
-
-const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
-
-function checkSize(what: string, text: string, limit: number): void {
-  const size = utf8Bytes(text);
-  if (size > limit)
-    throw new ContractError(`the ${what} is too long: ${size} bytes of UTF-8, and the board takes at most ${limit}`);
 }
 
 /** Checks a polish against what the board takes for a title and a prompt; the title is one line. */
@@ -26,8 +18,8 @@ export function checkPolish(polish: Polish): Polish {
   if (title === '') throw new ContractError('the polished title is empty');
   if (/[\r\n]/.test(title)) throw new ContractError('the polished title must be one line');
   if (prompt === '') throw new ContractError('the polished prompt is empty');
-  checkSize('title', title, SEALED_LIMITS.title);
-  checkSize('prompt', prompt, SEALED_LIMITS.input);
+  checkSealedSize('title', title, 'the title');
+  checkSealedSize('input', prompt, 'the prompt');
   return { target: polish.target, title, prompt };
 }
 
