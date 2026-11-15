@@ -127,7 +127,7 @@ export interface Task {
   woken: boolean;
   // The PR the task's agent reported with `board pr`; null for none, or for one that is not a GitHub PR URL.
   pr: string | null;
-  // GitHub's state of the task's PR (`prOf`) as intake last saw it; null while unknown. Clear, not sealed: it tells the
+  // GitHub's state of the task's PR (`statePrOf`) as intake last saw it; null while unknown. Clear, not sealed: it tells the
   // board only that some PR of the task merged, never which.
   prState: PrState | null;
   unreadable: UnreadableField[];
@@ -342,7 +342,7 @@ export interface Backend {
   indexHead(sha: string): Promise<string>;
   // The agent of a task reports the PR it opened for it; the last one wins. `url` must be a GitHub PR URL.
   setPr(id: string, url: string): Promise<void>;
-  // Intake records GitHub's state of the task's PR (`prOf`).
+  // Intake records GitHub's state of the task's PR (`statePrOf`).
   setPrState(id: string, prState: PrState): Promise<void>;
 }
 
@@ -780,7 +780,7 @@ export function parseWireTask(value: unknown): WireTask {
     sessionId: sessionId(nullableString(obj, 'sessionId', 'task'), 'task'),
     workdir: nullableString(obj, 'workdir', 'task'),
     pr: obj['pr'] === undefined ? null : nullableString(obj, 'pr', 'task'),
-    prState: obj['prState'] == null ? null : member(obj, 'prState', 'task', PR_STATES),
+    prState: PR_STATES.find((state) => state === obj['prState']) ?? null,
     next: member(obj, 'next', 'task', NEXT_RUNS),
     head: obj['head'] === null ? null : head(obj['head'], 'task'),
     openQuestion: boolean(obj, 'openQuestion', 'task'),

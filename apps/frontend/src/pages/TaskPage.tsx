@@ -1,4 +1,4 @@
-import { prOf, type UnreadableField } from '@agent-board/shared';
+import { prOf, statePrOf, type UnreadableField } from '@agent-board/shared';
 import {
   Alert,
   Anchor,
@@ -73,7 +73,7 @@ function TaskView({ id }: { id: string }) {
   }
 
   const { task, thread, followUps, parent } = query.data;
-  // The prompt's PR first; the agent's reported one too when it is another PR. The first one is the one with a state.
+  // The prompt's PR first; the agent's reported one too when it is another PR. The state belongs to `statePrOf`.
   const prs = [...new Set([prOf(task), task.pr].filter((url): url is string => url != null))];
 
   return (
@@ -134,7 +134,7 @@ function TaskView({ id }: { id: string }) {
           </Group>
           {prs.length > 0 && (
             <Group gap="xs">
-              {prs.map((pr, index) => (
+              {prs.map((pr) => (
                 <Button
                   key={pr}
                   component="a"
@@ -143,7 +143,7 @@ function TaskView({ id }: { id: string }) {
                   rel="noopener noreferrer"
                   variant="default"
                   size="xs"
-                  leftSection={<PrStateIcon state={index === 0 ? task.prState : null} size={14} />}
+                  leftSection={<PrStateIcon state={pr === statePrOf(task) ? task.prState : null} size={14} />}
                 >
                   {pr.replace('https://github.com/', '')}
                 </Button>
