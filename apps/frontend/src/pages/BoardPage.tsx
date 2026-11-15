@@ -7,6 +7,7 @@ import { IncompatibleMachinesBanner } from '../components/IncompatibleMachinesBa
 import { SlackInbox } from '../components/SlackInbox';
 import { TaskCard } from '../components/TaskCard';
 import { usePolish } from '../components/usePolish';
+import { beforeIdOver, dropNeighbors } from '../lib/dropPosition';
 import { canPolish, isOpenPolishOf } from '../lib/polish';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { POLL_MS, useTRPC, type ListedTask } from '../lib/trpc';
@@ -58,12 +59,10 @@ export function BoardPage() {
 
   const drop = (status: Status) => {
     if (!dragId || !canDrop(status)) return;
-    const column = byStatus(status).filter((t) => t.id !== dragId);
-    const beforeIndex = over?.beforeId ? column.findIndex((t) => t.id === over.beforeId) : -1;
-    const beforeId = beforeIndex >= 0 ? column[beforeIndex]?.id : undefined;
-    const afterId = beforeIndex > 0 ? column[beforeIndex - 1]?.id : beforeIndex === -1 ? column.at(-1)?.id : undefined;
+    const ids = byStatus(status).map((t) => t.id);
+    const neighbors = dropNeighbors(ids, dragId, over?.status === status ? over.beforeId : undefined);
     const task = tasks.data?.find((t) => t.id === dragId);
-    const run = () => move.mutate({ id: dragId, status, beforeId, afterId, task });
+    const run = () => move.mutate({ id: dragId, status, ...neighbors, task });
     if (task === undefined) run();
     else moveConfirmed(task, status, run);
     setDragId(null);
@@ -88,7 +87,8 @@ export function BoardPage() {
         onDragOver={(event: DragEvent) => {
           if (!dragId || !canDrop(status)) return;
           event.preventDefault();
-          if (over?.status !== status) setOver({ status });
+          // Cards stop their own dragover, so this is the gap or the space below them: the bottom.
+          if (over?.status !== status || over.beforeId !== undefined) setOver({ status });
         }}
         onDragLeave={(event: DragEvent) => {
           if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(null);
@@ -133,13 +133,12 @@ export function BoardPage() {
                     setOver(null);
                   }}
                   onDragOver={(event) => {
-                    if (!dragId || !canDrop(status) || task.id === dragId) return;
+                    if (!dragId || !canDrop(status)) return;
                     event.preventDefault();
                     event.stopPropagation();
-                    // Upper half: above this card; lower half: above the next one.
                     const rect = event.currentTarget.getBoundingClientRect();
-                    const index = column.indexOf(task);
-                    const beforeId = event.clientY < rect.top + rect.height / 2 ? task.id : column[index + 1]?.id;
+                    const ids = column.map((t) => t.id);
+                    const beforeId = beforeIdOver(ids, dragId, task.id, event.clientY < rect.top + rect.height / 2);
                     if (over?.status !== status || over.beforeId !== beforeId) setOver({ status, beforeId });
                   }}
                 />
