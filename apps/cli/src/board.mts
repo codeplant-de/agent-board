@@ -17,7 +17,6 @@ import {
   isSafeTaskId,
   isSafeWorkdir,
   isStatus,
-  ContractError,
   parseQuestions,
   PRIORITIES,
   QuestionError,

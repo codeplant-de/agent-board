@@ -285,7 +285,7 @@ test('a fresh skill run binds the task to its directory, and to the worktree it 
 });
 
 test('a run that reported keeps the worktree it ended in, though the board dropped its runStartedAt', async () => {
-  for (const status of ['needs-me', 'todo'] as const) {
+  for (const status of ['needs-me', 'waiting', 'todo'] as const) {
     const { deps, backend, notes } = setup({ exitCode: 0, signal: null });
     deps.run = async () => {
       deps.files.writeCwd('w1', '/tmp/.claude/worktrees/feat-x');

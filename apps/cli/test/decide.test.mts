@@ -350,7 +350,7 @@ test('a run is over for its worker when the task closed or runs again from anoth
 
 test('a run whose task left Running is still its own: the board drops runStartedAt with the move', () => {
   const started = { runStartedAt: new Date('2026-01-01T10:00:00Z') };
-  for (const status of ['needs-me', 'todo'] as const)
+  for (const status of ['needs-me', 'todo', 'waiting'] as const)
     assert.equal(isRunOver(started, { closed: false, status, runStartedAt: null }), false, status);
   assert.equal(isRunOver(started, { closed: true, status: 'needs-me', runStartedAt: null }), true);
 });
