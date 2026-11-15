@@ -1,5 +1,6 @@
 import {
   ContractError,
+  isSafeMachineName,
   isSafeTaskId,
   parseKeyId,
   parseKeySlots,
@@ -79,6 +80,8 @@ const noteInput = z.object({
   body: sealed('note.body', 'message'),
   preview: sealed('note.preview', 'preview').nullish(),
 });
+/** A machine name as the worker checks it: it reaches argv and unit names there, so the board takes no other shape. */
+const machineName = z.string().refine(isSafeMachineName, 'not a safe machine name');
 const createStatus = { now: 'todo', backlog: 'backlog', hold: 'needs-me' } as const;
 
 /** What the board needs of a task beyond the contract's fields. `title`, `input` and `workdir` are still sealed. */
@@ -133,23 +136,31 @@ const tasksRouter = router({
   }),
 
   /**
-   * A sealed prompt with its sealed title; it runs in the default directory of whichever machine takes it. `id` is the
-   * task's, or the schedule's when `when` repeats (its occurrences get ids of the server's): the fields are sealed against it.
+   * A sealed prompt with its sealed title; it runs in the default directory of whichever machine takes it, or, with `place`,
+   * only on that machine and in that sealed directory (a polish task runs where its Backlog task would). `id` is the task's,
+   * or the schedule's when `when` repeats (its occurrences get ids of the server's): the fields are sealed against it.
    */
   create: procedure
     .input(
-      z.object({
-        id,
-        title: sealed('title', 'title'),
-        input: sealed('input', 'input'),
-        priority: priority.default('normal'),
-        /** The task this one follows from, which must be on the board. */
-        parentId: id.optional(),
-        when: z.union([repeat, z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
-      }),
+      z
+        .object({
+          id,
+          title: sealed('title', 'title'),
+          input: sealed('input', 'input'),
+          priority: priority.default('normal'),
+          /** The task this one follows from, which must be on the board. */
+          parentId: id.optional(),
+          when: z.union([repeat, z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
+          /** The machine and the sealed directory the task runs in; a schedule made here has none. */
+          place: z.object({ machine: machineName, workdir: sealed('workdir', 'directory') }).optional(),
+        })
+        .refine((input) => input.place === undefined || typeof input.when !== 'object' || 'at' in input.when, {
+          message: 'A repeating task made in the browser has no directory.',
+          path: ['place'],
+        }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { title, when } = input;
+      const { title, when, place } = input;
       if (typeof when === 'object' && ('every' in when || 'cron' in when)) {
         const { task } = await addSchedule(ctx.db, {
           id: input.id,
@@ -172,6 +183,7 @@ const tasksRouter = router({
         notBefore: typeof when === 'string' ? undefined : when.at,
         createdBy: 'user',
         ...(input.parentId === undefined ? {} : { parentId: input.parentId }),
+        ...(place === undefined ? {} : { machine: place.machine, workdir: place.workdir }),
       });
       return boardTask(row);
     }),

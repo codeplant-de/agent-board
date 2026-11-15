@@ -32,6 +32,8 @@ export interface NewTask {
   priority?: Priority;
   when?: CreateInput['when'];
   parentId?: string;
+  /** The machine and directory it runs in, instead of the default directory of whichever machine takes it. */
+  place?: { machine: string; workdir: string };
 }
 
 /** What the shared sealing refuses (a text past the board's limit, answers that do not fit) is something to tell the user. */
@@ -56,7 +58,10 @@ export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInpu
   const row: RowRef = isRepeat(task.when)
     ? { kind: 'schedule', id }
     : { kind: 'task', id, createdBy: 'user', scheduleId: null };
-  const sealed = await checked(() => sealFields(sealerFor(keys), row, { title, input }));
+  if (task.place !== undefined && isRepeat(task.when))
+    throw new InputError('A repeating task cannot have a directory.');
+  const workdir = task.place?.workdir;
+  const sealed = await checked(() => sealFields(sealerFor(keys), row, { title, input, workdir }));
   return {
     id,
     title: sealed.title,
@@ -64,6 +69,9 @@ export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInpu
     ...(task.priority === undefined ? {} : { priority: task.priority }),
     ...(task.when === undefined ? {} : { when: task.when }),
     ...(task.parentId === undefined ? {} : { parentId: task.parentId }),
+    ...(task.place === undefined || sealed.workdir === undefined
+      ? {}
+      : { place: { machine: task.place.machine, workdir: sealed.workdir } }),
   };
 }
 
