@@ -5,11 +5,11 @@
  * A PR whose data cannot be read is skipped and its task left alone.
  * Add --dry-run to read everything and print every write instead.
  */
-import { buildContext, print } from './cli.mts';
+import { buildContext, print, skipTickWhileServerOlder } from './cli.mts';
 import type { Context } from './cli.mts';
 import type { Backend, Task, TaskPatch } from '@agent-board/shared';
 import { parsePrUrl, prUrlIn } from '@agent-board/shared';
-import { BackendError } from './backend.mts';
+import { BackendError, isVocabularyRefusal, updateCliHint } from './backend.mts';
 import { createGitHub } from './github.mts';
 import type { GitHub, LivePr } from './github.mts';
 
@@ -121,16 +121,24 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
     } else if (action.kind === 'create') {
       // The PR URL is the key: when the other machine's intake got there first, the board hands back its task.
       const prompt = config.intake.prompt.replaceAll('{url}', pr.url);
-      const result = await backend.addTask({
-        title: `#${pr.number} ${pr.title} (${pr.author})`,
-        input: prompt,
-        head: pr.headSha,
-        status: 'todo',
-        priority: config.intake.priority,
-        dedupeKey: pr.url,
-        createdBy: 'intake',
-      });
-      if (result.created) {
+      const result = await backend
+        .addTask({
+          title: `#${pr.number} ${pr.title} (${pr.author})`,
+          input: prompt,
+          head: pr.headSha,
+          status: 'todo',
+          priority: config.intake.priority,
+          dedupeKey: pr.url,
+          createdBy: 'intake',
+        })
+        .catch((error: unknown) => {
+          // The board's task for this PR uses a value this CLI does not know, so list-tasks hid it and add-task dedupes to it.
+          if (isVocabularyRefusal(error)) return undefined;
+          throw error;
+        });
+      if (result === undefined) {
+        log(`SKIP #${pr.number} its task on the board uses a value this CLI does not know; ${updateCliHint()}`);
+      } else if (result.created) {
         log(`CREATED #${pr.number}`);
         created++;
       } else {
@@ -170,5 +178,7 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
 }
 
 export async function intakeMain({ dryRun }: { dryRun: boolean }): Promise<void> {
-  await runIntake({ ...buildContext(dryRun), print, github: createGitHub(), now: () => new Date() });
+  await skipTickWhileServerOlder(() =>
+    runIntake({ ...buildContext(dryRun), print, github: createGitHub(), now: () => new Date() }),
+  );
 }

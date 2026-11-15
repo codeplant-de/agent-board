@@ -273,14 +273,6 @@ export async function attach(
   const { sessionId, workdir } = await context.backend.attachSession(id).catch((error: unknown) => {
     if (error instanceof BackendError && error.fromApi && (error.status === 409 || error.status === 403))
       throw new UsageError(error.message);
-    // attach-session came without a contract bump, so a board server from before it answers with an unknown command.
-    if (
-      error instanceof BackendError &&
-      error.fromApi &&
-      error.status === 404 &&
-      error.message.includes('unknown command')
-    )
-      throw new BackendError('the board server does not know attach-session yet: update the board server', 404, true);
     throw error;
   });
   if (!workdir || !isDirectory(workdir))

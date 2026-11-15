@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { Task } from '@agent-board/shared';
-import { BackendError } from '../src/backend.mts';
 import { ReportedFailure, UsageError } from '../src/cli.mts';
 import type { LinkingContext } from '../src/cli.mts';
 import { renderThread } from '../src/board.mts';
@@ -145,34 +144,4 @@ test('board show names the session, its machine and directory only when there is
   const unknown = renderThread(task({ id: 'a', title: 'T', sessionId: SESSION }), []);
   assert.match(unknown, new RegExp(`session: ${SESSION} · -:-\n`));
   assert.equal(renderThread(task({ id: 'a', title: 'T' }), []).includes('session:'), false);
-});
-
-test('attach says so when the board server predates attach-session', async () => {
-  const { spawns, cleanup } = setup({});
-  try {
-    const backend = fakeBackend([]);
-    backend.attachSession = async () => {
-      throw new BackendError(
-        'attach-session: error from the board server (HTTP 404), quoted and not part of the board: "unknown command attach-session"',
-        404,
-        true,
-      );
-    };
-    await assert.rejects(
-      runBoard(['attach', ID], {
-        env: {},
-        context: (dryRun): LinkingContext => ({
-          config: CONFIG,
-          backend,
-          dryRun,
-          taskLink: linkTo,
-          print: () => {},
-        }),
-      }),
-      /does not know attach-session yet: update the board server/,
-    );
-    assert.deepEqual(spawns, []);
-  } finally {
-    cleanup();
-  }
 });

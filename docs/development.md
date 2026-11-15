@@ -47,15 +47,15 @@ Parallel branches collide on the migration number. When you rebase onto a `main`
 
 ## Contract and CLI versions
 
-`CONTRACT_VERSION` in `packages/shared/src/contract.mts` must match exactly between the server and every CLI. A bump breaks every installed CLI until it is updated. Don't bump it for an addition old clients can ignore, such as a new command or an optional field. Do bump it for anything an old client would misread, including a new value of an enum the server returns. [architecture.md](architecture.md#versioning) has the reasoning.
+`API_VERSION`, `MIN_CLIENT` and `MIN_SERVER` in `packages/shared/src/contract.mts` are a break level between the server and the CLIs (see [machine-api.md](machine-api.md#version-handshake)); they are not a count of changes. An addition old clients can ignore, such as a new command, an optional field or a new enum value with a vocabulary row, adds a feature name in `packages/shared/src/features.mts` and bumps nothing ([machine-api.md](machine-api.md#features)). Anything an old client would misread, including a new enum value without a vocabulary row, raises `API_VERSION`, then `MIN_CLIENT` to it, which breaks every older CLI until it is updated. [architecture.md](architecture.md#versioning) has the reasoning. `LEGACY_CONTRACT` stays 9 for the CLIs up to 0.7.0 and is never changed.
 
-When you bump it:
+When you raise `MIN_CLIENT`:
 
-1. Raise the CLI version in `apps/cli/package.json` in the same PR.
-2. Add a note for the new contract under [Upgrading](setup.md#upgrading).
+1. Raise the CLI version in `apps/cli/package.json` in the same PR (CI checks it against the newest `cli-v*` tag).
+2. Add a note for the change under [Upgrading](setup.md#upgrading).
 3. After the merge, release the CLI before machines are expected to work again (see below).
 
-Parallel branches also collide on these two numbers. Renumber on rebase.
+Parallel branches also collide on these numbers and the CLI version. Renumber on rebase.
 
 ## Releasing the CLI
 

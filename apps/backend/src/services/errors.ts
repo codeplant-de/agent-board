@@ -1,4 +1,4 @@
-export type AppErrorCode = 'BAD_REQUEST' | 'UNAUTHORIZED' | 'FORBIDDEN' | 'NOT_FOUND' | 'CONFLICT';
+export type AppErrorCode = 'BAD_REQUEST' | 'UNAUTHORIZED' | 'FORBIDDEN' | 'NOT_FOUND' | 'CONFLICT' | 'UNPROCESSABLE';
 
 /** An expected failure with a message meant for the caller. */
 export class AppError extends Error {

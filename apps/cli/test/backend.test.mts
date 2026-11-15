@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  CONTRACT_VERSION,
+  API_VERSION,
+  BASELINE_SERVER_FEATURES,
+  CLIENT_FEATURES_HEADER,
   deriveKeys,
   encodeDataKey,
   generateDataKey,
+  MIN_SERVER,
   serializeSchedule,
   serializeTask,
 } from '@agent-board/shared';
@@ -19,7 +22,7 @@ import {
 } from '../src/backend.mts';
 import type { Fetch } from '../src/backend.mts';
 import { createSealedBackend } from '../src/sealing.mts';
-import { DATA_KEY, KEYS, OWNER, wireSchedule, wireTask } from './helpers.mts';
+import { DATA_KEY, KEYS, OWNER, SERVER_API, VERSION_ANSWER, wireSchedule, wireTask } from './helpers.mts';
 
 const config = { url: 'https://board.example', token: 'TOKEN-123', dataKey: DATA_KEY };
 const ENV = { AGENT_BOARD_TOKEN: 't', AGENT_BOARD_DATA_KEY: encodeDataKey(DATA_KEY) };
@@ -37,7 +40,7 @@ type Answer =
 // Answers per command, with `version` defaulting to this CLI's own and the test board's key. `seen` lists the requests in order.
 function board(
   answers: Record<string, Answer>,
-  version: number = CONTRACT_VERSION,
+  api: { version: number; minClient: number } | undefined = SERVER_API,
   served: { owner?: string; keyId?: string | null } = {},
 ) {
   const seen: Seen[] = [];
@@ -46,9 +49,7 @@ function board(
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
     seen.push({ command, body, headers: new Headers(init.headers) });
     const answer =
-      command === 'version'
-        ? { body: { result: { contract: version, owner: OWNER, keyId: KEYS.keyId, ...served } } }
-        : answers[command];
+      command === 'version' ? { body: { result: { ...VERSION_ANSWER, api, ...served } } } : answers[command];
     if (answer === undefined)
       return new Response(JSON.stringify({ error: `unknown command ${command}` }), { status: 404 });
     const { status = 200, body: payload } = typeof answer === 'function' ? answer(body) : answer;
@@ -237,18 +238,90 @@ test('unsafe ids and machine names are refused before any request', async () => 
   assert.deepEqual(seen, []);
 });
 
-test('a server on another contract version is refused, saying which side is older', async () => {
-  const older = board({ 'list-tasks': { body: { result: [] } } }, CONTRACT_VERSION - 1);
+test('a CLI the server no longer serves is refused, and so is a server older than the CLI works with', async () => {
+  const answers = { 'list-tasks': { body: { result: [] } } };
+  const tooOld = board(answers, { version: API_VERSION + 1, minClient: API_VERSION + 1 });
   await assert.rejects(
-    older.backend.listTasks(),
-    new RegExp(`server is older than this CLI.*speaks contract ${CONTRACT_VERSION - 1}`),
+    tooOld.backend.listTasks(),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.contractMismatch === 'cli-older' &&
+      /this CLI is older than the board server: it speaks API \d+, the server serves clients from \d+/.test(
+        error.message,
+      ),
   );
   assert.deepEqual(
-    older.seen.map((request) => request.command),
+    tooOld.seen.map((request) => request.command),
     ['version'],
   );
-  const newer = board({ 'list-tasks': { body: { result: [] } } }, CONTRACT_VERSION + 1);
-  await assert.rejects(newer.backend.listTasks(), /this CLI is older than the board server/);
+  const older = board(answers, { version: MIN_SERVER - 1, minClient: 1 });
+  await assert.rejects(
+    older.backend.listTasks(),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.contractMismatch === 'server-older' &&
+      error.message.includes(`speaks API ${MIN_SERVER - 1}, the CLI needs ${MIN_SERVER} or newer`),
+  );
+});
+
+test('a server within the range works, whether it is newer than the CLI or still serves older clients', async () => {
+  const answers = { 'list-tasks': { body: { result: [] } } };
+  for (const api of [
+    { version: API_VERSION + 5, minClient: API_VERSION },
+    { version: API_VERSION + 5, minClient: 1 },
+    { version: API_VERSION, minClient: API_VERSION },
+  ])
+    assert.deepEqual(await board(answers, api).backend.listTasks(), []);
+});
+
+test('a legacy server answer without api counts its contract as the whole range', async () => {
+  const answers = { 'list-tasks': { body: { result: [] } } };
+  assert.deepEqual(await board(answers, undefined).backend.listTasks(), []);
+  assert.deepEqual(
+    await verifyContract(
+      config,
+      async () => new Response(JSON.stringify({ result: { contract: API_VERSION, owner: 'alice', keyId: null } })),
+    ),
+    {
+      owner: 'alice',
+      keyId: null,
+      api: { version: API_VERSION, minClient: API_VERSION },
+      features: new Set(BASELINE_SERVER_FEATURES),
+    },
+  );
+});
+
+test('a list leaves out what has an enum value this CLI does not know, and reports it', async () => {
+  const known = await taskJson('abc');
+  const future = { ...(await taskJson('def')), status: 'snoozed' };
+  const answers = {
+    'list-tasks': { body: { result: [known, future] } },
+    'read-notes': {
+      body: {
+        result: [
+          { id: 'n1', body: 'b', preview: null, createdAt: '2026-01-01T00:00:00Z', author: 'bot', kind: 'comment' },
+        ],
+      },
+    },
+    'get-task': { body: { result: future } },
+  };
+  const skipped: unknown[] = [];
+  const tolerant = createWebBackend({
+    loadConfig: () => config,
+    fetch: board(answers).fetcher,
+    onSkip: (item) => skipped.push(item),
+  });
+  assert.deepEqual(
+    (await tolerant.listTasks()).map((task) => task.id),
+    ['abc'],
+  );
+  assert.deepEqual(await tolerant.readNotes('abc'), []);
+  assert.deepEqual(skipped, [
+    { what: 'task', field: 'status', value: 'snoozed' },
+    { what: 'note', field: 'author', value: 'bot' },
+  ]);
+  await assert.rejects(tolerant.getTask('def'), /task.status must be one of/);
+  await assert.rejects(board(answers).backend.listTasks(), /task.status must be one of/);
 });
 
 test('a server without the version command counts as older', async () => {
@@ -265,7 +338,7 @@ test('the version is checked once per process, and the config is loaded only on 
     commands.push(url.slice(`${config.url}/api/machine/`.length));
     return new Response(
       JSON.stringify({
-        result: url.endsWith('/version') ? { contract: CONTRACT_VERSION, owner: OWNER, keyId: KEYS.keyId } : [],
+        result: url.endsWith('/version') ? VERSION_ANSWER : [],
       }),
     );
   };
@@ -307,7 +380,7 @@ test('a dry run reads through and prints every write instead of sending it', asy
 });
 
 test('a board without a data key yet is refused, saying to set up encryption in the browser', async () => {
-  const { backend, seen } = board({ 'list-tasks': { body: { result: [] } } }, CONTRACT_VERSION, { keyId: null });
+  const { backend, seen } = board({ 'list-tasks': { body: { result: [] } } }, SERVER_API, { keyId: null });
   await assert.rejects(backend.listTasks(), /set up encryption in the browser first/);
   assert.deepEqual(
     seen.map((request) => request.command),
@@ -317,7 +390,7 @@ test('a board without a data key yet is refused, saying to set up encryption in 
 
 test('a data key that is not the board’s is refused, naming both key ids and never the key', async () => {
   const other = await deriveKeys(generateDataKey(), OWNER);
-  const { backend, seen } = board({ 'list-tasks': { body: { result: [] } } }, CONTRACT_VERSION, {
+  const { backend, seen } = board({ 'list-tasks': { body: { result: [] } } }, SERVER_API, {
     keyId: other.keyId,
   });
   await assert.rejects(
@@ -335,7 +408,7 @@ test('a data key that is not the board’s is refused, naming both key ids and n
 });
 
 test('the keys are derived for the owner the server names, with the blind index key', async () => {
-  const { backend } = board({}, CONTRACT_VERSION, { owner: 'bob' });
+  const { backend } = board({}, SERVER_API, { owner: 'bob' });
   const keys = await backend.keys();
   assert.equal(keys.owner, 'bob');
   assert.equal(keys.keyId, KEYS.keyId);
@@ -343,7 +416,7 @@ test('the keys are derived for the owner the server names, with the blind index 
 });
 
 test('an old server answer without owner and key id is a one-line failure', async () => {
-  const fetcher: Fetch = async () => new Response(JSON.stringify({ result: { contract: CONTRACT_VERSION } }));
+  const fetcher: Fetch = async () => new Response(JSON.stringify({ result: { contract: 9 } }));
   const backend = createWebBackend({ loadConfig: () => config, fetch: fetcher });
   await assert.rejects(backend.listTasks(), /version: version.owner must be a string/);
 });
@@ -387,20 +460,25 @@ test('a board URL with whitespace anywhere is refused', () => {
     assert.throws(() => checkBoardUrl(url), /http\(s\) URL/, JSON.stringify(url));
 });
 
-test('a contract mismatch says how to fix the older side, for a checkout', async () => {
+test('a mismatch says how to fix the older side, for a checkout', async () => {
   const answering =
-    (contract: number): Fetch =>
+    (api: { version: number; minClient: number }): Fetch =>
     async () =>
-      new Response(JSON.stringify({ result: { contract, owner: 'alice', keyId: null } }));
+      new Response(JSON.stringify({ result: { contract: 9, owner: 'alice', keyId: null, api } }));
   await assert.rejects(
-    verifyContract(config, answering(CONTRACT_VERSION + 1)),
-    /this CLI is older than the board server: it speaks contract \d+, the server has \d+; run "git pull" and "pnpm install" in the checkout/,
+    verifyContract(config, answering({ version: API_VERSION + 1, minClient: API_VERSION + 1 })),
+    /this CLI is older than the board server: it speaks API \d+, the server serves clients from \d+; run "git pull" and "pnpm install" in the checkout/,
   );
   await assert.rejects(
-    verifyContract(config, answering(CONTRACT_VERSION - 1)),
+    verifyContract(config, answering({ version: MIN_SERVER - 1, minClient: 1 })),
     /the board server is older than this CLI: .*; update the board server/,
   );
-  assert.deepEqual(await verifyContract(config, answering(CONTRACT_VERSION)), { owner: 'alice', keyId: null });
+  assert.deepEqual(await verifyContract(config, answering({ version: API_VERSION, minClient: API_VERSION })), {
+    owner: 'alice',
+    keyId: null,
+    api: { version: API_VERSION, minClient: API_VERSION },
+    features: new Set(BASELINE_SERVER_FEATURES),
+  });
 });
 
 test('what the server says in an error is quoted, bounded to one line, and marked as the server’s, not the board’s', async () => {
@@ -417,4 +495,105 @@ test('what the server says in an error is quoted, bounded to one line, and marke
   });
   const { backend: silent } = board({ 'get-task': { status: 502, body: {} } });
   await assert.rejects(silent.getTask('abc'), /\(HTTP 502\).*"\(no reason given\)"/);
+});
+
+// The test board answers `version` with these features instead of every feature the server has.
+function boardWith(features: unknown, answers: Record<string, { body: unknown }>) {
+  const seen: Seen[] = [];
+  const fetcher: Fetch = async (url, init) => {
+    const command = url.slice(`${config.url}/api/machine/`.length);
+    seen.push({
+      command,
+      body: JSON.parse(String(init.body)) as Record<string, unknown>,
+      headers: new Headers(init.headers),
+    });
+    const answer = command === 'version' ? { body: { result: { ...VERSION_ANSWER, features } } } : answers[command];
+    return new Response(JSON.stringify(answer?.body ?? { error: 'unknown' }), { status: 200 });
+  };
+  const warnings: string[] = [];
+  const backend = createWebBackend({ loadConfig: () => config, fetch: fetcher, warn: (line) => warnings.push(line) });
+  return { seen, backend, warnings };
+}
+
+test('a command whose feature the server lacks refuses with a clear message and sends nothing; the rest still works', async () => {
+  const { seen, backend } = boardWith(['events'], { 'list-tasks': { body: { result: [] } } });
+  await assert.rejects(
+    backend.attachSession('abc'),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'attach-session' &&
+      error.message === 'the board server does not support attaching to a task session yet; update the board server',
+  );
+  await assert.rejects(
+    backend.wait('abc', { body: 'abe1.x', wakeAt: new Date(), check: false }),
+    /does not support waiting yet/,
+  );
+  await assert.rejects(backend.wake('abc', noteInput), /does not support waiting yet/);
+  await assert.rejects(backend.addNote('abc', noteInput, { kind: 'polish' }), /does not support polish notes yet/);
+  assert.deepEqual(await backend.listTasks(), []);
+  assert.deepEqual(
+    seen.map((request) => request.command),
+    ['version', 'list-tasks'],
+  );
+});
+
+test('a suggested reply the server cannot take is dropped from the comment, with a warning', async () => {
+  const without = boardWith(['events'], { 'add-note': { body: { result: null } } });
+  await without.backend.addNote('abc', { ...noteInput, suggestion: 'abe1.yes' });
+  assert.deepEqual(without.seen[1]?.body['body'], noteInput);
+  assert.match(without.warnings.join('\n'), /does not support suggested replies yet; the comment is posted without it/);
+  const withIt = boardWith(['note.suggestion'], { 'add-note': { body: { result: null } } });
+  await withIt.backend.addNote('abc', { ...noteInput, suggestion: 'abe1.yes' });
+  assert.deepEqual(withIt.seen[1]?.body['body'], { ...noteInput, suggestion: 'abe1.yes' });
+  assert.deepEqual(withIt.warnings, []);
+});
+
+test('a server that names no features has the baseline: every gated command goes through', async () => {
+  const { seen, backend } = boardWith(undefined, { 'attach-session': { body: { result: await taskJson('abc') } } });
+  await backend.attachSession('abc');
+  assert.deepEqual(
+    seen.map((request) => request.command),
+    ['version', 'attach-session'],
+  );
+});
+
+test('a server that names features it has and this CLI has no name for is fine, and a malformed list is refused', async () => {
+  const known = boardWith(['wait', 'from-the-future'], { 'list-tasks': { body: { result: [] } } });
+  assert.deepEqual(await known.backend.listTasks(), []);
+  const junk = boardWith('wait', {});
+  await assert.rejects(junk.backend.listTasks(), /version.features must be a list of feature names/);
+  const unclean = boardWith(['wait', 'Not A Name'], {});
+  await assert.rejects(unclean.backend.listTasks(), /version.features must be a list of feature names/);
+});
+
+test('every request names the client vocabulary, empty while the baseline is all there is', async () => {
+  const { seen, backend } = board({ 'list-tasks': { body: { result: [] } } });
+  await backend.listTasks();
+  assert.deepEqual(
+    seen.map((request) => request.headers.get(CLIENT_FEATURES_HEADER)),
+    ['', ''],
+  );
+});
+
+test('a status or priority that needs a server feature is sent only when the server names it', async () => {
+  // `waiting` stands in for a value added later that needs the `wait` feature.
+  const sendable = { status: { waiting: 'wait' } } as const;
+  const make = (features: string[]) => {
+    const seen: string[] = [];
+    const fetcher: Fetch = async (url) => {
+      const command = url.slice(`${config.url}/api/machine/`.length);
+      seen.push(command);
+      const result = command === 'version' ? { ...VERSION_ANSWER, features } : taskJson('abc');
+      return new Response(JSON.stringify({ result: await result }));
+    };
+    return { seen, backend: createWebBackend({ loadConfig: () => config, fetch: fetcher, sendable }) };
+  };
+  const lacking = make(['events']);
+  await assert.rejects(lacking.backend.updateTask('abc', { status: 'waiting' }), /does not support waiting yet/);
+  await lacking.backend.updateTask('abc', { status: 'todo' });
+  await lacking.backend.updateTask('abc', { priority: 'high' });
+  assert.deepEqual(lacking.seen, ['version', 'update-task', 'update-task']);
+  const having = make(['wait']);
+  await having.backend.updateTask('abc', { status: 'waiting' });
+  assert.deepEqual(having.seen, ['version', 'update-task']);
 });

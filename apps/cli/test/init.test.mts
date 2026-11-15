@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { encodeDataKey } from '@agent-board/shared';
-import { DATA_KEY, KEYS, OWNER } from './helpers.mts';
+import { DATA_KEY, KEYS, OWNER, SERVER_API, SERVER_HAS } from './helpers.mts';
 import { UsageError } from '../src/cli.mts';
 import { runBoard } from '../src/commands.mts';
 import { init, machineProblem, tokenProblem, urlProblem } from '../src/init.mts';
@@ -257,7 +257,7 @@ test('board init runs the doctor checks after writing, and is refused inside a r
         interactive: false,
         verifyServer: async (config) => {
           verified.push(config.url);
-          return { owner: OWNER, keyId: KEYS.keyId };
+          return { owner: OWNER, keyId: KEYS.keyId, api: SERVER_API, features: SERVER_HAS };
         },
         systemctlCode: async () => 1,
       },

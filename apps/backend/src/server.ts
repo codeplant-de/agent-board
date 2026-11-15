@@ -37,6 +37,7 @@ const STATUS: Record<AppErrorCode, number> = {
   FORBIDDEN: 403,
   NOT_FOUND: 404,
   CONFLICT: 409,
+  UNPROCESSABLE: 422,
 };
 
 export interface ServerOptions extends Partial<MachineApiOptions> {
@@ -73,7 +74,10 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
     if (!req.username) return reply.status(403).send({ error: 'not allowed on this board' });
   });
 
-  registerMachineApi(app, root, config, changes, { pingMs: options.pingMs ?? 25_000 });
+  registerMachineApi(app, root, config, changes, {
+    pingMs: options.pingMs ?? 25_000,
+    ...(options.vocabulary === undefined ? {} : { vocabulary: options.vocabulary }),
+  });
 
   await app.register(fastifyTRPCPlugin, {
     prefix: '/trpc',

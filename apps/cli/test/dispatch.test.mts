@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runDispatch } from '../src/dispatch.mts';
 import type { DispatchDeps } from '../src/dispatch.mts';
+import { BackendError } from '../src/backend.mts';
 import { SystemError } from '../src/system.mts';
 import type { System } from '../src/system.mts';
 import { START_MARKER } from '../src/decide.mts';
@@ -446,6 +447,37 @@ test('a check wait whose check is gone wakes at once', async () => {
   const { deps, backend } = setup([waitingTask('w1', { wakeAt: at(60 * MIN), waitCheck: true })]);
   await runDispatch(deps);
   assert.ok(backend.writes.some((w) => w.startsWith('wake w1:') && w.includes('no longer stored on here')));
+});
+
+const vocabularyRefusal = (): BackendError =>
+  new BackendError(
+    'get-task: error from the board server (HTTP 422), quoted and not part of the board: "this task uses status \\"x\\""',
+    422,
+    true,
+  );
+
+test('a check whose task the board hides from this CLI is kept, and dropped only once the task is really gone', async () => {
+  const { deps, backend, waits, logs } = setup(
+    [],
+    [],
+    {},
+    { checks: { hidden: check(), moved: check(), down: check() } },
+  );
+  const getTask = backend.getTask.bind(backend);
+  backend.tasks.push(task({ id: 'moved', status: 'needs-me', machine: 'here' }));
+  backend.getTask = async (id) => {
+    if (id === 'hidden') throw vocabularyRefusal();
+    if (id === 'down') throw new BackendError('cannot reach the board');
+    return getTask(id);
+  };
+  backend.listTasks = async () => [];
+  await runDispatch(deps);
+  assert.deepEqual(waits.list().sort(), ['down', 'hidden']);
+  assert.ok(logs.some((line) => line.startsWith('KEEP-CHECK hidden') && line.includes('does not know')));
+  assert.ok(logs.some((line) => line.startsWith('DROP-CHECK moved')));
+  const gone = setup([], [], {}, { checks: { gone: check() } });
+  await runDispatch(gone.deps);
+  assert.deepEqual(gone.waits.list(), []);
 });
 
 test('a check whose task left Waiting is dropped; one whose task still runs is kept', async () => {
