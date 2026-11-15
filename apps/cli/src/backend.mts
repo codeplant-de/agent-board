@@ -368,6 +368,11 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     if (feature !== undefined) requireFeature((await connect()).features, feature);
   };
 
+  // Refuses to send a model to a server that would not read it.
+  const requireModelSupport = async (draft: { model?: string }): Promise<void> => {
+    if (draft.model !== undefined) requireFeature((await connect()).features, 'task.model');
+  };
+
   async function call<T>(command: string, request: MachineRequest, parse: (value: unknown) => T): Promise<T> {
     const result = await callServer(
       (await connectFor(command)).config,
@@ -409,6 +414,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     attachSession: async (id) => call('attach-session', { id: taskId(id) }, parseWireTask),
     addTask: async (draft) => {
       await requireSendable(draft);
+      await requireModelSupport(draft);
       return call('add-task', { body: draft }, parseWireAddTaskResult);
     },
     updateTask: async (id, patch) => {
@@ -456,6 +462,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     readNotes: async (id) => call('read-notes', { id: taskId(id) }, (value) => parseWireNotes(value, listOptions)),
     addSchedule: async (draft) => {
       await requireSendable(draft);
+      await requireModelSupport(draft);
       return call('add-schedule', { body: draft }, parseWireAddScheduleResult);
     },
     listSchedules: async () => call('list-schedules', {}, (value) => parseWireSchedules(value, listOptions)),
@@ -477,13 +484,14 @@ function asBackendError(command: string, error: unknown): Error {
 
 // The task an add-task would have made.
 function dryTask(draft: TaskDraft): Task {
-  const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, ...fields } = draft;
+  const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, model, ...fields } = draft;
   return {
     ...fields,
     labels: taskLabels({ input: draft.input, createdBy: createdBy ?? 'user' }),
     unreadable: [],
     status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
     priority: draft.priority ?? 'normal',
+    model: model ?? null,
     id: 'dry',
     closed: false,
     machine: machine ?? null,
@@ -520,6 +528,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         title: draft.title,
         input: draft.input,
         ...(draft.priority ? { priority: draft.priority } : {}),
+        ...(draft.model === undefined ? {} : { model: draft.model }),
         ...(draft.machine !== undefined && draft.workdir !== undefined
           ? { machine: draft.machine, workdir: draft.workdir }
           : {}),
@@ -531,6 +540,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         title: draft.title,
         input: draft.input,
         priority: draft.priority ?? 'normal',
+        model: draft.model ?? null,
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
         everyMs: draft.everyMs ?? null,

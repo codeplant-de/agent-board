@@ -262,6 +262,27 @@ describe('a task link is the CLI’s own', () => {
   });
 });
 
+describe('a task model', () => {
+  it('goes from the browser and from the CLI to the CLI that reads it back', async () => {
+    const { cli, trpc, mutate } = ctx;
+    const viaUi = await mutate<unknown, Task>(trpc.tasks.create.mutationOptions(), {
+      title: 'Pick',
+      input: '/x',
+      model: 'opus',
+    });
+    expect((await cli.getTask(viaUi.id)).model).toBe('opus');
+    const viaCli = await cli.addTask({ title: 'Pick', input: '/x', model: 'claude-sonnet-5-5[1m]' });
+    expect(viaCli.task.model).toBe('claude-sonnet-5-5[1m]');
+    const { schedule, task } = await cli.addSchedule({
+      title: 'Pick',
+      input: '/x',
+      everyMs: 3_600_000,
+      model: 'haiku',
+    });
+    expect([schedule.model, task.model]).toEqual(['haiku', 'haiku']);
+  });
+});
+
 describe('an agent’s proposal', () => {
   const dispatchDeps = (started: string[], logs: string[]): DispatchDeps => ({
     backend: ctx.cli,

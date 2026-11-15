@@ -63,6 +63,7 @@ export async function insertTask(
       scheduleId: extra.scheduleId ?? null,
       status,
       priority: draft.priority ?? parent?.priority ?? DEFAULT_PRIORITY,
+      model: draft.model ?? null,
       position: await edgePosition(tx, status, 'bottom'),
       dedupeKey: draft.dedupeKey ?? null,
       parentId: draft.parentId ?? null,

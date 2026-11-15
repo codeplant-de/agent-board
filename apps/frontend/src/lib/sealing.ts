@@ -30,6 +30,8 @@ export interface NewTask {
   title?: string;
   input: string;
   priority?: Priority;
+  /** An alias or full name; absent is claude's default. */
+  model?: string;
   when?: CreateInput['when'];
   parentId?: string;
   /** The machine and directory it runs in, instead of the default directory of whichever machine takes it. */
@@ -67,6 +69,7 @@ export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInpu
     title: sealed.title,
     input: sealed.input,
     ...(task.priority === undefined ? {} : { priority: task.priority }),
+    ...(task.model === undefined ? {} : { model: task.model }),
     ...(task.when === undefined ? {} : { when: task.when }),
     ...(task.parentId === undefined ? {} : { parentId: task.parentId }),
     ...(task.place === undefined || sealed.workdir === undefined
