@@ -22,7 +22,7 @@ interface MachineRow {
   clientVersion?: string | null;
   clientStatus?: 'current' | 'outdated' | 'incompatible' | 'unknown';
 }
-const machines = vi.hoisted(() => ({ current: [] as MachineRow[] }));
+const machines = vi.hoisted(() => ({ current: [] as MachineRow[], failure: null as Error | null }));
 const stored = vi.hoisted(() => ({ current: null as unknown }));
 
 vi.mock('../lib/trpc', () => ({
@@ -47,7 +47,13 @@ vi.mock('../lib/trpc', () => ({
     },
     machines: {
       list: {
-        queryOptions: () => ({ queryKey: ['machines'], queryFn: async () => openMachines(machines.current as never) }),
+        queryOptions: () => ({
+          queryKey: ['machines'],
+          queryFn: async () => {
+            if (machines.failure) throw machines.failure;
+            return openMachines(machines.current as never);
+          },
+        }),
       },
       advertisedCli: { queryOptions: () => ({ queryKey: ['advertisedCli'], queryFn: async () => '0.7.0' }) },
       issue: { mutationOptions: () => ({ mutationFn: issue }) },
@@ -95,6 +101,7 @@ beforeEach(() => {
   issue.mockClear();
   revoke.mockClear();
   stored.current = setup;
+  machines.failure = null;
   machines.current = [
     { name: 'laptop', lastSeenAt: null, revokedAt: null, clientVersion: '0.7.0', clientStatus: 'current' },
   ];
@@ -131,6 +138,15 @@ describe('a machine whose token carries a name the browser no longer accepts', (
     expect(await screen.findByText('laptop')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New token' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Revoke' })).toBeInTheDocument();
+  });
+});
+
+describe('a machines list that does not load', () => {
+  it('shows the error, not an empty table', async () => {
+    machines.failure = new Error('board is locked');
+    renderPage();
+    expect(await screen.findByText(/Could not load machines: .*board is locked/)).toBeInTheDocument();
+    expect(screen.queryByText('laptop')).not.toBeInTheDocument();
   });
 });
 

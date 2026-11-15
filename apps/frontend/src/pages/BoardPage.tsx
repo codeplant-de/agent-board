@@ -5,6 +5,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState, type DragEvent } from 'react';
 import { moveConfirmed } from '../components/confirmStart';
 import { IncompatibleMachinesBanner } from '../components/IncompatibleMachinesBanner';
+import { QueryStatus } from '../components/QueryStatus';
 import { SlackInbox } from '../components/SlackInbox';
 import { TaskCard } from '../components/TaskCard';
 import { usePolish } from '../components/usePolish';
@@ -167,7 +168,7 @@ export function BoardPage() {
                   }}
                 />
               ))}
-              {column.length === 0 && (
+              {column.length === 0 && tasks.data !== undefined && (
                 <Text size="sm" c="dimmed" ta="center" py={status === 'waiting' ? 'xs' : 'lg'}>
                   {status === 'needs-me' ? 'Nothing waiting for you' : 'Empty'}
                 </Text>
@@ -183,6 +184,7 @@ export function BoardPage() {
     <Stack gap="md">
       <IncompatibleMachinesBanner />
       <SlackInbox />
+      <QueryStatus query={tasks} what="the board" />
       <div className="board">
         {CELLS.map((statuses) => (
           <div

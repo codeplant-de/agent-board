@@ -11,13 +11,22 @@ import { BoardPage } from './BoardPage';
 const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const create = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const done = vi.hoisted(() => vi.fn(async (_: unknown) => null));
-const listed = vi.hoisted(() => ({ tasks: [] as unknown[], machines: [] as unknown[] }));
+const listed = vi.hoisted(() => ({ tasks: [] as unknown[], machines: [] as unknown[], failure: null as Error | null }));
 
 vi.mock('../lib/trpc', () => ({
   POLL_MS: 60_000,
+  errorMessage: (error: Error) => error.message,
   useTRPC: () => ({
     tasks: {
-      list: { queryOptions: () => ({ queryKey: ['tasks.list'], queryFn: async () => listed.tasks }) },
+      list: {
+        queryOptions: () => ({
+          queryKey: ['tasks.list'],
+          queryFn: async () => {
+            if (listed.failure) throw listed.failure;
+            return listed.tasks;
+          },
+        }),
+      },
       move: { mutationOptions: () => ({ mutationFn: move }) },
       create: { mutationOptions: () => ({ mutationFn: create }) },
       done: { mutationOptions: () => ({ mutationFn: done }) },
@@ -71,12 +80,12 @@ const task = (overrides: Partial<ListedTask>): ListedTask =>
     ...overrides,
   }) as ListedTask;
 
-function renderBoard() {
+function renderBoard(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
     <MemoryRouter>
       <MantineProvider>
         <ModalsProvider>
-          <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <QueryClientProvider client={client}>
             <BoardPage />
           </QueryClientProvider>
         </ModalsProvider>
@@ -100,6 +109,39 @@ beforeEach(() => {
   create.mockClear();
   done.mockClear();
   listed.machines = [];
+  listed.failure = null;
+});
+
+describe('BoardPage loading and errors', () => {
+  it('shows why the board did not load instead of empty columns', async () => {
+    listed.failure = new Error('a task has an id the browser does not accept');
+    renderBoard();
+    expect(await screen.findByText(/Could not load the board: a task has an id/)).toBeInTheDocument();
+    expect(screen.queryByText('Empty')).not.toBeInTheDocument();
+    expect(screen.queryByText('Nothing waiting for you')).not.toBeInTheDocument();
+  });
+
+  it('shows no empty columns while the board loads', async () => {
+    listed.tasks = [];
+    renderBoard();
+    expect(screen.getByText('Loading the board…')).toBeInTheDocument();
+    expect(screen.queryByText('Empty')).not.toBeInTheDocument();
+    expect(await screen.findByText('Nothing waiting for you')).toBeInTheDocument();
+    expect(screen.queryByText('Loading the board…')).not.toBeInTheDocument();
+  });
+
+  it('keeps the cards it has when a poll fails, and says the board is stale', async () => {
+    listed.tasks = [task({})];
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderBoard(client);
+    await screen.findByText('proposal');
+    listed.failure = new Error('board is locked');
+    await client.refetchQueries({ queryKey: ['tasks.list'] });
+    expect(
+      await screen.findByText(/Could not refresh the board; showing what loaded last: board is locked/),
+    ).toBeInTheDocument();
+    expect(screen.getByText('proposal')).toBeInTheDocument();
+  });
 });
 
 describe('BoardPage drag and drop', () => {
