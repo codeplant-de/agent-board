@@ -422,7 +422,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         .summary('propose a follow-up task')
         .description(
           paragraphs(
-            'Propose a follow-up task; the file is its prompt. It waits in needs-me until the user starts it, and runs in this directory on this machine. With --json, print {"id", "url"} on stdout.',
+            'Propose a follow-up task; the file is its prompt. It waits in backlog until the user starts it, and runs in this directory on this machine. With --json, print {"id", "url"} on stdout.',
             ID_NOTE,
           ),
         )

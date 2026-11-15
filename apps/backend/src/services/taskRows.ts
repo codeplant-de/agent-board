@@ -44,8 +44,8 @@ export async function insertTask(
   // A follow-up is as pressing as the task it came from, unless its creator says otherwise.
   const parent = draft.parentId === undefined ? undefined : await getTask(tx, draft.parentId);
   const proposed = draft.createdBy === 'agent';
-  // A proposal waits for the user whatever status the agent named.
-  const status = proposed ? 'needs-me' : (draft.status ?? 'todo');
+  // A proposal waits in Backlog for the user whatever status the agent named.
+  const status = proposed ? 'backlog' : (draft.status ?? 'todo');
   if (draft.notBefore !== undefined && status !== 'todo')
     throw new AppError('BAD_REQUEST', 'Only a task in Todo can have a start time.');
   // Running and Waiting need a run behind them and Done a close; their own commands are the only way in.
