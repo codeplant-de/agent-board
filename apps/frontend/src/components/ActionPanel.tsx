@@ -10,11 +10,13 @@ import {
   IconPlayerPlay,
   IconRefresh,
   IconSparkles,
+  IconWand,
 } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { canTakeBack } from '../lib/liveness';
+import { canPolish, isOpenPolishOf } from '../lib/polish';
 import { currentSuggestion } from '../lib/suggestion';
 import { startsIn } from '../lib/startsIn';
 import { ago, stamp } from '../lib/time';
@@ -24,6 +26,7 @@ import { LivenessText } from './LivenessText';
 import { MarkdownEditor } from './MarkdownEditor';
 import { confirmStart, moveConfirmed } from './confirmStart';
 import { QuestionPanel } from './QuestionPanel';
+import { usePolish } from './usePolish';
 
 function useActions(id: string) {
   const trpc = useTRPC();
@@ -100,8 +103,18 @@ function TakeBack({ task, actions }: { task: BoardTask; actions: ReturnType<type
  * What you can do with the task now, as explicit buttons: answer the agent's question, send it a follow-up,
  * finish it, start it over, or start a proposal.
  */
-export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadNote[] }) {
+export function ActionPanel({
+  task,
+  thread,
+  followUps,
+}: {
+  task: BoardTask;
+  thread: ThreadNote[];
+  followUps: BoardTask[];
+}) {
   const actions = useActions(task.id);
+  const polish = usePolish();
+  const polishing = followUps.some((child) => isOpenPolishOf(child, task.id));
   const now = useNow(30_000);
   const waiting = startsIn(task.notBefore, now) !== undefined;
   const [message, setMessage] = useState('');
@@ -184,6 +197,25 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
               Move to Todo
             </Button>
           </Group>
+          {canPolish(task) && (
+            <Group justify="space-between" wrap="nowrap">
+              <Text size="sm" c="dimmed">
+                {polishing
+                  ? 'A polish task is already open; apply its polished prompt from there.'
+                  : 'Rough notes? Have an agent write a clearer prompt. Nothing changes until you apply it.'}
+              </Text>
+              <Button
+                size="xs"
+                variant="default"
+                leftSection={<IconWand size={14} />}
+                onClick={() => polish.polish(task)}
+                loading={polish.isPending}
+                disabled={polishing}
+              >
+                Polish prompt
+              </Button>
+            </Group>
+          )}
           <CommentOnly actions={actions} hint="Add to the thread" />
         </Stack>
       </Paper>

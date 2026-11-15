@@ -1,6 +1,6 @@
 import { prUrlIn } from '@agent-board/shared';
 import { ActionIcon, Card, Group, Stack, Text, Tooltip } from '@mantine/core';
-import { IconBrandGithub, IconTerminal2 } from '@tabler/icons-react';
+import { IconBrandGithub, IconTerminal2, IconWand } from '@tabler/icons-react';
 import type { DragEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ago } from '../lib/time';
@@ -16,11 +16,13 @@ function lastNoteLine(note: LastNote | null, task: ListedTask): string {
       ? 'asked a question'
       : note.kind === 'answer'
         ? 'answered'
-        : note.text
-            .replace(/[#*`>_]/g, '')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .slice(0, 90);
+        : note.kind === 'polish'
+          ? 'polished a prompt'
+          : note.text
+              .replace(/[#*`>_]/g, '')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 90);
   return `${note.author}: ${text} · ${ago(note.createdAt)}`;
 }
 
@@ -31,9 +33,21 @@ interface Props {
   onDragStart: (event: DragEvent) => void;
   onDragEnd: () => void;
   onDragOver: (event: DragEvent) => void;
+  /** Queues a polish of this Backlog task's prompt; absent when it cannot be polished. */
+  onPolish?: () => void;
+  polishDisabled?: boolean;
 }
 
-export function TaskCard({ task, draggable, dragging, onDragStart, onDragEnd, onDragOver }: Props) {
+export function TaskCard({
+  task,
+  draggable,
+  dragging,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onPolish,
+  polishDisabled = false,
+}: Props) {
   const pr = prUrlIn(task.input);
   const navigate = useNavigate();
   return (
@@ -59,6 +73,24 @@ export function TaskCard({ task, draggable, dragging, onDragStart, onDragEnd, on
           <Text size="sm" fw={500} lineClamp={2} style={{ flex: 1 }}>
             {task.title}
           </Text>
+          {onPolish && (
+            <Tooltip label={polishDisabled ? 'A polish task is already open' : 'Polish prompt'}>
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                color="gray"
+                aria-label="Polish prompt"
+                disabled={polishDisabled}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onPolish();
+                }}
+              >
+                <IconWand size={14} />
+              </ActionIcon>
+            </Tooltip>
+          )}
           {(task.status === 'running' || task.sessionId !== null) && (
             <Tooltip label="Transcript">
               <ActionIcon

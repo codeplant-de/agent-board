@@ -10,6 +10,7 @@ import {
   openFields,
   openNote,
   headIndex,
+  parsePolish,
   QuestionError,
   seal,
   sealChecked,
@@ -123,11 +124,15 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     taskId: string,
     author: 'agent' | 'system',
     text: string,
+    kind: 'comment' | 'polish' = 'comment',
     options: { suggestion?: string } = {},
   ): Promise<WireNoteInput> => {
     if (text.trim() === '') throw invalid(command, 'note text is empty');
+    if (kind === 'polish' && author !== 'agent') throw invalid(command, 'only an agent writes a polish note');
+    const noteKind = author === 'agent' ? kind : 'event';
+    const previewSource = kind === 'polish' ? (parsePolish(text)?.prompt ?? text) : text;
     return checked(command, () =>
-      sealNote(sealer, { taskId, author, kind: author === 'agent' ? 'comment' : 'event' }, text, options),
+      sealNote(sealer, { taskId, author, kind: noteKind }, text, { ...options, previewSource }),
     );
   };
 
@@ -227,10 +232,12 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       const claimed = await inner.claimTask(id, machine);
       return claimed === undefined ? undefined : opened(claimed, openTask);
     },
-    addNote: async (id, text, { author = 'agent', suggestion } = {}) =>
-      inner.addNote(id, await noteInput('add-note', id, author, text, suggestion === undefined ? {} : { suggestion }), {
-        author,
-      }),
+    addNote: async (id, text, { author = 'agent', kind = 'comment', suggestion } = {}) =>
+      inner.addNote(
+        id,
+        await noteInput('add-note', id, author, text, kind, suggestion === undefined ? {} : { suggestion }),
+        { author, kind },
+      ),
     async ask(id, questions: Question[]) {
       await inner.ask(id, await checked('ask', () => sealQuestions(sealer, id, questions)));
     },

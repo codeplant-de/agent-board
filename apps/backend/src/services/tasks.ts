@@ -545,6 +545,46 @@ export async function moveTask(
 }
 
 /**
+ * The user's apply of an agent's polished title and prompt to one of their own tasks that waits (Backlog or Needs me): the new
+ * title and prompt sealed as theirs, and a note of theirs holding the old text, in one transaction. `polishId` is the task that
+ * made the polish note, a child of this one; it is marked done unless it is still running (its run reports back on its own).
+ * A schedule's occurrence is refused: its prompt is bound to the schedule.
+ */
+export async function applyPolish(
+  db: DbOrTx,
+  input: { taskId: string; polishId: string; title: string; input: string; previous: WireNoteInput; by: string },
+): Promise<TaskRow> {
+  requireSealed(input.title, 'the title');
+  requireSealed(input.input, 'the prompt');
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    if (task.createdBy !== 'user' || task.proposed)
+      throw new AppError('FORBIDDEN', 'Only a task you created takes a polished prompt.');
+    if (task.scheduleId !== null)
+      throw new AppError('CONFLICT', 'A scheduled occurrence takes its prompt from its schedule.');
+    if (task.closed || (task.status !== 'backlog' && task.status !== 'needs-me'))
+      throw new AppError('CONFLICT', 'A polished prompt can only be applied to a task in Backlog or Needs me.');
+    const polish = await lockTask(tx, input.polishId);
+    if (polish.parentId !== task.id)
+      throw new AppError('BAD_REQUEST', 'The polished prompt was not made for this task.');
+    await addNote(tx, task.id, {
+      author: 'user',
+      kind: 'event',
+      body: input.previous.body,
+      preview: input.previous.preview ?? null,
+      by: input.by,
+    });
+    if (polish.status !== 'running' && polish.status !== 'done') await markDone(tx, polish.id, input.by);
+    const [row] = await tx
+      .update(tasks)
+      .set({ title: input.title, input: input.input, updatedAt: new Date() })
+      .where(eq(tasks.id, task.id))
+      .returning();
+    return row!;
+  });
+}
+
+/**
  * The priority of a card dropped between `above` and `below`: its own when it fits there (equal to a
  * neighbour, or between theirs), else the neighbour's above it, else the one below. Without neighbours it keeps its own.
  */

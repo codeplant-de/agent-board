@@ -20,6 +20,7 @@ import { eventOutput, listEvents, listRuns } from '../services/transcripts';
 import {
   addTask,
   answer,
+  applyPolish,
   getTask,
   listTasksWithLastNote,
   type LastNote,
@@ -139,6 +140,8 @@ const tasksRouter = router({
         title: sealed('title', 'title'),
         input: sealed('input', 'input'),
         priority: priority.default('normal'),
+        /** The task this one follows from, which must be on the board. */
+        parentId: id.optional(),
         when: z.union([repeat, z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
       }),
     )
@@ -165,6 +168,7 @@ const tasksRouter = router({
         status: typeof when === 'string' ? createStatus[when] : 'todo',
         notBefore: typeof when === 'string' ? undefined : when.at,
         createdBy: 'user',
+        ...(input.parentId === undefined ? {} : { parentId: input.parentId }),
       });
       return boardTask(row);
     }),
@@ -195,6 +199,33 @@ const tasksRouter = router({
     .mutation(async ({ ctx, input }) =>
       boardTask(
         await reply(ctx.db, { taskId: input.id, message: input.message, resume: input.resume, by: ctx.username }),
+      ),
+    ),
+
+  /**
+   * Applies an agent's polished title and prompt (sealed again as the user's) to the task `id`, keeps the old text in a note
+   * of the user's (`previous`), and marks the polishing task `polishId` done.
+   */
+  applyPolish: procedure
+    .input(
+      z.object({
+        id,
+        polishId: id,
+        title: sealed('title', 'title'),
+        input: sealed('input', 'prompt'),
+        previous: noteInput,
+      }),
+    )
+    .mutation(async ({ ctx, input }) =>
+      boardTask(
+        await applyPolish(ctx.db, {
+          taskId: input.id,
+          polishId: input.polishId,
+          title: input.title,
+          input: input.input,
+          previous: input.previous,
+          by: ctx.username,
+        }),
       ),
     ),
 

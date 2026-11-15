@@ -20,9 +20,10 @@ import {
   selectTasks,
   taskJson,
   show,
+  polish,
   tasks,
 } from './board.mts';
-import type { AddFlags, AttachFlags, CommentFlags, DelayFlags, Spawner, TasksFlags } from './board.mts';
+import type { AddFlags, AttachFlags, CommentFlags, DelayFlags, PolishFlags, Spawner, TasksFlags } from './board.mts';
 import { buildContext, readStdin, ReportedFailure, UsageError } from './cli.mts';
 import type { ContextOptions, LinkingContext } from './cli.mts';
 import { verifyContract } from './backend.mts';
@@ -376,6 +377,28 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     const parent = flags.parent === undefined ? undefined : await taskIdOf(context, flags.parent);
     const task = await add(context, { ...flags, ...(parent === undefined ? {} : { parent }) });
     if (flags.json) writeJson({ id: task.id, url: context.taskLink(task.id) });
+  });
+
+  dryRunOption(
+    program
+      .command('polish')
+      .helpGroup(TASKS)
+      .summary('post a polished title and prompt for a task')
+      .description(
+        paragraphs(
+          'Post a polished title and prompt for <task>, a backlog task, on the thread of the task this run is for. It changes nothing: the user reads it on the board and applies it, which seals the text as theirs. The file is the new prompt, a regular file in /tmp. Only available inside a board run.',
+          ID_NOTE,
+        ),
+      )
+      .argument('<task>', TASK_ARGUMENT)
+      .requiredOption('--title <title>', 'the polished title, one line')
+      .requiredOption('--file <path>', 'the polished prompt, a regular file in /tmp')
+      .addHelpText('after', examples('board polish Ab3dEf9x --title "Fix the export" --file /tmp/prompt.md')),
+  ).action(async (arg: string, flags: PolishFlags, command: Command) => {
+    const run = env['AGENT_BOARD_TASK'];
+    if (!run) throw new UsageError('board polish only works inside a board run: it posts on the task the run is for');
+    const context = contextOf(command, { strictConfig: true });
+    await polish(context, run, await taskIdOf(context, arg), flags);
   });
 
   const schedule = program
