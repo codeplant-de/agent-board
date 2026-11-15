@@ -1,0 +1,49 @@
+# CLAUDE.md
+
+agent-board is a board for headless Claude Code runs: a Fastify/tRPC backend, a React frontend, and the `board` CLI that runs workers on the user's machines. Content is end-to-end encrypted. Read [docs/architecture.md](docs/architecture.md) before changing anything that crosses the CLI/server boundary, sealing, or how runs start.
+
+## Where to look
+
+| Question                                                      | Read                                                      |
+| ------------------------------------------------------------- | --------------------------------------------------------- |
+| How the parts fit, design decisions, rules a change must keep | `docs/architecture.md`                                    |
+| What a user sees and does                                     | `docs/usage.md`                                           |
+| Dispatch, lanes, worker permissions, how a run starts         | `docs/workers.md`                                         |
+| Sealing contexts and the threat model                         | `docs/encryption.md`, `packages/shared/src/sealing.mts`   |
+| CLI ↔ server wire protocol                                    | `docs/machine-api.md`, `packages/shared/src/contract.mts` |
+| Install, config keys, upgrade steps per contract              | `docs/setup.md`                                           |
+| Server env, deploy, cutover                                   | `docs/operations.md`                                      |
+| Tests, migrations, releases                                   | `docs/development.md`                                     |
+
+## Commands
+
+```
+mise exec -- pnpm install
+docker compose up -d postgres                      # :54331, board_dev + board_test
+pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
+pnpm db:generate --name <change>                   # after editing apps/backend/src/db/schema.ts
+pnpm --filter @agent-board/cli run docs            # regenerate docs/cli.md after changing a command
+mise exec -- node apps/cli/src/main.mts <command>  # the CLI from source
+```
+
+`pnpm --filter @agent-board/cli docs` without `run` hits pnpm's own `docs` command.
+
+## Traps
+
+- **`~/workspace/agent-board` is the live checkout.** The user's installed CLI and systemd timers may run from it. Never do unfinished work there. Work in a worktree under `.claude/worktrees/`, branched from `origin/main` (the local `main` is often behind).
+- **`CONTRACT_VERSION` must match exactly** between server and CLI, and the server deploys on every merge to `main`. A bump breaks every installed CLI until a `cli-v*` release is out and machines run `board self-update`. Bump it only for changes an old client would misread, including any new enum value in a response. Additive changes (new command, new optional field) must not bump it. A bump also raises `apps/cli/package.json` and adds an Upgrading note to `docs/setup.md`. See `docs/architecture.md#versioning`.
+- **Parallel branches collide** on the migration number, `CONTRACT_VERSION` and the CLI version. On rebase take `main`'s `drizzle/meta` files, regenerate the migration with `pnpm db:generate --name <same name>`, copy any hand-written SQL over from the old file, and renumber the versions.
+- **Backend tests reset `board_test`** on every run. Two worktrees testing at once need separate databases through `TEST_DATABASE_URL`.
+- **Never let an agent seal as `user`.** Anything an agent produces that would change the user's text (a prompt rewrite, a proposed task) is a suggestion the user applies in the browser. New content fields get a binding in `sealing.mts` and an entry in `apps/backend/src/db/sealedColumns.ts`.
+- **Clear values from the server are untrusted.** Shape-check them before they reach argv, paths, unit names or agent-visible text. Prompts go to `claude` on stdin.
+- **CLI code must run on Node and Bun.** Use `node:` APIs only.
+- **The listener keeps its old code** after a `git pull` or `self-update` until `systemctl --user restart agent-board-listen`.
+- **Headless `claude -p` has no AskUserQuestion.** Board runs use `board ask`.
+
+## Working conventions
+
+- Commits and tags are SSH-signed with a hardware key. Never bypass signing (`--no-gpg-sign`, `-c commit.gpgsign=false`). If signing fails, stop and ask the user to run `ssh-add-signing`. In a headless board run, stage the change and leave the exact `git commit -F <file>` command in your report.
+- Keep commits scoped to the task. Don't sweep unrelated working-tree changes into them.
+- PRs merge with merge commits. Describe what changed, the rollout or upgrade steps, how it was tested, and what was not verified (say so when nothing was checked in a real browser).
+- Document behaviour where users and agents will look: user-facing behaviour in `docs/usage.md` or `docs/workers.md`, protocol in `docs/machine-api.md`, design reasons in `docs/architecture.md`. Keep `README.md` short: it is the entry point, not the reference.
+- Only describe what is on `main` as shipped. Work on unmerged branches is "planned".

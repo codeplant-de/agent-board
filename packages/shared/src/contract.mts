@@ -1,4 +1,4 @@
-// The vocabulary shared by the CLI, the server and the UI. The README documents it as the backend contract.
+// The vocabulary shared by the CLI, the server and the UI. docs/machine-api.md documents it.
 import { envelopeLength, isBlindIndex, isEnvelope } from './crypto.mts';
 import type { Field } from './crypto.mts';
 import { isRecord } from './guards.mts';

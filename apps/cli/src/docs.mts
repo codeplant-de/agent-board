@@ -13,7 +13,7 @@ function helpOf(command: Command): string {
   return chunks.join('').trimEnd();
 }
 
-// The README's command reference, from the program itself, so it cannot drift from what `board help` says.
+// The command reference in docs/cli.md, from the program itself, so it cannot drift from what `board help` says.
 export function renderCommandsDoc(): string {
   const program = buildProgram({ env: {}, version: 'docs' });
   const help = program.createHelp();
@@ -24,16 +24,16 @@ export function renderCommandsDoc(): string {
     groups.set(heading, [...(groups.get(heading) ?? []), command]);
   }
   const sections = [...groups].map(([heading, commands]) => [
-    `### ${heading.replace(/:$/, '')}`,
-    ...commands.map((command) => `#### board ${command.name()}\n\n\`\`\`\n${helpOf(command)}\n\`\`\``),
+    `## ${heading.replace(/:$/, '')}`,
+    ...commands.map((command) => `### board ${command.name()}\n\n\`\`\`\n${helpOf(command)}\n\`\`\``),
   ]);
   return [COMMANDS_START, `\`\`\`\n${helpOf(program)}\n\`\`\``, ...sections.flat(), COMMANDS_END].join('\n\n');
 }
 
-// README with its generated block replaced.
-export function withCommandsDoc(readme: string): string {
-  const start = readme.indexOf(COMMANDS_START);
-  const end = readme.indexOf(COMMANDS_END);
-  if (start === -1 || end === -1) throw new Error('README.md has no commands block between its markers');
-  return `${readme.slice(0, start)}${renderCommandsDoc()}${readme.slice(end + COMMANDS_END.length)}`;
+// docs/cli.md with its generated block replaced.
+export function withCommandsDoc(doc: string): string {
+  const start = doc.indexOf(COMMANDS_START);
+  const end = doc.indexOf(COMMANDS_END);
+  if (start === -1 || end === -1) throw new Error('docs/cli.md has no commands block between its markers');
+  return `${doc.slice(0, start)}${renderCommandsDoc()}${doc.slice(end + COMMANDS_END.length)}`;
 }
