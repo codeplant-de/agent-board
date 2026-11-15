@@ -50,6 +50,7 @@ const task = (id: string, title: string): BoardTask =>
     machine: null,
     sessionId: 's',
     workdir: null,
+    model: null,
     next: 'resume',
     head: null,
     openQuestion: false,
