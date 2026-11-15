@@ -41,13 +41,14 @@ function utf8(text: string): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(text);
 }
 
-function toBase64Url(bytes: Uint8Array): string {
+export function toBase64Url(bytes: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
 }
 
-function fromBase64Url(text: string): Uint8Array<ArrayBuffer> | null {
+/** Decodes unpadded base64url; null for anything but the one canonical encoding of some byte string. */
+export function fromBase64Url(text: string): Uint8Array<ArrayBuffer> | null {
   if (!BASE64URL.test(text) || text.length % 4 === 1) return null;
   const padded = text
     .replaceAll('-', '+')
