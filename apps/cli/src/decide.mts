@@ -1,6 +1,7 @@
 import type { IntakeConfig, Lane } from './config.mts';
 import {
   formatAnswers,
+  isModelName,
   isSafeWorkdir,
   isSessionId,
   MAX_BATCH_EVENTS,
@@ -530,6 +531,8 @@ export function buildInvocation(input: {
   if (!isSessionId(input.run.sessionId)) return { ok: false, reason: 'The session id is not a UUID.' };
   if (task.workdir !== null && !isSafeWorkdir(task.workdir))
     return { ok: false, reason: 'The task directory is not an absolute path.' };
+  if (task.model !== null && !isModelName(task.model))
+    return { ok: false, reason: 'The task model is not a model name.' };
 
   // Where it runs: a resume where the session stopped; a scheduled task in its own directory; a task whose prompt
   // names a PR in that repo's checkout (an intake review always); else its lane's directory, else the default one.
@@ -565,6 +568,8 @@ export function buildInvocation(input: {
   const args = [
     '-p',
     session,
+    // One argument, like the session id.
+    ...(task.model === null ? [] : [`--model=${task.model}`]),
     // Every event as a JSON line: the worker keeps a readable log and sends the transcript to the board.
     '--output-format',
     'stream-json',

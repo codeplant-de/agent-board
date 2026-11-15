@@ -98,6 +98,8 @@ export const tasks = pgTable(
     input: text('input').notNull().default(''),
     status: taskStatus('status').notNull().default('todo'),
     priority: taskPriority('priority').notNull().default('normal'),
+    /** The Claude model of its runs (a clear choice, not content); null is claude's default. */
+    model: text('model'),
     /** Order within a status and priority: lower is higher up. */
     position: doublePrecision('position').notNull(),
     closed: boolean('closed').notNull().default(false),
@@ -166,6 +168,8 @@ export const schedules = pgTable(
     title: text('title').notNull(),
     input: text('input').notNull(),
     priority: taskPriority('priority').notNull().default('normal'),
+    /** The model of every occurrence; null is claude's default. */
+    model: text('model'),
     machine: text('machine'),
     workdir: text('workdir'),
     /** An interval on the grid `anchor_at + k * every_ms`, or a 5-field cron expression in `timezone`. */

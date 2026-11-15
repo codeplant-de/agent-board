@@ -93,6 +93,8 @@ in the task's directory (see [Where a task runs](#where-a-task-runs)). The promp
 
 The rules only ask; `--permission-mode auto` can still refuse a push or `gh pr create`, and the refusal shows in the log.
 
+A task that names a model (`board schedule --model`, or the Model select of the New task form) adds `--model=<model>` as one argument, on a fresh run and on a resume; a name that is not of a model name's shape (a clear value from the server) refuses the run instead. Without one, claude uses its own default.
+
 The hook is the [heartbeat, pause and question hook](#liveness-and-limits). A resumed run is `claude -p --resume=<session>` with the same flags and your reply on stdin (see [Ask and resume](usage.md#ask-and-resume)).
 
 In intake's rules, `Bash(` rules expand `~/` to your home directory and `{<plugin>}` (such as `{pr-review}` or `{engineering}`) to the root Claude Code gives `<plugin>@ccc` as `${CLAUDE_PLUGIN_ROOT}`, resolved when the worker starts: for a marketplace added as a directory (`~/.claude/plugins/known_marketplaces.json`) that is the plugin's `source` in the marketplace's `.claude-plugin/marketplace.json` (Claude Code loads it from the checkout, not from the cache copy), otherwise the `installPath` in `~/.claude/plugins/installed_plugins.json`. A rule must not start with `*` before a script path: a leading `*` matches any command that merely contains the path. If the plugin path cannot be resolved the task goes to `needs-me` with the reason. `Read(...)` rules are passed on unchanged (they take `~/` themselves). Old `backend`, `labels`, `intakeLabel` and `sandbox` entries in a config are ignored.

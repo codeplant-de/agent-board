@@ -26,6 +26,7 @@ import { PolishItem } from '../components/PolishItem';
 import { TaskBadges } from '../components/TaskBadges';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
+import { modelLabel } from '../lib/model';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago, stamp } from '../lib/time';
 import { errorMessage, POLL_MS, useTRPC } from '../lib/trpc';
@@ -92,6 +93,11 @@ export function TaskPage() {
               value={task.priority}
               onChange={(priority) => setPriority.mutate({ id: task.id, priority })}
             />
+            {task.model !== null && (
+              <Badge variant="default" tt="none" size="sm" title="The Claude model its runs use">
+                Model: {modelLabel(task.model)}
+              </Badge>
+            )}
             <TaskBadges task={task} withPriority={false} />
             <Text size="xs" c="dimmed" title={stamp(task.createdAt)}>
               created by {task.createdBy} {ago(task.createdAt)}

@@ -112,6 +112,35 @@ test("an intake review runs in the PR's checkout with intake's narrow rules", ()
   assert.ok(!unmapped.ok && /other\/repo/.test(unmapped.reason));
 });
 
+test('a task model becomes one --model= argument, on a fresh run and a resume, for intake too', () => {
+  const none = invoke({ id: 'abc', input: '/grill' });
+  assert.ok(none.ok);
+  assert.ok(!none.invocation.args.some((arg) => arg.startsWith('--model')));
+  const fresh = invoke({ id: 'abc', input: '/grill', model: 'claude-sonnet-5-5[1m]' });
+  assert.ok(fresh.ok);
+  assert.deepEqual(fresh.invocation.args.slice(0, 3), [
+    '-p',
+    `--session-id=${SESSION}`,
+    '--model=claude-sonnet-5-5[1m]',
+  ]);
+  const resumed = invoke(
+    { id: 'abc', input: '/grill', model: 'opus' },
+    { kind: 'resume', sessionId: SESSION, prompt: 'the reply' },
+  );
+  assert.ok(resumed.ok);
+  assert.deepEqual(resumed.invocation.args.slice(0, 3), ['-p', `--resume=${SESSION}`, '--model=opus']);
+  const intake = invoke({ id: 'abc', input: `/review-pr ${PR} --auto`, createdBy: 'intake', model: 'haiku' });
+  assert.ok(intake.ok);
+  assert.ok(intake.invocation.args.includes('--model=haiku'));
+});
+
+test('a task model that is not a model name refuses the run instead of being dropped', () => {
+  for (const model of ['--dangerously-skip-permissions', 'a b', '', 'opus\n']) {
+    const plan = invoke({ id: 'abc', input: '/grill', model });
+    assert.ok(!plan.ok && /not a model name/.test(plan.reason), JSON.stringify(model));
+  }
+});
+
 test('a resume passes the reply and continues where the session stopped', () => {
   const plan = invoke(
     { id: 'abc', input: '/grill', workdir: '/repo/.claude/worktrees/x' },

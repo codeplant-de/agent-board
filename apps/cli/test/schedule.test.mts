@@ -31,6 +31,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
   assert.deepEqual(parseScheduleArgs(['--priority', 'high', '/review-pr', '17741', '--auto']), {
     prompt: '/review-pr 17741 --auto',
     priority: 'high',
+    model: undefined,
     title: undefined,
     hold: false,
     backlog: false,
@@ -44,6 +45,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
   assert.deepEqual(parseScheduleArgs(['--hold', '--new', '--title', 'Export', 'Find', 'out', 'why']), {
     prompt: 'Find out why',
     priority: undefined,
+    model: undefined,
     title: 'Export',
     hold: true,
     backlog: false,
@@ -292,4 +294,30 @@ test('a cron repeat sends the machine time zone and says nothing about duplicate
   assert.ok(backend.writes[0]?.includes('| 0 9 * * 1-5 Europe/Berlin'));
   assert.match(printed[0] ?? '', /^scheduled repeat sched: cron 0 9 \* \* 1-5 \(Europe\/Berlin\);/);
   assert.ok(!printed.some((line) => line.includes('Looks like')));
+});
+
+test('--model is checked and sent for a plain task and for a repeat', async () => {
+  assert.equal(parseScheduleArgs(['--model', 'opus', 'x']).model, 'opus');
+  assert.equal(parseScheduleArgs(['--model', 'claude-sonnet-5-5[1m]', 'x']).model, 'claude-sonnet-5-5[1m]');
+  assert.equal(parseScheduleArgs(['x']).model, undefined);
+  for (const bad of ['--x', 'a b', 'opus;ls', ''])
+    assert.throws(() => parseScheduleArgs(['--model', bad, 'x']), /is not a model name|argument missing/, bad);
+
+  const plain = setup(undefined);
+  const created = await schedule(plain.deps, parseScheduleArgs(['--model', 'haiku', '--new', '/sweep']));
+  assert.equal(created?.model, 'haiku');
+  const none = setup(undefined);
+  assert.equal((await schedule(none.deps, parseScheduleArgs(['--new', '/sweep'])))?.model, null);
+
+  const repeat = setup(undefined);
+  const first = await schedule(repeat.deps, parseScheduleArgs(['--model', 'fable', '--every', '2h', '/sweep'], NOW));
+  assert.equal(first?.model, 'fable');
+  assert.ok(repeat.backend.writes[0]?.endsWith('| here:/work/cosuno | model fable'));
+});
+
+test('a requeue keeps the existing task model and says --model was not applied', async () => {
+  const requeue = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
+  await schedule(requeue.deps, parseScheduleArgs(['--model', 'opus', '/review-pr', '17741']));
+  assert.ok(requeue.printed.includes('old keeps its model (the default); --model applies only to a new task'));
+  assert.ok(!requeue.backend.writes.some((w) => w.startsWith('create')));
 });

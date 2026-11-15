@@ -43,6 +43,14 @@ export const PRIORITIES = ['urgent', 'high', 'normal', 'low'] as const;
 export type Priority = (typeof PRIORITIES)[number];
 export const DEFAULT_PRIORITY: Priority = 'normal';
 
+// The aliases the board offers for a task's Claude model; any name that `isModelName` accepts may be used, a full id included.
+export const MODEL_ALIASES = [
+  { value: 'fable', label: 'Fable' },
+  { value: 'opus', label: 'Opus' },
+  { value: 'sonnet', label: 'Sonnet' },
+  { value: 'haiku', label: 'Haiku' },
+] as const;
+
 // A running task whose agent has been quiet this long looks stuck: the board shows it red.
 export const QUIET_LIMIT_MS = 10 * 60_000;
 
@@ -74,6 +82,9 @@ export interface Task {
   labels: string[];
   status: Status;
   priority: Priority;
+  // The Claude model the runs use (`claude --model`): an alias or a full id; null is claude's default. A clear value from the
+  // server, so a worker shape-checks it with `isModelName` again before it reaches argv.
+  model: string | null;
   closed: boolean;
   // The machine that claimed the task last; a resume runs only there, because the Claude session lives on it.
   machine: string | null;
@@ -156,6 +167,8 @@ export interface TaskDraft {
   status?: Status;
   // Default: the parent's priority for a follow-up, otherwise normal.
   priority?: Priority;
+  // Default: claude's default model.
+  model?: string;
   // Unique per board: a second add-task with the same key returns the first task instead of a new one. The CLI sends the
   // blind index of the key, never the key.
   dedupeKey?: string;
@@ -202,6 +215,8 @@ export interface Schedule {
   title: string;
   input: string;
   priority: Priority;
+  // The model of every occurrence; null is claude's default.
+  model: string | null;
   // Pins the occurrences to a machine and the directory they run in there.
   machine: string | null;
   workdir: string | null;
@@ -231,6 +246,8 @@ export interface ScheduleDraft {
   title: string;
   input: string;
   priority?: Priority;
+  // Default: claude's default model.
+  model?: string;
   machine?: string;
   workdir?: string;
   // Exactly one of `everyMs` and `cron`; a cron expression needs its `timezone` (IANA name).
@@ -544,6 +561,14 @@ export const isNoteKind = oneOf(NOTE_KINDS);
 export const isTaskCreator = oneOf(TASK_CREATORS);
 export const isPriority = oneOf(PRIORITIES);
 
+// The characters carry the protection: a model name reaches argv as one `--model=` argument and is shown in the UI. It fits
+// the aliases (`opus`) and full ids (`claude-opus-5-5`, `claude-sonnet-5-5[1m]`).
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._\-[\]]{0,63}$/;
+
+export function isModelName(value: string): boolean {
+  return MODEL_NAME.test(value);
+}
+
 /** The server's one check of a sealed value: it is an envelope and within the field's size limit. */
 export function parseSealed(value: unknown, field: Field, what: string): string {
   if (typeof value !== 'string') throw new ContractError(`${what} must be a string`);
@@ -573,6 +598,20 @@ function string(obj: Record<string, unknown>, key: string, what: string): string
 function nullableString(obj: Record<string, unknown>, key: string, what: string): string | null {
   const value = obj[key];
   if (value !== null && typeof value !== 'string') throw new ContractError(`${what}.${key} must be a string or null`);
+  return value;
+}
+
+/** The `model` of a task or schedule; a server that predates the key leaves it out, which means claude's default. */
+function modelOf(obj: Record<string, unknown>, what: string): string | null {
+  const value = obj['model'] ?? null;
+  if (value !== null && !(typeof value === 'string' && isModelName(value)))
+    throw new ContractError(`${what}.model is not a model name`);
+  return value;
+}
+
+function modelName(obj: Record<string, unknown>, what: string): string {
+  const value = obj['model'];
+  if (typeof value !== 'string' || !isModelName(value)) throw new ContractError(`${what}.model is not a model name`);
   return value;
 }
 
@@ -693,6 +732,7 @@ export function parseWireTask(value: unknown): WireTask {
     input: string(obj, 'input', 'task'),
     status: member(obj, 'status', 'task', STATUSES),
     priority: member(obj, 'priority', 'task', PRIORITIES),
+    model: modelOf(obj, 'task'),
     closed: boolean(obj, 'closed', 'task'),
     machine,
     sessionId: sessionId(nullableString(obj, 'sessionId', 'task'), 'task'),
@@ -757,6 +797,7 @@ export function parseWireSchedule(value: unknown): WireSchedule {
     title: string(obj, 'title', 'schedule'),
     input: string(obj, 'input', 'schedule'),
     priority: member(obj, 'priority', 'schedule', PRIORITIES),
+    model: modelOf(obj, 'schedule'),
     machine,
     workdir: nullableString(obj, 'workdir', 'schedule'),
     everyMs,
@@ -929,6 +970,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
       'input',
       'status',
       'priority',
+      'model',
       'dedupeKey',
       'parentId',
       'createdBy',
@@ -946,6 +988,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
     status: 'status' in obj ? member(obj, 'status', 'draft', STATUSES) : 'todo',
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', 'draft', PRIORITIES);
+  if ('model' in obj) draft.model = modelName(obj, 'draft');
   if ('dedupeKey' in obj) draft.dedupeKey = parseBlindIndex(obj['dedupeKey'], 'draft.dedupeKey');
   if ('parentId' in obj) draft.parentId = safeId(string(obj, 'parentId', 'draft'), 'draft.parentId');
   if ('createdBy' in obj) draft.createdBy = member(obj, 'createdBy', 'draft', TASK_CREATORS);
@@ -974,6 +1017,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
       'title',
       'input',
       'priority',
+      'model',
       'machine',
       'workdir',
       'everyMs',
@@ -992,6 +1036,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
     input: sealedField(obj, 'input', what, 'input'),
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', what, PRIORITIES);
+  if ('model' in obj) draft.model = modelName(obj, what);
   if ('machine' in obj) {
     draft.machine = string(obj, 'machine', what);
     if (!isSafeMachineName(draft.machine)) throw new ContractError('schedule draft.machine is not a safe name');
