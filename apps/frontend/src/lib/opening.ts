@@ -7,6 +7,7 @@ import {
   isSessionId,
   openFields,
   openNote,
+  openPr,
   openPreview,
   taskLabels,
   transcriptBinding,
@@ -46,8 +47,10 @@ interface SealedFields {
   workdir: string | null;
 }
 
-export type BoardTask = Omit<WireBoardTask, keyof SealedFields> &
+export type BoardTask = Omit<WireBoardTask, keyof SealedFields | 'pr'> &
   SealedFields & {
+    // The PR its agent reported, when it opens under its binding as a GitHub PR URL; see `prOf`.
+    pr: string | null;
     labels: string[];
     unreadable: UnreadableField[];
     // The clear fields the board sent in a shape it does not promise; they are shown as neutral values.
@@ -132,11 +135,15 @@ export const openerFor =
 export async function openBoardTask(keys: Keys, wire: WireBoardTask): Promise<BoardTask> {
   const { invalid, ...shapes } = checkTaskShapes(wire);
   const row = { kind: 'task', id: wire.id, createdBy: shapes.createdBy, scheduleId: shapes.scheduleId } as const;
-  const fields = await openFields(openerFor(keys), row, wire);
+  const [fields, pr] = await Promise.all([
+    openFields(openerFor(keys), row, wire),
+    openPr(openerFor(keys), wire.id, wire.pr),
+  ]);
   return {
     ...wire,
     ...shapes,
     ...fields,
+    pr,
     labels: taskLabels({ input: fields.input, createdBy: shapes.createdBy }),
     invalid,
   };

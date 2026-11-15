@@ -1,4 +1,4 @@
-import { prUrlIn, type UnreadableField } from '@agent-board/shared';
+import { prOf, type UnreadableField } from '@agent-board/shared';
 import {
   Alert,
   Anchor,
@@ -65,7 +65,8 @@ export function TaskPage() {
   }
 
   const { task, thread, followUps, parent } = query.data;
-  const pr = prUrlIn(task.input);
+  // The prompt's PR first; the agent's reported one too when it is another PR.
+  const prs = [...new Set([prOf(task), task.pr].filter((url): url is string => url != null))];
 
   return (
     <Container size="md" px={0}>
@@ -118,19 +119,22 @@ export function TaskPage() {
               Transcript
             </Button>
           </Group>
-          {pr && (
-            <Group>
-              <Button
-                component="a"
-                href={pr}
-                target="_blank"
-                rel="noopener noreferrer"
-                variant="default"
-                size="xs"
-                leftSection={<IconBrandGithub size={14} />}
-              >
-                {pr.replace('https://github.com/', '')}
-              </Button>
+          {prs.length > 0 && (
+            <Group gap="xs">
+              {prs.map((pr) => (
+                <Button
+                  key={pr}
+                  component="a"
+                  href={pr}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  variant="default"
+                  size="xs"
+                  leftSection={<IconBrandGithub size={14} />}
+                >
+                  {pr.replace('https://github.com/', '')}
+                </Button>
+              ))}
             </Group>
           )}
         </Stack>

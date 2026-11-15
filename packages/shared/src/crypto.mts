@@ -17,6 +17,7 @@ export type Field =
   | 'title'
   | 'input'
   | 'workdir'
+  | 'pr'
   | 'note.body'
   | 'note.preview'
   | 'note.suggestion'

@@ -188,6 +188,11 @@ test("the board's rules tell the agent to attach the user's likely next reply to
   );
 });
 
+test("the board's rules tell the agent to report the PR it opens, except in an intake run", () => {
+  assert.match(boardRules(task({ id: 'abc' })), /open a pull request.*board pr abc <url>/s);
+  assert.doesNotMatch(boardRules(task({ id: 'abc', createdBy: 'intake' })), /board pr/);
+});
+
 test("the board's rules tell the agent to ask through the board, and an intake run to keep its commands simple", () => {
   assert.match(
     boardRules(task({ id: 'abc' })),

@@ -494,7 +494,7 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     const constraints = await rows<{ conname: string; convalidated: boolean }>(
       `select conname, convalidated from pg_constraint where conname like '%\\_sealed' or conname like '%\\_blind'`,
     );
-    expect(constraints).toHaveLength(15);
+    expect(constraints).toHaveLength(16);
     expect(constraints.every((constraint) => constraint.convalidated)).toBe(true);
   });
 
@@ -664,5 +664,18 @@ describe('the cutover re-encryption, in the order of the runbook', () => {
     const elsewhere = await seal(keys, 'note.suggestion', 'note:other:agent:comment', 'Yes');
     await admin.db.execute(sql`update note set suggestion = ${elsewhere} where id = 'n01'`);
     await refuses(() => run(), /note\.suggestion of note n01/);
+  });
+
+  it('leaves a sealed PR as it is, and refuses one that does not open', async () => {
+    await admin.db.execute(sql`update note set suggestion = null where id = 'n01'`);
+    const pr = await seal(keys, 'pr', 'task:t1plain1:agent', 'https://github.com/acme/app/pull/17');
+    await admin.db.execute(sql`update task set pr = ${pr} where id = 't1plain1'`);
+    const before = await snapshot();
+    const again = await run();
+    expect(again.columns['task.pr']).toMatchObject({ converted: 0, alreadySealed: 1 });
+    expect(await snapshot()).toBe(before);
+    const elsewhere = await seal(keys, 'pr', 'task:other:agent', 'https://github.com/acme/app/pull/17');
+    await admin.db.execute(sql`update task set pr = ${elsewhere} where id = 't1plain1'`);
+    await refuses(() => run(), /task\.pr of task t1plain1/);
   });
 });

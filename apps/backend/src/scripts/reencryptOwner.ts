@@ -20,6 +20,7 @@ import {
   open,
   parseAnswers,
   parseQuestions,
+  prBinding,
   QuestionError,
   seal,
   sealAnswers,
@@ -119,6 +120,8 @@ interface Context {
   warnedOversize: Set<string>;
   // `note.suggestion` came with migration 0015, so a board that has not got it yet is converted without it.
   hasSuggestion: boolean;
+  // `task.pr` came with migration 0020, likewise.
+  hasPr: boolean;
 }
 
 const counts = (ctx: Context, column: string): ColumnCounts => {
@@ -293,6 +296,7 @@ interface TaskRecord extends Record<string, unknown> {
   title: string;
   input: string;
   workdir: string | null;
+  pr: string | null;
   dedupe_key: string | null;
   head: string | null;
   created_by: TaskCreator;
@@ -376,7 +380,7 @@ async function convertTasks(ctx: Context, scheduleIds: Set<string>): Promise<voi
     (after) =>
       query(
         ctx,
-        `select t.id, t.title, t.input, t.workdir, t.dedupe_key, t.head, t.created_by, t.proposed, t.status::text as status,
+        `select t.id, t.title, t.input, t.workdir, ${ctx.hasPr ? 't.pr' : 'null::text as pr'}, t.dedupe_key, t.head, t.created_by, t.proposed, t.status::text as status,
            t.created_at, t.schedule_id, t.machine, t.lane, t.session_id, ${START_EVIDENCE} as start_evidence
          from task t where t.owner = $1 and ($2::text is null or t.id > $2) order by t.id limit $3`,
         [ctx.owner, after?.id ?? null, ctx.batchSize],
@@ -437,6 +441,7 @@ async function convertTasks(ctx: Context, scheduleIds: Set<string>): Promise<voi
         task.workdir === null
           ? null
           : await sealColumn(ctx, 'task.workdir', name, task.workdir, workdirBinding(row), workdirOpenBindings(row));
+      const pr = task.pr === null ? null : await sealColumn(ctx, 'task.pr', name, task.pr, prBinding(task.id));
       const dedupeKey =
         task.dedupe_key === null
           ? null
@@ -445,12 +450,13 @@ async function convertTasks(ctx: Context, scheduleIds: Set<string>): Promise<voi
         task.head === null
           ? null
           : await indexColumn(ctx, 'task.head', task.head, (plain) => headIndex(ctx.keys, plain));
-      const values = [title, input, workdir, dedupeKey, head, createdBy, String(proposed)];
+      const values = [title, input, workdir, pr, dedupeKey, head, createdBy, String(proposed)];
       if (
         same(values, [
           task.title,
           task.input,
           task.workdir,
+          task.pr,
           task.dedupe_key,
           task.head,
           task.created_by,
@@ -462,13 +468,13 @@ async function convertTasks(ctx: Context, scheduleIds: Set<string>): Promise<voi
     },
     async (rows) => {
       const { rows: stored } = await ctx.client.query<{ id: string; v: Value[] }>(
-        `update task t set title = v.title, input = v.input, workdir = v.workdir, dedupe_key = v.dedupe_key, head = v.head,
+        `update task t set title = v.title, input = v.input, workdir = v.workdir, ${ctx.hasPr ? 'pr = v.pr, ' : ''}dedupe_key = v.dedupe_key, head = v.head,
            created_by = v.created_by::task_creator, proposed = v.proposed::boolean
-         from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[])
-           as v(id, title, input, workdir, dedupe_key, head, created_by, proposed)
+         from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[])
+           as v(id, title, input, workdir, pr, dedupe_key, head, created_by, proposed)
          where t.owner = $1 and t.id = v.id
-         returning t.id, array[t.title, t.input, t.workdir, t.dedupe_key, t.head, t.created_by::text, t.proposed::text] as v`,
-        [ctx.owner, ...columnsOf(rows, 8)],
+         returning t.id, array[t.title, t.input, t.workdir, ${ctx.hasPr ? 't.pr' : 'null::text'}, t.dedupe_key, t.head, t.created_by::text, t.proposed::text] as v`,
+        [ctx.owner, ...columnsOf(rows, 9)],
       );
       return stored.map(({ id, v }) => [id, ...v]);
     },
@@ -956,6 +962,7 @@ export async function reencryptOwner(options: ReencryptOptions): Promise<Reencry
     problems: [],
     warnedOversize: new Set(),
     hasSuggestion: (await existingColumns(client)).has('note.suggestion'),
+    hasPr: (await existingColumns(client)).has('task.pr'),
   };
   if (!keys.index) throw new ReencryptError('The keys need the blind-index key: derive them with { index: true }.');
   let tableCounts: Record<string, number>;

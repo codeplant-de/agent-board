@@ -8,14 +8,17 @@ import {
   headIndex,
   inputBinding,
   noteBinding,
+  prBinding,
   openFields,
   openNote,
+  openPr,
   openPreview,
   sealAnswers,
   sealChecked,
   sealFields,
   sealInput,
   sealNote,
+  sealPr,
   sealQuestions,
   sealWorkdir,
   titleBinding,
@@ -546,4 +549,44 @@ test('a transcript event of one task does not open under another task, run or po
     transcriptBinding('tr.output', TASK, RUN, 3),
   ])
     assert.equal(await opens(other, sealed), undefined);
+});
+
+const PR_URL = 'https://github.com/o/r/pull/7';
+
+test('the PR of a task is bound to the task and to its agent, and opens only as a GitHub PR URL', async () => {
+  assert.deepEqual(prBinding(TASK), { field: 'pr', context: `task:${TASK}:agent` });
+  const sealed = await sealPr(seals, TASK, PR_URL);
+  assert.equal(await openPr(opens, TASK, sealed), PR_URL);
+  assert.equal(await openPr(opens, TASK, null), null);
+  assert.equal(await openPr(opens, TASK, undefined), null);
+  // Another task, another field or another context (a note body, the user's input) does not open as the task's PR.
+  assert.equal(await openPr(opens, 'Zz9dEf9x', sealed), null);
+  for (const other of [
+    await seal(keys, 'input', inputBinding(userTask).context, PR_URL),
+    await seal(keys, 'note.body', noteBinding('note.body', TASK, 'agent', 'comment').context, PR_URL),
+    await seal(keys, 'pr', `task:${TASK}:user`, PR_URL),
+    await seal(keys, 'workdir', prBinding(TASK).context, PR_URL),
+  ])
+    assert.equal(await openPr(opens, TASK, other), null);
+  // Plain text and a sealed value that is not a PR URL are not shown either.
+  assert.equal(await openPr(opens, TASK, PR_URL), null);
+  assert.equal(await openPr(opens, TASK, await seal(keys, 'pr', prBinding(TASK).context, 'javascript:alert(1)')), null);
+});
+
+test('only a GitHub pull request URL is sealed as a PR, and within the limit', async () => {
+  for (const bad of [
+    '',
+    'https://github.com/o/r/pull/7/files',
+    'https://github.com/o/r/pull/7/',
+    'https://github.com/o/r/issues/7',
+    'http://github.com/o/r/pull/7',
+    'https://github.com.evil.test/o/r/pull/7',
+    'https://github.com/o/r/pull/7 and more',
+    ` ${PR_URL}`,
+    'https://github.com/o/r/pull/x',
+    'https://github.com/o?x/r/pull/7',
+  ])
+    await assert.rejects(sealPr(seals, TASK, bad), ContractError, bad);
+  assert.match(await sealPr(seals, TASK, PR_URL), /^abe1\./);
+  await assert.rejects(sealPr(seals, TASK, `https://github.com/o/${'r'.repeat(1100)}/pull/7`), /too long/);
 });

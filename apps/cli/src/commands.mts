@@ -10,6 +10,7 @@ import {
   comment,
   delay,
   move,
+  reportPr,
   parseStatus,
   readNoteFile,
   readThread,
@@ -310,6 +311,26 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     const suggestion = flags.suggestFile === undefined ? flags.suggest : readNoteFile(flags.suggestFile);
     const context = contextOf(command);
     await comment(context, await taskIdOf(context, arg), text, suggestion === undefined ? {} : { suggestion });
+  });
+
+  dryRunOption(
+    program
+      .command('pr')
+      .helpGroup(TASKS)
+      .summary('report the pull request you opened for a task')
+      .description(
+        paragraphs(
+          "Inside a run: after you open a pull request for this task, report its URL. The board then shows it on the task's card and page, like the pull request of a review task. A later call replaces the earlier URL.",
+          'The URL must be a GitHub pull request, https://github.com/<owner>/<repo>/pull/<number>, and nothing else.',
+          ID_NOTE,
+        ),
+      )
+      .argument('<task>', TASK_ARGUMENT)
+      .argument('<url>', 'the pull request URL')
+      .addHelpText('after', examples('board pr Ab3dEf9x https://github.com/acme/app/pull/17741')),
+  ).action(async (arg: string, url: string, _options, command: Command) => {
+    const context = contextOf(command);
+    await reportPr(context, await taskIdOf(context, arg), url);
   });
 
   dryRunOption(

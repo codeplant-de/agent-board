@@ -31,6 +31,7 @@ export const SEALED_COLUMNS: readonly SealedColumn[] = [
   envelope('task', 'title'),
   envelope('task', 'input'),
   envelope('task', 'workdir'),
+  envelope('task', 'pr'),
   blindIndex('task', 'dedupe_key'),
   blindIndex('task', 'head'),
   envelope('schedule', 'title'),
