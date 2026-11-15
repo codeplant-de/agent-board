@@ -65,8 +65,8 @@ const questions: Question[] = [
   },
 ];
 
-// Envelopes sealed once with the fixed key above (data key 0, 1, ... 31, owner "alice"), under the rules in the README's
-// table. Opening them under the exact binding is what a later change of a context string would break.
+// Envelopes sealed once with the fixed key above (data key 0, 1, ... 31, owner "alice"), under the rules in the
+// table of docs/encryption.md. Opening them under the exact binding is what a later change of a context string would break.
 const VECTORS = {
   task: {
     title: 'abe1.CVJdIMfHdU040173VingA19rP5dSHeALJr7qqLn4mz0eK0G7VVp6ZUE',
@@ -203,7 +203,7 @@ test('known-answer: every field of a task, an intake task, a schedule, an occurr
   );
 });
 
-test('known-answer: the contexts are exactly the table in the README', async () => {
+test('known-answer: the contexts are exactly the table in docs/encryption.md', async () => {
   const contexts: [Binding, string][] = [
     [titleBinding(userTask), 'task:Ab3dEf9x'],
     [titleBinding({ ...userTask, createdBy: 'agent' }), 'task:Ab3dEf9x'],

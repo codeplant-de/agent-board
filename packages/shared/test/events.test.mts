@@ -25,7 +25,7 @@ test('every text the server writes is accepted', () => {
     assert.equal(isServerEventText(formatServerEvent(event)), true, formatServerEvent(event));
 });
 
-test('the exact texts, as the README lists them', () => {
+test('the exact texts, as docs/encryption.md lists them', () => {
   assert.deepEqual(
     [
       { type: 'done' },

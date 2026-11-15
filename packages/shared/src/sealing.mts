@@ -1,7 +1,7 @@
 // How board content is sealed and opened, for the CLI and the browser alike. The server keeps no key and reads nothing, so
 // what a client acts on or shows as trusted is exactly what a client of the user sealed *for that purpose*: every sealed
 // value is bound, through the context of its envelope, to the row it belongs to. The table of (field, context) rules is in
-// the README's Encryption section; this module is its one implementation.
+// docs/encryption.md; this module is its one implementation.
 //
 //   field          context
 //   title          <origin>
