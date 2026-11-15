@@ -17,6 +17,7 @@ const fetchPage = vi.hoisted(() =>
 );
 
 vi.mock('../lib/trpc', () => ({
+  errorMessage: (error: Error) => error.message,
   useTRPC: () => ({
     transcript: {
       runs: { queryOptions: ({ id }: { id: string }) => ({ queryKey: ['transcript.runs', id], queryFn: fetchRuns }) },
@@ -88,5 +89,24 @@ describe('TranscriptDrawer', () => {
     drawer.rerender({ opened: true, live: false });
     expect(await screen.findByText('third')).toBeInTheDocument();
     expect(fetchRuns).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows why the runs did not load instead of saying there is no transcript', async () => {
+    fetchRuns.mockReset().mockRejectedValue(new Error('board is locked'));
+    renderDrawer({ opened: true, live: false });
+    expect(await screen.findByText('Could not load the runs: board is locked')).toBeInTheDocument();
+    expect(screen.queryByText(/No transcript yet/)).not.toBeInTheDocument();
+  });
+
+  it('shows why a run’s events did not load instead of a blank pane', async () => {
+    fetchPage.mockReset().mockRejectedValue(new Error('event 2 does not open'));
+    renderDrawer({ opened: true, live: false });
+    expect(await screen.findByText('Could not load this run: event 2 does not open')).toBeInTheDocument();
+  });
+
+  it('says so while a run’s events load', async () => {
+    fetchPage.mockReset().mockReturnValue(new Promise(() => undefined));
+    renderDrawer({ opened: true, live: false });
+    expect(await screen.findByText('Loading this run…')).toBeInTheDocument();
   });
 });

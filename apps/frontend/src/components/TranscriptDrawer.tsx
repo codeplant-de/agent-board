@@ -29,6 +29,7 @@ import { ago, stamp } from '../lib/time';
 import { loadEventsAfter } from '../lib/transcript';
 import { useTRPC } from '../lib/trpc';
 import { Markdown } from './Markdown';
+import { QueryStatus } from './QueryStatus';
 
 type Event = TranscriptEventView;
 type ToolUse = Extract<Event, { kind: 'tool_use' }>;
@@ -313,10 +314,14 @@ export function TranscriptDrawer({
             )}
           </Group>
         ) : (
-          <Text size="sm" c="dimmed">
-            {runs.isLoading ? 'Loading…' : 'No transcript yet. Runs started after this feature record one.'}
-          </Text>
+          runs.data !== undefined && (
+            <Text size="sm" c="dimmed">
+              No transcript yet. Runs started after this feature record one.
+            </Text>
+          )
         )}
+        <QueryStatus query={runs} what="the runs" />
+        <QueryStatus query={events} what="this run" />
         <Box
           ref={viewport}
           style={{ height: 'calc(100vh - 140px)', overflowY: 'auto', paddingRight: 8 }}
