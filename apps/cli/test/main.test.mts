@@ -119,7 +119,7 @@ test('a typo or an extra argument on an internal command is refused before its a
     ]) {
       const result = await run('board', args, dir);
       assert.equal(result.code, 2, args.join(' '));
-      assert.doesNotMatch(result.stderr, /config file missing/, args.join(' '));
+      assert.doesNotMatch(result.stderr, /config file missing|intake is not enabled/, args.join(' '));
       assert.match(result.stderr, /^agent-board: /);
     }
   } finally {
