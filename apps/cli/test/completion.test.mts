@@ -277,11 +277,11 @@ _board`;
 test('the zsh script completes ids, statuses, schedule actions and files', (context) => {
   if (!requireShell('zsh', context)) return;
   assert.deepEqual(zshOffers(['show', '']), ['describe ids', 'Ab3dEf9x:First: one', 'Zk7mNp2q:Second']);
-  assert.deepEqual(zshOffers(['move', 'Ab3dEf9x', '']), ['backlog', 'todo', 'running', 'needs-me', 'done']);
+  assert.deepEqual(zshOffers(['move', 'Ab3dEf9x', '']), ['backlog', 'todo', 'running', 'waiting', 'needs-me', 'done']);
   assert.deepEqual(zshOffers(['schedules', '']), ['pause', 'resume', 'rm']);
   assert.equal(zshOffers(['schedules', 'rm', ''])[0], 'describe ids');
   assert.deepEqual(zshOffers(['schedules', 'stop', '']), [], 'the id of an unknown action is not offered');
-  assert.deepEqual(zshOffers(['tasks', '--status', '']), ['backlog', 'todo', 'running', 'needs-me', 'done']);
+  assert.deepEqual(zshOffers(['tasks', '--status', '']), ['backlog', 'todo', 'running', 'waiting', 'needs-me', 'done']);
   assert.deepEqual(zshOffers(['init', '--token-file', '']), ['files']);
   assert.deepEqual(zshOffers(['delay', 'Ab3dEf9x', '--at', '']), []);
   assert.ok(zshOffers(['tasks', '--']).includes('--status'));
@@ -318,7 +318,14 @@ complete -C '${line}'`;
 test('the fish script completes ids, statuses, schedule actions and files, and nothing after a free-text flag', (context) => {
   if (!requireShell('fish', context)) return;
   assert.deepEqual(fishOffers('board show '), ['Ab3dEf9x\tFirst', 'Zk7mNp2q\tSecond']);
-  assert.deepEqual(fishOffers('board move Ab3dEf9x ').sort(), ['backlog', 'done', 'needs-me', 'running', 'todo']);
+  assert.deepEqual(fishOffers('board move Ab3dEf9x ').sort(), [
+    'backlog',
+    'done',
+    'needs-me',
+    'running',
+    'todo',
+    'waiting',
+  ]);
   assert.deepEqual(fishOffers('board schedules '), ['pause', 'resume', 'rm']);
   assert.deepEqual(fishOffers('board schedules rm '), ['Sc1aBcDe\tSweep']);
   assert.deepEqual(fishOffers('board delay Ab3dEf9x --at '), []);
