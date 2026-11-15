@@ -2,8 +2,16 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { BackendError, checkBoardUrl, checkDataKey, looksLikeMachineToken, verifyContract } from './backend.mts';
 import type { ServerIdentity, WebConfig } from './backend.mts';
-import { ConfigError, isSafeMode, parseConfig } from './config.mts';
-import { API_VERSION, decodeDataKey, SERVER_FEATURE_LABELS, SERVER_FEATURES } from '@agent-board/shared';
+import { ConfigError, INTAKE_LIST_KEYS, isSafeMode, parseConfig } from './config.mts';
+import {
+  API_VERSION,
+  decodeDataKey,
+  isRecord,
+  promptSkill,
+  SERVER_FEATURE_LABELS,
+  SERVER_FEATURES,
+  shortSkill,
+} from '@agent-board/shared';
 import { parseEnv } from './env-file.mts';
 import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
 
@@ -299,8 +307,48 @@ const checkConfig: Check = ({ configDir, readText }) => {
       ),
     ];
   try {
-    const config = parseConfig(JSON.parse(text));
-    return [ok('config.json', `machine ${config.machine}`)];
+    const raw: unknown = JSON.parse(text);
+    const config = parseConfig(raw);
+    const rawIntake = isRecord(raw) && isRecord(raw['intake']) ? raw['intake'] : undefined;
+    const oldLists = INTAKE_LIST_KEYS.filter((key) => rawIntake !== undefined && key in rawIntake);
+    const unknownKeys = Object.keys(rawIntake ?? {}).filter(
+      (key) => key !== 'prompt' && key !== 'priority' && !oldLists.some((list) => list === key),
+    );
+    const skill = promptSkill(config.intake.prompt);
+    const target = skill === undefined ? undefined : shortSkill(skill);
+    return [
+      ok('config.json', `machine ${config.machine}`),
+      ...(oldLists.length === 0
+        ? []
+        : [
+            problem(
+              'config.json intake lists',
+              'warn',
+              `intake.${oldLists.join(', intake.')} ${oldLists.length === 1 ? 'is' : 'are'} deprecated and read for one more release only`,
+              `move them into skills.${target ?? '<skill>'} (see apps/cli/examples/config.reviews.json)`,
+            ),
+          ]),
+      ...(unknownKeys.length === 0
+        ? []
+        : [
+            problem(
+              'config.json intake keys',
+              'warn',
+              `intake has unknown keys, which are ignored: ${unknownKeys.map((key) => key.slice(0, 40)).join(', ')}`,
+              'check them for typos: a mistyped rule list is not applied',
+            ),
+          ]),
+      ...(!config.intakeEnabled || (target !== undefined && Object.hasOwn(config.skills, target))
+        ? []
+        : [
+            problem(
+              'config.json intake profile',
+              'warn',
+              `intake is set, but there is no skills.${target ?? '<skill>'} profile for its prompt's skill, so its tasks do not run here`,
+              `add skills.${target ?? '<skill>'} (see apps/cli/examples/config.reviews.json)`,
+            ),
+          ]),
+    ];
   } catch (error) {
     const message =
       error instanceof SyntaxError ? 'is not valid JSON' : error instanceof Error ? error.message : String(error);

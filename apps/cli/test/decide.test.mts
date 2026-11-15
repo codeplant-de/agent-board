@@ -19,6 +19,7 @@ import {
   supervise,
   notServableHere,
   planRun,
+  restrictedPr,
   freshThreadBlock,
   splitBatches,
   START_MARKER,
@@ -26,6 +27,7 @@ import {
   WAKE_MARKER,
 } from '../src/decide.mts';
 import type { LaneRun } from '../src/decide.mts';
+import type { SkillProfile } from '../src/config.mts';
 import { MAX_BATCH_EVENTS } from '@agent-board/shared';
 import { BackendError } from '../src/backend.mts';
 import type { TranscriptEvent } from '@agent-board/shared';
@@ -40,6 +42,9 @@ const options = (newSession = OTHER_SESSION, own = true) => ({
 
 const FRESH = { kind: 'fresh', sessionId: SESSION } as const;
 const PR = 'https://github.com/cosuno/cosuno/pull/17741';
+const withProfile = (over: Partial<SkillProfile>): Record<string, SkillProfile> => ({
+  'review-pr': { ...CONFIG.skills['review-pr']!, ...over },
+});
 const invoke = (
   overrides: Parameters<typeof task>[0],
   run: Parameters<typeof buildInvocation>[0]['run'] = FRESH,
@@ -50,7 +55,7 @@ const invoke = (
     task: task(overrides),
     repos: CONFIG.repos,
     defaultCwd: CONFIG.defaultCwd,
-    intake: CONFIG.intake,
+    skills: CONFIG.skills,
     laneCwd,
     home: '/h',
     pluginRoots: { 'pr-review': '/plugins/pr' },
@@ -158,13 +163,21 @@ test('a resume passes the reply and continues where the session stopped', () => 
   assert.equal(plan.invocation.cwd, '/repo/.claude/worktrees/x');
 });
 
-test('intake rules naming a plugin need its path', () => {
+test('a plugin placeholder may name its marketplace', () => {
+  assert.deepEqual(pluginPlaceholders(['Bash({pr-review@ccc}/a *)', 'Bash({pr-review}/b *)']), [
+    'pr-review@ccc',
+    'pr-review',
+  ]);
+  assert.equal(expandRule('Bash({pr-review@ccc}/a.sh *)', '/h', { 'pr-review@ccc': '/p' }), 'Bash(/p/a.sh *)');
+});
+
+test('profile rules naming a plugin need its path', () => {
   const plan = buildInvocation({
     run: FRESH,
-    task: task({ id: 'a', input: PR, createdBy: 'intake' }),
+    task: task({ id: 'a', input: `/review-pr ${PR}`, createdBy: 'intake' }),
     repos: CONFIG.repos,
     defaultCwd: '/',
-    intake: { ...CONFIG.intake, allowedTools: ['Bash({pr-review}/x.sh *)', 'Bash({engineering}/y.sh *)'] },
+    skills: withProfile({ allowedTools: ['Bash({pr-review}/x.sh *)', 'Bash({engineering}/y.sh *)'] }),
     home: '/h',
     pluginRoots: { 'pr-review': '/p' },
   });
@@ -196,15 +209,134 @@ test("a prompt's skill picks its lane; anything else goes to the lane with *", (
   assert.equal(ownLane(task({ id: 'a', input: 'Find out X' }), [lanes[0]!]), undefined);
 });
 
-test('a machine without an intake block leaves intake-created tasks to another machine', () => {
-  const intakeTask = task({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
-  assert.equal(notServableHere(intakeTask, 'here', CONFIG.repos, false), 'no intake block in config.json here');
-  assert.equal(notServableHere(intakeTask, 'here', CONFIG.repos, true), undefined);
-  assert.equal(notServableHere(task({ id: 'b', input: 'Find out X' }), 'here', CONFIG.repos, false), undefined);
+test('a restricted task needs the profile of its skill here, else another machine takes it', () => {
+  const restricted = (input: string) => task({ id: 'a', input, createdBy: 'intake' });
+  const here = (input: string, skills = CONFIG.skills) =>
+    notServableHere(restricted(input), 'here', CONFIG.repos, skills);
+  assert.equal(here(`/review-pr ${PR} --auto`), undefined);
+  assert.equal(here(`/pr-review:review-pr ${PR} --auto`), undefined);
+  assert.equal(here(`/review-pr ${PR} --auto`, {}), 'no skills.review-pr profile in config.json here');
+  assert.equal(here(`/other ${PR}`), 'no skills.other profile in config.json here');
+  assert.equal(here(`please review ${PR}`), 'no skill in the prompt');
+  assert.equal(here('/review-pr https://github.com/x/y/pull/1', CONFIG.skills), 'no checkout of x/y here');
+  assert.equal(
+    notServableHere(task({ id: 'b', input: 'Find out X' }), 'here', CONFIG.repos, {}),
+    undefined,
+    'a task the user typed needs no profile',
+  );
+  assert.equal(
+    notServableHere(task({ id: 'c', input: `/review-pr ${PR}` }), 'here', CONFIG.repos, {}),
+    undefined,
+    'a profile restricts only what intake sealed',
+  );
+});
+
+test('a restricted task is refused without a profile and runs dontAsk with exactly its profile', () => {
+  const restricted = (input: string, skills: Record<string, SkillProfile>) =>
+    buildInvocation({
+      run: FRESH,
+      task: task({ id: 'a', input, createdBy: 'intake' }),
+      repos: CONFIG.repos,
+      defaultCwd: '/home/me',
+      skills,
+      home: '/h',
+      pluginRoots: {},
+    });
+  const refused = restricted(`/review-pr ${PR}`, {});
+  assert.ok(!refused.ok && /no skills\.review-pr profile/.test(refused.reason));
+  const resumed = buildInvocation({
+    run: { kind: 'resume', sessionId: SESSION, prompt: 'go on' },
+    task: task({ id: 'a', input: `/review-pr ${PR}`, createdBy: 'intake', workdir: '/w' }),
+    repos: CONFIG.repos,
+    defaultCwd: '/home/me',
+    skills: {},
+    home: '/h',
+    pluginRoots: {},
+  });
+  assert.ok(!resumed.ok && /no skills\.review-pr profile/.test(resumed.reason), 'a resume needs the profile too');
+  const noSkill = restricted(`review ${PR}`, CONFIG.skills);
+  assert.ok(!noSkill.ok && /no skill in the prompt/.test(noSkill.reason));
+  const plan = restricted(
+    `/pr-review:review-pr ${PR}`,
+    withProfile({ allowedTools: ['Read'], disallowedTools: ['Bash(rm *)'] }),
+  );
+  assert.ok(plan.ok);
+  const { args } = plan.invocation;
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
+  assert.deepEqual(args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--disallowedTools')), ['Read']);
+  assert.deepEqual(args.slice(args.indexOf('--disallowedTools') + 1), ['Bash(rm *)']);
+});
+
+test('a task the user typed runs in auto mode even when a profile exists for its skill', () => {
+  const plan = invoke({ id: 'a', input: `/review-pr ${PR}` });
+  assert.ok(plan.ok);
+  assert.equal(plan.invocation.args[plan.invocation.args.indexOf('--permission-mode') + 1], 'auto');
+  assert.ok(!plan.invocation.args.includes('--allowedTools'));
+});
+
+test("a restricted task runs in its profile's directory, else the checkout of the PR it names, else its lane's, else the default", () => {
+  const where = (input: string, profileCwd: string | undefined, laneCwd: string | undefined) => {
+    const plan = buildInvocation({
+      run: FRESH,
+      task: task({ id: 'a', input, createdBy: 'intake' }),
+      repos: CONFIG.repos,
+      defaultCwd: '/home/me',
+      skills: withProfile(profileCwd === undefined ? {} : { cwd: profileCwd }),
+      laneCwd,
+      home: '/h',
+      pluginRoots: {},
+    });
+    return plan.ok ? plan.invocation.cwd : plan.reason;
+  };
+  assert.equal(where(`/review-pr ${PR}`, undefined, '/lane'), '/work/cosuno');
+  assert.equal(where(`/review-pr ${PR} --auto`, '/profile', '/lane'), '/profile', 'the profile directory beats the PR');
+  assert.equal(where(`/review-pr https://github.com/x/y/pull/1`, '/profile', undefined), '/profile');
+  assert.equal(where('/review-pr 17741', undefined, '/lane'), '/lane');
+  assert.equal(where('/review-pr 17741', undefined, undefined), '/home/me');
+  assert.match(
+    where('/review-pr https://github.com/x/y/pull/1', undefined, '/lane'),
+    /No checkout is configured for x\/y/,
+  );
+});
+
+test('only the first argument right after the skill names the PR of a restricted task', () => {
+  const other = 'https://github.com/x/y/pull/1';
+  for (const input of [
+    `/review-pr 17741 ${PR}`,
+    `/review-pr see ${PR}`,
+    `please review ${PR}`,
+    `/review-pr 17741\n${PR}`,
+    `/review-pr x${PR}`,
+  ]) {
+    const restricted = task({ id: 'a', input: `${input} ${other}`, createdBy: 'intake' });
+    const plan = buildInvocation({
+      run: FRESH,
+      task: restricted,
+      repos: CONFIG.repos,
+      defaultCwd: '/home/me',
+      skills: withProfile({}),
+      home: '/h',
+      pluginRoots: {},
+    });
+    if (input.startsWith('please')) {
+      assert.ok(!plan.ok && /no skill in the prompt/.test(plan.reason), input);
+      continue;
+    }
+    assert.ok(plan.ok && plan.invocation.cwd === '/home/me', input);
+    assert.equal(notServableHere(restricted, 'here', CONFIG.repos, CONFIG.skills), undefined, input);
+  }
+  assert.deepEqual(restrictedPr(`/pr-review:review-pr ${PR} --auto`), { repo: 'cosuno/cosuno', number: 17741 });
+});
+
+test("a restricted task for an unknown repo waits, unless its profile sets the directory; the profile's directory is no reason to skip", () => {
+  const unknown = task({ id: 'a', input: '/review-pr https://github.com/x/y/pull/1', createdBy: 'intake' });
+  assert.equal(notServableHere(unknown, 'here', CONFIG.repos, CONFIG.skills), 'no checkout of x/y here');
+  assert.equal(notServableHere(unknown, 'here', CONFIG.repos, withProfile({ cwd: '/profile' })), undefined);
 });
 
 test("a machine leaves a task to another when it is pinned there or lacks the PR's checkout", () => {
-  const here = (overrides: Parameters<typeof task>[0]) => notServableHere(task(overrides), 'here', CONFIG.repos, true);
+  const here = (overrides: Parameters<typeof task>[0]) =>
+    notServableHere(task(overrides), 'here', CONFIG.repos, CONFIG.skills);
   assert.equal(here({ id: 'a', input: 'Find out X' }), undefined);
   assert.match(here({ id: 'a', input: '/grill', machine: 'there', workdir: '/x' }) ?? '', /pinned to there/);
   assert.equal(here({ id: 'a', input: '/grill', machine: 'here', workdir: '/x' }), undefined);
@@ -629,7 +761,7 @@ test("a fresh run reads the user's notes since the previous run started, and is 
     task: task({ id: 'abc', input: '/grill the plan' }),
     repos: {},
     defaultCwd: '/',
-    intake: CONFIG.intake,
+    skills: CONFIG.skills,
     home: '/h',
     pluginRoots: {},
   });
@@ -692,7 +824,7 @@ test('a session id that is not a UUID, or a directory that is not a path, never 
       task: task({ id: 'a', input: '/grill', workdir }),
       repos: {},
       defaultCwd: '/',
-      intake: CONFIG.intake,
+      skills: CONFIG.skills,
       home: '/h',
       pluginRoots: {},
     });
@@ -712,7 +844,7 @@ test('a blocked plan never becomes an invocation', () => {
     task: task({ id: 'a', input: '/grill' }),
     repos: {},
     defaultCwd: '/',
-    intake: CONFIG.intake,
+    skills: CONFIG.skills,
     home: '/h',
     pluginRoots: {},
   });
@@ -785,15 +917,15 @@ test('every other board-derived value on the command line is one argument that c
   assert.ok(rules.length > 0 && rules.every((rule) => !rule.startsWith('-')));
 });
 
-test('an intake tool rule that would read as an option stops the run', () => {
+test('a profile tool rule that would read as an option stops the run', () => {
   for (const rule of ['--dangerously-skip-permissions', '-x', '{pr-review}/--x'.replace('{pr-review}', '-')]) {
     for (const list of ['allowedTools', 'disallowedTools'] as const) {
       const plan = buildInvocation({
         run: FRESH,
-        task: task({ id: 'a', input: PR, createdBy: 'intake' }),
+        task: task({ id: 'a', input: `/review-pr ${PR}`, createdBy: 'intake' }),
         repos: CONFIG.repos,
         defaultCwd: CONFIG.defaultCwd,
-        intake: { ...CONFIG.intake, [list]: [rule] },
+        skills: withProfile({ [list]: [rule] }),
         home: '/h',
         pluginRoots: {},
       });

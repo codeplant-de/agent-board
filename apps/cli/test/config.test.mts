@@ -15,11 +15,8 @@ test('a valid config gets defaults', () => {
   assert.deepEqual(config.intake, {
     prompt: '/review-pr {url} --auto',
     priority: 'normal',
-    allowedTools: [],
-    disallowedTools: [],
-    env: [],
-    mcpServers: [],
   });
+  assert.deepEqual(config.skills, {});
   assert.ok(config.defaultCwd.startsWith('/') && !config.defaultCwd.includes('~'));
   assert.deepEqual([config.pauseAfterMinutes, config.inactivityMinutes, config.maxRunHours], [5, 15, 6]);
   assert.ok(!config.repos['cosuno/cosuno']?.startsWith('~'));
@@ -126,4 +123,105 @@ test('autoUpdate defaults to incompatible, takes the three modes and refuses any
       () => parseConfig({ ...valid, autoUpdate: bad }),
       /config: autoUpdate must be one of incompatible, always, never/,
     );
+});
+
+const EMPTY = { allowedTools: [], disallowedTools: [], env: [], mcpServers: [] };
+
+test('a skills block is read per skill, keys are normalised like lanes, and cwd expands ~', () => {
+  const config = parseConfig({
+    ...valid,
+    skills: {
+      'pr-review:review-pr': { allowedTools: ['Read'], env: ['TOKEN'], mcpServers: ['shortcut'], cwd: '~/w' },
+      '/grill': {},
+    },
+  });
+  assert.deepEqual(Object.keys(config.skills), ['review-pr', 'grill']);
+  assert.deepEqual(config.skills['grill'], EMPTY);
+  const review = config.skills['review-pr'];
+  assert.deepEqual(
+    [review?.allowedTools, review?.disallowedTools, review?.env, review?.mcpServers],
+    [['Read'], [], ['TOKEN'], ['shortcut']],
+  );
+  assert.ok(review?.cwd?.startsWith('/') && review.cwd.endsWith('/w') && !review.cwd.includes('~'));
+});
+
+test('a skills block that is wrong is refused, and a mistyped key never fails open', () => {
+  const cases: [unknown, RegExp][] = [
+    ['x', /skills must be an object/],
+    [{ 'review-pr': [] }, /skills.review-pr must be an object/],
+    [
+      { 'review-pr': { disallowedTool: ['Bash(git push *)'] } },
+      /skills.review-pr has the unknown key "disallowedTool"/,
+    ],
+    [{ 'review-pr': { allowedTools: 'Read' } }, /skills.review-pr.allowedTools must be a list of strings/],
+    [{ 'review-pr': { mcpServers: [1] } }, /skills.review-pr.mcpServers must be a list of strings/],
+    [{ 'review-pr': { env: ['A-B'] } }, /skills.review-pr.env names "A-B"/],
+    [{ 'review-pr': { cwd: 'relative' } }, /skills.review-pr.cwd must be an absolute path/],
+    [{ 'review-pr': { cwd: 3 } }, /skills.review-pr.cwd must be an absolute path/],
+    [{ 'bad name': {} }, /skills key "bad name" is not a skill name/],
+    [{ 'plugin:': {} }, /skills key "plugin:" is not a skill name/],
+    [{ 'plugin:_x': {} }, /skills key "plugin:_x" is not a skill name/],
+    [
+      { 'review-pr': {}, 'pr-review:review-pr': {} },
+      /skills.review-pr and skills.pr-review:review-pr are the same skill \("review-pr"\)/,
+    ],
+  ];
+  for (const [skills, message] of cases)
+    assert.throws(
+      () => parseConfig({ ...valid, skills }),
+      (error) => error instanceof ConfigError && message.test(error.message),
+      message.source,
+    );
+});
+
+test("the intake block's tool lists become the profile of the intake prompt's skill", () => {
+  const config = parseConfig({
+    ...valid,
+    intake: {
+      prompt: '/pr-review:review-pr {url}',
+      allowedTools: ['Read'],
+      disallowedTools: ['Bash(git push *)'],
+      env: ['TOKEN'],
+      mcpServers: ['shortcut'],
+    },
+  });
+  assert.deepEqual(config.skills, {
+    'review-pr': {
+      allowedTools: ['Read'],
+      disallowedTools: ['Bash(git push *)'],
+      env: ['TOKEN'],
+      mcpServers: ['shortcut'],
+    },
+  });
+  assert.equal(config.intakeEnabled, true);
+  assert.deepEqual(config.intake, { prompt: '/pr-review:review-pr {url}', priority: 'normal' });
+  assert.throws(
+    () => parseConfig({ ...valid, intake: { allowedTools: 'Read' } }),
+    (error) => error instanceof ConfigError && /intake.allowedTools must be a list of strings/.test(error.message),
+  );
+});
+
+test('an intake block without lists adds no profile, and a skills profile of the same skill stands alone', () => {
+  const profile = { allowedTools: ['Read'] };
+  const config = parseConfig({ ...valid, intake: { priority: 'high' }, skills: { 'review-pr': profile } });
+  assert.deepEqual(config.skills, { 'review-pr': { ...EMPTY, allowedTools: ['Read'] } });
+  assert.deepEqual(parseConfig({ ...valid, intake: {} }).skills, {});
+});
+
+test('intake lists and a skills profile for the same skill conflict', () => {
+  assert.throws(
+    () => parseConfig({ ...valid, intake: { allowedTools: ['Read'] }, skills: { 'pr-review:review-pr': {} } }),
+    (error) =>
+      error instanceof ConfigError &&
+      /intake lists and skills.pr-review:review-pr both set the rules of "review-pr"/.test(error.message),
+  );
+  assert.doesNotThrow(() => parseConfig({ ...valid, intake: { allowedTools: ['Read'] }, skills: { other: {} } }));
+});
+
+test('intake lists under a prompt without a skill are refused instead of dropped', () => {
+  assert.throws(
+    () => parseConfig({ ...valid, intake: { prompt: 'review {url}', allowedTools: ['Read'] } }),
+    (error) => error instanceof ConfigError && /intake.prompt must start with a \/skill/.test(error.message),
+  );
+  assert.doesNotThrow(() => parseConfig({ ...valid, intake: { prompt: 'review {url}' } }));
 });

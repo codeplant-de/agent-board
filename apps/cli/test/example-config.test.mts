@@ -10,8 +10,8 @@ const FRESH = { kind: 'fresh', sessionId: '11111111-1111-4111-8111-111111111111'
 
 const raw: unknown = JSON.parse(readFileSync(new URL('../examples/config.reviews.json', import.meta.url), 'utf8'));
 const config = parseConfig(raw);
-// Intake reviews run unattended on PR text: these are the only rules with a job to do.
-const entry = config.intake;
+// Restricted review runs are unattended on PR text: these are the only rules with a job to do.
+const entry = config.skills['review-pr']!;
 
 const neutral = parseConfig(
   JSON.parse(readFileSync(new URL('../config.example.json', import.meta.url), 'utf8')) as unknown,
@@ -27,8 +27,10 @@ test('the config board init copies is neutral: one general lane, no repos, no in
   assert.ok(!readFileSync(new URL('../config.example.json', import.meta.url), 'utf8').includes('cosuno'));
 });
 
-test('the reviews example has an intake block', () => {
+test('the reviews example has an intake block, and the review rules are the profile of review-pr', () => {
   assert.equal(config.intakeEnabled, true);
+  assert.deepEqual(Object.keys(config.skills), ['review-pr']);
+  assert.ok(!(isRecord(raw) && isRecord(raw['intake']) && 'allowedTools' in raw['intake']));
 });
 
 test('the example has no backend entry: the CLI talks to the board directly', () => {
@@ -71,7 +73,7 @@ test('the plugin placeholder resolves in every shipped script rule', () => {
     task: task({ id: 'a', input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto', createdBy: 'intake' }),
     repos: config.repos,
     defaultCwd: '/',
-    intake: entry,
+    skills: config.skills,
     home: '/h',
     pluginRoots: { 'pr-review': '/p', engineering: '/e' },
   });
@@ -101,7 +103,7 @@ test('the shipped lanes give reviews their own slots and everything else three',
       ['general', ['*'], 3],
     ],
   );
-  assert.equal(entry.prompt, '/review-pr {url} --auto');
+  assert.equal(config.intake.prompt, '/review-pr {url} --auto');
 });
 
 // Claude Code's Bash rule matching as far as the shipped rules need it: `*` is any run of characters.
@@ -149,4 +151,10 @@ test('an intake run may report and propose through board, but never schedule or 
   assert.ok(entry.disallowedTools.includes('Bash(board schedule *)'));
   assert.ok(entry.disallowedTools.includes('Bash(board schedules *)'));
   assert.ok(entry.disallowedTools.includes('Bash(board internal *)'));
+});
+
+test('a review run may not call the commands that create tasks for scripts', () => {
+  for (const command of ['board create --skill review-pr x', 'board intake run']) assert.ok(!allows(command), command);
+  assert.ok(entry.disallowedTools.includes('Bash(board create *)'));
+  assert.ok(entry.disallowedTools.includes('Bash(board intake *)'));
 });

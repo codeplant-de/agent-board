@@ -141,17 +141,15 @@ test('a task this machine cannot serve is left in Todo for another machine', asy
   assert.ok(logs.some((line) => line.startsWith('SKIP elsewhere pinned to there')));
 });
 
-test('a machine without an intake block skips intake tasks', async () => {
-  const review = task({
-    id: 'rev',
-    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-    createdBy: 'intake',
-  });
-  const { deps, started, logs } = setup([review, todo('t1')]);
-  deps.config = { ...CONFIG, intakeEnabled: false };
+test('a machine without a profile for its skill skips restricted tasks, and runs the same skill typed by the user', async () => {
+  const input = '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto';
+  const review = task({ id: 'rev', input, createdBy: 'intake' });
+  const typed = task({ id: 'typed', input });
+  const { deps, started, logs } = setup([review, typed, todo('t1')]);
+  deps.config = { ...CONFIG, skills: {} };
   await runDispatch(deps);
-  assert.deepEqual(started, ['t1']);
-  assert.ok(logs.some((line) => line.startsWith('SKIP rev no intake block in config.json here')));
+  assert.deepEqual(started, ['typed', 't1']);
+  assert.ok(logs.some((line) => line.startsWith('SKIP rev no skills.review-pr profile in config.json here')));
 });
 
 test('a claim lost to another machine starts nothing and the next task gets the slot', async () => {

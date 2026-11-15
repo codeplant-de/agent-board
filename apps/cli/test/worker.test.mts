@@ -5,6 +5,7 @@ import type { Note, Task } from '@agent-board/shared';
 import { BackendError } from '../src/backend.mts';
 import { START_MARKER } from '../src/decide.mts';
 import type { Invocation, Supervision } from '../src/decide.mts';
+import type { Config, SkillProfile } from '../src/config.mts';
 import { runWorker } from '../src/worker.mts';
 import type { RunChannel, RunResult, Watch, WorkerDeps } from '../src/worker.mts';
 import { CONFIG, fakeBackend, fakeRunFiles, fakeSessions, note, OTHER_SESSION, SESSION, task } from './helpers.mts';
@@ -53,6 +54,11 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
 const settle = async (): Promise<void> => {
   for (let turn = 0; turn < 20; turn += 1) await new Promise<void>((done) => setImmediate(done));
 };
+
+const withProfile = (over: Partial<SkillProfile>): Config => ({
+  ...CONFIG,
+  skills: { 'review-pr': { ...CONFIG.skills['review-pr']!, ...over } },
+});
 
 test('non-zero exit reports the error and log tail', async () => {
   const { deps, backend } = setup({ exitCode: 1, signal: null });
@@ -137,7 +143,7 @@ test('exit 0 with the task already moved to Todo by a quick answer writes nothin
 
 test('an unresolvable pr-review plugin sends the task to Needs me with the reason', async () => {
   const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, allowedTools: ['Bash({pr-review}/skills/x.sh *)'] } };
+  deps.config = withProfile({ allowedTools: ['Bash({pr-review}/skills/x.sh *)'] });
   Object.assign(backend.tasks[0]!, {
     createdBy: 'intake',
     input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
@@ -155,16 +161,47 @@ test('an unresolvable pr-review plugin sends the task to Needs me with the reaso
   assert.ok(calls.some((c) => c.startsWith('append w1:')));
 });
 
-test('a worker refuses an intake task on a machine without an intake block', async () => {
-  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, intakeEnabled: false };
-  Object.assign(backend.tasks[0]!, {
-    createdBy: 'intake',
-    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-  });
-  await runWorker(deps, 'w1');
-  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('no intake block')));
-  assert.ok(calls.some((c) => c.startsWith('append w1:')));
+test('a worker refuses a restricted task on a machine without a profile for its skill', async () => {
+  for (const input of [
+    '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
+    'review https://github.com/cosuno/cosuno/pull/1',
+  ]) {
+    const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
+    deps.config = { ...CONFIG, skills: {} };
+    Object.assign(backend.tasks[0]!, { createdBy: 'intake', input });
+    let started = false;
+    deps.run = async () => {
+      started = true;
+      return { exitCode: 0, signal: null };
+    };
+    await runWorker(deps, 'w1');
+    assert.ok(
+      backend.writes.some((w) => w.startsWith('fail w1:') && /restricted.*has no /.test(w)),
+      backend.writes.join('\n'),
+    );
+    assert.ok(calls.some((c) => c.startsWith('append w1:')));
+    assert.equal(started, false);
+  }
+});
+
+test('a restricted task runs dontAsk with its profile, and a user task of the same skill runs auto', async () => {
+  const permissionModes: string[] = [];
+  for (const createdBy of ['intake', 'user']) {
+    const { deps, backend } = setup({ exitCode: 0, signal: null });
+    Object.assign(backend.tasks[0]!, {
+      createdBy,
+      input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
+      machine: null,
+      workdir: null,
+    });
+    deps.run = async (invocation) => {
+      permissionModes.push(invocation.args[invocation.args.indexOf('--permission-mode') + 1] ?? '');
+      backend.tasks[0]!.status = 'needs-me';
+      return { exitCode: 0, signal: null };
+    };
+    await runWorker(deps, 'w1');
+  }
+  assert.deepEqual(permissionModes, ['dontAsk', 'auto']);
 });
 
 test('a missing working directory is named in the error', async () => {
@@ -427,7 +464,7 @@ test('a transcript batch the board refused is sent again with the next one', asy
 
 test("an intake run gets the variables intake names from the checkout's settings, and nothing else", async () => {
   const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, env: ['CIRCLECI_TOKEN', 'SHORTCUT_API_TOKEN'] } };
+  deps.config = withProfile({ env: ['CIRCLECI_TOKEN', 'SHORTCUT_API_TOKEN'] });
   Object.assign(backend.tasks[0]!, {
     createdBy: 'intake',
     input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
@@ -450,6 +487,7 @@ test("an intake run gets the variables intake names from the checkout's settings
   assert.deepEqual(env, {
     CIRCLECI_TOKEN: 'ci-secret',
     AGENT_BOARD_TASK: 'w1',
+    AGENT_BOARD_RESTRICTED: '1',
     AGENT_BOARD_START_DIR: '/work/cosuno',
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
   });
@@ -459,7 +497,7 @@ test("an intake run gets the variables intake names from the checkout's settings
 
 test("a scheduled run loads the checkout's settings itself: no variables are copied", async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, env: ['CIRCLECI_TOKEN'] } };
+  deps.config = withProfile({ env: ['CIRCLECI_TOKEN'] });
   let env: Record<string, string> = { unset: 'x' };
   deps.settingsEnv = () => ({ CIRCLECI_TOKEN: 'ci-secret' });
   deps.run = async (_invocation, _taskId, runEnv) => {
@@ -477,7 +515,7 @@ test("a scheduled run loads the checkout's settings itself: no variables are cop
 
 test("an intake run gets the MCP servers intake names from the checkout's .mcp.json", async () => {
   const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, mcpServers: ['shortcut', 'gone'] } };
+  deps.config = withProfile({ mcpServers: ['shortcut', 'gone'] });
   Object.assign(backend.tasks[0]!, {
     createdBy: 'intake',
     input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
@@ -538,10 +576,7 @@ test('every run waits for background work: print mode would otherwise stop it 10
   for (const intake of [false, true]) {
     const { deps, backend } = setup({ exitCode: 0, signal: null });
     if (intake) {
-      deps.config = {
-        ...CONFIG,
-        intake: { ...CONFIG.intake, env: ['CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', 'AGENT_BOARD_TASK'] },
-      };
+      deps.config = withProfile({ env: ['CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', 'AGENT_BOARD_TASK'] });
       deps.settingsEnv = () => ({ CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '600000', AGENT_BOARD_TASK: 'other' });
       Object.assign(backend.tasks[0]!, {
         createdBy: 'intake',

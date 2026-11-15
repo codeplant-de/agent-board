@@ -1,4 +1,4 @@
-import type { IntakeConfig, Lane } from './config.mts';
+import type { Lane, SkillProfile } from './config.mts';
 import {
   formatAnswers,
   isModelName,
@@ -14,9 +14,9 @@ import type { Note, Task, TranscriptEvent, UnreadableField } from '@agent-board/
 import { BackendError } from './backend.mts';
 import { fence } from './text.mts';
 
-// `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives `<plugin>@ccc`, such as {pr-review}.
-const PLUGIN_PLACEHOLDER = /\{([a-z0-9][a-z0-9-]*)\}/g;
-export const PLUGIN_MARKETPLACE = 'ccc';
+// `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives the one installed `<plugin>@*`, such as
+// {pr-review}; `{<plugin>@<marketplace>}` names the marketplace.
+const PLUGIN_PLACEHOLDER = /\{([a-z0-9][a-z0-9-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?)\}/g;
 
 export const START_MARKER = 'agent-board: started';
 // The start of the note that ends a wait; the rest of it is why, and the resumed agent is told.
@@ -237,21 +237,49 @@ export function pinnedMachine(task: Task): string | undefined {
   return undefined;
 }
 
+export type ProfileLookup = { ok: true; profile: SkillProfile } | { ok: false; reason: string };
+
+/**
+ * The rules a restricted task (sealed `createdBy: 'intake'`) runs under: the profile of its prompt's skill. A restricted
+ * task runs on text nobody chose to read, so one without a profile on this machine must not run at all.
+ */
+export function profileFor(task: Task, skills: Record<string, SkillProfile>): ProfileLookup {
+  const skill = promptSkill(task.input);
+  if (skill === undefined) return { ok: false, reason: 'no skill in the prompt' };
+  const key = shortSkill(skill);
+  const profile = Object.hasOwn(skills, key) ? skills[key] : undefined;
+  if (profile === undefined) return { ok: false, reason: `no skills.${key} profile in config.json here` };
+  return { ok: true, profile };
+}
+
+/**
+ * The PR a restricted task is for: only the first argument right after its `/skill` token counts. Its text is untrusted, so
+ * a URL elsewhere on the line must not pick the run directory (and with it the settings and MCP servers the run reads).
+ */
+export function restrictedPr(input: string): { repo: string; number: number } | undefined {
+  const first = input.split('\n')[0] ?? '';
+  const url = /^\s*\/[A-Za-z0-9][A-Za-z0-9:_.-]*\s+(https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+)(?=\s|$)/.exec(
+    first,
+  )?.[1];
+  return parsePrUrl(url ?? '');
+}
+
 // Why this machine leaves a todo task to another one, or undefined when it can run it.
 export function notServableHere(
   task: Task,
   machine: string,
   repos: Record<string, string>,
-  intakeEnabled: boolean,
+  skills: Record<string, SkillProfile>,
 ): string | undefined {
   const pinned = pinnedMachine(task);
   if (pinned !== undefined && pinned !== machine) return `pinned to ${pinned}`;
   if (task.createdBy === 'intake') {
-    // Intake's tasks run on untrusted PR text under intake's rules, which only an `intake` block holds.
-    if (!intakeEnabled) return 'no intake block in config.json here';
-    const pr = parsePrUrl(prUrlIn(task.input) ?? '');
-    // An intake task without a PR URL is claimed and fails with the reason; one for a repo without a checkout here waits.
-    if (pr !== undefined && !Object.hasOwn(repos, pr.repo)) return `no checkout of ${pr.repo} here`;
+    const lookup = profileFor(task, skills);
+    if (!lookup.ok) return lookup.reason;
+    const pr = restrictedPr(task.input);
+    // A restricted task for a repo without a checkout here waits for a machine that has one, unless its profile sets the directory.
+    if (lookup.profile.cwd === undefined && pr !== undefined && !Object.hasOwn(repos, pr.repo))
+      return `no checkout of ${pr.repo} here`;
   }
   return undefined;
 }
@@ -559,16 +587,17 @@ export function buildInvocation(input: {
   repos: Record<string, string>;
   // Where a task without a directory of its own runs.
   defaultCwd: string;
-  intake: IntakeConfig;
+  // The profiles of restricted tasks, by short skill name.
+  skills: Record<string, SkillProfile>;
   // The directory a task without its own runs in when no PR in its prompt names a checkout (its lane's, if set).
   laneCwd?: string | undefined;
   home: string;
-  // Roots of the plugins intake's rules name ({pr-review} and the like).
+  // Roots of the plugins the profile's rules name ({pr-review} and the like), by placeholder text.
   pluginRoots: Record<string, string>;
   // The PreToolUse hook command (heartbeat, working directory, questions).
   hookCommand?: string;
 }): InvocationPlan {
-  const { task, intake } = input;
+  const { task } = input;
   const fromIntake = task.createdBy === 'intake';
   const prompt = task.input.trim();
   const refused = neverRun(task);
@@ -582,22 +611,28 @@ export function buildInvocation(input: {
     return { ok: false, reason: 'The task model is not a model name.' };
 
   // Where it runs: a resume where the session stopped; a scheduled task in its own directory; a task whose prompt
-  // names a PR in that repo's checkout (an intake review always); else its lane's directory, else the default one.
-  const pr = parsePrUrl(prUrlIn(task.input) ?? '');
+  // names a PR in that repo's checkout; else its lane's directory, else the default one. A restricted task's profile
+  // directory comes first, then the checkout of the PR it names as its first argument.
+  let profile: SkillProfile | undefined;
+  if (fromIntake) {
+    const lookup = profileFor(task, input.skills);
+    if (!lookup.ok)
+      return {
+        ok: false,
+        reason: `This task is restricted (it runs on text nobody chose to read) and has ${lookup.reason}, so it was not run.`,
+      };
+    profile = lookup.profile;
+  }
+  const pr = fromIntake ? restrictedPr(task.input) : parsePrUrl(prUrlIn(task.input) ?? '');
   const checkout = pr === undefined ? undefined : input.repos[pr.repo];
   let cwd: string;
   if (task.workdir !== null && (input.run.kind === 'resume' || !fromIntake)) {
     cwd = task.workdir;
-  } else if (fromIntake) {
-    if (!pr)
-      return {
-        ok: false,
-        reason: `The intake task's prompt names no GitHub PR: ${prompt.split('\n')[0] || '(empty)'}`,
-      };
-    if (!checkout)
-      return { ok: false, reason: `No checkout is configured for ${pr.repo}. Add it to "repos" in config.json.` };
-    cwd = checkout;
+  } else if (fromIntake && profile?.cwd !== undefined) {
+    cwd = profile.cwd;
   } else {
+    if (fromIntake && pr !== undefined && !checkout)
+      return { ok: false, reason: `No checkout is configured for ${pr.repo}. Add it to "repos" in config.json.` };
     cwd = checkout ?? input.laneCwd ?? input.defaultCwd;
   }
 
@@ -636,25 +671,27 @@ export function buildInvocation(input: {
     args.push('--permission-mode', 'auto');
     return { ok: true, invocation: { command: 'claude', args, prompt: promptText, cwd } };
   }
-  // Intake runs unattended on PR text nobody chose to read: only the user's own settings, and only what intake allows.
-  const missing = pluginPlaceholders([...intake.allowedTools, ...intake.disallowedTools]).filter(
+  // A restricted task runs unattended on text nobody chose to read: only the user's own settings, and only what its profile allows.
+  if (profile === undefined)
+    return { ok: false, reason: 'This task is restricted and has no profile, so it was not run.' };
+  const missing = pluginPlaceholders([...profile.allowedTools, ...profile.disallowedTools]).filter(
     (name) => !Object.hasOwn(input.pluginRoots, name),
   );
   if (missing.length > 0) {
     return {
       ok: false,
-      reason: `The path of the plugin ${missing.join(', ')} is unknown, but intake's rules name {${missing[0]}}.`,
+      reason: `The path of the plugin ${missing.join(', ')} is unknown, but the skill's rules name {${missing[0]}}.`,
     };
   }
   const expand = (rule: string): string => expandRule(rule, input.home, input.pluginRoots);
-  const allowed = intake.allowedTools.map(expand);
-  const disallowed = intake.disallowedTools.map(expand);
+  const allowed = profile.allowedTools.map(expand);
+  const disallowed = profile.disallowedTools.map(expand);
   // The two lists take every following argument that does not start with `-`: a rule that does would read as an option.
   const optionLike = [...allowed, ...disallowed].find((rule) => rule.startsWith('-'));
   if (optionLike !== undefined)
     return {
       ok: false,
-      reason: `An intake tool rule starts with "-" and would be read as an option: ${optionLike.slice(0, 40)}`,
+      reason: `A tool rule starts with "-" and would be read as an option: ${optionLike.slice(0, 40)}`,
     };
   args.push('--permission-mode', 'dontAsk', '--setting-sources', 'user');
   if (allowed.length > 0) args.push('--allowedTools', ...allowed);

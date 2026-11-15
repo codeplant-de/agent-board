@@ -38,7 +38,7 @@ function machine(
 const GOOD = {
   [`${CONFIG_DIR}/web.json`]: { text: '{"url": "https://board.example.com"}' },
   [`${CONFIG_DIR}/env`]: { text: `AGENT_BOARD_TOKEN=${TOKEN}\nAGENT_BOARD_DATA_KEY=${KEY_TEXT}\n`, mode: 0o100600 },
-  [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box", "intake": {}}' },
+  [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box", "intake": {}, "skills": {"review-pr": {}}}' },
 };
 
 const levels = (results: CheckResult[]): Record<string, string> =>
@@ -428,4 +428,37 @@ test('without an intake key, doctor checks gh but no intake unit', async () => {
   assert.ok(results.every((result) => !result.name.includes('intake')));
   const withIntake = await runChecks(machine({ ...GOOD, ...unitFiles(worker) }, { exists: () => true }));
   assert.ok(Object.keys(levels(withIntake)).some((name) => name.includes('intake.timer')));
+});
+
+test('tool lists under the intake key are deprecated: a warning naming the skill profile to move them to, never a failure', async () => {
+  const old = {
+    ...GOOD,
+    [`${CONFIG_DIR}/config.json`]: {
+      text: '{"machine": "box", "intake": {"prompt": "/pr-review:review-pr {url}", "allowedTools": ["Read"], "env": ["T"]}}',
+    },
+  };
+  const found = (await runChecks(machine(old))).find((result) => result.name === 'config.json intake lists');
+  assert.equal(found?.level, 'warn');
+  assert.match(found?.message ?? '', /intake\.allowedTools, intake\.env are deprecated/);
+  assert.match(found?.hint ?? '', /skills\.review-pr/);
+  const current = {
+    ...GOOD,
+    [`${CONFIG_DIR}/config.json`]: {
+      text: '{"machine": "box", "intake": {"priority": "high"}, "skills": {"review-pr": {}}}',
+    },
+  };
+  const results = await runChecks(machine(current));
+  assert.ok(!results.some((result) => result.name === 'config.json intake lists'));
+});
+
+test('unknown keys under intake warn, and intake without a profile for its skill warns', async () => {
+  const text = '{"machine": "box", "intake": {"disallowedTool": ["x"]}}';
+  const results = await runChecks(machine({ ...GOOD, [`${CONFIG_DIR}/config.json`]: { text } }));
+  const keys = results.find((result) => result.name === 'config.json intake keys');
+  assert.equal(keys?.level, 'warn');
+  assert.match(keys?.message ?? '', /disallowedTool/);
+  const profile = results.find((result) => result.name === 'config.json intake profile');
+  assert.equal(profile?.level, 'warn');
+  assert.match(profile?.message ?? '', /skills\.review-pr/);
+  assert.equal(hasFailure(results), false);
 });

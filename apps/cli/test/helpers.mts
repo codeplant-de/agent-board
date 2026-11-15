@@ -63,10 +63,14 @@ export const CONFIG: Config = {
   intake: {
     prompt: '/review-pr {url} --auto',
     priority: 'normal',
-    allowedTools: ['Read', 'Bash(board comment *)'],
-    disallowedTools: ['Bash(git push *)'],
-    env: [],
-    mcpServers: [],
+  },
+  skills: {
+    'review-pr': {
+      allowedTools: ['Read', 'Bash(board comment *)'],
+      disallowedTools: ['Bash(git push *)'],
+      env: [],
+      mcpServers: [],
+    },
   },
   intakeEnabled: true,
   repos: { 'cosuno/cosuno': '/work/cosuno' },

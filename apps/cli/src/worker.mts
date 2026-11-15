@@ -28,9 +28,9 @@ import {
   neverRun,
   ownLane,
   pauseMessageText,
-  PLUGIN_MARKETPLACE,
   planRun,
   pluginPlaceholders,
+  profileFor,
   splitBatches,
   supervise,
   unreadableForRun,
@@ -157,19 +157,19 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   const refused = neverRun(task);
   if (refused !== undefined) return fail(refused);
 
-  const fromIntake = task.createdBy === 'intake';
-  if (fromIntake && !config.intakeEnabled)
+  const restricted = task.createdBy === 'intake';
+  const lookup = restricted ? profileFor(task, config.skills) : undefined;
+  if (lookup !== undefined && !lookup.ok)
     return fail(
-      'This task came from intake, and config.json on this machine has no intake block: its rules would be missing.',
+      `This task is restricted (it runs on text nobody chose to read) and has ${lookup.reason}, so it was not run.`,
     );
+  const profile = lookup?.ok ? lookup.profile : undefined;
   // What a new directory is sealed against: the task's own creator and schedule, as the board has them.
   const sealing = { createdBy: task.createdBy, scheduleId: task.scheduleId };
   const pluginRoots: Record<string, string> = {};
-  for (const name of fromIntake
-    ? pluginPlaceholders([...config.intake.allowedTools, ...config.intake.disallowedTools])
-    : []) {
+  for (const name of profile ? pluginPlaceholders([...profile.allowedTools, ...profile.disallowedTools]) : []) {
     try {
-      pluginRoots[name] = deps.pluginPath(`${name}@${PLUGIN_MARKETPLACE}`);
+      pluginRoots[name] = deps.pluginPath(name);
     } catch (error) {
       return fail(`Cannot resolve the ${name} plugin: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -186,15 +186,15 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     task,
     repos: config.repos,
     defaultCwd: config.defaultCwd,
-    intake: config.intake,
+    skills: config.skills,
     laneCwd: config.lanes.find((lane) => lane.name === ownLane(task, config.lanes))?.cwd,
     home: deps.home,
     pluginRoots,
   });
   if (!plan.ok) return fail(plan.reason);
-  // Intake's MCP servers come from the checkout's .mcp.json: intake does not load the settings that switch them on.
-  if (fromIntake && config.intake.mcpServers.length > 0) {
-    const servers = deps.mcpServers(plan.invocation.cwd, config.intake.mcpServers);
+  // A restricted run's MCP servers come from the run directory's .mcp.json: it does not load the settings that switch them on.
+  if (profile && profile.mcpServers.length > 0) {
+    const servers = deps.mcpServers(plan.invocation.cwd, profile.mcpServers);
     if (servers.missing.length > 0)
       deps.appendLog(taskId, `not in the checkout's .mcp.json: ${servers.missing.join(', ')}`);
     if (Object.keys(servers.config.mcpServers).length > 0)
@@ -213,17 +213,19 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   if (task.workdir !== plan.invocation.cwd)
     await backend.updateTask(task.id, { workdir: plan.invocation.cwd, seal: sealing });
 
-  // Intake loads only the user's settings; the tokens and endpoints it is allowed come from the checkout's.
+  // A restricted run loads only the user's settings; the tokens and endpoints its profile allows come from the run directory's.
   // Print mode kills background work 10 minutes after the last turn; 0 waits for it, and the heartbeat and stop handling still bound the run.
   // AGENT_BOARD_START_DIR: whose settings the run loaded; a check of `board wait` gets their `env` too.
+  // AGENT_BOARD_RESTRICTED: set by this machine, not read from the board, so `board wait --check` can refuse in a restricted run.
   const fixedEnv = {
     AGENT_BOARD_TASK: taskId,
+    ...(profile ? { AGENT_BOARD_RESTRICTED: '1' } : {}),
     AGENT_BOARD_START_DIR: plan.invocation.cwd,
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
   };
   let env: Record<string, string> = fixedEnv;
-  if (fromIntake && config.intake.env.length > 0) {
-    const picked = pickEnv(deps.settingsEnv(plan.invocation.cwd), config.intake.env);
+  if (profile && profile.env.length > 0) {
+    const picked = pickEnv(deps.settingsEnv(plan.invocation.cwd), profile.env);
     env = { ...picked.env, ...fixedEnv };
     if (picked.missing.length > 0)
       deps.appendLog(taskId, `not in the checkout's settings: ${picked.missing.join(', ')}`);

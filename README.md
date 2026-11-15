@@ -41,7 +41,7 @@ You need Linux with systemd and `claude`, logged in, plus `gh`, both logged in. 
    board doctor          # checks config, token, key, server version and units
    ```
 
-4. Edit `~/.config/agent-board/config.json`: map `repos` to your local checkouts, adjust `lanes` if you want parallel runs split by skill. To turn PR review requests into tasks, add an `intake` block (see `apps/cli/examples/config.reviews.json`) and run `board setup --enable` again.
+4. Edit `~/.config/agent-board/config.json`: map `repos` to your local checkouts, adjust `lanes` if you want parallel runs split by skill. To turn PR review requests into tasks, add an `intake` block and a `skills["review-pr"]` profile (see `apps/cli/examples/config.reviews.json`) and run `board setup --enable` again.
 
 For runs after you log out, enable lingering with `loginctl enable-linger $USER`. Update later with `board self-update`.
 

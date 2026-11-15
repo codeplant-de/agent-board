@@ -46,11 +46,11 @@ The design assumes the server and database may be hostile, and that any PR text 
 
 **Who created a task decides how it runs.** `createdBy` is the only permission bit:
 
-| Creator  | Runs as                                                                                                                             |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `user`   | Your full settings and `--permission-mode auto`, as if you typed the prompt yourself.                                               |
-| `intake` | `--permission-mode dontAsk`, user settings only, a narrow allow-list from `config.json`. Its input is PR text nobody chose to read. |
-| `agent`  | Never runs. A proposal waits in `needs-me` until you press Start, and then the browser seals the prompt again as yours.             |
+| Creator  | Runs as                                                                                                                                                                                  |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `user`   | Your full settings and `--permission-mode auto`, as if you typed the prompt yourself.                                                                                                    |
+| `intake` | `--permission-mode dontAsk`, user settings only, a narrow allow-list from the `skills.<skill>` profile in `config.json` (no profile, no run). Its input is PR text nobody chose to read. |
+| `agent`  | Never runs. A proposal waits in `needs-me` until you press Start, and then the browser seals the prompt again as yours.                                                                  |
 
 **Every content field is sealed for its purpose.** The clients encrypt with AES-256-GCM. Each envelope's additional data binds it to the owner, the field, the row and the creator or author. So the server cannot move a prompt to another task, relabel an intake prompt as yours, present an agent's note as your reply, or write a note of its own beyond the fixed event texts. A value that does not open under its exact binding is unreadable, and nothing falls back to a looser reading. The table of bindings is in [encryption.md](encryption.md), and `packages/shared/src/sealing.mts` is its single implementation.
 

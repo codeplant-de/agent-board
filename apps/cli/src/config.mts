@@ -9,25 +9,33 @@ import {
   MACHINE_NAME_RULE,
   isStringList,
   PRIORITIES,
+  promptSkill,
   shortSkill,
 } from '@agent-board/shared';
 import type { Priority } from '@agent-board/shared';
 
 export class ConfigError extends Error {}
 
-// How intake's tasks run: unattended, on PR text nobody chose to read, so with a narrow allow list instead of the user's
-// own settings.
+// What the built-in review intake creates: its prompt and priority. What its tasks may do is the profile of the prompt's
+// skill in `skills`.
 export interface IntakeConfig {
   // The task's prompt; {url} is the PR's URL.
   prompt: string;
   priority: Priority;
+}
+
+// What a restricted task of one skill (one sealed `createdBy: 'intake'`) may do. It runs unattended on text nobody chose to
+// read, so with a narrow allow list instead of the user's own settings.
+export interface SkillProfile {
   allowedTools: string[];
   disallowedTools: string[];
-  // Variables the worker copies from the checkout's .claude/settings.json and settings.local.json into the run:
-  // intake loads only the user's settings, so tokens and endpoints kept in the checkout would be missing.
+  // Variables the worker copies from the run directory's .claude/settings.json and settings.local.json into the run:
+  // a restricted run loads only the user's settings, so tokens and endpoints kept in the checkout would be missing.
   env: string[];
-  // MCP servers of the checkout's .mcp.json that intake runs get (with `--mcp-config`), such as "shortcut".
+  // MCP servers of the run directory's .mcp.json that the run gets (with `--mcp-config`), such as "shortcut".
   mcpServers: string[];
+  // Where its tasks run, before the checkout of the PR they name and the lane's cwd.
+  cwd?: string;
 }
 
 // Slots of one kind of work on this machine. A lane runs its own skills first (a task's skill is the slash command its
@@ -62,6 +70,9 @@ export interface Config {
   maxRunHours: number;
   autoUpdate: AutoUpdate;
   intake: IntakeConfig;
+  // The profiles of restricted tasks, by short skill name (see `profileFor` in decide.mts). A restricted task of a skill
+  // without one does not run.
+  skills: Record<string, SkillProfile>;
   // Whether config.json has an `intake` key: the intake timer and `board internal intake` exist only then.
   intakeEnabled: boolean;
   repos: Record<string, string>;
@@ -142,6 +153,10 @@ function parseLanes(raw: unknown): Lane[] {
   });
 }
 
+export const INTAKE_LIST_KEYS = ['allowedTools', 'disallowedTools', 'env', 'mcpServers'] as const;
+const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9:_.-]*$/;
+const PROFILE_KEYS = new Set<string>([...INTAKE_LIST_KEYS, 'cwd']);
+
 function parseIntake(raw: unknown): IntakeConfig {
   const obj = raw === undefined ? {} : raw;
   if (!isRecord(obj)) throw new ConfigError('config: intake must be an object');
@@ -150,23 +165,76 @@ function parseIntake(raw: unknown): IntakeConfig {
     throw new ConfigError('config: intake.prompt must be a prompt with {url} in it');
   const priority = obj['priority'] ?? DEFAULT_PRIORITY;
   if (!isPriority(priority)) throw new ConfigError(`config: intake.priority must be one of ${PRIORITIES.join(', ')}`);
-  const tools = (key: string): string[] => {
-    const value = obj[key] ?? [];
-    if (!isStringList(value)) throw new ConfigError(`config: intake.${key} must be a list of strings`);
+  if (INTAKE_LIST_KEYS.some((key) => key in obj) && promptSkill(prompt) === undefined)
+    throw new ConfigError(
+      'config: intake.prompt must start with a /skill: its tasks run under skills.<skill>, and the intake lists would be dropped',
+    );
+  return { prompt, priority };
+}
+
+function parseProfile(raw: unknown, where: string): SkillProfile {
+  if (!isRecord(raw)) throw new ConfigError(`config: ${where} must be an object`);
+  const unknown = Object.keys(raw).find((key) => !PROFILE_KEYS.has(key));
+  if (unknown !== undefined)
+    throw new ConfigError(
+      `config: ${where} has the unknown key "${unknown.slice(0, 40)}" (known: ${[...PROFILE_KEYS].join(', ')})`,
+    );
+  const list = (key: string): string[] => {
+    const value = raw[key] ?? [];
+    if (!isStringList(value)) throw new ConfigError(`config: ${where}.${key} must be a list of strings`);
     return value;
   };
-  const env = tools('env');
+  const env = list('env');
   const badName = env.find((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
   if (badName !== undefined)
-    throw new ConfigError(`config: intake.env names "${badName}", which is not a variable name`);
+    throw new ConfigError(`config: ${where}.env names "${badName}", which is not a variable name`);
+  const cwd = raw['cwd'];
+  if (cwd !== undefined && (typeof cwd !== 'string' || !expandHome(cwd).startsWith('/')))
+    throw new ConfigError(`config: ${where}.cwd must be an absolute path (or ~/...)`);
   return {
-    prompt,
-    priority,
-    allowedTools: tools('allowedTools'),
-    disallowedTools: tools('disallowedTools'),
+    allowedTools: list('allowedTools'),
+    disallowedTools: list('disallowedTools'),
     env,
-    mcpServers: tools('mcpServers'),
+    mcpServers: list('mcpServers'),
+    ...(cwd === undefined ? {} : { cwd: expandHome(cwd) }),
   };
+}
+
+// The skills' profiles. The `intake` block's tool lists are the old home of the profile of its prompt's skill, read for
+// one more release.
+function parseSkills(raw: unknown, rawIntake: unknown, intake: IntakeConfig): Record<string, SkillProfile> {
+  if (raw !== undefined && !isRecord(raw)) throw new ConfigError('config: skills must be an object');
+  const owner = new Map<string, string>();
+  const profiles = new Map<string, SkillProfile>();
+  for (const [name, entry] of Object.entries(raw ?? {})) {
+    const key = shortSkill(name.replace(/^\//, ''));
+    if (!SKILL_NAME.test(name.replace(/^\//, '')) || key === '' || key.startsWith('_'))
+      throw new ConfigError(`config: skills key "${name.slice(0, 40)}" is not a skill name`);
+    const other = owner.get(key);
+    if (other !== undefined)
+      throw new ConfigError(`config: skills.${other} and skills.${name} are the same skill ("${key}")`);
+    owner.set(key, name);
+    profiles.set(key, parseProfile(entry, `skills.${name}`));
+  }
+  if (isRecord(rawIntake) && INTAKE_LIST_KEYS.some((key) => key in rawIntake)) {
+    const skill = promptSkill(intake.prompt);
+    if (skill !== undefined) {
+      const key = shortSkill(skill);
+      const named = owner.get(key);
+      if (named !== undefined)
+        throw new ConfigError(
+          `config: intake lists and skills.${named} both set the rules of "${key}"; move the intake lists into skills.${named} and remove them`,
+        );
+      profiles.set(
+        key,
+        parseProfile(
+          Object.fromEntries(INTAKE_LIST_KEYS.flatMap((k) => (k in rawIntake ? [[k, rawIntake[k]]] : []))),
+          'intake',
+        ),
+      );
+    }
+  }
+  return Object.fromEntries(profiles);
 }
 
 export function parseConfig(raw: unknown): Config {
@@ -192,6 +260,7 @@ export function parseConfig(raw: unknown): Config {
   }
   const autoUpdate = 'autoUpdate' in raw ? raw['autoUpdate'] : 'incompatible';
   if (!isAutoUpdate(autoUpdate)) throw new ConfigError(`config: autoUpdate must be one of ${AUTO_UPDATES.join(', ')}`);
+  const intake = parseIntake(raw['intake']);
   return {
     machine,
     lanes: parseLanes(raw['lanes']),
@@ -200,7 +269,8 @@ export function parseConfig(raw: unknown): Config {
     inactivityMinutes: positiveInt(raw, 'inactivityMinutes', '', 15),
     maxRunHours: positiveInt(raw, 'maxRunHours', '', 6),
     autoUpdate,
-    intake: parseIntake(raw['intake']),
+    intake,
+    skills: parseSkills(raw['skills'], raw['intake'], intake),
     intakeEnabled: 'intake' in raw,
     repos,
   };
