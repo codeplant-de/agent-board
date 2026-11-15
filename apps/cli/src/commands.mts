@@ -473,7 +473,8 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         'Make a task of the prompt, written as you would type it into Claude Code, bound to this machine and this directory. Prints its URL. A quick Haiku call first checks whether an open task already covers it; --new skips that.',
         'The flags come first; everything from the first other word on is the prompt, flags included (`--auto` below goes to the skill). To start the prompt with dashes, put -- before it.',
         '--in or --at keeps the task in Todo until then. --every or --cron makes a repeating schedule instead, starting at --in/--at (default now), for --times runs or until --until, else forever.',
-        'With --json, print {"id", "url"} of the task on stdout; everything else goes to stderr. Not available inside a board run: there, propose follow-up work with `board add`.',
+        '--polish parks the task in Backlog and queues a second task, "Polish prompt: <title>", that asks an agent to turn the prompt into a complete plan, as the Polish prompt button on the board does. Apply the result from that task\'s page. It cannot be combined with --hold, --in, --at or a repeat.',
+        'With --json, print {"id", "url"} of the task on stdout (and "polishId", "polishUrl" with --polish); everything else goes to stderr. Not available inside a board run: there, propose follow-up work with `board add`.',
       ),
     )
     .usage('[options] <prompt...>')
@@ -491,6 +492,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         'board schedule --at 09:00 /grill the plan in docs/x.md',
         'board schedule --every 2h --times 5 /sweep the stale branches',
         'board schedule --cron "0 9 * * 1-5" /review-pr --auto',
+        'board schedule --polish "bidder export should include postal codes"',
         'board schedule --hold -- --weird prompt',
         'board schedule --json /review-pr 17741',
       ),
@@ -504,17 +506,17 @@ export function buildProgram(options: ProgramOptions = {}): Command {
           'the prompt ends in --dry-run: put --dry-run before the prompt (board schedule --dry-run <prompt...>), or put -- before a prompt that really ends in it',
         );
       const context = contextOf(command, { strictConfig: true, json: flags.json === true });
-      const task = await scheduleCommand(context, flags, words);
-      if (flags.json)
-        writeJson(
-          task
-            ? {
-                id: task.id,
-                url: context.taskLink(task.id),
-                ...(task.scheduleId ? { scheduleId: task.scheduleId } : {}),
-              }
-            : null,
-        );
+      const scheduled = await scheduleCommand(context, flags, words);
+      if (flags.json) {
+        if (scheduled === undefined) return writeJson(null);
+        const { task, polish } = scheduled;
+        writeJson({
+          id: task.id,
+          url: context.taskLink(task.id),
+          ...(task.scheduleId ? { scheduleId: task.scheduleId } : {}),
+          ...(polish ? { polishId: polish.id, polishUrl: context.taskLink(polish.id) } : {}),
+        });
+      }
     });
 
   dryRunOption(
