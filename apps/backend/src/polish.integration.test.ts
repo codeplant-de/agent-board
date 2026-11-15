@@ -74,6 +74,27 @@ describe('creating a task under a parent', () => {
     expect((await ctx.ui.tasks.get({ id: target.id })).followUps.map((t) => t.id)).toEqual([polish.id]);
   });
 
+  it('runs on the machine and in the directory it was given, which stays sealed', async () => {
+    const polish = await ctx.ui.tasks.create({
+      title: 'p',
+      input: 'q',
+      place: { machine: 'deskwork', workdir: '/home/me/code/thing' },
+    });
+    expect(polish).toMatchObject({ machine: 'deskwork', workdir: '/home/me/code/thing' });
+    const [row] = await admin.select().from(tasks).where(eq(tasks.id, polish.id));
+    expect(row?.workdir).not.toContain('/home/me');
+  });
+
+  it('refuses a directory for a repeating task and a machine name of the wrong shape', async () => {
+    const workdir = '/home/me/code/thing';
+    await expect(
+      ctx.ui.tasks.create({ input: 'q', when: { every: 3_600_000 }, place: { machine: 'deskwork', workdir } }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(
+      ctx.ui.tasks.create({ input: 'q', place: { machine: 'desk work;rm', workdir } }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+  });
+
   it('refuses a parent that is not on the board', async () => {
     await expect(ctx.ui.tasks.create({ title: 'x', input: 'y', parentId: 'nope1234' })).rejects.toMatchObject({
       code: 'NOT_FOUND',
