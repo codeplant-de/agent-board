@@ -43,7 +43,7 @@ The CLI checks the server's API range once per process (see [Version handshake](
 
 **Contract 8 (`polish` notes) needs no cutover but the general order below.** It adds the note kind `polish` (migration 0016, which adds the enum value): a CLI of contract 7 cannot read a thread that holds one, and a server of contract 7 would store one as an unreadable comment, so the contract number moves and server and machines update together. `board polish` and the **Polish prompt** button come with it.
 
-**Contract 6 (encryption) moves data, so it has its own sequence: follow [Cutover to encryption](operations.md#cutover-to-encryption) from its first step, in its order.** It stops the timers and takes the dump before anything is deployed, and it holds the CLI release, the keys, the re-encryption and the restart. The list below is the order for a raised `MIN_CLIENT` that needs no such cutover:
+**Contract 6 (encryption) moved data and had its own sequence, done once; see [Cutover to encryption](operations.md#cutover-to-encryption).** The list below is the order for a raised `MIN_CLIENT`:
 
 1. Stop the dispatch and intake timers and the listener on every worker machine: `systemctl --user stop agent-board-dispatch.timer agent-board-intake.timer agent-board-listen.service`.
 2. Take a dump of the database, your way back if a migration has to be undone.
