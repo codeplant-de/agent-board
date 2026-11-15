@@ -6,11 +6,16 @@ import { ReportedFailure, UsageError } from './cli.mts';
 import type { Context, LinkingContext } from './cli.mts';
 import { BackendError } from './backend.mts';
 import {
+  ContractError,
   formatAnswers,
+  formatDuration,
+  MAX_WAIT_MS,
+  parseDuration,
   describeRule,
   formatQuestions,
   isPriority,
   isSafeTaskId,
+  isSafeWorkdir,
   isStatus,
   ContractError,
   parseQuestions,
@@ -29,6 +34,8 @@ import { plainLine, plainText } from './terminal.mts';
 import type { Style } from './style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
 import type { Choice, ScheduleFlags } from './schedule.mts';
+import type { WaitStore } from './waits.mts';
+import { isPermanentRefusal } from './decide.mts';
 
 const NOTE_FILE_DIR = '/tmp/';
 const NOTE_FILE_MAX_BYTES = 1024 * 1024;
@@ -126,6 +133,7 @@ export function formatTasks(found: Task[], flags: TasksFlags, style: Style): str
         const labels = task.labels.length > 0 ? `  [${plainLine(task.labels.join(','))}]` : '';
         const hints = [
           task.notBefore ? `starts ${localTime(task.notBefore)}` : undefined,
+          task.wakeAt ? `${task.waitCheck ? 'checks, gives up' : 'wakes'} ${localTime(task.wakeAt)}` : undefined,
           task.closed ? 'closed' : undefined,
           task.unreadable.length > 0 ? `cannot decrypt: ${task.unreadable.join(', ')}` : undefined,
         ].filter((hint) => hint !== undefined);
@@ -359,6 +367,8 @@ export async function polish(context: LinkingContext, run: string, target: strin
 }
 
 export async function move(context: LinkingContext, id: string, status: Status): Promise<void> {
+  if (status === 'waiting')
+    throw new UsageError(`a wait needs its end: use "board wait ${id} --in <dur>" or "--check '<command>'" instead`);
   try {
     await context.backend.updateTask(id, { status });
   } catch (error) {
@@ -390,6 +400,120 @@ export async function delay(context: Context, id: string, flags: DelayFlags): Pr
   const notBefore = parseDelayFlags(flags);
   await context.backend.updateTask(id, { notBefore, expect: 'todo' });
   confirm(context, notBefore === null ? `${id} is due now` : `${id} starts ${localTime(notBefore)}`);
+}
+
+export interface WaitFlags {
+  in?: string;
+  at?: string;
+  check?: string;
+  every?: string;
+  timeout?: string;
+  reason?: string;
+}
+
+export const DEFAULT_CHECK_EVERY = '2m';
+export const DEFAULT_CHECK_TIMEOUT = '2h';
+// A check every minute at most: the dispatcher ticks every two minutes, the listener in between.
+const MIN_CHECK_EVERY_MS = 60_000;
+
+export interface WaitPlan {
+  wakeAt: Date;
+  check?: { command: string; everyMs: number };
+}
+
+// The end of the wait, and the check that may end it early; a timer is --in or --at, a check is --check with --every and --timeout.
+export function parseWaitFlags(flags: WaitFlags, now: Date = new Date()): WaitPlan {
+  const { in: inText, at, check, every, timeout } = flags;
+  const ends = [inText, at, check].filter((flag) => flag !== undefined);
+  if (ends.length !== 1) throw new UsageError('give exactly one of --in, --at or --check');
+  const duration = (text: string, flag: string): number => {
+    try {
+      return parseDuration(text);
+    } catch (error) {
+      if (error instanceof ContractError) throw new UsageError(`${flag}: ${error.message}`);
+      throw error;
+    }
+  };
+  let plan: WaitPlan;
+  if (check === undefined) {
+    if (every !== undefined || timeout !== undefined) throw new UsageError('--every and --timeout go with --check');
+    plan = { wakeAt: parseStart(inText === undefined ? { at } : { delay: inText }, now) ?? now };
+  } else {
+    if (check.trim() === '') throw new UsageError('--check needs a command');
+    const everyMs = duration(every ?? DEFAULT_CHECK_EVERY, '--every');
+    if (everyMs < MIN_CHECK_EVERY_MS) throw new UsageError('--every must be at least 1m');
+    plan = {
+      wakeAt: new Date(now.getTime() + duration(timeout ?? DEFAULT_CHECK_TIMEOUT, '--timeout')),
+      check: { command: check, everyMs },
+    };
+  }
+  if (plan.wakeAt.getTime() - now.getTime() > MAX_WAIT_MS)
+    throw new UsageError(`a wait may last at most ${formatDuration(MAX_WAIT_MS)}`);
+  return plan;
+}
+
+// The agent's comment on the wait: its reason and when it ends. The check's command stays on this machine.
+export function waitText(plan: WaitPlan, reason: string | undefined, machine: string): string {
+  const what = reason?.trim() || (plan.check ? 'Waiting for a check.' : 'Waiting.');
+  const when = plan.check
+    ? `Waiting until a check on ${machine} passes (every ${formatDuration(plan.check.everyMs)}), at most until ${localTime(plan.wakeAt)}.`
+    : `Waiting until ${localTime(plan.wakeAt)}.`;
+  return `${what}\n\n${when}`;
+}
+
+/**
+ * A running task waits: the slot frees, and the task resumes in its session once the time is up or the check passes. The
+ * check is stored on this machine before the board hears of the wait, so no tick sees a waiting task without it.
+ */
+export async function wait(
+  context: Context,
+  id: string,
+  flags: WaitFlags,
+  // `settingsDir`: the directory the run started in (AGENT_BOARD_START_DIR), whose settings the check takes its `env` from.
+  deps: { waits: WaitStore; cwd: string; settingsDir?: string; now?: Date },
+): Promise<void> {
+  const now = deps.now ?? new Date();
+  const plan = parseWaitFlags(flags, now);
+  if (plan.check !== undefined) {
+    const task = await context.backend.getTask(id);
+    if (task.status !== 'running') throw new UsageError(`${id} is ${task.status}: only a running task can wait`);
+    // An intake review runs on PR text nobody chose to read, with a fixed list of commands; a check would run any command.
+    if (task.createdBy === 'intake')
+      throw new UsageError(`${id} is an intake review: it may wait with --in or --at only`);
+    if (task.machine !== context.config.machine)
+      throw new UsageError(
+        `${id} runs on ${task.machine ?? 'no machine'}, not on ${context.config.machine}: a check runs on the task's machine`,
+      );
+    if (context.dryRun) context.print(`DRY store check for ${id} in ${deps.cwd}: ${plainLine(plan.check.command)}`);
+    else
+      deps.waits.write(id, {
+        command: plan.check.command,
+        cwd: deps.cwd,
+        ...(deps.settingsDir !== undefined && isSafeWorkdir(deps.settingsDir) ? { settingsDir: deps.settingsDir } : {}),
+        everyMs: plan.check.everyMs,
+        createdAt: now,
+      });
+  }
+  try {
+    await context.backend.wait(id, {
+      text: waitText(plan, flags.reason, context.config.machine),
+      wakeAt: plan.wakeAt,
+      check: plan.check !== undefined,
+    });
+  } catch (error) {
+    // Only a refusal: after a timeout or a 5xx the board may have taken the wait, and its check must stay. A stray one goes at
+    // the next tick, once the task neither runs nor waits.
+    if (plan.check !== undefined && !context.dryRun && isPermanentRefusal(error)) deps.waits.remove(id);
+    if (error instanceof BackendError && error.status === 409)
+      throw new UsageError(`${id} cannot wait: ${error.message}`);
+    throw error;
+  }
+  confirm(
+    context,
+    plan.check
+      ? `${id} waits for its check, at most until ${localTime(plan.wakeAt)}; end your turn now`
+      : `${id} waits until ${localTime(plan.wakeAt)}; end your turn now`,
+  );
 }
 
 // A pending card with no start time is due now.

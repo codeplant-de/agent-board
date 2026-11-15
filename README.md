@@ -14,7 +14,7 @@ The CLI talks to the board directly, over HTTPS with a machine token: the [backe
 
 ## Tasks
 
-Five statuses: `backlog`, `todo`, `running`, `needs-me`, `done`. `backlog` is the first column: parked cards that no worker takes until you move them to Todo. Four priorities: `urgent`, `high`, `normal` (the default), `low`. Every column lists its tasks by priority, then in the order you dragged them into, and workers take Todo from the top, so an urgent task runs before anything else that waits. Dropping a card among tasks of another priority gives it their priority; the task page has a picker for it. A task is a **prompt**, written as you would type it into Claude Code: `/review-pr 17741`, `/grill the plan in docs/x.md`, or plain instructions. The worker runs it as written. The slash command it starts with, if any, is the task's skill: it picks the [lane](#lanes) and is shown as the task's label.
+Six statuses: `backlog`, `todo`, `running`, `waiting`, `needs-me`, `done`. `backlog` is the first column: parked cards that no worker takes until you move them to Todo. `waiting` holds tasks whose agent waits for something outside, such as CI (see [Waiting](#waiting)). Four priorities: `urgent`, `high`, `normal` (the default), `low`. Every column but Waiting lists its tasks by priority, then in the order you dragged them into (Waiting lists the wait that ends first on top), and workers take Todo from the top, so an urgent task runs before anything else that waits. Dropping a card among tasks of another priority gives it their priority; the task page has a picker for it. A task is a **prompt**, written as you would type it into Claude Code: `/review-pr 17741`, `/grill the plan in docs/x.md`, or plain instructions. The worker runs it as written. The slash command it starts with, if any, is the task's skill: it picks the [lane](#lanes) and is shown as the task's label.
 
 A run ends in `needs-me`: with a report, with a question, or, when it fails, times out or its worker disappears, with the reason and the end of the log. Nothing moves on until you press a button.
 
@@ -43,16 +43,16 @@ board schedules
 
 - `--every 2h` runs on a fixed grid from the first run: first run, then every 2 hours after it, whatever time the cards are started at. `--cron "0 9 * * 1-5"` is a 5-field expression (minute, hour, day of month, month, weekday), read in the time zone of the machine that made the schedule and stored with it, so `0 9 * * *` stays at 9:00 local across a change to summer time. Its first run is the first match at or after `--in`/`--at` (or now). A 6-field expression with seconds is refused, as is anything that does not parse.
 - The end is `--times <n>`, the number of runs including the first (a positive whole number), or `--until <time>`, after which nothing starts (a run exactly at that time still does); without either it repeats forever. They exclude each other. `--times` and `--until` without a repeat, and a repeat with `--hold` or `--backlog`, are usage errors.
-- A schedule has exactly one **pending occurrence**: an ordinary Todo card with a start time, the schedule's title and priority, pinned to the machine and directory it was made in (a schedule from the New task form is not pinned). The next card is made when the pending one leaves Todo: when a worker claims it, when you move it, or when you close it. So a worker that was off for a day finds one card, not a pile; the next run is the first one on the rule after the previous run's time that is not in the past, and the missed ones are skipped. Closing or moving the waiting card skips that run. A card that ran and comes back to Todo later (a reply, a re-run) makes no further card. There is no timer on the server.
+- A schedule has exactly one **pending occurrence**: an ordinary Todo card with a start time, the schedule's title and priority, pinned to the machine and directory it was made in (a schedule from the New task form is not pinned). The next card is made when the pending one leaves Todo: when a worker claims it, when you move it, or when you close it. So a worker that was off for a day finds one card, not a pile; the next run is the first one on the rule after the previous run's time that is not in the past, and the missed ones are skipped. Closing or moving the pending card skips that run. A card that ran and comes back to Todo later (a reply, a re-run) makes no further card. There is no timer on the server.
 - A schedule that has no run left, because `--times` is used up or the next run would lie after `--until`, ends: it stays in the list, dimmed, and creates nothing.
 - The repeat skips the duplicate check, since a recurring prompt resembles its own earlier runs. The confirmation names the schedule id, its rule, the first run and the card's URL.
-- `board schedules` lists them (id, rule, next run, runs left including the waiting one, paused or ended, title). `board schedules pause <id>` takes the waiting card off the board and stops the schedule; `resume <id>` makes the next card, at the first run on the rule from now. `board schedules rm <id>` deletes the schedule and its waiting card; cards that already ran stay with their history. Like `board schedule`, these three are refused inside a board run.
+- `board schedules` lists them (id, rule, next run, runs left including the pending one, paused or ended, title). `board schedules pause <id>` takes the pending card off the board and stops the schedule; `resume <id>` makes the next card, at the first run on the rule from now. `board schedules rm <id>` deletes the schedule and its pending card; cards that already ran stay with their history. Like `board schedule`, these three are refused inside a board run.
 
 Before it creates the task, a Haiku call (a few seconds, under a cent) checks whether an open task already covers the same work. On a likely match it asks in the terminal: requeue that task (a fresh run), create a new one anyway, or abort. Without a terminal it creates the task with a note naming the likely duplicate. `--new` skips the check.
 
-The board's **New task** form takes a prompt the same way; such a task runs in `defaultCwd` of whichever machine takes it. Its **When** menu offers Now, Later, Repeating, Backlog and Needs me. Repeating takes an interval (`2h`) or a cron expression (read in your browser's time zone, and the server's error is shown if it cannot read it), an optional first run and an optional number of runs, and opens the first waiting card.
+The board's **New task** form takes a prompt the same way; such a task runs in `defaultCwd` of whichever machine takes it. Its **When** menu offers Now, Later, Repeating, Backlog and Needs me. Repeating takes an interval (`2h`) or a cron expression (read in your browser's time zone, and the server's error is shown if it cannot read it), an optional first run and an optional number of runs, and opens the first pending card.
 
-The **Schedules** page of the web board lists the schedules: title and prompt, rule, next run, runs left (`forever` without an end), machine, a link to the waiting card, and pause or resume and delete. An ended schedule is dimmed and can only be deleted. A waiting card carries a **Repeat** badge, and its page says it is the next run of a schedule.
+The **Schedules** page of the web board lists the schedules: title and prompt, rule, next run, runs left (`forever` without an end), machine, a link to the pending card, and pause or resume and delete. An ended schedule is dimmed and can only be deleted. A pending card carries a **Repeat** badge, and its page says it is the next run of a schedule.
 
 ## Ask and resume
 
@@ -76,7 +76,26 @@ An agent can propose follow-up work with `board add --title <t> --file <path> --
 
 **Polishing a prompt.** Rough ideas parked in Backlog are hard to read later, so **Polish prompt** makes the browser create a task (yours, in Todo, with the Backlog task's priority and the Backlog task as its parent) titled `Polish prompt: <title>`, whose prompt tells an agent to read the card with `board show`, rewrite its prompt clearly without losing or inventing anything, and post the result with `board polish <task> --title <t> --file <path>` instead of doing the work. `board polish` works only inside a run (`AGENT_BOARD_TASK` is set) and posts a `polish` note on the run's own task, naming `<task>` as its target; it changes no task. The polish task shows the note as a **Polished prompt** (the title and the prompt as plain text) with **Apply to <title>**. Applying checks that the note is for this task's parent, that the parent is still yours (created by `user`, not a schedule's occurrence), not closed and in Backlog or Needs me, and then shows the whole new title and prompt for confirmation, like Start. **Applying is a sealed act:** the browser seals the new title for `task:<id>` and the new prompt for `task:<id>:user`, so the agent never writes a prompt a worker runs, and it seals a `user` event note on the Backlog task (an `event`, so the worker never hands it to a later run as something you wrote) holding the old title and prompt, so nothing is lost. `tasks.applyPolish` stores all of it in one transaction (and refuses a task an agent created, an occurrence, a task past Needs me, a closed one, or a polish task that is not the task's child), and marks the polish task done unless its run still goes on.
 
-Dragging a card moves it the way the matching button would, minus the reply. Into Todo or Done it drops the open question (the question note stays in the thread); into Todo a task with a session keeps its `next`, and a resume with nothing to answer starts a fresh run. Done tasks nobody touched for 14 days are closed, with a note in the thread; they stay readable under Closed. Intake's tasks are left open: intake treats a closed task as "never again", so closing one would block the PR's next review request.
+Dragging a card moves it the way the matching button would, minus the reply. Nothing can be dropped into Running or Waiting; a card dragged out of Waiting into Todo is woken, and into any other column loses its wait. Into Todo or Done it drops the open question (the question note stays in the thread); into Todo a task with a session keeps its `next`, and a resume with nothing to answer starts a fresh run. Done tasks nobody touched for 14 days are closed, with a note in the thread; they stay readable under Closed. Intake's tasks are left open: intake treats a closed task as "never again", so closing one would block the PR's next review request.
+
+## Waiting
+
+An agent that has to wait for something outside the run (CI, a deploy, a review bot) parks its task instead of sleeping in its slot:
+
+```
+board wait <task> --check 'gh pr checks 17741 --required' --reason "CI on #17741"
+board wait <task> --check 'curl -fsS https://staging.example.com/health' --every 5m --timeout 1h
+board wait <task> --in 20m --reason "the deploy settles"
+```
+
+and then ends its turn. The board's rules tell it to (an intake review is not told, see below). The task leaves Running for **Waiting**, its slot goes to the next task, and its card shows "Wakes in 20m" or "Checking · up to 1h 50m". When the wait ends, the task goes to the top of Todo, like a pause, and the next run resumes the session on the same machine and in the same directory, with the prompt "Your wait on board task … is over: <why>". The end of a check's output goes into the thread, not into the prompt: it can come from text you did not write (job names from a PR's workflow files).
+
+- **A timer** (`--in <dur>` or `--at <time>`, the forms of [Scheduling](#scheduling)) ends at that time.
+- **A check** (`--check '<command>'`) is a shell command that exits 0 once the wait is over. The dispatcher of the machine that runs the task runs it with `bash -c` in the directory the agent was in, every `--every` (default 2m, at least 1m, so in practice at every timer tick), with the `env` of the Claude Code settings the run loaded (`~/.claude/settings.json`, then `.claude/settings.json` and `settings.local.json` of the directory the run started in, which the worker passes on as `AGENT_BOARD_START_DIR`) on top of the dispatcher's environment. One attempt may take 45 seconds; checks run side by side at the end of a tick, and a passing one wakes its task, whose start the listener then triggers. Exit 0 wakes the task with "its check passed"; anything else is kept for the next attempt. After `--timeout` (default 2h) the task wakes anyway, told the check did not pass, with the last attempt's exit code and output.
+- **The command stays on the machine**, in `<state dir>/waits/<task>.json` (mode 600). The board learns only that the task waits for a check, and until when (`wakeAt`, `waitCheck`), so nothing on the board can make a machine run a command. A check whose file is gone (the state dir was wiped) wakes its task at the next tick and says so. A check is refused for an intake review (`board wait --check` on an intake task is a usage error), whose fixed command list a check would bypass; intake's allow list does not include `board wait` at all.
+- A wait lasts at most 7 days. Only a running task can wait, and nothing else puts a task in Waiting: `board move <task> waiting`, a drag into the column and `add-task` with that status are refused.
+- **You** can end a wait early with **Wake now** on the task page (the thread notes "Wait ended by you."), with **Send & continue** (the agent gets your reply and is told the wait is over), or by dragging the card to Todo. Dragging it anywhere else drops the wait; the next tick of its machine deletes the check.
+- Waits are woken by the machine that ran the task, since the session lives there: a timer on a machine that is off ends when it comes back, or when you wake it.
 
 ## Two machines
 
@@ -176,6 +195,8 @@ User timers and the listener only run while you are logged in. For runs after lo
 
 The CLI checks the server's contract version once per process and refuses to run when it differs from its own, in either direction, so a contract bump needs the server and every machine's CLI updated together. A machine left on the old CLI fails each dispatch and intake run with a version error until it is updated. So, in this order:
 
+**Contract 9 (Waiting) needs no cutover but the general order below.** It adds the status `waiting` and the task columns `wake_at`, `wait_check` and `woken_at` (migration 0017), the task fields `wakeAt`, `waitCheck` and `woken`, and the machine commands `wait` and `wake`: a CLI of contract 8 cannot read those fields, so server and machines update together. `board wait` and the **Waiting** column come with it.
+
 **Contract 8 (`polish` notes) needs no cutover but the general order below.** It adds the note kind `polish` (migration 0016, which adds the enum value): a CLI of contract 7 cannot read a thread that holds one, and a server of contract 7 would store one as an unreadable comment, so the contract number moves and server and machines update together. `board polish` and the **Polish prompt** button come with it.
 
 **Contract 6 (encryption) moves data, so it has its own sequence: follow [Cutover to encryption](#cutover-to-encryption) from its first step, in its order.** It stops the timers and takes the dump before anything is deployed, and it holds the CLI release, the keys, the re-encryption and the restart. The list below is the general order for a contract bump that needs no such cutover:
@@ -183,7 +204,7 @@ The CLI checks the server's contract version once per process and refuses to run
 1. Stop the dispatch and intake timers and the listener on every worker machine: `systemctl --user stop agent-board-dispatch.timer agent-board-intake.timer agent-board-listen.service`.
 2. Take a dump of the database, your way back if a migration has to be undone.
 3. Deploy or restart the server; migrations run on start.
-4. Release the CLI: once the change is on `main`, tag the commit `cli-v<version>` (the version in `apps/cli/package.json`; `cli-v0.3.0` is the contract-5 build, `0.4.0` is contract 6, `0.5.0` is contract 7, `0.6.0` is contract 8) and push the tag. The release workflow builds and publishes the binaries, so that `board self-update` has something to fetch before any machine is switched. `board self-update --check` on a machine shows it.
+4. Release the CLI: once the change is on `main`, tag the commit `cli-v<version>` (the version in `apps/cli/package.json`; `cli-v0.3.0` is the contract-5 build, `0.4.0` is contract 6, `0.5.0` is contract 7, `0.6.0` is contract 8, `0.7.0` is contract 9) and push the tag. The release workflow builds and publishes the binaries, so that `board self-update` has something to fetch before any machine is switched. `board self-update --check` on a machine shows it.
 5. On each machine: update the CLI: `board self-update` for a release binary (it needs `gh`; `--check` only reports), or for a checkout `git pull`, `pnpm install` and `apps/cli/install.sh`. A checkout that only pulls cannot resolve new dependencies, and then `board`, dispatch, intake and every run's hook fail. Then `board setup` once if the units were written by an older version, and `board doctor`.
 6. In an existing `config.json`, narrow `Bash(board *)` in `intake.allowedTools` to the forms in `config.example.json`, and add `Bash(board internal *)` to `intake.disallowedTools`. The old `backend` key is ignored; remove it if you like.
 7. Start the timers and the listener again: `systemctl --user start agent-board-dispatch.timer agent-board-intake.timer agent-board-listen.service`.
@@ -254,7 +275,7 @@ Ships after step 11 of the first, as its own change: migration 0014 (`0014_seale
 
 `web.json` next to it holds the board's `url`; plain `http` is refused except for localhost. Every link to a task that the CLI prints or sends to Slack is `<url>/t/<id>`, built here: the board's own answers carry no link. The token comes from `env`. The CLI reads them on its first call to the board, so a command that fails on a usage error needs neither.
 
-Logs: `~/.local/state/agent-board/logs/<task>.log`, one per task, emptied when a worker starts. The worker's own fatal errors are appended to it.
+Logs: `~/.local/state/agent-board/logs/<task>.log`, one per task, emptied when a worker starts. The worker's own fatal errors are appended to it. The checks of waiting tasks are in `~/.local/state/agent-board/waits/<task>.json` (see [Waiting](#waiting)).
 
 ## The board server
 
@@ -306,7 +327,7 @@ What that stops:
 - **Occurrences.** Naming a schedule on a task opens only what the user sealed for that schedule: its own prompt in its own directory (or the directory the worker later rewrote for that occurrence, sealed with the schedule's id too, so a task cannot lend its directory to a schedule's prompt). `task.schedule_id` is a plain reference, not a foreign key, and stays when the schedule is deleted, so old occurrences keep opening; a task that loses it, or gets another, is unreadable.
 - **Permission mode.** `createdBy` is clear and alone chooses between intake's restricted `dontAsk` allow-list and `--permission-mode auto`, so the creator is part of the `input` context: a prompt sealed as intake's does not open on a task the server relabelled as the user's, and the other way round. Intake seals as `intake` (`patch.seal.createdBy` for a requeue), never taking the creator from the board. The creator `agent` is never run: starting an agent's proposal seals its prompt again as `user` (see [Ask and resume](#ask-and-resume)).
 - **Relabelled notes.** A note is bound to its author and kind: an agent note (which can quote an untrusted PR or a log tail) cannot be served back as "the user replied", nor a system note as an agent's. Only the pairs a client writes exist (agent comment, question or polish note, system event, user comment, answer or event).
-- **Forged server events.** The server's own events are the only plain-text bodies, and a client accepts a plain body only when it is one of the fixed texts of `packages/shared/src/events.mts`: `Marked done.`, `Queued for a fresh run.`, `Closed.`, `Reopened.`, `Closed after <n> days in Done.`, `Moved from <status> to <status>.`, `Priority <priority> → <priority>.`, `Start time cleared.`, `Start time set to <ISO time>.`, `Taken back from <machine or "its worker">: no sign of life for 20 minutes.` The server writes them with the same module. They are shown as `server` events, never as `system` ones.
+- **Forged server events.** The server's own events are the only plain-text bodies, and a client accepts a plain body only when it is one of the fixed texts of `packages/shared/src/events.mts`: `Marked done.`, `Queued for a fresh run.`, `Closed.`, `Reopened.`, `Closed after <n> days in Done.`, `Moved from <status> to <status>.`, `Priority <priority> → <priority>.`, `Start time cleared.`, `Start time set to <ISO time>.`, `Wait ended by you.`, `Taken back from <machine or "its worker">: no sign of life for 20 minutes.` The server writes them with the same module. They are shown as `server` events, never as `system` ones.
 - **Re-attached answers.** The browser seals the questions it showed together with the answers in one envelope (`{"questions": [...], "answers": [...]}`), checked against each other. What the agent is told comes from that envelope alone; `questionNoteId` is only the server's pairing for display, and the browser shows an answer with a question only when the questions inside it are the question's own. The questions in the envelope are the ones the panel froze when it mounted for that open question, passed from the panel into the answer: the browser does not fetch the thread again when you press the button, and the panel does not follow the polls. A question note is immutable, so when the board later serves other questions under the same note id, the panel does not swap them in: it replaces the form with a notice that the question changed, drops your picks, sends nothing, and shows the changed questions (with fresh picks) only when you ask for them. Notes of one id are one note: when a thread holds the same note id twice, every note with that id is shown as unreadable.
 - **Flags from the server.** A session id is a UUID or nothing, and the worker resumes only the session this machine started for the task's newest fresh run (the record is `<state dir>/sessions/<task>`, one id): any other id, the board's or an agent's, or one that Re-run fresh abandoned on this machine, blocks the run with a message pointing to Re-run fresh, because starting fresh would run a prompt again that may already have done its work. The record is per machine, so "a session a fresh run abandoned is never resumed" holds only on the machine that ran that fresh run: the board can still send an older session to another machine that recorded it (a resume is pinned to the machine in `machine`, which the board chooses), and that machine resumes it, with the reply it is handed. A narrowing that needs no trust in clear fields would be for a worker to drop its record when the sealed start notes the workers write (`agent-board: started <time> (<skill>, <machine>, …)`) show a newer run on another machine; it is not built, because the board can withhold or replay notes, so it would only help when the board cooperates. The id travels as `--resume=<uuid>`, one argument. The prompt itself (a sealed prompt or a reply, which can start with `-` or even look like `--mcp-config=…`) reaches `claude` on stdin, never as an argument, so it cannot be read as an option. Every other clear value that reaches an argument, a path, a unit name, an environment variable or a shell is checked to a tight shape when it is parsed: ids, machine and lane names (at most 64 characters), a schedule's cron expression (five fields of digits, cron symbols and month and day abbreviations) and time zone (one the runtime knows), note ids, the key id (16 hex characters), the user name, and the sealed directory (absolute, no control characters). A task has no `url` on the wire: see the next point.
 
@@ -349,7 +370,7 @@ The server refuses a sealed field that is not an envelope (400) or that is longe
 
 ## Backend contract
 
-The spec between the CLI and the board, contract version 8. The CLI calls the board's machine API from its own process (`apps/cli/src/backend.mts` over HTTP, `apps/cli/src/sealing.mts` for the encryption); `apps/backend/src/machine-api.ts` serves it. Nothing else implements it. Everything below describes the wire, where sealed fields hold envelopes; the CLI's own `Backend` interface (`packages/shared/src/contract.mts`) is the plaintext view of it.
+The spec between the CLI and the board, contract version 9. The CLI calls the board's machine API from its own process (`apps/cli/src/backend.mts` over HTTP, `apps/cli/src/sealing.mts` for the encryption); `apps/backend/src/machine-api.ts` serves it. Nothing else implements it. Everything below describes the wire, where sealed fields hold envelopes; the CLI's own `Backend` interface (`packages/shared/src/contract.mts`) is the plaintext view of it.
 
 `POST <url>/api/machine/<command>` with `Authorization: Bearer <machine token>` and a JSON body `{"id"?, "all"?, "machine"?, "author"?, "body"?}`: `id` is the task, `body` is the command's payload (JSON, with the sealed values). The answer is `{"result": ...}` with status 200, or `{"error": "one line"}` with a non-200 status. The token names the machine; it never appears in an error message. A call times out after 45 seconds.
 
@@ -369,7 +390,7 @@ The spec between the CLI and the board, contract version 8. The CLI calls the bo
 - A write is visible to the next read.
 - The server refuses an unsafe id or machine name with 400 and writes nothing; the CLI refuses it before it sends anything.
 - `claim-task` answers 409 when the task is not free for this machine ("lost"). The CLI treats that as an answer and moves on to the next task; every other non-200 answer is a failure.
-- The CLI sends `version` once per process, before its first other call, and stops when the server's `contract` differs from its own (8), saying which side is older. It then derives its keys for the `owner` the server names, and stops when the board has no data key yet (`keyId: null`: set up encryption in the browser first) or its key's id differs from `keyId`.
+- The CLI sends `version` once per process, before its first other call, and stops when the server's `contract` differs from its own (9), saying which side is older. It then derives its keys for the `owner` the server names, and stops when the board has no data key yet (`keyId: null`: set up encryption in the browser first) or its key's id differs from `keyId`.
 - A sealed value comes back verbatim. The core parses `agent-board: started <iso>` notes (the start marker) and the first line of a review task's `input` (the PR URL) after opening them; the PR head is the `head` field, a blind index.
 - A task an agent proposed (`createdBy: agent`) is the user's to start: the server refuses `update-task` with a new status and loses `claim-task` for it, whoever asks. The user starts it in the browser, which moves it into Todo with its prompt sealed again for the creator `user`; the board then stores that prompt and sets `createdBy` to `user`. The core never runs a task whose `createdBy` is `agent`.
 - The board sends no link to a task. The CLI builds links itself from the `url` of its `web.json`.
@@ -398,11 +419,14 @@ The spec between the CLI and the board, contract version 8. The CLI calls the bo
   "runStartedAt": null,
   "paused": false,
   "notBefore": null,
-  "scheduleId": null
+  "scheduleId": null,
+  "wakeAt": null,
+  "waitCheck": false,
+  "woken": false
 }
 ```
 
-All twenty fields are required. The CLI's plaintext `Task` adds `labels` and `unreadable`.
+All twenty-three fields are required. The CLI's plaintext `Task` adds `labels` and `unreadable`.
 
 | Field | Meaning |
 | --- | --- |
@@ -410,7 +434,7 @@ All twenty fields are required. The CLI's plaintext `Task` adds `labels` and `un
 | `title` | Sealed, for the task (an occurrence: for its schedule). One line, shown in lists and Slack. |
 | `input` | Sealed, for the task and its creator (an occurrence: for its schedule and `user`). What to work on. |
 | `createdBy` | `intake`, `user` or `agent`. Intake's tasks run with intake's narrow permissions and in the PR's checkout. Part of the context of `input`, so a changed value makes the task unreadable. `agent` is a proposal the user has not started: no worker runs it, and starting it changes it to `user` with the prompt sealed again. |
-| `status` | One of `backlog`, `todo`, `running`, `needs-me`, `done`. |
+| `status` | One of `backlog`, `todo`, `running`, `waiting`, `needs-me`, `done`. |
 | `priority` | One of `urgent`, `high`, `normal`, `low`. |
 | `closed` | `true` for a task out of the workflow. Closed tasks are only listed with `all`; the core never starts, requeues or writes to one. |
 | `machine` | The machine that claimed it last, or `null`. A resume runs only there. |
@@ -426,8 +450,11 @@ All twenty fields are required. The CLI's plaintext `Task` adds `labels` and `un
 | `paused` | The last run gave up its slot (`pause`) and the task has not run since. Unlike the board's "Paused" badge, which shows it only in Todo, it stays `true` through the claim, so the worker that resumes the task can tell the agent; the worker's first `update-task` of the run clears it, as does the task leaving Running another way. |
 | `notBefore` | Todo only: no machine may claim the task before this time, ISO 8601; otherwise `null`. The server clears it whenever the task leaves Todo, the claim included. |
 | `scheduleId` | The schedule the task is an occurrence of, or `null`. Set by the server when a schedule makes the task; no draft or patch can set it. It stays when the schedule is removed, because the occurrence's sealed fields are bound to it. |
+| `wakeAt` | Waiting only: when the wait ends at the latest (a timer's end, a check's timeout), ISO 8601; otherwise `null`. The server clears it whenever the task leaves Waiting. |
+| `waitCheck` | Waiting only: a check on `machine` may end the wait earlier; otherwise `false`. The check's command is never sent to the board. |
+| `woken` | The task's wait ended into Todo (by `wake`, Wake now, a reply or a drag) and it has not run since. Like `paused`, it stays `true` through the claim, so the worker that resumes the task can tell the agent; the worker's first `update-task` of the run clears it, as does the task leaving Todo or Running another way. |
 
-Pickup order is the order of the array that `list-tasks` returns: within a status, the first task is the top. In Todo the store lists resumes (`next: resume`) first, then by `priority`, then by manual order; the lanes pick from that order. Waiting tasks (`notBefore` in the future) come last in Todo, by `notBefore`; once due they sort like any other. The dispatcher does not try to claim a waiting task.
+Pickup order is the order of the array that `list-tasks` returns: within a status, the first task is the top. In Todo the store lists resumes (`next: resume`) first, then by `priority`, then by manual order; the lanes pick from that order. Delayed tasks (`notBefore` in the future) come last in Todo, by `notBefore`; once due they sort like any other. The dispatcher does not try to claim a delayed task. Waiting lists the wait that ends first on top; nothing claims a task there.
 
 ### Schedule
 
@@ -469,7 +496,7 @@ A schedule always has at most one pending occurrence, a task in Todo with `sched
 
 | Command | Request | `result` |
 | --- | --- | --- |
-| `version` | - | `{"contract": 8, "owner": "<username>", "keyId": "<16 hex>" or null}` (the user whose board the token works on, which the keys are derived for, and the fingerprint of that user's data key; null before they set up encryption) |
+| `version` | - | `{"contract": 9, "owner": "<username>", "keyId": "<16 hex>" or null}` (the user whose board the token works on, which the keys are derived for, and the fingerprint of that user's data key; null before they set up encryption) |
 | `list-tasks` | `all?` | `[Task, ...]` in priority order |
 | `get-task` | `id` | `Task` |
 | `attach-session` | `id` | the `Task` whose session the token's machine may attach to; 404 for no task, 409 while it runs or without a session, 403 when another machine ran it |
@@ -481,6 +508,8 @@ A schedule always has at most one pending occurrence, a task in Todo with `sched
 | `heartbeat` | `id`, `body`: `{"lane": string, "borrowed": bool}` | `null` |
 | `pause` | `id`, `body`: `{"body", "preview"?}` | the updated `Task` |
 | `fail` | `id`, `body`: `{"body", "preview"?}` | `{"applied": bool, "task": Task}` |
+| `wait` | `id`, `body`: `{"body", "preview"?, "wakeAt", "check"}` | the updated `Task` |
+| `wake` | `id`, `body`: `{"body", "preview"?}` | `{"applied": bool, "task": Task}` |
 | `transcript` | `id`, `body`: `{"runId", "startedAt", "sessionId", "resumed", "events": [...]}`, each event `{"seq", "at", "kind", "parent", "data", "output"?, "outputSize"?}` | `null` |
 | `read-notes` | `id` | `[Note, ...]`, oldest first |
 | `add-schedule` | `body`: `{"id", "title", "input", "everyMs"? \| "cron"? + "timezone", "priority"?, "machine"?, "workdir"?, "startAt"?, "times"?, "until"?}` | `{"schedule": Schedule, "task": Task}` (the pending occurrence) |
@@ -499,6 +528,9 @@ A schedule always has at most one pending occurrence, a task in Todo with `sched
 - `heartbeat`: sets `lastActiveAt` to now with the lane, on a running task only; on any other it changes nothing.
 - `transcript`: appends a run's condensed events (see `packages/shared/src/transcript.mts`; at most 5000 per call, each with an integer `seq` from 0 and a parseable `at`, or the call fails with 400). `data` is the sealed JSON of the event without its output. A `tool_result` also carries the sealed `output` and `outputSize`, its length in characters counted by the client (the server cannot read it; it is bounded, nothing more); any other event carries neither. an event already stored (same run and `seq`) stays as it is, so a retried batch is harmless.
 - `pause`: a running task only. Adds the sealed note as a `system` event, then moves the task to Todo with `next: resume` (`fresh` without a session), at the top, and sets `paused`.
+- `wait`: a running, open task only (else 409). Adds the sealed note as the agent's `comment` (sealed for author `agent`, kind `comment`), then moves the task to `waiting` with `wakeAt` (ISO 8601, in the future and at most 7 days ahead, else 400), `waitCheck` from `check`, and `next: resume` (`fresh` without a session). `runStartedAt` and the run details go, as for any task that leaves Running.
+- `wake`: in one step, if the task is still `waiting` and not closed, adds the sealed note as a `system` event and moves the task to the top of Todo with `next: resume` (`fresh` without a session) and `woken: true`, and answers `applied: true`; otherwise it changes nothing and answers `applied: false`. The note starts with `agent-board: wait over:`, and the worker hands the rest of the newest such note since the agent last spoke to the resumed agent.
+- No other command takes a task into `waiting`: `update-task` with that status and `add-task` with it are 400. A task that leaves `waiting` for `todo` by a drag or a reply is woken (`woken: true`, `next` as for `wake`); one that leaves it for another status just loses its wait.
 - `fail`: in one step, if the task is still `running` and not closed, adds the sealed note as a `system` event and moves the task to `needs-me`, and answers `applied: true`; otherwise it changes nothing and answers `applied: false` with the task as it is.
 - `ask`: adds a question note with the sealed questions, and moves the task to `needs-me` with `openQuestion: true`. Refused with 403 for a proposal. The CLI validates the questions before sealing (1 to 4; a header of at most 16 characters; 2 to 4 options with different labels, at most one `recommended`); the server cannot.
 
@@ -509,7 +541,9 @@ There is no sandbox. A worker runs `claude` as you, with your home directory, yo
 - **Tasks you made** (`board schedule`, the New task form, and agent proposals once you start them) run as if you ran the prompt in your terminal: all your settings (user, project, local) and `--permission-mode auto`, Claude Code's classifier mode that lets safe actions through and refuses risky ones. Headless, a refusal cannot become a prompt; it shows in the log and usually in the agent's report.
 - **Intake's reviews** run unattended on PR text nobody chose to read, so they get less: `--permission-mode dontAsk` with only `intake.allowedTools` allowed and `intake.disallowedTools` denied on top, and `--setting-sources user`, which keeps a checkout's own `.claude/settings*.json` (its allow rules and tokens) out of the run. The shipped list allows reading, `gh` reads, the pr-review scripts, `board comment`, `ask`, `add`, `show` and `move <task> needs-me` (it cannot `board schedule` or start work), CircleCI through the engineering plugin's `cci.sh`, a few Shortcut reads and `bin/replica-psql` (the production and staging read replicas); it cannot push, merge or approve. `intake.env` hands it `CIRCLECI_TOKEN`, `SHORTCUT_API_TOKEN` and the replica endpoints from the checkout's settings, and nothing else from there. A review that a PR's text turns against you can read production data through the replica, and could put it into the pending draft (which you see before submitting) or onto the board.
 
-Every run gets `AGENT_BOARD_TASK=<id>` in its environment, and `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`, so print mode waits for background subagents instead of stopping them 10 minutes after the last turn. The board's rules also tell the agent not to end its turn while background work runs. And `board schedule` and the changes of `board schedules` refuse to run while it is set: an agent proposes follow-up work with `board add`, which waits in Needs me until you start it. A config that allows `Bash(board *)` covers `board schedule` and `board move <task> todo`; narrow it to the rules in `config.example.json` (`board comment *`, `board ask *`, `board add *`, `board show *`, `board move * needs-me`), and deny `Bash(board schedule *)`, `Bash(board schedules *)` and `Bash(board internal *)`.
+Every run gets `AGENT_BOARD_TASK=<id>` in its environment, `AGENT_BOARD_START_DIR=<the directory it started in>` (whose settings a check of `board wait` takes its `env` from), and `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`, so print mode waits for background subagents instead of stopping them 10 minutes after the last turn. The board's rules also tell the agent not to end its turn while background work runs. And `board schedule` and the changes of `board schedules` refuse to run while it is set: an agent proposes follow-up work with `board add`, which waits in Needs me until you start it. A config that allows `Bash(board *)` covers `board schedule` and `board move <task> todo`; narrow it to the rules in `config.example.json` (`board comment *`, `board ask *`, `board add *`, `board show *`, `board move * needs-me`), and deny `Bash(board schedule *)`, `Bash(board schedules *)` and `Bash(board internal *)`.
+
+A check of `board wait --check` runs later, from the dispatcher, outside Claude Code: its permission rules and the auto-mode classifier see the command only as part of the `board wait` call, so do not allow `Bash(board wait *)` by rule, or a check skips the classifier.
 
 Permission rules match the text of a call: they keep an agent on its task, but they are not a security boundary. A PR or story whose text turns the agent against you reaches whatever the run allows and whatever those commands can reach. A dedicated OS user for the workers, with its own checkouts and a narrowly scoped GitHub token, would make that a boundary again; it is not set up yet.
 
@@ -521,7 +555,7 @@ A fresh run is
 claude -p "<prompt>" --session-id=<new uuid> --append-system-prompt "<the board's rules>" --settings '<hook>' <permissions>
 ```
 
-in the task's directory (see [Where a task runs](#where-a-task-runs)). The prompt is the task's `input`, as written. The appended rules tell the agent its task id, to report with `board comment`, to ask with `board ask` instead of AskUserQuestion, to finish with `board move <task> needs-me`, and how to propose follow-ups. The hook is the [heartbeat, pause and question hook](#liveness-and-limits). A resumed run is `claude -p "<your reply>" --resume=<session>` with the same flags (see [Ask and resume](#ask-and-resume)).
+in the task's directory (see [Where a task runs](#where-a-task-runs)). The prompt is the task's `input`, as written. The appended rules tell the agent its task id, to report with `board comment`, to ask with `board ask` instead of AskUserQuestion, to finish with `board move <task> needs-me`, to wait for CI and the like with `board wait` (not in an intake review), and how to propose follow-ups. The hook is the [heartbeat, pause and question hook](#liveness-and-limits). A resumed run is `claude -p "<your reply>" --resume=<session>` with the same flags (see [Ask and resume](#ask-and-resume)).
 
 In intake's rules, `Bash(` rules expand `~/` to your home directory and `{<plugin>}` (such as `{pr-review}` or `{engineering}`) to the root Claude Code gives `<plugin>@ccc` as `${CLAUDE_PLUGIN_ROOT}`, resolved when the worker starts: for a marketplace added as a directory (`~/.claude/plugins/known_marketplaces.json`) that is the plugin's `source` in the marketplace's `.claude-plugin/marketplace.json` (Claude Code loads it from the checkout, not from the cache copy), otherwise the `installPath` in `~/.claude/plugins/installed_plugins.json`. A rule must not start with `*` before a script path: a leading `*` matches any command that merely contains the path. If the plugin path cannot be resolved the task goes to `needs-me` with the reason. `Read(...)` rules are passed on unchanged (they take `~/` themselves). Old `backend`, `labels`, `intakeLabel` and `sandbox` entries in a config are ignored.
 
@@ -557,6 +591,8 @@ Tasks:
   move <task> <status...>   move a task to the bottom of a status
   notify <task> <text...>   Slack message with the task link
   ask <task>                ask the user 1-4 questions
+  wait <task>               park a running task in Waiting until a time or a
+                            check
   add                       propose a follow-up task
   polish <task>             post a polished title and prompt for a task
 
@@ -590,8 +626,8 @@ delayed task starts. --all adds the closed ones, --status shows one status.
 
 Options:
   --all              closed tasks too
-  --status <status>  only this status (backlog, todo, running, needs-me, done;
-                     "Needs me" works too)
+  --status <status>  only this status (backlog, todo, running, waiting,
+                     needs-me, done; "Needs me" works too)
   --json             print JSON on stdout instead of text; a value this machine
                      cannot decrypt is null there and named in "unreadable"
                      (text shows "(cannot decrypt: input)" after the task, and
@@ -716,8 +752,8 @@ Examples:
 ```
 Usage: board move [options] <task> <status...>
 
-Move a task to the bottom of a status: backlog, todo, running, needs-me, done.
-"Backlog", "Todo", "Running", "Needs me" and "Done" work too.
+Move a task to the bottom of a status: backlog, todo, running, waiting,
+needs-me, done. "Backlog", "Todo", "Running", "Needs me" and "Done" work too.
 
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
@@ -793,6 +829,51 @@ Options:
 
 Examples:
   board ask Ab3dEf9x --file /tmp/pr-Ab3dEf9x-questions.json
+```
+
+#### board wait
+
+```
+Usage: board wait [options] <task>
+
+Inside a run: the task leaves Running for Waiting and frees its slot, while
+something outside (CI, a deploy) takes its time. End your turn after it. The
+task goes back to the top of Todo and resumes in its session when the time is
+up, or when the check passes.
+
+A timer is --in or --at. A check is --check with a shell command that exits 0
+once the wait is over: the dispatcher of this machine runs it in this directory
+every --every (default 2m, at least 1m; one attempt may take 45 s), with the env
+of your Claude Code settings, and wakes the task when it passes or after
+--timeout (default 2h). The command stays on this machine; the board only learns
+that the task waits for a check, and until when. A wait lasts at most 7 days.
+
+--reason says what the task waits for; it goes into the thread.
+
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
+
+Arguments:
+  task                  the task: its id, a board task link or the start of its
+                        id
+
+Options:
+  --in <duration>       wake after this long (30m, 2h, 1d, 1h30m)
+  --at <time>           wake then (2027-01-01T12:00, 2027-01-01, 09:30)
+  --check <command>     wake once this command exits 0
+  --every <duration>    with --check: how often it runs (default 2m)
+  --timeout <duration>  with --check: wake anyway after this long (default 2h)
+  --reason <text>       what the task waits for, for the thread
+  --dry-run             read everything, print every write instead of doing it
+  -h, --help            display help for command
+
+Examples:
+  board wait Ab3dEf9x --check 'gh pr checks 17741 --required' --reason "CI on #17741"
+  board wait Ab3dEf9x --check 'curl -fsS https://staging.example.com/health' --every 5m --timeout 1h
+  board wait Ab3dEf9x --in 20m --reason "the deploy settles"
 ```
 
 #### board add
@@ -1136,10 +1217,12 @@ Examples:
 Dispatcher, per tick:
 
 1. For each task in `running` claimed by this machine, ask `systemctl --user is-active agent-board-<task>`. A task whose unit is gone moves to `needs-me` with the log tail, timed from the unit's own start (else the task's `runStartedAt`). So does one whose worker failed to enforce the [limits](#liveness-and-limits) for five minutes past them; its unit is stopped. If `systemctl` gives no known state, or the backend fails, the tick stops before starting anything and exits non-zero.
-2. A task this machine cannot serve is skipped (see [Two machines](#two-machines)). The rest are planned into [lanes](#lanes): own work first, then borrowing. Each start is claimed, its lane written to the run directory, then `systemd-run --user --collect --unit agent-board-<task>` starts the worker and a start note names the machine, lane and PID. A lost claim hands its slot to the next task; the first failed start ends the tick's starting.
-3. Lanes whose own work still waits ask one borrowed run each to pause.
+2. For each task in `waiting` that this machine ran: a wait whose `wakeAt` has passed (a timer, or a check past its timeout) or whose check is not stored here is woken with the reason (`wake`), so it can start in this tick. A check whose task is neither waiting nor running here any more is deleted.
+3. A task this machine cannot serve is skipped (see [Two machines](#two-machines)). The rest are planned into [lanes](#lanes): own work first, then borrowing. Each start is claimed, its lane written to the run directory, then `systemd-run --user --collect --unit agent-board-<task>` starts the worker and a start note names the machine, lane and PID. A lost claim hands its slot to the next task; the first failed start ends the tick's starting.
+4. Lanes whose own work still waits ask one borrowed run each to pause.
+5. The checks that are due run side by side (45 s each at most). One that exits 0 wakes its task with the end of its output; for any other the result is kept with the check for the timeout message.
 
-Worker, per task: a task with `next: resume`, a session, and a user reply or a pause since the agent last spoke resumes that session with the reply (and "you were paused") as the prompt, but only a session this machine started for the task; for any other the run is refused with the reason. Anything else starts a new session, whose id is recorded on this machine and stored on the task once the run is about to start (and cleared again if the process cannot be spawned). A run is also refused when it would hand the agent a note of yours that cannot be decrypted. A fresh run's prompt is the task's prompt; when the thread already holds notes by you or the agent, it is followed by what you wrote since the previous run started and a line telling the agent to read the thread with `board show <task>`. Either way `next` goes back to `fresh`.
+Worker, per task: a task with `next: resume`, a session, and a user reply, a pause or a wake since the agent last spoke resumes that session with the reply (and "you were paused", or "your wait is over: <why>") as the prompt, but only a session this machine started for the task; for any other the run is refused with the reason. Anything else starts a new session, whose id is recorded on this machine and stored on the task once the run is about to start (and cleared again if the process cannot be spawned). A run is also refused when it would hand the agent a note of yours that cannot be decrypted. A fresh run's prompt is the task's prompt; when the thread already holds notes by you or the agent, it is followed by what you wrote since the previous run started and a line telling the agent to read the thread with `board show <task>`. Either way `next` goes back to `fresh`.
 
 Intake, per run: search the repos in `repos` for open, non-draft PRs that request your review, then create one task per PR URL (the dedupe key), checked against every task, closed ones included. One `gh api graphql` call per page covers all repos. A PR without an author (a deleted account) is listed as `ghost`. A PR whose data cannot be read is logged as `WARN skipped <url>` and its task is left alone; a result without a URL fails the run. A failed GitHub search or backend listing changes nothing and exits non-zero.
 

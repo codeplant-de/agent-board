@@ -3,13 +3,14 @@ import {
   IconArrowsExchange,
   IconClock,
   IconDeviceDesktop,
+  IconHourglass,
   IconMessageQuestion,
   IconPlayerPause,
   IconPlayerTrackNext,
   IconRepeat,
   IconSparkles,
 } from '@tabler/icons-react';
-import { startsIn } from '../lib/startsIn';
+import { startsIn, wakesIn } from '../lib/startsIn';
 import { stamp } from '../lib/time';
 import type { BoardTask } from '../lib/trpc';
 import { useNow } from '../lib/useNow';
@@ -17,7 +18,7 @@ import { PriorityBadge } from './PriorityPicker';
 
 /**
  * What sets a task apart at a glance: its priority (unless normal), an open question, a proposal, a pending
- * resume, a start time still ahead, a repeating schedule, where it runs.
+ * resume, a start time still ahead, the end of a wait, a repeating schedule, where it runs.
  */
 export function TaskBadges({
   task,
@@ -30,6 +31,7 @@ export function TaskBadges({
 }) {
   const now = useNow(30_000);
   const waiting = task.status === 'todo' && task.notBefore !== null ? startsIn(task.notBefore, now) : undefined;
+  const wakes = task.status === 'waiting' ? wakesIn(task.wakeAt, task.waitCheck, now) : undefined;
   return (
     <Group gap={4}>
       {withPriority && task.priority !== 'normal' && <PriorityBadge priority={task.priority} />}
@@ -55,6 +57,22 @@ export function TaskBadges({
           {waiting}
         </Badge>
       )}
+      {wakes !== undefined && task.wakeAt !== null && (
+        <Badge
+          size="sm"
+          color="cyan"
+          variant="light"
+          tt="none"
+          leftSection={<IconHourglass size={12} />}
+          title={
+            task.waitCheck
+              ? `Wakes when its check on ${task.machine ?? 'its machine'} passes, at the latest ${stamp(task.wakeAt)}`
+              : `Wakes ${stamp(task.wakeAt)}`
+          }
+        >
+          {wakes}
+        </Badge>
+      )}
       {task.scheduleId !== null && (
         <Badge
           size="sm"
@@ -71,7 +89,12 @@ export function TaskBadges({
           Paused
         </Badge>
       )}
-      {task.status === 'todo' && task.next === 'resume' && !task.paused && (
+      {task.status === 'todo' && task.woken && !task.paused && (
+        <Badge size="sm" color="cyan" variant="light" leftSection={<IconPlayerTrackNext size={12} />}>
+          Woken
+        </Badge>
+      )}
+      {task.status === 'todo' && task.next === 'resume' && !task.paused && !task.woken && (
         <Badge size="sm" color="indigo" variant="light" leftSection={<IconPlayerTrackNext size={12} />}>
           Resume
         </Badge>

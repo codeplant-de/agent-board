@@ -21,7 +21,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { BLIND_INDEX_PATTERN, ENVELOPE_PATTERN } from './sealedColumns';
 
-export const taskStatus = pgEnum('task_status', ['backlog', 'todo', 'running', 'needs-me', 'done']);
+export const taskStatus = pgEnum('task_status', ['backlog', 'todo', 'running', 'waiting', 'needs-me', 'done']);
 /** Declared highest first, so ordering by the enum puts urgent on top. */
 export const taskPriority = pgEnum('task_priority', ['urgent', 'high', 'normal', 'low']);
 export const nextRun = pgEnum('next_run', ['fresh', 'resume']);
@@ -119,6 +119,12 @@ export const tasks = pgTable(
     pausedAt: timestamp('paused_at', { withTimezone: true }),
     /** Todo only: no worker claims the task before this time. Cleared when the task leaves Todo. */
     notBefore: timestamp('not_before', { withTimezone: true }),
+    /** Waiting only: the wait ends at this time at the latest. Cleared when the task leaves Waiting. */
+    wakeAt: timestamp('wake_at', { withTimezone: true }),
+    /** Waiting only: a check on `machine` may end the wait early. */
+    waitCheck: boolean('wait_check').notNull().default(false),
+    /** When the task's wait ended into Todo; kept through the claim until the run's first update, like `paused_at`. */
+    wokenAt: timestamp('woken_at', { withTimezone: true }),
     /** The blind index (abh1.…) of the PR head sha an intake review was made for. */
     head: text('head'),
     /** The question note waiting for an answer, if any. */

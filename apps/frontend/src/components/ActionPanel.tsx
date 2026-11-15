@@ -4,6 +4,7 @@ import {
   IconArchive,
   IconArchiveOff,
   IconArrowBackUp,
+  IconAlarm,
   IconCheck,
   IconChevronDown,
   IconMessage,
@@ -39,6 +40,7 @@ function useActions(id: string) {
     move: useMutation(trpc.tasks.move.mutationOptions()),
     takeBack: useMutation(trpc.tasks.takeBack.mutationOptions()),
     setNotBefore: useMutation(trpc.tasks.setNotBefore.mutationOptions()),
+    wakeNow: useMutation(trpc.tasks.wakeNow.mutationOptions()),
     id,
   };
 }
@@ -254,7 +256,7 @@ export function ActionPanel({
           {waiting && task.notBefore !== null && (
             <Group justify="space-between" wrap="nowrap">
               <Text size="sm">
-                Waiting until {stamp(task.notBefore)}.
+                Delayed until {stamp(task.notBefore)}.
                 {task.scheduleId !== null && (
                   <>
                     {' '}
@@ -277,9 +279,9 @@ export function ActionPanel({
             </Group>
           )}
           <Text size="sm">
-            {task.paused ? 'Paused to free its slot.' : 'Queued.'}{' '}
+            {task.paused ? 'Paused to free its slot.' : task.woken ? 'Its wait is over.' : 'Queued.'}{' '}
             {task.next === 'resume'
-              ? `The next run resumes the agent's session${task.machine ? ` on ${task.machine}` : ''} with your reply.`
+              ? `The next run resumes the agent's session${task.machine ? ` on ${task.machine}` : ''}${task.woken ? '' : ' with your reply'}.`
               : 'The next free worker starts it.'}
           </Text>
           <CommentOnly actions={actions} hint="Add to the thread before it starts" />
@@ -307,6 +309,25 @@ export function ActionPanel({
   return (
     <Paper withBorder p="md">
       <Stack>
+        {task.status === 'waiting' && (
+          <Group justify="space-between" wrap="nowrap">
+            <Text size="sm">
+              {task.waitCheck ? `Waiting for a check on ${task.machine ?? 'its machine'} to pass` : 'Waiting'}
+              {task.wakeAt !== null
+                ? `${task.waitCheck ? ', at the latest until' : ' until'} ${stamp(task.wakeAt)}`
+                : ''}
+              . Its slot is free; then it resumes the agent’s session. Send & continue ends the wait with your reply.
+            </Text>
+            <Button
+              size="xs"
+              leftSection={<IconAlarm size={14} />}
+              onClick={() => actions.wakeNow.mutate({ id: task.id })}
+              loading={actions.wakeNow.isPending}
+            >
+              Wake now
+            </Button>
+          </Group>
+        )}
         {isProposal && (
           <Alert color="grape" variant="light" icon={<IconSparkles size={18} />} title="Proposed by an agent">
             <Group justify="space-between">

@@ -1,5 +1,6 @@
 /**
- * One dispatcher tick: sweep stale Running tasks, then fill free slots from the top of Todo.
+ * One dispatcher tick: sweep stale Running tasks, wake waiting tasks whose time is up, fill free slots from the top of Todo,
+ * then run the checks of waiting tasks that are due.
  * No LLM calls. Add --dry-run to read everything and print every write and process start instead.
  */
 import { buildContext, print } from './cli.mts';
@@ -7,7 +8,9 @@ import type { Context } from './cli.mts';
 import type { Task } from '@agent-board/shared';
 import { promptSkill } from '@agent-board/shared';
 import {
+  checkOutputBlock,
   decideStale,
+  decideWake,
   neverRun,
   notServableHere,
   ownLane,
@@ -16,6 +19,7 @@ import {
   START_MARKER,
   unitName,
   unreadableForRun,
+  WAKE_MARKER,
 } from './decide.mts';
 import type { LaneRun } from './decide.mts';
 import { createRunFiles } from './runtime.mts';
@@ -26,6 +30,8 @@ import { postSlack, slackText } from './notify.mts';
 import { readLogTail } from './logs.mts';
 import { sendToNeedsMe } from './report.mts';
 import { fence } from './text.mts';
+import type { CheckResult, WaitCheck, WaitStore } from './waits.mts';
+import { CHECK_TIME_LIMIT_MS, createWaitStore, runCheck } from './waits.mts';
 
 export interface DispatchDeps extends Context {
   system: System;
@@ -33,13 +39,98 @@ export interface DispatchDeps extends Context {
   now: () => Date;
   logTail: (taskId: string) => string;
   notify: (task: Task, text: string) => Promise<void>;
+  waits: WaitStore;
+  runCheck: (check: WaitCheck) => Promise<CheckResult>;
+}
+
+const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+// Ends a wait on the board: the woken task, or undefined when it no longer waited or the call failed.
+async function wakeTask(deps: DispatchDeps, task: Task, why: string): Promise<Task | undefined> {
+  deps.print(`WAKE ${task.id} ${why.split('\n')[0]}`);
+  try {
+    const { applied, task: after } = await deps.backend.wake(task.id, `${WAKE_MARKER} ${why}`);
+    if (!deps.dryRun) deps.waits.remove(task.id);
+    return applied ? after : undefined;
+  } catch (error) {
+    deps.print(`WARN wake ${task.id} failed: ${errorText(error)}`);
+    return undefined;
+  }
+}
+
+/**
+ * Waits whose time is up, or whose check is gone, end now, before the slots are filled: the woken tasks are Todo again and can
+ * start in this tick. Returns the tasks with the woken ones replaced, and the waiting tasks whose check is due.
+ */
+async function wakeDue(deps: DispatchDeps, tasks: Task[]): Promise<{ tasks: Task[]; checks: Task[] }> {
+  const { config, waits } = deps;
+  const waiting = tasks.filter((task) => task.status === 'waiting' && task.machine === config.machine);
+  // A check whose task no longer waits here is left over: the user moved the card, or the task was closed. One whose task is
+  // still running may be about to wait (`board wait` stores the check first), so it stays.
+  const keep = new Set(
+    tasks
+      .filter((task) => (task.status === 'waiting' || task.status === 'running') && task.machine === config.machine)
+      .map((task) => task.id),
+  );
+  for (const id of waits.list()) {
+    if (keep.has(id)) continue;
+    deps.print(`DROP-CHECK ${id} its task no longer waits here`);
+    if (!deps.dryRun) waits.remove(id);
+  }
+  const checks: Task[] = [];
+  const replaced = new Map<string, Task>();
+  for (const task of waiting) {
+    const decision = decideWake({ task, check: waits.read(task.id), machine: config.machine, now: deps.now() });
+    if (decision.kind === 'check') checks.push(task);
+    if (decision.kind === 'wake' || decision.kind === 'timeout') {
+      const after = await wakeTask(deps, task, decision.why);
+      if (after) replaced.set(task.id, after);
+    }
+  }
+  return { tasks: tasks.map((task) => replaced.get(task.id) ?? task), checks };
+}
+
+// The tick is stopped after 110 s, and the check processes would outlive it: they run in their own process group.
+const TICK_LIMIT_MS = 110_000;
+const TICK_MARGIN_MS = 10_000;
+
+// The due checks, side by side; a check that passes wakes its task, any other result is kept for the next attempt. Checks that
+// would not finish before the tick's limit wait for the next tick.
+async function runChecks(deps: DispatchDeps, checks: Task[], tickStart: Date): Promise<void> {
+  if (checks.length === 0) return;
+  const left = TICK_LIMIT_MS - TICK_MARGIN_MS - (deps.now().getTime() - tickStart.getTime());
+  if (left < CHECK_TIME_LIMIT_MS) {
+    deps.print(`DEFER-CHECKS ${checks.length}: the tick has ${Math.max(0, Math.round(left / 1000))} s left`);
+    return;
+  }
+  await Promise.all(
+    checks.map(async (task) => {
+      const check = deps.waits.read(task.id);
+      if (check === undefined) return;
+      if (deps.dryRun) {
+        deps.print(`DRY check ${task.id} in ${check.cwd}`);
+        return;
+      }
+      const at = deps.now();
+      const result = await deps.runCheck(check);
+      if (result.exitCode === 0) {
+        await wakeTask(deps, task, `its check passed.${checkOutputBlock(result.output)}`);
+        return;
+      }
+      deps.print(`CHECK ${task.id} ${result.timedOut ? 'too slow' : `exit ${result.exitCode ?? 'killed'}`}`);
+      // The task may have been woken or moved meanwhile; then the file is gone and stays gone.
+      if (deps.waits.read(task.id) === undefined) return;
+      deps.waits.write(task.id, { ...check, lastCheckAt: at, lastExit: result.exitCode, lastOutput: result.output });
+    }),
+  );
 }
 
 export async function runDispatch(deps: DispatchDeps): Promise<void> {
   const { backend, config, system, files, print: log } = deps;
-  const tasks = await backend.listTasks();
+  const tickStart = deps.now();
+  const listed = await backend.listTasks();
   // The unit of a task lives on the machine that claimed it; another machine's tasks are its own business.
-  const running = tasks.filter(
+  const running = listed.filter(
     (task) => task.status === 'running' && (task.machine === null || task.machine === config.machine),
   );
 
@@ -62,6 +153,8 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     const tail = deps.logTail(task.id);
     await sendToNeedsMe(deps, task, `${decision.reason}\n\nEnd of the log:\n${fence(tail || '(empty)')}`);
   }
+
+  const { tasks, checks } = await wakeDue(deps, listed);
 
   // What runs here, per lane: every active worker unit, whatever the board says, with the lane its run file names.
   const activeWorkers = await system.activeWorkers();
@@ -98,7 +191,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
       continue;
     }
     // Not due yet; the board refuses the claim too, this only saves the attempt every tick. Checked before
-    // notServableHere so no other machine logs a SKIP line for every waiting card on every tick.
+    // notServableHere so no other machine logs a SKIP line for every delayed card on every tick.
     if (task.notBefore !== null && task.notBefore > deps.now()) continue;
     // Another machine may have the checkout, the directory or the session.
     const elsewhere = notServableHere(task, config.machine, config.repos);
@@ -185,7 +278,8 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   const summary = config.lanes
     .map((lane) => `${lane.name}=${runs.filter((run) => run.lane === lane.name).length}/${lane.slots}`)
     .join(' ');
-  log(`TICK started=${started.size} ${summary}`);
+  await runChecks(deps, checks, tickStart);
+  log(`TICK started=${started.size} ${summary}${checks.length > 0 ? ` checks=${checks.length}` : ''}`);
 }
 
 export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<void> {
@@ -197,6 +291,8 @@ export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<voi
     files: createRunFiles(),
     now: () => new Date(),
     logTail: readLogTail,
+    waits: createWaitStore(),
+    runCheck: (check) => runCheck(check),
     notify: async (task, text) => {
       if (dryRun) return print(`DRY slack ${task.id} ${text}`);
       await postSlack(
