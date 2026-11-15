@@ -28,16 +28,21 @@ function shortTitle(title: string): string {
 
 export function polishPrompt(taskId: string): string {
   return [
-    `Polish the prompt of board task ${taskId}. Read it with \`board show ${taskId}\`.`,
+    `Polish the prompt of board task ${taskId}. Read it with \`board show ${taskId}\`, including its notes and its parent.`,
     '',
-    'Rewrite its prompt so it reads clearly later, when the context is gone:',
-    '- Fix grammar and structure, and make the goal, the context and the constraints explicit.',
-    '- Keep every idea and detail the user wrote. Invent no requirements.',
+    'Turn the rough idea into a complete task that an agent can pick up later, when the context is gone. First gather context:',
+    '- Find what the task is about: the repository, feature, PR, story, doc or earlier board task it names or implies. Read enough of it to understand how things work today.',
+    '- Fill the gaps from what you find: what exists now, what is missing, which parts are affected. Settle what the evidence settles.',
+    '',
+    'Then write the new prompt as a light, high-level plan in product language:',
+    '- The goal and why it matters, then how it works today and what should change, then the steps in the order they make sense, then what done looks like.',
+    '- Describe behaviour and outcomes a user would notice, not code. Name a file, command or component only where it points the agent to the right place.',
+    '- Keep every idea and detail the user wrote. Where you had to decide something the user did not say, mark it as an assumption; list what only the user can answer under "Open questions".',
     '- Keep a leading slash command and its arguments exactly as they are.',
-    '- Keep it about as terse as a good prompt.',
+    '- Keep it short: a plan to start from, not a design document.',
     'Also write a short title.',
     '',
-    `Do not start the work the prompt describes, and do not change task ${taskId}. Write the new prompt to a file in /tmp and post it from this run with \`board polish ${taskId} --title "<title>" --file <path>\`. Then end with a one-line comment.`,
+    `Do not start the work the prompt describes: read, do not edit, and do not change task ${taskId}. Write the new prompt to a file in /tmp and post it from this run with \`board polish ${taskId} --title "<title>" --file <path>\`. Then end with a one-line comment.`,
   ].join('\n');
 }
 
