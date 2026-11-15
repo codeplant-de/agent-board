@@ -4,6 +4,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { TOOL_UNIT_NAMES } from '@agent-board/shared';
 import { EXEC_PATH, isCompiledBinary, selfCommand } from './self.mts';
 import { SystemError } from './system.mts';
 
@@ -12,11 +13,14 @@ const exec = promisify(execFile);
 // The PATH of the units: what the worker finds `claude`, `gh` and `systemd-run` on, whatever the shell's PATH is. %h is the home directory.
 export const UNIT_PATH = '%h/.local/bin:/usr/local/bin:/usr/bin:/bin';
 
-export const UNIT_NAMES = ['dispatch', 'intake'] as const;
+// Every unit name must be in TOOL_UNIT_NAMES, which keeps it from being a task id and so a worker unit's name.
+type ToolUnitName = (typeof TOOL_UNIT_NAMES)[number];
+export const UNIT_NAMES = ['dispatch', 'intake'] as const satisfies readonly ToolUnitName[];
 export type UnitName = (typeof UNIT_NAMES)[number];
 
 // The listener is a service without a timer: it holds the board's event stream and starts dispatch ticks.
-export const LISTEN_SERVICE = 'agent-board-listen.service';
+const LISTEN_NAME: ToolUnitName = 'listen';
+export const LISTEN_SERVICE = `agent-board-${LISTEN_NAME}.service`;
 
 // Exit 75 is `flock -E 75`: another tick holds the lock, which is not a failure.
 const UNITS: Record<

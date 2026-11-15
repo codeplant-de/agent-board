@@ -448,8 +448,10 @@ export const MAX_OUTPUT_SIZE = 256 * 1024 + 1024;
 
 export class ContractError extends Error {}
 
-// "dispatch" and "intake" would make the worker unit agent-board-<id> collide with the tool's own units.
-const RESERVED_TASK_IDS = ['dispatch', 'intake'];
+// The CLI's own systemd units are agent-board-<name>, the same shape as a worker unit agent-board-<task id>,
+// so these names can never be task ids. Add a name here before the CLI installs a unit with it.
+export const TOOL_UNIT_NAMES = ['dispatch', 'intake', 'listen'] as const;
+const RESERVED_TASK_IDS: readonly string[] = TOOL_UNIT_NAMES;
 
 // The id ends up in a systemd unit name, a log file name and argv, so the CLI checks every id it reads from the board or its arguments.
 export function isSafeTaskId(id: string): boolean {

@@ -680,10 +680,11 @@ test('a failed update under always does not stop the tick, and a dry run never u
   assert.ok(dry.logs.some((line) => line.startsWith('DRY self-update')));
 });
 
-test('the listener unit is not a worker: it neither waits an update out nor takes a lane slot', async () => {
+test('the listener and foreign agent-board units are not workers: they neither wait an update out nor take a lane slot', async () => {
   const listing = [
     'agent-board-listen.service loaded active running agent-board listener',
     'agent-board-dispatch.service loaded active running agent-board dispatcher: one tick',
+    'agent-board-foo.service loaded active running a unit the user made',
   ].join('\n');
   const { deps, updates } = setup([], [], {}, { autoUpdate: 'always', advertised: '0.6.0' });
   deps.system.activeWorkers = async () => parseWorkerUnits(listing);

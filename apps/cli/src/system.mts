@@ -30,14 +30,17 @@ export function parseUnitState(stdout: string): boolean {
   throw new SystemError(`systemctl gave no known unit state (got "${state.slice(0, 40)}")`);
 }
 
-const NON_WORKER_UNITS = ['agent-board-dispatch', 'agent-board-intake', 'agent-board-listen'];
-
+// A worker unit is one startWorker made: systemd-run gives it the command line as its description, which ends in
+// `internal worker <id>` for the same id the unit is named after. Any other agent-board-* unit (the tool's own, or
+// one the user made) is not a worker and must not take a lane slot.
 export function parseWorkerUnits(stdout: string): string[] {
   const taskIds: string[] = [];
   for (const line of stdout.split('\n')) {
-    const name = /^\s*[●*]?\s*(agent-board-[^\s.]+)\.service\s/.exec(line)?.[1];
-    if (name === undefined || NON_WORKER_UNITS.includes(name)) continue;
-    taskIds.push(name.slice('agent-board-'.length));
+    const match = /^\s*[●*]?\s*agent-board-([^\s.]+)\.service\s.*\sinternal worker (\S+)\s*$/.exec(line);
+    if (match === null) continue;
+    const [, id, describedId] = match;
+    if (id === undefined || id !== describedId || !isSafeTaskId(id)) continue;
+    taskIds.push(id);
   }
   return taskIds;
 }
@@ -87,6 +90,7 @@ export function createSystem(input: { dryRun: boolean; print: (line: string) => 
           '--type=service',
           '--state=active,activating,reloading,deactivating',
           '--plain',
+          '--full',
           '--no-legend',
           '--no-pager',
         ]),
