@@ -127,7 +127,7 @@ body {
   border-color: var(--mantine-color-indigo-4);
 }
 
-/* The board: one column on a phone, two on a tablet, six on a wide screen. */
+/* The board: one column on a phone, two on a tablet, five tracks on a wide screen (Waiting stacked above Todo in the second). */
 .board {
   display: grid;
   gap: var(--mantine-spacing-md);
@@ -135,19 +135,22 @@ body {
 }
 .board-cell {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mantine-spacing-md);
 }
 @media (min-width: 48em) {
   .board {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-/* On a wide screen Waiting takes two thirds of a middle column, and Backlog and Done a third. Hovering Backlog or Done,
+/* On a wide screen Backlog and Done take a third of a middle column's width. Hovering Backlog or Done,
    dragging a card over it or tabbing into it widens it to a middle column's width, floating over its neighbor: Backlog to the
    right, Done to the left. Its content keeps the full width throughout and is clipped while collapsed,
    so cards don't reflow on hover. */
 @media (min-width: 75em) {
   .board {
-    grid-template-columns: minmax(0, 1fr) repeat(2, minmax(0, 3fr)) minmax(0, 2fr) minmax(0, 3fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) repeat(3, minmax(0, 3fr)) minmax(0, 1fr);
   }
   .board-cell[data-collapsible='true'] {
     position: relative;

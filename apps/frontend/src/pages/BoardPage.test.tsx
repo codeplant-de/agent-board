@@ -118,6 +118,17 @@ describe('BoardPage drag and drop', () => {
   });
 });
 
+describe('BoardPage layout', () => {
+  it('stacks Waiting above Todo in one board cell', async () => {
+    listed.tasks = [];
+    renderBoard();
+    await screen.findAllByText('Empty');
+    const cell = column('Waiting').closest('.board-cell') as HTMLElement;
+    expect(cell).toBe(column('Todo').closest('.board-cell'));
+    expect(column('Waiting').compareDocumentPosition(column('Todo')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
 describe('BoardPage polish action', () => {
   const backlog = (overrides: Partial<ListedTask>) =>
     task({ id: 'b1', title: 'rough idea', createdBy: 'user', proposed: false, status: 'backlog', ...overrides });
