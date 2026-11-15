@@ -20,7 +20,8 @@ const ENTRY = 'current';
 
 const isCryptoKey = (value: unknown): boolean => typeof value === 'object' && value !== null && 'algorithm' in value;
 
-const toStored = ({ owner, keyId, enc, transcript }: Keys): StoredKeys => ({ owner, keyId, enc, transcript });
+/** The part of `keys` that is kept: the derived keys without the index key. */
+export const toStored = ({ owner, keyId, enc, transcript }: Keys): StoredKeys => ({ owner, keyId, enc, transcript });
 
 function request<T>(req: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -70,19 +71,6 @@ export function createIndexedDbKeyStore(): KeyStore {
       } catch {
         // Nothing was stored.
       }
-    },
-  };
-}
-
-export function createMemoryKeyStore(initial?: Keys): KeyStore {
-  let entry = initial && toStored(initial);
-  return {
-    load: async () => entry,
-    save: async (keys) => {
-      entry = toStored(keys);
-    },
-    clear: async () => {
-      entry = undefined;
     },
   };
 }

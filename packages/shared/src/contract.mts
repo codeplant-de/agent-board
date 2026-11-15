@@ -443,6 +443,14 @@ export const SEALED_LIMITS: Record<Field, number> = {
   'tr.output': 4 * 256 * 1024 + 4096,
 };
 
+/** Throws when `text` is more UTF-8 than the board takes for `field`; the error names the size and the limit. */
+export function checkSealedSize(field: Field, text: string, what: string): void {
+  const limit = SEALED_LIMITS[field];
+  const size = new TextEncoder().encode(text).length;
+  if (size > limit)
+    throw new ContractError(`${what} is too long: ${size} bytes of UTF-8, and the board takes at most ${limit}`);
+}
+
 // A tool result is cut at 256 KiB characters plus a short note; a client reporting more is lying or broken.
 export const MAX_OUTPUT_SIZE = 256 * 1024 + 1024;
 
@@ -539,7 +547,7 @@ function oneOf<T extends string>(values: readonly T[]): (value: unknown) => valu
 
 export const isStatus = oneOf(STATUSES);
 export const isNextRun = oneOf(NEXT_RUNS);
-export const isNoteAuthor = oneOf(NOTE_AUTHORS);
+export const isWireNoteAuthor = oneOf(WIRE_NOTE_AUTHORS);
 export const isNoteKind = oneOf(NOTE_KINDS);
 export const isTaskCreator = oneOf(TASK_CREATORS);
 export const isPriority = oneOf(PRIORITIES);
@@ -627,7 +635,7 @@ function sessionId(value: string | null, what: string): string | null {
   return value;
 }
 
-function rejectUnknownKeys(obj: Record<string, unknown>, allowed: string[], what: string): void {
+export function rejectUnknownKeys(obj: Record<string, unknown>, allowed: string[], what: string): void {
   const extra = Object.keys(obj).find((key) => !allowed.includes(key));
   if (extra !== undefined) throw new ContractError(`${what} has an unknown key "${extra}"`);
 }

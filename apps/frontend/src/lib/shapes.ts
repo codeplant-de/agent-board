@@ -8,6 +8,7 @@ import {
   isCronExpression,
   isKeyId,
   isNextRun,
+  isNoteKind,
   isPriority,
   isSafeLane,
   isSafeMachineName,
@@ -17,9 +18,8 @@ import {
   isStatus,
   isTaskCreator,
   isTimeZoneName,
+  isWireNoteAuthor,
   hasControlCharacter,
-  NOTE_KINDS,
-  WIRE_NOTE_AUTHORS,
   type NextRun,
   type NoteKind,
   type Priority,
@@ -59,9 +59,6 @@ export function safeId(value: unknown, what: string): string {
 export function safeNullableId(value: unknown, what: string): string | null {
   return value === null || value === undefined ? null : safeId(value, what);
 }
-
-const isOneOf = <T extends string>(values: readonly T[], value: unknown): value is T =>
-  typeof value === 'string' && values.some((candidate) => candidate === value);
 
 /** A machine or lane name, or a placeholder. */
 export function shownName(value: string | null): string | null {
@@ -139,8 +136,8 @@ export function checkNoteShapes(wire: { id: string; author: unknown; kind: unkno
   by: string | null;
   ok: boolean;
 } {
-  const author = isOneOf(WIRE_NOTE_AUTHORS, wire.author) ? wire.author : undefined;
-  const kind = isOneOf(NOTE_KINDS, wire.kind) ? wire.kind : undefined;
+  const author = isWireNoteAuthor(wire.author) ? wire.author : undefined;
+  const kind = isNoteKind(wire.kind) ? wire.kind : undefined;
   const id = typeof wire.id === 'string' && isSafeNoteId(wire.id) ? wire.id : undefined;
   return {
     id: id ?? INVALID_VALUE,

@@ -16,14 +16,14 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
-import { INVALID_VALUE, MACHINE_NAME_RULE, type Keys } from '@agent-board/shared';
+import { INVALID_VALUE, MACHINE_NAME_RULE, type KeySetup, type Keys } from '@agent-board/shared';
 import { modals } from '@mantine/modals';
 import { notifications } from '@mantine/notifications';
 import { IconCheck, IconCopy, IconKey } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useSyncExternalStore } from 'react';
 import { KeyError } from '../crypto/kdf';
-import { exportDataKey, replacePassphrase, type StoredKey } from '../crypto/keySlots';
+import { exportDataKey, replacePassphrase } from '../crypto/keySlots';
 import { useKeys } from '../crypto/KeyContext';
 import { PASSPHRASE_ADVICE, passphraseProblem, samePassphrase } from '../crypto/passphrase';
 import { PassphraseModal } from '../crypto/PassphraseModal';
@@ -42,7 +42,7 @@ import { errorMessage, useTRPC } from '../lib/trpc';
  * The slots the board stores, read as the key this browser is using: the owner and key id are the browser's, not the ones the
  * board reports, so a key that unwraps is shown or re-wrapped only when it is the one in use.
  */
-function asHeld(stored: StoredKey, keys: Keys): StoredKey {
+function asHeld(stored: KeySetup, keys: Keys): KeySetup {
   return { ...stored, keyId: keys.keyId };
 }
 

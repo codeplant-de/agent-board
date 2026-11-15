@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createKeySetup } from './keySlots';
-import { createMemoryKeyStore, inspectStoredKeys } from './keyStore';
+import { createMemoryKeyStore } from '../test/memoryKeyStore';
+import { inspectStoredKeys } from './keyStore';
 
 async function keysFor(owner: string) {
   return (await createKeySetup({ owner, passphrase: 'correct horse battery staple', kdf: { m: 8192, t: 1, p: 1 } }))

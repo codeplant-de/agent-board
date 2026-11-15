@@ -1,6 +1,6 @@
 // How a user's data key is stored on the server: one wrapped copy per way of unlocking it. The server keeps the slots
 // and cannot open them; the browser opens one with a passphrase or a recovery key.
-import { ContractError } from './contract.mts';
+import { ContractError, rejectUnknownKeys } from './contract.mts';
 import { isWrappedKey } from './crypto.mts';
 import { isRecord } from './guards.mts';
 
@@ -40,11 +40,6 @@ export interface KeySetup {
 // 16 bytes are 22 base64url characters, 64 bytes are 86.
 const SALT = /^[A-Za-z0-9_-]{22,86}$/;
 const KEY_ID = /^[0-9a-f]{16}$/;
-
-function rejectUnknownKeys(obj: Record<string, unknown>, allowed: string[], what: string): void {
-  const extra = Object.keys(obj).find((key) => !allowed.includes(key));
-  if (extra !== undefined) throw new ContractError(`${what} has an unknown key "${extra}"`);
-}
 
 function bounded(obj: Record<string, unknown>, key: 'm' | 't' | 'p', what: string): number {
   const value = obj[key];

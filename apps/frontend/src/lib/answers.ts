@@ -1,4 +1,3 @@
-import type { Question } from '@agent-board/shared';
 import type { ThreadNote } from './opening';
 
 /**
@@ -14,8 +13,4 @@ export function answerTo(thread: ThreadNote[], question: ThreadNote): ThreadNote
       note.questionNoteId === question.id &&
       JSON.stringify(note.questions) === asked,
   );
-}
-
-export function questionsAnswered(answer: ThreadNote): Question[] | undefined {
-  return answer.questions;
 }
