@@ -32,7 +32,7 @@ import { SystemError } from './system.mts';
 import { plainLine, plainText } from './terminal.mts';
 import type { Style } from './style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
-import type { Choice, ScheduleFlags } from './schedule.mts';
+import type { Choice, Scheduled, ScheduleFlags } from './schedule.mts';
 import type { WaitStore } from './waits.mts';
 import { isPermanentRefusal } from './decide.mts';
 
@@ -553,7 +553,7 @@ export async function scheduleCommand(
   context: LinkingContext,
   flags: ScheduleFlags,
   words: string[],
-): Promise<Task | undefined> {
+): Promise<Scheduled | undefined> {
   const args = parseScheduleArgs(flags, words);
   return schedule(
     {

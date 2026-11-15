@@ -394,9 +394,14 @@ dashes, put -- before it.
 repeating schedule instead, starting at --in/--at (default now), for --times
 runs or until --until, else forever.
 
-With --json, print {"id", "url"} of the task on stdout; everything else goes to
-stderr. Not available inside a board run: there, propose follow-up work with
-`board add`.
+--polish parks the task in Backlog and queues a second task, "Polish prompt:
+<title>", that asks an agent to turn the prompt into a complete plan, as the
+Polish prompt button on the board does. Apply the result from that task's page.
+It cannot be combined with --hold, --in, --at or a repeat.
+
+With --json, print {"id", "url"} of the task on stdout (and "polishId",
+"polishUrl" with --polish); everything else goes to stderr. Not available inside
+a board run: there, propose follow-up work with `board add`.
 
 Arguments:
   prompt                 what the task should do
@@ -417,6 +422,8 @@ Options:
                          time zone ("0 9 * * 1-5")
   --times <n>            end a repeat after this many runs, the first included
   --until <time>         end a repeat after this time
+  --polish               park it in backlog and queue a task that polishes its
+                         prompt, as "Polish prompt" on the board
   --new                  skip the duplicate check
   --dry-run              read everything, print every write instead of doing it
   --json                 print JSON on stdout instead of text
@@ -431,6 +438,7 @@ Examples:
   board schedule --at 09:00 /grill the plan in docs/x.md
   board schedule --every 2h --times 5 /sweep the stale branches
   board schedule --cron "0 9 * * 1-5" /review-pr --auto
+  board schedule --polish "bidder export should include postal codes"
   board schedule --hold -- --weird prompt
   board schedule --json /review-pr 17741
 ```

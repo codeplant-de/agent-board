@@ -1,7 +1,8 @@
 // `board schedule [--priority p] [--model m] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
-// [--times <n> | --until <time>] [--new] <prompt...>`: a task from a prompt, written as you would type it into Claude Code,
+// [--times <n> | --until <time>] [--polish] [--new] <prompt...>`: a task from a prompt, written as you would type it into Claude Code,
 // bound to this machine and the directory it was scheduled from. Before it creates one, a quick Haiku call checks whether
-// an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead.
+// an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead. With `--polish` the
+// task goes to Backlog and a child task that polishes its prompt is queued, as the board's "Polish prompt" button does.
 import { execFile } from 'node:child_process';
 import {
   ContractError,
@@ -13,6 +14,7 @@ import {
   MODEL_ALIASES,
   parseDuration,
   parseWhen,
+  polishTask,
   PRIORITIES,
 } from '@agent-board/shared';
 import type { Command } from 'commander';
@@ -39,6 +41,8 @@ export interface ScheduleArgs {
   until: Date | undefined;
   // Skips the duplicate check.
   forceNew: boolean;
+  // Parks it in Backlog and queues a task that polishes its prompt.
+  polish: boolean;
 }
 
 // The flags `board schedule` takes before the prompt, as commander hands them over.
@@ -49,6 +53,7 @@ export interface ScheduleFlags {
   hold?: boolean;
   backlog?: boolean;
   new?: boolean;
+  polish?: boolean;
   in?: string;
   at?: string;
   every?: string;
@@ -76,15 +81,33 @@ export function addScheduleOptions(command: Command): Command {
     .option('--cron <expr>', 'repeat by a 5-field cron expression in this machine\'s time zone ("0 9 * * 1-5")')
     .option('--times <n>', 'end a repeat after this many runs, the first included')
     .option('--until <time>', 'end a repeat after this time')
+    .option('--polish', 'park it in backlog and queue a task that polishes its prompt, as "Polish prompt" on the board')
     .option('--new', 'skip the duplicate check');
 }
 
 // The flags are the board's own; the words after them are the prompt, flags included (`--auto`).
 export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Date = new Date()): ScheduleArgs {
   const hold = flags.hold === true;
-  const backlog = flags.backlog === true;
+  const polish = flags.polish === true;
+  // A polished prompt can only be applied to a Backlog task.
+  const backlog = flags.backlog === true || polish;
   const { in: delay, at, every, times, until } = flags;
   const cron = flags.cron?.trim();
+  if (polish) {
+    const conflicts = [
+      hold && '--hold',
+      delay !== undefined && '--in',
+      at !== undefined && '--at',
+      every !== undefined && '--every',
+      flags.cron !== undefined && '--cron',
+      times !== undefined && '--times',
+      until !== undefined && '--until',
+    ].filter((flag) => flag !== false);
+    if (conflicts.length > 0)
+      throw new UsageError(
+        `--polish parks the task in Backlog, where its polished prompt is applied; it cannot be combined with ${conflicts.join(', ')}`,
+      );
+  }
   const result: ScheduleArgs = {
     prompt: '',
     priority: undefined,
@@ -98,6 +121,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     times: undefined,
     until: undefined,
     forceNew: flags.new === true,
+    polish,
   };
   if (flags.priority !== undefined) {
     if (!isPriority(flags.priority))
@@ -294,9 +318,15 @@ async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<T
   return task;
 }
 
-export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<Task | undefined> {
+export interface Scheduled {
+  task: Task;
+  // The task that polishes `task`'s prompt (`--polish`).
+  polish?: Task;
+}
+
+export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<Scheduled | undefined> {
   const { backend } = deps;
-  if (args.every !== undefined || args.cron !== undefined) return scheduleRepeat(deps, args);
+  if (args.every !== undefined || args.cron !== undefined) return { task: await scheduleRepeat(deps, args) };
   let warning: string | undefined;
   if (!args.forceNew) {
     // A task this machine cannot read says nothing to the check, and the model must not see its placeholder.
@@ -313,6 +343,8 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
         return undefined;
       }
       if (choice === 'requeue') {
+        // The existing task's prompt is not the one just typed; polishing it stays a click on the board.
+        if (args.polish) deps.print(`no polish queued for ${existing.id}; queue one with "Polish prompt" on the board`);
         if (args.model !== undefined && args.model !== existing.model)
           deps.print(
             `${existing.id} keeps its model (${existing.model ?? 'the default'}); --model applies only to a new task`,
@@ -322,14 +354,14 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
           (deps.confirm ?? deps.print)(
             `${existing.id} is already queued, now starts ${localTime(args.notBefore)}: ${deps.link(delayed.id)}`,
           );
-          return delayed;
+          return { task: delayed };
         }
         if (existing.status === 'todo' || existing.status === 'running') {
           const note = args.notBefore ? '; the start time was not applied' : '';
           (deps.confirm ?? deps.print)(
             `${existing.id} is already ${existing.status === 'todo' ? 'queued' : 'running'}${note}: ${deps.link(existing.id)}`,
           );
-          return existing;
+          return { task: existing };
         }
         const requeued = await backend.updateTask(existing.id, {
           status: startStatus(args),
@@ -342,7 +374,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
         (deps.confirm ?? deps.print)(
           `requeued ${requeued.id} ${deps.link(requeued.id)}${requeued.notBefore ? `, starts ${localTime(requeued.notBefore)}` : ''}`,
         );
-        return requeued;
+        return { task: requeued };
       }
       if (!deps.choose) warning = `Possibly a duplicate of ${existing.id} ("${existing.title}"): ${duplicate.reason}`;
     }
@@ -362,5 +394,13 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
   (deps.confirm ?? deps.print)(
     `scheduled ${task.id} ${deps.link(task.id)}${task.notBefore ? `, starts ${localTime(task.notBefore)}` : ''}`,
   );
-  return task;
+  if (!args.polish) return { task };
+  const { place, ...draft } = polishTask(task);
+  const { task: polish } = await backend.addTask({
+    ...draft,
+    createdBy: 'user',
+    ...(place ? { machine: place.machine, workdir: place.workdir } : {}),
+  });
+  (deps.confirm ?? deps.print)(`queued polish ${polish.id} ${deps.link(polish.id)}`);
+  return { task, polish };
 }

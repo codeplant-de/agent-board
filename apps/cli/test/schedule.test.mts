@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { polishTask } from '@agent-board/shared';
+import type { TaskDraft } from '@agent-board/shared';
 import { Command } from 'commander';
 import {
   addScheduleOptions,
@@ -41,6 +43,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     times: undefined,
     until: undefined,
     forceNew: false,
+    polish: false,
   });
   assert.deepEqual(parseScheduleArgs(['--hold', '--new', '--title', 'Export', 'Find', 'out', 'why']), {
     prompt: 'Find out why',
@@ -55,6 +58,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     times: undefined,
     until: undefined,
     forceNew: true,
+    polish: false,
   });
   assert.equal(parseScheduleArgs(['--', '--weird', 'prompt']).prompt, '--weird prompt');
   assert.throws(() => parseScheduleArgs(['--priority', 'asap', 'x']), /unknown priority/);
@@ -88,7 +92,7 @@ function setup(duplicate: Duplicate | undefined, choice?: 'requeue' | 'new' | 'a
 
 test('without a duplicate the task is created, pinned to this machine and directory', async () => {
   const { deps, backend, printed } = setup(undefined);
-  const created = await schedule(deps, parseScheduleArgs(['--priority', 'high', '/grill', 'the', 'plan']));
+  const created = (await schedule(deps, parseScheduleArgs(['--priority', 'high', '/grill', 'the', 'plan'])))?.task;
   assert.deepEqual(
     [created?.machine, created?.workdir, created?.priority, created?.createdBy, created?.status],
     ['here', '/work/cosuno', 'high', 'user', 'todo'],
@@ -100,7 +104,7 @@ test('without a duplicate the task is created, pinned to this machine and direct
 test('a likely duplicate can be requeued, created anyway, or dropped', async () => {
   const dup = { taskId: 'old', reason: 'same PR' };
   const requeue = setup(dup, 'requeue');
-  const again = await schedule(requeue.deps, parseScheduleArgs(['/review-pr', '17741']));
+  const again = (await schedule(requeue.deps, parseScheduleArgs(['/review-pr', '17741'])))?.task;
   assert.equal(again?.id, 'old');
   assert.ok(requeue.backend.writes.includes('status old -> todo'));
   assert.ok(
@@ -119,7 +123,7 @@ test('a likely duplicate can be requeued, created anyway, or dropped', async () 
 
 test('--backlog creates the task in Backlog, --hold in Needs me, neither in Todo', async () => {
   const statusOf = async (flags: string[]) =>
-    (await schedule(setup(undefined).deps, parseScheduleArgs([...flags, 'do', 'it'])))?.status;
+    (await schedule(setup(undefined).deps, parseScheduleArgs([...flags, 'do', 'it'])))?.task.status;
   assert.equal(await statusOf(['--backlog']), 'backlog');
   assert.equal(await statusOf(['--hold']), 'needs-me');
   assert.equal(await statusOf([]), 'todo');
@@ -197,7 +201,7 @@ test('--in and --at set when the task starts; both need Todo and exclude each ot
 
 test('a delayed task is created in Todo with its start time, which the confirmation names', async () => {
   const { deps, backend, printed } = setup(undefined);
-  const created = await schedule(deps, parseScheduleArgs(['--in', '2h', '/grill', 'plan']));
+  const created = (await schedule(deps, parseScheduleArgs(['--in', '2h', '/grill', 'plan'])))?.task;
   assert.equal(created?.status, 'todo');
   assert.ok(created?.notBefore && created.notBefore.getTime() > Date.now() + 100 * 60_000);
   assert.ok(
@@ -209,7 +213,7 @@ test('a delayed task is created in Todo with its start time, which the confirmat
 
 test('a requeue with a delay gives the requeued task the delay', async () => {
   const requeue = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
-  const requeued = await schedule(requeue.deps, parseScheduleArgs(['--in', '1h', '/review-pr', '17741']));
+  const requeued = (await schedule(requeue.deps, parseScheduleArgs(['--in', '1h', '/review-pr', '17741'])))?.task;
   assert.ok(requeue.backend.writes.includes('status old -> todo'));
   assert.ok(requeue.backend.writes.some((w) => w.startsWith('notBefore old: ')));
   assert.ok(requeued?.notBefore);
@@ -219,7 +223,7 @@ test('a requeue with a delay gives the requeued task the delay', async () => {
 test('--in or --at on a requeue of a task already in Todo delays that task', async () => {
   const requeue = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
   requeue.backend.tasks[0]!.status = 'todo';
-  const delayed = await schedule(requeue.deps, parseScheduleArgs(['--in', '1h', '/review-pr', '17741']));
+  const delayed = (await schedule(requeue.deps, parseScheduleArgs(['--in', '1h', '/review-pr', '17741'])))?.task;
   assert.deepEqual(requeue.backend.writes, [`notBefore old: ${delayed?.notBefore?.toISOString()}`]);
   assert.ok(delayed?.notBefore && delayed.notBefore.getTime() > Date.now() + 50 * 60_000);
   assert.ok(requeue.printed.some((line) => line.startsWith('old is already queued, now starts ')));
@@ -269,13 +273,15 @@ test('repeat flags that cannot go together, or are malformed, are usage errors',
 
 test('a repeat creates a schedule bound to this machine, skips the duplicate check and names the first run', async () => {
   const { deps, backend, printed, asked } = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
-  const created = await schedule(
-    deps,
-    parseScheduleArgs(
-      ['--priority', 'high', '--in', '1h', '--every', '2h', '--times', '3', '/review-pr', '17741'],
-      NOW,
-    ),
-  );
+  const created = (
+    await schedule(
+      deps,
+      parseScheduleArgs(
+        ['--priority', 'high', '--in', '1h', '--every', '2h', '--times', '3', '/review-pr', '17741'],
+        NOW,
+      ),
+    )
+  )?.task;
   assert.deepEqual(asked, [], 'no duplicate check');
   assert.equal(created?.scheduleId, 'sched');
   assert.equal(backend.writes.length, 1);
@@ -304,13 +310,14 @@ test('--model is checked and sent for a plain task and for a repeat', async () =
     assert.throws(() => parseScheduleArgs(['--model', bad, 'x']), /is not a model name|argument missing/, bad);
 
   const plain = setup(undefined);
-  const created = await schedule(plain.deps, parseScheduleArgs(['--model', 'haiku', '--new', '/sweep']));
+  const created = (await schedule(plain.deps, parseScheduleArgs(['--model', 'haiku', '--new', '/sweep'])))?.task;
   assert.equal(created?.model, 'haiku');
   const none = setup(undefined);
-  assert.equal((await schedule(none.deps, parseScheduleArgs(['--new', '/sweep'])))?.model, null);
+  assert.equal((await schedule(none.deps, parseScheduleArgs(['--new', '/sweep'])))?.task.model, null);
 
   const repeat = setup(undefined);
-  const first = await schedule(repeat.deps, parseScheduleArgs(['--model', 'fable', '--every', '2h', '/sweep'], NOW));
+  const first = (await schedule(repeat.deps, parseScheduleArgs(['--model', 'fable', '--every', '2h', '/sweep'], NOW)))
+    ?.task;
   assert.equal(first?.model, 'fable');
   assert.ok(repeat.backend.writes[0]?.endsWith('| here:/work/cosuno | model fable'));
 });
@@ -320,4 +327,73 @@ test('a requeue keeps the existing task model and says --model was not applied',
   await schedule(requeue.deps, parseScheduleArgs(['--model', 'opus', '/review-pr', '17741']));
   assert.ok(requeue.printed.includes('old keeps its model (the default); --model applies only to a new task'));
   assert.ok(!requeue.backend.writes.some((w) => w.startsWith('create')));
+});
+
+test('--polish parks the task in Backlog; it cannot be combined with what keeps a task out of Backlog', () => {
+  const args = parseScheduleArgs(['--polish', 'rough', 'idea']);
+  assert.deepEqual([args.polish, args.backlog, args.hold, args.prompt], [true, true, false, 'rough idea']);
+  assert.equal(parseScheduleArgs(['--polish', '--backlog', 'x']).backlog, true);
+  for (const flags of [
+    ['--hold'],
+    ['--in', '2h'],
+    ['--at', '09:30'],
+    ['--every', '2h'],
+    ['--cron', '0 9 * * 1-5'],
+    ['--every', '2h', '--times', '3'],
+  ])
+    assert.throws(
+      () => parseScheduleArgs(['--polish', ...flags, 'x']),
+      new RegExp(`--polish .* cannot be combined with .*${flags[0]}`),
+    );
+  assert.throws(() => parseScheduleArgs(['--polish', '--until', '2099-01-01', 'x']), /--polish .* --until/);
+});
+
+test('--polish creates the task in Backlog and a polish task for it, placed in the same machine and directory', async () => {
+  const { deps, backend, printed } = setup(undefined);
+  const drafts: TaskDraft[] = [];
+  const addTask = backend.addTask.bind(backend);
+  backend.addTask = async (draft) => {
+    drafts.push(draft);
+    const added = await addTask(draft);
+    return { ...added, task: { ...added.task, id: `t${drafts.length}` } };
+  };
+  const scheduled = await schedule(
+    deps,
+    parseScheduleArgs(['--polish', '--priority', 'high', '--title', 'Postal codes', 'export', 'postal', 'codes']),
+  );
+  assert.equal(scheduled?.task.status, 'backlog');
+  assert.equal(scheduled?.polish?.id, 't2');
+  const expected = polishTask({
+    id: 't1',
+    title: 'Postal codes',
+    priority: 'high',
+    machine: 'here',
+    workdir: '/work/cosuno',
+  });
+  assert.deepEqual(drafts[1], {
+    title: 'Polish prompt: Postal codes',
+    input: expected.input,
+    priority: 'high',
+    parentId: 't1',
+    createdBy: 'user',
+    machine: 'here',
+    workdir: '/work/cosuno',
+  });
+  assert.equal(drafts[1]?.status, undefined, 'the polish task runs from Todo');
+  assert.match(drafts[1]?.input ?? '', /board polish t1 /);
+  assert.ok(printed.some((line) => line === 'queued polish t2 https://board.test/t/t2'));
+});
+
+test('--polish queues no polish when the duplicate is requeued or the schedule dropped', async () => {
+  const dup = { taskId: 'old', reason: 'same PR' };
+  const requeue = setup(dup, 'requeue');
+  const again = await schedule(requeue.deps, parseScheduleArgs(['--polish', '/review-pr', '17741']));
+  assert.equal(again?.polish, undefined);
+  assert.ok(requeue.backend.writes.includes('status old -> backlog'));
+  assert.ok(!requeue.backend.writes.some((w) => w.startsWith('create')));
+  assert.ok(requeue.printed.some((line) => line.startsWith('no polish queued for old')));
+
+  const abort = setup(dup, 'abort');
+  assert.equal(await schedule(abort.deps, parseScheduleArgs(['--polish', '/review-pr', '17741'])), undefined);
+  assert.deepEqual(abort.backend.writes, []);
 });
