@@ -19,7 +19,6 @@ const VISIBLE = [
   'attach',
   'comment',
   'move',
-  'notify',
   'ask',
   'wait',
   'add',

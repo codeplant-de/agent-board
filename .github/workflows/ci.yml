@@ -201,12 +201,16 @@ jobs:
       contents: read
       packages: write
     strategy:
+      # One failing image must not cancel the others, or a slack build could stop the backend deploy.
+      fail-fast: false
       matrix:
         include:
           - image: agent-board-backend
             dockerfile: apps/backend/Dockerfile
           - image: agent-board-web
             dockerfile: apps/frontend/Dockerfile
+          - image: agent-board-slack
+            dockerfile: apps/slack/Dockerfile
     steps:
       - name: Checkout
         uses: actions/checkout@v7

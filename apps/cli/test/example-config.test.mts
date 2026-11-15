@@ -113,7 +113,6 @@ test('an intake run may report and propose through board, but never schedule or 
     'board move abc todo',
     'board move abc running',
     'board move abc done',
-    'board notify abc hi',
     'board polish abc --title t --file /tmp/pr-x.md',
     'board tasks',
   ]) {

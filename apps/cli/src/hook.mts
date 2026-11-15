@@ -9,7 +9,6 @@
 import { isRecord, isSafeTaskId, isSafeWorkdir, parseQuestions, QuestionError } from '@agent-board/shared';
 import type { Question } from '@agent-board/shared';
 import { buildContext, readStdin } from './cli.mts';
-import { postSlack, slackText } from './notify.mts';
 import { createRunFiles } from './runtime.mts';
 import { oneLine } from './text.mts';
 
@@ -103,20 +102,6 @@ export async function runHook(args: string[]): Promise<void> {
           try {
             const context = buildContext(false);
             await context.backend.ask(taskId, questions);
-            // Best effort, as `board ask` does: the question is on the board either way.
-            const first = questions[0]?.question ?? '';
-            await context.backend
-              .getTask(taskId)
-              .then((task) =>
-                postSlack(
-                  context.config.slackWebhookFile,
-                  slackText(
-                    { title: task.title, url: context.taskLink(task.id) },
-                    `Question: ${first}${questions && questions.length > 1 ? ` (+${questions.length - 1} more)` : ''}`,
-                  ),
-                ),
-              )
-              .catch(() => undefined);
           } catch (error) {
             failure = error instanceof Error ? error.message : String(error);
           }

@@ -3,6 +3,7 @@ import { Badge, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState, type DragEvent } from 'react';
 import { moveConfirmed } from '../components/confirmStart';
+import { SlackInbox } from '../components/SlackInbox';
 import { TaskCard } from '../components/TaskCard';
 import { usePolish } from '../components/usePolish';
 import { canPolish, isOpenPolishOf } from '../lib/polish';
@@ -155,17 +156,20 @@ export function BoardPage() {
   };
 
   return (
-    <div className="board">
-      {CELLS.map((statuses) => (
-        <div
-          key={statuses.join()}
-          className="board-cell"
-          data-collapsible={statuses.length === 1 && COLLAPSIBLE.has(statuses[0]!)}
-          data-status={statuses.join(' ')}
-        >
-          {statuses.map(renderColumn)}
-        </div>
-      ))}
-    </div>
+    <Stack gap="md">
+      <SlackInbox />
+      <div className="board">
+        {CELLS.map((statuses) => (
+          <div
+            key={statuses.join()}
+            className="board-cell"
+            data-collapsible={statuses.length === 1 && COLLAPSIBLE.has(statuses[0]!)}
+            data-status={statuses.join(' ')}
+          >
+            {statuses.map(renderColumn)}
+          </div>
+        ))}
+      </div>
+    </Stack>
   );
 }

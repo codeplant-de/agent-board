@@ -20,7 +20,6 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
     runStartedAt: new Date('2026-01-01T10:00:00Z'),
   });
   const backend = fakeBackend([running]);
-  const notes: string[] = [];
   const calls: string[] = [];
   const deps: WorkerDeps = {
     backend,
@@ -33,7 +32,6 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
       return result;
     },
     logTail: () => 'tail of log',
-    notify: async (_task, text) => void notes.push(text),
     resetLog: (shortLink) => void calls.push(`reset ${shortLink}`),
     appendLog: (shortLink, text) => void calls.push(`append ${shortLink}: ${text}`),
     pluginPath: () => '/plugins/pr-review',
@@ -48,7 +46,7 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
     now: () => new Date(),
     watchEveryMs: 10,
   };
-  return { deps, backend, notes, calls };
+  return { deps, backend, calls };
 }
 
 // The calls to the board that a tick starts without waiting need a few turns of the event loop to finish.
@@ -57,11 +55,10 @@ const settle = async (): Promise<void> => {
 };
 
 test('non-zero exit reports the error and log tail', async () => {
-  const { deps, backend, notes } = setup({ exitCode: 1, signal: null });
+  const { deps, backend } = setup({ exitCode: 1, signal: null });
   await runWorker(deps, 'w1');
   assert.ok(backend.writes.some((w) => w.includes('exited with code 1') && w.includes('tail of log')));
   assert.ok(backend.writes.some((w) => w.startsWith('fail w1:')));
-  assert.equal(notes.length, 1);
 });
 
 test('a run the watch stopped is reported with the reason', async () => {
@@ -126,7 +123,7 @@ test('the log is reset before anything else', async () => {
 });
 
 test('exit 0 with the task already moved to Todo by a quick answer writes nothing', async () => {
-  const { deps, backend, notes } = setup({ exitCode: 0, signal: null });
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
   deps.run = async () => {
     backend.tasks[0]!.status = 'todo';
     return { exitCode: 0, signal: null };
@@ -136,7 +133,6 @@ test('exit 0 with the task already moved to Todo by a quick answer writes nothin
     backend.writes.filter((w) => !/^(heartbeat|session|next) /.test(w)),
     [],
   );
-  assert.deepEqual(notes, []);
 });
 
 test('an unresolvable pr-review plugin sends the task to Needs me with the reason', async () => {
@@ -173,7 +169,7 @@ test('a task closed during the run is left alone, whatever the outcome', async (
     { exitCode: 1, signal: null },
     { exitCode: null, signal: 'SIGTERM', timedOut: true },
   ]) {
-    const { deps, backend, notes } = setup(result);
+    const { deps, backend } = setup(result);
     deps.run = async () => {
       backend.tasks[0]!.closed = true;
       return result;
@@ -183,7 +179,6 @@ test('a task closed during the run is left alone, whatever the outcome', async (
       backend.writes.filter((w) => !/^(heartbeat|session|next) /.test(w)),
       [],
     );
-    assert.deepEqual(notes, []);
   }
 });
 
@@ -192,7 +187,7 @@ test('a run another machine took over is left alone: no workdir, no failure', as
     { exitCode: 0, signal: null },
     { exitCode: 1, signal: null },
   ]) {
-    const { deps, backend, notes } = setup(result);
+    const { deps, backend } = setup(result);
     backend.tasks[0]!.runStartedAt = new Date('2026-01-01T10:00:00Z');
     deps.run = async () => {
       deps.files.writeCwd('w1', '/tmp/.claude/worktrees/feat-x');
@@ -202,7 +197,6 @@ test('a run another machine took over is left alone: no workdir, no failure', as
     };
     await runWorker(deps, 'w1');
     assert.ok(!backend.writes.some((w) => w.startsWith('workdir w1: /tmp/.claude') || w.startsWith('fail ')));
-    assert.deepEqual(notes, []);
   }
 });
 
@@ -308,7 +302,7 @@ test('a fresh skill run binds the task to its directory, and to the worktree it 
 
 test('a run that reported keeps the worktree it ended in, though the board dropped its runStartedAt', async () => {
   for (const status of ['needs-me', 'waiting', 'todo'] as const) {
-    const { deps, backend, notes } = setup({ exitCode: 0, signal: null });
+    const { deps, backend } = setup({ exitCode: 0, signal: null });
     deps.run = async () => {
       deps.files.writeCwd('w1', '/tmp/.claude/worktrees/feat-x');
       backend.tasks[0]!.status = status;
@@ -321,7 +315,6 @@ test('a run that reported keeps the worktree it ended in, though the board dropp
       status,
     );
     assert.ok(!backend.writes.some((w) => w.startsWith('fail ')), status);
-    assert.deepEqual(notes, [], status);
   }
 });
 
@@ -633,7 +626,7 @@ test("a backlog is sent in batches of at most the board's limit, and a refused o
 });
 
 test('a task whose prompt cannot be decrypted is reported, never run', async () => {
-  const { deps, backend, notes } = setup({ exitCode: 0, signal: null });
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
   const [running] = backend.tasks;
   Object.assign(running!, { input: '', unreadable: ['input'] });
   let ran = false;
@@ -644,7 +637,6 @@ test('a task whose prompt cannot be decrypted is reported, never run', async () 
   await runWorker(deps, 'w1');
   assert.equal(ran, false);
   assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('input could not be decrypted')));
-  assert.equal(notes.length, 1);
 });
 
 test('a task whose directory cannot be decrypted is not run in the default directory', async () => {
@@ -820,7 +812,7 @@ test('an event the board refused for a passing reason waits, in order, with ever
 });
 
 test('a worker refuses a task whose creator is an agent, as the board lists it as Todo (unstarted proposal)', async () => {
-  const { deps, backend, notes } = setup({ exitCode: 0, signal: null });
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
   Object.assign(backend.tasks[0]!, { createdBy: 'agent', input: 'rm -rf the world' });
   let ran = false;
   deps.run = async () => {
@@ -830,7 +822,6 @@ test('a worker refuses a task whose creator is an agent, as the board lists it a
   await runWorker(deps, 'w1');
   assert.equal(ran, false);
   assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('you have not started it')));
-  assert.equal(notes.length, 1);
 });
 
 test('a session that a fresh run abandoned is not resumed, even when the board still names it (Re-run fresh)', async () => {

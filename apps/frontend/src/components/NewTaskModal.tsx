@@ -23,12 +23,21 @@ import { MarkdownEditor } from './MarkdownEditor';
 const WHEN_LABEL = { now: 'Now', later: 'Later', repeat: 'Repeating', backlog: 'Backlog', hold: 'Needs me' } as const;
 type When = keyof typeof WHEN_LABEL;
 
+interface Props {
+  opened: boolean;
+  onClose: () => void;
+  /** Text to start from; read when the modal mounts, so give a new one a new `key`. */
+  initial?: { title: string; input: string };
+  /** After the task exists. */
+  onCreated?: () => void;
+}
+
 /** A prompt, as you would type it into Claude Code. `board schedule` does the same from a terminal, in its directory. */
-export function NewTaskModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
+export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const trpc = useTRPC();
   const navigate = useNavigate();
-  const [title, setTitle] = useState('');
-  const [input, setInput] = useState('');
+  const [title, setTitle] = useState(initial?.title ?? '');
+  const [input, setInput] = useState(initial?.input ?? '');
   const [when, setWhen] = useState<When>('now');
   const [at, setAt] = useState('');
   const [rule, setRule] = useState('');
@@ -63,6 +72,7 @@ export function NewTaskModal({ opened, onClose }: { opened: boolean; onClose: ()
       { title, input, when: payload, priority },
       {
         onSuccess: (task) => {
+          onCreated?.();
           setTitle('');
           setInput('');
           setPriority('normal');
