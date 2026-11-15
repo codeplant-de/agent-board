@@ -123,7 +123,7 @@ WantedBy=timers.target
     file: LISTEN_SERVICE,
     text: `[Unit]
 Description=agent-board listener: dispatch as soon as the board says tasks changed
-# The listener exits on a contract mismatch until the CLI is updated; systemd must keep restarting it, not give up.
+# The listener exits when the board no longer serves this CLI, until the CLI is updated; systemd must keep restarting it, not give up.
 StartLimitIntervalSec=0
 
 [Service]

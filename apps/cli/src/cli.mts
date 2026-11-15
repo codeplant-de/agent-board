@@ -1,11 +1,11 @@
 import { GitHubError } from './github.mts';
 import { SystemError } from './system.mts';
-import { BackendError, dryRunBackend, loadWebConfig } from './backend.mts';
+import { BackendError, dryRunBackend, loadWebConfig, updateCliHint } from './backend.mts';
 import { ConfigError, getPaths, loadConfig } from './config.mts';
 import type { Config } from './config.mts';
 import { taskLink } from './links.mts';
 import { createSealedBackend } from './sealing.mts';
-import type { Backend } from '@agent-board/shared';
+import type { Backend, SkippedItem } from '@agent-board/shared';
 import { wantsColor } from './style.mts';
 
 export interface Context {
@@ -35,12 +35,38 @@ export interface ContextOptions {
   timeoutMs?: number;
 }
 
+// Warns on stderr, once per field and value, that a list answer left an item out for a value this CLI does not know.
+export function warnSkippedOnce(warn: (line: string) => void = console.error): (skipped: SkippedItem) => void {
+  const seen = new Set<string>();
+  return ({ what, field, value }) => {
+    const key = `${what}.${field}=${value}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    warn(`board: skipped a ${what} with ${field} ${JSON.stringify(value)} this CLI does not know; ${updateCliHint()}`);
+  };
+}
+
+// An older board server is a state to wait out during a rollout, not a failure of a tick: one line, exit 0.
+export async function skipTickWhileServerOlder(
+  tick: () => Promise<void>,
+  log: (line: string) => void = print,
+): Promise<void> {
+  try {
+    await tick();
+  } catch (error) {
+    if (!(error instanceof BackendError) || error.contractMismatch !== 'server-older') throw error;
+    log(`skipped: ${error.message}`);
+  }
+}
+
 // The config is read on first use, so a command that never needs it works without a config.json.
 export function buildContext(dryRun: boolean, options: ContextOptions = {}): LinkingContext {
   const paths = getPaths();
   // The dry-run wrapper goes outside the sealing one, so it prints plaintext and reads what the sealing backend opens.
   const backend = createSealedBackend({
     loadConfig: () => loadWebConfig(paths.configDir),
+    onSkip: warnSkippedOnce(),
+    warn: (line) => console.error(`board: ${line}`),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
   });
   let config: Config | undefined;

@@ -5,7 +5,7 @@
  */
 import { spawn } from 'node:child_process';
 import { ConfigError, getPaths } from './config.mts';
-import { BackendError, loadWebConfig, verifyContract } from './backend.mts';
+import { BackendError, loadWebConfig, machineHeaders, requireFeature, verifyContract } from './backend.mts';
 import type { Fetch, WebConfig } from './backend.mts';
 import { print } from './cli.mts';
 import { selfCommand } from './self.mts';
@@ -237,12 +237,14 @@ function sleep(ms: number, timers: Timers, signal: AbortSignal): Promise<void> {
   return within(new Promise<never>(() => undefined), ms, timers, signal, 'sleep').catch(() => undefined);
 }
 
-// Runs until `signal` aborts (exit code 0) or the contract does not match (1: systemd restarts it, on new code after an update).
+// Runs until `signal` aborts (exit code 0) or the board no longer serves this CLI (1: systemd restarts it, on new code after an update).
 export async function runListener(deps: ListenerDeps): Promise<number> {
   const { timers, log, signal } = deps;
   const options = { ...LISTENER_OPTIONS, ...deps.options };
   const ticker = createTicker({ run: deps.runTick, timers, log, ...options });
   let attempt = 0;
+  // A board server older than this CLI, or without the event stream, is a rollout in progress: the listener keeps trying, saying so once per state.
+  let loggedOlder: string | undefined;
   try {
     while (!signal.aborted) {
       let connectedAt: number | undefined;
@@ -253,7 +255,7 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
         const target = await deps.verify();
         const response = await within(
           deps.fetch(`${target.url}/api/machine/events`, {
-            headers: { authorization: `Bearer ${target.token}`, accept: 'text/event-stream' },
+            headers: { ...machineHeaders(target.token), accept: 'text/event-stream' },
             signal: connection.signal,
             redirect: 'error',
           }),
@@ -269,6 +271,7 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
         if (!response.ok || response.body === null)
           throw new Error(`the board answered the event stream with HTTP ${response.status}`);
         connectedAt = timers.now();
+        loggedOlder = undefined;
         log('connected');
         ticker.now();
         await readEvents(
@@ -281,7 +284,7 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
         log('disconnected: the board closed the stream');
       } catch (error) {
         if (signal.aborted) break;
-        if (error instanceof BackendError && error.contractMismatch !== undefined) {
+        if (error instanceof BackendError && error.contractMismatch === 'cli-older') {
           log(error.message);
           return 1;
         }
@@ -289,11 +292,19 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
           log(error.message);
           return 1;
         }
-        log(
-          error instanceof BackendError && error.status === 401
-            ? 'the board refused the token (401): it was revoked or replaced; run "board init" with a new one'
-            : `disconnected: ${describe(error)}`,
-        );
+        if (
+          error instanceof BackendError &&
+          (error.contractMismatch === 'server-older' || error.missingFeature !== undefined)
+        ) {
+          if (error.message !== loggedOlder) log(error.message);
+          loggedOlder = error.message;
+        } else {
+          log(
+            error instanceof BackendError && error.status === 401
+              ? 'the board refused the token (401): it was revoked or replaced; run "board init" with a new one'
+              : `disconnected: ${describe(error)}`,
+          );
+        }
       } finally {
         signal.removeEventListener('abort', stopConnection);
         connection.abort();
@@ -350,7 +361,7 @@ export async function listenMain(): Promise<void> {
     signal: stop.signal,
     verify: async () => {
       const config = loadWebConfig(configDir);
-      await verifyContract(config);
+      requireFeature((await verifyContract(config)).features, 'events');
       return config;
     },
     fetch: (url, init) => fetch(url, init),

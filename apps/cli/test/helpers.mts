@@ -4,11 +4,14 @@ import type { SessionStore } from '../src/sessions.mts';
 import type { WaitCheck, WaitStore } from '../src/waits.mts';
 import { BackendError } from '../src/backend.mts';
 import {
-  CONTRACT_VERSION,
+  API_VERSION,
+  LEGACY_CONTRACT,
+  MIN_CLIENT,
   deriveKeys,
   encodeDataKey,
   generateDataKey,
   seal,
+  SERVER_FEATURES,
   sealFields,
   taskLabels,
 } from '@agent-board/shared';
@@ -126,7 +129,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     },
     async getTask(id) {
       const found = state.tasks.find((t) => t.id === id);
-      if (!found) throw new Error(`no task ${id}`);
+      if (!found) throw new BackendError(`get-task: no task ${id}`, 404, true);
       return asBoardShows(found);
     },
     // The server's rules, for a token of the machine `CONFIG.machine`.
@@ -400,7 +403,17 @@ export function fakeSessions(known: [string, string][] = []): FakeSessions {
 export const ENV_FILE = `AGENT_BOARD_TOKEN=abm_secret\nAGENT_BOARD_DATA_KEY=${encodeDataKey(DATA_KEY)}\n`;
 
 // What the test board's `version` answers.
-export const VERSION_ANSWER = { contract: CONTRACT_VERSION, owner: OWNER, keyId: KEYS.keyId };
+export const VERSION_ANSWER = {
+  contract: LEGACY_CONTRACT,
+  owner: OWNER,
+  keyId: KEYS.keyId,
+  api: { version: API_VERSION, minClient: MIN_CLIENT },
+  features: [...SERVER_FEATURES],
+};
+
+// What verifying the test board returns: whose board it is, and the API range it speaks.
+export const SERVER_API = { version: API_VERSION, minClient: MIN_CLIENT };
+export const SERVER_HAS = new Set<string>(SERVER_FEATURES);
 
 export const SESSION = '11111111-1111-4111-8111-111111111111';
 export const OTHER_SESSION = '22222222-2222-4222-8222-222222222222';

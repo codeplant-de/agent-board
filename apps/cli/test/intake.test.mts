@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { BackendError } from '../src/backend.mts';
 import { GitHubError, parseSearchPage, searchQuery } from '../src/github.mts';
 import { STATUSES } from '@agent-board/shared';
 import type { Status } from '@agent-board/shared';
@@ -90,6 +91,43 @@ test('running intake twice creates the task once', async () => {
   await runIntake(deps);
   assert.equal(backend.writes.filter((w) => w.startsWith('create')).length, 1);
   assert.ok(logs.includes('INTAKE prs=1 created=0 requeued=0 done=0'));
+});
+
+test('a PR whose task the board hides from this CLI is skipped with one line, and the tick goes on', async () => {
+  const backend = fakeBackend([]);
+  const logs: string[] = [];
+  const hidden = new BackendError('add-task: HTTP 422', 422, true);
+  const addTask = backend.addTask.bind(backend);
+  backend.addTask = async (draft) => {
+    if (draft.dedupeKey === url(1)) throw hidden;
+    return addTask(draft);
+  };
+  await runIntake({
+    backend,
+    config: CONFIG,
+    dryRun: false,
+    print: (line: string) => logs.push(line),
+    github: { listReviewRequested: async () => ({ prs: [pr(1), pr(2)], unreadable: [] }) },
+    now: () => NOW,
+  });
+  assert.ok(logs.some((line) => line.startsWith('SKIP #1 its task on the board uses a value this CLI does not know')));
+  assert.ok(logs.includes('CREATED #2'));
+  assert.ok(logs.includes('INTAKE prs=2 created=1 requeued=0 done=0'));
+  await assert.rejects(
+    runIntake({
+      backend: Object.assign(fakeBackend([]), {
+        addTask: async () => {
+          throw new BackendError('add-task: HTTP 500', 500, true);
+        },
+      }),
+      config: CONFIG,
+      dryRun: false,
+      print: () => undefined,
+      github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+      now: () => NOW,
+    }),
+    /HTTP 500/,
+  );
 });
 
 test('requeue moves the task, updates the head and comments', async () => {

@@ -30,7 +30,11 @@ const mapErrors = t.middleware(async ({ next }) => {
   const result = await next();
   if (!result.ok && result.error.cause instanceof AppError) {
     const cause = result.error.cause;
-    throw new TRPCError({ code: cause.code, message: cause.message, cause });
+    throw new TRPCError({
+      code: cause.code === 'UNPROCESSABLE' ? 'UNPROCESSABLE_CONTENT' : cause.code,
+      message: cause.message,
+      cause,
+    });
   }
   return result;
 });

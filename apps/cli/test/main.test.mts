@@ -62,7 +62,7 @@ test('help and version need no config file', async () => {
     for (const flag of ['--version', '-V']) {
       const result = await run('board', [flag], dir);
       assert.equal(result.code, 0);
-      assert.match(result.stdout, /^board \d+\.\d+\.\d+-dev \(contract \d+\)\n$/);
+      assert.match(result.stdout, /^board \d+\.\d+\.\d+-dev \(api \d+\)\n$/);
     }
     for (const result of [overview, await run('board', ['--version'], dir)])
       assert.doesNotMatch(result.stderr, /config file missing/);
@@ -195,6 +195,77 @@ test('tasks works with only web.json and env', async () => {
     server.close();
     rmSync(dir, { recursive: true });
   }
+});
+
+// A board that answers `version` with the given API range and every list with `list`.
+async function withFakeBoard(
+  api: { version: number; minClient: number },
+  list: unknown[],
+  body: (dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = emptyConfigDir();
+  const server = createServer((request, response) => {
+    const command = request.url?.split('/').pop();
+    request.resume();
+    request.on('end', () => {
+      response.end(JSON.stringify({ result: command === 'version' ? { ...VERSION_ANSWER, api } : list }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { port } = server.address() as AddressInfo;
+    writeFileSync(join(dir, 'web.json'), JSON.stringify({ url: `http://127.0.0.1:${port}` }));
+    writeFileSync(join(dir, 'env'), ENV_FILE, { mode: 0o600 });
+    writeFileSync(join(dir, 'config.json'), '{}');
+    await body(dir);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+}
+
+test('a dispatch tick against an older server logs one line and exits 0; a command fails clearly', async () => {
+  await withFakeBoard({ version: 3, minClient: 1 }, [], async (dir) => {
+    const tick = await run('board', ['internal', 'dispatch', '--dry-run'], dir);
+    assert.equal(tick.code, 0, tick.stderr);
+    assert.match(tick.stdout, /^skipped: the board server is older than this CLI: it speaks API 3.*\n$/);
+    assert.equal(tick.stderr, '');
+    const tasks = await run('board', ['tasks'], dir);
+    assert.equal(tasks.code, 1);
+    assert.match(tasks.stderr, /the board server is older than this CLI/);
+  });
+});
+
+test('a board that no longer serves this CLI fails a command and a tick, saying how to update', async () => {
+  await withFakeBoard({ version: 99, minClient: 99 }, [], async (dir) => {
+    for (const args of [['tasks'], ['internal', 'dispatch', '--dry-run']]) {
+      const result = await run('board', args, dir);
+      assert.equal(result.code, 1, args.join(' '));
+      assert.match(
+        result.stderr,
+        /this CLI is older than the board server: it speaks API \d+, the server serves clients from 99/,
+      );
+    }
+  });
+});
+
+test('a task with a status this CLI does not know is left out of the list, with one warning on stderr', async () => {
+  const known = await wireTask({ id: 'Ab3dEf9x', title: 'Fix the thing' });
+  const list = [
+    known,
+    { ...known, id: 'Fu7ureT1', status: 'snoozed' },
+    { ...known, id: 'Fu7ureT2', status: 'snoozed' },
+  ];
+  await withFakeBoard({ version: 99, minClient: 7 }, list, async (dir) => {
+    const result = await run('board', ['tasks'], dir);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Ab3dEf9x/);
+    assert.doesNotMatch(result.stdout, /Fu7ureT/);
+    assert.equal(
+      result.stderr,
+      'board: skipped a task with status "snoozed" this CLI does not know; run "git pull" and "pnpm install" in the checkout\n',
+    );
+  });
 });
 
 test('__complete is gone after about two seconds of wall time, whatever is in flight', async () => {

@@ -3,7 +3,8 @@
  * then run the checks of waiting tasks that are due.
  * No LLM calls. Add --dry-run to read everything and print every write and process start instead.
  */
-import { buildContext, print } from './cli.mts';
+import { BackendError, isVocabularyRefusal, updateCliHint } from './backend.mts';
+import { buildContext, print, skipTickWhileServerOlder } from './cli.mts';
 import type { Context } from './cli.mts';
 import type { Task } from '@agent-board/shared';
 import { promptSkill } from '@agent-board/shared';
@@ -58,6 +59,23 @@ async function wakeTask(deps: DispatchDeps, task: Task, why: string): Promise<Ta
   }
 }
 
+// A check's task that the list does not show may be hidden from this CLI (a value it does not know) rather than gone: only
+// the board's 404, or a task that no longer waits or runs here, lets the check go; anything else keeps it.
+async function isGone(deps: DispatchDeps, id: string): Promise<boolean> {
+  try {
+    const task = await deps.backend.getTask(id);
+    return !((task.status === 'waiting' || task.status === 'running') && task.machine === deps.config.machine);
+  } catch (error) {
+    if (error instanceof BackendError && error.fromApi && error.status === 404) return true;
+    deps.print(
+      isVocabularyRefusal(error)
+        ? `KEEP-CHECK ${id} its task uses a value this CLI does not know; ${updateCliHint()}`
+        : `KEEP-CHECK ${id} its task could not be read: ${errorText(error)}`,
+    );
+    return false;
+  }
+}
+
 /**
  * Waits whose time is up, or whose check is gone, end now, before the slots are filled: the woken tasks are Todo again and can
  * start in this tick. Returns the tasks with the woken ones replaced, and the waiting tasks whose check is due.
@@ -73,7 +91,7 @@ async function wakeDue(deps: DispatchDeps, tasks: Task[]): Promise<{ tasks: Task
       .map((task) => task.id),
   );
   for (const id of waits.list()) {
-    if (keep.has(id)) continue;
+    if (keep.has(id) || !(await isGone(deps, id))) continue;
     deps.print(`DROP-CHECK ${id} its task no longer waits here`);
     if (!deps.dryRun) waits.remove(id);
   }
@@ -284,21 +302,23 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
 
 export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<void> {
   const context = buildContext(dryRun);
-  await runDispatch({
-    ...context,
-    print,
-    system: createSystem({ dryRun, print }),
-    files: createRunFiles(),
-    now: () => new Date(),
-    logTail: readLogTail,
-    waits: createWaitStore(),
-    runCheck: (check) => runCheck(check),
-    notify: async (task, text) => {
-      if (dryRun) return print(`DRY slack ${task.id} ${text}`);
-      await postSlack(
-        context.config.slackWebhookFile,
-        slackText({ title: task.title, url: context.taskLink(task.id) }, text),
-      );
-    },
-  });
+  await skipTickWhileServerOlder(() =>
+    runDispatch({
+      ...context,
+      print,
+      system: createSystem({ dryRun, print }),
+      files: createRunFiles(),
+      now: () => new Date(),
+      logTail: readLogTail,
+      waits: createWaitStore(),
+      runCheck: (check) => runCheck(check),
+      notify: async (task, text) => {
+        if (dryRun) return print(`DRY slack ${task.id} ${text}`);
+        await postSlack(
+          context.config.slackWebhookFile,
+          slackText({ title: task.title, url: context.taskLink(task.id) }, text),
+        );
+      },
+    }),
+  );
 }

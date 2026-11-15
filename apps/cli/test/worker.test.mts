@@ -91,6 +91,28 @@ test('exit 0 after the worker moved the task writes nothing', async () => {
   );
 });
 
+test('a task the board hides from this CLI at the end of the run keeps its run files and is logged, not thrown', async () => {
+  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
+  const cleared: string[] = [];
+  deps.files = { ...deps.files, clear: (id) => void cleared.push(id) };
+  const getTask = backend.getTask.bind(backend);
+  let ran = false;
+  deps.run = async () => {
+    ran = true;
+    return { exitCode: 0, signal: null };
+  };
+  backend.getTask = async (id) => {
+    if (ran) throw new BackendError('get-task: HTTP 422', 422, true);
+    return getTask(id);
+  };
+  await runWorker(deps, 'w1');
+  assert.ok(
+    calls.some((line) => /does not know/.test(line)),
+    calls.join('\n'),
+  );
+  assert.deepEqual(cleared, []);
+});
+
 test('a command that cannot start is reported on the task', async () => {
   const { deps, backend } = setup(new Error('could not start claude: ENOENT'));
   await runWorker(deps, 'w1');

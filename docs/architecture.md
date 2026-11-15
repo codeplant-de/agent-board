@@ -62,13 +62,11 @@ What the server can still do: decide when and where a task runs, reorder or with
 
 ## Versioning
 
-The CLI sends `version` once per process and stops when the server's `CONTRACT_VERSION` differs from its own, in either direction. The server deploys on every merge to `main`, while the CLI updates only through a `cli-v*` release and `board self-update`. So a bump leaves every machine refusing to work until it is updated, and that has caused outages.
+The CLI sends `version` once per process and checks the server's API range (see [machine-api.md](machine-api.md#version-handshake)): it stops when its `API_VERSION` is below the server's `minClient`, or when the server's version is below its own `MIN_SERVER`. A server that is merely older makes the unattended dispatch and intake ticks skip quietly until it catches up. CLIs up to 0.7.0 compare `contract` exactly, so the server keeps answering it (`LEGACY_CONTRACT`, 9) until a break raises `MIN_CLIENT` above it. The server deploys on every merge to `main`, while the CLI updates only through a `cli-v*` release and `board self-update`, so a raised `MIN_CLIENT` leaves every older machine refusing to work until it is updated.
 
-- Additive changes need no bump: a new machine command, a new optional request field the server ignores when absent, a new response field old clients skip. `board attach` and suggested replies shipped this way.
-- A new enum value in a response is breaking, because older CLIs parse statuses, kinds and creators strictly. Contracts 8 (`polish` notes) and 9 (`waiting`) were bumped for this.
-- A bump ships with a CLI version bump, an Upgrading note in [setup.md](setup.md#upgrading), and a CLI release right after the merge.
-
-A backward-compatible handshake (a version range instead of an exact match) is designed but not merged.
+- The numbers are a break level, not a count of changes. An additive change adds a **feature name** and bumps no number, so parallel branches do not collide: a new machine command, a new optional request field, a new enum value with a vocabulary row (see [machine-api.md](machine-api.md#features)). The server answers the features it has, the CLI checks the one it needs and a missing one disables only that command; the CLI sends the vocabulary it understands, and the server leaves out what the client cannot read. `board attach` and suggested replies shipped this way.
+- A new enum value in a response is additive if it gets a vocabulary feature, and breaking if it does not or if it changes what an existing value means: then older CLIs parse it strictly (a list skips an item it does not know, a single object fails). Contracts 8 (`polish` notes) and 9 (`waiting`) were bumped for this, before the vocabulary features existed.
+- A break (`API_VERSION` raised, then `MIN_CLIENT` to it) ships with a CLI version bump, an Upgrading note in [setup.md](setup.md#upgrading), and a CLI release right after the merge. CI fails a pull request that raises it without a CLI version above the newest `cli-v*` tag, and runs the newest release against the pull request's server.
 
 ## Design decisions
 
@@ -106,7 +104,7 @@ Break one of these only with a decision recorded here.
 
 | Concern                                  | Code                                                             |
 | ---------------------------------------- | ---------------------------------------------------------------- |
-| Wire types, statuses, `CONTRACT_VERSION` | `packages/shared/src/contract.mts`                               |
+| Wire types, statuses, `API_VERSION` etc. | `packages/shared/src/contract.mts`                               |
 | Sealing bindings, crypto                 | `packages/shared/src/sealing.mts`, `crypto.mts`, `keys.mts`      |
 | Machine API                              | `apps/backend/src/machine-api.ts`                                |
 | UI API                                   | `apps/backend/src/trpc/router.ts`                                |
@@ -124,5 +122,5 @@ Break one of these only with a decision recorded here.
 
 - Change events live in the backend process, so the server runs one replica. Postgres `LISTEN/NOTIFY` would lift that.
 - Workers have no OS-level isolation.
-- Every contract bump is a coordinated rollout until the compatible handshake lands.
+- A raised `MIN_CLIENT` is a coordinated rollout.
 - Intake is built in and GitHub-specific. Turning intakes into small scripts is planned.

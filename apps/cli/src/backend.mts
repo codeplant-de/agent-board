@@ -2,7 +2,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  CONTRACT_VERSION,
+  API_VERSION,
+  CLIENT_FEATURES_HEADER,
+  clientVocabulary,
   ContractError,
   decodeDataKey,
   deriveKeys,
@@ -10,7 +12,10 @@ import {
   isSafeMachineName,
   MACHINE_NAME_RULE,
   isSafeTaskId,
+  neededServerFeature,
+  MIN_SERVER,
   parseVersion,
+  parseVersionFeatures,
   parseVersionIdentity,
   parseWireAddScheduleResult,
   parseWireAddTaskResult,
@@ -22,9 +27,21 @@ import {
   parseWireTask,
   parseWireTasks,
   QuestionError,
+  SERVER_FEATURE_LABELS,
   taskLabels,
 } from '@agent-board/shared';
-import type { Backend, Keys, Schedule, Task, TaskDraft, WireBackend } from '@agent-board/shared';
+import type {
+  Backend,
+  Keys,
+  ListOptions,
+  Schedule,
+  SendableFeatures,
+  ServerFeature,
+  SkippedItem,
+  Task,
+  TaskDraft,
+  WireBackend,
+} from '@agent-board/shared';
 import { ConfigError } from './config.mts';
 import { loadEnvFile } from './env-file.mts';
 import { isCompiledBinary } from './self.mts';
@@ -38,14 +55,39 @@ export class BackendError extends Error {
   status: number | undefined;
   // Whether the status came in a JSON answer of the machine API; a login page or a proxy has a status too, and means something else.
   fromApi: boolean;
-  // Set when the contract numbers differ, from those numbers and nothing the server wrote: which side is the older one.
+  // Set when the API ranges do not fit, from those numbers and nothing the server wrote: which side is the older one.
   contractMismatch: 'cli-older' | 'server-older' | undefined;
+  // Set when the server lacks a feature this call needs; the name is this CLI's own, never the server's.
+  missingFeature: ServerFeature | undefined;
 
   constructor(message: string, status?: number, fromApi = false) {
     super(message);
     this.status = status;
     this.fromApi = fromApi;
   }
+}
+
+function missingFeature(feature: ServerFeature): BackendError {
+  const error = new BackendError(
+    `the board server does not support ${SERVER_FEATURE_LABELS[feature]} yet; update the board server`,
+  );
+  error.missingFeature = feature;
+  return error;
+}
+
+/** Throws for a feature the server did not list. */
+export function requireFeature(features: ReadonlySet<string>, feature: ServerFeature): void {
+  if (!features.has(feature)) throw missingFeature(feature);
+}
+
+/** The headers every machine API request carries: the token, and the client vocabulary this CLI understands. */
+export function machineHeaders(token: string): Record<string, string> {
+  return { authorization: `Bearer ${token}`, [CLIENT_FEATURES_HEADER]: clientVocabulary().join(',') };
+}
+
+/** Whether the board refused an answer because the task or schedule uses a value this CLI has no vocabulary feature for (422). */
+export function isVocabularyRefusal(error: unknown): error is BackendError {
+  return error instanceof BackendError && error.fromApi && error.status === 422;
 }
 
 function mismatch(kind: 'cli-older' | 'server-older', message: string, status?: number): BackendError {
@@ -146,7 +188,7 @@ export async function callServer(
   try {
     response = await fetcher(`${config.url}/api/machine/${command}`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' },
+      headers: { ...machineHeaders(config.token), 'content-type': 'application/json' },
       body: JSON.stringify(request),
       signal: AbortSignal.timeout(timeoutMs),
       redirect: 'error',
@@ -178,26 +220,37 @@ export interface WebBackendOptions {
   fetch?: Fetch;
   // Per request; commands that must answer quickly, such as completion, shorten it.
   timeoutMs?: number;
+  // Called for each task, note or schedule a list answer leaves out because of an enum value this CLI does not know.
+  onSkip?: (skipped: SkippedItem) => void;
+  // Which values the CLI sends need a server feature; tests hand in a table, the default is the shared one.
+  sendable?: SendableFeatures;
+  // Called with a line for a degraded call, such as a suggested reply the server cannot take.
+  warn?: (line: string) => void;
 }
 
-// How to bring this CLI up to the board's contract: a binary updates itself, a checkout is pulled.
-const updateCliHint = (): string =>
+// How to bring this CLI up to the board's API: a binary updates itself, a checkout is pulled.
+export const updateCliHint = (): string =>
   isCompiledBinary() ? 'run "board self-update"' : 'run "git pull" and "pnpm install" in the checkout';
 
 // Whose board this is and which data key it expects (null before encryption is set up).
 export interface ServerIdentity {
   owner: string;
   keyId: string | null;
+  // The API range the server speaks: its own break level and the oldest client level it serves.
+  api: { version: number; minClient: number };
+  // What the server can do beyond the range; the baseline for a server that names none.
+  features: ReadonlySet<string>;
 }
 
-// Asks the server for its contract version and refuses a mismatch in either direction; returns whose board it is.
+// Asks the server for its API range and refuses a CLI the server no longer serves and a server older than the CLI
+// works with; returns whose board it is.
 export async function verifyContract(
   config: Pick<WebConfig, 'url' | 'token'>,
   fetcher?: Fetch,
   timeoutMs?: number,
 ): Promise<ServerIdentity> {
   let version: unknown;
-  let served: number;
+  let served: { version: number; minClient: number };
   try {
     version = await callServer(config, 'version', {}, fetcher, timeoutMs);
     served = parseVersion(version);
@@ -206,24 +259,24 @@ export async function verifyContract(
     if (error instanceof BackendError && error.status === 404 && error.fromApi) {
       throw mismatch(
         'server-older',
-        `the board server is older than this CLI: it does not know the version command; the CLI needs contract ${CONTRACT_VERSION}; update the board server`,
+        `the board server is older than this CLI: it does not know the version command; the CLI needs API ${MIN_SERVER} or newer; update the board server`,
         404,
       );
     }
     throw asBackendError('version', error);
   }
-  if (served < CONTRACT_VERSION)
-    throw mismatch(
-      'server-older',
-      `the board server is older than this CLI: it speaks contract ${served}, the CLI needs ${CONTRACT_VERSION}; update the board server`,
-    );
-  if (served > CONTRACT_VERSION)
+  if (API_VERSION < served.minClient)
     throw mismatch(
       'cli-older',
-      `this CLI is older than the board server: it speaks contract ${CONTRACT_VERSION}, the server has ${served}; ${updateCliHint()}`,
+      `this CLI is older than the board server: it speaks API ${API_VERSION}, the server serves clients from ${served.minClient}; ${updateCliHint()}`,
+    );
+  if (served.version < MIN_SERVER)
+    throw mismatch(
+      'server-older',
+      `the board server is older than this CLI: it speaks API ${served.version}, the CLI needs ${MIN_SERVER} or newer; update the board server`,
     );
   try {
-    return parseVersionIdentity(version);
+    return { ...parseVersionIdentity(version), api: served, features: parseVersionFeatures(version) };
   } catch (error) {
     throw asBackendError('version', error);
   }
@@ -254,10 +307,18 @@ export interface WebBackend extends WireBackend {
 interface Connection {
   config: WebConfig;
   keys: Keys;
+  features: ReadonlySet<string>;
 }
 
+// The server feature each command needs; a command not listed works on every server this CLI accepts.
+const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
+  'attach-session': 'attach-session',
+  wait: 'wait',
+  wake: 'wait',
+};
+
 export function createWebBackend(options: WebBackendOptions): WebBackend {
-  // Loads the config, checks the contract version and the data key once, before the first real call.
+  // Loads the config, checks the API range and the data key once, before the first real call.
   let ready: Promise<Connection> | undefined;
   const connect = (): Promise<Connection> => {
     ready ??= (async () => {
@@ -265,13 +326,33 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       const identity = await verifyContract(config, options.fetch, options.timeoutMs);
       const checked = await checkDataKey(config.dataKey, identity);
       if ('problem' in checked) throw new BackendError(keyProblemMessage(checked));
-      return { config, keys: checked.keys };
+      return { config, keys: checked.keys, features: identity.features };
     })();
     return ready;
   };
 
+  // Connects, then refuses a command the server lacks the feature for, before anything is sent.
+  const connectFor = async (command: string): Promise<Connection> => {
+    const connection = await connect();
+    const feature = COMMAND_FEATURES[command];
+    if (feature !== undefined) requireFeature(connection.features, feature);
+    return connection;
+  };
+
+  // Refuses to send a status or priority that needs a server feature the server lacks.
+  const requireSendable = async (values: Parameters<typeof neededServerFeature>[0]): Promise<void> => {
+    const feature = neededServerFeature(values, options.sendable);
+    if (feature !== undefined) requireFeature((await connect()).features, feature);
+  };
+
   async function call<T>(command: string, request: MachineRequest, parse: (value: unknown) => T): Promise<T> {
-    const result = await callServer((await connect()).config, command, request, options.fetch, options.timeoutMs);
+    const result = await callServer(
+      (await connectFor(command)).config,
+      command,
+      request,
+      options.fetch,
+      options.timeoutMs,
+    );
     try {
       return parse(result);
     } catch (error) {
@@ -280,8 +361,10 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
   }
 
   const send = async (command: string, request: MachineRequest): Promise<void> => {
-    await callServer((await connect()).config, command, request, options.fetch, options.timeoutMs);
+    await callServer((await connectFor(command)).config, command, request, options.fetch, options.timeoutMs);
   };
+
+  const listOptions: ListOptions = options.onSkip === undefined ? {} : { onSkip: options.onSkip };
 
   const taskId = (id: string): string => {
     if (!isSafeTaskId(id)) throw new BackendError(`"${id.slice(0, 40)}" is not a valid task id`);
@@ -296,13 +379,20 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
   return {
     keys: async () => (await connect()).keys,
     listTasks: async ({ all = false } = {}) => {
-      const tasks = await call('list-tasks', { all }, parseWireTasks);
+      const tasks = await call('list-tasks', { all }, (value) => parseWireTasks(value, listOptions));
       return all ? tasks : tasks.filter((task) => !task.closed);
     },
     getTask: async (id) => call('get-task', { id: taskId(id) }, parseWireTask),
     attachSession: async (id) => call('attach-session', { id: taskId(id) }, parseWireTask),
-    addTask: async (draft) => call('add-task', { body: draft }, parseWireAddTaskResult),
-    updateTask: async (id, patch) => call('update-task', { id: taskId(id), body: patch }, parseWireTask),
+    addTask: async (draft) => {
+      await requireSendable(draft);
+      return call('add-task', { body: draft }, parseWireAddTaskResult);
+    },
+    updateTask: async (id, patch) => {
+      const checkedId = taskId(id);
+      await requireSendable(patch);
+      return call('update-task', { id: checkedId, body: patch }, parseWireTask);
+    },
     async claimTask(id, machine) {
       if (!isSafeMachineName(machine))
         throw new BackendError(`"${machine.slice(0, 40)}" is not a valid machine name: use ${MACHINE_NAME_RULE}`);
@@ -315,8 +405,24 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
         throw error;
       }
     },
-    addNote: async (id, note, { author = 'agent', kind = 'comment' } = {}) =>
-      send('add-note', { id: taskId(id), author, ...(kind === 'comment' ? {} : { kind }), body: note }),
+    async addNote(id, note, { author = 'agent', kind = 'comment' } = {}) {
+      const checkedId = taskId(id);
+      const { features } = await connect();
+      if (kind === 'polish') requireFeature(features, 'note.polish');
+      // A reply the agent expects is advice: without the feature the comment goes out alone, and the agent is told.
+      const { suggestion, ...plain } = note;
+      const unsupported = suggestion !== undefined && !features.has('note.suggestion');
+      if (unsupported)
+        options.warn?.(
+          `the board server does not support ${SERVER_FEATURE_LABELS['note.suggestion']} yet; the comment is posted without it`,
+        );
+      await send('add-note', {
+        id: checkedId,
+        author,
+        ...(kind === 'comment' ? {} : { kind }),
+        body: unsupported ? plain : note,
+      });
+    },
     ask: async (id, asked) => send('ask', { id: taskId(id), body: asked }),
     heartbeat: async (id, beat) => send('heartbeat', { id: taskId(id), body: beat }),
     pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
@@ -324,9 +430,12 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     wait: async (id, wait) => call('wait', { id: taskId(id), body: wait }, parseWireTask),
     wake: async (id, note) => call('wake', { id: taskId(id), body: note }, parseWireWakeResult),
     transcript: async (id, batch) => send('transcript', { id: taskId(id), body: batch }),
-    readNotes: async (id) => call('read-notes', { id: taskId(id) }, parseWireNotes),
-    addSchedule: async (draft) => call('add-schedule', { body: draft }, parseWireAddScheduleResult),
-    listSchedules: async () => call('list-schedules', {}, parseWireSchedules),
+    readNotes: async (id) => call('read-notes', { id: taskId(id) }, (value) => parseWireNotes(value, listOptions)),
+    addSchedule: async (draft) => {
+      await requireSendable(draft);
+      return call('add-schedule', { body: draft }, parseWireAddScheduleResult);
+    },
+    listSchedules: async () => call('list-schedules', {}, (value) => parseWireSchedules(value, listOptions)),
     updateSchedule: async (id, patch) =>
       call('update-schedule', { id: scheduleId(id), body: patch }, parseWireSchedule),
     removeSchedule: async (id) => send('remove-schedule', { id: scheduleId(id) }),

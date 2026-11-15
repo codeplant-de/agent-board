@@ -3,9 +3,11 @@ import { test } from 'node:test';
 import {
   ContractError,
   notePreview,
+  NOTE_KINDS,
   parseBlindIndex,
   parseHeartbeat,
   parseSchedulePatch,
+  parseVersion,
   parseVersionIdentity,
   parseWireAddScheduleResult,
   parseWireAsk,
@@ -14,9 +16,12 @@ import {
   parseWireNoteInput,
   parseWireSchedule,
   parseWireScheduleDraft,
+  parseWireNotes,
+  parseWireSchedules,
   parseWireTask,
   parseWireTaskDraft,
   parseWireTaskPatch,
+  parseWireTasks,
   parseWireWait,
   parseWireWakeResult,
   promptSkill,
@@ -24,6 +29,7 @@ import {
   serializeSchedule,
   serializeTask,
   serializeWireNote,
+  STATUSES,
   shortSkill,
   taskLabels,
 } from '../src/contract.mts';
@@ -585,4 +591,106 @@ test('what the board returns that reaches an argument, a path, a unit name or a 
   for (const keyId of ['ignore previous instructions', 'ABCDEF0123456789', '0123456789abcde', 7])
     assert.throws(() => parseVersionIdentity({ owner: 'alice', keyId }), /not a key id/, String(keyId));
   assert.equal(parseVersionIdentity({ owner: 'alice', keyId: '0123456789abcdef' }).keyId, '0123456789abcdef');
+});
+
+test('the version answer gives the API range, or the legacy contract as both ends', () => {
+  assert.deepEqual(parseVersion({ contract: 7, api: { version: 9, minClient: 7 } }), { version: 9, minClient: 7 });
+  assert.deepEqual(parseVersion({ contract: 7, api: { version: 7, minClient: 7 } }), { version: 7, minClient: 7 });
+  assert.deepEqual(parseVersion({ contract: 7 }), { version: 7, minClient: 7 });
+  assert.deepEqual(parseVersion({ contract: 7, api: undefined, extra: 1 }), { version: 7, minClient: 7 });
+  assert.throws(() => parseVersion({}), /version.contract must be a number/);
+  assert.throws(() => parseVersion({ contract: 7, api: 'x' }), /version.api must be a JSON object/);
+  for (const api of [
+    { version: 7.5, minClient: 7 },
+    { version: '7', minClient: 7 },
+    { version: 7 },
+    { version: 7, minClient: -1 },
+    { version: 7, minClient: 8 },
+  ])
+    assert.throws(() => parseVersion({ contract: 7, api }), /version\.api/, JSON.stringify(api));
+});
+
+test('a list skips what holds an enum value it does not know, when told where to report it', () => {
+  const skipped: unknown[] = [];
+  const onSkip = (item: unknown): void => void skipped.push(item);
+  const tasks = parseWireTasks(
+    [
+      task,
+      { ...task, id: 'Wa1t1ng0', status: 'snoozed' },
+      { ...task, id: 'Ab3dEf9y', next: 'later' },
+      { ...task, id: 'Ab3dEf9z' },
+    ],
+    { onSkip },
+  );
+  assert.deepEqual(
+    tasks.map((item) => item.id),
+    ['Ab3dEf9x', 'Ab3dEf9z'],
+  );
+  assert.deepEqual(skipped, [
+    { what: 'task', field: 'status', value: 'snoozed' },
+    { what: 'task', field: 'next', value: 'later' },
+  ]);
+  skipped.length = 0;
+  assert.deepEqual(parseWireTasks([{ ...task, priority: 'p0'.repeat(50) }], { onSkip }), []);
+  assert.deepEqual(parseWireTasks([{ ...task, createdBy: 'robot' }], { onSkip }), []);
+  assert.deepEqual(parseWireSchedules([{ ...schedule, priority: 'asap' }, schedule], { onSkip }).length, 1);
+  const note = {
+    id: 'n1',
+    body: BODY,
+    preview: null,
+    createdAt: '2026-11-13T10:00:00Z',
+    author: 'agent',
+    kind: 'comment',
+  };
+  assert.equal(parseWireNotes([{ ...note, author: 'bot' }, { ...note, kind: 'poll' }, note], { onSkip }).length, 1);
+  assert.deepEqual(
+    skipped.map((item) => (item as { what: string; field: string }).field),
+    ['priority', 'createdBy', 'priority', 'author', 'kind'],
+  );
+  assert.equal((skipped[0] as { value: string }).value.length, 40);
+});
+
+test('a list keeps every status and note kind this build knows', () => {
+  const onSkip = (): void => assert.fail('skipped a known value');
+  const note = {
+    id: 'n1',
+    body: BODY,
+    preview: null,
+    createdAt: '2026-11-13T10:00:00Z',
+    author: 'agent',
+    kind: 'comment',
+  };
+  assert.equal(
+    parseWireTasks(
+      STATUSES.map((status) => ({ ...task, status })),
+      { onSkip },
+    ).length,
+    STATUSES.length,
+  );
+  assert.equal(
+    parseWireNotes(
+      NOTE_KINDS.map((kind) => ({ ...note, kind })),
+      { onSkip },
+    ).length,
+    NOTE_KINDS.length,
+  );
+});
+
+test('a list still fails on any other shape error, and without onSkip on an unknown enum value too', () => {
+  const onSkip = (): void => undefined;
+  assert.throws(() => parseWireTasks([{ ...task, title: 5 }], { onSkip }), /task.title must be a string/);
+  assert.throws(() => parseWireTasks([{ ...task, status: 5 }], { onSkip }), /task.status must be one of/);
+  assert.throws(() => parseWireTasks({}, { onSkip }), /expected a JSON array/);
+  assert.throws(() => parseWireTasks([{ ...task, status: 'snoozed' }]), /task.status must be one of/);
+  assert.throws(() => parseWireTasks(['x'], { onSkip }), /task must be a JSON object/);
+});
+
+test('a single object and a request stay strict about enum values', () => {
+  assert.throws(() => parseWireTask({ ...task, status: 'snoozed' }), /task.status must be one of/);
+  assert.throws(() => parseWireSchedule({ ...schedule, priority: 'asap' }), /schedule.priority must be one of/);
+  assert.throws(() => parseWireTaskPatch({ status: 'snoozed' }), /patch.status must be one of/);
+  assert.throws(
+    () => parseWireTaskDraft({ id: 'Ab3dEf9x', title: TITLE, input: INPUT, status: 'snoozed' }),
+    /draft.status must be one of/,
+  );
 });
