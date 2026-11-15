@@ -3,7 +3,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   API_VERSION,
+  CLIENT_API_HEADER,
   CLIENT_FEATURES_HEADER,
+  CLIENT_VERSION_HEADER,
   clientVocabulary,
   ContractError,
   decodeDataKey,
@@ -15,6 +17,7 @@ import {
   neededServerFeature,
   MIN_SERVER,
   parseVersion,
+  parseVersionCli,
   parseVersionFeatures,
   parseVersionIdentity,
   parseWireAddScheduleResult,
@@ -46,6 +49,7 @@ import { ConfigError } from './config.mts';
 import { loadEnvFile } from './env-file.mts';
 import { isCompiledBinary } from './self.mts';
 import { oneLine } from './text.mts';
+import { cliVersion } from './version.mts';
 
 const REQUEST_TIMEOUT_MS = 45_000;
 const AGENT_BOARD_TOKEN_PREFIX = 'abm_';
@@ -80,9 +84,16 @@ export function requireFeature(features: ReadonlySet<string>, feature: ServerFea
   if (!features.has(feature)) throw missingFeature(feature);
 }
 
-/** The headers every machine API request carries: the token, and the client vocabulary this CLI understands. */
+let identifying: Record<string, string> | undefined;
+
+/** The headers every machine API request carries: the token, who this CLI is, and the client vocabulary it understands. */
 export function machineHeaders(token: string): Record<string, string> {
-  return { authorization: `Bearer ${token}`, [CLIENT_FEATURES_HEADER]: clientVocabulary().join(',') };
+  identifying ??= {
+    [CLIENT_VERSION_HEADER]: cliVersion(),
+    [CLIENT_API_HEADER]: String(API_VERSION),
+    [CLIENT_FEATURES_HEADER]: clientVocabulary().join(','),
+  };
+  return { authorization: `Bearer ${token}`, ...identifying };
 }
 
 /** Whether the board refused an answer because the task or schedule uses a value this CLI has no vocabulary feature for (422). */
@@ -226,6 +237,8 @@ export interface WebBackendOptions {
   sendable?: SendableFeatures;
   // Called with a line for a degraded call, such as a suggested reply the server cannot take.
   warn?: (line: string) => void;
+  // Told what the board answered to the version check, once per process.
+  onServer?: (identity: ServerIdentity) => void;
 }
 
 // How to bring this CLI up to the board's API: a binary updates itself, a checkout is pulled.
@@ -240,6 +253,8 @@ export interface ServerIdentity {
   api: { version: number; minClient: number };
   // What the server can do beyond the range; the baseline for a server that names none.
   features: ReadonlySet<string>;
+  // The newest CLI release the board knows of; absent from a server that does not say.
+  cli?: string;
 }
 
 // Asks the server for its API range and refuses a CLI the server no longer serves and a server older than the CLI
@@ -276,7 +291,14 @@ export async function verifyContract(
       `the board server is older than this CLI: it speaks API ${served.version}, the CLI needs ${MIN_SERVER} or newer; update the board server`,
     );
   try {
-    return { ...parseVersionIdentity(version), api: served, features: parseVersionFeatures(version) };
+    const identity = parseVersionIdentity(version);
+    const cli = parseVersionCli(version);
+    return {
+      ...identity,
+      api: served,
+      features: parseVersionFeatures(version),
+      ...(cli === null ? {} : { cli }),
+    };
   } catch (error) {
     throw asBackendError('version', error);
   }
@@ -324,6 +346,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     ready ??= (async () => {
       const config = options.loadConfig();
       const identity = await verifyContract(config, options.fetch, options.timeoutMs);
+      options.onServer?.(identity);
       const checked = await checkDataKey(config.dataKey, identity);
       if ('problem' in checked) throw new BackendError(keyProblemMessage(checked));
       return { config, keys: checked.keys, features: identity.features };
