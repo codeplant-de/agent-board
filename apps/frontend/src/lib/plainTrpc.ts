@@ -264,16 +264,12 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
       events: {
         queryKey: (input: { taskId: string; runId: string }): QueryKey =>
           plainKey(raw.transcript.events.queryKey({ runId: input.runId })),
-        queryOptions: ({ taskId, ...input }: { taskId: string; runId: string; afterSeq?: number }) =>
-          queryOptions({
-            queryKey: plainKey(raw.transcript.events.queryKey(input)),
-            queryFn: async ({ signal }) =>
-              openEvents(
-                need(),
-                { taskId, runId: input.runId },
-                await client.transcript.events.query(input, { signal }),
-              ),
-          }),
+        // The drawer keeps a run's events in one cache entry and extends it a page at a time, so pages are fetched directly.
+        fetchPage: async (
+          { taskId, ...input }: { taskId: string; runId: string; afterSeq: number },
+          signal?: AbortSignal,
+        ): Promise<TranscriptEventView[]> =>
+          openEvents(need(), { taskId, runId: input.runId }, await client.transcript.events.query(input, { signal })),
       },
       output: {
         queryOptions: ({ taskId, ...input }: { taskId: string; runId: string; seq: number }) =>
@@ -286,6 +282,8 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
                 input.seq,
                 await client.transcript.output.query(input, { signal }),
               ),
+            // A tool's output never changes, and it can be large: not even an invalidation fetches it again.
+            staleTime: 'static',
           }),
       },
     },
@@ -293,23 +291,3 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
 }
 
 export type PlainTRPC = ReturnType<typeof createPlainTRPC>;
-
-export function createPlainClient(client: RawClient, keys: Keys | null) {
-  return {
-    transcript: {
-      events: {
-        query: async ({
-          taskId,
-          ...input
-        }: {
-          taskId: string;
-          runId: string;
-          afterSeq?: number;
-        }): Promise<TranscriptEventView[]> => {
-          if (keys === null) throw new Error('The board is locked.');
-          return openEvents(keys, { taskId, runId: input.runId }, await client.transcript.events.query(input));
-        },
-      },
-    },
-  };
-}

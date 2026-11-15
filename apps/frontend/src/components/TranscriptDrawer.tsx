@@ -27,7 +27,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ago, stamp } from '../lib/time';
 import { loadEventsAfter } from '../lib/transcript';
-import { useTRPC, useTRPCClient } from '../lib/trpc';
+import { useTRPC } from '../lib/trpc';
 import { Markdown } from './Markdown';
 
 type Event = TranscriptEventView;
@@ -240,29 +240,33 @@ export function TranscriptDrawer({
   const selected = runId ?? runs.data?.[0]?.id ?? null;
   const newest = selected !== null && selected === runs.data?.[0]?.id;
   // The events of a run are kept per run and extended: a refetch asks only for what follows the last seq it has.
-  const client = useTRPCClient();
   const queryClient = useQueryClient();
   const eventsKey = trpc.transcript.events.queryKey({ taskId, runId: selected ?? '' });
   const events = useQuery({
     queryKey: eventsKey,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       loadEventsAfter(queryClient.getQueryData<Event[]>(eventsKey) ?? [], (afterSeq) =>
-        client.transcript.events.query({ taskId, runId: selected ?? '', afterSeq }),
+        trpc.transcript.events.fetchPage({ taskId, runId: selected ?? '', afterSeq }, signal),
       ),
     structuralSharing: false,
     enabled: opened && selected !== null,
+    // Only the newest run can still grow; an older one is complete once loaded, whatever focus or a write invalidates.
+    staleTime: newest ? undefined : 'static',
     refetchInterval: opened && newest && (live || recentlyActive(runs.data?.[0]?.lastEventAt)) ? LIVE_MS : false,
   });
 
-  // When the run ends, its last events arrive with the final batch: fetch once more after live polling stops.
+  // When the run ends, its last events arrive with the final batch: fetch once more after live polling stops. With the
+  // drawer closed there is nothing to update, and opening it later fetches anyway.
   const wasLive = useRef(live);
+  const { refetch: refetchRuns } = runs;
+  const { refetch: refetchEvents } = events;
   useEffect(() => {
-    if (wasLive.current && !live) {
-      void runs.refetch();
-      void events.refetch();
+    if (wasLive.current && !live && opened) {
+      void refetchRuns();
+      if (newest) void refetchEvents();
     }
     wasLive.current = live;
-  }, [live, runs, events]);
+  }, [live, opened, newest, refetchRuns, refetchEvents]);
 
   const { results, rows } = useMemo(() => {
     const results = new Map<string, ToolResult>();
