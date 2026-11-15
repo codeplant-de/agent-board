@@ -117,6 +117,32 @@ describe('ActionPanel of a running task', () => {
   });
 });
 
+describe('ActionPanel draft', () => {
+  const ui = (client: QueryClient, task: BoardTask) => (
+    <MemoryRouter>
+      <MantineProvider>
+        <ModalsProvider>
+          <QueryClientProvider client={client}>
+            <ActionPanel task={task} thread={[]} followUps={[]} />
+          </QueryClientProvider>
+        </ModalsProvider>
+      </MantineProvider>
+    </MemoryRouter>
+  );
+
+  it.each(['needs-me', 'waiting'] as const)(
+    'keeps a note typed while the task runs when a poll moves it to %s',
+    async (status) => {
+      const client = new QueryClient();
+      const view = render(ui(client, running({})));
+      await userEvent.type(screen.getByRole('textbox'), 'half a sent');
+      view.rerender(ui(client, running({ status })));
+      expect(screen.getByRole('button', { name: 'Send & continue' })).toBeInTheDocument();
+      expect(screen.getByRole('textbox')).toHaveValue('half a sent');
+    },
+  );
+});
+
 describe('ActionPanel of a proposal', () => {
   const asked = {
     id: 'q1',
