@@ -1,13 +1,14 @@
 #!/bin/sh
 # Compares the newest released CLI (the newest strict cli-v<x.y.z> tag) with MIN_CLIENT at HEAD
-# (packages/shared/src/contract.mts), the oldest client API version the server serves.
+# (packages/shared/src/contract.mts), the oldest client break level the server serves. Only a breaking change raises it:
+# an additive one adds a feature name (README, "Features") and leaves this script, and the CLI version, alone.
 #
 #   check-cli-release.sh                the pull request rule: if the newest release is below MIN_CLIENT, the CLI version
 #                                       in apps/cli/package.json must be above the newest tag; otherwise it passes
 #   check-cli-release.sh release-behind exits 0 if the newest release is below MIN_CLIENT (or there is no release): the
 #                                       break is declared and the release cannot be tested against this server; 1 if not
 #
-# The API version of a release is its API_VERSION, or its CONTRACT_VERSION before CLI 0.8.0 (0.7.0 and older). Everything is read from
+# The break level of a release is its API_VERSION, or its CONTRACT_VERSION before CLI 0.8.0 (0.7.0 and older). Everything is read from
 # git (the tag and HEAD), so the tags must be fetched.
 set -eu
 

@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { statSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { isVocabularyRefusal, updateCliHint } from './backend.mts';
 import { buildContext, print, UsageError } from './cli.mts';
 import type { Context } from './cli.mts';
 import { isSafeTaskId } from '@agent-board/shared';
@@ -366,33 +367,55 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   if (result.stopped) deps.appendLog(taskId, result.stopped.message);
   const pauseRequested = files.pauseRequestedAt(taskId) !== undefined;
   const endedIn = files.lastCwd(taskId);
-  files.clear(taskId);
-  const after = await backend.getTask(task.id);
-  // The core never writes to a task that left the workflow or runs again elsewhere, whatever this run's outcome.
-  if (isRunOver(task, after)) return;
-  // The session's directory as it stopped: a later resume must start in the same place, worktree included.
-  if (endedIn !== undefined && endedIn !== plan.invocation.cwd) {
-    await backend.updateTask(task.id, { workdir: endedIn, seal: sealing });
-    deps.appendLog(taskId, `the session ended in ${endedIn}`);
-  }
-  const outcome = decideOutcome({
-    exitCode: result.exitCode,
-    signal: result.signal,
-    stopped: result.stopped,
-    pauseRequested,
-    reported: after.status !== 'running',
-  });
-  if (outcome.kind === 'ok') return;
-  if (outcome.kind === 'paused') {
-    if (after.status === 'running')
-      await backend.pause(
-        task.id,
-        `Paused on ${config.machine}: its ${record.lane} lane needed the slot for its own work. Resumes next, on ${config.machine}.`,
-      );
+  let after: Task;
+  try {
+    after = await backend.getTask(task.id);
+  } catch (error) {
+    if (!isVocabularyRefusal(error)) {
+      files.clear(taskId);
+      throw error;
+    }
+    // The run's files stay: once the CLI is updated, the sweep finds this task running without a unit and deals with it.
+    deps.appendLog(
+      taskId,
+      `the board shows this task with a value this CLI does not know, so its end is not reported; ${updateCliHint()}`,
+    );
     return;
   }
-  const why = outcome.kind === 'failed' ? outcome.reason : 'The worker finished without reporting on the task.';
-  await report(`${why}\n\nEnd of the log:\n${fence(deps.logTail(taskId) || '(empty)')}`);
+  files.clear(taskId);
+  try {
+    // The core never writes to a task that left the workflow or runs again elsewhere, whatever this run's outcome.
+    if (isRunOver(task, after)) return;
+    // The session's directory as it stopped: a later resume must start in the same place, worktree included.
+    if (endedIn !== undefined && endedIn !== plan.invocation.cwd) {
+      await backend.updateTask(task.id, { workdir: endedIn, seal: sealing });
+      deps.appendLog(taskId, `the session ended in ${endedIn}`);
+    }
+    const outcome = decideOutcome({
+      exitCode: result.exitCode,
+      signal: result.signal,
+      stopped: result.stopped,
+      pauseRequested,
+      reported: after.status !== 'running',
+    });
+    if (outcome.kind === 'ok') return;
+    if (outcome.kind === 'paused') {
+      if (after.status === 'running')
+        await backend.pause(
+          task.id,
+          `Paused on ${config.machine}: its ${record.lane} lane needed the slot for its own work. Resumes next, on ${config.machine}.`,
+        );
+      return;
+    }
+    const why = outcome.kind === 'failed' ? outcome.reason : 'The worker finished without reporting on the task.';
+    await report(`${why}\n\nEnd of the log:\n${fence(deps.logTail(taskId) || '(empty)')}`);
+  } catch (error) {
+    if (!isVocabularyRefusal(error)) throw error;
+    deps.appendLog(
+      taskId,
+      `the board refused to show this task to this CLI, so the end of the run is not reported; ${updateCliHint()}`,
+    );
+  }
 }
 
 export function runProcess(

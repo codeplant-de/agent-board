@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { API_VERSION, MIN_SERVER } from '@agent-board/shared';
-import { verifyContract } from '../src/backend.mts';
+import { API_VERSION, CLIENT_FEATURES_HEADER, MIN_SERVER } from '@agent-board/shared';
+import { requireFeature, verifyContract } from '../src/backend.mts';
 import type { Fetch } from '../src/backend.mts';
 import {
   backoffMs,
@@ -188,7 +188,7 @@ type Plan = ReturnType<typeof openStream> | Response | Error;
 function listener(plans: Plan[], verify?: () => Promise<{ url: string; token: string }>) {
   const clock = new FakeClock();
   const log: string[] = [];
-  const requests: { url: string; authorization: string | undefined }[] = [];
+  const requests: { url: string; authorization: string | undefined; features: string | undefined }[] = [];
   const ticks: number[] = [];
   const stop = new AbortController();
   let verified = 0;
@@ -204,7 +204,12 @@ function listener(plans: Plan[], verify?: () => Promise<{ url: string; token: st
         return { url: 'https://board.example', token: 'abm_x' };
       }),
     fetch: async (url, init) => {
-      requests.push({ url, authorization: new Headers(init.headers).get('authorization') ?? undefined });
+      const headers = new Headers(init.headers);
+      requests.push({
+        url,
+        authorization: headers.get('authorization') ?? undefined,
+        features: headers.get(CLIENT_FEATURES_HEADER) ?? undefined,
+      });
       const next = plans.shift();
       if (next === undefined) throw new Error('no more plans');
       if (next instanceof Error) throw next;
@@ -223,7 +228,9 @@ test('it verifies the contract, opens the stream with the token and ticks once c
   const { clock, requests, ticks, log, verified, stop, done } = listener([stream]);
   await clock.advance(0);
   assert.equal(verified(), 1);
-  assert.deepEqual(requests, [{ url: 'https://board.example/api/machine/events', authorization: 'Bearer abm_x' }]);
+  assert.deepEqual(requests, [
+    { url: 'https://board.example/api/machine/events', authorization: 'Bearer abm_x', features: '' },
+  ]);
   assert.deepEqual(ticks, [0]);
   assert.equal(log[0], 'connected');
   stream.push(': connected\n\n');
@@ -362,6 +369,27 @@ test('a server older than the CLI keeps the listener reconnecting, saying so onc
   api = { version: API_VERSION, minClient: API_VERSION };
   await clock.advance(100_000);
   assert.ok(requests.length > 0);
+  assert.ok(log.includes('connected'));
+  stop.abort();
+  await done;
+});
+
+test('a server without the event stream keeps the listener reconnecting, saying so once', async () => {
+  let features = new Set<string>(['wait']);
+  const stream = openStream();
+  const { clock, log, requests, stop, done } = listener([stream], async () => {
+    requireFeature(features, 'events');
+    return { url: 'https://board.example', token: 'abm_x' };
+  });
+  await clock.advance(100_000);
+  assert.equal(requests.length, 0);
+  assert.deepEqual(
+    log.filter((line) => /does not support/.test(line)),
+    ['the board server does not support the event stream yet; update the board server'],
+  );
+  assert.ok(log.filter((line) => line.startsWith('reconnecting in')).length > 2);
+  features = new Set(['events']);
+  await clock.advance(100_000);
   assert.ok(log.includes('connected'));
   stop.abort();
   await done;

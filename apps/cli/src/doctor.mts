@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { BackendError, checkBoardUrl, checkDataKey, looksLikeMachineToken, verifyContract } from './backend.mts';
 import type { ServerIdentity, WebConfig } from './backend.mts';
 import { ConfigError, isSafeMode, parseConfig } from './config.mts';
-import { API_VERSION, decodeDataKey } from '@agent-board/shared';
+import { API_VERSION, decodeDataKey, SERVER_FEATURE_LABELS, SERVER_FEATURES } from '@agent-board/shared';
 import { parseEnv } from './env-file.mts';
 import { LISTEN_SERVICE, parseExecStart, UNIT_NAMES, UNIT_PATH, whichOnPath } from './setup.mts';
 
@@ -200,6 +200,21 @@ const checkEnv: Check = (deps) => readCredentials(deps).results;
 
 const unitPath = (home: string): string => UNIT_PATH.replaceAll('%h', () => home);
 
+// A server that lacks a feature still works; only the commands that need it refuse.
+const missingFeatureChecks = (features: ReadonlySet<string>): CheckResult[] => {
+  const lacking = SERVER_FEATURES.filter((feature) => !features.has(feature));
+  return lacking.length === 0
+    ? []
+    : [
+        problem(
+          'server features',
+          'warn',
+          `the board server does not support ${lacking.map((feature) => SERVER_FEATURE_LABELS[feature]).join(', ')} yet`,
+          'update the board server; until then the commands that need it refuse',
+        ),
+      ];
+};
+
 const checkServer: Check = async (deps) => {
   const { url } = readWebUrl(deps);
   const { token, dataKey } = readCredentials(deps);
@@ -211,6 +226,7 @@ const checkServer: Check = async (deps) => {
         'server',
         `${url} answers, api ${API_VERSION}, server api ${identity.api.version} (serves clients from ${identity.api.minClient})`,
       ),
+      ...missingFeatureChecks(identity.features),
     ];
     // A board without a key cannot be matched, whatever env holds: say so first, with the way out.
     if (identity.keyId === null)
