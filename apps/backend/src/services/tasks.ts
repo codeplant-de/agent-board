@@ -774,13 +774,33 @@ export async function setNotBefore(db: DbOrTx, taskId: string, notBefore: Date |
   });
 }
 
-/** The agent of a running task made a tool call. A task that stopped running in between is left alone. */
-export async function heartbeat(db: DbOrTx, taskId: string, beat: Heartbeat): Promise<void> {
+/**
+ * The agent of a running task made a tool call. A task that stopped running in between, or that runs on another machine
+ * now (taken back and claimed again), is left alone.
+ */
+export async function heartbeat(db: DbOrTx, taskId: string, beat: Heartbeat, machine: string): Promise<void> {
   await getTask(db, taskId);
   await db
     .update(tasks)
     .set({ lane: beat.lane, borrowed: beat.borrowed, lastActiveAt: new Date() })
-    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running')));
+    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running'), eq(tasks.machine, machine)));
+}
+
+/**
+ * Why `machine` may not report for the task's run or wait, or undefined when it may: the task is not `status` (or is closed,
+ * where that counts), or another machine holds it. A worker whose run was taken back and claimed elsewhere must not touch
+ * the new run; it gets the answer it would get had the task left `status`.
+ */
+function notHeldBy(
+  task: TaskRow,
+  machine: string,
+  status: 'running' | 'waiting',
+  { closedCounts = true }: { closedCounts?: boolean } = {},
+): string | undefined {
+  if (task.status !== status) return `the task is ${task.status}, not ${status}`;
+  if (closedCounts && task.closed) return `the task is closed, not ${status}`;
+  if (task.machine !== machine) return `the task is ${status} on ${task.machine ?? 'no machine'}, not on ${machine}`;
+  return undefined;
 }
 
 /** The pull request the task's agent reported, sealed; the last one wins. */
@@ -804,7 +824,8 @@ export async function setPrState(db: DbOrTx, taskId: string, prState: PrState): 
 export async function pause(db: DbOrTx, taskId: string, note: WireNoteInput, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    if (task.status !== 'running') throw new AppError('CONFLICT', `the task is ${task.status}, not running`);
+    const refused = notHeldBy(task, by, 'running', { closedCounts: false });
+    if (refused) throw new AppError('CONFLICT', refused);
     await clientEvent(tx, taskId, note, by);
     return transition(tx, task, {
       to: 'todo',
@@ -828,8 +849,8 @@ export async function wait(
 ): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    if (task.status !== 'running' || task.closed)
-      throw new AppError('CONFLICT', `the task is ${task.closed ? 'closed' : task.status}, not running`);
+    const refused = notHeldBy(task, by, 'running');
+    if (refused) throw new AppError('CONFLICT', refused);
     const ahead = request.wakeAt.getTime() - now.getTime();
     if (ahead <= 0) throw new AppError('BAD_REQUEST', 'the end of the wait must lie in the future');
     if (ahead > MAX_WAIT_MS)
@@ -858,7 +879,7 @@ export async function wake(
 ): Promise<{ applied: boolean; row: TaskRow }> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    if (task.status !== 'waiting' || task.closed) return { applied: false, row: task };
+    if (notHeldBy(task, by, 'waiting')) return { applied: false, row: task };
     await clientEvent(tx, taskId, note, by);
     return { applied: true, row: await transition(tx, task, { to: 'todo', place: 'top', by: 'worker' }) };
   });
@@ -883,7 +904,7 @@ export async function failTask(
 ): Promise<{ applied: boolean; row: TaskRow }> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    if (task.status !== 'running' || task.closed) return { applied: false, row: task };
+    if (notHeldBy(task, by, 'running')) return { applied: false, row: task };
     await clientEvent(tx, taskId, note, by);
     return { applied: true, row: await transition(tx, task, { to: 'needs-me', by: 'worker' }) };
   });

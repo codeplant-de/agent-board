@@ -197,6 +197,7 @@ async function handleMachineCall(
         db,
         idOf(body, 'task'),
         parsed(() => parseHeartbeat(body['body'])),
+        machine,
       );
       return null;
     case 'pause': {

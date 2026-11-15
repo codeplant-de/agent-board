@@ -1617,6 +1617,67 @@ describe('waiting', () => {
   });
 });
 
+describe('a run taken back and claimed by another machine', () => {
+  /** The laptop's run, taken back after it went quiet and run again fresh, now runs on the workstation. */
+  async function movedToWorkstation() {
+    const ui = plainUi(db);
+    const task = await ui.tasks.create({ title: 't', input: 'do it' });
+    await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
+    await admin
+      .update(tasks)
+      .set({ lastActiveAt: new Date(Date.now() - TAKE_BACK_AFTER_MS - 60_000) })
+      .where(eq(tasks.id, task.id));
+    await ui.tasks.takeBack({ id: task.id });
+    await ui.tasks.move({ id: task.id, status: 'todo' });
+    expect((await ctx.call('workstation', 'claim-task', { id: task.id, machine: 'workstation' })).status).toBe(200);
+    return task.id;
+  }
+  const get = async (id: string) => (await ctx.call('workstation', 'get-task', { id })).json.result;
+
+  it('ignores the old machine’s heartbeats, and keeps the new machine’s', async () => {
+    const id = await movedToWorkstation();
+    await ctx.call('workstation', 'heartbeat', { id, body: { lane: 'reviews', borrowed: false } });
+    const before = await get(id);
+    await ctx.call('laptop', 'heartbeat', { id, body: { lane: 'implement', borrowed: true } });
+    expect(await get(id)).toMatchObject({ lane: 'reviews', borrowed: false, lastActiveAt: before.lastActiveAt });
+  });
+
+  it('refuses a pause, wait or fail from the old machine as if the task had stopped running', async () => {
+    const id = await movedToWorkstation();
+    const wakeAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    expect(await ctx.call('laptop', 'pause', { id, body: 'Paused on laptop.' })).toMatchObject({
+      status: 409,
+      json: { error: 'the task is running on workstation, not on laptop' },
+    });
+    expect((await ctx.call('laptop', 'wait', { id, body: { text: 'CI', wakeAt } })).status).toBe(409);
+    expect(
+      (await ctx.call('laptop', 'fail', { id, body: 'The worker exited with code 1.' })).json.result,
+    ).toMatchObject({
+      applied: false,
+      task: { status: 'running', machine: 'workstation' },
+    });
+    const { thread } = await plainUi(db).tasks.get({ id });
+    expect(thread.some((n) => ['Paused on laptop.', 'CI', 'The worker exited with code 1.'].includes(n.text))).toBe(
+      false,
+    );
+    expect((await ctx.call('workstation', 'fail', { id, body: 'x' })).json.result.applied).toBe(true);
+  });
+
+  it('lets only the machine the task waits on end the wait', async () => {
+    const id = await movedToWorkstation();
+    const wakeAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    await ctx.call('workstation', 'wait', { id, body: { text: 'CI', wakeAt, check: true } });
+    expect((await ctx.call('laptop', 'wake', { id, body: 'check passed' })).json.result).toMatchObject({
+      applied: false,
+      task: { status: 'waiting' },
+    });
+    expect((await ctx.call('workstation', 'wake', { id, body: 'check passed' })).json.result).toMatchObject({
+      applied: true,
+      task: { status: 'todo', machine: 'workstation' },
+    });
+  });
+});
+
 describe('messages and stop requests for a running task', () => {
   /** A run whose worker has looked at its inbox, as every worker of CLI 0.9 does once its process started. */
   async function running(withSession = true, readsInbox = true) {
