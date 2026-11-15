@@ -45,9 +45,19 @@ function useActions(id: string) {
   };
 }
 
+/** The reply draft, held by ActionPanel so that it survives a status change that swaps the editor. */
+type Draft = { message: string; setMessage: (message: string) => void };
+
 /** A note for the thread that does not wake the agent: always possible, even while it runs. */
-function CommentOnly({ actions, hint }: { actions: ReturnType<typeof useActions>; hint: string }) {
-  const [message, setMessage] = useState('');
+function CommentOnly({
+  actions,
+  hint,
+  draft: { message, setMessage },
+}: {
+  actions: ReturnType<typeof useActions>;
+  hint: string;
+  draft: Draft;
+}) {
   const send = () =>
     message.trim() &&
     actions.reply.mutate({ id: actions.id, message, resume: false }, { onSuccess: () => setMessage('') });
@@ -119,7 +129,9 @@ export function ActionPanel({
   const polishing = followUps.some((child) => isOpenPolishOf(child, task.id));
   const now = useNow(30_000);
   const waiting = startsIn(task.notBefore, now) !== undefined;
+  // One draft for every editor below: when a poll moves the task from running to needs-me, the text stays.
   const [message, setMessage] = useState('');
+  const draft = { message, setMessage };
   const openQuestion = task.openQuestion ? thread.findLast((n) => n.kind === 'question') : undefined;
   // An agent's proposal: only starting it, which seals its prompt again as yours, lets a worker run it.
   const isProposal = task.createdBy === 'agent';
@@ -161,7 +173,11 @@ export function ActionPanel({
             </Text>
           </Group>
           <TakeBack task={task} actions={actions} />
-          <CommentOnly actions={actions} hint="Leave a note for later (does not reach the running agent)" />
+          <CommentOnly
+            actions={actions}
+            draft={draft}
+            hint="Leave a note for later (does not reach the running agent)"
+          />
         </Stack>
       </Paper>
     );
@@ -218,7 +234,7 @@ export function ActionPanel({
               </Button>
             </Group>
           )}
-          <CommentOnly actions={actions} hint="Add to the thread" />
+          <CommentOnly actions={actions} draft={draft} hint="Add to the thread" />
         </Stack>
       </Paper>
     );
@@ -243,7 +259,7 @@ export function ActionPanel({
               </Group>
             </Stack>
           </Alert>
-          <CommentOnly actions={actions} hint="Add to the thread" />
+          <CommentOnly actions={actions} draft={draft} hint="Add to the thread" />
         </Stack>
       </Paper>
     );
@@ -284,7 +300,7 @@ export function ActionPanel({
               ? `The next run resumes the agent's session${task.machine ? ` on ${task.machine}` : ''}${task.woken ? '' : ' with your reply'}.`
               : 'The next free worker starts it.'}
           </Text>
-          <CommentOnly actions={actions} hint="Add to the thread before it starts" />
+          <CommentOnly actions={actions} draft={draft} hint="Add to the thread before it starts" />
         </Stack>
       </Paper>
     );
