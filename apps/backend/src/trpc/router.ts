@@ -14,6 +14,7 @@ import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { getKeys, replaceSlots, setupKeys } from '../services/keys';
+import { getLink, listInbox, peekLinkCode, redeemLinkCode, removeInboxItem, removeLink } from '../services/slack';
 import { issueToken, listMachines, revokeMachine } from '../services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from '../services/schedules';
 import { eventOutput, listEvents, listRuns } from '../services/transcripts';
@@ -37,6 +38,7 @@ import {
   toTask,
   wakeNow,
 } from '../services/tasks';
+import { AppError } from '../services/errors';
 import { procedure, router } from './trpc';
 
 const id = z.string().refine(isSafeTaskId, 'not a task id');
@@ -328,6 +330,38 @@ const keysRouter = router({
     .mutation(({ ctx, input }) => replaceSlots(ctx.db, input)),
 });
 
+const slackCode = z.string().min(1).max(256);
+
+const slackRouter = router({
+  /** Whether the Slack intake API is on, and the Slack account this board user is linked to. */
+  status: procedure.query(async ({ ctx }) => {
+    const link = await getLink(ctx.db);
+    return {
+      enabled: ctx.config.intake !== null,
+      link: link && { slackUserId: link.slackUserId, displayName: link.displayName, createdAt: link.createdAt },
+    };
+  }),
+  /** Whom a code from `/board link` was issued to, for the confirmation page. */
+  peekLink: procedure.input(z.object({ code: slackCode })).query(async ({ ctx, input }) => {
+    const who = await peekLinkCode(ctx.db, input.code);
+    if (!who) throw new AppError('NOT_FOUND', 'This link has expired or was already used. Send /board link again.');
+    return who;
+  }),
+  confirmLink: procedure
+    .input(z.object({ code: slackCode }))
+    .mutation(({ ctx, input }) => redeemLinkCode(ctx.db, input.code)),
+  unlink: procedure.mutation(({ ctx }) => removeLink(ctx.db)),
+  inbox: router({
+    /** Proposals from Slack, in clear text by design. */
+    list: procedure.query(async ({ ctx }) =>
+      (await listInbox(ctx.db)).map(({ id, text, createdAt }) => ({ id, text, createdAt })),
+    ),
+    remove: procedure
+      .input(z.object({ id: z.string().min(1).max(64) }))
+      .mutation(({ ctx, input }) => removeInboxItem(ctx.db, input.id)),
+  }),
+});
+
 export const appRouter = router({
   transcript: transcriptRouter,
   me: procedure.query(async ({ ctx }) => ({ username: ctx.username, keyId: (await getKeys(ctx.db))?.keyId ?? null })),
@@ -335,6 +369,7 @@ export const appRouter = router({
   tasks: tasksRouter,
   schedules: schedulesRouter,
   machines: machinesRouter,
+  slack: slackRouter,
 });
 
 export type AppRouter = typeof appRouter;

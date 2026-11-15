@@ -123,7 +123,7 @@ export function formatAnswers(questions: Question[] | undefined, answers: Answer
     .join('\n');
 }
 
-// The question as markdown, for `board show` and Slack.
+// The question as markdown, for `board show`.
 export function formatQuestions(questions: Question[]): string {
   return questions
     .map((question) => {

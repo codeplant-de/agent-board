@@ -99,10 +99,9 @@ test('a comment reads stdin for - and a file in /tmp for --file', async () => {
   assert.deepEqual(backend.writes, [`note ${ID}: from stdin`, `note ${ID}: from a file`]);
 });
 
-test('notify reads stdin for - too, and an empty comment is refused', async () => {
+test('an empty comment is refused', async () => {
   const { go } = setup();
   await assert.rejects(go(['comment', ID]), /the text is missing/);
-  await assert.rejects(go(['notify', ID]), /missing required argument 'text'/);
 });
 
 test('move takes the status as one word, two words or a quoted phrase, and never reads stdin', async () => {
@@ -209,8 +208,6 @@ test('--dry-run at the start or end of the text is a usage error; one in the mid
     /--dry-run goes before the text.*board comment --dry-run/,
   );
   await assert.rejects(go(['comment', ID, '--dry-run', 'hello']), /--dry-run goes before the text/);
-  await assert.rejects(go(['notify', ID, 'done', '--dry-run']), /board notify --dry-run <task> <text...>/);
-  await assert.rejects(go(['notify', ID, '--dry-run', 'hello']), /--dry-run goes before the text/);
   assert.deepEqual(backend.writes, []);
   await go(['comment', ID, 'a', '--dry-run', 'b']);
   assert.deepEqual(backend.writes, [`note ${ID}: a --dry-run b`]);
@@ -271,9 +268,7 @@ function boardCommands(): string[] {
   const spans = sources.flatMap((source) =>
     [...source.matchAll(/\\?`(board [^`\\]+)\\?`/g)].map((match) => match[1] ?? ''),
   );
-  return [...new Set(spans)].filter(
-    (span) => !/^board (comment|move|ask|add|show|notify|tasks)$|^board internal /.test(span),
-  );
+  return [...new Set(spans)].filter((span) => !/^board (comment|move|ask|add|show|tasks)$|^board internal /.test(span));
 }
 
 function words(command: string, files: { questions: string; prompt: string }): string[] {

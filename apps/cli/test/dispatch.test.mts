@@ -55,7 +55,6 @@ function setup(
     files,
     now: () => NOW,
     logTail: () => 'last log line',
-    notify: async () => undefined,
     waits,
     runCheck: async (check) => {
       ranChecks.push(check.command);
@@ -280,20 +279,6 @@ test('a todo task whose last worker is still stopping is not started again', asy
   assert.deepEqual(started, ['t2']);
   assert.ok(logs.includes('SKIP t1 its last worker is still stopping'));
   assert.ok(!backend.writes.some((w) => w.includes('t1')));
-});
-
-test('a task that moved on since the listing is not reported or notified', async () => {
-  const notified: string[] = [];
-  const { deps, backend } = setup([running('dead')]);
-  deps.notify = async (_task, text) => void notified.push(text);
-  const list = backend.listTasks.bind(backend);
-  backend.listTasks = async (options) => {
-    const listed = await list(options);
-    backend.tasks[0]!.status = 'needs-me';
-    return listed;
-  };
-  await runDispatch(deps);
-  assert.deepEqual(notified, []);
 });
 
 test('a task that is not due yet is left alone: no claim, no log line', async () => {
