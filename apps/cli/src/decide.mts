@@ -11,12 +11,15 @@ import {
 } from '@agent-board/shared';
 import type { Note, Task, TranscriptEvent, UnreadableField } from '@agent-board/shared';
 import { BackendError } from './backend.mts';
+import { fence } from './text.mts';
 
 // `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives `<plugin>@ccc`, such as {pr-review}.
 const PLUGIN_PLACEHOLDER = /\{([a-z0-9][a-z0-9-]*)\}/g;
 export const PLUGIN_MARKETPLACE = 'ccc';
 
 export const START_MARKER = 'agent-board: started';
+// The start of the note that ends a wait; the rest of it is why, and the resumed agent is told.
+export const WAKE_MARKER = 'agent-board: wait over:';
 // Half the server's body limit.
 const BATCH_MAX_BYTES = 8 * 1024 * 1024;
 // The worker enforces the timeout itself; the sweep only catches a worker that cannot.
@@ -306,17 +309,35 @@ export function freshThreadBlock(task: Task, notes: Note[]): string | undefined 
 
 const CONTINUE_LINE = "The board's rules from the start of this session still hold.";
 
+// Why the wait ended, from the wake note a machine wrote after the agent last spoke; none means the user ended it. Only its first
+// paragraph: the rest is the end of the check's output, which can carry text the user did not write (a PR's job names), and the
+// prompt is the user's turn. It stays in the thread.
+function wokenLine(task: Task, notes: Note[]): string {
+  const sorted = byTime(notes);
+  const since = sorted.slice(sorted.findLastIndex((note) => note.author === 'agent') + 1);
+  const wake = since.findLast(
+    (note) => note.author === 'system' && !note.unreadable && note.text.startsWith(WAKE_MARKER),
+  );
+  const why =
+    wake === undefined
+      ? 'the user ended it early.'
+      : wake.text.slice(WAKE_MARKER.length).split('\n\n')[0]?.trim() || 'its time ran out.';
+  return `Your wait on board task ${task.id} is over: ${why}\n\nCheck the state of what you waited for, then go on with the task.`;
+}
+
 export function buildResumePrompt(task: Task, notes: Note[]): string | undefined {
   const reply = userReply(notes);
   const paused = task.paused;
-  if (reply.length === 0 && !paused) return undefined;
+  const woken = task.woken;
+  if (reply.length === 0 && !paused && !woken) return undefined;
   const pausedLine = `You were paused on board task ${task.id} to free the slot for other work. Continue where you left off; check the state of anything you were in the middle of before you go on.`;
+  const lead = [...(woken ? [wokenLine(task, notes), ''] : []), ...(paused ? [pausedLine, ''] : [])];
   if (reply.length === 0) {
-    return [pausedLine, '', CONTINUE_LINE].join('\n');
+    return [...lead, CONTINUE_LINE].join('\n');
   }
   const parts = reply.map((note) => noteText(note));
   return [
-    ...(paused ? [pausedLine, ''] : []),
+    ...lead,
     `The user replied on board task ${task.id}:`,
     '',
     ...parts.flatMap((part) => [part, '']),
@@ -396,6 +417,57 @@ function failed(input: { exitCode: number | null; signal: string | null }): Outc
   return { kind: 'failed', reason: `The worker ${how}.` };
 }
 
+const CHECK_SLACK_MS = 20_000;
+
+export type WakeDecision =
+  | { kind: 'sleep' }
+  | { kind: 'check' }
+  | { kind: 'wake'; why: string }
+  // The check's time is up: wake, with what its last attempt said.
+  | { kind: 'timeout'; why: string };
+
+// The end of a check's output, fenced for the thread. It stays out of the resume prompt (see `wokenLine`).
+export function checkOutputBlock(output: string | undefined): string {
+  const text = (output ?? '').trimEnd();
+  if (text === '') return '';
+  return `\n\nEnd of its output:\n${fence(text.split('\n').slice(-20).join('\n'))}`;
+}
+
+/**
+ * What the dispatcher of the task's machine does with a waiting task: wake it when its time is up (a timer's end, a check's
+ * timeout) or its check is missing, run its check when one is due, or leave it.
+ */
+export function decideWake(input: {
+  task: Pick<Task, 'wakeAt' | 'waitCheck'>;
+  // The check stored on this machine, if any.
+  check: { everyMs: number; lastCheckAt?: Date; lastExit?: number | null; lastOutput?: string } | undefined;
+  machine: string;
+  now: Date;
+}): WakeDecision {
+  const { task, check, now } = input;
+  const due = task.wakeAt === null || task.wakeAt.getTime() <= now.getTime();
+  if (!task.waitCheck) return due ? { kind: 'wake', why: 'its time ran out.' } : { kind: 'sleep' };
+  if (check === undefined)
+    return {
+      kind: 'wake',
+      why: `its check is no longer stored on ${input.machine}, so nothing could end it. Find out yourself whether what you waited for is done.`,
+    };
+  if (due) {
+    const last =
+      check.lastCheckAt === undefined
+        ? 'It never ran.'
+        : `Its last attempt ended ${check.lastExit === null || check.lastExit === undefined ? 'without an exit code (killed or too slow)' : `with exit code ${check.lastExit}`}.`;
+    return {
+      kind: 'timeout',
+      why: `the check did not pass before its timeout. ${last}${checkOutputBlock(check.lastOutput)}`,
+    };
+  }
+  // A little early is on time: ticks come every two minutes, give or take, and a check every 2m must not slip to every 4m.
+  if (check.lastCheckAt === undefined || now.getTime() - check.lastCheckAt.getTime() >= check.everyMs - CHECK_SLACK_MS)
+    return { kind: 'check' };
+  return { kind: 'sleep' };
+}
+
 export interface Invocation {
   command: string;
   // Options only, and never the prompt: `claude` would read a prompt that starts with a dash as an option, and some options
@@ -418,6 +490,11 @@ export function boardRules(task: Task): string {
     `- To suggest follow-up work, write it to a file in /tmp and run \`board add --title "<title>" --file <path> --parent ${task.id}\`; the user starts it.`,
     '- Do not end your turn while a background agent or background command you started is still running: this run ends when your turn does. Run subagents in the foreground, or wait for their result before ending your turn.',
     '- If a tool call is refused with "Pause requested", post a one-line status with `board comment` and end your turn; you will be resumed here.',
+    ...(task.createdBy === 'intake'
+      ? []
+      : [
+          `- When you have to wait for something outside that takes minutes or longer (CI, a deploy, a review), do not sleep or poll in this run: run \`board wait ${task.id} --check '<command>' --reason "<what you wait for>"\` with a command that exits 0 once the wait is over (\`--every <dur>\` how often it runs, default 2m; \`--timeout <dur>\` when to give up, default 2h), or \`board wait ${task.id} --in 30m --reason "<what you wait for>"\` for a plain timer, then end your turn. The task frees its slot, and you are resumed in this session when the check passes or the time is up.`,
+        ]),
     ...(task.createdBy === 'intake'
       ? [
           "- This run allows only a fixed list of commands, and each matches only when it stands alone: run every Bash command on its own, without pipes, `;`, `&&`, redirects or `cd`, by its full path, and filter output with the command's own options. A refused call is a result; report it instead of working around it, and go on with the other steps.",

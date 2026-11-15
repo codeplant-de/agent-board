@@ -21,6 +21,7 @@ const VISIBLE = [
   'move',
   'notify',
   'ask',
+  'wait',
   'add',
   'polish',
   'schedule',
@@ -47,7 +48,10 @@ test('the model lists the visible commands only, with their flags', () => {
   assert.ok(['--all', '--status', '--json', '--dry-run'].every((flag) => flags('tasks').includes(flag)));
   assert.ok(flags('attach').includes('--fork'));
   assert.ok(flags('schedule').includes('--cron') && flags('add').includes('--priority'));
-  assert.deepEqual(model.flagValues['--status'], ['backlog', 'todo', 'running', 'needs-me', 'done']);
+  assert.deepEqual(model.flagValues['--status'], ['backlog', 'todo', 'running', 'waiting', 'needs-me', 'done']);
+  assert.ok(
+    ['--in', '--at', '--check', '--every', '--timeout', '--reason'].every((flag) => flags('wait').includes(flag)),
+  );
   assert.deepEqual(model.flagValues['--priority'], ['urgent', 'high', 'normal', 'low']);
 });
 

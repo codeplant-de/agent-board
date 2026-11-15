@@ -165,7 +165,7 @@ export function NewTaskModal({ opened, onClose }: { opened: boolean; onClose: ()
                 description="Default: it repeats until you delete it"
               />
               <Text size="xs" c="dimmed">
-                One waiting card is on the board at a time; the next appears when it is started, moved or closed.
+                One pending card is on the board at a time; the next appears when it is started, moved or closed.
               </Text>
             </Stack>
           )}

@@ -249,6 +249,14 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       const { applied, task } = await inner.fail(id, await noteInput('fail', id, 'system', text.trim()));
       return { applied, task: await opened(task, openTask) };
     },
+    async wait(id, { text, wakeAt, check }) {
+      const note = await noteInput('wait', id, 'agent', text.trim());
+      return opened(await inner.wait(id, { ...note, wakeAt, check }), openTask);
+    },
+    async wake(id, text) {
+      const { applied, task } = await inner.wake(id, await noteInput('wake', id, 'system', text.trim()));
+      return { applied, task: await opened(task, openTask) };
+    },
     async transcript(id, batch: TranscriptBatch) {
       const events = await checked('transcript', () =>
         Promise.all(batch.events.map((event) => sealEvent(id, batch.runId, event))),

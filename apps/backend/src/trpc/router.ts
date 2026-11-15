@@ -35,6 +35,7 @@ import {
   takeBack,
   toNote,
   toTask,
+  wakeNow,
 } from '../services/tasks';
 import { procedure, router } from './trpc';
 
@@ -245,6 +246,11 @@ const tasksRouter = router({
   setNotBefore: procedure
     .input(z.object({ id, notBefore: z.coerce.date().nullable() }))
     .mutation(async ({ ctx, input }) => boardTask(await setNotBefore(ctx.db, input.id, input.notBefore, ctx.username))),
+
+  /** Ends a wait early: the task resumes next in its session. */
+  wakeNow: procedure
+    .input(z.object({ id }))
+    .mutation(async ({ ctx, input }) => boardTask(await wakeNow(ctx.db, input.id, ctx.username))),
 
   /** A running task whose agent has been quiet too long: its worker is gone, so the task goes to Needs me. */
   takeBack: procedure

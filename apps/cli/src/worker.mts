@@ -180,7 +180,12 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
 
   // Intake loads only the user's settings; the tokens and endpoints it is allowed come from the checkout's.
   // Print mode kills background work 10 minutes after the last turn; 0 waits for it, and the heartbeat and stop handling still bound the run.
-  const fixedEnv = { AGENT_BOARD_TASK: taskId, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' };
+  // AGENT_BOARD_START_DIR: whose settings the run loaded; a check of `board wait` gets their `env` too.
+  const fixedEnv = {
+    AGENT_BOARD_TASK: taskId,
+    AGENT_BOARD_START_DIR: plan.invocation.cwd,
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
+  };
   let env: Record<string, string> = fixedEnv;
   if (fromIntake && config.intake.env.length > 0) {
     const picked = pickEnv(deps.settingsEnv(plan.invocation.cwd), config.intake.env);
