@@ -44,6 +44,17 @@ export interface ReplyVariables {
   resume: boolean;
 }
 
+export interface SendVariables {
+  id: string;
+  message: string;
+}
+
+export interface StopVariables {
+  id: string;
+  // Sent after the interruption (Stop & send).
+  message?: string | undefined;
+}
+
 export interface AnswerVariables {
   id: string;
   questionNoteId: string;
@@ -186,6 +197,31 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
               openBoardTask(
                 need(),
                 await client.tasks.reply.mutate({ id, message: await sealReply(need(), id, message), resume }),
+              ),
+          }),
+      },
+      send: {
+        mutationOptions: () =>
+          mutationOptions({
+            mutationKey: raw.tasks.send.mutationKey(),
+            mutationFn: async ({ id, message }: SendVariables) =>
+              openBoardTask(
+                need(),
+                await client.tasks.send.mutate({ id, message: await sealReply(need(), id, message) }),
+              ),
+          }),
+      },
+      stop: {
+        mutationOptions: () =>
+          mutationOptions({
+            mutationKey: raw.tasks.stop.mutationKey(),
+            mutationFn: async ({ id, message }: StopVariables) =>
+              openBoardTask(
+                need(),
+                await client.tasks.stop.mutate({
+                  id,
+                  ...(message === undefined ? {} : { message: await sealReply(need(), id, message) }),
+                }),
               ),
           }),
       },

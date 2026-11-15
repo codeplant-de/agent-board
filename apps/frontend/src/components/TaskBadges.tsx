@@ -6,11 +6,13 @@ import {
   IconHourglass,
   IconMessageQuestion,
   IconPlayerPause,
+  IconPlayerStop,
   IconPlayerTrackNext,
   IconRepeat,
   IconSparkles,
 } from '@tabler/icons-react';
 import { startsIn, wakesIn } from '../lib/startsIn';
+import { isStopping } from '../lib/stopping';
 import { stamp } from '../lib/time';
 import type { BoardTask } from '../lib/trpc';
 import { useNow } from '../lib/useNow';
@@ -102,6 +104,11 @@ export function TaskBadges({
       {task.status === 'running' && task.machine && (
         <Badge size="sm" color="blue" variant="light" tt="none" leftSection={<IconDeviceDesktop size={12} />}>
           {task.lane ? `${task.machine} · ${task.lane}` : task.machine}
+        </Badge>
+      )}
+      {isStopping(task) && (
+        <Badge size="sm" color="red" variant="light" leftSection={<IconPlayerStop size={12} />}>
+          Stopping…
         </Badge>
       )}
       {task.status === 'running' && task.borrowed && (

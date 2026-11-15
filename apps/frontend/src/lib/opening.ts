@@ -83,6 +83,10 @@ export interface ThreadNote {
   questionNoteId?: string;
   // On a comment by the agent: the reply it drafted for you.
   suggestion?: string;
+  // Your message to a running agent that no worker has handed over yet.
+  pending?: boolean;
+  // When a worker handed your message to the running agent.
+  deliveredAt?: string;
 }
 
 export interface TaskDetail {
@@ -201,7 +205,13 @@ async function openThreadNote(
     wire.questionNoteId !== undefined && isSafeNoteId(wire.questionNoteId)
       ? { questionNoteId: wire.questionNoteId }
       : {};
-  return { ...base, ...opened, ...questionNoteId };
+  const delivery = {
+    ...(wire.pending === true ? { pending: true } : {}),
+    ...(typeof wire.deliveredAt === 'string' && !Number.isNaN(Date.parse(wire.deliveredAt))
+      ? { deliveredAt: wire.deliveredAt }
+      : {}),
+  };
+  return { ...base, ...opened, ...questionNoteId, ...delivery };
 }
 
 /**

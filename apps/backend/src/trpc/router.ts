@@ -32,9 +32,11 @@ import {
   readNotes,
   rerunFresh,
   reply,
+  send,
   setClosed,
   setNotBefore,
   setPriority,
+  stop,
   takeBack,
   toNote,
   toTask,
@@ -221,6 +223,26 @@ const tasksRouter = router({
       boardTask(
         await reply(ctx.db, { taskId: input.id, message: input.message, resume: input.resume, by: ctx.username }),
       ),
+    ),
+
+  /**
+   * "Send": a sealed message to the agent. On a running task it reaches the agent without interrupting it; in any other
+   * status it is "Send & continue".
+   */
+  send: procedure
+    .input(z.object({ id, message: noteInput }))
+    .mutation(async ({ ctx, input }) =>
+      boardTask(await send(ctx.db, { taskId: input.id, message: input.message, by: ctx.username })),
+    ),
+
+  /**
+   * "Stop" (and "Stop & send" with `message`, a sealed message that follows the interruption): a running task's run is
+   * interrupted; an answered task that has not started again goes to Needs me, and a waiting one to Backlog.
+   */
+  stop: procedure
+    .input(z.object({ id, message: noteInput.optional() }))
+    .mutation(async ({ ctx, input }) =>
+      boardTask(await stop(ctx.db, { taskId: input.id, message: input.message, by: ctx.username })),
     ),
 
   /**

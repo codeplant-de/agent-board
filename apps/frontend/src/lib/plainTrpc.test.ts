@@ -229,6 +229,27 @@ describe('sealing what is sent', () => {
     expect(strings(calls[0]?.input).join(' ')).not.toContain('secret');
   });
 
+  it('seals the message of a send and of Stop & send like a reply, and a plain stop carries none', async () => {
+    handle.mockResolvedValue(await wireTask());
+    const { trpc } = plain();
+    await mutate(trpc.tasks.send.mutationOptions(), { id: 'task1', message: ' secret one ' });
+    await mutate(trpc.tasks.stop.mutationOptions(), { id: 'task1', message: 'secret two' });
+    await mutate(trpc.tasks.stop.mutationOptions(), { id: 'task1' });
+    const [sent, stopped, plainStop] = calls.map((call) => call.input as { message?: { body: string } });
+    expect(await openAs(keys, bodyOf('task1', 'user', 'comment'), sent?.message?.body ?? '')).toBe('secret one');
+    expect(await openAs(keys, bodyOf('task1', 'user', 'comment'), stopped?.message?.body ?? '')).toBe('secret two');
+    expect(plainStop).toEqual({ id: 'task1' });
+    expect(strings(calls.map((call) => call.input)).join(' ')).not.toContain('secret');
+  });
+
+  it('refuses an empty send without sending anything', async () => {
+    const { trpc } = plain();
+    await expect(mutate(trpc.tasks.send.mutationOptions(), { id: 'task1', message: ' ' })).rejects.toThrow(
+      'Write something',
+    );
+    expect(calls).toEqual([]);
+  });
+
   it('refuses an empty reply without sending anything', async () => {
     const { trpc } = plain();
     await expect(

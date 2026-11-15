@@ -153,6 +153,14 @@ function fakeWire(): FakeWire {
       push(state, id, parseWireNoteInput(JSON.parse(record(state, note)), 'note'), 'system', 'event');
       return { applied: true, task: state.tasks.find((t) => t.id === id)! };
     },
+    async runInbox(id) {
+      return { stop: false, messages: state.notes.get(id) ?? [] };
+    },
+    async ackMessages() {},
+    async stopped(id, note) {
+      push(state, id, parseWireNoteInput(JSON.parse(record(state, note)), 'note'), 'system', 'event');
+      return state.tasks.find((t) => t.id === id)!;
+    },
     async transcript(_id, batch) {
       parseWireTranscriptBatch(JSON.parse(record(state, batch)));
     },
