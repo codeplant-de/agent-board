@@ -116,6 +116,9 @@ async function openThreadNote(keys: Keys, taskId: string, wire: WireNote): Promi
     kind: wire.kind,
     ...opened,
     ...(wire.questionNoteId !== undefined ? { questionNoteId: wire.questionNoteId } : {}),
+    ...(wire.pending === undefined ? {} : { pending: wire.pending }),
+    ...(wire.queued === undefined ? {} : { queued: wire.queued }),
+    ...(wire.deliveredAt === undefined ? {} : { deliveredAt: wire.deliveredAt }),
   };
 }
 
@@ -266,6 +269,19 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     async wake(id, text) {
       const { applied, task } = await inner.wake(id, await noteInput('wake', id, 'system', text.trim()));
       return { applied, task: await opened(task, openTask) };
+    },
+    async runInbox(id) {
+      const { stop, stopMessage, messages } = await inner.runInbox(id);
+      const resolvedKeys = await getKeys();
+      return {
+        stop,
+        ...(stopMessage === undefined ? {} : { stopMessage }),
+        messages: await Promise.all(messages.map((note) => openThreadNote(resolvedKeys, id, note))),
+      };
+    },
+    ackMessages: (id, ack) => inner.ackMessages(id, ack),
+    async stopped(id, text) {
+      return opened(await inner.stopped(id, await noteInput('stopped', id, 'system', text.trim())), openTask);
     },
     async transcript(id, batch: TranscriptBatch) {
       const events = await checked('transcript', () =>

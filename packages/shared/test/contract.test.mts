@@ -5,6 +5,7 @@ import {
   isModelName,
   notePreview,
   NOTE_KINDS,
+  parseAckMessages,
   parseBlindIndex,
   parseHeartbeat,
   parseSchedulePatch,
@@ -24,6 +25,7 @@ import {
   parseWireSchedule,
   parseWireScheduleDraft,
   parseWireNotes,
+  parseWireRunInbox,
   parseWireSchedules,
   parseWireTask,
   parseWireTaskDraft,
@@ -783,4 +785,86 @@ test('a draft carries a model that is checked, in add-task and add-schedule', ()
   const rule = { id: ID, title: TITLE, input: INPUT, everyMs: 60_000 };
   assert.equal(parseWireScheduleDraft({ ...rule, model: 'opus' }).model, 'opus');
   assert.throws(() => parseWireScheduleDraft({ ...rule, model: 'a b' }), /schedule draft.model is not a model name/);
+});
+
+const SEALED_TEXT = `abe1.${'A'.repeat(40)}`;
+
+test('a note carries pending and deliveredAt when the server has them, and the parser keeps them apart', () => {
+  const wire = {
+    id: 'n1',
+    body: SEALED_TEXT,
+    preview: null,
+    createdAt: '2026-11-13T10:00:00.000Z',
+    author: 'user',
+    kind: 'comment',
+  };
+  const plain = parseWireNote(wire);
+  assert.equal(plain.pending, undefined);
+  assert.equal(plain.deliveredAt, undefined);
+  const pending = parseWireNote({ ...wire, pending: true });
+  assert.equal(pending.pending, true);
+  const delivered = parseWireNote({ ...wire, pending: false, deliveredAt: '2026-11-13T10:05:00.000Z' });
+  assert.deepEqual([delivered.pending, delivered.deliveredAt], [false, new Date('2026-11-13T10:05:00.000Z')]);
+  assert.throws(() => parseWireNote({ ...wire, pending: 'yes' }), ContractError);
+  assert.throws(() => parseWireNote({ ...wire, deliveredAt: 'yesterday' }), ContractError);
+  assert.deepEqual(parseWireNote(serializeWireNote(delivered)), delivered);
+});
+
+test('a task shows stopRequested only when the server sends it', () => {
+  const wire = {
+    id: 't1',
+    title: SEALED_TEXT,
+    input: SEALED_TEXT,
+    status: 'running',
+    priority: 'normal',
+    closed: false,
+    machine: 'laptop',
+    sessionId: null,
+    workdir: null,
+    next: 'fresh',
+    head: null,
+    openQuestion: false,
+    createdBy: 'user',
+    lane: null,
+    borrowed: false,
+    lastActiveAt: null,
+    runStartedAt: null,
+    paused: false,
+    notBefore: null,
+    scheduleId: null,
+    wakeAt: null,
+    waitCheck: false,
+    woken: false,
+  };
+  assert.equal('stopRequested' in parseWireTask(wire), false);
+  assert.equal(parseWireTask({ ...wire, stopRequested: true }).stopRequested, true);
+  assert.throws(() => parseWireTask({ ...wire, stopRequested: 1 }), ContractError);
+});
+
+test('the run inbox answer and the acknowledgement are checked', () => {
+  const note = {
+    id: 'n1',
+    body: SEALED_TEXT,
+    preview: null,
+    createdAt: '2026-11-13T10:00:00.000Z',
+    author: 'user',
+    kind: 'comment',
+    pending: true,
+  };
+  assert.deepEqual(
+    parseWireRunInbox({ stop: true, messages: [note] }).messages.map((m) => m.id),
+    ['n1'],
+  );
+  assert.equal(parseWireRunInbox({ stop: true, stopMessage: 'n1', messages: [note] }).stopMessage, 'n1');
+  assert.equal('stopMessage' in parseWireRunInbox({ stop: true, messages: [] }), false);
+  assert.throws(() => parseWireRunInbox({ stop: true, stopMessage: 'no id!', messages: [] }), ContractError);
+  assert.equal(parseWireNote({ ...note, queued: true }).queued, true);
+  assert.throws(() => parseWireNote({ ...note, queued: 1 }), ContractError);
+  assert.throws(() => parseWireRunInbox({ stop: 'yes', messages: [] }), ContractError);
+  assert.throws(() => parseWireRunInbox({ stop: false }), ContractError);
+  assert.deepEqual(parseAckMessages({ ids: ['n1'], stop: true }), { ids: ['n1'], stop: true });
+  assert.deepEqual(parseAckMessages({ ids: [] }), { ids: [] });
+  assert.throws(() => parseAckMessages({ ids: ['not an id!'] }), ContractError);
+  assert.throws(() => parseAckMessages({ ids: Array.from({ length: 101 }, (_, i) => `n${i}`) }), ContractError);
+  assert.throws(() => parseAckMessages({ ids: [], extra: 1 }), ContractError);
 });

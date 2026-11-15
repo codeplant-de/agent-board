@@ -99,6 +99,8 @@ export interface FakeBackend extends Backend {
   tasks: Task[];
   schedules: Schedule[];
   notes: Map<string, Note[]>;
+  // What the user sent each running task and no worker has acknowledged.
+  inboxes: Map<string, { stop: boolean; stopMessage?: string; messages: Note[] }>;
   writes: string[];
   // Claims of these ids are lost, as if another machine got there first.
   lostClaims: string[];
@@ -127,6 +129,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     tasks,
     schedules: [],
     notes: new Map(),
+    inboxes: new Map(),
     writes: [],
     lostClaims: [],
     async listTasks({ all = false } = {}) {
@@ -282,6 +285,29 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       state.writes.push(`ask ${id}: ${questions.map((q) => q.header).join(', ')}`);
       const found = state.tasks.find((t) => t.id === id);
       if (found) Object.assign(found, { status: 'needs-me', openQuestion: true });
+    },
+    async runInbox(id) {
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`run-inbox: no task ${id}`, 404, true);
+      if (found.status !== 'running') throw new BackendError(`run-inbox: the task is ${found.status}`, 409, true);
+      const inbox = state.inboxes.get(id) ?? { stop: false, messages: [] };
+      return { ...inbox, messages: [...inbox.messages] };
+    },
+    async ackMessages(id, ack) {
+      state.writes.push(`ack ${id}: ${ack.ids.join(',')}${ack.stop === true ? ' stop' : ''}`);
+      const inbox = state.inboxes.get(id) ?? { stop: false, messages: [] };
+      state.inboxes.set(id, {
+        stop: ack.stop === true ? false : inbox.stop,
+        ...(ack.stop === true || inbox.stopMessage === undefined ? {} : { stopMessage: inbox.stopMessage }),
+        messages: inbox.messages.filter((message) => !ack.ids.includes(message.id)),
+      });
+    },
+    async stopped(id, text) {
+      state.writes.push(`stopped ${id}: ${text}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new Error(`no task ${id}`);
+      if (found.status === 'running') Object.assign(found, { status: 'needs-me' });
+      return { ...found };
     },
     async readNotes(id) {
       return state.notes.get(id) ?? [];
