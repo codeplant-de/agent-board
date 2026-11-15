@@ -3,13 +3,12 @@ import {
   formatAnswers,
   isSafeWorkdir,
   isSessionId,
-  MAX_BATCH_EVENTS,
   parsePrUrl,
   prUrlIn,
   promptSkill,
   shortSkill,
 } from '@agent-board/shared';
-import type { Note, Task, TranscriptEvent, UnreadableField } from '@agent-board/shared';
+import type { Note, Task, UnreadableField } from '@agent-board/shared';
 import { BackendError } from './backend.mts';
 import { fence } from './text.mts';
 
@@ -20,8 +19,6 @@ export const PLUGIN_MARKETPLACE = 'ccc';
 export const START_MARKER = 'agent-board: started';
 // The start of the note that ends a wait; the rest of it is why, and the resumed agent is told.
 export const WAKE_MARKER = 'agent-board: wait over:';
-// Half the server's body limit.
-const BATCH_MAX_BYTES = 8 * 1024 * 1024;
 // The worker enforces the timeout itself; the sweep only catches a worker that cannot.
 const SWEEP_GRACE_MINUTES = 5;
 
@@ -605,62 +602,4 @@ export function buildInvocation(input: {
   if (allowed.length > 0) args.push('--allowedTools', ...allowed);
   if (disallowed.length > 0) args.push('--disallowedTools', ...disallowed);
   return { ok: true, invocation: { command: 'claude', args, prompt: promptText, cwd } };
-}
-
-// The size of one event as it would be sent.
-const eventBytes = (event: TranscriptEvent): number => Buffer.byteLength(JSON.stringify(event));
-
-/**
- * A transcript backlog held to a count and a size: past either, the oldest tool outputs go first (the event stays, its output
- * empties), then, when that is not enough, the oldest events. Says how many of each it dropped, so the transcript can note it.
- */
-export function boundBacklog(
-  events: TranscriptEvent[],
-  { maxEvents, maxBytes }: { maxEvents: number; maxBytes: number },
-): { events: TranscriptEvent[]; droppedOutputs: number; droppedEvents: number } {
-  let kept = events.length > maxEvents ? events.slice(events.length - maxEvents) : events;
-  let droppedEvents = events.length - kept.length;
-  let droppedOutputs = 0;
-  let total = kept.reduce((sum, event) => sum + eventBytes(event), 0);
-  if (total > maxBytes) {
-    kept = kept.map((event) => {
-      if (total <= maxBytes || event.kind !== 'tool_result' || event.output === '') return event;
-      const emptied = { ...event, output: '' };
-      total -= eventBytes(event) - eventBytes(emptied);
-      droppedOutputs += 1;
-      return emptied;
-    });
-  }
-  if (total > maxBytes) {
-    let first = 0;
-    while (first < kept.length && total > maxBytes) {
-      total -= eventBytes(kept[first]!);
-      first += 1;
-    }
-    droppedEvents += first;
-    kept = kept.slice(first);
-  }
-  return { events: kept, droppedOutputs, droppedEvents };
-}
-
-// Events as the board takes them: batches of at most `maxEvents` events and about `maxBytes` of JSON, so a backlog
-// stays under the server's limits. One event larger than `maxBytes` goes alone.
-export function splitBatches(
-  events: TranscriptEvent[],
-  { maxEvents = MAX_BATCH_EVENTS, maxBytes = BATCH_MAX_BYTES }: { maxEvents?: number; maxBytes?: number } = {},
-): TranscriptEvent[][] {
-  const batches: TranscriptEvent[][] = [];
-  let bytes = 0;
-  for (const event of events) {
-    const size = Buffer.byteLength(JSON.stringify(event));
-    const last = batches.at(-1);
-    if (last === undefined || last.length >= maxEvents || bytes + size > maxBytes) {
-      batches.push([event]);
-      bytes = size;
-    } else {
-      last.push(event);
-      bytes += size;
-    }
-  }
-  return batches;
 }

@@ -13,19 +13,16 @@ import { buildContext, print, UsageError } from './cli.mts';
 import type { Context } from './cli.mts';
 import { isSafeTaskId } from '@agent-board/shared';
 import { logLine, StreamCondenser } from '@agent-board/shared';
-import type { Task, TranscriptEvent } from '@agent-board/shared';
+import type { Task } from '@agent-board/shared';
 import {
-  boundBacklog,
   buildInvocation,
   decideOutcome,
-  isPermanentRefusal,
   isRunOver,
   neverRun,
   ownLane,
   PLUGIN_MARKETPLACE,
   planRun,
   pluginPlaceholders,
-  splitBatches,
   supervise,
   unreadableForRun,
 } from './decide.mts';
@@ -39,6 +36,7 @@ import type { SessionStore } from './sessions.mts';
 import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from './logs.mts';
 import { resolvePluginPath } from './plugins.mts';
 import { fence } from './text.mts';
+import { createTranscriptUploader } from './transcript-upload.mts';
 
 export interface RunResult {
   exitCode: number | null;
@@ -59,14 +57,6 @@ export interface Watch {
 const PAUSE_GRACE_MINUTES = 5;
 // The board's liveness is updated at most this often.
 const HEARTBEAT_EVERY_MS = 15_000;
-// Events waiting for the board past this many, or past this many bytes of JSON, lose their oldest tool outputs first and then their
-// oldest events, with a note in the transcript: the board is down, the run goes on.
-const MAX_PENDING_EVENTS = 20_000;
-const MAX_PENDING_BYTES = 32 * 1024 * 1024;
-// What one upload pass may spend on the board: calls, counting the halving of a refused batch, and time. What is left goes
-// with the next pass.
-const MAX_UPLOAD_CALLS = 24;
-const MAX_UPLOAD_MS = 60_000;
 
 export interface WorkerDeps extends Context {
   // `env` is added to the process's environment: the secrets of the invocation's masked variables.
@@ -96,7 +86,7 @@ export interface WorkerDeps extends Context {
   // The hook command line for a task, given the run directory.
   hookCommand: (runDir: string, taskId: string) => string;
   now: () => Date;
-  // The transcript backlog's byte budget; the default is `MAX_PENDING_BYTES`.
+  // The transcript backlog's byte budget; `createTranscriptUploader` has the default.
   maxPendingBytes?: number;
   watchEveryMs: number;
 }
@@ -217,106 +207,20 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   // The transcript: condensed stream-json events, sent in batches with each check and once more at the end.
   const condenser = new StreamCondenser(deps.now);
   const runId = deps.newSessionId();
-  let pending: TranscriptEvent[] = [];
-  let pendingBytes = 0;
-  const bytesOf = (events: TranscriptEvent[]): number =>
-    events.reduce((sum, event) => sum + Buffer.byteLength(JSON.stringify(event)), 0);
-  // Holds the backlog to its count and byte budget, and says in the transcript what it had to drop.
-  const keepBounded = (): void => {
-    const maxBytes = deps.maxPendingBytes ?? MAX_PENDING_BYTES;
-    if (pending.length <= MAX_PENDING_EVENTS && pendingBytes <= maxBytes) return;
-    // Trimmed to 90% so that the next lines do not trim again, and note again, at once.
-    const bounded = boundBacklog(pending, {
-      maxEvents: Math.floor(MAX_PENDING_EVENTS * 0.9),
-      maxBytes: Math.floor(maxBytes * 0.9),
-    });
-    pending = bounded.events;
-    if (bounded.droppedOutputs > 0 || bounded.droppedEvents > 0) {
-      const parts = [
-        ...(bounded.droppedOutputs > 0 ? [`${bounded.droppedOutputs} tool outputs`] : []),
-        ...(bounded.droppedEvents > 0 ? [`${bounded.droppedEvents} events`] : []),
-      ];
-      pending.push(
-        condenser.note(
-          `${parts.join(' and ')} of this run were dropped from the transcript: the board could not take them in time.`,
-        ),
-      );
-      deps.appendLog(taskId, `transcript backlog over its budget: dropped ${parts.join(' and ')}`);
-    }
-    pendingBytes = bytesOf(pending);
-  };
-  const post = (events: TranscriptEvent[]): Promise<void> =>
-    backend.transcript(task.id, {
-      runId,
-      startedAt: startedAt.toISOString(),
-      sessionId: run.sessionId,
-      resumed: run.kind === 'resume',
-      events,
-    });
-  // Sends `events`; returns the ones to try again later (all, or none). A batch the board refuses for good is halved until the
-  // event it cannot take is alone and dropped, so one bad event never holds the transcript back. `spend` says whether this pass
-  // may make another call.
-  const sendEvents = async (events: TranscriptEvent[], spend: () => boolean): Promise<TranscriptEvent[]> => {
-    if (!spend()) return events;
-    try {
-      await post(events);
-      return [];
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      if (!isPermanentRefusal(error)) {
-        deps.appendLog(taskId, `transcript upload failed: ${reason}`);
-        return events;
-      }
-      if (events.length === 1) {
-        deps.appendLog(taskId, `transcript event ${events[0]?.seq} was refused and dropped: ${reason}`);
-        return [];
-      }
-      const middle = Math.ceil(events.length / 2);
-      const firstBack = await sendEvents(events.slice(0, middle), spend);
-      if (firstBack.length > 0) return [...firstBack, ...events.slice(middle)];
-      return sendEvents(events.slice(middle), spend);
-    }
-  };
-  const upload = async (): Promise<void> => {
-    const batches = splitBatches(pending);
-    pending = [];
-    pendingBytes = 0;
-    const passStarted = deps.now().getTime();
-    let calls = 0;
-    const spend = (): boolean => {
-      if (calls >= MAX_UPLOAD_CALLS || deps.now().getTime() - passStarted > MAX_UPLOAD_MS) return false;
-      calls += 1;
-      return true;
-    };
-    for (const [index, events] of batches.entries()) {
-      const back = await sendEvents(events, spend);
-      if (back.length > 0) {
-        // What could not go out, and the batches after it, go again with the next pass.
-        pending = [...back, ...batches.slice(index + 1).flat(), ...pending];
-        pendingBytes = bytesOf(pending);
-        keepBounded();
-        return;
-      }
-    }
-  };
-  // One upload at a time. A tick that finds one in flight leaves what has come in since to the next pass.
-  let uploading: Promise<void> | undefined;
-  const startUpload = (): Promise<void> => {
-    uploading ??= upload()
-      .catch((error: unknown) => {
-        deps.appendLog(taskId, `transcript upload failed: ${error instanceof Error ? error.message : String(error)}`);
-      })
-      .finally(() => {
-        uploading = undefined;
-      });
-    return uploading;
-  };
-  // The end of the run: what is in flight, then what is left, then once more what a pass left over, each bounded like any other.
-  const flushTranscript = async (): Promise<void> => {
-    await uploading;
-    await startUpload();
-    if (pending.length > 0) await startUpload();
-  };
+  const transcript = createTranscriptUploader({
+    post: (events) =>
+      backend.transcript(task.id, {
+        runId,
+        startedAt: startedAt.toISOString(),
+        sessionId: run.sessionId,
+        resumed: run.kind === 'resume',
+        events,
+      }),
+    now: deps.now,
+    log: (text) => deps.appendLog(taskId, text),
+    note: (text) => condenser.note(text),
+    maxBytes: deps.maxPendingBytes,
+  });
   let beating: Promise<void> | undefined;
   const startBeat = (): Promise<void> => {
     beating ??= beat().finally(() => {
@@ -326,9 +230,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   };
   const onLine = (line: string): string | undefined => {
     const events = condenser.line(line);
-    pending.push(...events);
-    pendingBytes += bytesOf(events);
-    keepBounded();
+    transcript.add(events);
     const text = events.map(logLine).filter((part) => part !== undefined);
     return text.length > 0 ? text.join('\n') : undefined;
   };
@@ -336,7 +238,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     everyMs: deps.watchEveryMs,
     tick: async () => {
       void startBeat();
-      void startUpload();
+      void transcript.start();
       return supervise({
         now: deps.now(),
         startedAt,
@@ -362,7 +264,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     if (run.kind === 'fresh') await backend.updateTask(task.id, { sessionId: null });
     return fail(error instanceof Error ? error.message : String(error));
   }
-  await flushTranscript();
+  await transcript.flush();
   if (result.stopped) deps.appendLog(taskId, result.stopped.message);
   const pauseRequested = files.pauseRequestedAt(taskId) !== undefined;
   const endedIn = files.lastCwd(taskId);
