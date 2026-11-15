@@ -48,6 +48,8 @@ export async function insertTask(
   const status = proposed ? 'needs-me' : (draft.status ?? 'todo');
   if (draft.notBefore !== undefined && status !== 'todo')
     throw new AppError('BAD_REQUEST', 'Only a task in Todo can have a start time.');
+  // A wait needs its end and a run that waits; `wait` is the only way in.
+  if (status === 'waiting') throw new AppError('BAD_REQUEST', 'A new task cannot start in Waiting.');
   const [row] = await tx
     .insert(tasks)
     .values({

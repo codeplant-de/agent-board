@@ -15,6 +15,7 @@ const answer = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const reply = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const create = vi.hoisted(() => vi.fn(async (_: unknown) => null));
+const wakeNow = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 
 vi.mock('../lib/trpc', () => {
   const procedure = (mutationFn: (variables: unknown) => Promise<unknown>) => ({
@@ -33,6 +34,7 @@ vi.mock('../lib/trpc', () => {
         create: procedure(create),
         takeBack: procedure(takeBack),
         setNotBefore: procedure(setNotBefore),
+        wakeNow: procedure(wakeNow),
       },
     }),
   };
@@ -64,6 +66,9 @@ function running(overrides: Partial<BoardTask>): BoardTask {
     paused: false,
     notBefore: null,
     scheduleId: null,
+    wakeAt: null,
+    waitCheck: false,
+    woken: false,
     proposed: false,
     invalid: [],
     unreadable: [],
@@ -478,7 +483,7 @@ describe('ActionPanel of a delayed task', () => {
     setNotBefore.mockClear();
     const notBefore = new Date(Date.now() + 3_600_000).toISOString();
     renderPanel(running({ status: 'todo', machine: null, sessionId: null, notBefore }), []);
-    expect(screen.getByText(`Waiting until ${stamp(notBefore)}.`)).toBeInTheDocument();
+    expect(screen.getByText(`Delayed until ${stamp(notBefore)}.`)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Run now' }));
     await waitFor(() => expect(setNotBefore).toHaveBeenCalled());
     expect(setNotBefore.mock.calls[0]?.[0]).toEqual({ id: 'abc12345', notBefore: null });
@@ -500,7 +505,31 @@ describe('ActionPanel of a delayed task', () => {
   it('shows neither once the task is due', () => {
     const notBefore = new Date(Date.now() - 1000).toISOString();
     renderPanel(running({ status: 'todo', notBefore }), []);
-    expect(screen.queryByText(/Waiting until/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Delayed until/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Run now' })).not.toBeInTheDocument();
+  });
+});
+
+describe('ActionPanel of a waiting task', () => {
+  const inMinutes = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+
+  it('says what it waits for and until when, and Wake now ends the wait', async () => {
+    const wakeAt = inMinutes(90);
+    renderPanel(running({ status: 'waiting', waitCheck: true, wakeAt, runStartedAt: null }));
+    expect(
+      screen.getByText(new RegExp(`Waiting for a check on laptop to pass, at the latest until ${stamp(wakeAt)}`)),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Wake now' }));
+    await waitFor(() => expect(wakeNow).toHaveBeenCalled());
+    expect(wakeNow.mock.calls[0]?.[0]).toEqual({ id: 'abc12345' });
+    // A reply ends the wait as well: the panel keeps the message box.
+    expect(screen.getByRole('button', { name: 'Send & continue' })).toBeInTheDocument();
+  });
+
+  it('says a woken task in Todo resumes without a reply', () => {
+    renderPanel(running({ status: 'todo', next: 'resume', woken: true, runStartedAt: null }));
+    expect(
+      screen.getByText(/Its wait is over\. The next run resumes the agent's session on laptop\./),
+    ).toBeInTheDocument();
   });
 });

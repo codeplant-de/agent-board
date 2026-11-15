@@ -14,6 +14,7 @@ export type ServerEvent =
   | { type: 'priority'; from: Priority; to: Priority }
   | { type: 'start-cleared' }
   | { type: 'start-set'; at: Date }
+  | { type: 'woken' }
   // `machine` is the one that ran the task, or null when it never had one.
   | { type: 'taken-back'; machine: string | null };
 
@@ -39,6 +40,8 @@ export function formatServerEvent(event: ServerEvent): string {
       return 'Start time cleared.';
     case 'start-set':
       return `Start time set to ${event.at.toISOString()}.`;
+    case 'woken':
+      return 'Wait ended by you.';
     case 'taken-back':
       return `Taken back from ${event.machine ?? 'its worker'}: no sign of life for ${TAKE_BACK_MINUTES} minutes.`;
   }
@@ -58,6 +61,7 @@ const SERVER_EVENT_PATTERNS: RegExp[] = [
   new RegExp(`^Moved from ${STATUS} to ${STATUS}\\.$`),
   new RegExp(`^Priority ${PRIORITY} → ${PRIORITY}\\.$`),
   /^Start time cleared\.$/,
+  /^Wait ended by you\.$/,
   /^Start time set to \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\.$/,
   new RegExp(
     `^Taken back from (?:${MACHINE_NAME_PATTERN}|its worker): no sign of life for ${TAKE_BACK_MINUTES} minutes\\.$`,

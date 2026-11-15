@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { Argument, Command, CommanderError } from 'commander';
 import { CONTRACT_VERSION, STATUSES } from '@agent-board/shared';
@@ -22,8 +23,22 @@ import {
   show,
   polish,
   tasks,
+  wait,
+  DEFAULT_CHECK_EVERY,
+  DEFAULT_CHECK_TIMEOUT,
 } from './board.mts';
-import type { AddFlags, AttachFlags, CommentFlags, DelayFlags, PolishFlags, Spawner, TasksFlags } from './board.mts';
+import type {
+  AddFlags,
+  AttachFlags,
+  CommentFlags,
+  DelayFlags,
+  PolishFlags,
+  Spawner,
+  TasksFlags,
+  WaitFlags,
+} from './board.mts';
+import { CHECK_TIME_LIMIT_MS, createWaitStore } from './waits.mts';
+import type { WaitStore } from './waits.mts';
 import { buildContext, readStdin, ReportedFailure, UsageError } from './cli.mts';
 import type { ContextOptions, LinkingContext } from './cli.mts';
 import { verifyContract } from './backend.mts';
@@ -79,6 +94,9 @@ export interface ProgramOptions {
   gh?: (args: string[]) => Promise<string>;
   // The command line being run, set by runBoard.
   argv?: string[];
+  // Where `board wait --check` stores the check, and the directory it runs in.
+  waits?: WaitStore;
+  cwd?: string;
 }
 
 const TASKS = 'Tasks:';
@@ -349,6 +367,44 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   ).action(async (arg: string, flags: { file: string }, command: Command) => {
     const context = contextOf(command);
     await ask(context, await taskIdOf(context, arg), flags.file);
+  });
+
+  dryRunOption(
+    program
+      .command('wait')
+      .helpGroup(TASKS)
+      .summary('park a running task in Waiting until a time or a check')
+      .description(
+        paragraphs(
+          'Inside a run: the task leaves Running for Waiting and frees its slot, while something outside (CI, a deploy) takes its time. End your turn after it. The task goes back to the top of Todo and resumes in its session when the time is up, or when the check passes.',
+          `A timer is --in or --at. A check is --check with a shell command that exits 0 once the wait is over: the dispatcher of this machine runs it in this directory every --every (default ${DEFAULT_CHECK_EVERY}, at least 1m; one attempt may take ${CHECK_TIME_LIMIT_MS / 1000} s), with the env of your Claude Code settings, and wakes the task when it passes or after --timeout (default ${DEFAULT_CHECK_TIMEOUT}). The command stays on this machine; the board only learns that the task waits for a check, and until when. A wait lasts at most 7 days.`,
+          '--reason says what the task waits for; it goes into the thread.',
+          ID_NOTE,
+        ),
+      )
+      .argument('<task>', TASK_ARGUMENT)
+      .option('--in <duration>', 'wake after this long (30m, 2h, 1d, 1h30m)')
+      .option('--at <time>', 'wake then (2027-01-01T12:00, 2027-01-01, 09:30)')
+      .option('--check <command>', 'wake once this command exits 0')
+      .option('--every <duration>', `with --check: how often it runs (default ${DEFAULT_CHECK_EVERY})`)
+      .option('--timeout <duration>', `with --check: wake anyway after this long (default ${DEFAULT_CHECK_TIMEOUT})`)
+      .option('--reason <text>', 'what the task waits for, for the thread')
+      .addHelpText(
+        'after',
+        examples(
+          `board wait Ab3dEf9x --check 'gh pr checks 17741 --required' --reason "CI on #17741"`,
+          `board wait Ab3dEf9x --check 'curl -fsS https://staging.example.com/health' --every 5m --timeout 1h`,
+          'board wait Ab3dEf9x --in 20m --reason "the deploy settles"',
+        ),
+      ),
+  ).action(async (arg: string, flags: WaitFlags, command: Command) => {
+    const context = contextOf(command, { strictConfig: flags.check !== undefined });
+    await wait(context, await taskIdOf(context, arg), flags, {
+      waits: options.waits ?? createWaitStore(),
+      cwd: options.cwd ?? realpathSync(process.cwd()),
+      ...(env['AGENT_BOARD_START_DIR'] ? { settingsDir: env['AGENT_BOARD_START_DIR'] } : {}),
+      ...(options.now ? { now: options.now() } : {}),
+    });
   });
 
   dryRunOption(

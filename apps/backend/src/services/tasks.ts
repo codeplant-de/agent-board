@@ -1,5 +1,6 @@
 import {
   formatServerEvent,
+  MAX_WAIT_MS,
   PRIORITIES,
   TAKE_BACK_AFTER_MS,
   type ServerEvent,
@@ -11,6 +12,7 @@ import {
   type WireTask,
   type WireTaskDraft,
   type WireTaskPatch,
+  type WireWait,
 } from '@agent-board/shared';
 import { and, asc, desc, eq, lt, ne, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
@@ -46,6 +48,9 @@ export function toTask(row: TaskRow): WireTask {
     paused: row.pausedAt !== null,
     notBefore: row.notBefore,
     scheduleId: row.scheduleId,
+    wakeAt: row.status === 'waiting' ? row.wakeAt : null,
+    waitCheck: row.status === 'waiting' && row.waitCheck,
+    woken: row.wokenAt !== null,
   };
 }
 
@@ -66,11 +71,13 @@ export function toNote(row: NoteRow): WireNote {
 }
 
 /**
- * Columns by status, then priority (urgent first), then manual order. In Todo, waiting cards (delayed, not yet due) come
+ * Columns by status, then priority (urgent first), then manual order. In Todo, delayed cards (not yet due) come
  * last, by their start; resumes (answered, replied to, paused) come before the rest: that work is already under way.
+ * Waiting lists the wait that ends first on top.
  */
 const taskOrder = () => [
   asc(tasks.status),
+  asc(sql`case when ${tasks.status} = 'waiting' then ${tasks.wakeAt} end`),
   sql`case when ${tasks.status} = 'todo' and ${tasks.notBefore} > now() then 1 else 0 end`,
   asc(sql`case when ${tasks.status} = 'todo' and ${tasks.notBefore} > now() then ${tasks.notBefore} end`),
   sql`case when ${tasks.status} = 'todo' and ${tasks.next} = 'resume' then 0 else 1 end`,
@@ -155,6 +162,12 @@ function keepsPause(from: Status, to: Status): boolean {
   return (from === 'todo' && (to === 'todo' || to === 'running')) || (from === 'running' && to === 'running');
 }
 
+/** Only `wait` takes a task into Waiting: a wait needs its end, and only a running agent knows what it waits for. */
+function requireNotIntoWaiting(task: TaskRow, to: Status): void {
+  if (to === 'waiting' && task.status !== 'waiting')
+    throw new AppError('BAD_REQUEST', 'Only a running agent puts a task in Waiting (board wait).');
+}
+
 /**
  * Every status change goes through here, in a transaction that holds the task's lock, so the columns that depend
  * on the status cannot drift apart: the open question (only while it waits in Needs me), the run's start, a proposal
@@ -172,6 +185,16 @@ async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promis
   const values: TaskValues = { status: to, updatedAt: now };
   if (to !== 'needs-me') values.openQuestionNoteId = null;
   if (!keepsPause(task.status, to)) values.pausedAt = null;
+  // A wait that ends into Todo resumes the session (it is still under way) and tells the agent why; a wake survives the
+  // claim like a pause does. A task that leaves Waiting any other way just drops the wait.
+  if (task.status === 'waiting' && to === 'todo') {
+    values.wokenAt = now;
+    values.next = task.sessionId ? 'resume' : 'fresh';
+  } else if (!keepsPause(task.status, to)) values.wokenAt = null;
+  if (to !== 'waiting') {
+    values.wakeAt = null;
+    values.waitCheck = false;
+  }
   if (change.start !== undefined) {
     values.input = change.start.input;
     values.createdBy = 'user';
@@ -217,8 +240,12 @@ export async function updateTask(db: DbOrTx, id: string, patch: WireTaskPatch): 
       set.notBefore = patch.notBefore;
     } else if (patch.notBefore === null) set.notBefore = null;
     if (patch.priority !== undefined && patch.priority !== current.priority) set.priority = patch.priority;
-    // The worker has read the pause by now; its first update of the run consumes it.
-    if (current.status === 'running') set.pausedAt = null;
+    if (patch.status !== undefined) requireNotIntoWaiting(current, patch.status);
+    // The worker has read the pause and the wake by now; its first update of the run consumes them.
+    if (current.status === 'running') {
+      set.pausedAt = null;
+      set.wokenAt = null;
+    }
     return transition(tx, current, {
       to: patch.status,
       place: set.priority !== undefined ? 'bottom' : undefined,
@@ -432,7 +459,8 @@ export async function rerunFresh(db: DbOrTx, taskId: string, by: string): Promis
       to: 'todo',
       place: 'bottom',
       by: 'user',
-      set: { next: 'fresh', sessionId: null, workdir: null, closed: false, closedAt: null },
+      // A fresh run is not a resume after a wait, even when it comes out of Waiting.
+      set: { next: 'fresh', sessionId: null, workdir: null, closed: false, closedAt: null, wokenAt: null },
     });
   });
 }
@@ -500,6 +528,7 @@ export async function moveTask(
       throw new AppError('CONFLICT', 'The task is running. Wait until it reports back.');
     if (task.status !== 'running' && input.status === 'running')
       throw new AppError('BAD_REQUEST', 'Only a worker moves a task to Running.');
+    requireNotIntoWaiting(task, input.status);
     const neighbour = async (id: string | undefined) => {
       if (id === undefined) return undefined;
       const [row] = await tx
@@ -645,6 +674,65 @@ export async function pause(db: DbOrTx, taskId: string, note: WireNoteInput, by:
       by: 'worker',
       set: { next: task.sessionId ? 'resume' : 'fresh', pausedAt: new Date() },
     });
+  });
+}
+
+/**
+ * The agent waits for something outside (CI, a deploy): its comment goes into the thread, and the task leaves Running for
+ * Waiting, freeing its slot, until `wakeAt` or until a check on its machine passes. Either way it then resumes in its session.
+ */
+export async function wait(
+  db: DbOrTx,
+  taskId: string,
+  request: WireWait,
+  by: string,
+  now: Date = new Date(),
+): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    if (task.status !== 'running' || task.closed)
+      throw new AppError('CONFLICT', `the task is ${task.closed ? 'closed' : task.status}, not running`);
+    const ahead = request.wakeAt.getTime() - now.getTime();
+    if (ahead <= 0) throw new AppError('BAD_REQUEST', 'the end of the wait must lie in the future');
+    if (ahead > MAX_WAIT_MS)
+      throw new AppError('BAD_REQUEST', `a wait may last at most ${MAX_WAIT_MS / (24 * 60 * 60_000)} days`);
+    await addNote(tx, taskId, {
+      author: 'agent',
+      kind: 'comment',
+      body: request.body,
+      preview: request.preview ?? null,
+      by,
+    });
+    return transition(tx, task, {
+      to: 'waiting',
+      by: 'worker',
+      set: { wakeAt: request.wakeAt, waitCheck: request.check, next: task.sessionId ? 'resume' : 'fresh' },
+    });
+  });
+}
+
+/** A wait ended (its time ran out, its check passed): while the task still waits, the reason goes into its thread and it resumes next. */
+export async function wake(
+  db: DbOrTx,
+  taskId: string,
+  note: WireNoteInput,
+  by: string,
+): Promise<{ applied: boolean; row: TaskRow }> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    if (task.status !== 'waiting' || task.closed) return { applied: false, row: task };
+    await clientEvent(tx, taskId, note, by);
+    return { applied: true, row: await transition(tx, task, { to: 'todo', place: 'top', by: 'worker' }) };
+  });
+}
+
+/** The user ends a wait early: the task resumes next, as if its wait had run out. */
+export async function wakeNow(db: DbOrTx, taskId: string, by: string): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    if (task.status !== 'waiting') throw new AppError('CONFLICT', `The task is ${task.status}, not waiting.`);
+    await systemEvent(tx, taskId, { type: 'woken' }, by);
+    return transition(tx, task, { to: 'todo', place: 'top', by: 'user' });
   });
 }
 

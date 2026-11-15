@@ -65,6 +65,8 @@ export interface Paths {
   logDir: string;
   // Per-task records of the Claude sessions this machine started (see sessions.mts).
   sessionDir: string;
+  // The checks of waiting tasks this machine runs (see waits.mts).
+  waitDir: string;
 }
 
 export function getPaths(env: NodeJS.ProcessEnv = process.env): Paths {
@@ -76,6 +78,7 @@ export function getPaths(env: NodeJS.ProcessEnv = process.env): Paths {
     configFile: join(configDir, 'config.json'),
     logDir: join(stateDir, 'logs'),
     sessionDir: join(stateDir, 'sessions'),
+    waitDir: join(stateDir, 'waits'),
   };
 }
 

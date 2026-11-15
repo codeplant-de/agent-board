@@ -16,6 +16,7 @@ import {
   parseWireTaskDraft,
   parseWireTaskPatch,
   parseWireTranscriptBatch,
+  parseWireWait,
   TranscriptError,
   serializeSchedule,
   serializeWireNote,
@@ -45,6 +46,8 @@ import {
   toNote,
   toTask,
   updateTask,
+  wait,
+  wake,
 } from './services/tasks';
 
 function scheduleId(body: Record<string, unknown>): string {
@@ -152,6 +155,15 @@ export async function handleMachineCall(
       const { applied, row } = await failTask(db, taskId(body), note, machine);
       return { applied, task: task(row) };
     }
+    case 'wait': {
+      const request = parsed(() => parseWireWait(body['body']));
+      return task(await wait(db, taskId(body), request, machine));
+    }
+    case 'wake': {
+      const note = parsed(() => parseWireNoteInput(body['body'], 'wake note'));
+      const { applied, row } = await wake(db, taskId(body), note, machine);
+      return { applied, task: task(row) };
+    }
     case 'transcript':
       await appendTranscript(
         db,
@@ -190,6 +202,8 @@ const DISPATCH_WRITES = new Set([
   'ask',
   'pause',
   'fail',
+  'wait',
+  'wake',
   'add-schedule',
   'update-schedule',
   'remove-schedule',

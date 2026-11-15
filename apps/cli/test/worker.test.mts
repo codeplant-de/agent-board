@@ -285,7 +285,7 @@ test('a fresh skill run binds the task to its directory, and to the worktree it 
 });
 
 test('a run that reported keeps the worktree it ended in, though the board dropped its runStartedAt', async () => {
-  for (const status of ['needs-me', 'todo'] as const) {
+  for (const status of ['needs-me', 'waiting', 'todo'] as const) {
     const { deps, backend, notes } = setup({ exitCode: 0, signal: null });
     deps.run = async () => {
       deps.files.writeCwd('w1', '/tmp/.claude/worktrees/feat-x');
@@ -423,6 +423,7 @@ test("an intake run gets the variables intake names from the checkout's settings
   assert.deepEqual(env, {
     CIRCLECI_TOKEN: 'ci-secret',
     AGENT_BOARD_TASK: 'w1',
+    AGENT_BOARD_START_DIR: '/work/cosuno',
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
   });
   assert.ok(calls.some((c) => c.includes("not in the checkout's settings: SHORTCUT_API_TOKEN")));
@@ -440,7 +441,11 @@ test("a scheduled run loads the checkout's settings itself: no variables are cop
     return { exitCode: 0, signal: null };
   };
   await runWorker(deps, 'w1');
-  assert.deepEqual(env, { AGENT_BOARD_TASK: 'w1', CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' });
+  assert.deepEqual(env, {
+    AGENT_BOARD_TASK: 'w1',
+    AGENT_BOARD_START_DIR: '/tmp',
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
+  });
 });
 
 test("an intake run gets the MCP servers intake names from the checkout's .mcp.json", async () => {

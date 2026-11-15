@@ -17,7 +17,7 @@ import { taskLink } from '../../cli/src/links.mts';
 import { slackText } from '../../cli/src/notify.mts';
 import { createSealedBackend } from '../../cli/src/sealing.mts';
 import { runWorker, type WorkerDeps } from '../../cli/src/worker.mts';
-import { CONFIG, fakeRunFiles, fakeSessions } from '../../cli/test/helpers.mts';
+import { CONFIG, fakeRunFiles, fakeSessions, fakeWaitStore } from '../../cli/test/helpers.mts';
 import { createKeySetup, exportDataKey } from '../../frontend/src/crypto/keySlots';
 import { createMemoryKeyStore, inspectStoredKeys } from '../../frontend/src/crypto/keyStore';
 import { createBrowserHarness } from '../../frontend/src/test/browserHarness';
@@ -275,6 +275,8 @@ describe('an agent’s proposal', () => {
     now: () => new Date(),
     logTail: () => '',
     notify: async () => undefined,
+    waits: fakeWaitStore(),
+    runCheck: async () => ({ exitCode: 1, timedOut: false, output: '' }),
   });
   const workerDeps = (invocations: { args: string[]; prompt: string }[], failures: string[]): WorkerDeps => ({
     backend: ctx.cli,
@@ -378,6 +380,111 @@ describe('an agent’s proposal', () => {
         stored!.input,
       ),
     ).toBeUndefined();
+  });
+});
+
+describe('a wait', () => {
+  it('frees the slot, keeps its check on the machine, and resumes the session once the check passes', async () => {
+    const waits = fakeWaitStore();
+    const config = { ...CONFIG, machine: 'laptop' };
+    const started: string[] = [];
+    const logs: string[] = [];
+    const checks: string[] = [];
+    const dispatch = (checkExit: number): DispatchDeps => ({
+      backend: ctx.cli,
+      config,
+      dryRun: false,
+      print: (line) => logs.push(line),
+      system: {
+        isActive: async () => false,
+        startedAt: async () => undefined,
+        activeWorkers: async () => [],
+        stop: async () => undefined,
+        startWorker: async (taskId) => {
+          started.push(taskId);
+          return { pid: 1 };
+        },
+      },
+      files: fakeRunFiles(),
+      now: () => new Date(),
+      logTail: () => '',
+      notify: async () => undefined,
+      waits,
+      runCheck: async (check) => {
+        checks.push(check.command);
+        return { exitCode: checkExit, timedOut: false, output: checkExit === 0 ? 'all checks passed' : 'pending' };
+      },
+    });
+    const sessions = fakeSessions();
+    const invocations: { args: string[]; prompt: string }[] = [];
+    const worker = (agent: (taskId: string) => Promise<void>): WorkerDeps => ({
+      backend: ctx.cli,
+      config,
+      dryRun: false,
+      print: () => undefined,
+      run: async (invocation) => {
+        invocations.push({ args: invocation.args, prompt: invocation.prompt });
+        await agent(id);
+        return { exitCode: 0, signal: null };
+      },
+      logTail: () => '',
+      notify: async () => undefined,
+      resetLog: () => undefined,
+      appendLog: () => undefined,
+      pluginPath: () => '/p',
+      dirExists: () => true,
+      settingsEnv: () => ({}),
+      mcpServers: () => ({ config: { mcpServers: {} }, missing: [] }),
+      home: '/h',
+      newSessionId: () => SESSION,
+      sessions,
+      files: fakeRunFiles(),
+      hookCommand: () => 'hook',
+      now: () => new Date(),
+      watchEveryMs: 10,
+    });
+
+    const { task } = await ctx.cli.addTask({ title: 'Ship it', input: 'push and watch CI' });
+    const id = task.id;
+    await runDispatch(dispatch(1));
+    expect(started).toEqual([id]);
+    // The agent pushes, then waits for CI the way `board wait --check` does: the check first, on this machine, then the board.
+    await runWorker(
+      worker(async (taskId) => {
+        waits.write(taskId, { command: 'gh pr checks 1', cwd: '/w', everyMs: 60_000, createdAt: new Date() });
+        await ctx.cli.wait(taskId, { text: 'Waiting for CI.', wakeAt: new Date(Date.now() + 3_600_000), check: true });
+      }),
+      id,
+    );
+    expect(await ctx.cli.getTask(id)).toMatchObject({ status: 'waiting', waitCheck: true, next: 'resume' });
+    expect(received.some((body) => body.includes('gh pr checks'))).toBe(false);
+
+    await runDispatch(dispatch(1));
+    expect(checks).toEqual(['gh pr checks 1']);
+    expect((await ctx.cli.getTask(id)).status).toBe('waiting');
+    expect(waits.read(id)?.lastExit).toBe(1);
+
+    // The next attempt is not due for a minute; pretend it is.
+    waits.write(id, { ...waits.read(id)!, lastCheckAt: new Date(Date.now() - 120_000) });
+    await runDispatch(dispatch(0));
+    expect(waits.list()).toEqual([]);
+    expect(await ctx.cli.getTask(id)).toMatchObject({ status: 'todo', next: 'resume', woken: true });
+    // Checks run at the end of a tick; the wake tells the listener, whose next tick starts the task.
+    await runDispatch(dispatch(1));
+    expect(started).toEqual([id, id]);
+    expect(await ctx.cli.getTask(id)).toMatchObject({ status: 'running', woken: true });
+
+    await runWorker(
+      worker(async () => undefined),
+      id,
+    );
+    const resumed = invocations.at(-1)!;
+    expect(resumed.args).toContain(`--resume=${SESSION}`);
+    expect(resumed.prompt).toMatch(/^Your wait on board task \S+ is over: its check passed\./);
+    // The check's output goes into the thread, never into the agent's prompt, where it would read as the user's words.
+    expect(resumed.prompt).not.toContain('all checks passed');
+    const thread = await ctx.cli.readNotes(id);
+    expect(thread.some((note) => note.author === 'system' && note.text.includes('all checks passed'))).toBe(true);
   });
 });
 

@@ -14,6 +14,7 @@ import {
   parseVersionIdentity,
   parseWireAddScheduleResult,
   parseWireAddTaskResult,
+  parseWireWakeResult,
   parseWireFailResult,
   parseWireNotes,
   parseWireSchedule,
@@ -120,7 +121,7 @@ export interface MachineRequest {
   all?: boolean;
   machine?: string;
   author?: string;
-  // The command's payload, JSON: sealed values for add-task, update-task, add-schedule, add-note, ask, pause, fail and transcript.
+  // The command's payload, JSON: sealed values for add-task, update-task, add-schedule, add-note, ask, pause, fail, wait, wake and transcript.
   body?: unknown;
 }
 
@@ -320,6 +321,8 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     heartbeat: async (id, beat) => send('heartbeat', { id: taskId(id), body: beat }),
     pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
     fail: async (id, note) => call('fail', { id: taskId(id), body: note }, parseWireFailResult),
+    wait: async (id, wait) => call('wait', { id: taskId(id), body: wait }, parseWireTask),
+    wake: async (id, note) => call('wake', { id: taskId(id), body: note }, parseWireWakeResult),
     transcript: async (id, batch) => send('transcript', { id: taskId(id), body: batch }),
     readNotes: async (id) => call('read-notes', { id: taskId(id) }, parseWireNotes),
     addSchedule: async (draft) => call('add-schedule', { body: draft }, parseWireAddScheduleResult),
@@ -365,6 +368,9 @@ function dryTask(draft: TaskDraft): Task {
     paused: false,
     notBefore: notBefore ?? null,
     scheduleId: null,
+    wakeAt: null,
+    waitCheck: false,
+    woken: false,
   };
 }
 
@@ -446,6 +452,16 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     async fail(id, text) {
       print(`DRY fail ${id} ${oneLine(text, 160)}`);
       return { applied: true, task: { ...(await inner.getTask(id)), status: 'needs-me' } };
+    },
+    async wait(id, request) {
+      print(
+        `DRY wait ${id} until ${request.wakeAt.toISOString()}${request.check ? ' --check' : ''} ${oneLine(request.text, 160)}`,
+      );
+      return { ...(await inner.getTask(id)), status: 'waiting', wakeAt: request.wakeAt, waitCheck: request.check };
+    },
+    async wake(id, text) {
+      print(`DRY wake ${id} ${oneLine(text, 160)}`);
+      return { applied: true, task: { ...(await inner.getTask(id)), status: 'todo', next: 'resume', woken: true } };
     },
     async transcript(id, batch) {
       print(`DRY transcript ${id} run ${batch.runId}: ${batch.events.length} events`);

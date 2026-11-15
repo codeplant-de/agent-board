@@ -125,7 +125,7 @@ export function SchedulesPage() {
     <Stack maw={1100} mx="auto">
       <Title order={3}>Schedules</Title>
       <Text size="sm" c="dimmed">
-        Each schedule keeps one waiting card on the board; the next one appears when that card is started, moved or
+        Each schedule keeps one pending card on the board; the next one appears when that card is started, moved or
         closed. Runs missed while nothing took the card are skipped. Make one with New task, When: Repeating, or{' '}
         <Code>board schedule --every</Code>.
       </Text>

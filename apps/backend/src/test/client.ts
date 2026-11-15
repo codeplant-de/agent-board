@@ -131,8 +131,20 @@ async function sealRequest(command: string, request: Json, sealing: Sealing, raw
                 : await note('agent', request['kind'] === 'polish' ? 'polish' : 'comment', body),
           }
         : request;
+    case 'wait':
+      // `body.text` is the agent's comment, sealed; the rest goes as it is.
+      if (typeof body?.text !== 'string') return request;
+      return {
+        ...request,
+        body: {
+          ...(await note('agent', 'comment', body.text)),
+          wakeAt: body.wakeAt,
+          check: body.check ?? false,
+        },
+      };
     case 'pause':
     case 'fail':
+    case 'wake':
       return typeof body === 'string' ? { ...request, body: await note('system', 'event', body) } : request;
     case 'ask': {
       const questions: Question[] = Array.isArray(body) ? body : body.questions;
@@ -301,6 +313,7 @@ export function plainUi(db: Db, owner = 'jascha') {
       setPriority: mutation(raw.tasks.setPriority),
       setNotBefore: mutation(raw.tasks.setNotBefore),
       takeBack: mutation(raw.tasks.takeBack),
+      wakeNow: mutation(raw.tasks.wakeNow),
       setClosed: mutation(raw.tasks.setClosed),
       // As the browser does: an agent's proposal enters Todo with its prompt sealed again for the creator "user".
       move: async (input: Parameters<Raw['tasks']['move']>[0]) => {
