@@ -196,8 +196,15 @@ test("a prompt's skill picks its lane; anything else goes to the lane with *", (
   assert.equal(ownLane(task({ id: 'a', input: 'Find out X' }), [lanes[0]!]), undefined);
 });
 
+test('a machine without an intake block leaves intake-created tasks to another machine', () => {
+  const intakeTask = task({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
+  assert.equal(notServableHere(intakeTask, 'here', CONFIG.repos, false), 'no intake block in config.json here');
+  assert.equal(notServableHere(intakeTask, 'here', CONFIG.repos, true), undefined);
+  assert.equal(notServableHere(task({ id: 'b', input: 'Find out X' }), 'here', CONFIG.repos, false), undefined);
+});
+
 test("a machine leaves a task to another when it is pinned there or lacks the PR's checkout", () => {
-  const here = (overrides: Parameters<typeof task>[0]) => notServableHere(task(overrides), 'here', CONFIG.repos);
+  const here = (overrides: Parameters<typeof task>[0]) => notServableHere(task(overrides), 'here', CONFIG.repos, true);
   assert.equal(here({ id: 'a', input: 'Find out X' }), undefined);
   assert.match(here({ id: 'a', input: '/grill', machine: 'there', workdir: '/x' }) ?? '', /pinned to there/);
   assert.equal(here({ id: 'a', input: '/grill', machine: 'here', workdir: '/x' }), undefined);

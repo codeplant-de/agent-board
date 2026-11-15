@@ -62,6 +62,8 @@ export interface Config {
   maxRunHours: number;
   autoUpdate: AutoUpdate;
   intake: IntakeConfig;
+  // Whether config.json has an `intake` key: the intake timer and `board internal intake` exist only then.
+  intakeEnabled: boolean;
   repos: Record<string, string>;
 }
 
@@ -199,6 +201,7 @@ export function parseConfig(raw: unknown): Config {
     maxRunHours: positiveInt(raw, 'maxRunHours', '', 6),
     autoUpdate,
     intake: parseIntake(raw['intake']),
+    intakeEnabled: 'intake' in raw,
     repos,
   };
 }

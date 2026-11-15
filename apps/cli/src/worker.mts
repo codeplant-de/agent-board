@@ -158,6 +158,10 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   if (refused !== undefined) return fail(refused);
 
   const fromIntake = task.createdBy === 'intake';
+  if (fromIntake && !config.intakeEnabled)
+    return fail(
+      'This task came from intake, and config.json on this machine has no intake block: its rules would be missing.',
+    );
   // What a new directory is sealed against: the task's own creator and schedule, as the board has them.
   const sealing = { createdBy: task.createdBy, scheduleId: task.scheduleId };
   const pluginRoots: Record<string, string> = {};

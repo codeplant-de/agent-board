@@ -238,10 +238,17 @@ export function pinnedMachine(task: Task): string | undefined {
 }
 
 // Why this machine leaves a todo task to another one, or undefined when it can run it.
-export function notServableHere(task: Task, machine: string, repos: Record<string, string>): string | undefined {
+export function notServableHere(
+  task: Task,
+  machine: string,
+  repos: Record<string, string>,
+  intakeEnabled: boolean,
+): string | undefined {
   const pinned = pinnedMachine(task);
   if (pinned !== undefined && pinned !== machine) return `pinned to ${pinned}`;
   if (task.createdBy === 'intake') {
+    // Intake's tasks run on untrusted PR text under intake's rules, which only an `intake` block holds.
+    if (!intakeEnabled) return 'no intake block in config.json here';
     const pr = parsePrUrl(prUrlIn(task.input) ?? '');
     // An intake task without a PR URL is claimed and fails with the reason; one for a repo without a checkout here waits.
     if (pr !== undefined && !Object.hasOwn(repos, pr.repo)) return `no checkout of ${pr.repo} here`;
