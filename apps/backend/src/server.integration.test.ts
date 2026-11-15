@@ -302,7 +302,7 @@ describe('board UI', () => {
     await ui.tasks.reply({ id: task.id, message: 'fyi', resume: false });
   });
 
-  it('agent proposals wait in needs-me until started; moving into Todo starts them', async () => {
+  it('agent proposals wait in backlog until started; moving into Todo starts them', async () => {
     const ui = plainUi(db);
     const parent = await ui.tasks.create({ title: 'parent', input: 'do it' });
     const proposed = await ctx.call('laptop', 'add-task', {
@@ -317,10 +317,20 @@ describe('board UI', () => {
     });
     const id = proposed.json.result.task.id;
     const before = await ui.tasks.get({ id });
-    expect(before.task).toMatchObject({ proposed: true, status: 'needs-me', parentId: parent.id });
+    expect(before.task).toMatchObject({ proposed: true, status: 'backlog', parentId: parent.id });
     expect((await ui.tasks.get({ id: parent.id })).followUps.map((t) => t.id)).toEqual([id]);
     const started = await ui.tasks.move({ id, status: 'todo' });
     expect(started).toMatchObject({ proposed: false, status: 'todo', createdBy: 'user', input: 'do Y' });
+  });
+
+  it('a proposal in backlog goes below the user’s backlog tasks, and stays startable and closable there', async () => {
+    const ui = plainUi(db);
+    const mine = await ui.tasks.create({ title: 'mine', input: 'do it', when: 'backlog' });
+    const { id } = (
+      await ctx.call('laptop', 'add-task', { body: { title: 'idea', input: 'do Y', createdBy: 'agent' } })
+    ).json.result.task;
+    expect((await ui.tasks.list()).filter((t) => t.status === 'backlog').map((t) => t.id)).toEqual([mine.id, id]);
+    await expect(ui.tasks.setClosed({ id, closed: true })).resolves.toMatchObject({ closed: true });
   });
 
   it('drag and drop places a task between its neighbours', async () => {
@@ -771,9 +781,9 @@ describe('proposals', () => {
     (await ctx.call('laptop', 'add-task', { body: { title: 'idea', input: 'do Y', createdBy: 'agent', ...body } })).json
       .result.task;
 
-  it('an agent task lands in needs-me as a proposal whatever start status it names', async () => {
+  it('an agent task lands in backlog as a proposal whatever start status it names', async () => {
     for (const status of ['backlog', 'todo', 'needs-me']) {
-      expect(await propose({ status })).toMatchObject({ status: 'needs-me', createdBy: 'agent' });
+      expect(await propose({ status })).toMatchObject({ status: 'backlog', createdBy: 'agent' });
     }
     expect((await plainUi(db).tasks.list()).every((t) => t.proposed)).toBe(true);
   });
@@ -786,13 +796,13 @@ describe('proposals', () => {
     }
     // Other fields are fine, and so is staying put.
     expect(
-      (await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me', sessionId: SESSION } })).status,
+      (await ctx.call('laptop', 'update-task', { id, body: { status: 'backlog', sessionId: SESSION } })).status,
     ).toBe(200);
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
     // Even a proposal that somehow sits in Todo is not claimable.
     await admin.update(tasks).set({ status: 'todo' }).where(eq(tasks.id, id));
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
-    await admin.update(tasks).set({ status: 'needs-me' }).where(eq(tasks.id, id));
+    await admin.update(tasks).set({ status: 'backlog' }).where(eq(tasks.id, id));
     const started = await plainUi(db).tasks.move({ id, status: 'todo' });
     expect(started).toMatchObject({ status: 'todo', proposed: false, createdBy: 'user' });
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(200);
@@ -848,7 +858,7 @@ describe('proposals', () => {
     expect(asked.status).toBe(403);
     expect(asked.json.error).toMatch(/only you start it/);
     const { task, thread } = await plainUi(db).tasks.get({ id });
-    expect(task).toMatchObject({ status: 'needs-me', proposed: true, openQuestion: false });
+    expect(task).toMatchObject({ status: 'backlog', proposed: true, openQuestion: false });
     expect(thread.filter((n) => n.kind === 'question')).toEqual([]);
   });
 });
