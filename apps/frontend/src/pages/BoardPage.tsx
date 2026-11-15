@@ -3,6 +3,7 @@ import { Badge, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState, type DragEvent } from 'react';
 import { moveConfirmed } from '../components/confirmStart';
+import { IncompatibleMachinesBanner } from '../components/IncompatibleMachinesBanner';
 import { SlackInbox } from '../components/SlackInbox';
 import { TaskCard } from '../components/TaskCard';
 import { usePolish } from '../components/usePolish';
@@ -157,6 +158,7 @@ export function BoardPage() {
 
   return (
     <Stack gap="md">
+      <IncompatibleMachinesBanner />
       <SlackInbox />
       <div className="board">
         {CELLS.map((statuses) => (

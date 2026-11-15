@@ -7,7 +7,11 @@ import {
   parseBlindIndex,
   parseHeartbeat,
   parseSchedulePatch,
+  compareVersions,
+  parseClientApi,
+  parseClientVersion,
   parseVersion,
+  parseVersionCli,
   parseVersionIdentity,
   parseWireAddScheduleResult,
   parseWireAsk,
@@ -693,4 +697,29 @@ test('a single object and a request stay strict about enum values', () => {
     () => parseWireTaskDraft({ id: 'Ab3dEf9x', title: TITLE, input: INPUT, status: 'snoozed' }),
     /draft.status must be one of/,
   );
+});
+
+test('client headers are read leniently: a bad value is null, never an error', () => {
+  for (const good of ['0.5.0', '12.0.3', '0.6.0-dev', '1.2.3-rc.1']) assert.equal(parseClientVersion(good), good);
+  for (const bad of ['', 'hello', '1.2', '1.2.3-', '1.2.3-x y', `1.2.3-${'x'.repeat(21)}`, '1.2.3\n', undefined, 5])
+    assert.equal(parseClientVersion(bad), null, String(bad));
+  assert.equal(parseClientApi('7'), 7);
+  assert.equal(parseClientApi('10000'), 10_000);
+  for (const bad of ['0', '10001', '1.5', '-1', '07x', '', ' 7', undefined, 7])
+    assert.equal(parseClientApi(bad), null, String(bad));
+});
+
+test('the advertised CLI of the version answer is x.y.z or nothing', () => {
+  assert.equal(parseVersionCli({ contract: 7, cli: '0.7.0' }), '0.7.0');
+  for (const cli of [undefined, null, '0.7', '0.7.0-dev', 7, 'x'.repeat(50)])
+    assert.equal(parseVersionCli({ contract: 7, cli }), null, String(cli));
+});
+
+test('versions compare numerically, and a suffix counts as its base', () => {
+  assert.equal(compareVersions('0.10.0', '0.9.0'), 1);
+  assert.equal(compareVersions('1.0', '1.0.0'), 0);
+  assert.equal(compareVersions('0.3.0', '0.3.1'), -1);
+  assert.equal(compareVersions('0.7.0-dev', '0.7.0'), 0);
+  assert.equal(compareVersions('1.2.3-rc.1', '1.2.3'), 0);
+  assert.equal(compareVersions('0.6.0-dev', '0.7.0'), -1);
 });

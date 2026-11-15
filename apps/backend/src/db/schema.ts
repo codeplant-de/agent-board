@@ -241,6 +241,9 @@ export const machines = pgTable(
     tokenHash: text('token_hash').notNull().unique(),
     createdAt: createdAt(),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    /** The CLI version and API level of the machine's last request, from its request headers; null before it sent them. */
+    clientVersion: text('client_version'),
+    clientApi: integer('client_api'),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
   },
   (t) => [primaryKey({ columns: [t.owner, t.name] }), tenant()],

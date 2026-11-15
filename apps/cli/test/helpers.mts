@@ -55,6 +55,7 @@ export const CONFIG: Config = {
   pauseAfterMinutes: 5,
   inactivityMinutes: 15,
   maxRunHours: 6,
+  autoUpdate: 'incompatible',
   intake: {
     prompt: '/review-pr {url} --auto',
     priority: 'normal',

@@ -65,8 +65,8 @@ test('a skipped item is warned about once per field and value', () => {
   warn({ what: 'task', field: 'status', value: 'blocked' });
   warn({ what: 'note', field: 'kind', value: 'snoozed' });
   assert.deepEqual(lines, [
-    'board: skipped a task with status "snoozed" this CLI does not know; run "git pull" and "pnpm install" in the checkout',
-    'board: skipped a task with status "blocked" this CLI does not know; run "git pull" and "pnpm install" in the checkout',
-    'board: skipped a note with kind "snoozed" this CLI does not know; run "git pull" and "pnpm install" in the checkout',
+    'board: skipped a task with status "snoozed" this CLI does not know (text in quotes is the server\'s, not part of the board); run "git pull" and "pnpm install" in the checkout',
+    'board: skipped a task with status "blocked" this CLI does not know (text in quotes is the server\'s, not part of the board); run "git pull" and "pnpm install" in the checkout',
+    'board: skipped a note with kind "snoozed" this CLI does not know (text in quotes is the server\'s, not part of the board); run "git pull" and "pnpm install" in the checkout',
   ]);
 });

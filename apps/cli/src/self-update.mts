@@ -1,9 +1,19 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { chmodSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { isRecord } from '@agent-board/shared';
+import { compareVersions, isRecord } from '@agent-board/shared';
+import { LISTEN_SERVICE } from './setup.mts';
 import { SystemError } from './system.mts';
 
 export const RELEASE_REPO = 'codeplant-de/agent-board';
@@ -21,6 +31,8 @@ export interface SelfUpdateDeps {
   arch: string;
   // Runs `gh` and returns its stdout.
   gh: (args: string[]) => Promise<string>;
+  // Restarts the listener, which keeps the old code until then; the line to print, if there is one.
+  restartListener: () => Promise<string | undefined>;
   print: (line: string) => void;
 }
 
@@ -34,20 +46,6 @@ export function assetName(platform: string, arch: string): string {
   const name = `board-${platform}-${arch}`;
   if (!RELEASED_ASSETS.includes(name)) throw new SystemError(`there is no released binary for ${platform}-${arch}`);
   return name;
-}
-
-function versionParts(version: string): number[] {
-  return version.split('.').map((part) => Number.parseInt(part, 10) || 0);
-}
-
-export function compareVersions(a: string, b: string): number {
-  const left = versionParts(a);
-  const right = versionParts(b);
-  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-    const difference = (left[index] ?? 0) - (right[index] ?? 0);
-    if (difference !== 0) return Math.sign(difference);
-  }
-  return 0;
 }
 
 // The newest published cli-v* release of `gh release list --json tagName,isDraft,isPrerelease`.
@@ -72,18 +70,64 @@ export function newestRelease(listing: string): { tag: string; version: string }
     .sort((a, b) => compareVersions(b.version, a.version))[0];
 }
 
-export function realGh(env: Record<string, string | undefined>): SelfUpdateDeps['gh'] {
+// `timeoutMs` bounds each call, so a stalled download ends before a dispatch tick's own time limit does.
+export function realGh(env: Record<string, string | undefined>, timeoutMs?: number): SelfUpdateDeps['gh'] {
   return (args) =>
     new Promise((resolve, reject) => {
-      execFile('gh', args, { env, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
-        if (error === null) return resolve(stdout);
-        if ('code' in error && error.code === 'ENOENT')
-          return reject(
-            new SystemError('gh is not installed; install it from https://cli.github.com and run "gh auth login"'),
-          );
-        reject(new SystemError(`gh ${args.slice(0, 2).join(' ')} failed: ${stderr.split('\n')[0] || error.message}`));
+      execFile(
+        'gh',
+        args,
+        { env, maxBuffer: 16 * 1024 * 1024, ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }) },
+        (error, stdout, stderr) => {
+          if (error === null) return resolve(stdout);
+          if ('killed' in error && error.killed === true)
+            return reject(
+              new SystemError(`gh ${args.slice(0, 2).join(' ')} took longer than ${(timeoutMs ?? 0) / 1000} s`),
+            );
+          if ('code' in error && error.code === 'ENOENT')
+            return reject(
+              new SystemError('gh is not installed; install it from https://cli.github.com and run "gh auth login"'),
+            );
+          reject(new SystemError(`gh ${args.slice(0, 2).join(' ')} failed: ${stderr.split('\n')[0] || error.message}`));
+        },
+      );
+    });
+}
+
+// `try-restart` leaves a listener that is not running alone, and a machine without systemd has none to restart.
+// `block: false` returns at once: the dispatcher runs inside the listener's unit, whose stop waits for that dispatcher.
+export function realListenerRestart({ block }: { block: boolean }): SelfUpdateDeps['restartListener'] {
+  return () =>
+    new Promise((resolve) => {
+      const args = ['--user', ...(block ? [] : ['--no-block']), 'try-restart', LISTEN_SERVICE];
+      execFile('systemctl', args, (error, _stdout, stderr) => {
+        if (error === null) return resolve(`restarted ${LISTEN_SERVICE} if it was running, to run the new code`);
+        // 5: the unit is not installed, which is a machine that never ran `board setup`.
+        if ('code' in error && (error.code === 'ENOENT' || error.code === 5)) return resolve(undefined);
+        resolve(
+          `could not restart ${LISTEN_SERVICE} (${stderr.split('\n')[0] || error.message}); run "systemctl --user restart agent-board-listen"`,
+        );
       });
     });
+}
+
+const UPDATE_DIR_PREFIX = 'board-update-';
+const STALE_DIR_MS = 60 * 60 * 1000;
+
+// A killed update leaves its download directory behind: remove those of this user that are over an hour old.
+export function sweepStaleUpdateDirs(now: Date = new Date(), root: string = tmpdir()): void {
+  try {
+    for (const name of readdirSync(root)) {
+      if (!name.startsWith(UPDATE_DIR_PREFIX)) continue;
+      const path = join(root, name);
+      const info = lstatSync(path);
+      const mine = process.getuid === undefined || info.uid === process.getuid();
+      if (info.isDirectory() && mine && now.getTime() - info.mtimeMs > STALE_DIR_MS)
+        rmSync(path, { recursive: true, force: true });
+    }
+  } catch {
+    // Housekeeping only.
+  }
 }
 
 export function checksumOf(sums: string, name: string): string | undefined {
@@ -94,7 +138,8 @@ export function checksumOf(sums: string, name: string): string | undefined {
   return undefined;
 }
 
-export async function selfUpdate(deps: SelfUpdateDeps, flags: SelfUpdateFlags): Promise<void> {
+// Whether a newer binary replaced this one.
+export async function selfUpdate(deps: SelfUpdateDeps, flags: SelfUpdateFlags): Promise<'updated' | 'unchanged'> {
   if (!deps.compiled || deps.version === undefined)
     throw new SystemError(
       'this board runs from a checkout: update it with "git pull" and "pnpm install", then run apps/cli/install.sh',
@@ -119,12 +164,17 @@ export async function selfUpdate(deps: SelfUpdateDeps, flags: SelfUpdateFlags): 
     ]),
   );
   if (newest === undefined) throw new SystemError(`${RELEASE_REPO} has no ${TAG_PREFIX}* release`);
-  if (compareVersions(newest.version, deps.version) <= 0)
-    return deps.print(`board ${deps.version} is the newest release`);
-  if (flags.check)
-    return deps.print(`board ${newest.version} is available (this is ${deps.version}); run "board self-update"`);
+  if (compareVersions(newest.version, deps.version) <= 0) {
+    deps.print(`board ${deps.version} is the newest release`);
+    return 'unchanged';
+  }
+  if (flags.check) {
+    deps.print(`board ${newest.version} is available (this is ${deps.version}); run "board self-update"`);
+    return 'unchanged';
+  }
 
-  const dir = mkdtempSync(join(tmpdir(), 'board-update-'));
+  sweepStaleUpdateDirs();
+  const dir = mkdtempSync(join(tmpdir(), UPDATE_DIR_PREFIX));
   try {
     await deps.gh([
       'release',
@@ -160,6 +210,9 @@ export async function selfUpdate(deps: SelfUpdateDeps, flags: SelfUpdateFlags): 
       );
     }
     deps.print(`updated board ${deps.version} -> ${newest.version}`);
+    const restarted = await deps.restartListener();
+    if (restarted !== undefined) deps.print(restarted);
+    return 'updated';
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

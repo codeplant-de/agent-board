@@ -118,6 +118,7 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
     machines: {
       issue: raw.machines.issue,
       revoke: raw.machines.revoke,
+      advertisedCli: raw.machines.advertisedCli,
       list: {
         queryOptions: () =>
           queryOptions({
