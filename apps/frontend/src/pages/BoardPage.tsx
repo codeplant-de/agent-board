@@ -1,4 +1,4 @@
-import { prOf, type Status } from '@agent-board/shared';
+import { statePrOf, type Status } from '@agent-board/shared';
 import { Badge, Button, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
 import { IconGitMerge } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -31,8 +31,9 @@ interface DropTarget {
 const canDrag = (task: ListedTask) => task.status !== 'running';
 const canDrop = (status: Status) => status !== 'running' && status !== 'waiting';
 
-/** The tasks of a column whose PR has been merged: nothing is left for the user to do on them. */
-const hasMergedPr = (task: ListedTask) => task.prState === 'merged' && prOf(task) !== undefined;
+/** A task of the user's whose PR has been merged and that asks nothing: it can go to Done. */
+const hasMergedPr = (task: ListedTask) =>
+  task.prState === 'merged' && statePrOf(task) !== undefined && !task.proposed && !task.openQuestion;
 
 /** The board's cells in order; Waiting sits above Todo in one cell, so a wait never takes a column of its own. */
 const CELLS: Status[][] = [['backlog'], ['waiting', 'todo'], ['running'], ['needs-me'], ['done']];

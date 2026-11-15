@@ -105,15 +105,15 @@ describe('TaskPage pull request link', () => {
     expect(screen.queryByRole('link', { name: /acme/ })).not.toBeInTheDocument();
   });
 
-  it('shows the state of the PR next to its link, only for the PR the state is about', async () => {
+  it('shows the state next to the link of the agent’s reported PR, not the prompt’s', async () => {
     renderPage({
       input: '/review-pr https://github.com/acme/app/pull/1 --auto',
       pr: 'https://github.com/acme/app/pull/2',
       prState: 'merged',
     });
     const [first, second] = await screen.findAllByRole('link', { name: /acme\/app\/pull\/\d+$/ });
-    expect(within(first!).getByLabelText('PR merged')).toBeInTheDocument();
-    expect(within(second!).queryByLabelText('PR merged')).not.toBeInTheDocument();
+    expect(within(first!).queryByLabelText('PR merged')).not.toBeInTheDocument();
+    expect(within(second!).getByLabelText('PR merged')).toBeInTheDocument();
   });
 
   it('shows a closed PR as closed', async () => {

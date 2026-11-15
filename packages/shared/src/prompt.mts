@@ -25,6 +25,11 @@ export function prOf(task: { input: string; pr: string | null }): string | undef
   return prUrlIn(task.input) ?? task.pr ?? undefined;
 }
 
+// The PR whose state a task shows: the one its agent reported, else the one its prompt names.
+export function statePrOf(task: { input: string; pr: string | null }): string | undefined {
+  return task.pr ?? prUrlIn(task.input);
+}
+
 // The first line of a prompt, shortened.
 export function defaultTitle(prompt: string): string {
   const first = prompt.trim().split('\n')[0]?.trim() ?? '';

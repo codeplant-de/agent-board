@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { defaultTitle, isPrUrl, parsePrUrl, prOf, prUrlIn } from '../src/prompt.mts';
+import { defaultTitle, isPrUrl, parsePrUrl, prOf, prUrlIn, statePrOf } from '../src/prompt.mts';
 
 const PR = 'https://github.com/cosuno/cosuno/pull/17741';
 
@@ -30,5 +30,8 @@ test("a PR URL is exactly a GitHub pull request, and the PR shown is the prompt'
   const agents = 'https://github.com/a/b/pull/2';
   assert.equal(prOf({ input: `/review-pr ${PR}`, pr: agents }), PR);
   assert.equal(prOf({ input: 'Fix the bug', pr: agents }), agents);
+  assert.equal(statePrOf({ input: `/review-pr ${PR}`, pr: agents }), agents);
+  assert.equal(statePrOf({ input: `/review-pr ${PR}`, pr: null }), PR);
+  assert.equal(statePrOf({ input: 'Fix the bug', pr: null }), undefined);
   assert.equal(prOf({ input: 'Fix the bug', pr: null }), undefined);
 });
