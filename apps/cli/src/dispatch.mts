@@ -3,7 +3,7 @@
  * then run the checks of waiting tasks that are due.
  * No LLM calls. Add --dry-run to read everything and print every write and process start instead.
  */
-import { buildContext, print } from './cli.mts';
+import { buildContext, print, skipTickWhileServerOlder } from './cli.mts';
 import type { Context } from './cli.mts';
 import type { Task } from '@agent-board/shared';
 import { promptSkill } from '@agent-board/shared';
@@ -284,21 +284,23 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
 
 export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<void> {
   const context = buildContext(dryRun);
-  await runDispatch({
-    ...context,
-    print,
-    system: createSystem({ dryRun, print }),
-    files: createRunFiles(),
-    now: () => new Date(),
-    logTail: readLogTail,
-    waits: createWaitStore(),
-    runCheck: (check) => runCheck(check),
-    notify: async (task, text) => {
-      if (dryRun) return print(`DRY slack ${task.id} ${text}`);
-      await postSlack(
-        context.config.slackWebhookFile,
-        slackText({ title: task.title, url: context.taskLink(task.id) }, text),
-      );
-    },
-  });
+  await skipTickWhileServerOlder(() =>
+    runDispatch({
+      ...context,
+      print,
+      system: createSystem({ dryRun, print }),
+      files: createRunFiles(),
+      now: () => new Date(),
+      logTail: readLogTail,
+      waits: createWaitStore(),
+      runCheck: (check) => runCheck(check),
+      notify: async (task, text) => {
+        if (dryRun) return print(`DRY slack ${task.id} ${text}`);
+        await postSlack(
+          context.config.slackWebhookFile,
+          slackText({ title: task.title, url: context.taskLink(task.id) }, text),
+        );
+      },
+    }),
+  );
 }

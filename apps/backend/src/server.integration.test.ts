@@ -1,4 +1,12 @@
-import { CONTRACT_VERSION, inputBinding, sealFields, sealNote, TAKE_BACK_AFTER_MS } from '@agent-board/shared';
+import {
+  API_VERSION,
+  inputBinding,
+  LEGACY_CONTRACT,
+  MIN_CLIENT,
+  sealFields,
+  sealNote,
+  TAKE_BACK_AFTER_MS,
+} from '@agent-board/shared';
 import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { schedules, tasks } from './db/schema';
@@ -56,10 +64,16 @@ describe('machine API', () => {
     expect((await ctx.call('workstation', 'list-tasks')).status).toBe(200);
   });
 
-  it('answers the contract version it speaks', async () => {
+  it('answers the API range it speaks, and the legacy contract number for older CLIs', async () => {
     const { status, json } = await ctx.call('laptop', 'version');
     expect(status).toBe(200);
-    expect(json.result).toEqual({ contract: CONTRACT_VERSION, owner: 'jascha', keyId: null });
+    expect(json.result).toEqual({
+      contract: LEGACY_CONTRACT,
+      owner: 'jascha',
+      keyId: null,
+      api: { version: API_VERSION, minClient: MIN_CLIENT },
+    });
+    expect(LEGACY_CONTRACT).toBe(9);
   });
 
   it('the UI needs a signed-in user in an allowed group; Remote-* headers do not open the machine API', async () => {

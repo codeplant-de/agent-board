@@ -6,7 +6,16 @@ import { isKeyId } from './keys.mts';
 import type { Answer, Question } from './questions.mts';
 import type { TranscriptBatch, WireTranscriptBatch } from './transcript.mts';
 
-export const CONTRACT_VERSION = 9;
+// What an installed CLI up to 0.7.0 compares exactly. The server reports it as max(LEGACY_CONTRACT, MIN_CLIENT): it stays 9
+// until the first breaking change, which then refuses those CLIs as well. Never change this number.
+export const LEGACY_CONTRACT = 9;
+
+// The API version this build speaks: raised by every change to the wire, additive or not.
+export const API_VERSION = 9;
+// The oldest client API version the server serves: raised only by a breaking change. One line, read by scripts/check-cli-release.sh.
+export const MIN_CLIENT = 9;
+// The oldest server API version this CLI works with.
+export const MIN_SERVER = 9;
 
 export const STATUSES = ['backlog', 'todo', 'running', 'waiting', 'needs-me', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
@@ -629,6 +638,42 @@ function safeId(id: string, what: string): string {
   return id;
 }
 
+/** A list element left out because one of its enum fields holds a value this build does not know. */
+export interface SkippedItem {
+  what: 'task' | 'note' | 'schedule';
+  field: string;
+  /** Bounded, so it is safe to print. */
+  value: string;
+}
+
+export interface ListOptions {
+  /** Called for each element left out; without it an unknown enum value fails the list like any other shape error. */
+  onSkip?: (skipped: SkippedItem) => void;
+}
+
+/** Parses each element, leaving out the ones whose enum field is a string this build does not know, when `onSkip` is given. */
+function skippingUnknown<T>(
+  items: unknown[],
+  { onSkip }: ListOptions,
+  parse: (value: unknown) => T,
+  what: SkippedItem['what'],
+  enums: [field: string, values: readonly string[]][],
+): T[] {
+  const parsed: T[] = [];
+  for (const item of items) {
+    const unknown =
+      onSkip !== undefined && isRecord(item)
+        ? enums.flatMap(([field, values]) => {
+            const value = item[field];
+            return typeof value === 'string' && !values.includes(value) ? [{ field, value }] : [];
+          })[0]
+        : undefined;
+    if (unknown === undefined) parsed.push(parse(item));
+    else onSkip?.({ what, field: unknown.field, value: unknown.value.slice(0, 40) });
+  }
+  return parsed;
+}
+
 // What the server returns is parsed leniently: a sealed field is any string (it may be legacy plain text), and the
 // client decides what it can open.
 
@@ -667,9 +712,14 @@ export function parseWireTask(value: unknown): WireTask {
   };
 }
 
-export function parseWireTasks(value: unknown): WireTask[] {
+export function parseWireTasks(value: unknown, options: ListOptions = {}): WireTask[] {
   if (!Array.isArray(value)) throw new ContractError('expected a JSON array of tasks');
-  return value.map(parseWireTask);
+  return skippingUnknown(value, options, parseWireTask, 'task', [
+    ['status', STATUSES],
+    ['priority', PRIORITIES],
+    ['next', NEXT_RUNS],
+    ['createdBy', TASK_CREATORS],
+  ]);
 }
 
 export function parseWireAddTaskResult(value: unknown): WireAddTaskResult {
@@ -724,9 +774,9 @@ export function parseWireSchedule(value: unknown): WireSchedule {
   };
 }
 
-export function parseWireSchedules(value: unknown): WireSchedule[] {
+export function parseWireSchedules(value: unknown, options: ListOptions = {}): WireSchedule[] {
   if (!Array.isArray(value)) throw new ContractError('expected a JSON array of schedules');
-  return value.map(parseWireSchedule);
+  return skippingUnknown(value, options, parseWireSchedule, 'schedule', [['priority', PRIORITIES]]);
 }
 
 export function parseWireAddScheduleResult(value: unknown): WireAddScheduleResult {
@@ -769,9 +819,12 @@ export function parseWireNote(value: unknown): WireNote {
   return note;
 }
 
-export function parseWireNotes(value: unknown): WireNote[] {
+export function parseWireNotes(value: unknown, options: ListOptions = {}): WireNote[] {
   if (!Array.isArray(value)) throw new ContractError('expected a JSON array of notes');
-  return value.map(parseWireNote);
+  return skippingUnknown(value, options, parseWireNote, 'note', [
+    ['author', WIRE_NOTE_AUTHORS],
+    ['kind', NOTE_KINDS],
+  ]);
 }
 
 // The JSON form of a note, as `read-notes` sends it.
@@ -779,10 +832,26 @@ export function serializeWireNote(note: WireNote): Record<string, unknown> {
   return { ...note, createdAt: note.createdAt.toISOString() };
 }
 
-export function parseVersion(value: unknown): number {
-  const contract = record(value, 'version')['contract'];
-  if (typeof contract !== 'number') throw new ContractError('version.contract must be a number');
-  return contract;
+/** The API range a server answers with: `api` when present, else the legacy `contract` as both ends. */
+export function parseVersion(value: unknown): { version: number; minClient: number } {
+  const obj = record(value, 'version');
+  const api = obj['api'];
+  if (api === undefined) {
+    const contract = obj['contract'];
+    if (typeof contract !== 'number') throw new ContractError('version.contract must be a number');
+    return { version: contract, minClient: contract };
+  }
+  const range = record(api, 'version.api');
+  const apiVersion = range['version'];
+  const minClient = range['minClient'];
+  if (!isWholeNumber(apiVersion) || !isWholeNumber(minClient))
+    throw new ContractError('version.api.version and version.api.minClient must be whole numbers');
+  if (minClient > apiVersion) throw new ContractError('version.api.minClient is above version.api.version');
+  return { version: apiVersion, minClient };
+}
+
+function isWholeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 // The rest of the `version` answer: whose board this is and which data key it expects (null before encryption is set up).

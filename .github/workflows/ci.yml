@@ -101,6 +101,97 @@ jobs:
       - name: Binary smoke test
         run: pnpm --filter @agent-board/cli test:binary
 
+  # A change that raises MIN_CLIENT above the newest release makes that CLI fail against the server, so it must come
+  # with a higher CLI version. The rollout order is the README's "Upgrading" list.
+  cli-release:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      # Full history and the cli-v* tags: the script compares MIN_CLIENT at HEAD with the newest cli-v* tag, and the version with that tag.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check the CLI version against MIN_CLIENT
+        run: scripts/check-cli-release.sh
+
+  # The newest released CLI must keep working against this commit's server, unless MIN_CLIENT is above it (a declared
+  # break). It adds and reads tasks, schedules and notes, runs a real dispatch tick with stubbed systemd-run and claude, and
+  # holds the event stream open.
+  previous-cli:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: board
+          POSTGRES_PASSWORD: board
+          POSTGRES_DB: board_prevcli
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U board -d board_prevcli"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Is a break declared
+        id: declared
+        run: |
+          if scripts/check-cli-release.sh release-behind; then
+            echo "MIN_CLIENT is above the newest release: it is expected to fail, the previous-cli check is skipped"
+            echo "raised=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "raised=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup pnpm
+        if: steps.declared.outputs.raised == 'false'
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.28.9
+
+      - name: Setup Node
+        if: steps.declared.outputs.raised == 'false'
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.declared.outputs.raised == 'false'
+        run: pnpm install --frozen-lockfile
+
+      # The repository is private; the workflow token reads its releases with `contents: read`.
+      - name: Download the newest released CLI
+        if: steps.declared.outputs.raised == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The tag the script compares with: the newest strict cli-v<x.y.z>. Its release must be published, or this fails.
+          tag=$(git tag --list 'cli-v*' | grep -E '^cli-v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          [ -n "$tag" ] || { echo "no cli-v* tag found" >&2; exit 1; }
+          echo "previous CLI: $tag"
+          gh release view "$tag" >/dev/null 2>&1 || { echo "$tag is not published as a release yet" >&2; exit 1; }
+          mkdir "$RUNNER_TEMP/previous-cli"
+          gh release download "$tag" -p board-linux-x64 -D "$RUNNER_TEMP/previous-cli"
+          chmod +x "$RUNNER_TEMP/previous-cli/board-linux-x64"
+
+      - name: Previous CLI smoke test
+        if: steps.declared.outputs.raised == 'false'
+        env:
+          DATABASE_URL: postgresql://board:board@localhost:5432/board_prevcli
+        run: scripts/run-previous-cli-smoke.sh "$RUNNER_TEMP/previous-cli/board-linux-x64"
+
   # Images are built only after the tests pass, so Flux never rolls out a commit that failed them.
   build-and-push:
     needs: test

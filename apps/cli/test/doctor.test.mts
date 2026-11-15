@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { encodeDataKey } from '@agent-board/shared';
-import { DATA_KEY, KEYS, OWNER } from './helpers.mts';
+import { DATA_KEY, KEYS, OWNER, SERVER_API } from './helpers.mts';
 import { BackendError } from '../src/backend.mts';
 import { formatResult, hasFailure, runChecks } from '../src/doctor.mts';
 import type { CheckResult, DoctorDeps } from '../src/doctor.mts';
@@ -30,7 +30,7 @@ function machine(
     whichInUnits: (program) => `/usr/bin/${program}`,
     home: '/home/me',
     systemctl: async () => 0,
-    verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId }),
+    verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId, api: SERVER_API }),
     ...overrides,
   };
 }
@@ -122,15 +122,21 @@ test('the server check tells unreachable, unauthorised and a contract mismatch a
   const unauthorised = await run(new BackendError('version: bad token', 401, true));
   assert.match(unauthorised?.message ?? '', /refused the token/);
   const serverOlder = await run(
-    Object.assign(new BackendError('the board server is older than this CLI: it speaks contract 4, the CLI needs 7'), {
-      contractMismatch: 'server-older' as const,
-    }),
+    Object.assign(
+      new BackendError('the board server is older than this CLI: it speaks API 4, the CLI needs 7 or newer'),
+      {
+        contractMismatch: 'server-older' as const,
+      },
+    ),
   );
   assert.match(serverOlder?.hint ?? '', /update the board server/);
   const cliOlder = await run(
-    Object.assign(new BackendError('this CLI is older than the board server: it speaks contract 7, the server has 8'), {
-      contractMismatch: 'cli-older' as const,
-    }),
+    Object.assign(
+      new BackendError('this CLI is older than the board server: it speaks API 7, the server serves clients from 8'),
+      {
+        contractMismatch: 'cli-older' as const,
+      },
+    ),
   );
   assert.match(cliOlder?.hint ?? '', /update this CLI: "board self-update"/);
   // Words the server wrote must not pick the hint.
@@ -334,13 +340,17 @@ test('the board has a key and this machine holds the same one, or the check fail
   assert.equal(ok.find((result) => result.name === 'board key')?.level, 'ok');
   assert.match(ok.find((result) => result.name === 'board key')?.message ?? '', new RegExp(`id ${KEYS.keyId}`));
 
-  const noKey = await runChecks(machine(GOOD, { verifyServer: async () => ({ owner: OWNER, keyId: null }) }));
+  const noKey = await runChecks(
+    machine(GOOD, { verifyServer: async () => ({ owner: OWNER, keyId: null, api: SERVER_API }) }),
+  );
   const board = noKey.find((result) => result.name === 'board key');
   assert.equal(board?.level, 'fail');
   assert.match(board?.hint ?? '', /set up encryption in the browser first/);
 
   const other = '0123456789abcdef';
-  const different = await runChecks(machine(GOOD, { verifyServer: async () => ({ owner: OWNER, keyId: other }) }));
+  const different = await runChecks(
+    machine(GOOD, { verifyServer: async () => ({ owner: OWNER, keyId: other, api: SERVER_API }) }),
+  );
   const mismatch = different.find((result) => result.name === 'board key');
   assert.equal(mismatch?.level, 'fail');
   assert.match(
@@ -356,7 +366,7 @@ test('a board with no key yet says so even when env has no key either, and the h
   const results = await runChecks(
     machine(
       { ...GOOD, ...envWith(`AGENT_BOARD_TOKEN=${TOKEN}\n`) },
-      { verifyServer: async () => ({ owner: OWNER, keyId: null }) },
+      { verifyServer: async () => ({ owner: OWNER, keyId: null, api: SERVER_API }) },
     ),
   );
   const board = results.find((result) => result.name === 'board key');
@@ -366,7 +376,7 @@ test('a board with no key yet says so even when env has no key either, and the h
   const noToken = await runChecks(machine({ ...GOOD, ...envWith(`AGENT_BOARD_DATA_KEY=${KEY_TEXT}\n`) }));
   assert.match(noToken.find((result) => result.name === 'token')?.hint ?? '', /asks for the token only/);
   const other = await runChecks(
-    machine(GOOD, { verifyServer: async () => ({ owner: OWNER, keyId: '0123456789abcdef' }) }),
+    machine(GOOD, { verifyServer: async () => ({ owner: OWNER, keyId: '0123456789abcdef', api: SERVER_API }) }),
   );
   assert.match(
     other.find((result) => result.name === 'board key')?.hint ?? '',

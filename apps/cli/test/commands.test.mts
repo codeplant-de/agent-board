@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { CONTRACT_VERSION } from '@agent-board/shared';
+import { API_VERSION } from '@agent-board/shared';
 import { BackendError } from '../src/backend.mts';
 import { UsageError } from '../src/cli.mts';
 import type { LinkingContext } from '../src/cli.mts';
@@ -177,10 +177,7 @@ test('help and version print and end normally, help of a command lists flags and
   assert.match(help, /Usage: board schedule/);
   assert.match(help, /--every <duration>/);
   assert.match(help, /Examples:/);
-  assert.equal(
-    await printed(['--version'], { version: '1.2.3-dev' }),
-    `board 1.2.3-dev (contract ${CONTRACT_VERSION})\n`,
-  );
+  assert.equal(await printed(['--version'], { version: '1.2.3-dev' }), `board 1.2.3-dev (api ${API_VERSION})\n`);
 });
 
 test('help text inside a comment is text, not a request for help', async () => {

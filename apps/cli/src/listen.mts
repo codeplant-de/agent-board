@@ -237,12 +237,14 @@ function sleep(ms: number, timers: Timers, signal: AbortSignal): Promise<void> {
   return within(new Promise<never>(() => undefined), ms, timers, signal, 'sleep').catch(() => undefined);
 }
 
-// Runs until `signal` aborts (exit code 0) or the contract does not match (1: systemd restarts it, on new code after an update).
+// Runs until `signal` aborts (exit code 0) or the board no longer serves this CLI (1: systemd restarts it, on new code after an update).
 export async function runListener(deps: ListenerDeps): Promise<number> {
   const { timers, log, signal } = deps;
   const options = { ...LISTENER_OPTIONS, ...deps.options };
   const ticker = createTicker({ run: deps.runTick, timers, log, ...options });
   let attempt = 0;
+  // A board server older than this CLI is a rollout in progress: the listener keeps trying, saying so once per state.
+  let loggedOlder: string | undefined;
   try {
     while (!signal.aborted) {
       let connectedAt: number | undefined;
@@ -269,6 +271,7 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
         if (!response.ok || response.body === null)
           throw new Error(`the board answered the event stream with HTTP ${response.status}`);
         connectedAt = timers.now();
+        loggedOlder = undefined;
         log('connected');
         ticker.now();
         await readEvents(
@@ -281,7 +284,7 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
         log('disconnected: the board closed the stream');
       } catch (error) {
         if (signal.aborted) break;
-        if (error instanceof BackendError && error.contractMismatch !== undefined) {
+        if (error instanceof BackendError && error.contractMismatch === 'cli-older') {
           log(error.message);
           return 1;
         }
@@ -289,11 +292,16 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
           log(error.message);
           return 1;
         }
-        log(
-          error instanceof BackendError && error.status === 401
-            ? 'the board refused the token (401): it was revoked or replaced; run "board init" with a new one'
-            : `disconnected: ${describe(error)}`,
-        );
+        if (error instanceof BackendError && error.contractMismatch === 'server-older') {
+          if (error.message !== loggedOlder) log(error.message);
+          loggedOlder = error.message;
+        } else {
+          log(
+            error instanceof BackendError && error.status === 401
+              ? 'the board refused the token (401): it was revoked or replaced; run "board init" with a new one'
+              : `disconnected: ${describe(error)}`,
+          );
+        }
       } finally {
         signal.removeEventListener('abort', stopConnection);
         connection.abort();
