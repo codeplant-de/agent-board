@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   ContractError,
+  isModelName,
+  MAX_INTERVAL_MS,
   notePreview,
   NOTE_KINDS,
+  parseAckMessages,
   parseBlindIndex,
   parseHeartbeat,
   parseSchedulePatch,
@@ -18,9 +21,12 @@ import {
   parseWireFailResult,
   parseWireNote,
   parseWireNoteInput,
+  parseWirePr,
+  parseWirePrState,
   parseWireSchedule,
   parseWireScheduleDraft,
   parseWireNotes,
+  parseWireRunInbox,
   parseWireSchedules,
   parseWireTask,
   parseWireTaskDraft,
@@ -62,10 +68,13 @@ const task = {
   input: INPUT,
   status: 'todo',
   priority: 'normal',
+  model: null,
   closed: false,
   machine: null,
   sessionId: null,
   workdir: null,
+  pr: null,
+  prState: null,
   next: 'fresh',
   head: null,
   openQuestion: false,
@@ -109,6 +118,25 @@ test('a task needs every field', () => {
   assert.throws(() => parseWireTask({ ...task, machine: 'bad name' }), /not a safe name/);
 });
 
+test('a task has a sealed PR or none, and a server that does not know the field leaves it out', async () => {
+  const PR = await sealed('pr');
+  assert.equal(parseWireTask({ ...task, pr: PR }).pr, PR);
+  const { pr: _pr, ...older } = task;
+  assert.equal(parseWireTask(older).pr, null);
+  assert.throws(() => parseWireTask({ ...task, pr: 5 }), /pr must be a string/);
+  assert.deepEqual(parseWirePr({ pr: PR }), { pr: PR });
+  assert.throws(() => parseWirePr({ pr: 'https://github.com/o/r/pull/1' }), /pr.pr must be encrypted/);
+  assert.throws(() => parseWirePr({ pr: PR, extra: 1 }), /unknown key "extra"/);
+  assert.throws(() => parseWirePr({}), /pr/);
+  assert.equal(parseWireTask(task).prState, null);
+  assert.equal(parseWireTask({ ...task, prState: 'merged' }).prState, 'merged');
+  assert.equal(parseWireTask({ ...task, prState: 'draft' }).prState, null);
+  assert.deepEqual(parseWirePrState({ prState: 'closed' }), { prState: 'closed' });
+  assert.throws(() => parseWirePrState({ prState: null }), /prState.prState must be one of/);
+  assert.throws(() => parseWirePrState({ prState: 'open', extra: 1 }), /unknown key "extra"/);
+  assert.equal(SEALED_LIMITS.pr, 1024);
+});
+
 test('a running task carries its lane, liveness and start', () => {
   const running = parseWireTask({
     ...task,
@@ -133,6 +161,13 @@ test('a draft takes the dedupe key, parent and creator; unknown keys fail', () =
     { id: ID, title: TITLE, input: INPUT, status: 'todo', dedupeKey: KEY, parentId: 'abc', createdBy: 'agent' },
   );
   assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, status: 'backlog' }).status, 'backlog');
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, status: 'needs-me' }).status, 'needs-me');
+  for (const status of ['running', 'waiting', 'done']) {
+    assert.throws(
+      () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, status }),
+      /draft.status must be one of/,
+    );
+  }
   assert.deepEqual(parseWireTaskPatch({ status: 'backlog' }), { status: 'backlog' });
   assert.throws(() => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, rank: 1 }), ContractError);
   assert.throws(() => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, labels: [] }), /unknown key "labels"/);
@@ -288,6 +323,7 @@ const schedule = {
   title: TITLE,
   input: INPUT,
   priority: 'normal',
+  model: null,
   machine: null,
   workdir: null,
   everyMs: 7_200_000,
@@ -392,6 +428,11 @@ test('a schedule draft needs sealed title and input and one rule', () => {
   );
   assert.throws(() => parseWireScheduleDraft({ ...draft, timezone: 'UTC' }), /only goes with cron/);
   assert.throws(() => parseWireScheduleDraft({ ...draft, times: 0 }), /positive integer/);
+  assert.equal(parseWireScheduleDraft({ ...draft, times: 2 ** 31 - 1 }).times, 2 ** 31 - 1);
+  assert.throws(() => parseWireScheduleDraft({ ...draft, times: 2 ** 31 }), /times must be at most 2147483647/);
+  assert.equal(parseWireScheduleDraft({ ...draft, everyMs: MAX_INTERVAL_MS }).everyMs, MAX_INTERVAL_MS);
+  assert.throws(() => parseWireScheduleDraft({ ...draft, everyMs: MAX_INTERVAL_MS + 1 }), /everyMs must be at most/);
+  assert.throws(() => parseWireScheduleDraft({ ...draft, everyMs: 7e15 }), /everyMs must be at most/);
   assert.throws(
     () => parseWireScheduleDraft({ ...draft, times: 2, until: '2027-01-01T00:00:00Z' }),
     /exclude each other/,
@@ -722,4 +763,121 @@ test('versions compare numerically, and a suffix counts as its base', () => {
   assert.equal(compareVersions('0.7.0-dev', '0.7.0'), 0);
   assert.equal(compareVersions('1.2.3-rc.1', '1.2.3'), 0);
   assert.equal(compareVersions('0.6.0-dev', '0.7.0'), -1);
+});
+
+test('a model is a name of a safe shape, and a server that sends none means the default', () => {
+  const { model: _model, ...legacyTask } = task;
+  assert.equal(parseWireTask(legacyTask).model, null);
+  const { model: _scheduleModel, ...legacySchedule } = schedule;
+  assert.equal(parseWireSchedule(legacySchedule).model, null);
+  assert.equal(parseWireTask({ ...task, model: 'claude-sonnet-5-5[1m]' }).model, 'claude-sonnet-5-5[1m]');
+  assert.equal(parseWireSchedule({ ...schedule, model: 'opus' }).model, 'opus');
+  for (const bad of ['--model', 'a b', '', 'x'.repeat(65), 'opus\n', 5])
+    assert.throws(() => parseWireTask({ ...task, model: bad }), /task.model is not a model name/, String(bad));
+  assert.throws(() => parseWireSchedule({ ...schedule, model: '-x' }), /schedule.model is not a model name/);
+});
+
+test('isModelName accepts aliases and full ids only', () => {
+  for (const good of ['fable', 'opus', 'opusplan', 'claude-opus-5-5', 'claude-sonnet-5-5[1m]', 'a.b_c-d'])
+    assert.ok(isModelName(good), good);
+  for (const bad of ['', '-opus', '[1m]', 'op us', 'opus;rm', '$(x)', 'o'.repeat(65)])
+    assert.ok(!isModelName(bad), bad);
+});
+
+test('a draft carries a model that is checked, in add-task and add-schedule', () => {
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, model: 'haiku' }).model, 'haiku');
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT }).model, undefined);
+  assert.throws(
+    () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, model: '--x' }),
+    /draft.model is not a model name/,
+  );
+  assert.throws(
+    () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, model: null }),
+    /draft.model is not a model name/,
+  );
+  const rule = { id: ID, title: TITLE, input: INPUT, everyMs: 60_000 };
+  assert.equal(parseWireScheduleDraft({ ...rule, model: 'opus' }).model, 'opus');
+  assert.throws(() => parseWireScheduleDraft({ ...rule, model: 'a b' }), /schedule draft.model is not a model name/);
+});
+
+const SEALED_TEXT = `abe1.${'A'.repeat(40)}`;
+
+test('a note carries pending and deliveredAt when the server has them, and the parser keeps them apart', () => {
+  const wire = {
+    id: 'n1',
+    body: SEALED_TEXT,
+    preview: null,
+    createdAt: '2026-11-13T10:00:00.000Z',
+    author: 'user',
+    kind: 'comment',
+  };
+  const plain = parseWireNote(wire);
+  assert.equal(plain.pending, undefined);
+  assert.equal(plain.deliveredAt, undefined);
+  const pending = parseWireNote({ ...wire, pending: true });
+  assert.equal(pending.pending, true);
+  const delivered = parseWireNote({ ...wire, pending: false, deliveredAt: '2026-11-13T10:05:00.000Z' });
+  assert.deepEqual([delivered.pending, delivered.deliveredAt], [false, new Date('2026-11-13T10:05:00.000Z')]);
+  assert.throws(() => parseWireNote({ ...wire, pending: 'yes' }), ContractError);
+  assert.throws(() => parseWireNote({ ...wire, deliveredAt: 'yesterday' }), ContractError);
+  assert.deepEqual(parseWireNote(serializeWireNote(delivered)), delivered);
+});
+
+test('a task shows stopRequested only when the server sends it', () => {
+  const wire = {
+    id: 't1',
+    title: SEALED_TEXT,
+    input: SEALED_TEXT,
+    status: 'running',
+    priority: 'normal',
+    closed: false,
+    machine: 'laptop',
+    sessionId: null,
+    workdir: null,
+    next: 'fresh',
+    head: null,
+    openQuestion: false,
+    createdBy: 'user',
+    lane: null,
+    borrowed: false,
+    lastActiveAt: null,
+    runStartedAt: null,
+    paused: false,
+    notBefore: null,
+    scheduleId: null,
+    wakeAt: null,
+    waitCheck: false,
+    woken: false,
+  };
+  assert.equal('stopRequested' in parseWireTask(wire), false);
+  assert.equal(parseWireTask({ ...wire, stopRequested: true }).stopRequested, true);
+  assert.throws(() => parseWireTask({ ...wire, stopRequested: 1 }), ContractError);
+});
+
+test('the run inbox answer and the acknowledgement are checked', () => {
+  const note = {
+    id: 'n1',
+    body: SEALED_TEXT,
+    preview: null,
+    createdAt: '2026-11-13T10:00:00.000Z',
+    author: 'user',
+    kind: 'comment',
+    pending: true,
+  };
+  assert.deepEqual(
+    parseWireRunInbox({ stop: true, messages: [note] }).messages.map((m) => m.id),
+    ['n1'],
+  );
+  assert.equal(parseWireRunInbox({ stop: true, stopMessage: 'n1', messages: [note] }).stopMessage, 'n1');
+  assert.equal('stopMessage' in parseWireRunInbox({ stop: true, messages: [] }), false);
+  assert.throws(() => parseWireRunInbox({ stop: true, stopMessage: 'no id!', messages: [] }), ContractError);
+  assert.equal(parseWireNote({ ...note, queued: true }).queued, true);
+  assert.throws(() => parseWireNote({ ...note, queued: 1 }), ContractError);
+  assert.throws(() => parseWireRunInbox({ stop: 'yes', messages: [] }), ContractError);
+  assert.throws(() => parseWireRunInbox({ stop: false }), ContractError);
+  assert.deepEqual(parseAckMessages({ ids: ['n1'], stop: true }), { ids: ['n1'], stop: true });
+  assert.deepEqual(parseAckMessages({ ids: [] }), { ids: [] });
+  assert.throws(() => parseAckMessages({ ids: ['not an id!'] }), ContractError);
+  assert.throws(() => parseAckMessages({ ids: Array.from({ length: 101 }, (_, i) => `n${i}`) }), ContractError);
+  assert.throws(() => parseAckMessages({ ids: [], extra: 1 }), ContractError);
 });

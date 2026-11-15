@@ -1,4 +1,4 @@
-import { prUrlIn, type UnreadableField } from '@agent-board/shared';
+import { prOf, statePrOf, type UnreadableField } from '@agent-board/shared';
 import {
   Alert,
   Anchor,
@@ -15,17 +15,19 @@ import {
   Text,
   Title,
 } from '@mantine/core';
-import { IconBrandGithub, IconCornerDownRight, IconLockOff, IconTerminal2 } from '@tabler/icons-react';
+import { IconCornerDownRight, IconLockOff, IconTerminal2 } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ActionPanel } from '../components/ActionPanel';
 import { Markdown } from '../components/Markdown';
 import { PriorityPicker } from '../components/PriorityPicker';
+import { PrStateIcon } from '../components/PrStateIcon';
 import { PolishItem } from '../components/PolishItem';
 import { TaskBadges } from '../components/TaskBadges';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
+import { modelLabel } from '../lib/model';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago, stamp } from '../lib/time';
 import { errorMessage, POLL_MS, useTRPC } from '../lib/trpc';
@@ -71,7 +73,8 @@ function TaskView({ id }: { id: string }) {
   }
 
   const { task, thread, followUps, parent } = query.data;
-  const pr = prUrlIn(task.input);
+  // The prompt's PR first; the agent's reported one too when it is another PR. The state belongs to `statePrOf`.
+  const prs = [...new Set([prOf(task), task.pr].filter((url): url is string => url != null))];
 
   return (
     <Container size="md" px={0}>
@@ -98,6 +101,11 @@ function TaskView({ id }: { id: string }) {
               value={task.priority}
               onChange={(priority) => setPriority.mutate({ id: task.id, priority })}
             />
+            {task.model !== null && (
+              <Badge variant="default" tt="none" size="sm" title="The Claude model its runs use">
+                Model: {modelLabel(task.model)}
+              </Badge>
+            )}
             <TaskBadges task={task} withPriority={false} />
             <Text size="xs" c="dimmed" title={stamp(task.createdAt)}>
               created by {task.createdBy} {ago(task.createdAt)}
@@ -124,19 +132,22 @@ function TaskView({ id }: { id: string }) {
               Transcript
             </Button>
           </Group>
-          {pr && (
-            <Group>
-              <Button
-                component="a"
-                href={pr}
-                target="_blank"
-                rel="noopener noreferrer"
-                variant="default"
-                size="xs"
-                leftSection={<IconBrandGithub size={14} />}
-              >
-                {pr.replace('https://github.com/', '')}
-              </Button>
+          {prs.length > 0 && (
+            <Group gap="xs">
+              {prs.map((pr) => (
+                <Button
+                  key={pr}
+                  component="a"
+                  href={pr}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  variant="default"
+                  size="xs"
+                  leftSection={<PrStateIcon state={pr === statePrOf(task) ? task.prState : null} size={14} />}
+                >
+                  {pr.replace('https://github.com/', '')}
+                </Button>
+              ))}
             </Group>
           )}
         </Stack>

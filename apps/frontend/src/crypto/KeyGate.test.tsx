@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { KeyGate } from './KeyGate';
 import { createKeySetup } from './keySlots';
-import { createMemoryKeyStore } from './keyStore';
+import { createMemoryKeyStore } from '../test/memoryKeyStore';
 import { useKeys, useLock } from './KeyContext';
 import type { Keys } from '@agent-board/shared';
 

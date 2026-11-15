@@ -1,4 +1,4 @@
-import { PRIORITIES, type Priority } from '@agent-board/shared';
+import { MODEL_ALIASES, PRIORITIES, type Priority } from '@agent-board/shared';
 import {
   Button,
   Code,
@@ -20,6 +20,11 @@ import { errorMessage, useTRPC } from '../lib/trpc';
 import { useNow } from '../lib/useNow';
 import { MarkdownEditor } from './MarkdownEditor';
 
+const DEFAULT_MODEL = 'default';
+const MODEL_OPTIONS = [
+  { value: DEFAULT_MODEL, label: 'Default' },
+  ...MODEL_ALIASES.map(({ value, label }) => ({ value, label })),
+];
 const WHEN_LABEL = { now: 'Now', later: 'Later', repeat: 'Repeating', backlog: 'Backlog', hold: 'Needs me' } as const;
 type When = keyof typeof WHEN_LABEL;
 
@@ -43,6 +48,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const [rule, setRule] = useState('');
   const [times, setTimes] = useState<number | string>('');
   const [priority, setPriority] = useState<Priority>('normal');
+  const [model, setModel] = useState(DEFAULT_MODEL);
   const create = useMutation(trpc.tasks.create.mutationOptions());
 
   const now = useNow(30_000);
@@ -69,13 +75,14 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
     const payload = when === 'later' ? { at: start } : when === 'repeat' ? repeating : when;
     if (payload === undefined) return;
     create.mutate(
-      { title, input, when: payload, priority },
+      { title, input, when: payload, priority, ...(model === DEFAULT_MODEL ? {} : { model }) },
       {
         onSuccess: (task) => {
           onCreated?.();
           setTitle('');
           setInput('');
           setPriority('normal');
+          setModel(DEFAULT_MODEL);
           setAt('');
           setRule('');
           setTimes('');
@@ -119,6 +126,14 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
             data={PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABEL[p] }))}
           />
         </div>
+        <Select
+          label="Model"
+          allowDeselect={false}
+          value={model}
+          onChange={(value) => value && setModel(value)}
+          data={MODEL_OPTIONS}
+          description="Default is the model claude picks on the machine that runs it"
+        />
         <div>
           <Text size="sm" fw={500} mb={4}>
             When

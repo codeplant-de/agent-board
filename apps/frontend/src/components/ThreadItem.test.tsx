@@ -55,4 +55,21 @@ describe('ThreadItem', () => {
       expect(screen.getByText(UNREADABLE_TEXT)).toBeInTheDocument();
     },
   );
+
+  it('marks a message the running agent has not received yet', () => {
+    renderNote(note({ author: 'user', text: 'try again', pending: true }));
+    expect(screen.getByText('Waiting for the agent')).toBeInTheDocument();
+    expect(screen.queryByText(/Delivered/)).not.toBeInTheDocument();
+  });
+
+  it('marks a message that was delivered', () => {
+    renderNote(note({ author: 'user', text: 'try again', deliveredAt: new Date().toISOString() }));
+    expect(screen.getByText(/Delivered/)).toBeInTheDocument();
+    expect(screen.queryByText('Waiting for the agent')).not.toBeInTheDocument();
+  });
+
+  it('shows no delivery state on an ordinary note', () => {
+    renderNote(note({ author: 'user', text: 'plain' }));
+    expect(screen.queryByText(/Delivered|Waiting for the agent/)).not.toBeInTheDocument();
+  });
 });

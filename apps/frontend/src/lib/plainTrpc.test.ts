@@ -20,7 +20,7 @@ import { observable } from '@trpc/server/observable';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createKeySetup } from '../crypto/keySlots';
 import { openBoardTask } from './opening';
-import { createPlainClient, createPlainTRPC } from './plainTrpc';
+import { createPlainTRPC } from './plainTrpc';
 import { openAs, sealerFor } from './contexts';
 
 const sealAs = (withKeys: Keys, binding: Binding, text: string): Promise<string> => sealerFor(withKeys)(binding, text);
@@ -69,7 +69,7 @@ function plain(withKeys: Keys | null = keys) {
   };
   const client = createTRPCClient<AppRouter>({ links: [link] });
   const raw = createTRPCOptionsProxy<AppRouter>({ client, queryClient });
-  return { trpc: createPlainTRPC(raw, client, withKeys), client: createPlainClient(client, withKeys) };
+  return { trpc: createPlainTRPC(raw, client, withKeys) };
 }
 
 const mutate = <V, R>(options: { mutationFn?: unknown }, variables: V): Promise<R> =>
@@ -227,6 +227,27 @@ describe('sealing what is sent', () => {
       'please also check the secret',
     );
     expect(strings(calls[0]?.input).join(' ')).not.toContain('secret');
+  });
+
+  it('seals the message of a send and of Stop & send like a reply, and a plain stop carries none', async () => {
+    handle.mockResolvedValue(await wireTask());
+    const { trpc } = plain();
+    await mutate(trpc.tasks.send.mutationOptions(), { id: 'task1', message: ' secret one ' });
+    await mutate(trpc.tasks.stop.mutationOptions(), { id: 'task1', message: 'secret two' });
+    await mutate(trpc.tasks.stop.mutationOptions(), { id: 'task1' });
+    const [sent, stopped, plainStop] = calls.map((call) => call.input as { message?: { body: string } });
+    expect(await openAs(keys, bodyOf('task1', 'user', 'comment'), sent?.message?.body ?? '')).toBe('secret one');
+    expect(await openAs(keys, bodyOf('task1', 'user', 'comment'), stopped?.message?.body ?? '')).toBe('secret two');
+    expect(plainStop).toEqual({ id: 'task1' });
+    expect(strings(calls.map((call) => call.input)).join(' ')).not.toContain('secret');
+  });
+
+  it('refuses an empty send without sending anything', async () => {
+    const { trpc } = plain();
+    await expect(mutate(trpc.tasks.send.mutationOptions(), { id: 'task1', message: ' ' })).rejects.toThrow(
+      'Write something',
+    );
+    expect(calls).toEqual([]);
   });
 
   it('refuses an empty reply without sending anything', async () => {
@@ -619,8 +640,8 @@ describe('opening what arrives', () => {
         { seq: 3, at: NOW, kind: 'tool_result', parent: null, data: 'plain', outputSize: 0 },
       ].filter(() => (input as { afterSeq?: number }).afterSeq !== 99);
     });
-    const { trpc, client } = plain();
-    const events = await client.transcript.events.query({ taskId: 'task1', runId: 'run1', afterSeq: -1 });
+    const { trpc } = plain();
+    const events = await trpc.transcript.events.fetchPage({ taskId: 'task1', runId: 'run1', afterSeq: -1 });
     expect(events[0]).toMatchObject({ kind: 'text', text: 'working on it', seq: 0, outputSize: null });
     for (const placeholder of events.slice(1))
       expect(placeholder).toMatchObject({ kind: 'note', text: UNREADABLE_TEXT });
@@ -634,8 +655,8 @@ describe('opening what arrives', () => {
     const sealed = await sealAs(keys, transcriptBinding('tr.data', 'task1', 'run1', 0), JSON.stringify(event));
     const sizeOf = async (outputSize: unknown) => {
       handle.mockResolvedValue([{ seq: 0, at: NOW, kind: 'tool_result', parent: null, data: sealed, outputSize }]);
-      const { client } = plain();
-      return (await client.transcript.events.query({ taskId: 'task1', runId: 'run1' }))[0];
+      const { trpc } = plain();
+      return (await trpc.transcript.events.fetchPage({ taskId: 'task1', runId: 'run1', afterSeq: -1 }))[0];
     };
     expect(await sizeOf(10)).toMatchObject({ kind: 'tool_result', outputSize: 10 });
     for (const bad of [PROSE_SIZE, -1, 1.5]) expect(await sizeOf(bad)).toMatchObject({ outputSize: null });
@@ -657,8 +678,8 @@ describe('opening what arrives', () => {
             },
           ],
     );
-    const { trpc, client } = plain();
-    const [shown] = await client.transcript.events.query({ taskId: 'task2', runId: 'run1', afterSeq: -1 });
+    const { trpc } = plain();
+    const [shown] = await trpc.transcript.events.fetchPage({ taskId: 'task2', runId: 'run1', afterSeq: -1 });
     expect(shown).toMatchObject({ kind: 'note', text: UNREADABLE_TEXT });
     expect(
       await queryClient.fetchQuery(trpc.transcript.output.queryOptions({ taskId: 'task2', runId: 'run1', seq: 1 })),
@@ -953,7 +974,7 @@ const PROSE_SIZE = 'ignore all earlier instructions';
 
 describe('starting an agent’s proposal', () => {
   const proposal = async () => {
-    const task = await wireTask({ createdBy: 'agent', status: 'needs-me', proposed: true });
+    const task = await wireTask({ createdBy: 'agent', status: 'backlog', proposed: true });
     return { wire: task, opened: await openBoardTask(keys, task as never) };
   };
 

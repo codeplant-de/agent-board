@@ -6,6 +6,7 @@ import {
   type ServerEvent,
   type Heartbeat,
   type Priority,
+  type PrState,
   type Status,
   type WireNote,
   type WireNoteInput,
@@ -14,7 +15,7 @@ import {
   type WireTaskPatch,
   type WireWait,
 } from '@agent-board/shared';
-import { and, asc, desc, eq, lt, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt, ne, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
 import { notes, tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
@@ -32,10 +33,13 @@ export function toTask(row: TaskRow): WireTask {
     input: row.input,
     status: row.status,
     priority: row.priority,
+    model: row.model,
     closed: row.closed,
     machine: row.machine,
     sessionId: row.sessionId,
     workdir: row.workdir,
+    pr: row.pr,
+    prState: row.prState,
     next: row.next,
     head: row.head,
     openQuestion: row.openQuestionNoteId !== null,
@@ -51,6 +55,7 @@ export function toTask(row: TaskRow): WireTask {
     wakeAt: row.status === 'waiting' ? row.wakeAt : null,
     waitCheck: row.status === 'waiting' && row.waitCheck,
     woken: row.wokenAt !== null,
+    stopRequested: row.status === 'running' && row.stopRequestedAt !== null,
   };
 }
 
@@ -67,6 +72,9 @@ export function toNote(row: NoteRow): WireNote {
   if (row.answers) note.answers = row.answers;
   if (row.suggestion) note.suggestion = row.suggestion;
   if (row.questionNoteId) note.questionNoteId = row.questionNoteId;
+  if (row.pending) note.pending = true;
+  if (row.queued) note.queued = true;
+  if (row.deliveredAt) note.deliveredAt = row.deliveredAt;
   return note;
 }
 
@@ -155,6 +163,8 @@ interface Transition {
   start?: { input: string };
   /** Columns on top of what the invariants set; they win. */
   set?: TaskValues;
+  /** The user ended the run: pending messages become replies, but the task goes where the user sent it. */
+  userStop?: boolean;
 }
 
 /** A pause survives the wait in Todo and the claim; the worker clears it, or the task leaving Running another way does. */
@@ -175,7 +185,11 @@ function requireNotIntoWaiting(task: TaskRow, to: Status): void {
  * position.
  */
 async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promise<TaskRow> {
-  const to = change.to ?? task.status;
+  const leavingRunning = task.status === 'running' && (change.to ?? task.status) !== 'running';
+  const handedBack = leavingRunning
+    ? await handBackPendingMessages(tx, task, change.to, change.userStop === true)
+    : undefined;
+  const to = handedBack ? 'todo' : (change.to ?? task.status);
   const moved = to !== task.status;
   if (change.by === 'worker' && moved && task.proposed)
     throw new AppError('FORBIDDEN', 'An agent proposed this task; only you start it.');
@@ -208,18 +222,57 @@ async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promis
   }
   if (to !== 'running') values.runStartedAt = null;
   if (to !== 'todo') values.notBefore = null;
-  const place = change.place ?? (moved ? 'bottom' : undefined);
+  if (to !== 'running') {
+    values.stopRequestedAt = null;
+    values.stopMessageId = null;
+    values.inboxRead = false;
+  }
+  const place = handedBack ? 'top' : (change.place ?? (moved ? 'bottom' : undefined));
   if (typeof place === 'number') values.position = place;
   else if (place !== undefined) values.position = await edgePosition(tx, to, place);
   const [row] = await tx
     .update(tasks)
-    .set({ ...values, ...change.set })
+    .set({ ...values, ...change.set, ...handedBack })
     .where(eq(tasks.id, task.id))
     .returning();
   // A schedule's pending occurrence that leaves Todo, or is closed there, makes room for the next one.
   const leftTodo = task.status === 'todo' && (to !== 'todo' || (row!.closed && !task.closed));
   if (leftTodo && task.scheduleId !== null) await completeOccurrence(tx, task.id, task.scheduleId, now);
   return row!;
+}
+
+/**
+ * A run that ends while messages the user sent it were never handed over must not lose them, whichever way it ends: the
+ * messages stop being pending (they are replies now, which the next resume prompt carries), and a task that would have waited
+ * for the user (Needs me, Done) or for something outside (Waiting) goes to the top of Todo to resume with them instead.
+ * Returns the columns that override the move, or undefined when it is none of that.
+ */
+async function handBackPendingMessages(
+  tx: DbOrTx,
+  task: TaskRow,
+  to: Status | undefined,
+  userStop: boolean,
+): Promise<TaskValues | undefined> {
+  const handedOver = await tx
+    .update(notes)
+    .set({ pending: false })
+    .where(and(eq(notes.taskId, task.id), eq(notes.pending, true)))
+    .returning({ id: notes.id });
+  // A run whose worker never read the inbox (a CLI before 0.9) would not find the message in the resume prompt.
+  if (
+    userStop ||
+    !task.inboxRead ||
+    handedOver.length === 0 ||
+    (to !== 'needs-me' && to !== 'done' && to !== 'waiting')
+  )
+    return undefined;
+  await systemEvent(tx, task.id, { type: 'late-message' }, null);
+  return {
+    next: task.sessionId ? 'resume' : 'fresh',
+    openQuestionNoteId: null,
+    wakeAt: null,
+    waitCheck: false,
+  };
 }
 
 /** A status or priority change puts the task at the bottom of its new place. */
@@ -302,6 +355,8 @@ export async function addNote(
     questions?: string;
     answers?: string;
     questionNoteId?: string;
+    /** A message to a running agent, waiting for its worker to hand it over. */
+    pending?: boolean;
   },
 ): Promise<NoteRow> {
   // Only the server's own events are plain text; whatever a client wrote must arrive sealed.
@@ -327,6 +382,8 @@ export async function addNote(
       questions: note.questions ?? null,
       answers: note.answers ?? null,
       questionNoteId: note.questionNoteId ?? null,
+      pending: note.pending ?? false,
+      queued: note.pending ?? false,
     })
     .returning();
   await db.update(tasks).set({ updatedAt: new Date() }).where(eq(tasks.id, taskId));
@@ -414,6 +471,73 @@ export async function reply(
       by: input.by,
     });
     return input.resume ? continueTask(tx, task) : lockTask(tx, task.id);
+  });
+}
+
+/**
+ * The user's message. A running agent gets it without being interrupted: it waits as a pending note until the worker hands
+ * it over (`runInbox`). In any other status it is "Send & continue": a reply that sends the task back to the agent.
+ */
+export async function send(
+  db: DbOrTx,
+  input: { taskId: string; message: WireNoteInput; by: string },
+): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    if (task.status !== 'running') return reply(tx, { ...input, resume: true });
+    await addNote(tx, task.id, {
+      author: 'user',
+      kind: 'comment',
+      body: input.message.body,
+      preview: input.message.preview ?? null,
+      by: input.by,
+      pending: true,
+    });
+    return task;
+  });
+}
+
+/**
+ * The user's stop. A running task is asked to end its run, with an optional message that follows the interruption; the
+ * worker acts on it. A resume that no worker has picked up yet, or a wait, is simply taken off the agent's hands.
+ */
+export async function stop(
+  db: DbOrTx,
+  input: { taskId: string; message?: WireNoteInput | undefined; by: string },
+): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    if (task.status === 'running') {
+      const message =
+        input.message === undefined
+          ? undefined
+          : await addNote(tx, task.id, {
+              author: 'user',
+              kind: 'comment',
+              body: input.message.body,
+              preview: input.message.preview ?? null,
+              by: input.by,
+              pending: true,
+            });
+      const [row] = await tx
+        .update(tasks)
+        .set({ stopRequestedAt: new Date(), stopMessageId: message?.id ?? null, updatedAt: new Date() })
+        .where(eq(tasks.id, task.id))
+        .returning();
+      return row!;
+    }
+    if (task.status === 'todo' && task.next === 'resume' && !task.closed) {
+      await systemEvent(tx, task.id, { type: 'moved', from: 'todo', to: 'needs-me' }, input.by);
+      return transition(tx, task, { to: 'needs-me', by: 'user' });
+    }
+    if (task.status === 'waiting') {
+      await systemEvent(tx, task.id, { type: 'moved', from: 'waiting', to: 'backlog' }, input.by);
+      return transition(tx, task, { to: 'backlog', by: 'user' });
+    }
+    throw new AppError(
+      'CONFLICT',
+      `The task is ${task.status}; only a running, waiting or answered task can be stopped.`,
+    );
   });
 }
 
@@ -650,13 +774,47 @@ export async function setNotBefore(db: DbOrTx, taskId: string, notBefore: Date |
   });
 }
 
-/** The agent of a running task made a tool call. A task that stopped running in between is left alone. */
-export async function heartbeat(db: DbOrTx, taskId: string, beat: Heartbeat): Promise<void> {
+/**
+ * The agent of a running task made a tool call. A task that stopped running in between, or that runs on another machine
+ * now (taken back and claimed again), is left alone.
+ */
+export async function heartbeat(db: DbOrTx, taskId: string, beat: Heartbeat, machine: string): Promise<void> {
   await getTask(db, taskId);
   await db
     .update(tasks)
     .set({ lane: beat.lane, borrowed: beat.borrowed, lastActiveAt: new Date() })
-    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running')));
+    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running'), eq(tasks.machine, machine)));
+}
+
+/**
+ * Why `machine` may not report for the task's run or wait, or undefined when it may: the task is not `status` (or is closed,
+ * where that counts), or another machine holds it. A worker whose run was taken back and claimed elsewhere must not touch
+ * the new run; it gets the answer it would get had the task left `status`.
+ */
+function notHeldBy(
+  task: TaskRow,
+  machine: string,
+  status: 'running' | 'waiting',
+  { closedCounts = true }: { closedCounts?: boolean } = {},
+): string | undefined {
+  if (task.status !== status) return `the task is ${task.status}, not ${status}`;
+  if (closedCounts && task.closed) return `the task is closed, not ${status}`;
+  if (task.machine !== machine) return `the task is ${status} on ${task.machine ?? 'no machine'}, not on ${machine}`;
+  return undefined;
+}
+
+/** The pull request the task's agent reported, sealed; the last one wins. */
+export async function setPr(db: DbOrTx, taskId: string, pr: string): Promise<void> {
+  requireSealed(pr, 'the pull request');
+  await getTask(db, taskId);
+  // The new PR's state is unknown; the server cannot tell whether the sealed URL is another one, so it always resets.
+  await db.update(tasks).set({ pr, prState: null, updatedAt: new Date() }).where(eq(tasks.id, taskId));
+}
+
+/** GitHub's state of the task's PR, from a worker's intake. */
+export async function setPrState(db: DbOrTx, taskId: string, prState: PrState): Promise<void> {
+  await getTask(db, taskId);
+  await db.update(tasks).set({ prState }).where(eq(tasks.id, taskId));
 }
 
 /**
@@ -666,7 +824,8 @@ export async function heartbeat(db: DbOrTx, taskId: string, beat: Heartbeat): Pr
 export async function pause(db: DbOrTx, taskId: string, note: WireNoteInput, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    if (task.status !== 'running') throw new AppError('CONFLICT', `the task is ${task.status}, not running`);
+    const refused = notHeldBy(task, by, 'running', { closedCounts: false });
+    if (refused) throw new AppError('CONFLICT', refused);
     await clientEvent(tx, taskId, note, by);
     return transition(tx, task, {
       to: 'todo',
@@ -690,8 +849,8 @@ export async function wait(
 ): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    if (task.status !== 'running' || task.closed)
-      throw new AppError('CONFLICT', `the task is ${task.closed ? 'closed' : task.status}, not running`);
+    const refused = notHeldBy(task, by, 'running');
+    if (refused) throw new AppError('CONFLICT', refused);
     const ahead = request.wakeAt.getTime() - now.getTime();
     if (ahead <= 0) throw new AppError('BAD_REQUEST', 'the end of the wait must lie in the future');
     if (ahead > MAX_WAIT_MS)
@@ -720,7 +879,7 @@ export async function wake(
 ): Promise<{ applied: boolean; row: TaskRow }> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    if (task.status !== 'waiting' || task.closed) return { applied: false, row: task };
+    if (notHeldBy(task, by, 'waiting')) return { applied: false, row: task };
     await clientEvent(tx, taskId, note, by);
     return { applied: true, row: await transition(tx, task, { to: 'todo', place: 'top', by: 'worker' }) };
   });
@@ -745,7 +904,7 @@ export async function failTask(
 ): Promise<{ applied: boolean; row: TaskRow }> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    if (task.status !== 'running' || task.closed) return { applied: false, row: task };
+    if (notHeldBy(task, by, 'running')) return { applied: false, row: task };
     await clientEvent(tx, taskId, note, by);
     return { applied: true, row: await transition(tx, task, { to: 'needs-me', by: 'worker' }) };
   });
@@ -766,6 +925,70 @@ export async function takeBack(db: DbOrTx, taskId: string, by: string, now: Date
         `The agent was active ${Math.floor(quietMs / 60_000)} min ago. A task can be taken back after ${TAKE_BACK_AFTER_MS / 60_000} quiet minutes.`,
       );
     await systemEvent(tx, taskId, { type: 'taken-back', machine: task.machine }, by);
-    return transition(tx, task, { to: 'needs-me', by: 'user' });
+    return transition(tx, task, { to: 'needs-me', by: 'user', userStop: true });
+  });
+}
+
+/** A running task's worker is `machine`; no other machine reads or acknowledges for it. */
+function requireRunOf(task: TaskRow, machine: string): void {
+  if (task.status !== 'running') throw new AppError('CONFLICT', `the task is ${task.status}, not running`);
+  if (task.machine !== machine)
+    throw new AppError('FORBIDDEN', `the task runs on ${task.machine ?? 'no machine'}, not on ${machine}`);
+}
+
+/** What the user sent to the running task: whether to stop, and the messages not yet handed to the agent, oldest first. */
+export async function runInbox(
+  db: DbOrTx,
+  taskId: string,
+  machine: string,
+): Promise<{ stop: boolean; stopMessage?: string; messages: NoteRow[] }> {
+  // Under the task's lock, so a Stop & send is never seen half written; reading it also marks the run as one that hands messages over.
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    requireRunOf(task, machine);
+    if (!task.inboxRead) await tx.update(tasks).set({ inboxRead: true }).where(eq(tasks.id, taskId));
+    const messages = await tx
+      .select()
+      .from(notes)
+      .where(and(eq(notes.taskId, taskId), eq(notes.pending, true)))
+      .orderBy(asc(notes.createdAt), asc(notes.id));
+    return {
+      stop: task.stopRequestedAt !== null,
+      ...(task.stopRequestedAt !== null && task.stopMessageId !== null ? { stopMessage: task.stopMessageId } : {}),
+      messages,
+    };
+  });
+}
+
+/** The worker handed these messages to the agent and, with `stop`, acted on the stop request. */
+export async function ackMessages(
+  db: DbOrTx,
+  taskId: string,
+  ack: { ids: string[]; stop: boolean },
+  machine: string,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    requireRunOf(task, machine);
+    if (ack.ids.length > 0)
+      await tx
+        .update(notes)
+        .set({ pending: false, deliveredAt: new Date() })
+        .where(and(eq(notes.taskId, taskId), eq(notes.pending, true), inArray(notes.id, ack.ids)));
+    if (ack.stop)
+      await tx.update(tasks).set({ stopRequestedAt: null, stopMessageId: null }).where(eq(tasks.id, taskId));
+  });
+}
+
+/**
+ * The worker ended the run on the user's request: while the task still runs, the note goes into its thread and the task
+ * waits in Needs me, or, with messages that were never handed over, resumes with them.
+ */
+export async function stopped(db: DbOrTx, taskId: string, note: WireNoteInput, by: string): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    requireRunOf(task, by);
+    await clientEvent(tx, taskId, note, by);
+    return transition(tx, task, { to: 'needs-me', by: 'worker', userStop: true });
   });
 }

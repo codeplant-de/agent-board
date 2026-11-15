@@ -3,6 +3,10 @@ import { test } from 'node:test';
 import {
   boardRules,
   buildInvocation,
+  buildResumePrompt,
+  inboxMessageText,
+  pauseMessageText,
+  userReply,
   ownLane,
   decideOutcome,
   isPermanentRefusal,
@@ -60,8 +64,10 @@ test('a scheduled task runs its prompt as written, in its directory, as the user
   assert.equal(args[args.indexOf('--permission-mode') + 1], 'auto');
   assert.ok(!args.includes('--setting-sources'), "all of the user's settings load");
   assert.ok(!args.includes('--allowedTools'));
-  assert.deepEqual(args.slice(args.indexOf('--output-format'), args.indexOf('--output-format') + 3), [
+  assert.deepEqual(args.slice(args.indexOf('--output-format'), args.indexOf('--output-format') + 5), [
     '--output-format',
+    'stream-json',
+    '--input-format',
     'stream-json',
     '--verbose',
   ]);
@@ -107,6 +113,35 @@ test("an intake review runs in the PR's checkout with intake's narrow rules", ()
     createdBy: 'intake',
   });
   assert.ok(!unmapped.ok && /other\/repo/.test(unmapped.reason));
+});
+
+test('a task model becomes one --model= argument, on a fresh run and a resume, for intake too', () => {
+  const none = invoke({ id: 'abc', input: '/grill' });
+  assert.ok(none.ok);
+  assert.ok(!none.invocation.args.some((arg) => arg.startsWith('--model')));
+  const fresh = invoke({ id: 'abc', input: '/grill', model: 'claude-sonnet-5-5[1m]' });
+  assert.ok(fresh.ok);
+  assert.deepEqual(fresh.invocation.args.slice(0, 3), [
+    '-p',
+    `--session-id=${SESSION}`,
+    '--model=claude-sonnet-5-5[1m]',
+  ]);
+  const resumed = invoke(
+    { id: 'abc', input: '/grill', model: 'opus' },
+    { kind: 'resume', sessionId: SESSION, prompt: 'the reply' },
+  );
+  assert.ok(resumed.ok);
+  assert.deepEqual(resumed.invocation.args.slice(0, 3), ['-p', `--resume=${SESSION}`, '--model=opus']);
+  const intake = invoke({ id: 'abc', input: `/review-pr ${PR} --auto`, createdBy: 'intake', model: 'haiku' });
+  assert.ok(intake.ok);
+  assert.ok(intake.invocation.args.includes('--model=haiku'));
+});
+
+test('a task model that is not a model name refuses the run instead of being dropped', () => {
+  for (const model of ['--dangerously-skip-permissions', 'a b', '', 'opus\n']) {
+    const plan = invoke({ id: 'abc', input: '/grill', model });
+    assert.ok(!plan.ok && /not a model name/.test(plan.reason), JSON.stringify(model));
+  }
 });
 
 test('a resume passes the reply and continues where the session stopped', () => {
@@ -158,8 +193,15 @@ test("a prompt's skill picks its lane; anything else goes to the lane with *", (
   assert.equal(ownLane(task({ id: 'a', input: 'Find out X' }), [lanes[0]!]), undefined);
 });
 
+test('a machine without an intake block leaves intake-created tasks to another machine', () => {
+  const intakeTask = task({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
+  assert.equal(notServableHere(intakeTask, 'here', CONFIG.repos, false), 'no intake block in config.json here');
+  assert.equal(notServableHere(intakeTask, 'here', CONFIG.repos, true), undefined);
+  assert.equal(notServableHere(task({ id: 'b', input: 'Find out X' }), 'here', CONFIG.repos, false), undefined);
+});
+
 test("a machine leaves a task to another when it is pinned there or lacks the PR's checkout", () => {
-  const here = (overrides: Parameters<typeof task>[0]) => notServableHere(task(overrides), 'here', CONFIG.repos);
+  const here = (overrides: Parameters<typeof task>[0]) => notServableHere(task(overrides), 'here', CONFIG.repos, true);
   assert.equal(here({ id: 'a', input: 'Find out X' }), undefined);
   assert.match(here({ id: 'a', input: '/grill', machine: 'there', workdir: '/x' }) ?? '', /pinned to there/);
   assert.equal(here({ id: 'a', input: '/grill', machine: 'here', workdir: '/x' }), undefined);
@@ -183,6 +225,11 @@ test("the board's rules tell the agent to attach the user's likely next reply to
     boardRules(task({ id: 'abc' })),
     /board comment --suggest "<reply>" abc "<summary>".*Skip it when no single reply is obvious.*refuses `--suggest`.*without it/s,
   );
+});
+
+test("the board's rules tell the agent to report the PR it opens, except in an intake run", () => {
+  assert.match(boardRules(task({ id: 'abc' })), /open a pull request.*board pr abc <url>/s);
+  assert.doesNotMatch(boardRules(task({ id: 'abc', createdBy: 'intake' })), /board pr/);
 });
 
 test("the board's rules tell the agent to ask through the board, and an intake run to keep its commands simple", () => {
@@ -340,7 +387,7 @@ test('stale: a gone unit at once; an active one only past the limits plus grace'
 });
 
 test('supervision: inactivity, the ceiling and an ignored pause stop a run; activity keeps it going', () => {
-  const run = { now: NOW, limits: LIMITS, pauseGraceMinutes: 5, pauseRequestedAt: undefined };
+  const run = { now: NOW, limits: LIMITS, pauseGraceMinutes: 2, pauseRequestedAt: undefined };
   assert.equal(supervise({ ...run, startedAt: ago(120), lastActive: ago(1) }).kind, 'continue');
   assert.equal(supervise({ ...run, startedAt: ago(10), lastActive: undefined }).kind, 'continue');
   const inactive = supervise({ ...run, startedAt: ago(120), lastActive: ago(16) });
@@ -350,10 +397,10 @@ test('supervision: inactivity, the ceiling and an ignored pause stop a run; acti
   const ceiling = supervise({ ...run, startedAt: ago(6 * 60 + 1), lastActive: ago(0) });
   assert.ok(ceiling.kind === 'stop' && ceiling.why === 'ceiling');
   assert.equal(
-    supervise({ ...run, startedAt: ago(30), lastActive: ago(0), pauseRequestedAt: ago(4) }).kind,
+    supervise({ ...run, startedAt: ago(30), lastActive: ago(0), pauseRequestedAt: ago(1) }).kind,
     'continue',
   );
-  const forced = supervise({ ...run, startedAt: ago(30), lastActive: ago(0), pauseRequestedAt: ago(6) });
+  const forced = supervise({ ...run, startedAt: ago(30), lastActive: ago(0), pauseRequestedAt: ago(3) });
   assert.ok(forced.kind === 'stop' && forced.why === 'pause-forced');
 });
 
@@ -374,7 +421,7 @@ test('a run whose task left Running is still its own: the board drops runStarted
 });
 
 test('outcomes: a pause wins over the stop it caused, a report wins over a pause', () => {
-  const base = { signal: null, stopped: undefined, pauseRequested: false, reported: false };
+  const base = { signal: null, stopped: undefined, pauseRequested: false, stopRequested: false, reported: false };
   const forced = { kind: 'stop' as const, why: 'pause-forced' as const, message: 'forced' };
   const inactive = { kind: 'stop' as const, why: 'inactive' as const, message: 'Stopped: no tool call' };
   assert.equal(decideOutcome({ ...base, exitCode: 1 }).kind, 'failed');
@@ -390,6 +437,14 @@ test('outcomes: a pause wins over the stop it caused, a report wins over a pause
     'paused',
   );
   assert.equal(decideOutcome({ ...base, exitCode: 0, pauseRequested: true, reported: true }).kind, 'ok');
+});
+
+test('outcomes: a stop the user asked for ends in Needs me, and a report still wins', () => {
+  const base = { signal: null, stopped: undefined, pauseRequested: false, stopRequested: true, reported: false };
+  assert.equal(decideOutcome({ ...base, exitCode: 0 }).kind, 'stopped');
+  assert.equal(decideOutcome({ ...base, exitCode: 143 }).kind, 'stopped', 'whatever the exit code says');
+  assert.equal(decideOutcome({ ...base, exitCode: 0, pauseRequested: true }).kind, 'stopped');
+  assert.equal(decideOutcome({ ...base, exitCode: 1, reported: true }).kind, 'ok');
 });
 
 const LANES = [
@@ -712,4 +767,65 @@ test('an intake tool rule that would read as an option stops the run', () => {
       assert.ok(!plan.ok && /starts with "-"/.test(plan.reason), `${list} ${rule}`);
     }
   }
+});
+
+test('a reply leaves out the notes the agent was handed while it ran, and the resume prompt does not repeat them', () => {
+  const user = (text: string, minute: number, extra: Partial<Parameters<typeof makeNote>[2]> = {}) =>
+    makeNote(text, at(minute), { author: 'user', ...extra });
+  const notes = [
+    makeNote('Working on it', at(1), { author: 'agent' }),
+    user('handed over mid-run', 2, { deliveredAt: at(3) }),
+    user('said after the stop', 4),
+  ];
+  assert.deepEqual(
+    userReply(notes).map((note) => note.text),
+    ['said after the stop'],
+  );
+  const prompt = buildResumePrompt(task({ id: 'p', next: 'resume', sessionId: SESSION }), notes);
+  assert.match(prompt ?? '', /said after the stop/);
+  assert.doesNotMatch(prompt ?? '', /handed over mid-run/);
+  assert.equal(
+    buildResumePrompt(task({ id: 'p', next: 'resume', sessionId: SESSION }), notes.slice(0, 2)),
+    undefined,
+    'a thread whose only reply was handed over has nothing to resume with',
+  );
+});
+
+test('a resume carries the messages the agent was never handed, even from before its last note, once', () => {
+  const user = (text: string, minute: number, extra: Partial<Parameters<typeof makeNote>[2]> = {}) =>
+    makeNote(text, at(minute), { author: 'user', ...extra });
+  const start = (minute: number) =>
+    makeNote(`${START_MARKER} on laptop`, at(minute), { author: 'system', kind: 'event' });
+  const notes = [
+    user('before the previous run', 0, { queued: true }),
+    start(1),
+    user('never handed over', 2, { queued: true }),
+    user('handed over', 3, { queued: true, deliveredAt: at(4) }),
+    makeNote('Done, here is the summary', at(5), { author: 'agent' }),
+    user('and after it', 6),
+    start(7),
+  ];
+  const reply = userReply(notes, at(7));
+  assert.deepEqual(
+    reply.map((note) => note.text),
+    ['never handed over', 'and after it'],
+  );
+  const ordinary = userReply(
+    [...notes.slice(0, 6)].map((n) => (n.text === 'and after it' ? { ...n, queued: true } : n)),
+    at(7),
+  );
+  assert.equal(new Set(ordinary.map((n) => n.id)).size, ordinary.length, 'a note found twice is listed once');
+});
+
+test('the messages an agent is sent say who wrote them, and an interruption says it was one', () => {
+  const message = makeNote('use the other table', at(1), { author: 'user' });
+  assert.match(
+    inboxMessageText('abc', message, false),
+    /sent you a message on board task abc while you work:\n\nuse the other table/,
+  );
+  assert.match(
+    inboxMessageText('abc', message, true),
+    /interrupted you on board task abc to correct you:\n\nuse the other table/,
+  );
+  assert.match(pauseMessageText('abc'), /Pause requested.*`board comment abc "..."`.*end your turn/);
 });

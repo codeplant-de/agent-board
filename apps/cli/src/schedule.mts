@@ -1,26 +1,32 @@
-// `board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
-// [--times <n> | --until <time>] [--new] <prompt...>`: a task from a prompt, written as you would type it into Claude Code,
+// `board schedule [--priority p] [--model m] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
+// [--times <n> | --until <time>] [--polish] [--new] <prompt...>`: a task from a prompt, written as you would type it into Claude Code,
 // bound to this machine and the directory it was scheduled from. Before it creates one, a quick Haiku call checks whether
-// an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead.
+// an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead. With `--polish` the
+// task goes to Backlog and a child task that polishes its prompt is queued, as the board's "Polish prompt" button does.
 import { execFile } from 'node:child_process';
 import {
   ContractError,
   defaultTitle,
   describeRule,
+  isModelName,
   isPriority,
   isRecord,
+  MODEL_ALIASES,
   parseDuration,
   parseWhen,
+  polishTask,
   PRIORITIES,
 } from '@agent-board/shared';
 import type { Command } from 'commander';
-import type { Backend, Priority, Status, Task } from '@agent-board/shared';
+import type { Backend, DraftStatus, Priority, Task } from '@agent-board/shared';
 import { UsageError } from './cli.mts';
 import { plainLine } from './terminal.mts';
 
 export interface ScheduleArgs {
   prompt: string;
   priority: Priority | undefined;
+  // The Claude model of the run; undefined is claude's default.
+  model: string | undefined;
   title: string | undefined;
   // Waits in Needs me instead of Todo.
   hold: boolean;
@@ -35,15 +41,19 @@ export interface ScheduleArgs {
   until: Date | undefined;
   // Skips the duplicate check.
   forceNew: boolean;
+  // Parks it in Backlog and queues a task that polishes its prompt.
+  polish: boolean;
 }
 
 // The flags `board schedule` takes before the prompt, as commander hands them over.
 export interface ScheduleFlags {
   priority?: string;
+  model?: string;
   title?: string;
   hold?: boolean;
   backlog?: boolean;
   new?: boolean;
+  polish?: boolean;
   in?: string;
   at?: string;
   every?: string;
@@ -55,6 +65,10 @@ export interface ScheduleFlags {
 export function addScheduleOptions(command: Command): Command {
   return command
     .option('--priority <priority>', `${PRIORITIES.join(', ')} (default normal)`)
+    .option(
+      '--model <model>',
+      `claude model alias or full name, e.g. ${MODEL_ALIASES.map((alias) => alias.value).join(', ')} (default: claude's default)`,
+    )
     .option('--title <title>', "the task's title (default: the prompt's first line)")
     .option('--hold', 'land it in needs-me instead of Todo')
     .option('--backlog', 'park it in backlog instead of Todo')
@@ -67,18 +81,37 @@ export function addScheduleOptions(command: Command): Command {
     .option('--cron <expr>', 'repeat by a 5-field cron expression in this machine\'s time zone ("0 9 * * 1-5")')
     .option('--times <n>', 'end a repeat after this many runs, the first included')
     .option('--until <time>', 'end a repeat after this time')
+    .option('--polish', 'park it in backlog and queue a task that polishes its prompt, as "Polish prompt" on the board')
     .option('--new', 'skip the duplicate check');
 }
 
 // The flags are the board's own; the words after them are the prompt, flags included (`--auto`).
 export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Date = new Date()): ScheduleArgs {
   const hold = flags.hold === true;
-  const backlog = flags.backlog === true;
+  const polish = flags.polish === true;
+  // A polished prompt can only be applied to a Backlog task.
+  const backlog = flags.backlog === true || polish;
   const { in: delay, at, every, times, until } = flags;
   const cron = flags.cron?.trim();
+  if (polish) {
+    const conflicts = [
+      hold && '--hold',
+      delay !== undefined && '--in',
+      at !== undefined && '--at',
+      every !== undefined && '--every',
+      flags.cron !== undefined && '--cron',
+      times !== undefined && '--times',
+      until !== undefined && '--until',
+    ].filter((flag) => flag !== false);
+    if (conflicts.length > 0)
+      throw new UsageError(
+        `--polish parks the task in Backlog, where its polished prompt is applied; it cannot be combined with ${conflicts.join(', ')}`,
+      );
+  }
   const result: ScheduleArgs = {
     prompt: '',
     priority: undefined,
+    model: undefined,
     title: flags.title?.trim(),
     hold,
     backlog,
@@ -88,11 +121,19 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     times: undefined,
     until: undefined,
     forceNew: flags.new === true,
+    polish,
   };
   if (flags.priority !== undefined) {
     if (!isPriority(flags.priority))
       throw new UsageError(`unknown priority "${flags.priority.slice(0, 20)}"; use one of ${PRIORITIES.join(', ')}`);
     result.priority = flags.priority;
+  }
+  if (flags.model !== undefined) {
+    if (!isModelName(flags.model))
+      throw new UsageError(
+        `"${flags.model.slice(0, 70)}" is not a model name (a claude alias such as opus, or a full name such as claude-opus-5-5)`,
+      );
+    result.model = flags.model;
   }
   if (hold && backlog) throw new UsageError('--hold and --backlog cannot be combined');
   if (delay !== undefined && at !== undefined) throw new UsageError('--in and --at cannot be combined');
@@ -147,7 +188,7 @@ function parseInterval(text: string): number {
   }
 }
 
-function startStatus(args: Pick<ScheduleArgs, 'hold' | 'backlog'>): Status {
+function startStatus(args: Pick<ScheduleArgs, 'hold' | 'backlog'>): DraftStatus {
   if (args.hold) return 'needs-me';
   return args.backlog ? 'backlog' : 'todo';
 }
@@ -264,6 +305,7 @@ async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<T
     machine: deps.machine,
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
+    ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.every !== undefined ? { everyMs: args.every } : { cron: args.cron ?? '', timezone: deps.timezone }),
     ...(args.notBefore ? { startAt: args.notBefore } : {}),
     ...(args.times ? { times: args.times } : {}),
@@ -276,9 +318,15 @@ async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<T
   return task;
 }
 
-export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<Task | undefined> {
+export interface Scheduled {
+  task: Task;
+  // The task that polishes `task`'s prompt (`--polish`).
+  polish?: Task;
+}
+
+export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<Scheduled | undefined> {
   const { backend } = deps;
-  if (args.every !== undefined || args.cron !== undefined) return scheduleRepeat(deps, args);
+  if (args.every !== undefined || args.cron !== undefined) return { task: await scheduleRepeat(deps, args) };
   let warning: string | undefined;
   if (!args.forceNew) {
     // A task this machine cannot read says nothing to the check, and the model must not see its placeholder.
@@ -295,19 +343,25 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
         return undefined;
       }
       if (choice === 'requeue') {
+        // The existing task's prompt is not the one just typed; polishing it stays a click on the board.
+        if (args.polish) deps.print(`no polish queued for ${existing.id}; queue one with "Polish prompt" on the board`);
+        if (args.model !== undefined && args.model !== existing.model)
+          deps.print(
+            `${existing.id} keeps its model (${existing.model ?? 'the default'}); --model applies only to a new task`,
+          );
         if (existing.status === 'todo' && args.notBefore) {
           const delayed = await backend.updateTask(existing.id, { notBefore: args.notBefore, expect: 'todo' });
           (deps.confirm ?? deps.print)(
             `${existing.id} is already queued, now starts ${localTime(args.notBefore)}: ${deps.link(delayed.id)}`,
           );
-          return delayed;
+          return { task: delayed };
         }
         if (existing.status === 'todo' || existing.status === 'running') {
           const note = args.notBefore ? '; the start time was not applied' : '';
           (deps.confirm ?? deps.print)(
             `${existing.id} is already ${existing.status === 'todo' ? 'queued' : 'running'}${note}: ${deps.link(existing.id)}`,
           );
-          return existing;
+          return { task: existing };
         }
         const requeued = await backend.updateTask(existing.id, {
           status: startStatus(args),
@@ -320,7 +374,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
         (deps.confirm ?? deps.print)(
           `requeued ${requeued.id} ${deps.link(requeued.id)}${requeued.notBefore ? `, starts ${localTime(requeued.notBefore)}` : ''}`,
         );
-        return requeued;
+        return { task: requeued };
       }
       if (!deps.choose) warning = `Possibly a duplicate of ${existing.id} ("${existing.title}"): ${duplicate.reason}`;
     }
@@ -334,10 +388,19 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     machine: deps.machine,
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
+    ...(args.model === undefined ? {} : { model: args.model }),
   });
   if (warning) await backend.addNote(task.id, warning, { author: 'system' });
   (deps.confirm ?? deps.print)(
     `scheduled ${task.id} ${deps.link(task.id)}${task.notBefore ? `, starts ${localTime(task.notBefore)}` : ''}`,
   );
-  return task;
+  if (!args.polish) return { task };
+  const { place, ...draft } = polishTask(task);
+  const { task: polish } = await backend.addTask({
+    ...draft,
+    createdBy: 'user',
+    ...(place ? { machine: place.machine, workdir: place.workdir } : {}),
+  });
+  (deps.confirm ?? deps.print)(`queued polish ${polish.id} ${deps.link(polish.id)}`);
+  return { task, polish };
 }

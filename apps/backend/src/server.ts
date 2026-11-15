@@ -54,6 +54,7 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
     logger: config.nodeEnv === 'test' ? false : { level: 'info' },
     // A transcript batch can carry a few large tool results.
     bodyLimit: 16 * 1024 * 1024,
+    // Behind the auth proxy: makes req.ip, which the request log writes as remoteAddress, the client's address, not the proxy's.
     trustProxy: true,
   });
 
@@ -61,8 +62,10 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
   app.addHook('onClose', async () => changes.close());
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof AppError) return reply.status(STATUS[err.code]).send({ error: err.message });
-    app.log.error(err);
     const status = (err as { statusCode?: number }).statusCode ?? 500;
+    // Fastify's own 4xx (bad JSON, a too large body) are the client's fault; error is kept for server faults.
+    if (status < 500) app.log.warn(err);
+    else app.log.error(err);
     return reply.status(status).send({ error: status === 500 ? 'internal error' : (err as Error).message });
   });
 

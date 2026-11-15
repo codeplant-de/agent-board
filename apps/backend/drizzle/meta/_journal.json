@@ -141,6 +141,41 @@
       "when": 1794765642666,
       "tag": "0019_machine_client",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794769661935,
+      "tag": "0020_task-model",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1794777795598,
+      "tag": "0021_task_pr",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1794777911435,
+      "tag": "0022_task_pr_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1794779001445,
+      "tag": "0023_run_inbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794782750199,
+      "tag": "0024_proposals-in-backlog",
+      "breakpoints": true
     }
   ]
 }

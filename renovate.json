@@ -1,0 +1,55 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "Europe/Berlin",
+  "schedule": ["before 6am on monday"],
+  "minimumReleaseAge": "7 days",
+  "prConcurrentLimit": 10,
+  "customManagers": [
+    {
+      "description": "pnpm version passed to pnpm/action-setup in the workflows",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["uses: pnpm/action-setup@\\S+\\s+with:\\s+version: (?<currentValue>\\S+)"],
+      "depNameTemplate": "pnpm",
+      "datasourceTemplate": "npm"
+    },
+    {
+      "description": "Bun version passed to oven-sh/setup-bun in the workflows",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["bun-version: (?<currentValue>\\S+)"],
+      "depNameTemplate": "bun",
+      "datasourceTemplate": "npm"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Minor and patch bumps land as one PR; each major gets its own",
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "minor and patch"
+    },
+    {
+      "description": "All GitHub Actions in one PR",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Keep each tool's version in sync across mise.toml, package.json, the workflows and the Dockerfiles",
+      "matchDepNames": ["node", "pnpm", "bun"],
+      "groupName": "{{depName}}"
+    },
+    {
+      "description": "Node majors are a deliberate move to the next LTS, not a weekly PR",
+      "matchDepNames": ["node"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "A Postgres major needs a dump and restore of the production database",
+      "matchDepNames": ["postgres"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    }
+  ]
+}

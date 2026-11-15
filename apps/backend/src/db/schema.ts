@@ -25,6 +25,7 @@ export const taskStatus = pgEnum('task_status', ['backlog', 'todo', 'running', '
 /** Declared highest first, so ordering by the enum puts urgent on top. */
 export const taskPriority = pgEnum('task_priority', ['urgent', 'high', 'normal', 'low']);
 export const nextRun = pgEnum('next_run', ['fresh', 'resume']);
+export const prState = pgEnum('pr_state', ['open', 'merged', 'closed']);
 export const taskCreator = pgEnum('task_creator', ['intake', 'user', 'agent']);
 /** "server" is the only author whose body is plain text: the events the server writes itself. Every other note body is sealed. */
 export const noteAuthor = pgEnum('note_author', ['agent', 'user', 'system', 'server']);
@@ -98,6 +99,8 @@ export const tasks = pgTable(
     input: text('input').notNull().default(''),
     status: taskStatus('status').notNull().default('todo'),
     priority: taskPriority('priority').notNull().default('normal'),
+    /** The Claude model of its runs (a clear choice, not content); null is claude's default. */
+    model: text('model'),
     /** Order within a status and priority: lower is higher up. */
     position: doublePrecision('position').notNull(),
     closed: boolean('closed').notNull().default(false),
@@ -108,6 +111,10 @@ export const tasks = pgTable(
     sessionId: text('session_id'),
     /** Where the session was when it last stopped, on `machine`. */
     workdir: text('workdir'),
+    /** The sealed URL of the pull request the task's agent opened for it (`board pr`). */
+    pr: text('pr'),
+    /** GitHub's state of that PR or of the one the prompt names, as a worker's intake last saw it. Clear on purpose: it says only that some PR of the task merged. */
+    prState: prState('pr_state'),
     next: nextRun('next').notNull().default('fresh'),
     /** Reported by the worker while the task runs; stale once it stops running. */
     lane: text('lane'),
@@ -125,6 +132,12 @@ export const tasks = pgTable(
     waitCheck: boolean('wait_check').notNull().default(false),
     /** When the task's wait ended into Todo; kept through the claim until the run's first update, like `paused_at`. */
     wokenAt: timestamp('woken_at', { withTimezone: true }),
+    /** Running only: when the user asked for the run to be interrupted; the worker clears it when it acts on it, and any move out of Running does. */
+    stopRequestedAt: timestamp('stop_requested_at', { withTimezone: true }),
+    /** Running only: this run's worker has read the run inbox, so it hands messages over; a CLI that never does leaves them to the resume. Cleared when the task leaves Running. */
+    inboxRead: boolean('inbox_read').notNull().default(false),
+    /** With a stop request: the pending note that goes with it (Stop & send); null for a plain stop. */
+    stopMessageId: text('stop_message_id'),
     /** The blind index (abh1.…) of the PR head sha an intake review was made for. */
     head: text('head'),
     /** The question note waiting for an answer, if any. */
@@ -147,6 +160,7 @@ export const tasks = pgTable(
     check('task_title_sealed', isEnvelope(t.title)),
     check('task_input_sealed', isEnvelope(t.input)),
     check('task_workdir_sealed', isEnvelope(t.workdir)),
+    check('task_pr_sealed', isEnvelope(t.pr)),
     check('task_dedupe_key_blind', isBlindIndex(t.dedupeKey)),
     check('task_head_blind', isBlindIndex(t.head)),
     unique('task_owner_dedupe_key_unique').on(t.owner, t.dedupeKey),
@@ -166,6 +180,8 @@ export const schedules = pgTable(
     title: text('title').notNull(),
     input: text('input').notNull(),
     priority: taskPriority('priority').notNull().default('normal'),
+    /** The model of every occurrence; null is claude's default. */
+    model: text('model'),
     machine: text('machine'),
     workdir: text('workdir'),
     /** An interval on the grid `anchor_at + k * every_ms`, or a 5-field cron expression in `timezone`. */
@@ -214,6 +230,12 @@ export const notes = pgTable(
     questionNoteId: text('question_note_id'),
     /** The signed-in user for author "user", the machine for agent and system notes. */
     by: text('by'),
+    /** A message the user sent to a running agent that no worker has handed over yet; cleared when the worker acknowledges it or the run ends. */
+    pending: boolean('pending').notNull().default(false),
+    /** Written to a running agent (Send, Stop & send); never cleared, so a resume can find messages that were never handed over. */
+    queued: boolean('queued').notNull().default(false),
+    /** When a worker handed the message to the running agent. The resume prompt does not repeat it. */
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
     createdAt: createdAt(),
   },
   (t) => [

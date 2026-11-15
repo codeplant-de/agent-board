@@ -15,12 +15,15 @@ import {
   LEGACY_CONTRACT,
   MIN_CLIENT,
   parseClientApi,
+  parseAckMessages,
   parseClientFeatures,
   parseClientVersion,
   parseHeartbeat,
   parseSchedulePatch,
   parseWireAsk,
   parseWireNoteInput,
+  parseWirePr,
+  parseWirePrState,
   parseWireScheduleDraft,
   parseWireTaskDraft,
   parseWireTaskPatch,
@@ -43,6 +46,7 @@ import { machineForToken, recordClient } from './services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
 import { appendTranscript } from './services/transcripts';
 import {
+  ackMessages,
   addNote,
   addTask,
   ask,
@@ -54,6 +58,10 @@ import {
   listTasks,
   pause,
   readNotes,
+  runInbox,
+  setPr,
+  setPrState,
+  stopped,
   toNote,
   toTask,
   updateTask,
@@ -61,15 +69,9 @@ import {
   wake,
 } from './services/tasks';
 
-function scheduleId(body: Record<string, unknown>): string {
+function idOf(body: Record<string, unknown>, what: 'task' | 'schedule'): string {
   const id = body['id'];
-  if (typeof id !== 'string' || !isSafeTaskId(id)) throw new AppError('BAD_REQUEST', 'a valid schedule id is required');
-  return id;
-}
-
-function taskId(body: Record<string, unknown>): string {
-  const id = body['id'];
-  if (typeof id !== 'string' || !isSafeTaskId(id)) throw new AppError('BAD_REQUEST', 'a valid task id is required');
+  if (typeof id !== 'string' || !isSafeTaskId(id)) throw new AppError('BAD_REQUEST', `a valid ${what} id is required`);
   return id;
 }
 
@@ -105,7 +107,7 @@ function knownTo(clientFeatures: ReadonlySet<string>, vocabulary: VocabularyFeat
   };
 }
 
-export async function handleMachineCall(
+async function handleMachineCall(
   db: DbOrTx,
   config: Config,
   identity: MachineIdentity,
@@ -131,9 +133,9 @@ export async function handleMachineCall(
     case 'list-tasks':
       return visible.only((await listTasks(db, { all: body['all'] === true })).map(toTask));
     case 'get-task':
-      return task(await getTask(db, taskId(body)));
+      return task(await getTask(db, idOf(body, 'task')));
     case 'attach-session':
-      return task(await attachSession(db, taskId(body), machine));
+      return task(await attachSession(db, idOf(body, 'task'), machine));
     case 'add-task': {
       const draft = parsed(() => parseWireTaskDraft(body['body']));
       const { row, created } = await addTask(db, draft);
@@ -143,12 +145,12 @@ export async function handleMachineCall(
       return task(
         await updateTask(
           db,
-          taskId(body),
+          idOf(body, 'task'),
           parsed(() => parseWireTaskPatch(body['body'])),
         ),
       );
     case 'claim-task': {
-      const id = taskId(body);
+      const id = idOf(body, 'task');
       const asMachine = body['machine'];
       if (typeof asMachine !== 'string' || !isSafeMachineName(asMachine))
         throw new AppError('BAD_REQUEST', 'machine is required');
@@ -165,7 +167,7 @@ export async function handleMachineCall(
       if (kind !== 'comment' && kind !== 'polish') throw new AppError('BAD_REQUEST', 'kind must be comment or polish');
       if (kind === 'polish' && author !== 'agent')
         throw new AppError('BAD_REQUEST', 'only an agent writes a polish note');
-      await addNote(db, taskId(body), {
+      await addNote(db, idOf(body, 'task'), {
         author,
         kind: author === 'system' ? 'event' : kind,
         body: note.body,
@@ -175,46 +177,74 @@ export async function handleMachineCall(
       });
       return null;
     }
+    case 'set-pr': {
+      const { pr } = parsed(() => parseWirePr(body['body']));
+      await setPr(db, idOf(body, 'task'), pr);
+      return null;
+    }
+    case 'set-pr-state': {
+      const { prState } = parsed(() => parseWirePrState(body['body']));
+      await setPrState(db, idOf(body, 'task'), prState);
+      return null;
+    }
     case 'ask': {
       const asked = parsed(() => parseWireAsk(body['body']));
-      await ask(db, taskId(body), asked, machine);
+      await ask(db, idOf(body, 'task'), asked, machine);
       return null;
     }
     case 'heartbeat':
       await heartbeat(
         db,
-        taskId(body),
+        idOf(body, 'task'),
         parsed(() => parseHeartbeat(body['body'])),
+        machine,
       );
       return null;
     case 'pause': {
       const note = parsed(() => parseWireNoteInput(body['body'], 'pause note'));
-      return task(await pause(db, taskId(body), note, machine));
+      return task(await pause(db, idOf(body, 'task'), note, machine));
     }
     case 'fail': {
       const note = parsed(() => parseWireNoteInput(body['body'], 'fail note'));
-      const { applied, row } = await failTask(db, taskId(body), note, machine);
+      const { applied, row } = await failTask(db, idOf(body, 'task'), note, machine);
       return { applied, task: task(row) };
     }
     case 'wait': {
       const request = parsed(() => parseWireWait(body['body']));
-      return task(await wait(db, taskId(body), request, machine));
+      return task(await wait(db, idOf(body, 'task'), request, machine));
     }
     case 'wake': {
       const note = parsed(() => parseWireNoteInput(body['body'], 'wake note'));
-      const { applied, row } = await wake(db, taskId(body), note, machine);
+      const { applied, row } = await wake(db, idOf(body, 'task'), note, machine);
       return { applied, task: task(row) };
+    }
+    case 'run-inbox': {
+      const inbox = await runInbox(db, idOf(body, 'task'), machine);
+      return {
+        stop: inbox.stop,
+        ...(inbox.stopMessage === undefined ? {} : { stopMessage: inbox.stopMessage }),
+        messages: visible.only(inbox.messages.map(toNote)).map(serializeWireNote),
+      };
+    }
+    case 'ack-messages': {
+      const ack = parsed(() => parseAckMessages(body['body']));
+      await ackMessages(db, idOf(body, 'task'), { ids: ack.ids, stop: ack.stop === true }, machine);
+      return null;
+    }
+    case 'stopped': {
+      const note = parsed(() => parseWireNoteInput(body['body'], 'stopped note'));
+      return task(await stopped(db, idOf(body, 'task'), note, machine));
     }
     case 'transcript':
       await appendTranscript(
         db,
-        taskId(body),
+        idOf(body, 'task'),
         machine,
         parsed(() => parseWireTranscriptBatch(body['body'])),
       );
       return null;
     case 'read-notes':
-      return visible.only((await readNotes(db, taskId(body))).map(toNote)).map(serializeWireNote);
+      return visible.only((await readNotes(db, idOf(body, 'task'))).map(toNote)).map(serializeWireNote);
     case 'add-schedule': {
       const draft = parsed(() => parseWireScheduleDraft(body['body']));
       const { schedule: created, task: pending } = await addSchedule(db, draft);
@@ -224,10 +254,10 @@ export async function handleMachineCall(
       return visible.only((await listSchedules(db)).map(toSchedule)).map(serializeSchedule);
     case 'update-schedule': {
       const { paused } = parsed(() => parseSchedulePatch(body['body']));
-      return serializeSchedule(schedule(await setPaused(db, scheduleId(body), paused)));
+      return serializeSchedule(schedule(await setPaused(db, idOf(body, 'schedule'), paused)));
     }
     case 'remove-schedule':
-      await removeSchedule(db, scheduleId(body));
+      await removeSchedule(db, idOf(body, 'schedule'));
       return null;
     default:
       throw new AppError('NOT_FOUND', `unknown command ${command.slice(0, 40)}`);
@@ -240,8 +270,10 @@ const DISPATCH_WRITES = new Set([
   'update-task',
   'claim-task',
   'add-note',
+  'set-pr',
   'ask',
   'pause',
+  'stopped',
   'fail',
   'wait',
   'wake',

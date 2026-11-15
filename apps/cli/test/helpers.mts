@@ -13,6 +13,7 @@ import {
   seal,
   SERVER_FEATURES,
   sealFields,
+  sealPr,
   taskLabels,
 } from '@agent-board/shared';
 import type { Sealer } from '@agent-board/shared';
@@ -25,10 +26,13 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     labels: [],
     status: 'todo',
     priority: 'normal',
+    model: null,
     closed: false,
     machine: null,
     sessionId: null,
     workdir: null,
+    pr: null,
+    prState: null,
     next: 'fresh',
     head: null,
     openQuestion: false,
@@ -64,6 +68,7 @@ export const CONFIG: Config = {
     env: [],
     mcpServers: [],
   },
+  intakeEnabled: true,
   repos: { 'cosuno/cosuno': '/work/cosuno' },
 };
 
@@ -72,6 +77,7 @@ export function schedule(overrides: Partial<Schedule> & { id: string }): Schedul
     title: `schedule ${overrides.id}`,
     input: '/sweep',
     priority: 'normal',
+    model: null,
     machine: null,
     workdir: null,
     everyMs: 7_200_000,
@@ -94,6 +100,8 @@ export interface FakeBackend extends Backend {
   tasks: Task[];
   schedules: Schedule[];
   notes: Map<string, Note[]>;
+  // What the user sent each running task and no worker has acknowledged.
+  inboxes: Map<string, { stop: boolean; stopMessage?: string; messages: Note[] }>;
   writes: string[];
   // Claims of these ids are lost, as if another machine got there first.
   lostClaims: string[];
@@ -122,6 +130,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     tasks,
     schedules: [],
     notes: new Map(),
+    inboxes: new Map(),
     writes: [],
     lostClaims: [],
     async listTasks({ all = false } = {}) {
@@ -213,6 +222,18 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     async transcript(id, batch) {
       state.writes.push(`transcript ${id} ${batch.runId} ${batch.events.map((e) => e.kind).join(',')}`);
     },
+    async setPr(id, url) {
+      state.writes.push(`pr ${id} ${url}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`set-pr: no task ${id}`, 404, true);
+      found.pr = url;
+    },
+    async setPrState(id, prState) {
+      state.writes.push(`prState ${id} ${prState}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`set-pr-state: no task ${id}`, 404, true);
+      found.prState = prState;
+    },
     async heartbeat(id, beat) {
       state.writes.push(`heartbeat ${id} ${beat.lane}${beat.borrowed ? ' borrowed' : ''}`);
     },
@@ -266,6 +287,29 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       const found = state.tasks.find((t) => t.id === id);
       if (found) Object.assign(found, { status: 'needs-me', openQuestion: true });
     },
+    async runInbox(id) {
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`run-inbox: no task ${id}`, 404, true);
+      if (found.status !== 'running') throw new BackendError(`run-inbox: the task is ${found.status}`, 409, true);
+      const inbox = state.inboxes.get(id) ?? { stop: false, messages: [] };
+      return { ...inbox, messages: [...inbox.messages] };
+    },
+    async ackMessages(id, ack) {
+      state.writes.push(`ack ${id}: ${ack.ids.join(',')}${ack.stop === true ? ' stop' : ''}`);
+      const inbox = state.inboxes.get(id) ?? { stop: false, messages: [] };
+      state.inboxes.set(id, {
+        stop: ack.stop === true ? false : inbox.stop,
+        ...(ack.stop === true || inbox.stopMessage === undefined ? {} : { stopMessage: inbox.stopMessage }),
+        messages: inbox.messages.filter((message) => !ack.ids.includes(message.id)),
+      });
+    },
+    async stopped(id, text) {
+      state.writes.push(`stopped ${id}: ${text}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new Error(`no task ${id}`);
+      if (found.status === 'running') Object.assign(found, { status: 'needs-me' });
+      return { ...found };
+    },
     async readNotes(id) {
       return state.notes.get(id) ?? [];
     },
@@ -273,12 +317,14 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       state.writes.push(
         `add-schedule ${draft.title} | ${draft.input} | ${draft.everyMs ?? `${draft.cron} ${draft.timezone}`}` +
           `${draft.startAt ? ` | start ${draft.startAt.toISOString()}` : ''}${draft.times ? ` | times ${draft.times}` : ''}` +
-          `${draft.until ? ` | until ${draft.until.toISOString()}` : ''}${draft.machine ? ` | ${draft.machine}:${draft.workdir}` : ''}`,
+          `${draft.until ? ` | until ${draft.until.toISOString()}` : ''}${draft.machine ? ` | ${draft.machine}:${draft.workdir}` : ''}` +
+          `${draft.model ? ` | model ${draft.model}` : ''}`,
       );
       const pending = task({
         id: 'pending',
         title: draft.title,
         input: draft.input,
+        model: draft.model ?? null,
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
         notBefore: draft.startAt ?? new Date('2027-01-01T08:00:00Z'),
@@ -288,6 +334,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         id: 'sched',
         title: draft.title,
         input: draft.input,
+        model: draft.model ?? null,
         everyMs: draft.everyMs ?? null,
         cron: draft.cron ?? null,
         timezone: draft.timezone ?? null,
@@ -362,13 +409,18 @@ const seals: Sealer = async ({ field, context }, text) => seal(KEYS, field, cont
 // A task as the server stores it: title, input and workdir sealed with the test key, for the task's own row (an occurrence's
 // for its schedule).
 export async function wireTask(overrides: Partial<Task> & { id: string }): Promise<WireTask> {
-  const { labels: _labels, unreadable: _unreadable, title, input, workdir, ...rest } = task(overrides);
+  const { labels: _labels, unreadable: _unreadable, title, input, workdir, pr, ...rest } = task(overrides);
   const sealed = await sealFields(
     seals,
     { kind: 'task', id: rest.id, createdBy: rest.createdBy, scheduleId: rest.scheduleId },
     { title, input, workdir: workdir ?? undefined },
   );
-  return { ...rest, ...sealed, workdir: sealed.workdir ?? null };
+  return {
+    ...rest,
+    ...sealed,
+    workdir: sealed.workdir ?? null,
+    pr: pr === null ? null : await sealPr(seals, rest.id, pr),
+  };
 }
 
 export async function wireSchedule(overrides: Partial<Schedule> & { id: string }): Promise<WireSchedule> {
@@ -435,3 +487,6 @@ export function fakeWaitStore(initial: Record<string, WaitCheck> = {}): WaitStor
     list: () => [...checks.keys()],
   };
 }
+
+// The GitHub half that looks up PR states, for a test that is about something else: it knows no PR.
+export const NO_PR_STATES = { prStates: async () => ({ states: new Map(), unreadable: [] }) };

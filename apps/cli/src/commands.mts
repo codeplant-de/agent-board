@@ -10,6 +10,7 @@ import {
   comment,
   delay,
   move,
+  reportPr,
   parseStatus,
   readNoteFile,
   readThread,
@@ -43,7 +44,7 @@ import type { Context, ContextOptions, LinkingContext } from './cli.mts';
 import { verifyContract } from './backend.mts';
 import { completionModel, renderCompletion, SHELLS } from './completion.mts';
 import type { Shell } from './completion.mts';
-import { getPaths } from './config.mts';
+import { getPaths, loadConfig } from './config.mts';
 import { runDir } from './runtime.mts';
 import { dispatchMain } from './dispatch.mts';
 import { formatResult, hasFailure, realDoctorDeps, runChecks } from './doctor.mts';
@@ -314,6 +315,26 @@ export function buildProgram(options: ProgramOptions = {}): Command {
 
   dryRunOption(
     program
+      .command('pr')
+      .helpGroup(TASKS)
+      .summary('report the pull request you opened for a task')
+      .description(
+        paragraphs(
+          "Inside a run: after you open a pull request for this task, report its URL. The board then shows it on the task's card and page, like the pull request of a review task. A later call replaces the earlier URL.",
+          'The URL must be a GitHub pull request, https://github.com/<owner>/<repo>/pull/<number>, and nothing else.',
+          ID_NOTE,
+        ),
+      )
+      .argument('<task>', TASK_ARGUMENT)
+      .argument('<url>', 'the pull request URL')
+      .addHelpText('after', examples('board pr Ab3dEf9x https://github.com/acme/app/pull/17741')),
+  ).action(async (arg: string, url: string, _options, command: Command) => {
+    const context = contextOf(command);
+    await reportPr(context, await taskIdOf(context, arg), url);
+  });
+
+  dryRunOption(
+    program
       .command('move')
       .helpGroup(TASKS)
       .summary('move a task to the bottom of a status')
@@ -401,7 +422,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         .summary('propose a follow-up task')
         .description(
           paragraphs(
-            'Propose a follow-up task; the file is its prompt. It waits in needs-me until the user starts it, and runs in this directory on this machine. With --json, print {"id", "url"} on stdout.',
+            'Propose a follow-up task; the file is its prompt. It waits in backlog until the user starts it, and runs in this directory on this machine. With --json, print {"id", "url"} on stdout.',
             ID_NOTE,
           ),
         )
@@ -452,7 +473,8 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         'Make a task of the prompt, written as you would type it into Claude Code, bound to this machine and this directory. Prints its URL. A quick Haiku call first checks whether an open task already covers it; --new skips that.',
         'The flags come first; everything from the first other word on is the prompt, flags included (`--auto` below goes to the skill). To start the prompt with dashes, put -- before it.',
         '--in or --at keeps the task in Todo until then. --every or --cron makes a repeating schedule instead, starting at --in/--at (default now), for --times runs or until --until, else forever.',
-        'With --json, print {"id", "url"} of the task on stdout; everything else goes to stderr. Not available inside a board run: there, propose follow-up work with `board add`.',
+        '--polish parks the task in Backlog and queues a second task, "Polish prompt: <title>", that asks an agent to turn the prompt into a complete plan, as the Polish prompt button on the board does. Apply the result from that task\'s page. It cannot be combined with --hold, --in, --at or a repeat.',
+        'With --json, print {"id", "url"} of the task on stdout (and "polishId", "polishUrl" with --polish); everything else goes to stderr. Not available inside a board run: there, propose follow-up work with `board add`.',
       ),
     )
     .usage('[options] <prompt...>')
@@ -464,11 +486,13 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       examples(
         'board schedule /review-pr 17741',
         'board schedule --priority high /review-pr cosuno/cosuno#17741 --auto',
+        'board schedule --model opus "Find out why the bidder export is slow and propose a fix"',
         'board schedule "Find out why the bidder export is slow and propose a fix"',
         'board schedule --in 2h /review-pr 17741',
         'board schedule --at 09:00 /grill the plan in docs/x.md',
         'board schedule --every 2h --times 5 /sweep the stale branches',
         'board schedule --cron "0 9 * * 1-5" /review-pr --auto',
+        'board schedule --polish "bidder export should include postal codes"',
         'board schedule --hold -- --weird prompt',
         'board schedule --json /review-pr 17741',
       ),
@@ -482,17 +506,17 @@ export function buildProgram(options: ProgramOptions = {}): Command {
           'the prompt ends in --dry-run: put --dry-run before the prompt (board schedule --dry-run <prompt...>), or put -- before a prompt that really ends in it',
         );
       const context = contextOf(command, { strictConfig: true, json: flags.json === true });
-      const task = await scheduleCommand(context, flags, words);
-      if (flags.json)
-        writeJson(
-          task
-            ? {
-                id: task.id,
-                url: context.taskLink(task.id),
-                ...(task.scheduleId ? { scheduleId: task.scheduleId } : {}),
-              }
-            : null,
-        );
+      const scheduled = await scheduleCommand(context, flags, words);
+      if (flags.json) {
+        if (scheduled === undefined) return writeJson(null);
+        const { task, polish } = scheduled;
+        writeJson({
+          id: task.id,
+          url: context.taskLink(task.id),
+          ...(task.scheduleId ? { scheduleId: task.scheduleId } : {}),
+          ...(polish ? { polishId: polish.id, polishUrl: context.taskLink(polish.id) } : {}),
+        });
+      }
     });
 
   dryRunOption(
@@ -566,7 +590,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         );
       }));
   const setupDeps = (): SetupDeps => ({
-    ...realSetupDeps(env, out),
+    ...realSetupDeps(env, out, loadConfig(getPaths(env).configFile, { optionalConfig: true }).intakeEnabled),
     ...(options.which ? { which: options.which } : {}),
     ...(options.platform ? { platform: options.platform } : {}),
     ...(options.runSystem ? { run: options.runSystem } : {}),
@@ -657,11 +681,11 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   program
     .command('setup')
     .helpGroup(SETUP)
-    .summary('install the dispatch and intake timers and the listener as systemd user units')
+    .summary('install the dispatch timer (and intake, if configured) and the listener as systemd user units')
     .description(
       paragraphs(
-        'Install this machine as a worker: write the dispatch and intake services and timers and the listener service into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies, run `systemctl --user daemon-reload` and print the line that enables them. The listener holds a stream to the board and starts a dispatch tick within a second of a change; the timers stay as the fallback. Run it again after moving the binary or the checkout, or upgrading Node. It needs Linux with systemd and flock.',
-        'The services run this CLI the way `board setup` was started: the binary, or the checkout with its Node. --print shows the units and changes nothing; --enable also enables and starts the timers and the listener. When an installed unit differs from what it writes, the differing lines are shown. It refuses unless --force when this checkout is not the one the installed ~/.local/bin/board runs from (a worktree, a scratch copy), or when a binary runs from the temp directory, so it cannot take over the live timers. Not available inside a board run.',
+        'Install this machine as a worker: write the dispatch service and timer, the intake service and timer when config.json has an `intake` key, and the listener service into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies, run `systemctl --user daemon-reload` and print the line that enables them. The listener holds a stream to the board and starts a dispatch tick within a second of a change; the timers stay as the fallback. Run it again after moving the binary or the checkout, or upgrading Node. It needs Linux with systemd and flock.',
+        'The services run this CLI the way `board setup` was started: the binary, or the checkout with its Node. --print shows the units and changes nothing; --enable also enables and starts the timers and the listener. When an installed unit differs from what it writes, the differing lines are shown. It refuses unless --force when this checkout is not the one the installed ~/.local/bin/board runs from (a worktree, a scratch copy), or when a binary runs from the temp directory, so it cannot take over the live timers. Without an `intake` key it leaves installed intake units alone and does not enable them. Not available inside a board run.',
       ),
     )
     .option('--enable', 'also enable and start the timers and the listener')
@@ -782,6 +806,10 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   dryRunOption(internal.command('intake').description('Review requests to tasks')).action(
     (_options, command: Command) => {
       refuseInternalInRun();
+      if (!loadConfig(getPaths(env).configFile, { optionalConfig: true }).intakeEnabled)
+        throw new UsageError(
+          'intake is not enabled: config.json has no intake key (see apps/cli/examples/config.reviews.json)',
+        );
       return intakeMain({ dryRun: contextOf(command).dryRun });
     },
   );

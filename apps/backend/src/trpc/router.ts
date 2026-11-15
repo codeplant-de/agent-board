@@ -1,5 +1,6 @@
 import {
   ContractError,
+  isModelName,
   isSafeMachineName,
   isSafeTaskId,
   parseKeyId,
@@ -10,6 +11,8 @@ import {
   type Field,
   type WireNote,
   type WireTask,
+  MAX_INT32,
+  MAX_INTERVAL_MS,
 } from '@agent-board/shared';
 import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -31,9 +34,11 @@ import {
   readNotes,
   rerunFresh,
   reply,
+  send,
   setClosed,
   setNotBefore,
   setPriority,
+  stop,
   takeBack,
   toNote,
   toTask,
@@ -45,15 +50,16 @@ import { procedure, router } from './trpc';
 const id = z.string().refine(isSafeTaskId, 'not a task id');
 const status = z.enum(STATUSES);
 const priority = z.enum(PRIORITIES);
+const model = z.string().refine(isModelName, 'not a model name');
 const repeatEnd = {
   at: z.coerce.date().optional(),
-  times: z.number().int().positive().optional(),
+  times: z.number().int().positive().max(MAX_INT32).optional(),
   until: z.coerce.date().optional(),
 };
 /** A repeat: an interval in ms, or a cron expression with its time zone; `at` is the first run. */
 const repeat = z
   .union([
-    z.object({ every: z.number().int().min(60_000), ...repeatEnd }),
+    z.object({ every: z.number().int().min(60_000).max(MAX_INTERVAL_MS), ...repeatEnd }),
     z.object({ cron: z.string().trim().min(1), timezone: z.string().trim().min(1), ...repeatEnd }),
   ])
   .refine(
@@ -148,6 +154,8 @@ const tasksRouter = router({
           title: sealed('title', 'title'),
           input: sealed('input', 'input'),
           priority: priority.default('normal'),
+          /** The Claude model of its runs; absent is claude's default. */
+          model: model.optional(),
           /** The task this one follows from, which must be on the board. */
           parentId: id.optional(),
           when: z.union([repeat, z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
@@ -167,6 +175,7 @@ const tasksRouter = router({
           title,
           input: input.input,
           priority: input.priority,
+          ...(input.model === undefined ? {} : { model: input.model }),
           ...('every' in when ? { everyMs: when.every } : { cron: when.cron, timezone: when.timezone }),
           ...(when.at ? { startAt: when.at } : {}),
           ...(when.times ? { times: when.times } : {}),
@@ -179,6 +188,7 @@ const tasksRouter = router({
         title,
         input: input.input,
         priority: input.priority,
+        ...(input.model === undefined ? {} : { model: input.model }),
         status: typeof when === 'string' ? createStatus[when] : 'todo',
         notBefore: typeof when === 'string' ? undefined : when.at,
         createdBy: 'user',
@@ -215,6 +225,26 @@ const tasksRouter = router({
       boardTask(
         await reply(ctx.db, { taskId: input.id, message: input.message, resume: input.resume, by: ctx.username }),
       ),
+    ),
+
+  /**
+   * "Send": a sealed message to the agent. On a running task it reaches the agent without interrupting it; in any other
+   * status it is "Send & continue".
+   */
+  send: procedure
+    .input(z.object({ id, message: noteInput }))
+    .mutation(async ({ ctx, input }) =>
+      boardTask(await send(ctx.db, { taskId: input.id, message: input.message, by: ctx.username })),
+    ),
+
+  /**
+   * "Stop" (and "Stop & send" with `message`, a sealed message that follows the interruption): a running task's run is
+   * interrupted; an answered task that has not started again goes to Needs me, and a waiting one to Backlog.
+   */
+  stop: procedure
+    .input(z.object({ id, message: noteInput.optional() }))
+    .mutation(async ({ ctx, input }) =>
+      boardTask(await stop(ctx.db, { taskId: input.id, message: input.message, by: ctx.username })),
     ),
 
   /**

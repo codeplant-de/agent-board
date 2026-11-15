@@ -17,8 +17,9 @@ import { createSealedBackend } from '../../cli/src/sealing.mts';
 import { runWorker, type WorkerDeps } from '../../cli/src/worker.mts';
 import { CONFIG, fakeRunFiles, fakeSessions, fakeWaitStore } from '../../cli/test/helpers.mts';
 import { createKeySetup, exportDataKey } from '../../frontend/src/crypto/keySlots';
-import { createMemoryKeyStore, inspectStoredKeys } from '../../frontend/src/crypto/keyStore';
+import { inspectStoredKeys } from '../../frontend/src/crypto/keyStore';
 import { createBrowserHarness } from '../../frontend/src/test/browserHarness';
+import { createMemoryKeyStore } from '../../frontend/src/test/memoryKeyStore';
 import { openerFor } from '../../frontend/src/lib/opening';
 import { notes, tasks } from './db/schema';
 import { buildServer } from './server';
@@ -262,6 +263,27 @@ describe('a task link is the CLI’s own', () => {
   });
 });
 
+describe('a task model', () => {
+  it('goes from the browser and from the CLI to the CLI that reads it back', async () => {
+    const { cli, trpc, mutate } = ctx;
+    const viaUi = await mutate<unknown, Task>(trpc.tasks.create.mutationOptions(), {
+      title: 'Pick',
+      input: '/x',
+      model: 'opus',
+    });
+    expect((await cli.getTask(viaUi.id)).model).toBe('opus');
+    const viaCli = await cli.addTask({ title: 'Pick', input: '/x', model: 'claude-sonnet-5-5[1m]' });
+    expect(viaCli.task.model).toBe('claude-sonnet-5-5[1m]');
+    const { schedule, task } = await cli.addSchedule({
+      title: 'Pick',
+      input: '/x',
+      everyMs: 3_600_000,
+      model: 'haiku',
+    });
+    expect([schedule.model, task.model]).toEqual(['haiku', 'haiku']);
+  });
+});
+
 describe('an agent’s proposal', () => {
   const dispatchDeps = (started: string[], logs: string[]): DispatchDeps => ({
     backend: ctx.cli,
@@ -323,7 +345,7 @@ describe('an agent’s proposal', () => {
 
   it('is not run by dispatch or the worker when the server serves it as Todo, and runs as the user’s task once started in the browser', async () => {
     const proposal = await propose();
-    expect(proposal).toMatchObject({ createdBy: 'agent', status: 'needs-me', unreadable: [] });
+    expect(proposal).toMatchObject({ createdBy: 'agent', status: 'backlog', unreadable: [] });
     // The operator moves it to Todo and clears every flag it controls.
     await admin.update(tasks).set({ status: 'todo', proposed: false, position: 0 }).where(eq(tasks.id, proposal.id));
 
@@ -345,7 +367,7 @@ describe('an agent’s proposal', () => {
     // Put it back as an honest board has it, and start it the way the Start button does.
     await admin
       .update(tasks)
-      .set({ status: 'needs-me', proposed: true, machine: null })
+      .set({ status: 'backlog', proposed: true, machine: null })
       .where(eq(tasks.id, proposal.id));
     const shown = await ctx.fetchQuery<any>(ctx.trpc.tasks.get.queryOptions({ id: proposal.id }));
     expect(shown.task).toMatchObject({ createdBy: 'agent', input: 'delete everything under /tmp' });

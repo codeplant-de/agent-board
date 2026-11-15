@@ -1,4 +1,4 @@
-import { DEFAULT_PRIORITY, isSafeTaskId, type Status, type WireTaskDraft } from '@agent-board/shared';
+import { DEFAULT_PRIORITY, isDraftStatus, isSafeTaskId, type Status, type WireTaskDraft } from '@agent-board/shared';
 import { eq, max, min } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import type { DbOrTx } from '../db/client';
@@ -7,7 +7,7 @@ import { AppError } from './errors';
 
 const ID_ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
-/** 8 characters, safe for a systemd unit name; never "dispatch" or "intake". */
+/** 8 characters, safe for a systemd unit name; never one of the CLI's own unit names. */
 export function newId(length = 8): string {
   for (;;) {
     const bytes = randomBytes(length);
@@ -44,12 +44,12 @@ export async function insertTask(
   // A follow-up is as pressing as the task it came from, unless its creator says otherwise.
   const parent = draft.parentId === undefined ? undefined : await getTask(tx, draft.parentId);
   const proposed = draft.createdBy === 'agent';
-  // A proposal waits for the user whatever status the agent named.
-  const status = proposed ? 'needs-me' : (draft.status ?? 'todo');
+  // A proposal waits in Backlog for the user whatever status the agent named.
+  const status = proposed ? 'backlog' : (draft.status ?? 'todo');
   if (draft.notBefore !== undefined && status !== 'todo')
     throw new AppError('BAD_REQUEST', 'Only a task in Todo can have a start time.');
-  // A wait needs its end and a run that waits; `wait` is the only way in.
-  if (status === 'waiting') throw new AppError('BAD_REQUEST', 'A new task cannot start in Waiting.');
+  // Running and Waiting need a run behind them and Done a close; their own commands are the only way in.
+  if (!isDraftStatus(status)) throw new AppError('BAD_REQUEST', 'A new task starts in Backlog, Todo or Needs me.');
   const [row] = await tx
     .insert(tasks)
     .values({
@@ -63,6 +63,7 @@ export async function insertTask(
       scheduleId: extra.scheduleId ?? null,
       status,
       priority: draft.priority ?? parent?.priority ?? DEFAULT_PRIORITY,
+      model: draft.model ?? null,
       position: await edgePosition(tx, status, 'bottom'),
       dedupeKey: draft.dedupeKey ?? null,
       parentId: draft.parentId ?? null,

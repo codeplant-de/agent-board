@@ -4,6 +4,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { TOOL_UNIT_NAMES } from '@agent-board/shared';
 import { EXEC_PATH, isCompiledBinary, selfCommand } from './self.mts';
 import { SystemError } from './system.mts';
 
@@ -12,11 +13,19 @@ const exec = promisify(execFile);
 // The PATH of the units: what the worker finds `claude`, `gh` and `systemd-run` on, whatever the shell's PATH is. %h is the home directory.
 export const UNIT_PATH = '%h/.local/bin:/usr/local/bin:/usr/bin:/bin';
 
-export const UNIT_NAMES = ['dispatch', 'intake'] as const;
+// Every unit name must be in TOOL_UNIT_NAMES, which keeps it from being a task id and so a worker unit's name.
+type ToolUnitName = (typeof TOOL_UNIT_NAMES)[number];
+export const UNIT_NAMES = ['dispatch', 'intake'] as const satisfies readonly ToolUnitName[];
 export type UnitName = (typeof UNIT_NAMES)[number];
 
+// The timed units a machine runs: intake only when its config has an `intake` key.
+export function activeUnitNames(intake: boolean): UnitName[] {
+  return UNIT_NAMES.filter((name) => name !== 'intake' || intake);
+}
+
 // The listener is a service without a timer: it holds the board's event stream and starts dispatch ticks.
-export const LISTEN_SERVICE = 'agent-board-listen.service';
+const LISTEN_NAME: ToolUnitName = 'listen';
+export const LISTEN_SERVICE = `agent-board-${LISTEN_NAME}.service`;
 
 // Exit 75 is `flock -E 75`: another tick holds the lock, which is not a failure.
 const UNITS: Record<
@@ -73,10 +82,12 @@ export interface RenderInput {
   flock: string;
   // The command that runs `internal <name>`.
   command: (name: UnitName | 'listen') => string[];
+  // Whether to render the intake service and timer.
+  intake: boolean;
 }
 
-export function renderUnits({ flock, command }: RenderInput): UnitFile[] {
-  const timed = UNIT_NAMES.flatMap((name) => {
+export function renderUnits({ flock, command, intake }: RenderInput): UnitFile[] {
+  const timed = activeUnitNames(intake).flatMap((name) => {
     const unit = UNITS[name];
     // %t is the runtime directory, where bin/dispatch and bin/intake keep the same lock files.
     const execStart = [
@@ -147,8 +158,13 @@ export function unitDirectory(env: Record<string, string | undefined>): string {
   return join(env['XDG_CONFIG_HOME'] || join(homedir(), '.config'), 'systemd', 'user');
 }
 
-const ENABLE_UNITS = [...UNIT_NAMES.map((name) => `agent-board-${name}.timer`), LISTEN_SERVICE];
-export const ENABLE_COMMAND = `systemctl --user enable --now ${ENABLE_UNITS.join(' ')}`;
+function enableUnits(intake: boolean): string[] {
+  return [...activeUnitNames(intake).map((name) => `agent-board-${name}.timer`), LISTEN_SERVICE];
+}
+
+export function enableCommand(intake: boolean): string {
+  return `systemctl --user enable --now ${enableUnits(intake).join(' ')}`;
+}
 
 export interface SetupFlags {
   enable?: boolean;
@@ -163,6 +179,8 @@ export interface SetupDeps {
   // The absolute path of a program on PATH.
   which: (program: string) => string | undefined;
   command: RenderInput['command'];
+  // Whether this machine's config.json has an `intake` key.
+  intake: boolean;
   // A sentence when this tree is not the one the installed `board` runs from, else undefined.
   treeProblem?: () => string | undefined;
   // Whether a timer or service is already enabled (a read-only systemctl call), to leave out the hint to enable it.
@@ -206,8 +224,13 @@ export function whichOnPath(program: string, path: string | undefined = process.
     .find((candidate) => existsSync(candidate));
 }
 
-export function realSetupDeps(env: Record<string, string | undefined>, print: (line: string) => void): SetupDeps {
+export function realSetupDeps(
+  env: Record<string, string | undefined>,
+  print: (line: string) => void,
+  intake: boolean,
+): SetupDeps {
   return {
+    intake,
     unitDir: unitDirectory(env),
     platform: process.platform,
     which: (program) => whichOnPath(program, env['PATH']),
@@ -242,7 +265,7 @@ export async function setup(deps: SetupDeps, flags: SetupFlags): Promise<void> {
     throw new SystemError(`board setup installs systemd user units and needs Linux; this is ${deps.platform}`);
   const flock = deps.which('flock');
   if (flock === undefined) throw new SystemError('flock is not on PATH; install util-linux and run board setup again');
-  const units = renderUnits({ flock, command: deps.command });
+  const units = renderUnits({ flock, command: deps.command, intake: deps.intake });
   if (flags.print) {
     for (const unit of units) deps.print(`# ${join(deps.unitDir, unit.file)}\n${unit.text}`);
     return;
@@ -256,6 +279,15 @@ export async function setup(deps: SetupDeps, flags: SetupFlags): Promise<void> {
     deps.print(`warning: ${mismatch}`);
   }
   mkdirSync(deps.unitDir, { recursive: true });
+  if (!deps.intake) {
+    const leftover = ['service', 'timer']
+      .map((kind) => `agent-board-intake.${kind}`)
+      .filter((file) => existsSync(join(deps.unitDir, file)));
+    if (leftover.length > 0)
+      deps.print(
+        `note: config.json has no intake key, so setup leaves ${leftover.join(' and ')} alone and \`board internal intake\` refuses; if the timer is enabled, stop it: systemctl --user disable --now agent-board-intake.timer`,
+      );
+  }
   let listenerChanged = false;
   for (const unit of units) {
     const path = join(deps.unitDir, unit.file);
@@ -283,14 +315,23 @@ export async function setup(deps: SetupDeps, flags: SetupFlags): Promise<void> {
     deps.print(`restarted ${LISTEN_SERVICE} if it was running, to run the new unit`);
   }
   if (flags.enable) {
-    await deps.run('systemctl', ['--user', 'enable', '--now', ...ENABLE_UNITS]);
-    deps.print('enabled and started the dispatch and intake timers and the listener');
+    await deps.run('systemctl', ['--user', 'enable', '--now', ...enableUnits(deps.intake)]);
+    deps.print(
+      deps.intake
+        ? 'enabled and started the dispatch and intake timers and the listener'
+        : 'enabled and started the dispatch timer and the listener',
+    );
   } else {
-    const enabled = await Promise.all(ENABLE_UNITS.map((unit) => deps.unitEnabled?.(unit) ?? Promise.resolve(false)));
+    const enabled = await Promise.all(
+      enableUnits(deps.intake).map((unit) => deps.unitEnabled?.(unit) ?? Promise.resolve(false)),
+    );
     if (enabled.every(Boolean))
       deps.print(
-        'the timers and the listener are enabled already; the next tick runs the new units, and the listener once it is restarted: systemctl --user restart agent-board-listen',
+        `${deps.intake ? 'the timers' : 'the timer'} and the listener are enabled already; the next tick runs the new units, and the listener once it is restarted: systemctl --user restart agent-board-listen`,
       );
-    else deps.print(`Enable the timers and the listener when you are ready:\n  ${ENABLE_COMMAND}`);
+    else
+      deps.print(
+        `Enable ${deps.intake ? 'the timers' : 'the timer'} and the listener when you are ready:\n  ${enableCommand(deps.intake)}`,
+      );
   }
 }

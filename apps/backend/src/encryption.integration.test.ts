@@ -2,9 +2,11 @@ import {
   isBlindIndex,
   isEnvelope,
   newTaskId,
+  openPr,
   sealAnswers,
   sealFields,
   sealNote,
+  sealPr,
   sealQuestions,
   transcriptBinding,
   type RowRef,
@@ -440,6 +442,95 @@ describe('suggested replies', () => {
     expect(
       (await ctx.raw('add-note', { id, body: { ...(await comment(id, 'n')), suggestion: huge } })).json.error,
     ).toMatch(/too long/);
+  });
+});
+
+describe('the pull request of a task', () => {
+  const PR_URL = 'https://github.com/acme/app/pull/17';
+
+  it('is kept sealed, served to the browser and the CLI, and the last one wins', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    const pr = await sealPr(sealed.seal, task.id, PR_URL);
+    expect((await ctx.raw('set-pr', { id: task.id, body: { pr } })).status).toBe(200);
+    const [row] = await admin.select().from(tasks);
+    expect(isEnvelope(row?.pr ?? '')).toBe(true);
+    expect(JSON.stringify(row)).not.toContain('acme');
+    const served = (await ctx.ui.tasks.get({ id: task.id })).task;
+    expect(await openPr(sealed.open, task.id, served.pr)).toBe(PR_URL);
+    expect((await ctx.raw('get-task', { id: task.id })).json.result.pr).toBe(pr);
+    expect((await ctx.ui.tasks.list()).find(({ id }) => id === task.id)?.pr).toBe(pr);
+    const second = await sealPr(sealed.seal, task.id, 'https://github.com/acme/app/pull/18');
+    await ctx.raw('set-pr', { id: task.id, body: { pr: second } });
+    expect((await ctx.raw('get-task', { id: task.id })).json.result.pr).toBe(second);
+  });
+
+  it('is null until one is reported, and opens only for the task it was sealed for', async () => {
+    const first = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    const other = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    expect((await ctx.raw('get-task', { id: first.id })).json.result.pr).toBeNull();
+    const pr = await sealPr(sealed.seal, first.id, PR_URL);
+    // The server cannot tell, so it stores another task's ciphertext; no client opens it there.
+    expect((await ctx.raw('set-pr', { id: other.id, body: { pr } })).status).toBe(200);
+    const served = (await ctx.ui.tasks.get({ id: other.id })).task;
+    expect(await openPr(sealed.open, other.id, served.pr)).toBeNull();
+    expect(await openPr(sealed.open, first.id, served.pr)).toBe(PR_URL);
+  });
+
+  it('is refused in plain text, with another key, for an unknown task, and when too long', async () => {
+    const { id } = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    expect((await ctx.raw('set-pr', { id, body: { pr: PR_URL } })).status).toBe(400);
+    expect((await ctx.raw('set-pr', { id, body: {} })).status).toBe(400);
+    expect(
+      (await ctx.raw('set-pr', { id, body: { pr: await sealPr(sealed.seal, id, PR_URL), extra: 1 } })).status,
+    ).toBe(400);
+    expect(
+      (await ctx.raw('set-pr', { id: 'Nope1234', body: { pr: await sealPr(sealed.seal, id, PR_URL) } })).status,
+    ).toBe(404);
+    const huge = `abe1.${'A'.repeat(20_000)}`;
+    expect((await ctx.raw('set-pr', { id, body: { pr: huge } })).json.error).toMatch(/too long/);
+    expect((await admin.select().from(tasks))[0]?.pr).toBeNull();
+  });
+
+  it('is not taken from the browser: a reply that carries one stores none', async () => {
+    const { id } = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    const pr = await sealPr(sealed.seal, id, PR_URL);
+    await ctx.rawUi.tasks.reply({ id, message: { body: pr, pr } as never, resume: false });
+    expect((await admin.select().from(tasks))[0]?.pr).toBeNull();
+  });
+});
+
+describe('the PR state of a task', () => {
+  const PR_URL = 'https://github.com/acme/app/pull/17';
+
+  it('is null until intake writes it, is served in clear to the browser and the CLI, and a new PR resets it', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    expect((await ctx.raw('get-task', { id: task.id })).json.result.prState).toBeNull();
+    await ctx.raw('set-pr', { id: task.id, body: { pr: await sealPr(sealed.seal, task.id, PR_URL) } });
+    expect((await ctx.raw('set-pr-state', { id: task.id, body: { prState: 'merged' } })).status).toBe(200);
+    expect((await admin.select().from(tasks))[0]?.prState).toBe('merged');
+    expect((await ctx.raw('get-task', { id: task.id })).json.result.prState).toBe('merged');
+    expect((await ctx.ui.tasks.get({ id: task.id })).task.prState).toBe('merged');
+    expect((await ctx.ui.tasks.list()).find(({ id }) => id === task.id)?.prState).toBe('merged');
+    const second = await sealPr(sealed.seal, task.id, 'https://github.com/acme/app/pull/18');
+    await ctx.raw('set-pr', { id: task.id, body: { pr: second } });
+    expect((await ctx.raw('get-task', { id: task.id })).json.result.prState).toBeNull();
+  });
+
+  it('is written without moving the task or touching a running task’s pause', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    await ctx.call('claim-task', { id: task.id, machine: 'laptop' });
+    const before = (await admin.select().from(tasks))[0]!;
+    await ctx.raw('set-pr-state', { id: task.id, body: { prState: 'closed' } });
+    const after = (await admin.select().from(tasks))[0]!;
+    expect(after).toMatchObject({ status: 'running', prState: 'closed', updatedAt: before.updatedAt });
+  });
+
+  it('refuses anything but a state, extra keys and an unknown task', async () => {
+    const { id } = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    for (const body of [{}, { prState: 'draft' }, { prState: null }, { prState: 'merged', extra: 1 }])
+      expect((await ctx.raw('set-pr-state', { id, body })).status).toBe(400);
+    expect((await ctx.raw('set-pr-state', { id: 'Nope1234', body: { prState: 'merged' } })).status).toBe(404);
+    expect((await admin.select().from(tasks))[0]?.prState).toBeNull();
   });
 });
 

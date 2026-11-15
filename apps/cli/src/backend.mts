@@ -25,6 +25,7 @@ import {
   parseWireWakeResult,
   parseWireFailResult,
   parseWireNotes,
+  parseWireRunInbox,
   parseWireSchedule,
   parseWireSchedules,
   parseWireTask,
@@ -174,7 +175,7 @@ export interface MachineRequest {
   all?: boolean;
   machine?: string;
   author?: string;
-  // The command's payload, JSON: sealed values for add-task, update-task, add-schedule, add-note, ask, pause, fail, wait, wake and transcript.
+  // The command's payload, JSON: sealed values for add-task, update-task, add-schedule, add-note, ask, pause, stopped, fail, wait, wake and transcript; ack-messages takes plain ids.
   body?: unknown;
 }
 
@@ -337,6 +338,11 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   'attach-session': 'attach-session',
   wait: 'wait',
   wake: 'wait',
+  'set-pr': 'task.pr',
+  'set-pr-state': 'task.pr-state',
+  'run-inbox': 'run-inbox',
+  'ack-messages': 'run-inbox',
+  stopped: 'run-inbox',
 };
 
 export function createWebBackend(options: WebBackendOptions): WebBackend {
@@ -366,6 +372,11 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
   const requireSendable = async (values: Parameters<typeof neededServerFeature>[0]): Promise<void> => {
     const feature = neededServerFeature(values, options.sendable);
     if (feature !== undefined) requireFeature((await connect()).features, feature);
+  };
+
+  // Refuses to send a model to a server that would not read it.
+  const requireModelSupport = async (draft: { model?: string }): Promise<void> => {
+    if (draft.model !== undefined) requireFeature((await connect()).features, 'task.model');
   };
 
   async function call<T>(command: string, request: MachineRequest, parse: (value: unknown) => T): Promise<T> {
@@ -409,6 +420,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     attachSession: async (id) => call('attach-session', { id: taskId(id) }, parseWireTask),
     addTask: async (draft) => {
       await requireSendable(draft);
+      await requireModelSupport(draft);
       return call('add-task', { body: draft }, parseWireAddTaskResult);
     },
     updateTask: async (id, patch) => {
@@ -448,14 +460,20 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     },
     ask: async (id, asked) => send('ask', { id: taskId(id), body: asked }),
     heartbeat: async (id, beat) => send('heartbeat', { id: taskId(id), body: beat }),
+    setPr: async (id, body) => send('set-pr', { id: taskId(id), body }),
+    setPrState: async (id, body) => send('set-pr-state', { id: taskId(id), body }),
     pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
     fail: async (id, note) => call('fail', { id: taskId(id), body: note }, parseWireFailResult),
     wait: async (id, wait) => call('wait', { id: taskId(id), body: wait }, parseWireTask),
     wake: async (id, note) => call('wake', { id: taskId(id), body: note }, parseWireWakeResult),
+    runInbox: async (id) => call('run-inbox', { id: taskId(id) }, parseWireRunInbox),
+    ackMessages: async (id, ack) => send('ack-messages', { id: taskId(id), body: ack }),
+    stopped: async (id, note) => call('stopped', { id: taskId(id), body: note }, parseWireTask),
     transcript: async (id, batch) => send('transcript', { id: taskId(id), body: batch }),
     readNotes: async (id) => call('read-notes', { id: taskId(id) }, (value) => parseWireNotes(value, listOptions)),
     addSchedule: async (draft) => {
       await requireSendable(draft);
+      await requireModelSupport(draft);
       return call('add-schedule', { body: draft }, parseWireAddScheduleResult);
     },
     listSchedules: async () => call('list-schedules', {}, (value) => parseWireSchedules(value, listOptions)),
@@ -477,18 +495,21 @@ function asBackendError(command: string, error: unknown): Error {
 
 // The task an add-task would have made.
 function dryTask(draft: TaskDraft): Task {
-  const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, ...fields } = draft;
+  const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, model, ...fields } = draft;
   return {
     ...fields,
     labels: taskLabels({ input: draft.input, createdBy: createdBy ?? 'user' }),
     unreadable: [],
     status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
     priority: draft.priority ?? 'normal',
+    model: model ?? null,
     id: 'dry',
     closed: false,
     machine: machine ?? null,
     sessionId: null,
     workdir: workdir ?? null,
+    pr: null,
+    prState: null,
     next: 'fresh',
     head: head ?? null,
     openQuestion: false,
@@ -520,6 +541,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         title: draft.title,
         input: draft.input,
         ...(draft.priority ? { priority: draft.priority } : {}),
+        ...(draft.model === undefined ? {} : { model: draft.model }),
         ...(draft.machine !== undefined && draft.workdir !== undefined
           ? { machine: draft.machine, workdir: draft.workdir }
           : {}),
@@ -531,6 +553,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         title: draft.title,
         input: draft.input,
         priority: draft.priority ?? 'normal',
+        model: draft.model ?? null,
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
         everyMs: draft.everyMs ?? null,
@@ -574,12 +597,25 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         `DRY add-note ${id}${options?.author === 'system' ? ' --author system' : ''}${kind}${suggested} ${oneLine(text, 160)}`,
       );
     },
+    async setPr(id, url) {
+      print(`DRY set-pr ${id} ${url}`);
+    },
+    async setPrState(id, prState) {
+      print(`DRY set-pr-state ${id} ${prState}`);
+    },
     async heartbeat(id, beat) {
       print(`DRY heartbeat ${id} ${JSON.stringify(beat)}`);
     },
     async pause(id, note) {
       print(`DRY pause ${id} ${oneLine(note, 160)}`);
       return { ...(await inner.getTask(id)), status: 'todo', next: 'resume' };
+    },
+    async ackMessages(id, ack) {
+      print(`DRY ack-messages ${id} ${ack.ids.join(',')}${ack.stop === true ? ' --stop' : ''}`);
+    },
+    async stopped(id, note) {
+      print(`DRY stopped ${id} ${oneLine(note, 160)}`);
+      return { ...(await inner.getTask(id)), status: 'needs-me' };
     },
     async fail(id, text) {
       print(`DRY fail ${id} ${oneLine(text, 160)}`);

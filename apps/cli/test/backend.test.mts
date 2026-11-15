@@ -622,3 +622,69 @@ test('a status or priority that needs a server feature is sent only when the ser
   await having.backend.updateTask('abc', { status: 'waiting' });
   assert.deepEqual(having.seen, ['version', 'update-task']);
 });
+
+test('a model is sent only to a server that names task.model', async () => {
+  const make = (features: string[]) => {
+    const seen: string[] = [];
+    const fetcher: Fetch = async (url) => {
+      const command = url.slice(`${config.url}/api/machine/`.length);
+      seen.push(command);
+      const result =
+        command === 'version'
+          ? { ...VERSION_ANSWER, features }
+          : command === 'add-task'
+            ? { task: await taskJson('abc'), created: true }
+            : { schedule: serializeSchedule(await wireSchedule({ id: 'sch1' })), task: await taskJson('abc') };
+      return new Response(JSON.stringify({ result }));
+    };
+    return { seen, backend: createWebBackend({ loadConfig: () => config, fetch: fetcher }) };
+  };
+  const task = { id: 'abc', title: 'abe1.t', input: 'abe1.i' };
+  const schedule = { ...task, everyMs: 7_200_000 };
+  const lacking = make(['events']);
+  await assert.rejects(lacking.backend.addTask({ ...task, model: 'opus' }), /does not support choosing a model yet/);
+  await assert.rejects(
+    lacking.backend.addSchedule({ ...schedule, model: 'opus' }),
+    /does not support choosing a model yet/,
+  );
+  await lacking.backend.addTask(task);
+  await lacking.backend.addSchedule(schedule);
+  assert.deepEqual(lacking.seen, ['version', 'add-task', 'add-schedule']);
+  const having = make(['task.model']);
+  await having.backend.addTask({ ...task, model: 'opus' });
+  await having.backend.addSchedule({ ...schedule, model: 'opus' });
+  assert.deepEqual(having.seen, ['version', 'add-task', 'add-schedule']);
+});
+
+test('reporting a PR needs the task.pr feature and is refused without it, before anything is sent', async () => {
+  const without = boardWith(['events'], {});
+  await assert.rejects(
+    without.backend.setPr('abc', { pr: 'abe1.pr' }),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'task.pr' &&
+      error.message === 'the board server does not support reporting a pull request yet; update the board server',
+  );
+  assert.deepEqual(
+    without.seen.map((request) => request.command),
+    ['version'],
+  );
+  const withIt = boardWith(['task.pr'], { 'set-pr': { body: { result: null } } });
+  await withIt.backend.setPr('abc', { pr: 'abe1.pr' });
+  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { pr: 'abe1.pr' } });
+});
+
+test('recording a PR state needs the task.pr-state feature and is refused without it, before anything is sent', async () => {
+  const without = boardWith(['task.pr'], {});
+  await assert.rejects(
+    without.backend.setPrState('abc', { prState: 'merged' }),
+    (error: unknown) => error instanceof BackendError && error.missingFeature === 'task.pr-state',
+  );
+  assert.deepEqual(
+    without.seen.map((request) => request.command),
+    ['version'],
+  );
+  const withIt = boardWith(['task.pr-state'], { 'set-pr-state': { body: { result: null } } });
+  await withIt.backend.setPrState('abc', { prState: 'merged' });
+  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { prState: 'merged' } });
+});

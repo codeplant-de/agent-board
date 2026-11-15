@@ -14,6 +14,7 @@ import {
   describeRule,
   formatQuestions,
   isPriority,
+  isPrUrl,
   isSafeTaskId,
   isSafeWorkdir,
   isStatus,
@@ -31,7 +32,7 @@ import { SystemError } from './system.mts';
 import { plainLine, plainText } from './terminal.mts';
 import type { Style } from './style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
-import type { Choice, ScheduleFlags } from './schedule.mts';
+import type { Choice, Scheduled, ScheduleFlags } from './schedule.mts';
 import type { WaitStore } from './waits.mts';
 import { isPermanentRefusal } from './decide.mts';
 
@@ -85,6 +86,15 @@ export async function comment(
 ): Promise<void> {
   await context.backend.addNote(id, text, options);
   confirm(context, `commented on ${id}  ${context.taskLink(id)}`);
+}
+
+export async function reportPr(context: LinkingContext, id: string, url: string): Promise<void> {
+  if (!isPrUrl(url))
+    throw new UsageError(
+      `"${url.slice(0, 80)}" is not a pull request URL: use https://github.com/<owner>/<repo>/pull/<number>`,
+    );
+  await context.backend.setPr(id, url);
+  confirm(context, `reported ${url} for ${id}  ${context.taskLink(id)}`);
 }
 
 export interface CommentFlags {
@@ -175,6 +185,7 @@ export function renderThread(task: Task, notes: Note[]): string {
     `# ${task.title}`,
     '',
     `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(', ') || '-'}`,
+    ...(task.pr === null ? [] : [`pr: ${task.pr}`]),
     ...(task.sessionId ? [`session: ${task.sessionId} · ${task.machine ?? '-'}:${task.workdir ?? '-'}`] : []),
     '',
     '## Input',
@@ -289,7 +300,7 @@ export function parseAddFlags(flags: AddFlags): {
   return { title, file, parent, priority };
 }
 
-// The board puts a proposal in Needs me itself, so no status is sent.
+// The board puts a proposal in Backlog itself, so no status is sent.
 export async function add(context: LinkingContext, flags: AddFlags): Promise<Task> {
   const { title, file, parent, priority } = parseAddFlags(flags);
   // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
@@ -340,7 +351,7 @@ export async function move(context: LinkingContext, id: string, status: Status):
     await context.backend.updateTask(id, { status });
   } catch (error) {
     if (error instanceof BackendError && error.status === 403)
-      throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Needs me.`);
+      throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Backlog.`);
     throw error;
   }
   confirm(context, `moved ${id} to ${status}  ${context.taskLink(id)}`);
@@ -542,7 +553,7 @@ export async function scheduleCommand(
   context: LinkingContext,
   flags: ScheduleFlags,
   words: string[],
-): Promise<Task | undefined> {
+): Promise<Scheduled | undefined> {
   const args = parseScheduleArgs(flags, words);
   return schedule(
     {

@@ -13,13 +13,14 @@ vi.mock('../lib/trpc', () => {
   return {
     POLL_MS: 60_000,
     errorMessage: () => 'error',
-    useTRPCClient: () => ({}),
     useTRPC: () => ({
       tasks: {
         get: { queryOptions: ({ id }: { id: string }) => ({ queryKey: ['tasks.get', id] }) },
         setPriority: idle,
         answer: idle,
         reply: idle,
+        send: idle,
+        stop: idle,
         done: idle,
         rerun: idle,
         setClosed: idle,
@@ -50,6 +51,9 @@ const task = (id: string, title: string): BoardTask =>
     machine: null,
     sessionId: 's',
     workdir: null,
+    model: null,
+    pr: null,
+    prState: null,
     next: 'resume',
     head: null,
     openQuestion: false,

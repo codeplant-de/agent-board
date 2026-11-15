@@ -231,7 +231,7 @@ function config(
   if (options.config)
     writeFileSync(
       join(dir, 'config.json'),
-      JSON.stringify({ machine: 'smoke', ...(options.repos ? { repos: { 'o/r': '/tmp' } } : {}) }),
+      JSON.stringify({ machine: 'smoke', ...(options.repos ? { repos: { 'o/r': '/tmp' }, intake: {} } : {}) }),
     );
   return dir;
 }
@@ -473,15 +473,25 @@ async function withBoardAsync<T>(patch: Partial<typeof fake>, run: () => Promise
   }
 }
 
+const args0 = (seen: string): string => readFileSync(join(seen, 'args'), 'utf8');
 await check('a worker hands claude a large prompt on stdin, whole, and not in its arguments', async () => {
   const claudePath = fakeClaude(
     'claude-reads',
-    '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$SEEN/args"\ncat > "$SEEN/stdin"\n',
+    // stream-json input: the prompt is the first line, a user message; stdin stays open until the run's result line.
+    '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$SEEN/args"\nIFS= read -r line\nprintf \'%s\' "$line" > "$SEEN/stdin"\necho \'{"type":"result","subtype":"success","result":"ok"}\'\ncat > /dev/null\n',
   );
   const { result, seen } = await runWorkerWith(claudePath, BIG_PROMPT);
   assert.equal(result.code, 0, result.stderr);
-  const received = readFileSync(join(seen, 'stdin'), 'utf8');
-  assert.ok(received === BIG_PROMPT, `claude received ${received.length} characters, expected ${BIG_PROMPT.length}`);
+  const line: unknown = JSON.parse(readFileSync(join(seen, 'stdin'), 'utf8'));
+  const received =
+    typeof line === 'object' && line !== null && 'message' in line
+      ? (line.message as { content?: unknown }).content
+      : undefined;
+  assert.ok(
+    received === BIG_PROMPT,
+    `claude received ${typeof received === 'string' ? received.length : 'no'} characters, expected ${BIG_PROMPT.length}`,
+  );
+  assert.match(args0(seen), /--input-format\nstream-json\n/);
   const args = readFileSync(join(seen, 'args'), 'utf8');
   assert.ok(
     !args.includes('héllo') && !args.includes('--dangerously-skip-permissions\n--mcp-config'),

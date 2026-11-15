@@ -52,22 +52,34 @@ Parallel branches collide on the migration number. When you rebase onto a `main`
 
 When you raise `MIN_CLIENT`:
 
-1. Raise the CLI version in `apps/cli/package.json` in the same PR (CI checks it against the newest `cli-v*` tag).
+1. Raise the CLI version in `apps/cli/package.json` in the same PR (CI checks it against the newest `cli-v*` tag, and on `main` it stops a break that has no higher version before the images are built).
 2. Add a note for the change under [Upgrading](setup.md#upgrading).
-3. After the merge, release the CLI before machines are expected to work again (see below).
+3. After the merge CI releases the CLI by itself, before the images (see below). Machines can then run `board self-update`.
 
 Parallel branches also collide on these numbers and the CLI version. Renumber on rebase.
 
 ## Releasing the CLI
 
-A merge to `main` deploys the server: CI builds the images and Flux rolls them out. The CLI is released separately, by a tag:
+A merge to `main` deploys the server: CI builds the images and Flux rolls them out. The CLI is released from the same run. To release one, raise the version in `apps/cli/package.json` in the PR. After the merge, CI checks whether `cli-v<version>` has a published release; if not, it calls `.github/workflows/release-cli.yml`, and the images wait for it, so a machine told to update finds the release. A merge that leaves the version alone releases nothing.
 
-```
-git tag -s -m "board CLI 0.8.0" cli-v0.8.0 <commit on main>
-git push origin cli-v0.8.0
-```
+The workflow refuses to run outside `main`. It checks that the version is `x.y.z` and above the newest `cli-v*` tag, runs the checks and the CLI tests, builds the binaries for Linux x64 and arm64 and macOS arm64, and smoke-tests a Linux x64 build (the arm64 and macOS binaries never run in CI). It then creates a draft release for the commit, uploads the binaries, `SHA256SUMS` and `install.sh`, and publishes it. GitHub creates the tag `cli-v<version>` when the draft is published, so a failed run leaves a draft and no tag, and the next run deletes the draft and starts over. Two runs never publish at once; the second finds the release published and does nothing.
 
-The tag must match `apps/cli/package.json`, and the commit must be on `main`. `.github/workflows/release-cli.yml` checks both, runs the checks and the CLI tests, builds the binaries for Linux x64 and arm64 and macOS arm64, smoke-tests a Linux x64 build (the arm64 and macOS binaries never run in CI), and publishes a GitHub release with `SHA256SUMS` and `install.sh`. Machines then run `board self-update`, and the listener needs a restart (`board setup` does that when the unit changed).
+The tag is lightweight and unsigned. The tags `cli-v0.3.0` to `cli-v0.8.0` were signed by hand. The integrity of a release is meant to come from GitHub's immutable releases (to be enabled in the repository settings; not done yet): a published release can no longer change its assets or its tag. Check one with `gh release verify cli-v<version>`, and a downloaded file with `gh release verify-asset cli-v<version> <file>`.
+
+If the release fails, the images are held. Use "Re-run failed jobs" on the CI run, or run the Release CLI workflow by hand (`workflow_dispatch`) from `main`; it releases the head of `main`. Once the release is published, re-run the failed `build-and-push` of the CI run if it was not started again. Machines then run `board self-update`, and the listener needs a restart (`board setup` does that when the unit changed).
+
+## Dependencies
+
+[Renovate](https://docs.renovatebot.com/) ([`renovate.json`](../renovate.json)) opens PRs on Monday mornings (Europe/Berlin) and keeps a Dependency Dashboard issue listing what is pending. It needs the Renovate GitHub App installed on the repository. It covers:
+
+- the pnpm workspace, including `packageManager` in `package.json`;
+- the tools in `mise.toml`, and the pnpm and Bun versions the workflows pass to `pnpm/action-setup` and `oven-sh/setup-bun` (a regex manager in `renovate.json`; keep those `with:` blocks in the same shape);
+- the GitHub Actions in `.github/workflows`;
+- the images in `apps/*/Dockerfile`, `docker-compose.yml` and CI.
+
+It waits seven days after a release before proposing it. Minor and patch bumps come as one grouped PR and each major as its own PR, except that every change to node, pnpm or bun is one PR per tool across all the files that name it, so `mise.toml`, `package.json` and CI never disagree. Node and Postgres majors are disabled: a new Node LTS and a Postgres major (which needs a dump and restore of production) are moved to by hand.
+
+CI runs on these PRs like on any other, and merging one deploys the server like any other merge to `main`. A dependency bump in `apps/cli` changes the next CLI release, not the installed CLIs; it reaches the machines with the next `cli-v*` release.
 
 ## Git
 

@@ -57,9 +57,8 @@ highest=$(printf '%s\n%s\n' "$newest" "$version" | sort -V | tail -n 1)
 if [ "$version" = "$newest" ] || [ "$highest" != "$version" ]; then
   cat >&2 <<MESSAGE
 MIN_CLIENT is $head_min, but the newest release cli-v$newest speaks API $released_api, so it stops working against this
-server. apps/cli/package.json is at $version, not above that release. Raise the CLI version there, and roll the change
-out in the order of the "Upgrading" list in docs/setup.md: the CLI release (a cli-v<version> tag on main) and the machines come
-first where the old CLIs must not see the new server.
+server. apps/cli/package.json is at $version, not above that release. Raise the CLI version there: CI releases it from
+main after the merge, and the rollout order is the "Upgrading" list in docs/setup.md.
 MESSAGE
   exit 1
 fi

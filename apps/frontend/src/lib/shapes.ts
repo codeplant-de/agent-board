@@ -7,7 +7,9 @@ import {
   isBlindIndex,
   isCronExpression,
   isKeyId,
+  isModelName,
   isNextRun,
+  isNoteKind,
   isPriority,
   isSafeLane,
   isSafeMachineName,
@@ -17,9 +19,8 @@ import {
   isStatus,
   isTaskCreator,
   isTimeZoneName,
+  isWireNoteAuthor,
   hasControlCharacter,
-  NOTE_KINDS,
-  WIRE_NOTE_AUTHORS,
   type NextRun,
   type NoteKind,
   type Priority,
@@ -60,9 +61,6 @@ export function safeNullableId(value: unknown, what: string): string | null {
   return value === null || value === undefined ? null : safeId(value, what);
 }
 
-const isOneOf = <T extends string>(values: readonly T[], value: unknown): value is T =>
-  typeof value === 'string' && values.some((candidate) => candidate === value);
-
 /** A machine or lane name, or a placeholder. */
 export function shownName(value: string | null): string | null {
   return value === null || isSafeMachineName(value) ? value : INVALID_VALUE;
@@ -73,6 +71,7 @@ export interface TaskShapes {
   priority: Priority;
   next: NextRun;
   createdBy: TaskCreator;
+  model: string | null;
   machine: string | null;
   lane: string | null;
   sessionId: string | null;
@@ -90,6 +89,7 @@ export function checkTaskShapes(wire: {
   priority: unknown;
   next: unknown;
   createdBy: unknown;
+  model: string | null;
   machine: string | null;
   lane: string | null;
   sessionId: string | null;
@@ -102,6 +102,7 @@ export function checkTaskShapes(wire: {
   const priority = guarded(wire.priority, isPriority, NEUTRAL_PRIORITY);
   const next = guarded(wire.next, isNextRun, NEUTRAL_NEXT);
   const createdBy = guarded(wire.createdBy, isTaskCreator, NEUTRAL_CREATOR);
+  const model = checked(wire.model === null || isModelName(wire.model), wire.model, null);
   const machine = checked(wire.machine === null || isSafeMachineName(wire.machine), wire.machine, INVALID_VALUE);
   const lane = checked(wire.lane === null || isSafeLane(wire.lane), wire.lane, INVALID_VALUE);
   const sessionId = checked(wire.sessionId === null || isSessionId(wire.sessionId), wire.sessionId, null);
@@ -111,6 +112,7 @@ export function checkTaskShapes(wire: {
     ['priority', priority],
     ['next', next],
     ['createdBy', createdBy],
+    ['model', model],
     ['machine', machine],
     ['lane', lane],
     ['sessionId', sessionId],
@@ -121,6 +123,7 @@ export function checkTaskShapes(wire: {
     priority: priority.value,
     next: next.value,
     createdBy: createdBy.value,
+    model: model.value,
     machine: machine.value,
     lane: lane.value,
     sessionId: sessionId.value,
@@ -139,8 +142,8 @@ export function checkNoteShapes(wire: { id: string; author: unknown; kind: unkno
   by: string | null;
   ok: boolean;
 } {
-  const author = isOneOf(WIRE_NOTE_AUTHORS, wire.author) ? wire.author : undefined;
-  const kind = isOneOf(NOTE_KINDS, wire.kind) ? wire.kind : undefined;
+  const author = isWireNoteAuthor(wire.author) ? wire.author : undefined;
+  const kind = isNoteKind(wire.kind) ? wire.kind : undefined;
   const id = typeof wire.id === 'string' && isSafeNoteId(wire.id) ? wire.id : undefined;
   return {
     id: id ?? INVALID_VALUE,

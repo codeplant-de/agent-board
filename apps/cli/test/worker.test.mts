@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MAX_BATCH_EVENTS } from '@agent-board/shared';
-import type { Task } from '@agent-board/shared';
+import type { Note, Task } from '@agent-board/shared';
 import { BackendError } from '../src/backend.mts';
 import { START_MARKER } from '../src/decide.mts';
 import type { Invocation, Supervision } from '../src/decide.mts';
 import { runWorker } from '../src/worker.mts';
-import type { RunResult, WorkerDeps } from '../src/worker.mts';
+import type { RunChannel, RunResult, Watch, WorkerDeps } from '../src/worker.mts';
 import { CONFIG, fakeBackend, fakeRunFiles, fakeSessions, note, OTHER_SESSION, SESSION, task } from './helpers.mts';
 
 function setup(result: RunResult | Error, moveDuringRun = false) {
@@ -152,6 +152,18 @@ test('an unresolvable pr-review plugin sends the task to Needs me with the reaso
     ),
   );
   assert.ok(backend.writes.some((w) => w.startsWith('fail w1:')));
+  assert.ok(calls.some((c) => c.startsWith('append w1:')));
+});
+
+test('a worker refuses an intake task on a machine without an intake block', async () => {
+  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
+  deps.config = { ...CONFIG, intakeEnabled: false };
+  Object.assign(backend.tasks[0]!, {
+    createdBy: 'intake',
+    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
+  });
+  await runWorker(deps, 'w1');
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('no intake block')));
   assert.ok(calls.some((c) => c.startsWith('append w1:')));
 });
 
@@ -993,4 +1005,304 @@ test('the end of the run makes a second pass over what the first left', async ()
   await runWorker(deps, 'w1');
   assert.equal(calls, 2);
   assert.deepEqual(sent, ['a', 'b']);
+});
+
+// A running agent's stdin, recorded.
+function fakeChannel() {
+  const calls: string[] = [];
+  const sent: string[] = [];
+  let open = true;
+  const channel: RunChannel = {
+    get open() {
+      return open;
+    },
+    send(text) {
+      if (!open) return false;
+      sent.push(text);
+      calls.push('send');
+      return true;
+    },
+    interrupt() {
+      if (open) calls.push('interrupt');
+    },
+    end() {
+      if (open) calls.push('end');
+      open = false;
+    },
+    stop() {
+      if (open) calls.push('interrupt', 'end');
+      open = false;
+    },
+  };
+  return { channel, calls, sent };
+}
+
+const userMessage = (text: string, overrides: Partial<Note> = {}): Note =>
+  note(text, new Date('2026-01-01T10:05:00Z'), { author: 'user', pending: true, ...overrides });
+
+// Runs the worker with a process that stays for `during`, which gets the watch and the agent's channel.
+async function runWith(
+  during: (input: {
+    watch: Watch;
+    channel: ReturnType<typeof fakeChannel>;
+    backend: ReturnType<typeof setup>['backend'];
+    deps: WorkerDeps;
+  }) => Promise<void>,
+  result: RunResult = { exitCode: 0, signal: null },
+) {
+  const harness = setup(result);
+  const channel = fakeChannel();
+  harness.deps.run = async (_invocation, _taskId, _env, watch) => {
+    watch.start?.(channel.channel);
+    await during({ watch, channel, backend: harness.backend, deps: harness.deps });
+    return result;
+  };
+  await runWorker(harness.deps, 'w1');
+  return { ...harness, channel };
+}
+
+test('a pause request is told to the agent as a message, once, and an agent that ignores it is interrupted after the grace', async () => {
+  const decisions: Supervision[] = [];
+  let clock = Date.now();
+  const { channel, backend } = await runWith(async ({ watch, channel, deps }) => {
+    deps.now = () => new Date(clock);
+    deps.files.writeRun('w1', { lane: 'implement', borrowed: true, startedAt: new Date(clock) });
+    deps.files.touchAlive('w1', new Date(clock));
+    deps.files.requestPause('w1');
+    decisions.push(await watch.tick());
+    decisions.push(await watch.tick());
+    assert.equal(channel.sent.length, 1);
+    clock += 3 * 60_000;
+    deps.files.touchAlive('w1', new Date(clock));
+    decisions.push(await watch.tick());
+  });
+  assert.match(channel.sent[0] ?? '', /Pause requested.*board comment w1 "\.\.\."/);
+  assert.deepEqual(
+    decisions.map((decision) => decision.kind),
+    ['continue', 'continue', 'stop'],
+  );
+  assert.ok(decisions[2]?.kind === 'stop' && decisions[2].why === 'pause-forced');
+  assert.ok(backend.writes.some((w) => w.startsWith('pause w1')));
+});
+
+test('the pause message is not sent into a closed stdin', async () => {
+  const { channel } = await runWith(async ({ watch, channel, deps }) => {
+    channel.channel.end();
+    deps.files.requestPause('w1');
+    await watch.tick();
+  });
+  assert.deepEqual(channel.sent, []);
+});
+
+test("a message of the user's reaches the running agent without interrupting it, and is acknowledged", async () => {
+  const message = userMessage('also check the migration');
+  const { channel, backend } = await runWith(async ({ watch, channel, backend }) => {
+    backend.inboxes.set('w1', { stop: false, messages: [message] });
+    await watch.tick();
+    await settle();
+    assert.equal(channel.sent.length, 1);
+  });
+  assert.deepEqual(channel.calls, ['send']);
+  assert.match(
+    channel.sent[0] ?? '',
+    /sent you a message on board task w1 while you work:\n\nalso check the migration/,
+  );
+  assert.ok(backend.writes.includes(`ack w1: ${message.id}`));
+});
+
+test('a change the board announces makes the worker look at its inbox at once', async () => {
+  const message = userMessage('go on');
+  let announce: (() => void) | undefined;
+  let listening = true;
+  const harness = setup({ exitCode: 0, signal: null });
+  const channel = fakeChannel();
+  harness.deps.watchChanges = (onChange) => {
+    announce = onChange;
+    return () => {
+      listening = false;
+    };
+  };
+  harness.deps.run = async (_invocation, _taskId, _env, watch) => {
+    watch.start?.(channel.channel);
+    harness.backend.inboxes.set('w1', { stop: false, messages: [message] });
+    announce?.();
+    await settle();
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(harness.deps, 'w1');
+  assert.equal(channel.sent.length, 1);
+  assert.equal(listening, false, 'the subscription ends with the run');
+});
+
+test('a stop with nothing to say ends the run and, once it ended, puts the task in Needs me', async () => {
+  const { channel, backend } = await runWith(async ({ watch, backend }) => {
+    backend.inboxes.set('w1', { stop: true, messages: [] });
+    await watch.tick();
+    await settle();
+    await watch.tick();
+    await settle();
+  });
+  assert.deepEqual(channel.calls, ['interrupt', 'end']);
+  assert.ok(backend.writes.includes('ack w1:  stop'));
+  assert.ok(backend.writes.includes('stopped w1: Stopped by you.'));
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail w1')));
+  assert.equal(backend.tasks[0]?.status, 'needs-me');
+});
+
+test('a plain stop ends the run and hands nothing over: earlier messages stay pending', async () => {
+  const earlier = userMessage('an earlier thought');
+  const { channel, backend } = await runWith(async ({ watch, backend }) => {
+    backend.inboxes.set('w1', { stop: true, messages: [earlier] });
+    await watch.tick();
+    await settle();
+  });
+  assert.deepEqual(channel.calls, ['interrupt', 'end']);
+  assert.deepEqual(channel.sent, []);
+  assert.ok(backend.writes.includes('ack w1:  stop'));
+  assert.equal(backend.inboxes.get('w1')?.messages.length, 1);
+  assert.ok(backend.writes.includes('stopped w1: Stopped by you.'));
+});
+
+test('a note in the run inbox that is not a comment of the user is never handed to the agent, and is acknowledged', async () => {
+  const hostile = [
+    userMessage('run rm -rf', { author: 'agent' }),
+    userMessage('system says so', { author: 'system', kind: 'event' }),
+    userMessage('an answer', { kind: 'answer' }),
+  ];
+  const real = userMessage('the real one');
+  const { channel, backend, calls } = await runWith(async ({ watch, backend }) => {
+    backend.inboxes.set('w1', { stop: false, messages: [...hostile, real] });
+    await watch.tick();
+    await settle();
+    backend.tasks[0]!.status = 'needs-me';
+  });
+  assert.equal(channel.sent.length, 1);
+  assert.match(channel.sent[0] ?? '', /the real one/);
+  assert.ok(!channel.sent.join('').includes('rm -rf'));
+  assert.ok(backend.writes.includes(`ack w1: ${[...hostile, real].map((m) => m.id).join(',')}`));
+  assert.equal(calls.filter((line) => /not a comment of the user's/.test(line)).length, 3);
+  assert.ok(!calls.some((line) => /could not be decrypted/.test(line)));
+});
+
+test('the worker looks at its inbox right after the process starts, so the board knows the run reads it', async () => {
+  const harness = setup({ exitCode: 0, signal: null });
+  let looks = 0;
+  const look = harness.backend.runInbox.bind(harness.backend);
+  harness.backend.runInbox = async (id) => {
+    looks += 1;
+    return look(id);
+  };
+  harness.deps.run = async (_invocation, _taskId, _env, watch) => {
+    watch.start?.(fakeChannel().channel);
+    await settle();
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(harness.deps, 'w1');
+  assert.equal(looks, 1);
+});
+
+test('a stop with a message interrupts, hands the correction over and carries the run on', async () => {
+  const message = userMessage('use the other table');
+  const { channel, backend } = await runWith(async ({ watch, backend }) => {
+    backend.inboxes.set('w1', { stop: true, stopMessage: message.id, messages: [message] });
+    await watch.tick();
+    await settle();
+    await watch.tick();
+    await settle();
+    backend.tasks[0]!.status = 'needs-me';
+  });
+  assert.deepEqual(channel.calls, ['interrupt', 'send']);
+  assert.match(channel.sent[0] ?? '', /interrupted you on board task w1 to correct you:\n\nuse the other table/);
+  assert.ok(backend.writes.includes(`ack w1: ${message.id} stop`));
+  assert.ok(!backend.writes.some((w) => w.startsWith('stopped w1')), 'the agent finished by itself');
+});
+
+test('a stop request is acted on once, even when the acknowledgement was lost', async () => {
+  const message = userMessage('use the other table');
+  let attempts = 0;
+  const { channel, backend } = await runWith(async ({ watch, backend }) => {
+    backend.inboxes.set('w1', { stop: true, stopMessage: message.id, messages: [message] });
+    const ack = backend.ackMessages.bind(backend);
+    backend.ackMessages = async (id, request) => {
+      attempts += 1;
+      if (attempts === 1) throw new BackendError('ack-messages: cannot reach the board');
+      return ack(id, request);
+    };
+    for (let round = 0; round < 3; round += 1) {
+      await watch.tick();
+      await settle();
+    }
+    backend.tasks[0]!.status = 'needs-me';
+  });
+  assert.deepEqual(channel.calls, ['interrupt', 'send'], 'one interrupt and one delivery');
+  assert.equal(attempts, 2);
+  assert.ok(backend.writes.includes(`ack w1: ${message.id} stop`));
+});
+
+test('nothing is handed over once the run ended its stdin; the message stays pending', async () => {
+  const { channel, backend } = await runWith(async ({ watch, channel, backend }) => {
+    channel.channel.end();
+    backend.inboxes.set('w1', { stop: false, messages: [userMessage('too late')] });
+    await watch.tick();
+    await settle();
+    backend.tasks[0]!.status = 'needs-me';
+  });
+  assert.deepEqual(channel.sent, []);
+  assert.ok(!backend.writes.some((w) => w.startsWith('ack ')));
+  assert.equal(backend.inboxes.get('w1')?.messages.length, 1);
+});
+
+test('a message that cannot be decrypted is not handed over, and is acknowledged so it does not come back', async () => {
+  const unreadable = userMessage('', { unreadable: true });
+  const { channel, backend, calls } = await runWith(async ({ watch, backend }) => {
+    backend.inboxes.set('w1', { stop: false, messages: [unreadable] });
+    await watch.tick();
+    await settle();
+    backend.tasks[0]!.status = 'needs-me';
+  });
+  assert.deepEqual(channel.sent, []);
+  assert.ok(backend.writes.includes(`ack w1: ${unreadable.id}`));
+  assert.ok(calls.some((line) => /could not be decrypted.*acknowledged/.test(line)));
+});
+
+test('a board without the run inbox is left alone for the rest of the run', async () => {
+  let looks = 0;
+  const { calls, channel } = await runWith(async ({ watch, backend }) => {
+    backend.runInbox = async () => {
+      looks += 1;
+      const error = new BackendError('the board server does not support messages yet');
+      error.missingFeature = 'run-inbox';
+      throw error;
+    };
+    await watch.tick();
+    await settle();
+    await watch.tick();
+    await settle();
+  });
+  assert.equal(looks, 1);
+  assert.deepEqual(channel.calls, []);
+  assert.ok(calls.some((line) => /no run inbox/.test(line)));
+});
+
+test('the resume prompt of a run leaves out what the agent was handed while it ran', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  deps.sessions = fakeSessions([['w1', SESSION]]);
+  Object.assign(backend.tasks[0]!, { next: 'resume', sessionId: SESSION });
+  backend.notes.set('w1', [
+    note('earlier', new Date('2026-01-01T09:00:00Z'), { author: 'agent' }),
+    note('handed over mid-run', new Date('2026-01-01T09:10:00Z'), {
+      author: 'user',
+      deliveredAt: new Date('2026-01-01T09:11:00Z'),
+    }),
+    note('said after the stop', new Date('2026-01-01T09:20:00Z'), { author: 'user' }),
+  ]);
+  let prompt = '';
+  deps.run = async (invocation) => {
+    prompt = invocation.prompt;
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.match(prompt, /said after the stop/);
+  assert.doesNotMatch(prompt, /handed over mid-run/);
 });

@@ -1,31 +1,38 @@
 /**
  * One task: run `claude -p` for it, keep its log and transcript, and report failures on the task.
- * Started by the dispatcher as the transient unit agent-board-<id>. While the run goes on it checks every 15 seconds:
- * no tool call for inactivityMinutes, or a run longer than maxRunHours, stops it; a pause request that the
- * agent does not follow within a few minutes stops it too. It passes the agent's liveness on to the board.
+ * Started by the dispatcher as the transient unit agent-board-<id>. The agent's prompt and what comes after it travel on
+ * stdin as stream-json user messages, so the worker can talk to a running agent: it tells it that a pause was requested, and
+ * hands it what the user sends from the board, checking the board's run inbox every 15 seconds and whenever the board's event
+ * stream says tasks changed. While the run goes on it also checks: no tool call for inactivityMinutes, or a run longer than
+ * maxRunHours, interrupts it; so does a pause request that the agent does not follow within a few minutes. It passes the
+ * agent's liveness on to the board.
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { statSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isVocabularyRefusal, updateCliHint } from './backend.mts';
+import { BackendError, isVocabularyRefusal, loadWebConfig, updateCliHint, verifyContract } from './backend.mts';
+import { watchBoardChanges } from './changes.mts';
 import { buildContext, print, UsageError } from './cli.mts';
 import type { Context } from './cli.mts';
-import { isSafeTaskId } from '@agent-board/shared';
+import { isRecord, isSafeTaskId } from '@agent-board/shared';
 import { logLine, StreamCondenser } from '@agent-board/shared';
-import type { Task } from '@agent-board/shared';
+import type { RunInbox, Task } from '@agent-board/shared';
 import {
   buildInvocation,
   decideOutcome,
+  inboxMessageText,
   isRunOver,
   neverRun,
   ownLane,
+  pauseMessageText,
   PLUGIN_MARKETPLACE,
   planRun,
   pluginPlaceholders,
   supervise,
   unreadableForRun,
 } from './decide.mts';
+import { getPaths } from './config.mts';
 import { selfCommand } from './self.mts';
 import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
 import type { Invocation, Supervision } from './decide.mts';
@@ -45,16 +52,37 @@ export interface RunResult {
   stopped?: Exclude<Supervision, { kind: 'continue' }>;
 }
 
-// Called every `everyMs` while the process runs; a stop decision ends it (SIGTERM, then SIGKILL). A tick decides from the
-// clock and the run's own files alone: the calls to the board it starts (liveness, transcript) run on their own, so a board
-// that is slow, down or hostile cannot hold the run's limits back.
+// The worker's way to a running agent: its stdin.
+export interface RunChannel {
+  // Hands the agent a user message, which it takes up at its next tool boundary. False when stdin was closed already: nothing
+  // was written.
+  send: (text: string) => boolean;
+  // Stops what the agent is doing at once; its session stays resumable, and a message sent after the interrupt carries the run on.
+  interrupt: () => void;
+  // Closes stdin: the agent exits once its turn is over. Nothing can be sent after that.
+  end: () => void;
+  // Interrupt, end, and kill the process if it is still there after the kill grace: what a stop decision does.
+  stop: () => void;
+  readonly open: boolean;
+}
+
+// Called every `everyMs` while the process runs; a stop decision interrupts it and closes its stdin, and kills it (SIGTERM, then
+// SIGKILL) if it is still there `killGraceMs` later. A tick decides from the clock and the run's own files alone: the calls
+// to the board it starts (liveness, transcript, inbox) run on their own, so a board that is slow, down or hostile cannot hold
+// the run's limits back.
 export interface Watch {
   everyMs: number;
+  // Default: 30 seconds.
+  killGraceMs?: number;
+  // Called once the process runs, with the channel to it.
+  start?: (channel: RunChannel) => void;
   tick: () => Promise<Supervision>;
 }
 
-// How long a run may take to stop by itself after a pause was asked for.
-const PAUSE_GRACE_MINUTES = 5;
+// How long a run may take to end its turn by itself after a pause was asked for.
+const PAUSE_GRACE_MINUTES = 2;
+// How long a stopped process has to exit on its own before it is killed.
+const KILL_GRACE_MS = 30_000;
 // The board's liveness is updated at most this often.
 const HEARTBEAT_EVERY_MS = 15_000;
 
@@ -86,6 +114,9 @@ export interface WorkerDeps extends Context {
   // The hook command line for a task, given the run directory.
   hookCommand: (runDir: string, taskId: string) => string;
   now: () => Date;
+  // Calls `onChange` whenever the board says tasks changed; returns the function that stops listening. Without it only the
+  // watch's own tick looks at the run inbox.
+  watchChanges?: (onChange: () => void) => () => void;
   // The transcript backlog's byte budget; `createTranscriptUploader` has the default.
   maxPendingBytes?: number;
   watchEveryMs: number;
@@ -117,6 +148,10 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   if (refused !== undefined) return fail(refused);
 
   const fromIntake = task.createdBy === 'intake';
+  if (fromIntake && !config.intakeEnabled)
+    return fail(
+      'This task came from intake, and config.json on this machine has no intake block: its rules would be missing.',
+    );
   // What a new directory is sealed against: the task's own creator and schedule, as the board has them.
   const sealing = { createdBy: task.createdBy, scheduleId: task.scheduleId };
   const pluginRoots: Record<string, string> = {};
@@ -234,11 +269,114 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     const text = events.map(logLine).filter((part) => part !== undefined);
     return text.length > 0 ? text.join('\n') : undefined;
   };
+  // What the user sent the running agent: messages are handed over, a stop request interrupts it. One look at a time; a change
+  // that comes in meanwhile makes one more.
+  let channel: RunChannel | undefined;
+  let inboxOff = false;
+  let looking: Promise<void> | undefined;
+  let lookAgain = false;
+  // The messages the agent has been handed, so that a lost acknowledgement does not hand one over twice.
+  const handedOver = new Set<string>();
+  // An interrupt for a stop request is out and not acknowledged yet: the request is not acted on again.
+  let interrupted = false;
+  // The run was ended because the user asked for a stop, with nothing to carry on with.
+  let endedByStop = false;
+  let pauseTold = false;
+  const logFailure = (what: string, error: unknown): void => {
+    deps.appendLog(taskId, `${what}: ${error instanceof Error ? error.message : String(error)}`);
+  };
+  const handOver = async (live: RunChannel, inbox: RunInbox): Promise<string[]> => {
+    const acknowledged: string[] = [];
+    for (const message of inbox.messages) {
+      // Only the user's own comments are the agent's to read: the board's answer is not trusted to hold anything else.
+      if (message.author !== 'user' || message.kind !== 'comment') {
+        deps.appendLog(
+          taskId,
+          `a note in the run inbox is not a comment of the user's, so it was not handed to the agent; it is acknowledged so that it does not come back (${message.id})`,
+        );
+      } else if (message.unreadable) {
+        deps.appendLog(
+          taskId,
+          `a message of the user's could not be decrypted with this machine's data key, so it was not handed to the agent; it is acknowledged so that it does not come back (${message.id})`,
+        );
+      } else if (!handedOver.has(message.id)) {
+        if (!live.send(inboxMessageText(task.id, message, inbox.stop))) break;
+        handedOver.add(message.id);
+        deps.appendLog(taskId, `handed the agent a message of the user's (${message.id})`);
+      }
+      acknowledged.push(message.id);
+    }
+    return acknowledged;
+  };
+  const lookAtInbox = async (): Promise<void> => {
+    const live = channel;
+    if (inboxOff || live === undefined || !live.open) return;
+    let inbox: RunInbox;
+    try {
+      inbox = await backend.runInbox(task.id);
+    } catch (error) {
+      if (error instanceof BackendError && error.missingFeature !== undefined) {
+        inboxOff = true;
+        deps.appendLog(taskId, 'the board has no run inbox: messages and stop requests are not delivered');
+      } else if (!(error instanceof BackendError && error.status === 409)) logFailure('run inbox failed', error);
+      return;
+    }
+    // The run ended while the board answered.
+    if (!live.open) return;
+    const act = inbox.stop && !interrupted;
+    // A plain stop hands nothing over: what is pending stays pending. Stop & send hands over all of it, the stop's own message last.
+    const plainStop = inbox.stop && inbox.stopMessage === undefined;
+    if (act) {
+      if (!plainStop) live.interrupt();
+      interrupted = true;
+      deps.appendLog(taskId, 'the user asked to stop: interrupted the agent');
+    }
+    const ids = plainStop ? [] : await handOver(live, inbox);
+    // A message after the interruption carries the run on; without one the run ends.
+    if (inbox.stop && (plainStop || !inbox.messages.some((message) => handedOver.has(message.id)))) {
+      live.stop();
+      endedByStop = true;
+    }
+    if (ids.length === 0 && !inbox.stop) return;
+    try {
+      await backend.ackMessages(task.id, { ids, stop: inbox.stop });
+      if (inbox.stop) interrupted = false;
+    } catch (error) {
+      logFailure('acknowledging the run inbox failed', error);
+    }
+  };
+  const startLooking = (): Promise<void> => {
+    if (looking !== undefined) {
+      lookAgain = true;
+      return looking;
+    }
+    looking = lookAtInbox()
+      .catch((error: unknown) => logFailure('run inbox failed', error))
+      .finally(() => {
+        looking = undefined;
+        if (lookAgain) {
+          lookAgain = false;
+          void startLooking();
+        }
+      });
+    return looking;
+  };
   const watch: Watch = {
     everyMs: deps.watchEveryMs,
+    start: (live) => {
+      channel = live;
+      // The board marks the run as one that reads its inbox, which is what keeps a late message from being lost.
+      void startLooking();
+    },
     tick: async () => {
       void startBeat();
       void transcript.start();
+      void startLooking();
+      if (!pauseTold && channel?.open && files.pauseRequestedAt(taskId) !== undefined) {
+        pauseTold = channel.send(pauseMessageText(task.id));
+        if (pauseTold)
+          deps.appendLog(taskId, 'the lane needs the slot: asked the agent to post a status and end its turn');
+      }
       return supervise({
         now: deps.now(),
         startedAt,
@@ -256,14 +394,17 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     await backend.updateTask(task.id, { sessionId: run.sessionId });
   }
   let result: RunResult;
+  const stopListening = deps.watchChanges?.(() => void startLooking());
   try {
     void startBeat();
     result = await deps.run(plan.invocation, taskId, env, watch, onLine);
   } catch (error) {
+    stopListening?.();
     files.clear(taskId);
     if (run.kind === 'fresh') await backend.updateTask(task.id, { sessionId: null });
     return fail(error instanceof Error ? error.message : String(error));
   }
+  stopListening?.();
   await transcript.flush();
   if (result.stopped) deps.appendLog(taskId, result.stopped.message);
   const pauseRequested = files.pauseRequestedAt(taskId) !== undefined;
@@ -297,9 +438,14 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       signal: result.signal,
       stopped: result.stopped,
       pauseRequested,
+      stopRequested: endedByStop,
       reported: after.status !== 'running',
     });
     if (outcome.kind === 'ok') return;
+    if (outcome.kind === 'stopped') {
+      if (after.status === 'running') await backend.stopped(task.id, 'Stopped by you.');
+      return;
+    }
     if (outcome.kind === 'paused') {
       if (after.status === 'running')
         await backend.pause(
@@ -316,6 +462,24 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       taskId,
       `the board refused to show this task to this CLI, so the end of the run is not reported; ${updateCliHint()}`,
     );
+  }
+}
+
+// A user message as `claude --input-format stream-json` reads it.
+const userMessageLine = (text: string): string =>
+  `${JSON.stringify({ type: 'user', message: { role: 'user', content: text } })}\n`;
+
+const interruptLine = (): string =>
+  `${JSON.stringify({ type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } })}\n`;
+
+// Whether a line of the agent's output is the end of a turn.
+function isResultLine(line: string): boolean {
+  if (!line.includes('"result"')) return false;
+  try {
+    const parsed: unknown = JSON.parse(line);
+    return isRecord(parsed) && parsed['type'] === 'result';
+  } catch {
+    return false;
   }
 }
 
@@ -336,13 +500,59 @@ export function runProcess(
       detached: true,
       env: { ...process.env, ...env },
     });
-    // The prompt goes in on stdin, never in argv. A process that exits without reading it must not take the worker down.
+    // A process that exits without reading its stdin must not take the worker down.
     child.stdin?.on('error', () => undefined);
-    child.stdin?.end(invocation.prompt);
+    let ended = false;
+    let stopping = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    // An interrupt is out and its turn has not ended yet; `carryOn`: a message was sent after it, so the run goes on.
+    let interruptOut = false;
+    let carryOn = false;
+    const channel: RunChannel = {
+      get open() {
+        return !ended;
+      },
+      send(text) {
+        if (ended) return false;
+        child.stdin?.write(userMessageLine(text));
+        if (interruptOut) carryOn = true;
+        return true;
+      },
+      interrupt() {
+        if (ended) return;
+        child.stdin?.write(interruptLine());
+        interruptOut = true;
+      },
+      end() {
+        if (ended) return;
+        ended = true;
+        child.stdin?.end();
+      },
+      stop() {
+        // The agent is asked to stop first, so that its session ends cleanly and stays resumable.
+        channel.interrupt();
+        channel.end();
+        stopping = true;
+        killTimer ??= setTimeout(terminate, watch.killGraceMs ?? KILL_GRACE_MS);
+        killTimer.unref();
+      },
+    };
+    // The prompt goes in on stdin, never in argv, and stdin stays open for what follows.
+    child.stdin?.write(userMessageLine(invocation.prompt));
     let buffered = '';
     const emit = (line: string): void => {
       const text = onLine(line);
       if (text !== undefined) writeSync(fd, `${text}\n`);
+      // The turn is over and nothing is waiting to be written: close stdin, and the agent exits.
+      if (!isResultLine(line)) return;
+      if (interruptOut) {
+        interruptOut = false;
+        if (carryOn) {
+          carryOn = false;
+          return;
+        }
+      }
+      channel.end();
     };
     child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
       buffered += chunk;
@@ -361,6 +571,10 @@ export function runProcess(
         // already gone
       }
     };
+    const terminate = (): void => {
+      killGroup('SIGTERM');
+      setTimeout(() => killGroup('SIGKILL'), 10_000).unref();
+    };
     let checking = false;
     const timer = setInterval(() => {
       if (checking || stopped) return;
@@ -370,8 +584,7 @@ export function runProcess(
         .then((decision) => {
           if (decision.kind === 'continue' || stopped) return;
           stopped = decision;
-          killGroup('SIGTERM');
-          setTimeout(() => killGroup('SIGKILL'), 10_000).unref();
+          channel.stop();
         })
         .catch(() => undefined)
         .finally(() => {
@@ -384,6 +597,8 @@ export function runProcess(
       if (finished) return false;
       finished = true;
       clearInterval(timer);
+      clearTimeout(killTimer);
+      ended = true;
       if (buffered !== '') emit(buffered);
       closeLog(fd);
       return true;
@@ -394,8 +609,11 @@ export function runProcess(
     });
     child.on('close', (exitCode, signal) => {
       if (!finish()) return;
+      // What a stopped agent left running goes with it.
+      if (stopping) terminate();
       resolve(stopped ? { exitCode, signal, stopped } : { exitCode, signal });
     });
+    watch.start?.(channel);
   });
 }
 
@@ -428,6 +646,33 @@ export async function workerMain(taskId: string): Promise<void> {
     files: createRunFiles(),
     hookCommand,
     now: () => new Date(),
+    watchChanges: (onChange) => {
+      const stop = new AbortController();
+      void (async () => {
+        try {
+          const config = loadWebConfig(getPaths().configDir);
+          // A board without the stream is only checked on the timer.
+          if (!(await verifyContract(config)).features.has('events')) return;
+          await watchBoardChanges(
+            {
+              config,
+              fetch: (url, init) => fetch(url, init),
+              onChange,
+              log: (line) => appendLog(taskId, line),
+              retryMs: 10_000,
+              idleMs: 60_000,
+            },
+            stop.signal,
+          );
+        } catch (error) {
+          appendLog(
+            taskId,
+            `no event stream for the run inbox: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      })();
+      return () => stop.abort();
+    },
     watchEveryMs: 15_000,
   };
   try {

@@ -1,6 +1,7 @@
 import type { IntakeConfig, Lane } from './config.mts';
 import {
   formatAnswers,
+  isModelName,
   isSafeWorkdir,
   isSessionId,
   parsePrUrl,
@@ -79,7 +80,7 @@ export function supervise(input: {
     return {
       kind: 'stop',
       why: 'pause-forced',
-      message: `The run did not stop within ${input.pauseGraceMinutes} minutes of the pause request and was stopped.`,
+      message: `The run did not end its turn within ${input.pauseGraceMinutes} minutes of the pause request and was interrupted.`,
     };
   }
   if (minutesSince(input.startedAt) > input.limits.maxRunHours * 60) {
@@ -234,10 +235,17 @@ export function pinnedMachine(task: Task): string | undefined {
 }
 
 // Why this machine leaves a todo task to another one, or undefined when it can run it.
-export function notServableHere(task: Task, machine: string, repos: Record<string, string>): string | undefined {
+export function notServableHere(
+  task: Task,
+  machine: string,
+  repos: Record<string, string>,
+  intakeEnabled: boolean,
+): string | undefined {
   const pinned = pinnedMachine(task);
   if (pinned !== undefined && pinned !== machine) return `pinned to ${pinned}`;
   if (task.createdBy === 'intake') {
+    // Intake's tasks run on untrusted PR text under intake's rules, which only an `intake` block holds.
+    if (!intakeEnabled) return 'no intake block in config.json here';
     const pr = parsePrUrl(prUrlIn(task.input) ?? '');
     // An intake task without a PR URL is claimed and fails with the reason; one for a repo without a checkout here waits.
     if (pr !== undefined && !Object.hasOwn(repos, pr.repo)) return `no checkout of ${pr.repo} here`;
@@ -257,10 +265,37 @@ const byTime = (notes: Note[]): Note[] => [...notes].sort((a, b) => a.createdAt.
 const userNotes = (notes: Note[]): Note[] =>
   notes.filter((note) => note.author === 'user' && (note.kind === 'answer' || note.kind === 'comment'));
 
-// The user's reply since the agent last spoke, oldest first.
-export function userReply(notes: Note[]): Note[] {
+/**
+ * The user's reply, oldest first: what they wrote since the agent last spoke, and the messages they sent the running agent
+ * since the previous run started that it was never handed (they may sit before the agent's last note). Without what the agent
+ * already got while the run went on. `runStartedAt` is when this run was claimed.
+ */
+export function userReply(notes: Note[], runStartedAt: Date | null = null): Note[] {
   const sorted = byTime(notes);
-  return userNotes(sorted.slice(sorted.findLastIndex((note) => note.author === 'agent') + 1));
+  const lastStart = previousRunStart(notes, runStartedAt);
+  const spoken = userNotes(sorted.slice(sorted.findLastIndex((note) => note.author === 'agent') + 1));
+  const queued = userNotes(
+    sorted.filter((note) => note.queued === true && (lastStart === undefined || note.createdAt > lastStart)),
+  );
+  const seen = new Set<string>();
+  return byTime([...spoken, ...queued]).filter((note) => {
+    if (note.deliveredAt !== undefined || seen.has(note.id)) return false;
+    seen.add(note.id);
+    return true;
+  });
+}
+
+// A message of the user's, as the running agent gets it. After an interruption it is the correction to what it was doing.
+export function inboxMessageText(taskId: string, note: Note, afterInterrupt: boolean): string {
+  const lead = afterInterrupt
+    ? `The user interrupted you on board task ${taskId} to correct you:`
+    : `The user sent you a message on board task ${taskId} while you work:`;
+  return `${lead}\n\n${noteText(note)}`;
+}
+
+// What the agent is told when its lane's slot is needed; it ends its turn and is resumed in this session.
+export function pauseMessageText(taskId: string): string {
+  return `Pause requested: this machine needs the slot for other work. Post a one-line status of where you are with \`board comment ${taskId} "..."\`, then end your turn without any other tool call. You will be resumed later in this same session.`;
 }
 
 // A note as the agent reads it; an answer comes with the questions the user was shown, from its own envelope.
@@ -323,7 +358,7 @@ function wokenLine(task: Task, notes: Note[]): string {
 }
 
 export function buildResumePrompt(task: Task, notes: Note[]): string | undefined {
-  const reply = userReply(notes);
+  const reply = userReply(notes, task.runStartedAt);
   const paused = task.paused;
   const woken = task.woken;
   if (reply.length === 0 && !paused && !woken) return undefined;
@@ -366,7 +401,8 @@ export function planRun(task: Task, notes: Note[], options: RunPlanOptions): Run
           kind: 'blocked',
           reason: `The board asks to resume Claude session ${task.sessionId}, which this machine did not start for this task, so the run was not started. Use Re-run fresh to start over.`,
         };
-      if (userReply(notes).some((note) => note.unreadable)) return { kind: 'blocked', reason: UNREADABLE_NOTE_REASON };
+      if (userReply(notes, task.runStartedAt).some((note) => note.unreadable))
+        return { kind: 'blocked', reason: UNREADABLE_NOTE_REASON };
       return { kind: 'resume', sessionId: task.sessionId.toLowerCase(), prompt };
     }
   }
@@ -389,7 +425,12 @@ export function isRunOver(
   return after.status === 'running' && after.runStartedAt?.getTime() !== started.runStartedAt?.getTime();
 }
 
-export type Outcome = { kind: 'ok' } | { kind: 'failed'; reason: string } | { kind: 'unreported' } | { kind: 'paused' };
+export type Outcome =
+  | { kind: 'ok' }
+  | { kind: 'failed'; reason: string }
+  | { kind: 'unreported' }
+  | { kind: 'paused' }
+  | { kind: 'stopped' };
 
 export function decideOutcome(input: {
   exitCode: number | null;
@@ -398,11 +439,15 @@ export function decideOutcome(input: {
   stopped: Exclude<Supervision, { kind: 'continue' }> | undefined;
   // The dispatcher asked the run to give up its slot.
   pauseRequested: boolean;
+  // The worker ended the run because the user asked it to stop.
+  stopRequested: boolean;
   // The task is no longer Running: the agent reported, the user answered, or the task was taken back.
   reported: boolean;
 }): Outcome {
-  // A run that reported before it noticed the pause is simply done.
-  if (input.reported) return input.exitCode === 0 || input.pauseRequested ? { kind: 'ok' } : failed(input);
+  // A run that reported before it noticed the pause or the stop is simply done.
+  if (input.reported)
+    return input.exitCode === 0 || input.pauseRequested || input.stopRequested ? { kind: 'ok' } : failed(input);
+  if (input.stopRequested) return { kind: 'stopped' };
   if (input.pauseRequested) return { kind: 'paused' };
   if (input.stopped) return { kind: 'failed', reason: input.stopped.message };
   if (input.exitCode !== 0) return failed(input);
@@ -470,7 +515,8 @@ export interface Invocation {
   // Options only, and never the prompt: `claude` would read a prompt that starts with a dash as an option, and some options
   // start things (`--mcp-config`) before any permission applies.
   args: string[];
-  // The prompt, from the board (a sealed prompt, a reply). It reaches `claude` on stdin, which is only ever text.
+  // The prompt, from the board (a sealed prompt, a reply). It reaches `claude` on stdin as the first user message of the
+  // stream-json input, JSON-encoded, so it is only ever text.
   prompt: string;
   cwd: string;
 }
@@ -486,12 +532,14 @@ export function boardRules(task: Task): string {
     `- When the work is done, post a short summary with \`board comment\`, then \`board move ${task.id} needs-me\`. Attach to that comment the reply you expect the user to send next, in their voice (for example a go-ahead for your proposed next step): \`board comment --suggest "<reply>" ${task.id} "<summary>"\`. Skip it when no single reply is obvious, and if the board refuses \`--suggest\`, post the comment without it.`,
     `- To suggest follow-up work, write it to a file in /tmp and run \`board add --title "<title>" --file <path> --parent ${task.id}\`; the user starts it.`,
     '- Do not end your turn while a background agent or background command you started is still running: this run ends when your turn does. Run subagents in the foreground, or wait for their result before ending your turn.',
-    '- If a tool call is refused with "Pause requested", post a one-line status with `board comment` and end your turn; you will be resumed here.',
+    '- If you are told that a pause was requested, post a one-line status with `board comment` and end your turn; you will be resumed here.',
+    '- The user may send you a message while you work, or interrupt you with a correction. Take it as the latest instruction on the task.',
     ...(task.createdBy === 'intake'
       ? []
       : [
           `- Work on your own. Decide and act without asking on whatever is easy to undo and stays on this machine: reading, editing files, running tests and builds, local branches, worktrees and commits, scratch files in /tmp. Where the prompt leaves a gap, make a reasonable choice and name it in your report. Use \`board ask\` only before a step that is hard to undo or that other people see, unless the prompt asked for that step: force-pushing, deleting branches or data, merging, deploying, posting to Slack, Shortcut, email or someone else's PR or issue.`,
           `- A prompt that asks you to implement, fix or change code in a git repository is the user's request to commit, push and open a PR, and the result it expects is that PR. Work on a new branch, never the default branch; if the checkout holds changes that are not yours, work in a new git worktree. Commit, push with \`git push -u origin HEAD\`, and open the PR with \`gh pr create\`. If the repository's CI has to be started or approved by hand (its CLAUDE.md or skills say so and how), start it; otherwise CI runs on push. Wait for CI as the next rule says, and fix what fails. Put the PR link in your final \`board comment\`. A task that asks only for a plan, an investigation or a review opens no PR.`,
+          `- Right after you open a pull request for this task, run \`board pr ${task.id} <url>\`: the board shows it on the task's card and page. A later PR replaces the earlier one.`,
           `- When you have to wait for something outside that takes minutes or longer (CI, a deploy, a review), do not sleep or poll in this run: run \`board wait ${task.id} --check '<command>' --reason "<what you wait for>"\` with a command that exits 0 once the wait is over (\`--every <dur>\` how often it runs, default 2m; \`--timeout <dur>\` when to give up, default 2h), or \`board wait ${task.id} --in 30m --reason "<what you wait for>"\` for a plain timer, then end your turn. The task frees its slot, and you are resumed in this session when the check passes or the time is up.`,
         ]),
     ...(task.createdBy === 'intake'
@@ -514,7 +562,7 @@ export function buildInvocation(input: {
   home: string;
   // Roots of the plugins intake's rules name ({pr-review} and the like).
   pluginRoots: Record<string, string>;
-  // The PreToolUse hook command (heartbeat, pause, questions).
+  // The PreToolUse hook command (heartbeat, working directory, questions).
   hookCommand?: string;
 }): InvocationPlan {
   const { task, intake } = input;
@@ -527,6 +575,8 @@ export function buildInvocation(input: {
   if (!isSessionId(input.run.sessionId)) return { ok: false, reason: 'The session id is not a UUID.' };
   if (task.workdir !== null && !isSafeWorkdir(task.workdir))
     return { ok: false, reason: 'The task directory is not an absolute path.' };
+  if (task.model !== null && !isModelName(task.model))
+    return { ok: false, reason: 'The task model is not a model name.' };
 
   // Where it runs: a resume where the session stopped; a scheduled task in its own directory; a task whose prompt
   // names a PR in that repo's checkout (an intake review always); else its lane's directory, else the default one.
@@ -562,13 +612,18 @@ export function buildInvocation(input: {
   const args = [
     '-p',
     session,
+    // One argument, like the session id.
+    ...(task.model === null ? [] : [`--model=${task.model}`]),
     // Every event as a JSON line: the worker keeps a readable log and sends the transcript to the board.
     '--output-format',
+    'stream-json',
+    // Messages and an interrupt can follow the prompt on stdin while the run goes on.
+    '--input-format',
     'stream-json',
     '--verbose',
     '--append-system-prompt',
     boardRules(task),
-    // The heartbeat, pause and question hook, inline.
+    // The heartbeat and question hook, inline.
     '--settings',
     JSON.stringify(settings),
   ];

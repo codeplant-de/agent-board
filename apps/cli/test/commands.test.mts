@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { API_VERSION } from '@agent-board/shared';
@@ -59,6 +60,17 @@ test('a comment takes a suggested reply before the task, and never reads one out
     `note ${ID}: Ready for review [suggest: Yes, open the PR.]`,
     `note ${ID}: asks --suggest nothing`,
   ]);
+});
+
+test('board pr reports the pull request of a task, and refuses anything but a GitHub pull request URL', async () => {
+  const { backend, printed, go } = setup();
+  const url = 'https://github.com/acme/app/pull/17741';
+  await go(['pr', ID, url]);
+  assert.deepEqual(backend.writes, [`pr ${ID} ${url}`]);
+  assert.match(printed.join('\n'), new RegExp(`reported ${url} for ${ID}`));
+  for (const bad of [`${url}/files`, 'https://github.com/acme/app/issues/3', 'http://github.com/acme/app/pull/1', 'x'])
+    await assert.rejects(go(['pr', ID, bad]), UsageError, bad);
+  assert.equal(backend.writes.length, 1);
 });
 
 test('a suggested reply can come from a file in /tmp, and not from both', async () => {
@@ -277,6 +289,7 @@ function words(command: string, files: { questions: string; prompt: string }): s
     .replaceAll('${taskId}', ID)
     .replaceAll('<task>', ID)
     .replace(/<path>/g, files.prompt)
+    .replace(/<url>/g, 'https://github.com/acme/app/pull/1')
     .replace(/\/tmp\/pr-[^/]*-questions\.json/, files.questions)
     .replace(/<[^>]*>/g, 'x');
   return [...concrete.matchAll(/"([^"]*)"|(\S+)/g)].map((match) => match[1] ?? match[2] ?? '').slice(1);
@@ -326,6 +339,7 @@ test('every board command in the run rules, the hook messages and the selftest s
             .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( \\[suggest: .*\\])?$`,
         ),
         move: /^status Zt0Test1 -> needs-me$/,
+        pr: /^pr Zt0Test1 https:\/\/github\.com\/acme\/app\/pull\/1$/,
         ask: /^ask Zt0Test1: Color$/,
         add: /^create .* \| do the thing \| $/,
         wait: /^wait Zt0Test1 until \S+( check)?: x/,
@@ -334,7 +348,7 @@ test('every board command in the run rules, the hook messages and the selftest s
       if (verb in expected) assert.match(action, expected[verb] as RegExp, command);
       else assert.deepEqual(backend.writes, [], command);
     }
-    for (const verb of ['comment', 'move', 'ask', 'add', 'show', 'wait'])
+    for (const verb of ['comment', 'move', 'ask', 'add', 'show', 'wait', 'pr'])
       assert.ok(verbs.has(verb), `no ${verb} command found in the sources`);
   } finally {
     rmSync(dir, { recursive: true });
@@ -386,6 +400,24 @@ test('internal dispatch, intake and worker say they need Linux elsewhere', async
       /needs Linux with systemd; this is darwin/,
       argv.join(' '),
     );
+});
+
+test('internal intake refuses with a usage error when config.json has no intake key', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-intake-off-'));
+  try {
+    writeFileSync(join(dir, 'config.json'), '{"machine": "box"}');
+    await assert.rejects(
+      runBoard(['internal', 'intake'], { env: { AGENT_BOARD_CONFIG_DIR: dir }, platform: 'linux' }),
+      (error) =>
+        error instanceof UsageError && /intake is not enabled: config\.json has no intake key/.test(error.message),
+    );
+    await assert.rejects(
+      runBoard(['internal', 'intake'], { env: { AGENT_BOARD_CONFIG_DIR: join(dir, 'none') }, platform: 'linux' }),
+      UsageError,
+    );
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });
 
 test('wait --in parks a running task until then, and stores no check', async () => {

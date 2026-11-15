@@ -21,10 +21,16 @@ export const MIN_SERVER = 9;
 
 export const STATUSES = ['backlog', 'todo', 'running', 'waiting', 'needs-me', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
+// Where a new task may start. Running and Waiting need a run behind them and Done a close, which only their own commands do.
+export const DRAFT_STATUSES = ['backlog', 'todo', 'needs-me'] as const satisfies readonly Status[];
+export type DraftStatus = (typeof DRAFT_STATUSES)[number];
 
 // What the next run of a task does: start over, or resume the Claude session of the last run with the user's reply.
 export const NEXT_RUNS = ['fresh', 'resume'] as const;
 export type NextRun = (typeof NEXT_RUNS)[number];
+
+export const PR_STATES = ['open', 'merged', 'closed'] as const;
+export type PrState = (typeof PR_STATES)[number];
 
 export const NOTE_AUTHORS = ['agent', 'user', 'system'] as const;
 export type NoteAuthor = (typeof NOTE_AUTHORS)[number];
@@ -43,6 +49,14 @@ export const PRIORITIES = ['urgent', 'high', 'normal', 'low'] as const;
 export type Priority = (typeof PRIORITIES)[number];
 export const DEFAULT_PRIORITY: Priority = 'normal';
 
+// The aliases the board offers for a task's Claude model; any name that `isModelName` accepts may be used, a full id included.
+export const MODEL_ALIASES = [
+  { value: 'fable', label: 'Fable' },
+  { value: 'opus', label: 'Opus' },
+  { value: 'sonnet', label: 'Sonnet' },
+  { value: 'haiku', label: 'Haiku' },
+] as const;
+
 // A running task whose agent has been quiet this long looks stuck: the board shows it red.
 export const QUIET_LIMIT_MS = 10 * 60_000;
 
@@ -52,6 +66,12 @@ export const TAKE_BACK_AFTER_MS = 20 * 60_000;
 
 // How far ahead an agent may set a wait's end: the longest it can park a task in Waiting.
 export const MAX_WAIT_MS = 7 * 24 * 60 * 60_000;
+
+// The largest count the database holds in an `integer` column (a schedule's runs left, a transcript event's seq).
+export const MAX_INT32 = 2_147_483_647;
+
+// The longest interval a schedule may repeat at; far beyond it, the date arithmetic of the next run breaks.
+export const MAX_INTERVAL_MS = 10 * 365 * 24 * 60 * 60_000;
 
 export const TASK_CREATORS = ['intake', 'user', 'agent'] as const;
 export type TaskCreator = (typeof TASK_CREATORS)[number];
@@ -74,6 +94,9 @@ export interface Task {
   labels: string[];
   status: Status;
   priority: Priority;
+  // The Claude model the runs use (`claude --model`): an alias or a full id; null is claude's default. A clear value from the
+  // server, so a worker shape-checks it with `isModelName` again before it reaches argv.
+  model: string | null;
   closed: boolean;
   // The machine that claimed the task last; a resume runs only there, because the Claude session lives on it.
   machine: string | null;
@@ -111,6 +134,14 @@ export interface Task {
   // The task left Waiting for Todo (its wait ended) and has not run since. Like `paused`, kept through the claim so the
   // worker that resumes it can tell the agent, and cleared by that worker's first `update-task` of the run.
   woken: boolean;
+  // The PR the task's agent reported with `board pr`; null for none, or for one that is not a GitHub PR URL.
+  pr: string | null;
+  // GitHub's state of the task's PR (`statePrOf`) as intake last saw it; null while unknown. Clear, not sealed: it tells the
+  // board only that some PR of the task merged, never which.
+  prState: PrState | null;
+  // While it runs: the user asked for the run to be interrupted and no worker has acted on it yet. Absent from a server
+  // without the `run-inbox` feature.
+  stopRequested?: boolean;
   unreadable: UnreadableField[];
 }
 
@@ -145,6 +176,30 @@ export interface Note {
   questionNoteId?: string;
   // kind "comment" by the agent: a ready-to-send reply in the user's voice, for the user to use or edit.
   suggestion?: string;
+  // A message the user sent to the running agent that no worker has handed over yet.
+  pending?: boolean;
+  // When a worker handed the message to the running agent (`ack-messages`); a resume prompt does not repeat it.
+  deliveredAt?: Date;
+  // The user wrote it to a running agent. Never cleared: a resume carries the ones that were never handed over, wherever they
+  // fall in the thread.
+  queued?: boolean;
+}
+
+// What the user sent to a running task since the worker last looked: stop asks the worker to interrupt the run, and the
+// messages (oldest first) are for it to hand to the agent.
+export interface RunInbox {
+  stop: boolean;
+  // With `stop`: the message that belongs to the request (Stop & send), among `messages`. Without it the stop is plain: the
+  // run ends, and the pending messages stay pending.
+  stopMessage?: string;
+  messages: Note[];
+}
+
+export interface AckMessages {
+  // Messages handed to the agent; they stop being pending.
+  ids: string[];
+  // The worker acted on the stop request: it is cleared, so one request is acted on once.
+  stop?: boolean;
 }
 
 export interface TaskDraft {
@@ -152,10 +207,12 @@ export interface TaskDraft {
   id?: string;
   title: string;
   input: string;
-  // Default: todo. A task an agent proposes is always created in needs-me, whatever it names.
-  status?: Status;
+  // Default: todo. A task an agent proposes is always created in backlog, whatever it names.
+  status?: DraftStatus;
   // Default: the parent's priority for a follow-up, otherwise normal.
   priority?: Priority;
+  // Default: claude's default model.
+  model?: string;
   // Unique per board: a second add-task with the same key returns the first task instead of a new one. The CLI sends the
   // blind index of the key, never the key.
   dedupeKey?: string;
@@ -202,6 +259,8 @@ export interface Schedule {
   title: string;
   input: string;
   priority: Priority;
+  // The model of every occurrence; null is claude's default.
+  model: string | null;
   // Pins the occurrences to a machine and the directory they run in there.
   machine: string | null;
   workdir: string | null;
@@ -231,6 +290,8 @@ export interface ScheduleDraft {
   title: string;
   input: string;
   priority?: Priority;
+  // Default: claude's default model.
+  model?: string;
   machine?: string;
   workdir?: string;
   // Exactly one of `everyMs` and `cron`; a cron expression needs its `timezone` (IANA name).
@@ -302,6 +363,14 @@ export interface Backend {
   // A wait ended: if the task is still waiting (and not closed), adds the text as a system event and moves it to the top of
   // Todo, resumed next in its session, in one step.
   wake(id: string, text: string): Promise<WakeResult>;
+  // The user's stop request and pending messages for a running task of this machine; the server refuses with 409 when the
+  // task is not running and 403 for another machine's task.
+  runInbox(id: string): Promise<RunInbox>;
+  // Marks messages as handed to the agent and, with `stop`, the stop request as acted on.
+  ackMessages(id: string, ack: AckMessages): Promise<void>;
+  // The run was ended on the user's request: while the task still runs, adds the text as a system event and moves it to
+  // needs-me (or, with messages that were not handed over, back to Todo to resume with them).
+  stopped(id: string, text: string): Promise<Task>;
   // Appends events to a run's transcript; an event already stored (same run and seq) is kept as it is.
   transcript(id: string, batch: TranscriptBatch): Promise<void>;
   // Oldest first.
@@ -315,14 +384,25 @@ export interface Backend {
   removeSchedule(id: string): Promise<void>;
   // The value `Task.head` has for a PR head sha: the board holds only a blind index of it.
   indexHead(sha: string): Promise<string>;
+  // The agent of a task reports the PR it opened for it; the last one wins. `url` must be a GitHub PR URL.
+  setPr(id: string, url: string): Promise<void>;
+  // Intake records GitHub's state of the task's PR (`statePrOf`).
+  setPrState(id: string, prState: PrState): Promise<void>;
 }
 
 // What the board server stores and returns: the sealed fields are envelopes (`abe1.…`) it cannot read. Values the server
 // returns may also be legacy plain text from before encryption; only what a client sends is checked to be sealed.
 
-type SealedTaskFields = 'title' | 'input' | 'workdir' | 'labels' | 'unreadable';
+type SealedTaskFields = 'title' | 'input' | 'workdir' | 'pr' | 'labels' | 'unreadable';
 
-export type WireTask = Omit<Task, SealedTaskFields> & { title: string; input: string; workdir: string | null };
+// `pr` is the sealed "pr", or null; a server without the `task.pr` feature leaves it out, and without `task.pr-state`
+// it leaves out `prState`.
+export type WireTask = Omit<Task, SealedTaskFields> & {
+  title: string;
+  input: string;
+  workdir: string | null;
+  pr: string | null;
+};
 
 export type WireSchedule = Omit<Schedule, 'title' | 'input' | 'workdir' | 'unreadable'> & {
   title: string;
@@ -347,6 +427,16 @@ export interface WireNote {
   questionNoteId?: string;
   // Sealed "note.suggestion", on a comment by the agent only.
   suggestion?: string;
+  // Absent on a server without the `run-inbox` feature.
+  pending?: boolean;
+  deliveredAt?: Date;
+  queued?: boolean;
+}
+
+export interface WireRunInbox {
+  stop: boolean;
+  stopMessage?: string;
+  messages: WireNote[];
 }
 
 // A task draft with its id; title, input and workdir are sealed, dedupeKey and head are blind indexes.
@@ -362,6 +452,16 @@ export interface WireNoteInput {
   preview?: string | null;
   // Sealed "note.suggestion"; only an agent comment (add-note) may carry one.
   suggestion?: string;
+}
+
+// Body of set-pr: the sealed "pr".
+export interface WirePr {
+  pr: string;
+}
+
+// Body of set-pr-state.
+export interface WirePrState {
+  prState: PrState;
 }
 
 export interface WireAsk {
@@ -417,12 +517,17 @@ export interface WireBackend {
   fail(id: string, note: WireNoteInput): Promise<WireFailResult>;
   wait(id: string, wait: WireWait): Promise<WireTask>;
   wake(id: string, note: WireNoteInput): Promise<WireWakeResult>;
+  runInbox(id: string): Promise<WireRunInbox>;
+  ackMessages(id: string, ack: AckMessages): Promise<void>;
+  stopped(id: string, note: WireNoteInput): Promise<WireTask>;
   transcript(id: string, batch: WireTranscriptBatch): Promise<void>;
   readNotes(id: string): Promise<WireNote[]>;
   addSchedule(draft: WireScheduleDraft): Promise<WireAddScheduleResult>;
   listSchedules(): Promise<WireSchedule[]>;
   updateSchedule(id: string, patch: SchedulePatch): Promise<WireSchedule>;
   removeSchedule(id: string): Promise<void>;
+  setPr(id: string, body: WirePr): Promise<void>;
+  setPrState(id: string, body: WirePrState): Promise<void>;
 }
 
 // The characters of a suggested reply the board takes.
@@ -434,6 +539,7 @@ export const SEALED_LIMITS: Record<Field, number> = {
   title: 4 * 300,
   input: 4 * 200_000,
   workdir: 4096,
+  pr: 1024,
   'note.body': 4 * 100_000,
   'note.preview': 4 * 300,
   'note.suggestion': 4 * NOTE_SUGGESTION_CHARS,
@@ -443,13 +549,23 @@ export const SEALED_LIMITS: Record<Field, number> = {
   'tr.output': 4 * 256 * 1024 + 4096,
 };
 
+/** Throws when `text` is more UTF-8 than the board takes for `field`; the error names the size and the limit. */
+export function checkSealedSize(field: Field, text: string, what: string): void {
+  const limit = SEALED_LIMITS[field];
+  const size = new TextEncoder().encode(text).length;
+  if (size > limit)
+    throw new ContractError(`${what} is too long: ${size} bytes of UTF-8, and the board takes at most ${limit}`);
+}
+
 // A tool result is cut at 256 KiB characters plus a short note; a client reporting more is lying or broken.
 export const MAX_OUTPUT_SIZE = 256 * 1024 + 1024;
 
 export class ContractError extends Error {}
 
-// "dispatch" and "intake" would make the worker unit agent-board-<id> collide with the tool's own units.
-const RESERVED_TASK_IDS = ['dispatch', 'intake'];
+// The CLI's own systemd units are agent-board-<name>, the same shape as a worker unit agent-board-<task id>,
+// so these names can never be task ids. Add a name here before the CLI installs a unit with it.
+export const TOOL_UNIT_NAMES = ['dispatch', 'intake', 'listen'] as const;
+const RESERVED_TASK_IDS: readonly string[] = TOOL_UNIT_NAMES;
 
 // The id ends up in a systemd unit name, a log file name and argv, so the CLI checks every id it reads from the board or its arguments.
 export function isSafeTaskId(id: string): boolean {
@@ -538,11 +654,20 @@ function oneOf<T extends string>(values: readonly T[]): (value: unknown) => valu
 }
 
 export const isStatus = oneOf(STATUSES);
+export const isDraftStatus = oneOf(DRAFT_STATUSES);
 export const isNextRun = oneOf(NEXT_RUNS);
-export const isNoteAuthor = oneOf(NOTE_AUTHORS);
+export const isWireNoteAuthor = oneOf(WIRE_NOTE_AUTHORS);
 export const isNoteKind = oneOf(NOTE_KINDS);
 export const isTaskCreator = oneOf(TASK_CREATORS);
 export const isPriority = oneOf(PRIORITIES);
+
+// The characters carry the protection: a model name reaches argv as one `--model=` argument and is shown in the UI. It fits
+// the aliases (`opus`) and full ids (`claude-opus-5-5`, `claude-sonnet-5-5[1m]`).
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._\-[\]]{0,63}$/;
+
+export function isModelName(value: string): boolean {
+  return MODEL_NAME.test(value);
+}
 
 /** The server's one check of a sealed value: it is an envelope and within the field's size limit. */
 export function parseSealed(value: unknown, field: Field, what: string): string {
@@ -576,6 +701,20 @@ function nullableString(obj: Record<string, unknown>, key: string, what: string)
   return value;
 }
 
+/** The `model` of a task or schedule; a server that predates the key leaves it out, which means claude's default. */
+function modelOf(obj: Record<string, unknown>, what: string): string | null {
+  const value = obj['model'] ?? null;
+  if (value !== null && !(typeof value === 'string' && isModelName(value)))
+    throw new ContractError(`${what}.model is not a model name`);
+  return value;
+}
+
+function modelName(obj: Record<string, unknown>, what: string): string {
+  const value = obj['model'];
+  if (typeof value !== 'string' || !isModelName(value)) throw new ContractError(`${what}.model is not a model name`);
+  return value;
+}
+
 function nullableDate(obj: Record<string, unknown>, key: string, what: string): Date | null {
   const value = nullableString(obj, key, what);
   if (value === null) return null;
@@ -590,10 +729,11 @@ function date(obj: Record<string, unknown>, key: string, what: string): Date {
   return value;
 }
 
-function positiveInt(obj: Record<string, unknown>, key: string, what: string): number {
+function positiveInt(obj: Record<string, unknown>, key: string, what: string, max = Number.MAX_SAFE_INTEGER): number {
   const value = obj[key];
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
     throw new ContractError(`${what}.${key} must be a positive integer`);
+  if (value > max) throw new ContractError(`${what}.${key} must be at most ${max}`);
   return value;
 }
 
@@ -627,7 +767,7 @@ function sessionId(value: string | null, what: string): string | null {
   return value;
 }
 
-function rejectUnknownKeys(obj: Record<string, unknown>, allowed: string[], what: string): void {
+export function rejectUnknownKeys(obj: Record<string, unknown>, allowed: string[], what: string): void {
   const extra = Object.keys(obj).find((key) => !allowed.includes(key));
   if (extra !== undefined) throw new ContractError(`${what} has an unknown key "${extra}"`);
 }
@@ -693,10 +833,13 @@ export function parseWireTask(value: unknown): WireTask {
     input: string(obj, 'input', 'task'),
     status: member(obj, 'status', 'task', STATUSES),
     priority: member(obj, 'priority', 'task', PRIORITIES),
+    model: modelOf(obj, 'task'),
     closed: boolean(obj, 'closed', 'task'),
     machine,
     sessionId: sessionId(nullableString(obj, 'sessionId', 'task'), 'task'),
     workdir: nullableString(obj, 'workdir', 'task'),
+    pr: obj['pr'] === undefined ? null : nullableString(obj, 'pr', 'task'),
+    prState: PR_STATES.find((state) => state === obj['prState']) ?? null,
     next: member(obj, 'next', 'task', NEXT_RUNS),
     head: obj['head'] === null ? null : head(obj['head'], 'task'),
     openQuestion: boolean(obj, 'openQuestion', 'task'),
@@ -711,6 +854,7 @@ export function parseWireTask(value: unknown): WireTask {
     wakeAt: nullableDate(obj, 'wakeAt', 'task'),
     waitCheck: boolean(obj, 'waitCheck', 'task'),
     woken: boolean(obj, 'woken', 'task'),
+    ...(obj['stopRequested'] === undefined ? {} : { stopRequested: boolean(obj, 'stopRequested', 'task') }),
   };
 }
 
@@ -757,6 +901,7 @@ export function parseWireSchedule(value: unknown): WireSchedule {
     title: string(obj, 'title', 'schedule'),
     input: string(obj, 'input', 'schedule'),
     priority: member(obj, 'priority', 'schedule', PRIORITIES),
+    model: modelOf(obj, 'schedule'),
     machine,
     workdir: nullableString(obj, 'workdir', 'schedule'),
     everyMs,
@@ -818,6 +963,13 @@ export function parseWireNote(value: unknown): WireNote {
   if (obj['answers'] !== undefined) note.answers = string(obj, 'answers', 'note');
   if (obj['questionNoteId'] !== undefined) note.questionNoteId = noteId('questionNoteId');
   if (obj['suggestion'] !== undefined) note.suggestion = string(obj, 'suggestion', 'note');
+  if (obj['pending'] !== undefined) note.pending = boolean(obj, 'pending', 'note');
+  if (obj['queued'] !== undefined) note.queued = boolean(obj, 'queued', 'note');
+  if (obj['deliveredAt'] !== undefined && obj['deliveredAt'] !== null) {
+    const deliveredAt = new Date(string(obj, 'deliveredAt', 'note'));
+    if (Number.isNaN(deliveredAt.getTime())) throw new ContractError('note.deliveredAt is not a date');
+    note.deliveredAt = deliveredAt;
+  }
   return note;
 }
 
@@ -831,7 +983,42 @@ export function parseWireNotes(value: unknown, options: ListOptions = {}): WireN
 
 // The JSON form of a note, as `read-notes` sends it.
 export function serializeWireNote(note: WireNote): Record<string, unknown> {
-  return { ...note, createdAt: note.createdAt.toISOString() };
+  const { deliveredAt, ...rest } = note;
+  return {
+    ...rest,
+    createdAt: note.createdAt.toISOString(),
+    ...(deliveredAt === undefined ? {} : { deliveredAt: deliveredAt.toISOString() }),
+  };
+}
+
+// The answer of run-inbox.
+export function parseWireRunInbox(value: unknown): WireRunInbox {
+  const obj = record(value, 'run-inbox result');
+  if (!Array.isArray(obj['messages'])) throw new ContractError('run-inbox result.messages must be a list');
+  const stopMessage = obj['stopMessage'];
+  if (stopMessage !== undefined && !(typeof stopMessage === 'string' && isSafeNoteId(stopMessage)))
+    throw new ContractError('run-inbox result.stopMessage must be a note id');
+  return {
+    stop: boolean(obj, 'stop', 'run-inbox result'),
+    ...(stopMessage === undefined ? {} : { stopMessage }),
+    messages: obj['messages'].map(parseWireNote),
+  };
+}
+
+// At most this many notes are acknowledged in one call.
+const MAX_ACK_IDS = 100;
+
+// Body of ack-messages.
+export function parseAckMessages(value: unknown): AckMessages {
+  const obj = record(value, 'ack-messages');
+  rejectUnknownKeys(obj, ['ids', 'stop'], 'ack-messages');
+  const ids = obj['ids'];
+  if (!Array.isArray(ids) || ids.length > MAX_ACK_IDS || !ids.every((id) => typeof id === 'string' && isSafeNoteId(id)))
+    throw new ContractError(`ack-messages.ids must be a list of at most ${MAX_ACK_IDS} note ids`);
+  return {
+    ids: ids as string[],
+    ...(obj['stop'] === undefined ? {} : { stop: boolean(obj, 'stop', 'ack-messages') }),
+  };
 }
 
 /** The API range a server answers with: `api` when present, else the legacy `contract` as both ends. */
@@ -918,6 +1105,20 @@ function nullableSealedField(obj: Record<string, unknown>, key: string, what: st
   return obj[key] === null ? null : sealedField(obj, key, what, field);
 }
 
+// Body of set-pr: a sealed PR URL.
+export function parseWirePr(value: unknown): WirePr {
+  const obj = record(value, 'pr');
+  rejectUnknownKeys(obj, ['pr'], 'pr');
+  return { pr: sealedField(obj, 'pr', 'pr', 'pr') };
+}
+
+// Body of set-pr-state.
+export function parseWirePrState(value: unknown): WirePrState {
+  const obj = record(value, 'prState');
+  rejectUnknownKeys(obj, ['prState'], 'prState');
+  return { prState: member(obj, 'prState', 'prState', PR_STATES) };
+}
+
 // Body of add-task. `id`, `title` and `input` are required.
 export function parseWireTaskDraft(value: unknown): WireTaskDraft {
   const obj = record(value, 'draft');
@@ -929,6 +1130,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
       'input',
       'status',
       'priority',
+      'model',
       'dedupeKey',
       'parentId',
       'createdBy',
@@ -943,9 +1145,10 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
     id: safeId(string(obj, 'id', 'draft'), 'draft.id'),
     title: sealedField(obj, 'title', 'draft', 'title'),
     input: sealedField(obj, 'input', 'draft', 'input'),
-    status: 'status' in obj ? member(obj, 'status', 'draft', STATUSES) : 'todo',
+    status: 'status' in obj ? member(obj, 'status', 'draft', DRAFT_STATUSES) : 'todo',
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', 'draft', PRIORITIES);
+  if ('model' in obj) draft.model = modelName(obj, 'draft');
   if ('dedupeKey' in obj) draft.dedupeKey = parseBlindIndex(obj['dedupeKey'], 'draft.dedupeKey');
   if ('parentId' in obj) draft.parentId = safeId(string(obj, 'parentId', 'draft'), 'draft.parentId');
   if ('createdBy' in obj) draft.createdBy = member(obj, 'createdBy', 'draft', TASK_CREATORS);
@@ -974,6 +1177,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
       'title',
       'input',
       'priority',
+      'model',
       'machine',
       'workdir',
       'everyMs',
@@ -992,6 +1196,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
     input: sealedField(obj, 'input', what, 'input'),
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', what, PRIORITIES);
+  if ('model' in obj) draft.model = modelName(obj, what);
   if ('machine' in obj) {
     draft.machine = string(obj, 'machine', what);
     if (!isSafeMachineName(draft.machine)) throw new ContractError('schedule draft.machine is not a safe name');
@@ -1000,14 +1205,14 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   if ((draft.machine === undefined) !== (draft.workdir === undefined))
     throw new ContractError('schedule draft.machine and schedule draft.workdir go together');
   if ('everyMs' in obj === 'cron' in obj) throw new ContractError('a schedule needs exactly one of everyMs and cron');
-  if ('everyMs' in obj) draft.everyMs = positiveInt(obj, 'everyMs', what);
+  if ('everyMs' in obj) draft.everyMs = positiveInt(obj, 'everyMs', what, MAX_INTERVAL_MS);
   if ('cron' in obj) {
     draft.cron = string(obj, 'cron', what);
     draft.timezone = string(obj, 'timezone', what);
     if (draft.timezone === '') throw new ContractError('schedule draft.timezone must not be empty');
   } else if ('timezone' in obj) throw new ContractError('schedule draft.timezone only goes with cron');
   if ('startAt' in obj) draft.startAt = date(obj, 'startAt', what);
-  if ('times' in obj) draft.times = positiveInt(obj, 'times', what);
+  if ('times' in obj) draft.times = positiveInt(obj, 'times', what, MAX_INT32);
   if ('until' in obj) draft.until = date(obj, 'until', what);
   if ('times' in obj && 'until' in obj)
     throw new ContractError('schedule draft.times and schedule draft.until exclude each other');
