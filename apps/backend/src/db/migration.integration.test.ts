@@ -17,9 +17,7 @@ const scratchUrl = (): string => {
 
 /** The pool of a scratch database that the test later drops by force: a connection it kills is no failure. */
 function scratchDb(options: { backfillOwner?: string } = {}): ReturnType<typeof createDb> {
-  const scratch = createDb(scratchUrl(), options);
-  scratch.pool.on('error', () => undefined);
-  return scratch;
+  return createDb(scratchUrl(), { ...options, onError: () => undefined });
 }
 
 // These tests are about the migrations up to 0013, with plain text in the rows; the sealed-content constraints of a later release would refuse it.
