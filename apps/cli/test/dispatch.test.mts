@@ -5,13 +5,24 @@ import type { DispatchDeps } from '../src/dispatch.mts';
 import { SystemError } from '../src/system.mts';
 import type { System } from '../src/system.mts';
 import { START_MARKER } from '../src/decide.mts';
-import { CONFIG, fakeBackend, fakeRunFiles, task } from './helpers.mts';
+import { CONFIG, fakeBackend, fakeRunFiles, fakeWaitStore, task } from './helpers.mts';
+import type { CheckResult, WaitCheck } from '../src/waits.mts';
 import type { FakeBackend } from './helpers.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
 
-function setup(tasks: ReturnType<typeof task>[], active: string[] = [], unitStarts: Record<string, Date> = {}) {
+function setup(
+  tasks: ReturnType<typeof task>[],
+  active: string[] = [],
+  unitStarts: Record<string, Date> = {},
+  {
+    checks = {},
+    checkResult,
+  }: { checks?: Record<string, WaitCheck>; checkResult?: (check: WaitCheck) => CheckResult } = {},
+) {
   const backend: FakeBackend = fakeBackend(tasks);
+  const waits = fakeWaitStore(checks);
+  const ranChecks: string[] = [];
   const files = fakeRunFiles(() => NOW);
   const started: string[] = [];
   const stopped: string[] = [];
@@ -44,8 +55,13 @@ function setup(tasks: ReturnType<typeof task>[], active: string[] = [], unitStar
     now: () => NOW,
     logTail: () => 'last log line',
     notify: async () => undefined,
+    waits,
+    runCheck: async (check) => {
+      ranChecks.push(check.command);
+      return checkResult?.(check) ?? { exitCode: 1, timedOut: false, output: 'pending' };
+    },
   };
-  return { backend, deps, started, stopped, logs, files };
+  return { backend, deps, started, stopped, logs, files, waits, ranChecks };
 }
 
 const running = (id: string) => task({ id, status: 'running', input: '/selftest go' });
@@ -316,4 +332,132 @@ test('a task that still names an agent as its creator is never started, whatever
   assert.deepEqual(started, ['t1']);
   assert.ok(!backend.writes.some((w) => w.includes('claim prop')));
   assert.ok(logs.some((line) => line.startsWith('SKIP prop proposed by an agent')));
+});
+
+const MIN = 60_000;
+const at = (offsetMs: number) => new Date(NOW.getTime() + offsetMs);
+const waitingTask = (id: string, overrides: Partial<ReturnType<typeof task>> = {}) =>
+  task({
+    id,
+    status: 'waiting',
+    machine: 'here',
+    sessionId: '11111111-2222-3333-4444-555555555555',
+    input: '/selftest go',
+    ...overrides,
+  });
+const check = (overrides: Partial<WaitCheck> = {}): WaitCheck => ({
+  command: 'gh pr checks 1',
+  cwd: '/work/cosuno',
+  everyMs: 2 * MIN,
+  createdAt: at(-10 * MIN),
+  ...overrides,
+});
+
+test('a timer whose time is up wakes the task, which starts in the same tick', async () => {
+  const { deps, backend, started } = setup([waitingTask('w1', { wakeAt: at(-MIN) })]);
+  await runDispatch(deps);
+  assert.ok(backend.writes.some((w) => w.startsWith('wake w1: agent-board: wait over: its time ran out.')));
+  assert.deepEqual(started, ['w1']);
+});
+
+test('a timer that still runs, or a wait on another machine, is left alone', async () => {
+  const { deps, backend, ranChecks } = setup([
+    waitingTask('w1', { wakeAt: at(MIN) }),
+    waitingTask('w2', { wakeAt: at(-MIN), machine: 'other' }),
+  ]);
+  await runDispatch(deps);
+  assert.equal(backend.writes.filter((w) => w.startsWith('wake')).length, 0);
+  assert.deepEqual(ranChecks, []);
+});
+
+test('a due check that passes wakes the task with the end of its output', async () => {
+  const { deps, backend, waits, ranChecks } = setup(
+    [waitingTask('w1', { wakeAt: at(60 * MIN), waitCheck: true })],
+    [],
+    {},
+    { checks: { w1: check() }, checkResult: () => ({ exitCode: 0, timedOut: false, output: 'all green\n' }) },
+  );
+  await runDispatch(deps);
+  assert.deepEqual(ranChecks, ['gh pr checks 1']);
+  const wake = backend.writes.find((w) => w.startsWith('wake w1:'));
+  assert.ok(wake?.includes('its check passed.') && wake.includes('all green'), wake);
+  assert.equal(waits.read('w1'), undefined);
+});
+
+test('a check that fails is kept with its result, and not run again before --every', async () => {
+  const first = setup(
+    [waitingTask('w1', { wakeAt: at(60 * MIN), waitCheck: true })],
+    [],
+    {},
+    { checks: { w1: check() } },
+  );
+  await runDispatch(first.deps);
+  const kept = first.waits.read('w1');
+  assert.equal(kept?.lastExit, 1);
+  assert.equal(kept?.lastOutput, 'pending');
+  assert.equal(kept?.lastCheckAt?.getTime(), NOW.getTime());
+  assert.equal(first.backend.writes.filter((w) => w.startsWith('wake')).length, 0);
+
+  const second = setup(
+    [waitingTask('w1', { wakeAt: at(60 * MIN), waitCheck: true })],
+    [],
+    {},
+    { checks: { w1: check({ lastCheckAt: at(-MIN) }) } },
+  );
+  await runDispatch(second.deps);
+  assert.deepEqual(second.ranChecks, []);
+});
+
+test('a check past its timeout wakes the task with what its last attempt said', async () => {
+  const { deps, backend, ranChecks } = setup(
+    [waitingTask('w1', { wakeAt: at(-MIN), waitCheck: true })],
+    [],
+    {},
+    { checks: { w1: check({ lastCheckAt: at(-2 * MIN), lastExit: 8, lastOutput: 'still running' }) } },
+  );
+  await runDispatch(deps);
+  assert.deepEqual(ranChecks, []);
+  const wake = backend.writes.find((w) => w.startsWith('wake w1:'));
+  assert.ok(wake?.includes('did not pass before its timeout') && wake.includes('exit code 8'), wake);
+  assert.ok(wake?.includes('still running'));
+});
+
+test('checks wait for the next tick when the tick has too little time left for them', async () => {
+  let now = NOW;
+  const { deps, ranChecks, logs } = setup(
+    [waitingTask('w1', { wakeAt: at(60 * MIN), waitCheck: true })],
+    [],
+    {},
+    { checks: { w1: check() } },
+  );
+  // The board was slow: listing took a minute.
+  const listTasks = deps.backend.listTasks.bind(deps.backend);
+  deps.backend.listTasks = async (options) => {
+    const tasks = await listTasks(options);
+    now = at(MIN);
+    return tasks;
+  };
+  await runDispatch({ ...deps, now: () => now });
+  assert.deepEqual(ranChecks, []);
+  assert.ok(logs.some((line) => line.startsWith('DEFER-CHECKS 1')));
+});
+
+test('a check wait whose check is gone wakes at once', async () => {
+  const { deps, backend } = setup([waitingTask('w1', { wakeAt: at(60 * MIN), waitCheck: true })]);
+  await runDispatch(deps);
+  assert.ok(backend.writes.some((w) => w.startsWith('wake w1:') && w.includes('no longer stored on here')));
+});
+
+test('a check whose task left Waiting is dropped; one whose task still runs is kept', async () => {
+  const { deps, waits } = setup(
+    [
+      task({ id: 'moved', status: 'needs-me', machine: 'here' }),
+      task({ id: 'r1', status: 'running', machine: 'here' }),
+    ],
+    ['agent-board-r1'],
+    {},
+    { checks: { moved: check(), r1: check(), gone: check() } },
+  );
+  await runDispatch(deps);
+  assert.deepEqual(waits.list(), ['r1']);
 });

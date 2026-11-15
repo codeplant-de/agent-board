@@ -218,6 +218,9 @@ test('a task link is built from the board URL and the id; a url the server sends
     paused: false,
     notBefore: null,
     scheduleId: null,
+    wakeAt: null,
+    waitCheck: false,
+    woken: false,
   });
   assert.equal('url' in wire, false);
   const shown = renderThread({ ...wire, title: 'Fix the build', input: '/fix', labels: [], unreadable: [] }, []);

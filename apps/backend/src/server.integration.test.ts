@@ -1342,3 +1342,102 @@ describe('schedules', () => {
     await expect(ui.tasks.get({ id: task.id })).rejects.toThrow();
   });
 });
+
+describe('waiting', () => {
+  let sessions = 100;
+  async function running(title = 't') {
+    const task = await plainUi(db).tasks.create({ title, input: 'do it' });
+    await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
+    await ctx.call('laptop', 'update-task', { id: task.id, body: { sessionId: sessionNamed((sessions += 1)) } });
+    return task.id;
+  }
+  const inMinutes = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+
+  it('a running task waits with the agent’s comment, frees Running, sorts by its end, and is never claimed', async () => {
+    const ui = plainUi(db);
+    const later = await running('later');
+    const sooner = await running('sooner');
+    const waited = await ctx.call('laptop', 'wait', {
+      id: later,
+      body: { text: 'Waiting for CI on #1.', wakeAt: inMinutes(60), check: true },
+    });
+    expect(waited.json.result).toMatchObject({ status: 'waiting', waitCheck: true, next: 'resume', machine: 'laptop' });
+    expect(waited.json.result.runStartedAt).toBeNull();
+    await ctx.call('laptop', 'wait', { id: sooner, body: { text: 'A timer.', wakeAt: inMinutes(5) } });
+    const list = await ui.tasks.list();
+    expect(list.filter((t) => t.status === 'waiting').map((t) => [t.title, t.waitCheck])).toEqual([
+      ['sooner', false],
+      ['later', true],
+    ]);
+    expect((await ctx.call('laptop', 'claim-task', { id: sooner, machine: 'laptop' })).status).toBe(409);
+    const { thread } = await ui.tasks.get({ id: later });
+    expect(thread.at(-1)).toMatchObject({ author: 'agent', kind: 'comment', text: 'Waiting for CI on #1.' });
+  });
+
+  it('only a running task waits, and only until a time in the next 7 days', async () => {
+    const id = await running();
+    const bad = (wakeAt: string) => ctx.call('laptop', 'wait', { id, body: { text: 'x', wakeAt } });
+    expect((await bad(inMinutes(-1))).status).toBe(400);
+    expect((await bad(inMinutes(8 * 24 * 60))).status).toBe(400);
+    await ctx.call('laptop', 'wait', { id, body: { text: 'x', wakeAt: inMinutes(5) } });
+    expect((await bad(inMinutes(10))).status).toBe(409);
+  });
+
+  it('nothing else moves a task into Waiting', async () => {
+    const ui = plainUi(db);
+    const id = await running();
+    expect((await ctx.call('laptop', 'update-task', { id, body: { status: 'waiting' } })).status).toBe(400);
+    await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me' } });
+    await expect(ui.tasks.move({ id, status: 'waiting' })).rejects.toThrow(/board wait/);
+    expect((await ctx.call('laptop', 'add-task', { body: { title: 't', input: 'x', status: 'waiting' } })).status).toBe(
+      400,
+    );
+  });
+
+  it('a wake puts the task on top of Todo as a resume on its machine, and the worker sees `woken` until its first update', async () => {
+    const ui = plainUi(db);
+    const id = await running('woken');
+    await ui.tasks.create({ title: 'urgent', input: 'do it', priority: 'urgent' });
+    await ctx.call('laptop', 'wait', { id, body: { text: 'CI', wakeAt: inMinutes(30), check: true } });
+    const woken = await ctx.call('laptop', 'wake', { id, body: 'agent-board: wait over: its check passed.' });
+    expect(woken.json.result).toMatchObject({ applied: true, task: { status: 'todo', next: 'resume', woken: true } });
+    expect(woken.json.result.task).toMatchObject({ wakeAt: null, waitCheck: false });
+    expect((await ui.tasks.list()).filter((t) => t.status === 'todo').map((t) => t.title)).toEqual(['woken', 'urgent']);
+    // A second wake (the timer and the check at once) changes nothing.
+    expect((await ctx.call('laptop', 'wake', { id, body: 'again' })).json.result).toMatchObject({ applied: false });
+    expect((await ctx.call('workstation', 'claim-task', { id, machine: 'workstation' })).status).toBe(409);
+    const claimed = await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' });
+    expect(claimed.json.result).toMatchObject({ status: 'running', woken: true });
+    await ctx.call('laptop', 'update-task', { id, body: { next: 'fresh' } });
+    expect((await ctx.call('laptop', 'get-task', { id })).json.result.woken).toBe(false);
+    const { thread } = await ui.tasks.get({ id });
+    expect(thread.some((n) => n.author === 'system' && n.text.includes('its check passed'))).toBe(true);
+  });
+
+  it('Wake now and a drag into Todo end the wait as the user; a drag elsewhere drops it', async () => {
+    const ui = plainUi(db);
+    const now = await running();
+    await ctx.call('laptop', 'wait', { id: now, body: { text: 'x', wakeAt: inMinutes(30) } });
+    const woken = await ui.tasks.wakeNow({ id: now });
+    expect(woken).toMatchObject({ status: 'todo', next: 'resume', woken: true, wakeAt: null });
+    const { thread } = await ui.tasks.get({ id: now });
+    expect(thread.at(-1)).toMatchObject({ author: 'server', text: 'Wait ended by you.' });
+    await expect(ui.tasks.wakeNow({ id: now })).rejects.toThrow(/not waiting/);
+
+    const dragged = await running();
+    await ctx.call('laptop', 'wait', { id: dragged, body: { text: 'x', wakeAt: inMinutes(30) } });
+    expect(await ui.tasks.move({ id: dragged, status: 'todo' })).toMatchObject({ next: 'resume', woken: true });
+
+    const parked = await running();
+    await ctx.call('laptop', 'wait', { id: parked, body: { text: 'x', wakeAt: inMinutes(30), check: true } });
+    expect(await ui.tasks.move({ id: parked, status: 'backlog' })).toMatchObject({
+      status: 'backlog',
+      woken: false,
+      wakeAt: null,
+      waitCheck: false,
+    });
+    expect((await ctx.call('laptop', 'wake', { id: parked, body: 'late' })).json.result).toMatchObject({
+      applied: false,
+    });
+  });
+});

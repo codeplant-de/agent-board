@@ -3,11 +3,14 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'n
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { CONTRACT_VERSION } from '@agent-board/shared';
+import { BackendError } from '../src/backend.mts';
 import { UsageError } from '../src/cli.mts';
 import type { LinkingContext } from '../src/cli.mts';
 import { runBoard } from '../src/commands.mts';
 import type { ProgramOptions } from '../src/commands.mts';
-import { CONFIG, fakeBackend, linkTo, task } from './helpers.mts';
+import { CONFIG, fakeBackend, fakeWaitStore, linkTo, task } from './helpers.mts';
+
+const NOW = new Date('2026-01-01T12:00:00Z');
 
 const ID = 'Zt0Test1';
 
@@ -315,7 +318,9 @@ test('every board command in the run rules, the hook messages and the selftest s
     for (const command of commands) {
       const { backend, go } = setup();
       const argv = words(command, { questions, prompt });
-      const inRun = { env: { AGENT_BOARD_TASK: ID } };
+      // A wait needs a running task on this machine; its check goes to a store in memory.
+      if (argv[0] === 'wait') Object.assign(backend.tasks[0]!, { status: 'running', machine: CONFIG.machine });
+      const inRun = { env: { AGENT_BOARD_TASK: ID }, waits: fakeWaitStore(), cwd: '/work/cosuno', now: () => NOW };
       verbs.add(argv[0] ?? '');
       await go(argv, inRun).catch((error: unknown) => {
         throw new Error(`"${command}" does not parse: ${error instanceof Error ? error.message : String(error)}`);
@@ -331,12 +336,13 @@ test('every board command in the run rules, the hook messages and the selftest s
         move: /^status Zt0Test1 -> needs-me$/,
         ask: /^ask Zt0Test1: Color$/,
         add: /^create .* \| do the thing \| $/,
+        wait: /^wait Zt0Test1 until \S+( check)?: x/,
       };
       const verb = argv[0] ?? '';
       if (verb in expected) assert.match(action, expected[verb] as RegExp, command);
       else assert.deepEqual(backend.writes, [], command);
     }
-    for (const verb of ['comment', 'move', 'ask', 'add', 'show'])
+    for (const verb of ['comment', 'move', 'ask', 'add', 'show', 'wait'])
       assert.ok(verbs.has(verb), `no ${verb} command found in the sources`);
   } finally {
     rmSync(dir, { recursive: true });
@@ -388,4 +394,78 @@ test('internal dispatch, intake and worker say they need Linux elsewhere', async
       /needs Linux with systemd; this is darwin/,
       argv.join(' '),
     );
+});
+
+test('wait --in parks a running task until then, and stores no check', async () => {
+  const { backend, go, printed } = setup();
+  Object.assign(backend.tasks[0]!, { status: 'running', machine: CONFIG.machine });
+  const waits = fakeWaitStore();
+  await go(['wait', ID, '--in', '20m', '--reason', 'the deploy settles'], { waits, cwd: '/w', now: () => NOW });
+  assert.deepEqual(backend.writes, [
+    `wait ${ID} until 2026-01-01T12:20:00.000Z: the deploy settles\n\nWaiting until ${new Date('2026-01-01T12:20:00Z').toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' })}.`,
+  ]);
+  assert.equal(backend.tasks[0]?.status, 'waiting');
+  assert.deepEqual(waits.list(), []);
+  assert.ok(printed.some((line) => line.includes('end your turn now')));
+});
+
+test('wait --check stores the check on this machine, keeps the command off the board, and defaults to 2m and 2h', async () => {
+  const { backend, go } = setup();
+  Object.assign(backend.tasks[0]!, { status: 'running', machine: CONFIG.machine });
+  const waits = fakeWaitStore();
+  await go(['wait', ID, '--check', 'gh pr checks 17741 --required'], {
+    waits,
+    cwd: '/work/cosuno/apps/cli',
+    now: () => NOW,
+    env: { AGENT_BOARD_TASK: ID, AGENT_BOARD_START_DIR: '/work/cosuno' },
+  });
+  assert.deepEqual(waits.read(ID), {
+    command: 'gh pr checks 17741 --required',
+    cwd: '/work/cosuno/apps/cli',
+    settingsDir: '/work/cosuno',
+    everyMs: 120_000,
+    createdAt: NOW,
+  });
+  assert.equal(backend.writes.length, 1);
+  assert.match(backend.writes[0] ?? '', /^wait Zt0Test1 until 2026-01-01T14:00:00.000Z check: Waiting for a check\./);
+  assert.ok(!(backend.writes[0] ?? '').includes('gh pr checks'));
+});
+
+test('wait --check is refused for a task of another machine, and a refused wait drops its check', async () => {
+  const other = setup();
+  Object.assign(other.backend.tasks[0]!, { status: 'running', machine: 'elsewhere' });
+  const waits = fakeWaitStore();
+  await assert.rejects(
+    other.go(['wait', ID, '--check', 'true'], { waits, cwd: '/w', now: () => NOW }),
+    /runs on elsewhere, not on here/,
+  );
+  assert.deepEqual(waits.list(), []);
+
+  const done = setup();
+  Object.assign(done.backend.tasks[0]!, { status: 'running', machine: CONFIG.machine });
+  done.backend.wait = async () => {
+    throw new BackendError('wait: the task is closed, not running', 409);
+  };
+  await assert.rejects(done.go(['wait', ID, '--check', 'true'], { waits, cwd: '/w', now: () => NOW }), /cannot wait/);
+  assert.deepEqual(waits.list(), []);
+
+  // A failure that may have reached the board keeps the check; the next tick drops it if the task does not wait.
+  done.backend.wait = async () => {
+    throw new BackendError('wait: 502 Bad Gateway', 502);
+  };
+  await assert.rejects(done.go(['wait', ID, '--check', 'true'], { waits, cwd: '/w', now: () => NOW }), /502/);
+  assert.deepEqual(waits.list(), [ID]);
+});
+
+test('wait takes exactly one end, --every and --timeout only with --check, and at most 7 days', async () => {
+  const { backend, go } = setup();
+  Object.assign(backend.tasks[0]!, { status: 'running', machine: CONFIG.machine });
+  const opts = { waits: fakeWaitStore(), cwd: '/w', now: () => NOW };
+  await assert.rejects(go(['wait', ID], opts), /exactly one of --in, --at or --check/);
+  await assert.rejects(go(['wait', ID, '--in', '5m', '--check', 'true'], opts), /exactly one/);
+  await assert.rejects(go(['wait', ID, '--in', '5m', '--timeout', '1h'], opts), /go with --check/);
+  await assert.rejects(go(['wait', ID, '--check', 'true', '--every', '30m', '--timeout', '8d'], opts), /at most/);
+  await assert.rejects(go(['wait', ID, '--check', 'true', '--every', '0m'], opts), /--every/);
+  await assert.rejects(go(['move', ID, 'waiting']), /board wait/);
+  assert.deepEqual(backend.writes, []);
 });

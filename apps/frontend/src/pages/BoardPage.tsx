@@ -13,6 +13,7 @@ const HINT: Record<Status, string> = {
   backlog: 'Parked; no worker takes these',
   todo: 'By priority; top runs first',
   running: 'On a worker machine',
+  waiting: 'On CI and the like; back to Todo by itself',
   'needs-me': 'Waiting for you',
   done: '',
 };
@@ -23,9 +24,9 @@ interface DropTarget {
   beforeId?: string;
 }
 
-/** Only a worker moves a task into or out of Running. */
+/** Only a worker moves a task into or out of Running, and only a running agent puts one in Waiting (a drag out ends the wait). */
 const canDrag = (task: ListedTask) => task.status !== 'running';
-const canDrop = (status: Status) => status !== 'running';
+const canDrop = (status: Status) => status !== 'running' && status !== 'waiting';
 
 /** Narrow on a wide screen until hovered, then they float over their neighbors at full width. */
 const COLLAPSIBLE = new Set<Status>(['backlog', 'done']);

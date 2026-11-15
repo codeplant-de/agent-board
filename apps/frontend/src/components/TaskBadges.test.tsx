@@ -20,6 +20,9 @@ const task = (overrides: Partial<BoardTask>) =>
     lane: null,
     notBefore: null,
     scheduleId: null,
+    wakeAt: null,
+    waitCheck: false,
+    woken: false,
     ...overrides,
   }) as BoardTask;
 
@@ -46,6 +49,24 @@ describe('TaskBadges', () => {
     renderBadges({ notBefore });
     const badge = screen.getByText('Starts in 4h');
     expect(badge.closest('[title]')).toHaveAttribute('title', stamp(notBefore));
+  });
+
+  it('shows when a timer wakes a waiting task, and how long a check may take', () => {
+    const wakeAt = new Date(Date.now() + 20 * 60_000 + 30_000).toISOString();
+    const { unmount } = renderBadges({ status: 'waiting', wakeAt });
+    expect(screen.getByText('Wakes in 20m').closest('[title]')).toHaveAttribute('title', `Wakes ${stamp(wakeAt)}`);
+    unmount();
+    renderBadges({ status: 'waiting', wakeAt, waitCheck: true, machine: 'laptop' });
+    expect(screen.getByText('Checking · up to 20m').closest('[title]')).toHaveAttribute(
+      'title',
+      `Wakes when its check on laptop passes, at the latest ${stamp(wakeAt)}`,
+    );
+  });
+
+  it('shows Woken, not Resume, on a task whose wait ended into Todo', () => {
+    renderBadges({ next: 'resume', woken: true });
+    expect(screen.getByText('Woken')).toBeInTheDocument();
+    expect(screen.queryByText('Resume')).not.toBeInTheDocument();
   });
 
   it('marks a task made by a schedule as a repeat', () => {

@@ -12,6 +12,7 @@ import {
   parseWireTaskPatch,
   parseWireTranscriptBatch,
   parsePolish,
+  parseWireWait,
   seal,
   serializePolish,
   UNREADABLE_TITLE,
@@ -120,6 +121,21 @@ function fakeWire(): FakeWire {
       return state.tasks.find((t) => t.id === id)!;
     },
     async fail(id, note) {
+      push(state, id, parseWireNoteInput(JSON.parse(record(state, note)), 'note'), 'system', 'event');
+      return { applied: true, task: state.tasks.find((t) => t.id === id)! };
+    },
+    async wait(id, wait) {
+      const sent = parseWireWait(JSON.parse(record(state, wait)));
+      push(
+        state,
+        id,
+        { body: sent.body, ...(sent.preview === undefined ? {} : { preview: sent.preview }) },
+        'agent',
+        'comment',
+      );
+      return state.tasks.find((t) => t.id === id)!;
+    },
+    async wake(id, note) {
       push(state, id, parseWireNoteInput(JSON.parse(record(state, note)), 'note'), 'system', 'event');
       return { applied: true, task: state.tasks.find((t) => t.id === id)! };
     },

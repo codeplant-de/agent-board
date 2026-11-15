@@ -1,6 +1,7 @@
 import type { Config } from '../src/config.mts';
 import type { RunFiles, RunRecord } from '../src/runtime.mts';
 import type { SessionStore } from '../src/sessions.mts';
+import type { WaitCheck, WaitStore } from '../src/waits.mts';
 import { BackendError } from '../src/backend.mts';
 import {
   CONTRACT_VERSION,
@@ -36,6 +37,9 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     paused: false,
     notBefore: null,
     scheduleId: null,
+    wakeAt: null,
+    waitCheck: false,
+    woken: false,
     unreadable: [],
     ...overrides,
   };
@@ -224,6 +228,36 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       if (applied) Object.assign(found, { status: 'needs-me' });
       return { applied, task: { ...found } };
     },
+    async wait(id, request) {
+      state.writes.push(
+        `wait ${id} until ${request.wakeAt.toISOString()}${request.check ? ' check' : ''}: ${request.text}`,
+      );
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new Error(`no task ${id}`);
+      if (found.status !== 'running') throw new BackendError(`wait: the task is ${found.status}, not running`, 409);
+      Object.assign(found, {
+        status: 'waiting',
+        wakeAt: request.wakeAt,
+        waitCheck: request.check,
+        next: found.sessionId ? 'resume' : 'fresh',
+      });
+      return { ...found };
+    },
+    async wake(id, text) {
+      state.writes.push(`wake ${id}: ${text}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new Error(`no task ${id}`);
+      const applied = found.status === 'waiting' && !found.closed;
+      if (applied)
+        Object.assign(found, {
+          status: 'todo',
+          next: found.sessionId ? 'resume' : 'fresh',
+          woken: true,
+          wakeAt: null,
+          waitCheck: false,
+        });
+      return { applied, task: { ...found } };
+    },
     async ask(id, questions) {
       state.writes.push(`ask ${id}: ${questions.map((q) => q.header).join(', ')}`);
       const found = state.tasks.find((t) => t.id === id);
@@ -373,3 +407,18 @@ export const OTHER_SESSION = '22222222-2222-4222-8222-222222222222';
 
 // A task's link as the CLI builds it from the board URL of its own web.json.
 export const linkTo = (id: string): string => `https://board.test/t/${id}`;
+
+// The checks of waiting tasks, in memory.
+export function fakeWaitStore(initial: Record<string, WaitCheck> = {}): WaitStore & { checks: Map<string, WaitCheck> } {
+  const checks = new Map(Object.entries(initial));
+  return {
+    checks,
+    write: (taskId, check) => void checks.set(taskId, { ...check }),
+    read: (taskId) => {
+      const check = checks.get(taskId);
+      return check === undefined ? undefined : { ...check };
+    },
+    remove: (taskId) => void checks.delete(taskId),
+    list: () => [...checks.keys()],
+  };
+}

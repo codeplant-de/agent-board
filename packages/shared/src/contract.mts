@@ -6,9 +6,9 @@ import { isKeyId } from './keys.mts';
 import type { Answer, Question } from './questions.mts';
 import type { TranscriptBatch, WireTranscriptBatch } from './transcript.mts';
 
-export const CONTRACT_VERSION = 8;
+export const CONTRACT_VERSION = 9;
 
-export const STATUSES = ['backlog', 'todo', 'running', 'needs-me', 'done'] as const;
+export const STATUSES = ['backlog', 'todo', 'running', 'waiting', 'needs-me', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
 
 // What the next run of a task does: start over, or resume the Claude session of the last run with the user's reply.
@@ -38,6 +38,9 @@ export const QUIET_LIMIT_MS = 10 * 60_000;
 // The server lets you take a running task back after this much quiet. Longer than the red text: one long tool call is
 // quiet for minutes, and a live worker gives up at `inactivityMinutes` (15 by default) plus the sweep's grace.
 export const TAKE_BACK_AFTER_MS = 20 * 60_000;
+
+// How far ahead an agent may set a wait's end: the longest it can park a task in Waiting.
+export const MAX_WAIT_MS = 7 * 24 * 60 * 60_000;
 
 export const TASK_CREATORS = ['intake', 'user', 'agent'] as const;
 export type TaskCreator = (typeof TASK_CREATORS)[number];
@@ -90,7 +93,23 @@ export interface Task {
   notBefore: Date | null;
   // The schedule this task is an occurrence of; set by the server, never by a draft or a patch.
   scheduleId: string | null;
+  // Waiting only: when the wait ends at the latest (a timer's end, a check's timeout). Cleared when the task leaves Waiting.
+  wakeAt: Date | null;
+  // Waiting only: the wait ends early when a check on `machine` passes; false for a plain timer.
+  waitCheck: boolean;
+  // The task left Waiting for Todo (its wait ended) and has not run since. Like `paused`, kept through the claim so the
+  // worker that resumes it can tell the agent, and cleared by that worker's first `update-task` of the run.
+  woken: boolean;
   unreadable: UnreadableField[];
+}
+
+// An agent's wait: the task leaves Running for Waiting and frees its slot until `wakeAt`, or until a check passes.
+export interface WaitRequest {
+  // Shown in the thread as the agent's comment: what it waits for.
+  text: string;
+  wakeAt: Date;
+  // A check command on the task's machine may end the wait early; the command itself never leaves the machine.
+  check: boolean;
 }
 
 export interface Heartbeat {
@@ -229,6 +248,12 @@ export interface AddTaskResult {
   created: boolean;
 }
 
+// The result of `wake`: false when the task was no longer waiting (or was closed): nothing changed.
+export interface WakeResult {
+  applied: boolean;
+  task: Task;
+}
+
 export interface FailResult {
   // False when the task was no longer running (or was closed): nothing changed.
   applied: boolean;
@@ -261,6 +286,11 @@ export interface Backend {
   pause(id: string, note: string): Promise<Task>;
   // A run failed: if the task is still running (and not closed), adds the text as a system event and moves it to needs-me, in one step.
   fail(id: string, text: string): Promise<FailResult>;
+  // A running task waits: the text as the agent's comment, then Waiting until `wakeAt` or a passed check. Frees the slot.
+  wait(id: string, request: WaitRequest): Promise<Task>;
+  // A wait ended: if the task is still waiting (and not closed), adds the text as a system event and moves it to the top of
+  // Todo, resumed next in its session, in one step.
+  wake(id: string, text: string): Promise<WakeResult>;
   // Appends events to a run's transcript; an event already stored (same run and seq) is kept as it is.
   transcript(id: string, batch: TranscriptBatch): Promise<void>;
   // Oldest first.
@@ -334,6 +364,19 @@ export interface WireAddTaskResult {
   created: boolean;
 }
 
+export interface WireWait {
+  // Sealed note text and its sealed preview, as for add-note.
+  body: string;
+  preview?: string | null;
+  wakeAt: Date;
+  check: boolean;
+}
+
+export interface WireWakeResult {
+  applied: boolean;
+  task: WireTask;
+}
+
 export interface WireFailResult {
   applied: boolean;
   task: WireTask;
@@ -361,6 +404,8 @@ export interface WireBackend {
   heartbeat(id: string, beat: Heartbeat): Promise<void>;
   pause(id: string, note: WireNoteInput): Promise<WireTask>;
   fail(id: string, note: WireNoteInput): Promise<WireFailResult>;
+  wait(id: string, wait: WireWait): Promise<WireTask>;
+  wake(id: string, note: WireNoteInput): Promise<WireWakeResult>;
   transcript(id: string, batch: WireTranscriptBatch): Promise<void>;
   readNotes(id: string): Promise<WireNote[]>;
   addSchedule(draft: WireScheduleDraft): Promise<WireAddScheduleResult>;
@@ -616,6 +661,9 @@ export function parseWireTask(value: unknown): WireTask {
     paused: boolean(obj, 'paused', 'task'),
     notBefore: nullableDate(obj, 'notBefore', 'task'),
     scheduleId: obj['scheduleId'] === null ? null : safeId(string(obj, 'scheduleId', 'task'), 'task scheduleId'),
+    wakeAt: nullableDate(obj, 'wakeAt', 'task'),
+    waitCheck: boolean(obj, 'waitCheck', 'task'),
+    woken: boolean(obj, 'woken', 'task'),
   };
 }
 
@@ -627,6 +675,11 @@ export function parseWireTasks(value: unknown): WireTask[] {
 export function parseWireAddTaskResult(value: unknown): WireAddTaskResult {
   const obj = record(value, 'add-task result');
   return { task: parseWireTask(obj['task']), created: boolean(obj, 'created', 'add-task result') };
+}
+
+export function parseWireWakeResult(value: unknown): WireWakeResult {
+  const obj = record(value, 'wake result');
+  return { applied: boolean(obj, 'applied', 'wake result'), task: parseWireTask(obj['task']) };
 }
 
 export function parseWireFailResult(value: unknown): WireFailResult {
@@ -898,6 +951,19 @@ export function parseWireAsk(value: unknown): WireAsk {
   };
 }
 
+// Body of wait: the sealed comment, the end of the wait and whether a check may end it early.
+export function parseWireWait(value: unknown): WireWait {
+  const obj = record(value, 'wait');
+  rejectUnknownKeys(obj, ['body', 'preview', 'wakeAt', 'check'], 'wait');
+  const wait: WireWait = {
+    body: sealedField(obj, 'body', 'wait', 'note.body'),
+    wakeAt: date(obj, 'wakeAt', 'wait'),
+    check: boolean(obj, 'check', 'wait'),
+  };
+  if (obj['preview'] !== undefined) wait.preview = nullableSealedField(obj, 'preview', 'wait', 'note.preview');
+  return wait;
+}
+
 // Body of heartbeat.
 export function parseHeartbeat(value: unknown): Heartbeat {
   const obj = record(value, 'heartbeat');
@@ -914,6 +980,7 @@ export function serializeTask(task: WireTask): Record<string, unknown> {
     lastActiveAt: task.lastActiveAt?.toISOString() ?? null,
     runStartedAt: task.runStartedAt?.toISOString() ?? null,
     notBefore: task.notBefore?.toISOString() ?? null,
+    wakeAt: task.wakeAt?.toISOString() ?? null,
   };
 }
 

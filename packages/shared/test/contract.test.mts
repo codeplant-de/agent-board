@@ -17,6 +17,8 @@ import {
   parseWireTask,
   parseWireTaskDraft,
   parseWireTaskPatch,
+  parseWireWait,
+  parseWireWakeResult,
   promptSkill,
   SEALED_LIMITS,
   serializeSchedule,
@@ -65,7 +67,30 @@ const task = {
   paused: false,
   notBefore: null,
   scheduleId: null,
+  wakeAt: null,
+  waitCheck: false,
+  woken: false,
 };
+
+test('a waiting task carries the end of its wait; a wait body is a sealed comment, a date and whether a check may end it', async () => {
+  const waiting = { ...task, status: 'waiting', wakeAt: '2027-01-01T10:00:00.000Z', waitCheck: true };
+  assert.deepEqual(parseWireTask(waiting).wakeAt, new Date('2027-01-01T10:00:00.000Z'));
+  assert.throws(() => parseWireTask({ ...task, woken: undefined }), /woken must be a boolean/);
+  const body = await sealed('note.body', 'waiting for CI');
+  assert.deepEqual(parseWireWait({ body, wakeAt: '2027-01-01T10:00:00Z', check: false }), {
+    body,
+    wakeAt: new Date('2027-01-01T10:00:00Z'),
+    check: false,
+  });
+  assert.throws(() => parseWireWait({ body: 'plain', wakeAt: '2027-01-01T10:00:00Z', check: false }), /encrypted/);
+  assert.throws(() => parseWireWait({ body, wakeAt: 'soon', check: false }), /not a date/);
+  assert.throws(() => parseWireWait({ body, wakeAt: '2027-01-01T10:00:00Z' }), /check must be a boolean/);
+  assert.throws(
+    () => parseWireWait({ body, wakeAt: '2027-01-01T10:00:00Z', check: true, command: 'rm -rf /' }),
+    /unknown key "command"/,
+  );
+  assert.deepEqual(parseWireWakeResult({ applied: false, task }), { applied: false, task: parseWireTask(task) });
+});
 
 test('a task needs every field', () => {
   assert.deepEqual(parseWireTask(task), task);
