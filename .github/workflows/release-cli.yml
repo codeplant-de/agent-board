@@ -1,9 +1,10 @@
 name: Release CLI
 
+# Called by ci.yml after a merge to main, or started by hand to retry a failed release of the main head. Either way it
+# releases apps/cli/package.json's version at the checked-out commit, and only from main.
 on:
-  push:
-    tags:
-      - 'cli-v*'
+  workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -11,9 +12,13 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Two pushes to main never publish at once: the second run then finds the release published and skips.
+    concurrency:
+      group: cli-release
+      cancel-in-progress: false
 
     steps:
-      # Full history, for the ancestor check; no credential is left in the checkout, only the publish step gets a token.
+      # Full history, for the tags; no credential is left in the checkout, only the steps that call gh get a token.
       - name: Checkout
         uses: actions/checkout@v7
         with:
@@ -36,58 +41,89 @@ jobs:
         with:
           bun-version: 1.4.4
 
-      - name: Check the tag is a release of the package version, on main
+      - name: Check the version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "releases are made from main only, this run is on $GITHUB_REF" >&2
+            exit 1
+          fi
           version=$(node -p "require('./apps/cli/package.json').version")
           if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "apps/cli/package.json version $version is not x.y.z" >&2
             exit 1
           fi
-          if [ "$GITHUB_REF_NAME" != "cli-v$version" ]; then
-            echo "tag $GITHUB_REF_NAME does not match apps/cli/package.json version $version" >&2
-            exit 1
+          tag="cli-v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # A missing release is not released; a draft is a failed earlier run.
+          draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || echo missing)
+          if [ "$draft" = false ]; then
+            echo "$tag is already published, nothing to release"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "the tagged commit is not on main" >&2
-            exit 1
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          newest=$(git tag --list 'cli-v*' | grep -E '^cli-v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^cli-v//' | sort -V | tail -n 1)
+          if [ -n "$newest" ]; then
+            highest=$(printf '%s\n%s\n' "$newest" "$version" | sort -V | tail -n 1)
+            if [ "$version" = "$newest" ] || [ "$highest" != "$version" ]; then
+              echo "apps/cli/package.json version $version is not above the newest release cli-v$newest" >&2
+              exit 1
+            fi
           fi
 
       # The completion tests parse the zsh and fish scripts with the real shells and fail without them on CI.
       - name: Install zsh and fish
+        if: steps.version.outputs.skip == 'false'
         run: sudo apt-get update && sudo apt-get install -y zsh fish
 
       - name: Install dependencies
+        if: steps.version.outputs.skip == 'false'
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
+        if: steps.version.outputs.skip == 'false'
         run: pnpm typecheck
 
       - name: Lint
+        if: steps.version.outputs.skip == 'false'
         run: pnpm lint
 
       - name: Format
+        if: steps.version.outputs.skip == 'false'
         run: pnpm format:check
 
       # The backend integration tests need the Postgres service of ci.yml, which this job does not have.
       - name: Tests
+        if: steps.version.outputs.skip == 'false'
         run: pnpm --filter "@agent-board/cli..." test
 
       - name: Build
+        if: steps.version.outputs.skip == 'false'
         run: pnpm --filter @agent-board/cli build
 
       - name: Binary smoke test
+        if: steps.version.outputs.skip == 'false'
         run: pnpm --filter @agent-board/cli test:binary
 
       - name: Publish the release
+        if: steps.version.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          tag="cli-v$VERSION"
+          # A draft is left by a failed run; it has no tag, so removing it leaves nothing behind.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release delete "$tag" --yes
+          fi
+          gh release create "$tag" --target "$GITHUB_SHA" --draft --title "board $tag" --generate-notes
+          gh release upload "$tag" \
             apps/cli/dist/board-linux-x64 \
             apps/cli/dist/board-linux-arm64 \
             apps/cli/dist/board-darwin-arm64 \
             apps/cli/dist/SHA256SUMS \
-            scripts/install.sh \
-            --title "board $GITHUB_REF_NAME" \
-            --verify-tag \
-            --generate-notes
+            scripts/install.sh
+          gh release edit "$tag" --draft=false
