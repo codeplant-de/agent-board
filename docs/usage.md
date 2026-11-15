@@ -68,6 +68,10 @@ An agent can propose follow-up work with `board add --title <t> --file <path> --
 
 Dragging a card moves it the way the matching button would, minus the reply. Nothing can be dropped into Running or Waiting; a card dragged out of Waiting into Todo is woken, and into any other column loses its wait. Into Todo or Done it drops the open question (the question note stays in the thread); into Todo a task with a session keeps its `next`, and a resume with nothing to answer starts a fresh run. Done tasks nobody touched for 14 days are closed, with a note in the thread; they stay readable under Closed. Intake's tasks are left open: intake treats a closed task as "never again", so closing one would block the PR's next review request.
 
+## Desktop notifications
+
+Settings has a **Desktop notifications** switch, off by default. Turning it on asks the browser for permission; once granted, the browser shows an OS notification for each task that newly enters Needs me ("Asked you a question" when an agent asked one, "Needs you" otherwise), and clicking it opens the task. Tasks already waiting when you open the board do not notify, and nothing is shown while you are looking at a focused board tab. It works while a board tab is open, a background tab included, though browsers may slow a hidden tab's timers to about once a minute. The title is opened in your browser, so there is no server push, and the browser needs https or localhost.
+
 ## Waiting
 
 An agent that has to wait for something outside the run (CI, a deploy, a review bot) parks its task instead of sleeping in its slot:
