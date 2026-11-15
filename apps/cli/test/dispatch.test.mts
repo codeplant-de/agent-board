@@ -2,15 +2,37 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runDispatch } from '../src/dispatch.mts';
 import type { DispatchDeps } from '../src/dispatch.mts';
-import { BackendError } from '../src/backend.mts';
-import { SystemError } from '../src/system.mts';
+import { BackendError, createWebBackend } from '../src/backend.mts';
+import type { Fetch } from '../src/backend.mts';
+import { API_VERSION, MIN_SERVER } from '@agent-board/shared';
+import { RETRY_AFTER_FAILURE_MS, RETRY_AFTER_UNPUBLISHED_MS } from '../src/auto-update.mts';
+import type { UpdateDeps } from '../src/auto-update.mts';
+import type { AutoUpdate } from '../src/config.mts';
+import type { UpdateState } from '../src/update-state.mts';
+import { parseWorkerUnits, SystemError } from '../src/system.mts';
 import type { System } from '../src/system.mts';
 import { START_MARKER } from '../src/decide.mts';
-import { CONFIG, fakeBackend, fakeRunFiles, fakeWaitStore, task } from './helpers.mts';
+import { CONFIG, DATA_KEY, fakeBackend, fakeRunFiles, fakeWaitStore, task } from './helpers.mts';
 import type { CheckResult, WaitCheck } from '../src/waits.mts';
 import type { FakeBackend } from './helpers.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
+
+function memoryState(retryAfter?: Date): UpdateState & { deferred: Date | undefined } {
+  const state = {
+    deferred: retryAfter,
+    hintShownAt: () => undefined,
+    markHintShown: () => undefined,
+    retryAfter: () => state.deferred,
+    deferUpdateUntil: (at: Date) => {
+      state.deferred = at;
+    },
+    clearDeferral: () => {
+      state.deferred = undefined;
+    },
+  };
+  return state;
+}
 
 function setup(
   tasks: ReturnType<typeof task>[],
@@ -19,7 +41,16 @@ function setup(
   {
     checks = {},
     checkResult,
-  }: { checks?: Record<string, WaitCheck>; checkResult?: (check: WaitCheck) => CheckResult } = {},
+    ...updating
+  }: {
+    checks?: Record<string, WaitCheck>;
+    checkResult?: (check: WaitCheck) => CheckResult;
+    autoUpdate?: AutoUpdate;
+    advertised?: string;
+    compiled?: boolean;
+    retryAfter?: Date;
+    fails?: string;
+  } = {},
 ) {
   const backend: FakeBackend = fakeBackend(tasks);
   const waits = fakeWaitStore(checks);
@@ -46,9 +77,22 @@ function setup(
       return { pid: 42 };
     },
   };
+  const updates: string[] = [];
+  const state = memoryState(updating.retryAfter);
+  const update: UpdateDeps = {
+    compiled: updating.compiled ?? true,
+    version: '0.5.0',
+    advertised: () => updating.advertised,
+    state,
+    update: async () => {
+      updates.push('self-update');
+      if (updating.fails !== undefined) throw new SystemError(updating.fails);
+      return 'updated';
+    },
+  };
   const deps: DispatchDeps = {
     backend,
-    config: CONFIG,
+    config: { ...CONFIG, autoUpdate: updating.autoUpdate ?? 'incompatible' },
     dryRun: false,
     print: (line) => logs.push(line),
     system,
@@ -61,8 +105,9 @@ function setup(
       ranChecks.push(check.command);
       return checkResult?.(check) ?? { exitCode: 1, timedOut: false, output: 'pending' };
     },
+    update,
   };
-  return { backend, deps, started, stopped, logs, files, waits, ranChecks };
+  return { backend, deps, started, stopped, logs, files, waits, ranChecks, updates, state };
 }
 
 const running = (id: string) => task({ id, status: 'running', input: '/selftest go' });
@@ -492,4 +537,171 @@ test('a check whose task left Waiting is dropped; one whose task still runs is k
   );
   await runDispatch(deps);
   assert.deepEqual(waits.list(), ['r1']);
+});
+
+const tooOld = (backend: FakeBackend): void => {
+  backend.listTasks = async () => {
+    const error = new BackendError('this CLI is older than the board server', undefined);
+    error.contractMismatch = 'cli-older';
+    throw error;
+  };
+};
+
+test('a CLI the board refuses as too old updates itself and ends the tick without failing', async () => {
+  const { deps, backend, updates, started, logs, state } = setup([todo('t1')], [], {}, { autoUpdate: 'incompatible' });
+  tooOld(backend);
+  await runDispatch(deps);
+  assert.deepEqual(updates, ['self-update']);
+  assert.deepEqual(started, []);
+  assert.ok(logs.some((line) => line.startsWith('UPDATING this CLI is too old')));
+  assert.equal(state.deferred, undefined);
+});
+
+test('the real version check of a server that moved on makes the dispatcher update, and one that is merely older does not', async () => {
+  const answering =
+    (api: { version: number; minClient: number }): Fetch =>
+    async () =>
+      new Response(JSON.stringify({ result: { contract: 9, owner: 'alice', keyId: null, api } }));
+  const listingVia = (backend: FakeBackend, api: { version: number; minClient: number }): void => {
+    const web = createWebBackend({
+      loadConfig: () => ({ url: 'https://board.test', token: 'abm_x', dataKey: DATA_KEY }),
+      fetch: answering(api),
+    });
+    backend.listTasks = () => web.listTasks().then(() => []);
+  };
+  const newer = setup([], [], {}, {});
+  listingVia(newer.backend, { version: API_VERSION + 1, minClient: API_VERSION + 1 });
+  await runDispatch(newer.deps);
+  assert.deepEqual(newer.updates, ['self-update']);
+  const older = setup([], [], {}, {});
+  listingVia(older.backend, { version: MIN_SERVER - 1, minClient: 1 });
+  await assert.rejects(runDispatch(older.deps), /the board server is older than this CLI/);
+  assert.deepEqual(older.updates, []);
+});
+
+test('with autoUpdate never a too-old CLI does not update and the tick fails as before', async () => {
+  const { deps, backend, updates } = setup([], [], {}, { autoUpdate: 'never' });
+  tooOld(backend);
+  await assert.rejects(runDispatch(deps), /older than the board server/);
+  assert.deepEqual(updates, []);
+});
+
+test('a checkout never updates itself: it says so and the tick fails', async () => {
+  const { deps, backend, updates, logs } = setup([], [], {}, { compiled: false });
+  tooOld(backend);
+  await assert.rejects(runDispatch(deps), /older than the board server/);
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.startsWith('UPDATE-NEEDED') && line.includes('git pull')));
+});
+
+test('a failed update is logged, ends the tick quietly and is not tried again for an hour', async () => {
+  const { deps, backend, updates, logs, state } = setup(
+    [],
+    [],
+    {},
+    { fails: 'gh is not logged in: run "gh auth login"' },
+  );
+  tooOld(backend);
+  await runDispatch(deps);
+  assert.deepEqual(updates, ['self-update']);
+  assert.ok(logs.some((line) => line.startsWith('UPDATE-FAILED gh is not logged in')));
+  assert.deepEqual(state.deferred, new Date(NOW.getTime() + RETRY_AFTER_FAILURE_MS));
+
+  const soon = setup([], [], {}, { retryAfter: new Date(NOW.getTime() + 60_000) });
+  tooOld(soon.backend);
+  await runDispatch(soon.deps);
+  assert.deepEqual(soon.updates, []);
+  assert.ok(soon.logs.some((line) => line.startsWith('UPDATE-SKIPPED')));
+
+  const later = setup([], [], {}, { retryAfter: NOW });
+  tooOld(later.backend);
+  await runDispatch(later.deps);
+  assert.deepEqual(later.updates, ['self-update']);
+});
+
+test('the attempt is recorded before it starts, so a tick killed midway does not start over', async () => {
+  const { deps, backend, state } = setup([], [], {}, {});
+  tooOld(backend);
+  let during: Date | undefined;
+  deps.update.update = async () => {
+    during = state.deferred;
+    throw new Error('the tick was killed here');
+  };
+  await runDispatch(deps);
+  assert.deepEqual(during, new Date(NOW.getTime() + RETRY_AFTER_FAILURE_MS));
+});
+
+test('an advertised release that is not published yet is retried in five minutes, not an hour', async () => {
+  const { deps, backend, state, logs } = setup([], [], {}, {});
+  tooOld(backend);
+  deps.update.update = async () => 'unchanged';
+  await runDispatch(deps);
+  assert.ok(logs.some((line) => line.includes('no newer release is published yet')));
+  assert.deepEqual(state.deferred, new Date(NOW.getTime() + RETRY_AFTER_UNPUBLISHED_MS));
+});
+
+test('a tick that fails for another reason is not an update', async () => {
+  const { deps, backend, updates } = setup([]);
+  backend.listTasks = async () => {
+    throw new BackendError('cannot reach the board');
+  };
+  await assert.rejects(runDispatch(deps), /cannot reach/);
+  assert.deepEqual(updates, []);
+});
+
+test('with autoUpdate always a newer release updates an idle machine and ends the tick', async () => {
+  const { deps, updates, started } = setup([todo('t1')], [], {}, { autoUpdate: 'always', advertised: '0.6.0' });
+  await runDispatch(deps);
+  assert.deepEqual(updates, ['self-update']);
+  assert.deepEqual(started, []);
+});
+
+test('with autoUpdate always a newer release waits while workers run, and the tick goes on', async () => {
+  const { deps, updates, logs } = setup(
+    [running('r1')],
+    ['agent-board-r1'],
+    {},
+    { autoUpdate: 'always', advertised: '0.6.0' },
+  );
+  await runDispatch(deps);
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.startsWith('UPDATE-WAIT') && line.includes('1 worker')));
+  assert.ok(logs.some((line) => line.startsWith('TICK')));
+});
+
+test('a newer release is left alone by incompatible, and an equal or unknown one by always', async () => {
+  const incompatible = setup([], [], {}, { autoUpdate: 'incompatible', advertised: '0.9.0' });
+  await runDispatch(incompatible.deps);
+  const equal = setup([], [], {}, { autoUpdate: 'always', advertised: '0.5.0' });
+  await runDispatch(equal.deps);
+  const unknown = setup([], [], {}, { autoUpdate: 'always' });
+  await runDispatch(unknown.deps);
+  assert.deepEqual([...incompatible.updates, ...equal.updates, ...unknown.updates], []);
+});
+
+test('a failed update under always does not stop the tick, and a dry run never updates', async () => {
+  const failing = setup(
+    [todo('t1')],
+    [],
+    {},
+    { autoUpdate: 'always', advertised: '0.6.0', fails: 'gh is not installed' },
+  );
+  await runDispatch(failing.deps);
+  assert.deepEqual(failing.started, ['t1']);
+  const dry = setup([], [], {}, { autoUpdate: 'always', advertised: '0.6.0' });
+  dry.deps.dryRun = true;
+  await runDispatch(dry.deps);
+  assert.deepEqual(dry.updates, []);
+  assert.ok(dry.logs.some((line) => line.startsWith('DRY self-update')));
+});
+
+test('the listener unit is not a worker: it neither waits an update out nor takes a lane slot', async () => {
+  const listing = [
+    'agent-board-listen.service loaded active running agent-board listener',
+    'agent-board-dispatch.service loaded active running agent-board dispatcher: one tick',
+  ].join('\n');
+  const { deps, updates } = setup([], [], {}, { autoUpdate: 'always', advertised: '0.6.0' });
+  deps.system.activeWorkers = async () => parseWorkerUnits(listing);
+  await runDispatch(deps);
+  assert.deepEqual(updates, ['self-update']);
 });

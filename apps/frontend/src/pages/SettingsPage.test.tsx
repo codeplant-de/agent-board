@@ -15,9 +15,14 @@ const TITLE = { field: 'title', context: 'task:abc' } as const;
 
 const revoke = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const issue = vi.hoisted(() => vi.fn(async (_: unknown) => ({ token: 'abm_secret-token' })));
-const machines = vi.hoisted(() => ({
-  current: [] as { name: string; lastSeenAt: string | null; revokedAt: string | null }[],
-}));
+interface MachineRow {
+  name: string;
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+  clientVersion?: string | null;
+  clientStatus?: 'current' | 'outdated' | 'incompatible' | 'unknown';
+}
+const machines = vi.hoisted(() => ({ current: [] as MachineRow[] }));
 const stored = vi.hoisted(() => ({ current: null as unknown }));
 
 vi.mock('../lib/trpc', () => ({
@@ -37,6 +42,7 @@ vi.mock('../lib/trpc', () => ({
       list: {
         queryOptions: () => ({ queryKey: ['machines'], queryFn: async () => openMachines(machines.current as never) }),
       },
+      advertisedCli: { queryOptions: () => ({ queryKey: ['advertisedCli'], queryFn: async () => '0.7.0' }) },
       issue: { mutationOptions: () => ({ mutationFn: issue }) },
       revoke: { mutationOptions: () => ({ mutationFn: revoke }) },
     },
@@ -82,7 +88,9 @@ beforeEach(() => {
   issue.mockClear();
   revoke.mockClear();
   stored.current = setup;
-  machines.current = [{ name: 'laptop', lastSeenAt: null, revokedAt: null }];
+  machines.current = [
+    { name: 'laptop', lastSeenAt: null, revokedAt: null, clientVersion: '0.7.0', clientStatus: 'current' },
+  ];
 });
 
 async function askFor(button: string, passphrase: string) {
@@ -168,5 +176,22 @@ describe('machine enrolment', () => {
     renderPage();
     expect(await screen.findByText(held.keyId)).toBeInTheDocument();
     expect(screen.queryByText(second.setup.keyId)).not.toBeInTheDocument();
+  });
+});
+
+describe('what the machines list says about each CLI', () => {
+  it('shows the version and whether it needs an update, is refused, or is not known', async () => {
+    machines.current = [
+      { name: 'a', lastSeenAt: null, revokedAt: null, clientVersion: '0.7.0', clientStatus: 'current' },
+      { name: 'b', lastSeenAt: null, revokedAt: null, clientVersion: '0.5.0', clientStatus: 'outdated' },
+      { name: 'c', lastSeenAt: null, revokedAt: null, clientVersion: '0.4.0', clientStatus: 'incompatible' },
+      { name: 'd', lastSeenAt: null, revokedAt: null, clientVersion: null, clientStatus: 'unknown' },
+    ];
+    renderPage();
+    expect(await screen.findByText('0.7.0')).toBeInTheDocument();
+    expect(screen.getByText('0.5.0 · update available')).toBeInTheDocument();
+    expect(screen.getByText('0.4.0 · incompatible — run board self-update')).toBeInTheDocument();
+    expect(screen.getByText('version unknown')).toBeInTheDocument();
+    expect(screen.getByText(/The newest CLI is 0\.7\.0/)).toBeInTheDocument();
   });
 });

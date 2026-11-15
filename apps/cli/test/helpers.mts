@@ -56,6 +56,7 @@ export const CONFIG: Config = {
   inactivityMinutes: 15,
   maxRunHours: 6,
   slackWebhookFile: '/nonexistent',
+  autoUpdate: 'incompatible',
   intake: {
     prompt: '/review-pr {url} --auto',
     priority: 'normal',

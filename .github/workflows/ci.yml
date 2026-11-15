@@ -227,12 +227,18 @@ jobs:
         id: tag
         run: echo "tag=main-${GITHUB_SHA::8}-$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
 
+      # The backend advertises it to the machines, so they learn that a newer CLI exists.
+      - name: CLI version
+        id: cli
+        run: echo "version=$(jq -r .version apps/cli/package.json)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push ${{ matrix.image }}
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           push: true
+          build-args: ${{ matrix.image == 'agent-board-backend' && format('CLI_VERSION={0}', steps.cli.outputs.version) || '' }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:latest
             ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ github.sha }}

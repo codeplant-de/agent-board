@@ -1,9 +1,28 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  utimesSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { assetName, checksumOf, compareVersions, newestRelease, realGh, selfUpdate } from '../src/self-update.mts';
+import { compareVersions } from '@agent-board/shared';
+import {
+  assetName,
+  checksumOf,
+  newestRelease,
+  realGh,
+  realListenerRestart,
+  sweepStaleUpdateDirs,
+  selfUpdate,
+} from '../src/self-update.mts';
 import type { SelfUpdateDeps } from '../src/self-update.mts';
 import { fakeGh, sha256 } from './helpers-gh.mts';
 import type { FakeRelease } from './helpers-gh.mts';
@@ -17,6 +36,7 @@ function fixture(releases: FakeRelease[], overrides: Partial<SelfUpdateDeps> = {
   const execPath = join(dir, 'board');
   writeFileSync(execPath, 'old binary', { mode: 0o755 });
   const printed: string[] = [];
+  const restarts: string[] = [];
   const deps: SelfUpdateDeps = {
     compiled: true,
     version: '0.3.0',
@@ -24,6 +44,10 @@ function fixture(releases: FakeRelease[], overrides: Partial<SelfUpdateDeps> = {
     platform: 'linux',
     arch: 'x64',
     gh: realGh(gh.env),
+    restartListener: async () => {
+      restarts.push('restart');
+      return undefined;
+    },
     print: (line) => printed.push(line),
     ...overrides,
   };
@@ -31,7 +55,7 @@ function fixture(releases: FakeRelease[], overrides: Partial<SelfUpdateDeps> = {
     rmSync(gh.dir, { recursive: true });
     rmSync(dir, { recursive: true });
   };
-  return { gh, dir, execPath, printed, deps, clean };
+  return { gh, dir, execPath, printed, restarts, deps, clean };
 }
 
 test('versions compare numerically, and the newest published cli release wins', () => {
@@ -115,6 +139,35 @@ test('an update replaces the binary beside itself with mode 755 and leaves nothi
   }
 });
 
+test('the listener is restarted after the binary was replaced, and only then', async () => {
+  const updated = fixture([{ tag: 'cli-v0.4.0', assets: { [ASSET]: 'new' } }], {
+    restartListener: async () => 'restarted the listener',
+  });
+  const same = fixture([{ tag: 'cli-v0.3.0' }]);
+  const checking = fixture([{ tag: 'cli-v0.4.0', assets: { [ASSET]: 'new' } }]);
+  const bad = fixture([{ tag: 'cli-v0.4.0', assets: { [ASSET]: 'tampered' }, sums: `${sha256('genuine')}  ${ASSET}` }]);
+  try {
+    assert.equal(await selfUpdate(updated.deps, {}), 'updated');
+    assert.deepEqual(updated.printed, ['updated board 0.3.0 -> 0.4.0', 'restarted the listener']);
+    assert.equal(await selfUpdate(same.deps, {}), 'unchanged');
+    assert.equal(await selfUpdate(checking.deps, { check: true }), 'unchanged');
+    await assert.rejects(selfUpdate(bad.deps, {}));
+    assert.deepEqual([...same.restarts, ...checking.restarts, ...bad.restarts], []);
+  } finally {
+    for (const f of [updated, same, checking, bad]) f.clean();
+  }
+});
+
+test('a machine without systemctl has no listener to restart, and that is no failure', async () => {
+  const saved = process.env['PATH'];
+  try {
+    process.env['PATH'] = '/nonexistent';
+    assert.equal(await realListenerRestart({ block: true })(), undefined);
+  } finally {
+    process.env['PATH'] = saved;
+  }
+});
+
 test('a download that does not match SHA256SUMS is refused, and so is a missing entry', async () => {
   const bad = fixture([{ tag: 'cli-v0.4.0', assets: { [ASSET]: 'tampered' }, sums: `${sha256('genuine')}  ${ASSET}` }]);
   const unlisted = fixture([{ tag: 'cli-v0.4.0', assets: { [ASSET]: 'x' }, sums: `${sha256('x')}  other-file` }]);
@@ -150,5 +203,53 @@ test('the staging file beside the binary has an unpredictable name and is gone a
     assert.equal(readFileSync(join(dir, `.board-update-${process.pid}`), 'utf8'), 'planted');
   } finally {
     clean();
+  }
+});
+
+function fakeBin(script: string): { dir: string; env: Record<string, string> } {
+  const dir = mkdtempSync(join(tmpdir(), 'board-fakebin-test-'));
+  for (const [name, body] of Object.entries({ [script.split(':')[0] ?? '']: script.split(':').slice(1).join(':') })) {
+    writeFileSync(join(dir, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  }
+  return { dir, env: { PATH: `${dir}:/usr/bin:/bin` } };
+}
+
+test('a systemctl that does not know the listener unit (exit 5) is no failure either', async () => {
+  const { dir } = fakeBin('systemctl:exit 5');
+  const saved = process.env['PATH'];
+  try {
+    process.env['PATH'] = `${dir}:${saved ?? ''}`;
+    assert.equal(await realListenerRestart({ block: true })(), undefined);
+    writeFileSync(join(dir, 'systemctl'), '#!/bin/sh\necho boom >&2\nexit 1\n', { mode: 0o755 });
+    assert.match((await realListenerRestart({ block: true })()) ?? '', /could not restart.*boom/);
+  } finally {
+    process.env['PATH'] = saved;
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a gh call that outlasts its time limit is stopped and named', async () => {
+  const { dir, env } = fakeBin('gh:sleep 5');
+  try {
+    await assert.rejects(realGh(env, 100)(['release', 'download']), /gh release download took longer than 0\.1 s/);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('download directories left by a killed update are removed once they are over an hour old', () => {
+  const root = mkdtempSync(join(tmpdir(), 'board-sweep-test-'));
+  try {
+    const old = join(root, 'board-update-old');
+    const fresh = join(root, 'board-update-fresh');
+    const other = join(root, 'something-else');
+    for (const path of [old, fresh, other]) mkdirSync(path);
+    const longAgo = new Date(Date.now() - 2 * 3_600_000);
+    utimesSync(old, longAgo, longAgo);
+    utimesSync(other, longAgo, longAgo);
+    sweepStaleUpdateDirs(new Date(), root);
+    assert.deepEqual(readdirSync(root).sort(), ['board-update-fresh', 'something-else']);
+  } finally {
+    rmSync(root, { recursive: true });
   }
 });
