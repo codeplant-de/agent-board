@@ -29,6 +29,7 @@ pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 
 - **Backend tests** are integration tests against `board_test`. They use `app.inject` for the machine API and tRPC callers for the UI. The global setup drops and recreates the schema on every run, so two worktrees testing at the same time need separate databases (`TEST_DATABASE_URL`).
 - **CLI tests** use `node --test`. The decision logic (`apps/cli/src/decide.mts`, `planIntake`, the `run*` functions) takes the backend, GitHub and the system as arguments, and tests pass fakes from `apps/cli/test/helpers.mts`. A fake backend must behave like the real one. For example, the server clears `runStartedAt` when a task leaves Running.
+- **Slack app tests** (`apps/slack`) use vitest with a fake Socket Mode client and a local HTTP server standing in for the backend. The backend's `intake.integration.test.ts` runs the app's real intake client against the real intake API.
 - **Completion tests** need zsh and fish and skip without them, so CI may be their first real run.
 - **The command reference** in [cli.md](cli.md) is generated from the commander program. A test fails when it is stale; regenerate it with `pnpm --filter @agent-board/cli run docs`.
 - **The binary**: `pnpm --filter @agent-board/cli test:binary` builds one for this host and runs it the way a worker machine would. CI does the same in its `binary` job.

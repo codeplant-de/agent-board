@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import tty from 'node:tty';
-import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { formatTasks } from '../src/board.mts';
@@ -204,18 +202,9 @@ test('schedule --json prints scheduleId for a repeat', async () => {
   });
 });
 
-test('notify and ask confirm after the Slack post', async () => {
+test('ask confirms after the question is on the board', async () => {
   const dir = mkdtempSync('/tmp/board-output-test-');
-  const server = createServer((request, response) => {
-    request.resume();
-    request.on('end', () => response.end('ok'));
-  });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
-    const { port } = server.address() as AddressInfo;
-    const hook = join(dir, 'webhook');
-    writeFileSync(hook, `http://127.0.0.1:${port}/hook\n`);
-    chmodSync(hook, 0o600);
     writeFileSync(
       join(dir, 'q.json'),
       JSON.stringify({
@@ -232,15 +221,10 @@ test('notify and ask confirm after the Slack post', async () => {
         ],
       }),
     );
-    const { printed, go } = setup({ config: { ...CONFIG, slackWebhookFile: hook } });
-    await go(['notify', ID, 'hello']);
+    const { printed, go } = setup();
     await go(['ask', ID, '--file', join(dir, 'q.json')]);
-    assert.deepEqual(printed, [
-      `notified about ${ID}  https://board.test/t/${ID}`,
-      `asked 1 question on ${ID}, now in needs-me  https://board.test/t/${ID}`,
-    ]);
+    assert.deepEqual(printed, [`asked 1 question on ${ID}, now in needs-me  https://board.test/t/${ID}`]);
   } finally {
-    server.close();
     rmSync(dir, { recursive: true });
   }
 });

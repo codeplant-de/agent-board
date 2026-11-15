@@ -20,6 +20,12 @@ vi.mock('../lib/trpc', () => ({
       move: { mutationOptions: () => ({ mutationFn: move }) },
       create: { mutationOptions: () => ({ mutationFn: create }) },
     },
+    slack: {
+      inbox: {
+        list: { queryOptions: () => ({ queryKey: ['slack.inbox.list'], queryFn: async () => [] }) },
+        remove: { mutationOptions: () => ({ mutationFn: async () => null }) },
+      },
+    },
   }),
 }));
 

@@ -15,6 +15,7 @@ PR review was the first use. A task is any prompt you would type into Claude Cod
  browser ───▶ auth proxy: login, sets Remote-User ──▶ Caddy ── /trpc ──────────▶ backend ──▶ Postgres
  workers ───▶ auth proxy: bearer route, no login ───▶ Caddy ── /api/machine/* ─▶ backend
               └───────────────────────────────────────────────────────────────────────────┘
+ Slack ◀──Socket Mode──▶ slack app ──POST /api/intake/*, in-cluster only──▶ backend
                     ▲ machine API (POST, sealed)        │ SSE "tasks changed"
                     │                                   ▼
  worker machine:  board internal listen ──▶ dispatch tick ──▶ systemd-run ──▶ worker ──▶ claude -p
@@ -26,6 +27,7 @@ PR review was the first use. A task is any prompt you would type into Claude Cod
 | Backend   | `apps/backend`           | Fastify 5, tRPC 11 for the UI, `POST /api/machine/<command>` for workers, `GET /api/machine/events` (SSE). Drizzle on Postgres; migrations run on start. Holds no key.                                                                                                            |
 | Frontend  | `apps/frontend`          | React 19, Mantine, TanStack Query over tRPC. Derives the keys from the passphrase (Argon2id), seals and opens every content field. Polls every 5 s. Served by Caddy, which also proxies the backend and strips every response header the backend sets.                            |
 | CLI       | `apps/cli`               | One program for people, agents and the worker machine. Runs from source on Node 24 or as a Bun-compiled binary. Its `internal` subcommands `dispatch`, `intake`, `listen` and `worker` run from systemd user units; `hook` is the PreToolUse hook Claude Code calls during a run. |
+| Slack app | `apps/slack`             | Optional companion container. Holds the Slack app token and the Socket Mode connection, answers `/board`, and reaches the backend only through the intake API. No state, no ingress, no database access.                                                                          |
 | Shared    | `packages/shared`        | No dependencies, consumed as source. The contract (`contract.mts`), the sealing rules (`sealing.mts`), crypto, key slots, the fixed server event texts, question and transcript shapes.                                                                                           |
 | Infra     | `infra/`, `*/Dockerfile` | Postgres init for compose, and a patch for the separate `codeplant-de/cloud-infra` repo (cluster, login proxy, backups).                                                                                                                                                          |
 
@@ -60,6 +62,26 @@ What the server can still do: decide when and where a task runs, reorder or with
 
 **No sandbox.** A worker runs as you. A sandbox per command could not support implementation work (worktrees, installs, pushes), and once an agent may push, the boundary that matters is the machine and its credentials. Permission rules are not a security boundary. A dedicated OS user for workers is the planned way to get one.
 
+## The Slack companion
+
+`/board <text>` in Slack proposes a task, and `/board link` binds a Slack user to a board user. That is all it does: **there are no notifications**, because the server cannot read a task's title, prompt or notes, and a message that says only "a task needs you" would be a bare link. Notifying is left to the client: the browser already shows [desktop notifications](usage.md#desktop-notifications) for tasks that enter Needs me, and Slack notifications are deliberately not built server-side.
+
+It is a separate container (`apps/slack`, image `agent-board-slack`) and not part of the backend for three reasons. The Slack tokens and the SDK stay out of the process that holds the database and every user's ciphertext, and what the Slack pod can ask of the backend is limited to the intake token's three commands. The backend stays free of an outbound connection it has no other need for. And Slack being down, or its SDK misbehaving, cannot touch the board. The app dials out to Slack over Socket Mode, so nothing reaches it from outside and it needs no ingress.
+
+The backend keeps the data and the rules: the `slack_inbox` and `slack_link` tables (row-level security like every board table), one-time link codes (`slack_link_code`, readable only through security-definer functions, because a code is issued before anyone knows whose board it is for), the 30-day retention of inbox items, and the tRPC procedures the browser uses (list and dismiss items, confirm a link, show and remove your own link).
+
+**The intake API** (`POST /api/intake/<command>`, `apps/backend/src/intake-api.ts`) is how the Slack app reaches the backend. It is shaped like the machine API (JSON in, `{result}` or `{error}` out) and authenticated by one shared secret, `INTAKE_TOKEN`, sent as a bearer token and compared in constant time. The API is off while the variable is unset. The token opens three commands and nothing else:
+
+| Command     | Does                                                                                             |
+| ----------- | ------------------------------------------------------------------------------------------------ |
+| `inbox-add` | Adds text to the inbox of the board user the Slack user is linked to; 409 when there is no link. |
+| `link`      | Issues a one-time code for a Slack user and returns the board URL that confirms it.              |
+| `unlink`    | Removes the link of a Slack user.                                                                |
+
+It cannot read or change a task, a note or a machine. A leaked token can fill a linked user's inbox (at most 4000 characters an item, 30 days) and start or remove links, and a link only takes effect when the board user confirms it behind the login. **The limit of that isolation:** it holds only while the backend takes `Remote-User` and `Remote-Groups` from nobody but the login proxy (see [Sign-in is the proxy's job](#trust-model)). Today that is enforced by the network path alone: the backend trusts those headers from any caller that reaches port 4000, so a compromised pod in the cluster, the Slack pod included, could call `/trpc` as any user. Even then it gets only what the board stores, which is ciphertext plus clear metadata, but it is more than the intake token allows. A NetworkPolicy that admits only the web container to `/trpc`, or a shared secret the proxy adds and the backend checks, is the planned hardening and is not built. The route is deliberately not one of the proxy's login bypasses: the Slack app reaches the backend inside the cluster (`BOARD_API_URL`), and from outside the login proxy answers first.
+
+**Text from Slack is untrusted and never sealed by the server.** An inbox item is a suggestion: the user turns it into a task in the browser, which seals it as theirs, or dismisses it. Nothing creates a task from it by itself (rule 2). The text is kept out of logs on both sides; failures are logged by their reason only.
+
 ## Versioning
 
 The CLI sends `version` once per process and checks the server's API range (see [machine-api.md](machine-api.md#version-handshake)): it stops when its `API_VERSION` is below the server's `minClient`, or when the server's version is below its own `MIN_SERVER`. A server that is merely older makes the unattended dispatch and intake ticks skip quietly until it catches up. CLIs up to 0.7.0 compare `contract` exactly, so the server keeps answering it (`LEGACY_CONTRACT`, 9) until a break raises `MIN_CLIENT` above it. The server deploys on every merge to `main`, while the CLI updates only through a `cli-v*` release and `board self-update`, so a raised `MIN_CLIENT` leaves every older machine refusing to work until it is updated.
@@ -85,6 +107,8 @@ The CLI sends `version` once per process and checks the server's API range (see 
 | Agent output that changes your text is a suggestion you apply (`board polish`, `--suggest`)     | An agent must never seal anything as `user`                                             | Agents editing tasks            |
 | Bun-compiled release binary                                                                     | No Node to find on a worker machine, the most fragile part of installing                | esbuild bundle on Node          |
 | Duplicate check by a Haiku call for scheduled tasks; a blind-indexed dedupe key only for intake | A key does not fit free-form prompts                                                    | Dedupe keys everywhere          |
+| Slack as a separate container behind a narrow token-gated intake API                            | Tokens and the SDK stay out of the backend, and the token can touch only the inbox      | Slack app inside the backend    |
+| No Slack notifications                                                                          | The server cannot read task text, so a message could only be a bare link                | Server-side DMs with an outbox  |
 
 ## Rules for changes
 
@@ -115,6 +139,8 @@ Break one of these only with a decision recorded here.
 | Running Claude, transcripts              | `apps/cli/src/worker.mts`                                        |
 | Hook                                     | `apps/cli/src/hook.mts`                                          |
 | Intake                                   | `apps/cli/src/intake.mts`, `github.mts`                          |
+| Slack app, Slack intake API              | `apps/slack/src/`, `apps/backend/src/intake-api.ts`              |
+| Slack inbox and links                    | `apps/backend/src/services/slack.ts`                             |
 | systemd units                            | `apps/cli/src/setup.mts`, `system.mts`                           |
 | Browser keys                             | `apps/frontend/src/crypto/`                                      |
 

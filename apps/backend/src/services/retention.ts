@@ -8,3 +8,6 @@ export const daysBefore = (now: Date, days: number): Date => new Date(now.getTim
 
 /** Intake's tasks stay open in Done, so their transcripts go after this long untouched. */
 export const DONE_TRANSCRIPT_DAYS = 28;
+
+/** A Slack inbox item is plain text, so it goes after this long if nobody used it. */
+export const INBOX_RETENTION_DAYS = 30;

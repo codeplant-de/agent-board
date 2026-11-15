@@ -17,7 +17,7 @@ index a0090cb..044f2f5 100644
  | hct: Postgres | 16 | `postgres:16-alpine` (floating tag: a new 16.x arrives when the node pulls again) | by hand: a major needs dump and restore |
 -| hct, estimation-bot | `main-<sha8>-<time>` | `ghcr.io/codeplant-de/hct-*`, `ghcr.io/jascha-schiffer/estimation-bot` | Flux image automation |
 +| agent-board: Postgres | 16 | `postgres:16-alpine` (floating tag) | by hand: a major needs dump and restore |
-+| hct, estimation-bot, agent-board | `main-<sha8>-<time>` | `ghcr.io/codeplant-de/hct-*`, `ghcr.io/jascha-schiffer/estimation-bot`, `ghcr.io/codeplant-de/agent-board-*` | Flux image automation |
++| hct, estimation-bot, agent-board | `main-<sha8>-<time>` | `ghcr.io/codeplant-de/hct-*`, `ghcr.io/jascha-schiffer/estimation-bot`, `ghcr.io/codeplant-de/agent-board-*` (backend, web, slack) | Flux image automation |
  | SonarQube (off) | 26.10 Community Build, Postgres 17 | `sonarqube` | nobody: LTA steps by hand if it comes back |
  
  ## Routing
@@ -29,14 +29,15 @@ index a0090cb..044f2f5 100644
  | ntfy.codeplant.de | ntfy/ntfy:80 | no Authelia: ntfy's own users and tokens, deny-all by default |
  
  ## Domains
-@@ -157,8 +159,9 @@ sops -e -i apps/hct/env.sops.yaml
+@@ -157,8 +159,10 @@ sops -e -i apps/hct/env.sops.yaml
  | File | Contents |
  |---|---|
  | infrastructure/controllers/hetzner-dns-token.sops.yaml | Hetzner token for the zone project (DNS-01) |
 -| apps/ghcr-pull.sops.yaml | GHCR read:packages pull secret, 4 namespaces |
 +| apps/ghcr-pull.sops.yaml | GHCR read:packages pull secret, 5 namespaces |
  | apps/hct/env.sops.yaml | hct backend + Postgres env |
-+| apps/agent-board/env.sops.yaml | agent board backend + Postgres env (no app secrets; UI login is Authelia, machine tokens live hashed in Postgres) |
++| apps/agent-board/env.sops.yaml | agent board backend + Postgres env (INTAKE_TOKEN is its only app secret; UI login is Authelia, machine tokens live hashed in Postgres) |
++| apps/agent-board/slack-env.sops.yaml | Slack app: SLACK_APP_TOKEN, BOARD_API_URL, INTAKE_TOKEN (the same value as the backend's) |
  | apps/estimation-bot/env.sops.yaml | Slack and Shortcut credentials |
  | apps/happy/env.sops.yaml | HANDY_MASTER_SECRET etc. |
  | apps/frps/env.sops.yaml | LLDAP password of the frp-auth sidecar (same as `FRPS_BIND_PASSWORD` in lldap) |
@@ -49,7 +50,7 @@ index 0000000..a068226
 +apiVersion: v1
 +kind: Service
 +metadata:
-+  # The web container's Caddy proxies /trpc and /api to backend:4000.
++  # The web container's Caddy proxies /trpc and /api to backend:4000; the Slack app calls /api/intake here.
 +  name: backend
 +spec:
 +  selector:
@@ -105,13 +106,13 @@ index 0000000..a068226
 +              memory: 384Mi
 diff --git a/cluster/apps/agent-board/env.sops.yaml.example b/cluster/apps/agent-board/env.sops.yaml.example
 new file mode 100644
-index 0000000..d47c3d2
+index 0000000..0000000
 --- /dev/null
 +++ b/cluster/apps/agent-board/env.sops.yaml.example
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,23 @@
 +# Encrypt as env.sops.yaml (see cluster/README.md). DATABASE_URL uses the host "postgres" (the
 +# Service name). The UI login is Authelia's; worker machines use tokens made on the board's Settings
-+# page, stored hashed in Postgres. No app secrets here.
++# page, stored hashed in Postgres. The only app secret is INTAKE_TOKEN.
 +apiVersion: v1
 +kind: Secret
 +metadata:
@@ -128,6 +129,10 @@ index 0000000..d47c3d2
 +  # One-time: the username that owns the existing tasks. Remove after the first start.
 +  BACKFILL_OWNER: <fill-in>
 +  ALLOWED_GROUPS: admins
++  # The Slack app's access to the intake API: the same value as INTAKE_TOKEN in slack-env.sops.yaml (openssl rand -hex 32).
++  # BOARD_URL builds the links the Slack app hands out. Leave both out to run without Slack.
++  INTAKE_TOKEN: <fill-in>
++  BOARD_URL: https://board.codeplant.de
 diff --git a/cluster/apps/agent-board/ingress.yaml b/cluster/apps/agent-board/ingress.yaml
 new file mode 100644
 index 0000000..6815d4c
@@ -200,19 +205,21 @@ index 0000000..6815d4c
 +      Remote-Groups: ""
 diff --git a/cluster/apps/agent-board/kustomization.yaml b/cluster/apps/agent-board/kustomization.yaml
 new file mode 100644
-index 0000000..6fd077a
+index 0000000..0000000
 --- /dev/null
 +++ b/cluster/apps/agent-board/kustomization.yaml
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,12 @@
 +apiVersion: kustomize.config.k8s.io/v1beta1
 +kind: Kustomization
 +namespace: agent-board
 +resources:
 +  - namespace.yaml
 +  - env.sops.yaml
++  - slack-env.sops.yaml
 +  - postgres.yaml
 +  - backend.yaml
 +  - web.yaml
++  - slack.yaml
 +  - ingress.yaml
 diff --git a/cluster/apps/agent-board/namespace.yaml b/cluster/apps/agent-board/namespace.yaml
 new file mode 100644
@@ -352,6 +359,62 @@ index 0000000..d3822b2
 +              memory: 16Mi
 +            limits:
 +              memory: 96Mi
+diff --git a/cluster/apps/agent-board/slack.yaml b/cluster/apps/agent-board/slack.yaml
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/cluster/apps/agent-board/slack.yaml
+@@ -0,0 +1,32 @@
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: slack
++spec:
++  replicas: 1
++  strategy:
++    # One connection to Slack at a time.
++    type: Recreate
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: slack
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: slack
++    spec:
++      imagePullSecrets:
++        - name: ghcr-pull
++      containers:
++        - name: slack
++          image: ghcr.io/codeplant-de/agent-board-slack:latest # {"$imagepolicy": "flux-system:agent-board-slack"}
++          # No Service, no ingress, no probes: it listens on no port. It dials out to Slack and to backend:4000.
++          envFrom:
++            - secretRef:
++                name: agent-board-slack-env
++          resources:
++            requests:
++              cpu: 10m
++              memory: 48Mi
++            limits:
++              memory: 128Mi
+diff --git a/cluster/apps/agent-board/slack-env.sops.yaml.example b/cluster/apps/agent-board/slack-env.sops.yaml.example
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/cluster/apps/agent-board/slack-env.sops.yaml.example
+@@ -0,0 +1,12 @@
++# Encrypt as slack-env.sops.yaml (see cluster/README.md). SLACK_APP_TOKEN is the app-level token (xapp-, scope
++# connections:write) of the Slack app made from infra/slack-app-manifest.yaml in codeplant-de/agent-board.
++# INTAKE_TOKEN must equal the backend secret's. The backend holds no Slack token.
++apiVersion: v1
++kind: Secret
++metadata:
++  name: agent-board-slack-env
++  namespace: agent-board
++stringData:
++  SLACK_APP_TOKEN: <fill-in>
++  BOARD_API_URL: http://backend:4000
++  INTAKE_TOKEN: <fill-in>
 diff --git a/cluster/apps/authelia/configuration.yml b/cluster/apps/authelia/configuration.yml
 index 404603e..d8ee52e 100644
 --- a/cluster/apps/authelia/configuration.yml
@@ -391,7 +454,7 @@ diff --git a/cluster/apps/image-policies.yaml b/cluster/apps/image-policies.yaml
 index 3c1c4d0..4146b34 100644
 --- a/cluster/apps/image-policies.yaml
 +++ b/cluster/apps/image-policies.yaml
-@@ -78,3 +78,55 @@ spec:
+@@ -78,3 +78,81 @@ spec:
    policy:
      numerical:
        order: asc
@@ -441,6 +504,32 @@ index 3c1c4d0..4146b34 100644
 +spec:
 +  imageRepositoryRef:
 +    name: agent-board-web
++  filterTags:
++    pattern: '^main-[a-f0-9]{8}-(?P<ts>[0-9]+)$'
++    extract: '$ts'
++  policy:
++    numerical:
++      order: asc
++---
++apiVersion: image.toolkit.fluxcd.io/v1
++kind: ImageRepository
++metadata:
++  name: agent-board-slack
++  namespace: flux-system
++spec:
++  image: ghcr.io/codeplant-de/agent-board-slack
++  interval: 5m
++  secretRef:
++    name: ghcr-pull
++---
++apiVersion: image.toolkit.fluxcd.io/v1
++kind: ImagePolicy
++metadata:
++  name: agent-board-slack
++  namespace: flux-system
++spec:
++  imageRepositoryRef:
++    name: agent-board-slack
 +  filterTags:
 +    pattern: '^main-[a-f0-9]{8}-(?P<ts>[0-9]+)$'
 +    extract: '$ts'
