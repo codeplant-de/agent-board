@@ -490,15 +490,17 @@ const lookup = (states: Record<string, PrState> = {}, unreadable: string[] = [])
 
 test('the PR states asked for are those of the open tasks’ PRs, the agent’s and the prompt’s, each once', () => {
   const agents = task({ id: 'a1', status: 'needs-me', input: 'fix it', pr: url(7) });
+  const both = task({ id: 'b1', status: 'needs-me', input: `/review-pr ${url(8)}`, pr: url(9) });
   const tasks = [
     taskFor(1, 'needs-me'),
     taskFor(1, 'todo'),
     taskFor(2, 'done'),
     { ...taskFor(3, 'needs-me'), closed: true },
     agents,
+    both,
     task({ id: 'plain', status: 'needs-me', input: 'no pr' }),
   ];
-  assert.deepEqual(prsToCheck(tasks), [url(1), url(7)]);
+  assert.deepEqual(prsToCheck(tasks), [url(1), url(7), url(9)]);
 });
 
 test('a task is written only when GitHub’s state differs from the stored one, and an unanswered PR changes nothing', () => {
@@ -539,6 +541,8 @@ test('the PR states query has an alias and variables per PR, and no URL text in 
     k1: 22,
   });
   assert.equal(prStatesVariables(['https://github.com/o"x/r/pull/1']), undefined);
+  assert.equal(prStatesVariables(['https://github.com/o/r/pull/2147483648']), undefined);
+  assert.ok(prStatesVariables(['https://github.com/o/r/pull/2147483647']));
 });
 
 test('the PR states answer maps GitHub’s states, and a PR it found nothing for is unreadable', () => {

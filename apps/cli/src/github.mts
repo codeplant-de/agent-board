@@ -38,6 +38,8 @@ export class GitHubError extends Error {}
 
 const PAGE_SIZE = 100;
 const PR_STATES_PER_QUERY = 50;
+// GraphQL's Int is 32-bit: a larger PR number would fail the whole query.
+const MAX_GRAPHQL_INT = 2 ** 31 - 1;
 // A listing cut short would read as "these PRs no longer ask for a review", so it fails instead.
 const MAX_PAGES = 10;
 
@@ -119,7 +121,15 @@ export function prStatesVariables(urls: string[]): Record<string, string | numbe
   for (const [index, url] of urls.entries()) {
     const parsed = parsePrUrl(url);
     const [owner, name] = parsed?.repo.split('/') ?? [];
-    if (!parsed || !owner || !name || !/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(name)) return undefined;
+    if (
+      !parsed ||
+      parsed.number > MAX_GRAPHQL_INT ||
+      !owner ||
+      !name ||
+      !/^[\w.-]+$/.test(owner) ||
+      !/^[\w.-]+$/.test(name)
+    )
+      return undefined;
     Object.assign(variables, { [`o${index}`]: owner, [`n${index}`]: name, [`k${index}`]: parsed.number });
   }
   return variables;
@@ -157,7 +167,8 @@ async function gh(args: string[], { keepAnswerOnError = false } = {}): Promise<u
         // Not an answer: reported below like any other failure.
       }
     }
-    const first = error instanceof Error ? error.message.split('\n')[0] : 'unknown error';
+    const stderr = isRecord(error) && typeof error['stderr'] === 'string' ? error['stderr'].trim() : '';
+    const first = (stderr || (error instanceof Error ? error.message : 'unknown error')).split('\n')[0];
     throw new GitHubError(`gh ${args.slice(0, 2).join(' ')} failed: ${first}`);
   }
 }
@@ -193,28 +204,39 @@ export function createGitHub(): GitHub {
     async prStates(urls) {
       const queryable = urls.filter((url) => prStatesVariables([url]) !== undefined);
       const lookup: PrStateLookup = { states: new Map(), unreadable: urls.filter((url) => !queryable.includes(url)) };
+      let answered = 0;
+      let failure: GitHubError | undefined;
       for (let start = 0; start < queryable.length; start += PR_STATES_PER_QUERY) {
         const chunk = queryable.slice(start, start + PR_STATES_PER_QUERY);
         const variables = prStatesVariables(chunk) ?? {};
-        const found = parsePrStates(
-          await gh(
-            [
-              'api',
-              'graphql',
-              '-f',
-              `query=${prStatesQuery(chunk.length)}`,
-              ...Object.entries(variables).flatMap(([name, value]) => [
-                typeof value === 'number' ? '-F' : '-f',
-                `${name}=${value}`,
-              ]),
-            ],
-            { keepAnswerOnError: true },
-          ),
-          chunk,
-        );
-        for (const [url, state] of found.states) lookup.states.set(url, state);
-        lookup.unreadable.push(...found.unreadable);
+        try {
+          const found = parsePrStates(
+            await gh(
+              [
+                'api',
+                'graphql',
+                '-f',
+                `query=${prStatesQuery(chunk.length)}`,
+                ...Object.entries(variables).flatMap(([name, value]) => [
+                  typeof value === 'number' ? '-F' : '-f',
+                  `${name}=${value}`,
+                ]),
+              ],
+              { keepAnswerOnError: true },
+            ),
+            chunk,
+          );
+          for (const [url, state] of found.states) lookup.states.set(url, state);
+          lookup.unreadable.push(...found.unreadable);
+          answered += 1;
+        } catch (error) {
+          if (!(error instanceof GitHubError)) throw error;
+          failure ??= error;
+          lookup.unreadable.push(...chunk);
+        }
       }
+      // Every query failing is an outage to report; a few failing leave their PRs without a state.
+      if (failure !== undefined && answered === 0) throw failure;
       return lookup;
     },
   };

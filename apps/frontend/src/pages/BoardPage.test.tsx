@@ -190,6 +190,14 @@ describe('BoardPage move merged to Done', () => {
     expect(done.mock.calls.map(([variables]) => variables)).toEqual([{ id: 'm1' }, { id: 'm2' }]);
   });
 
+  it('leaves out proposals and tasks with an open question', async () => {
+    listed.tasks = [merged('m1', { proposed: true }), merged('m2', { openQuestion: true }), merged('m3')];
+    renderBoard();
+    await userEvent.click(await screen.findByRole('button', { name: 'Move merged to Done (1)' }));
+    await waitFor(() => expect(done).toHaveBeenCalledTimes(1));
+    expect(done.mock.calls[0]?.[0]).toEqual({ id: 'm3' });
+  });
+
   it('is only there while Needs me has a merged PR', async () => {
     listed.tasks = [merged('m1', { prState: 'closed' }), merged('m2', { status: 'done' }), merged('m3', { pr: null })];
     renderBoard();

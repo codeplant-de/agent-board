@@ -9,7 +9,7 @@
 import { buildContext, print, skipTickWhileServerOlder } from './cli.mts';
 import type { Context } from './cli.mts';
 import type { Backend, PrState, Task, TaskPatch } from '@agent-board/shared';
-import { parsePrUrl, prOf, prUrlIn } from '@agent-board/shared';
+import { parsePrUrl, prUrlIn, statePrOf } from '@agent-board/shared';
 import { BackendError, isVocabularyRefusal, updateCliHint } from './backend.mts';
 import { createGitHub, GitHubError } from './github.mts';
 import type { GitHub, LivePr, PrStateLookup } from './github.mts';
@@ -66,14 +66,14 @@ export function planIntake(input: {
 
 /** The PRs whose state to look up: those of the tasks still on the board, each once. */
 export function prsToCheck(tasks: Task[]): string[] {
-  const urls = tasks.filter((task) => !task.closed && task.status !== 'done').map((task) => prOf(task));
+  const urls = tasks.filter((task) => !task.closed && task.status !== 'done').map((task) => statePrOf(task));
   return [...new Set(urls.filter((url): url is string => url !== undefined))];
 }
 
 /** The tasks whose stored state differs from what GitHub says; a PR GitHub did not answer for changes nothing. */
 export function planPrStates(tasks: Task[], lookup: PrStateLookup): { task: Task; prState: PrState }[] {
   return tasks.flatMap((task) => {
-    const url = task.closed || task.status === 'done' ? undefined : prOf(task);
+    const url = task.closed || task.status === 'done' ? undefined : statePrOf(task);
     const prState = url === undefined ? undefined : lookup.states.get(url);
     return prState === undefined || prState === task.prState ? [] : [{ task, prState }];
   });
