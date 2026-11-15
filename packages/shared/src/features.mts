@@ -1,5 +1,5 @@
 // Named features, so an additive change never needs a version number: the server answers the capabilities it has, the
-// client sends the vocabulary it understands, and each side checks for the one name it needs. README: "Features".
+// client sends the vocabulary it understands, and each side checks for the one name it needs. See docs/machine-api.md#features.
 import { ContractError } from './contract.mts';
 import type { NextRun, NoteAuthor, NoteKind, Priority, Status, TaskCreator } from './contract.mts';
 import { isRecord } from './guards.mts';
@@ -51,7 +51,8 @@ export interface Vocabulary {
 
 // Enum value -> the client feature that understands it. Only values added after the baseline appear here: every client
 // from 0.7.0 on knows today's. Adding a value to an enum means adding its row, and the server then withholds the value
-// from a client that did not send the feature.
+// from a client that did not send the feature. The first row waits until every machine runs CLI 0.8.0 or newer (0.7.0
+// cannot handle the 422 for a task it cannot read), or it comes with a raised MIN_CLIENT.
 export type VocabularyFeatures = { [Field in keyof Vocabulary]?: Partial<Record<Vocabulary[Field], string>> };
 export const VOCABULARY_FEATURES: VocabularyFeatures = {};
 

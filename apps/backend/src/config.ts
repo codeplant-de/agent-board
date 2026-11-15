@@ -1,3 +1,5 @@
+import { isReleaseVersion } from '@agent-board/shared';
+
 const requireEnv = (name: string): string => {
   const value = process.env[name];
   if (!value) throw new Error(`Missing required environment variable ${name}`);
@@ -24,8 +26,16 @@ export interface Config {
   allowedGroups: string[];
   /** Local development only: act as this user instead of reading Authelia headers. */
   devAuthUser: string | null;
+  /** The newest CLI release, x.y.z, which the machine API advertises; null when this build does not know it. */
+  cliVersion: string | null;
   /** Null unless INTAKE_TOKEN is set: the Slack intake API is off then. */
   intake: IntakeConfig | null;
+}
+
+/** An unset or malformed value is "unknown", not a start failure: the advertisement is a convenience. */
+function parseCliVersion(value: string | undefined): string | null {
+  const version = value?.trim();
+  return isReleaseVersion(version) ? version : null;
 }
 
 function loadIntakeConfig(): IntakeConfig | null {
@@ -55,6 +65,7 @@ export function loadConfig(): Config {
       .map((g) => g.trim())
       .filter(Boolean),
     devAuthUser,
+    cliVersion: parseCliVersion(process.env.CLI_VERSION),
     intake: loadIntakeConfig(),
   };
 }

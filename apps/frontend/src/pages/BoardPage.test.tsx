@@ -10,7 +10,7 @@ import { BoardPage } from './BoardPage';
 
 const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const create = vi.hoisted(() => vi.fn(async (_: unknown) => null));
-const listed = vi.hoisted(() => ({ tasks: [] as unknown[] }));
+const listed = vi.hoisted(() => ({ tasks: [] as unknown[], machines: [] as unknown[] }));
 
 vi.mock('../lib/trpc', () => ({
   POLL_MS: 60_000,
@@ -19,6 +19,9 @@ vi.mock('../lib/trpc', () => ({
       list: { queryOptions: () => ({ queryKey: ['tasks.list'], queryFn: async () => listed.tasks }) },
       move: { mutationOptions: () => ({ mutationFn: move }) },
       create: { mutationOptions: () => ({ mutationFn: create }) },
+    },
+    machines: {
+      list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => listed.machines }) },
     },
     slack: {
       inbox: {
@@ -91,6 +94,7 @@ async function drag(title: string, to: string) {
 beforeEach(() => {
   move.mockClear();
   create.mockClear();
+  listed.machines = [];
 });
 
 describe('BoardPage drag and drop', () => {
@@ -175,5 +179,44 @@ describe('BoardPage polish action', () => {
     renderBoard();
     await screen.findByText('waiting');
     expect(screen.queryByRole('button', { name: 'Polish prompt' })).not.toBeInTheDocument();
+  });
+});
+
+describe('BoardPage banner for machines whose CLI the board refuses', () => {
+  const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+  const machine = (name: string, overrides: Record<string, unknown> = {}) => ({
+    name,
+    shown: name,
+    revokedAt: null,
+    lastSeenAt: hoursAgo(1),
+    clientVersion: '0.4.0',
+    clientStatus: 'incompatible',
+    ...overrides,
+  });
+
+  it('names the machines seen in the last day and links to Settings', async () => {
+    listed.tasks = [];
+    listed.machines = [
+      machine('laptop'),
+      machine('workstation'),
+      machine('old-box', { lastSeenAt: hoursAgo(30) }),
+      machine('revoked-box', { revokedAt: hoursAgo(2) }),
+      machine('never-seen', { lastSeenAt: null }),
+      machine('fine', { clientStatus: 'current', clientVersion: '0.7.0' }),
+    ];
+    renderBoard();
+    const banner = await screen.findByText(/A machine needs a CLI update/);
+    const alert = banner.closest('[role="alert"]') as HTMLElement;
+    expect(alert.textContent).toContain('laptop, workstation');
+    expect(alert.textContent).not.toMatch(/old-box|revoked-box|never-seen|fine/);
+    expect(within(alert).getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings');
+  });
+
+  it('shows nothing while every machine is compatible', async () => {
+    listed.tasks = [];
+    listed.machines = [machine('laptop', { clientStatus: 'outdated' }), machine('b', { clientStatus: 'unknown' })];
+    renderBoard();
+    await screen.findByText('Backlog');
+    expect(screen.queryByText(/A machine needs a CLI update/)).not.toBeInTheDocument();
   });
 });

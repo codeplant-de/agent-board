@@ -1,5 +1,5 @@
-import { isSafeMachineName, MACHINE_NAME_RULE } from '@agent-board/shared';
-import { asc, eq, sql } from 'drizzle-orm';
+import { compareVersions, isSafeMachineName, MACHINE_NAME_RULE, MIN_CLIENT } from '@agent-board/shared';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { createHash, randomBytes } from 'node:crypto';
 import type { DbOrTx } from '../db/client';
 import { machines } from '../db/schema';
@@ -16,7 +16,14 @@ export async function issueToken(db: DbOrTx, name: string): Promise<string> {
     .values({ name, tokenHash: hash(token) })
     .onConflictDoUpdate({
       target: [machines.owner, machines.name],
-      set: { tokenHash: hash(token), revokedAt: null, createdAt: new Date(), lastSeenAt: null },
+      set: {
+        tokenHash: hash(token),
+        revokedAt: null,
+        createdAt: new Date(),
+        lastSeenAt: null,
+        clientVersion: null,
+        clientApi: null,
+      },
     });
   return token;
 }
@@ -33,16 +40,59 @@ export async function machineForToken(db: DbOrTx, token: string): Promise<{ owne
   return rows[0] ?? null;
 }
 
-export async function listMachines(db: DbOrTx) {
-  return db
+/** Whether a client at this break level can work with this server. */
+export function isCompatibleClientApi(level: number): boolean {
+  return level >= MIN_CLIENT;
+}
+
+/** Remembers what a machine's CLI reported; writes only when that differs from what is stored, so heartbeats do not write. */
+export async function recordClient(
+  db: DbOrTx,
+  name: string,
+  client: { version: string | null; api: number | null },
+): Promise<void> {
+  if (client.version === null && client.api === null) return;
+  await db
+    .update(machines)
+    .set({ clientVersion: client.version, clientApi: client.api })
+    .where(
+      and(
+        eq(machines.name, name),
+        sql`(${machines.clientVersion} is distinct from ${client.version} or ${machines.clientApi} is distinct from ${client.api})`,
+      ),
+    );
+}
+
+export type ClientStatus = 'current' | 'outdated' | 'incompatible' | 'unknown';
+
+export function clientStatus(
+  machine: { clientVersion: string | null; clientApi: number | null },
+  advertised: string | null,
+): ClientStatus {
+  const { clientVersion, clientApi } = machine;
+  if (clientVersion === null && clientApi === null) return 'unknown';
+  if (clientApi !== null && !isCompatibleClientApi(clientApi)) return 'incompatible';
+  if (clientVersion !== null && advertised !== null && compareVersions(clientVersion, advertised) < 0)
+    return 'outdated';
+  return 'current';
+}
+
+export async function listMachines(db: DbOrTx, advertisedCli: string | null) {
+  const rows = await db
     .select({
       name: machines.name,
       createdAt: machines.createdAt,
       lastSeenAt: machines.lastSeenAt,
       revokedAt: machines.revokedAt,
+      clientVersion: machines.clientVersion,
+      clientApi: machines.clientApi,
     })
     .from(machines)
     .orderBy(asc(machines.name));
+  return rows.map(({ clientApi, ...machine }) => ({
+    ...machine,
+    clientStatus: clientStatus({ clientVersion: machine.clientVersion, clientApi }, advertisedCli),
+  }));
 }
 
 export async function revokeMachine(db: DbOrTx, name: string): Promise<void> {

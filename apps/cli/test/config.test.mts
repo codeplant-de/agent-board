@@ -116,3 +116,14 @@ test('a machine name is 1 to 64 characters, and a longer one says what the rule 
     /machine must be a name of 1 to 64 characters: .*\(65 characters\)/,
   );
 });
+
+test('autoUpdate defaults to incompatible, takes the three modes and refuses anything else', () => {
+  assert.equal(parseConfig(valid).autoUpdate, 'incompatible');
+  for (const mode of ['incompatible', 'always', 'never'])
+    assert.equal(parseConfig({ ...valid, autoUpdate: mode }).autoUpdate, mode);
+  for (const bad of ['sometimes', true, null, 1])
+    assert.throws(
+      () => parseConfig({ ...valid, autoUpdate: bad }),
+      /config: autoUpdate must be one of incompatible, always, never/,
+    );
+});

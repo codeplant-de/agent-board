@@ -297,7 +297,9 @@ const schedulesRouter = router({
 });
 
 const machinesRouter = router({
-  list: procedure.query(({ ctx }) => listMachines(ctx.db)),
+  list: procedure.query(({ ctx }) => listMachines(ctx.db, ctx.config.cliVersion)),
+  /** The newest CLI release this server knows of, x.y.z, or null. */
+  advertisedCli: procedure.query(({ ctx }) => ctx.config.cliVersion),
   /** Returns the token once; only its hash is stored. */
   issue: procedure
     .input(z.object({ name: z.string().min(1).max(256) }))

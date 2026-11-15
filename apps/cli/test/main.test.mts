@@ -263,7 +263,7 @@ test('a task with a status this CLI does not know is left out of the list, with 
     assert.doesNotMatch(result.stdout, /Fu7ureT/);
     assert.equal(
       result.stderr,
-      'board: skipped a task with status "snoozed" this CLI does not know; run "git pull" and "pnpm install" in the checkout\n',
+      'board: skipped a task with status "snoozed" this CLI does not know (text in quotes is the server\'s, not part of the board); run "git pull" and "pnpm install" in the checkout\n',
     );
   });
 });

@@ -41,6 +41,12 @@ export interface Lane {
   cwd?: string;
 }
 
+// What a machine does when its CLI is behind the board: "incompatible" updates when the board refuses this CLI,
+// "always" also when a newer release exists and no worker runs, "never" leaves it to the user.
+export const AUTO_UPDATES = ['incompatible', 'always', 'never'] as const;
+export type AutoUpdate = (typeof AUTO_UPDATES)[number];
+const isAutoUpdate = (value: unknown): value is AutoUpdate => AUTO_UPDATES.some((mode) => mode === value);
+
 export interface Config {
   // This machine's name on the board: it claims tasks under it, and a resume runs only on the machine that ran the session.
   machine: string;
@@ -54,6 +60,7 @@ export interface Config {
   inactivityMinutes: number;
   // A run is stopped after this long however busy it is: a guard against runaways.
   maxRunHours: number;
+  autoUpdate: AutoUpdate;
   intake: IntakeConfig;
   repos: Record<string, string>;
 }
@@ -66,6 +73,8 @@ export interface Paths {
   sessionDir: string;
   // The checks of waiting tasks this machine runs (see waits.mts).
   waitDir: string;
+  // Small state files of the CLI itself, such as when it last offered an update.
+  stateDir: string;
 }
 
 export function getPaths(env: NodeJS.ProcessEnv = process.env): Paths {
@@ -78,6 +87,7 @@ export function getPaths(env: NodeJS.ProcessEnv = process.env): Paths {
     logDir: join(stateDir, 'logs'),
     sessionDir: join(stateDir, 'sessions'),
     waitDir: join(stateDir, 'waits'),
+    stateDir,
   };
 }
 
@@ -178,6 +188,8 @@ export function parseConfig(raw: unknown): Config {
       `config: machine must be a name of ${MACHINE_NAME_RULE} (defaults to the host name), not "${String(machine).slice(0, 40)}" (${String(machine).length} characters)`,
     );
   }
+  const autoUpdate = 'autoUpdate' in raw ? raw['autoUpdate'] : 'incompatible';
+  if (!isAutoUpdate(autoUpdate)) throw new ConfigError(`config: autoUpdate must be one of ${AUTO_UPDATES.join(', ')}`);
   return {
     machine,
     lanes: parseLanes(raw['lanes']),
@@ -185,6 +197,7 @@ export function parseConfig(raw: unknown): Config {
     pauseAfterMinutes: positiveInt(raw, 'pauseAfterMinutes', '', 5),
     inactivityMinutes: positiveInt(raw, 'inactivityMinutes', '', 15),
     maxRunHours: positiveInt(raw, 'maxRunHours', '', 6),
+    autoUpdate,
     intake: parseIntake(raw['intake']),
     repos,
   };

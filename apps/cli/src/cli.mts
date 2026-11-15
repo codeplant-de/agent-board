@@ -15,6 +15,8 @@ export interface Context {
   print: (line: string) => void;
   // Whether output may carry colour.
   color?: boolean;
+  // The newest CLI release the board advertised, known once a call reached the board.
+  serverCli?: () => string | undefined;
 }
 
 /** What the commands that print or send a link to a task need: that link, from this machine's own web.json and the task's id. */
@@ -42,7 +44,9 @@ export function warnSkippedOnce(warn: (line: string) => void = console.error): (
     const key = `${what}.${field}=${value}`;
     if (seen.has(key)) return;
     seen.add(key);
-    warn(`board: skipped a ${what} with ${field} ${JSON.stringify(value)} this CLI does not know; ${updateCliHint()}`);
+    warn(
+      `board: skipped a ${what} with ${field} ${JSON.stringify(value)} this CLI does not know (text in quotes is the server's, not part of the board); ${updateCliHint()}`,
+    );
   };
 }
 
@@ -63,7 +67,11 @@ export async function skipTickWhileServerOlder(
 export function buildContext(dryRun: boolean, options: ContextOptions = {}): LinkingContext {
   const paths = getPaths();
   // The dry-run wrapper goes outside the sealing one, so it prints plaintext and reads what the sealing backend opens.
+  let serverCli: string | undefined;
   const backend = createSealedBackend({
+    onServer: (identity) => {
+      serverCli = identity.cli;
+    },
     loadConfig: () => loadWebConfig(paths.configDir),
     onSkip: warnSkippedOnce(),
     warn: (line) => console.error(`board: ${line}`),
@@ -81,6 +89,7 @@ export function buildContext(dryRun: boolean, options: ContextOptions = {}): Lin
     dryRun,
     print: out,
     color: wantsColor(process.stdout, process.env),
+    serverCli: () => serverCli,
     // From this machine's own web.json, never from the server.
     taskLink: (taskId) => taskLink((boardUrl ??= loadWebConfig(paths.configDir).url), taskId),
   };

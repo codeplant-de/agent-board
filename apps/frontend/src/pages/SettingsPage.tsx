@@ -27,6 +27,7 @@ import { exportDataKey, replacePassphrase, type StoredKey } from '../crypto/keyS
 import { useKeys } from '../crypto/KeyContext';
 import { PASSPHRASE_ADVICE, passphraseProblem, samePassphrase } from '../crypto/passphrase';
 import { PassphraseModal } from '../crypto/PassphraseModal';
+import { CLIENT_COLOR, clientText } from '../lib/clientStatus';
 import {
   isNotificationSupported,
   readDesktopNotificationsPreference,
@@ -59,6 +60,7 @@ const envLines = ({ token, dataKey }: Enrolment): string[] => [
 function Machines() {
   const trpc = useTRPC();
   const machines = useQuery(trpc.machines.list.queryOptions());
+  const advertised = useQuery(trpc.machines.advertisedCli.queryOptions());
   const issue = useMutation(trpc.machines.issue.mutationOptions());
   const revoke = useMutation(trpc.machines.revoke.mutationOptions());
   const keys = useKeys();
@@ -102,6 +104,7 @@ function Machines() {
           <Text size="sm" c="dimmed">
             Each machine that runs <Code>dispatch</Code> and <Code>intake</Code> gets a token. Its name must match{' '}
             <Code>machine</Code> in its config.json (default: the host name).
+            {advertised.data ? <> The newest CLI is {advertised.data}.</> : null}
           </Text>
         </div>
         {asking && (
@@ -152,6 +155,7 @@ function Machines() {
           <Table.Thead>
             <Table.Tr>
               <Table.Th>Name</Table.Th>
+              <Table.Th>CLI</Table.Th>
               <Table.Th>Last seen</Table.Th>
               <Table.Th />
             </Table.Tr>
@@ -168,6 +172,11 @@ function Machines() {
                       </Badge>
                     )}
                   </Group>
+                </Table.Td>
+                <Table.Td>
+                  <Text size="sm" c={CLIENT_COLOR[m.clientStatus]}>
+                    {clientText(m)}
+                  </Text>
                 </Table.Td>
                 <Table.Td>
                   <Text size="sm" c="dimmed">

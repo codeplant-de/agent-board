@@ -579,8 +579,9 @@ Examples:
 Usage: board self-update [options]
 
 Download the newest cli-v* release of codeplant-de/agent-board with `gh`, check
-it against SHA256SUMS and replace this binary with it. Running workers keep the
-old file until they end. --check only reports whether a newer release exists.
+it against SHA256SUMS and replace this binary with it, then restart the listener
+if it runs (`systemctl --user try-restart`). Running workers keep the old file
+until they end. --check only reports whether a newer release exists.
 
 It needs `gh`, logged in. A checkout is updated with `git pull` and `pnpm
 install` instead, and says so. Not available inside a board run.

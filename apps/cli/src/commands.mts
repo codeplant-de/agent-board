@@ -39,7 +39,7 @@ import type {
 import { CHECK_TIME_LIMIT_MS, createWaitStore } from './waits.mts';
 import type { WaitStore } from './waits.mts';
 import { buildContext, readStdin, ReportedFailure, UsageError } from './cli.mts';
-import type { ContextOptions, LinkingContext } from './cli.mts';
+import type { Context, ContextOptions, LinkingContext } from './cli.mts';
 import { verifyContract } from './backend.mts';
 import { completionModel, renderCompletion, SHELLS } from './completion.mts';
 import type { Shell } from './completion.mts';
@@ -51,8 +51,8 @@ import type { CheckResult, DoctorDeps } from './doctor.mts';
 import { clackPrompts, init } from './init.mts';
 import type { InitFlags, Prompts } from './init.mts';
 import { EXEC_PATH, isCompiledBinary } from './self.mts';
-import { realGh, selfUpdate } from './self-update.mts';
-import type { SelfUpdateFlags } from './self-update.mts';
+import { realGh, realListenerRestart, selfUpdate } from './self-update.mts';
+import type { SelfUpdateDeps, SelfUpdateFlags } from './self-update.mts';
 import { SystemError } from './system.mts';
 import { releaseVersion } from './version.mts';
 import { realSetupDeps, setup, unitDirectory, whichOnPath } from './setup.mts';
@@ -65,6 +65,9 @@ import { listenMain } from './listen.mts';
 import { addScheduleOptions } from './schedule.mts';
 import type { ScheduleFlags } from './schedule.mts';
 import { cliVersion } from './version.mts';
+import { updateHint } from './update-hint.mts';
+import { createUpdateState, updateStateFile } from './update-state.mts';
+import type { UpdateState } from './update-state.mts';
 import { workerMain } from './worker.mts';
 
 export interface ProgramOptions {
@@ -91,11 +94,17 @@ export interface ProgramOptions {
   verifyServer?: DoctorDeps['verifyServer'];
   // Runs `gh` for self-update.
   gh?: (args: string[]) => Promise<string>;
+  // Restarts the listener after self-update replaced the binary.
+  restartListener?: SelfUpdateDeps['restartListener'];
   // The command line being run, set by runBoard.
   argv?: string[];
   // Where `board wait --check` stores the check, and the directory it runs in.
   waits?: WaitStore;
   cwd?: string;
+  // Whether stderr is a terminal, the only place the update hint is shown.
+  stderrIsTty?: boolean;
+  // Where the update hint remembers when it was last shown.
+  updateState?: UpdateState;
 }
 
 const TASKS = 'Tasks:';
@@ -129,7 +138,11 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   const env = options.env ?? process.env;
   const argv = options.argv ?? [];
   const stdin = options.readStdin ?? readStdin;
-  const makeContext = options.context ?? buildContext;
+  const buildContextOf = options.context ?? buildContext;
+  // The context of the command that runs: it knows what the board advertised.
+  let lastContext: Context | undefined;
+  const makeContext: typeof buildContextOf = (dryRun, contextOptions) =>
+    (lastContext = buildContextOf(dryRun, contextOptions));
   const writeOut = options.writeOut ?? ((text: string) => void process.stdout.write(text));
   const writeErr = options.writeErr ?? ((text: string) => void process.stderr.write(text));
 
@@ -663,13 +676,30 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       await setup(setupDeps(), flags);
     });
 
+  // A person at a terminal hears of a newer CLI; nothing internal, and nothing inside a run, ever does.
+  program.hook('postAction', (_program, action) => {
+    if (commandPath(action)[0] === 'internal') return;
+    const state = options.updateState ?? createUpdateState(updateStateFile(getPaths(env).stateDir));
+    const now = options.now?.() ?? new Date();
+    const line = updateHint({
+      advertised: lastContext?.serverCli?.(),
+      version: options.version ?? cliVersion(),
+      state,
+      now,
+      interactive: (options.stderrIsTty ?? process.stderr.isTTY === true) && !inRun,
+    });
+    if (line === undefined) return;
+    writeErr(`${line}\n`);
+    state.markHintShown(now);
+  });
+
   program
     .command('self-update')
     .helpGroup(SETUP)
     .summary('replace this binary with the newest release')
     .description(
       paragraphs(
-        'Download the newest cli-v* release of codeplant-de/agent-board with `gh`, check it against SHA256SUMS and replace this binary with it. Running workers keep the old file until they end. --check only reports whether a newer release exists.',
+        'Download the newest cli-v* release of codeplant-de/agent-board with `gh`, check it against SHA256SUMS and replace this binary with it, then restart the listener if it runs (`systemctl --user try-restart`). Running workers keep the old file until they end. --check only reports whether a newer release exists.',
         'It needs `gh`, logged in. A checkout is updated with `git pull` and `pnpm install` instead, and says so. Not available inside a board run.',
       ),
     )
@@ -685,6 +715,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
           platform: options.platform ?? process.platform,
           arch: process.arch,
           gh: options.gh ?? realGh(env),
+          restartListener: options.restartListener ?? realListenerRestart({ block: true }),
           print: out,
         },
         flags,
