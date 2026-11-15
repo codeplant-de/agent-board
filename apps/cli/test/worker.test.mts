@@ -11,7 +11,14 @@ import { CONFIG, fakeBackend, fakeRunFiles, fakeSessions, note, OTHER_SESSION, S
 
 function setup(result: RunResult | Error, moveDuringRun = false) {
   // A task scheduled from /tmp on this machine.
-  const running = task({ id: 'w1', status: 'running', input: '/selftest go', machine: 'here', workdir: '/tmp' });
+  const running = task({
+    id: 'w1',
+    status: 'running',
+    input: '/selftest go',
+    machine: 'here',
+    workdir: '/tmp',
+    runStartedAt: new Date('2026-01-01T10:00:00Z'),
+  });
   const backend = fakeBackend([running]);
   const notes: string[] = [];
   const calls: string[] = [];
@@ -275,6 +282,25 @@ test('a fresh skill run binds the task to its directory, and to the worktree it 
   await runWorker(deps, 'w1');
   const workdirs = backend.writes.filter((w) => w.startsWith('workdir w1'));
   assert.deepEqual(workdirs, ['workdir w1: /home/me', 'workdir w1: /tmp/.claude/worktrees/feat-x']);
+});
+
+test('a run that reported keeps the worktree it ended in, though the board dropped its runStartedAt', async () => {
+  for (const status of ['needs-me', 'todo'] as const) {
+    const { deps, backend, notes } = setup({ exitCode: 0, signal: null });
+    deps.run = async () => {
+      deps.files.writeCwd('w1', '/tmp/.claude/worktrees/feat-x');
+      backend.tasks[0]!.status = status;
+      return { exitCode: 0, signal: null };
+    };
+    await runWorker(deps, 'w1');
+    assert.deepEqual(
+      backend.writes.filter((w) => w.startsWith('workdir w1')),
+      ['workdir w1: /tmp/.claude/worktrees/feat-x'],
+      status,
+    );
+    assert.ok(!backend.writes.some((w) => w.startsWith('fail ')), status);
+    assert.deepEqual(notes, [], status);
+  }
 });
 
 test("a resume starts in the task's directory, and a missing one fails without starting", async () => {

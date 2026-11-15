@@ -323,11 +323,18 @@ test('supervision: inactivity, the ceiling and an ignored pause stop a run; acti
 
 test('a run is over for its worker when the task closed or runs again from another start', () => {
   const started = { runStartedAt: new Date('2026-01-01T10:00:00Z') };
-  assert.equal(isRunOver(started, { closed: false, runStartedAt: new Date('2026-01-01T10:00:00Z') }), false);
-  assert.equal(isRunOver(started, { closed: true, runStartedAt: started.runStartedAt }), true);
-  assert.equal(isRunOver(started, { closed: false, runStartedAt: new Date('2026-01-01T11:00:00Z') }), true);
-  assert.equal(isRunOver(started, { closed: false, runStartedAt: null }), true);
-  assert.equal(isRunOver({ runStartedAt: null }, { closed: false, runStartedAt: null }), false);
+  const running = { closed: false, status: 'running' } as const;
+  assert.equal(isRunOver(started, { ...running, runStartedAt: new Date('2026-01-01T10:00:00Z') }), false);
+  assert.equal(isRunOver(started, { ...running, closed: true, runStartedAt: started.runStartedAt }), true);
+  assert.equal(isRunOver(started, { ...running, runStartedAt: new Date('2026-01-01T11:00:00Z') }), true);
+  assert.equal(isRunOver({ runStartedAt: null }, { ...running, runStartedAt: null }), false);
+});
+
+test('a run whose task left Running is still its own: the board drops runStartedAt with the move', () => {
+  const started = { runStartedAt: new Date('2026-01-01T10:00:00Z') };
+  for (const status of ['needs-me', 'todo'] as const)
+    assert.equal(isRunOver(started, { closed: false, status, runStartedAt: null }), false, status);
+  assert.equal(isRunOver(started, { closed: true, status: 'needs-me', runStartedAt: null }), true);
 });
 
 test('outcomes: a pause wins over the stop it caused, a report wins over a pause', () => {
