@@ -69,6 +69,19 @@ git push origin cli-v0.8.0
 
 The tag must match `apps/cli/package.json`, and the commit must be on `main`. `.github/workflows/release-cli.yml` checks both, runs the checks and the CLI tests, builds the binaries for Linux x64 and arm64 and macOS arm64, smoke-tests a Linux x64 build (the arm64 and macOS binaries never run in CI), and publishes a GitHub release with `SHA256SUMS` and `install.sh`. Machines then run `board self-update`, and the listener needs a restart (`board setup` does that when the unit changed).
 
+## Dependencies
+
+[Renovate](https://docs.renovatebot.com/) ([`renovate.json`](../renovate.json)) opens PRs on Monday mornings (Europe/Berlin) and keeps a Dependency Dashboard issue listing what is pending. It needs the Renovate GitHub App installed on the repository. It covers:
+
+- the pnpm workspace, including `packageManager` in `package.json`;
+- the tools in `mise.toml`, and the pnpm and Bun versions the workflows pass to `pnpm/action-setup` and `oven-sh/setup-bun` (a regex manager in `renovate.json`; keep those `with:` blocks in the same shape);
+- the GitHub Actions in `.github/workflows`;
+- the images in `apps/*/Dockerfile`, `docker-compose.yml` and CI.
+
+It waits seven days after a release before proposing it. Minor and patch bumps come as one grouped PR and each major as its own PR, except that every change to node, pnpm or bun is one PR per tool across all the files that name it, so `mise.toml`, `package.json` and CI never disagree. Node and Postgres majors are disabled: a new Node LTS and a Postgres major (which needs a dump and restore of production) are moved to by hand.
+
+CI runs on these PRs like on any other, and merging one deploys the server like any other merge to `main`. A dependency bump in `apps/cli` changes the next CLI release, not the installed CLIs; it reaches the machines with the next `cli-v*` release.
+
 ## Git
 
 - Commits and tags are SSH-signed. Never bypass signing; if it fails, ask the user to run `ssh-add-signing`.
