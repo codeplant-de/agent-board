@@ -190,10 +190,12 @@ export function plainMachine(raw: MachineCall, owner = 'jascha'): MachineCall {
   };
 }
 
-type CreateInput = Omit<Parameters<Raw['tasks']['create']>[0], 'id' | 'title' | 'input'> & {
+type CreateInput = Omit<Parameters<Raw['tasks']['create']>[0], 'id' | 'title' | 'input' | 'place'> & {
   id?: string;
   title?: string;
   input: string;
+  /** The directory in plaintext; it is sealed like the browser seals it. */
+  place?: { machine: string; workdir: string };
 };
 
 /** Makes a client of a tRPC caller: plaintext in and out, with the sealing the browser does (the same shared rules). */
@@ -254,14 +256,20 @@ export function plainUi(db: Db, owner = 'jascha') {
           parent: parent === null ? null : await openTask(parent),
         };
       },
-      create: async ({ id: chosen, title, input, ...rest }: CreateInput) => {
+      create: async ({ id: chosen, title, input, place, ...rest }: CreateInput) => {
         const id = chosen ?? newTaskId();
         const repeats = typeof rest.when === 'object' && ('every' in rest.when || 'cron' in rest.when);
         const row: RowRef = repeats
           ? { kind: 'schedule', id }
           : { kind: 'task', id, createdBy: 'user', scheduleId: null };
-        const fields = await sealFields(sealing.seal, row, { title: title ?? defaultTitle(input), input });
-        return openTask(await raw.tasks.create({ id, ...fields, ...rest }));
+        const { workdir, ...fields } = await sealFields(sealing.seal, row, {
+          title: title ?? defaultTitle(input),
+          input,
+          workdir: place?.workdir,
+        });
+        const placed =
+          place === undefined || workdir === undefined ? {} : { place: { machine: place.machine, workdir } };
+        return openTask(await raw.tasks.create({ id, ...fields, ...rest, ...placed }));
       },
       answer: async (input: { id: string; questionNoteId: string; answers: Answer[]; message?: string }) => {
         const { thread } = await raw.tasks.get({ id: input.id });

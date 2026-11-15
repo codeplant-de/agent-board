@@ -1,4 +1,4 @@
-import { parsePolish, type Status, type Polish } from '@agent-board/shared';
+import { isSafeMachineName, isSafeWorkdir, parsePolish, type Status, type Polish } from '@agent-board/shared';
 import type { NewTask } from './sealing';
 import type { BoardTask, ThreadNote } from './trpc';
 
@@ -46,13 +46,20 @@ export function polishPrompt(taskId: string): string {
   ].join('\n');
 }
 
-/** The task that asks an agent to polish `target`'s prompt, as its child with the same priority. */
-export function polishTask(target: Pick<BoardTask, 'id' | 'title' | 'priority'>): NewTask {
+/**
+ * The task that asks an agent to polish `target`'s prompt, as its child with the same priority. When `target` has a directory
+ * of its own (it was scheduled from a checkout), the polish runs there on the same machine, so the agent starts in the code
+ * the idea is about; otherwise in the default directory of whichever machine takes it.
+ */
+export function polishTask(target: Pick<BoardTask, 'id' | 'title' | 'priority' | 'machine' | 'workdir'>): NewTask {
+  const { machine, workdir } = target;
+  const placed = machine !== null && workdir !== null && isSafeMachineName(machine) && isSafeWorkdir(workdir);
   return {
     title: `${TITLE_PREFIX}${shortTitle(target.title)}`,
     input: polishPrompt(target.id),
     priority: target.priority,
     parentId: target.id,
+    ...(placed ? { place: { machine, workdir } } : {}),
   };
 }
 
