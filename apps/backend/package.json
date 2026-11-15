@@ -13,8 +13,7 @@
     "test": "vitest --run",
     "typecheck": "tsc -p tsconfig.json",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx --env-file-if-exists=.env src/db/migrate-cli.ts",
-    "reencrypt": "tsx src/scripts/reencrypt.ts"
+    "db:migrate": "tsx --env-file-if-exists=.env src/db/migrate-cli.ts"
   },
   "dependencies": {
     "@agent-board/shared": "workspace:*",
