@@ -1,5 +1,5 @@
 import { STATUSES, type Status } from '@agent-board/shared';
-import { Badge, Group, Paper, ScrollArea, SimpleGrid, Stack, Text } from '@mantine/core';
+import { Badge, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState, type DragEvent } from 'react';
 import { moveConfirmed } from '../components/confirmStart';
@@ -25,6 +25,9 @@ interface DropTarget {
 const canDrag = (task: ListedTask) => task.status !== 'running';
 const canDrop = (status: Status) => status !== 'running';
 
+/** Narrow on a wide screen until hovered, then they float over their neighbors at full width. */
+const COLLAPSIBLE = new Set<Status>(['backlog', 'done']);
+
 export function BoardPage() {
   const trpc = useTRPC();
   const tasks = useQuery({ ...trpc.tasks.list.queryOptions(), refetchInterval: POLL_MS });
@@ -49,87 +52,90 @@ export function BoardPage() {
   };
 
   return (
-    <SimpleGrid cols={{ base: 1, sm: 2, lg: 5 }} spacing="md">
+    <div className="board">
       {STATUSES.map((status) => {
         const column = byStatus(status);
         return (
-          <Paper
-            key={status}
-            withBorder
-            p="sm"
-            radius="md"
-            className="board-column"
-            data-over={dragId !== null && over?.status === status && canDrop(status)}
-            bg="var(--mantine-color-default-hover)"
-            style={
-              status === 'needs-me' && column.length > 0
-                ? { borderTop: '3px solid var(--mantine-color-orange-5)' }
-                : undefined
-            }
-            onDragOver={(event: DragEvent) => {
-              if (!dragId || !canDrop(status)) return;
-              event.preventDefault();
-              if (over?.status !== status) setOver({ status });
-            }}
-            onDragLeave={(event: DragEvent) => {
-              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(null);
-            }}
-            onDrop={(event: DragEvent) => {
-              event.preventDefault();
-              drop(status);
-            }}
-          >
-            <Group justify="space-between" mb="sm">
-              <Group gap={6}>
-                <Badge color={STATUS_COLOR[status]} variant="light">
-                  {STATUS_LABEL[status]}
-                </Badge>
-                <Text size="sm" c="dimmed">
-                  {column.length}
-                </Text>
-              </Group>
-              <Text size="xs" c="dimmed">
-                {HINT[status]}
-              </Text>
-            </Group>
-            <ScrollArea.Autosize mah="calc(100vh - 160px)" offsetScrollbars>
-              <Stack gap="xs" mih={60}>
-                {column.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    draggable={canDrag(task)}
-                    dragging={dragId === task.id}
-                    onDragStart={(event) => {
-                      event.dataTransfer.effectAllowed = 'move';
-                      setDragId(task.id);
-                    }}
-                    onDragEnd={() => {
-                      setDragId(null);
-                      setOver(null);
-                    }}
-                    onDragOver={(event) => {
-                      if (!dragId || !canDrop(status) || task.id === dragId) return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      // Upper half: above this card; lower half: above the next one.
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      const index = column.indexOf(task);
-                      const beforeId = event.clientY < rect.top + rect.height / 2 ? task.id : column[index + 1]?.id;
-                      if (over?.status !== status || over.beforeId !== beforeId) setOver({ status, beforeId });
-                    }}
-                  />
-                ))}
-                {column.length === 0 && (
-                  <Text size="sm" c="dimmed" ta="center" py="lg">
-                    {status === 'needs-me' ? 'Nothing waiting for you' : 'Empty'}
+          <div key={status} className="board-cell" data-collapsible={COLLAPSIBLE.has(status)} data-status={status}>
+            <Paper
+              withBorder
+              p="sm"
+              radius="md"
+              className="board-column"
+              data-over={dragId !== null && over?.status === status && canDrop(status)}
+              bg="var(--mantine-color-default-hover)"
+              style={
+                status === 'needs-me' && column.length > 0
+                  ? { borderTop: '3px solid var(--mantine-color-orange-5)' }
+                  : undefined
+              }
+              onDragOver={(event: DragEvent) => {
+                if (!dragId || !canDrop(status)) return;
+                event.preventDefault();
+                if (over?.status !== status) setOver({ status });
+              }}
+              onDragLeave={(event: DragEvent) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(null);
+              }}
+              onDrop={(event: DragEvent) => {
+                event.preventDefault();
+                drop(status);
+              }}
+            >
+              <div className="board-column-content">
+                <Group justify="space-between" mb="sm">
+                  <Group gap={6}>
+                    <Badge color={STATUS_COLOR[status]} variant="light">
+                      {STATUS_LABEL[status]}
+                    </Badge>
+                    <Text size="sm" c="dimmed">
+                      {column.length}
+                    </Text>
+                  </Group>
+                  <Text size="xs" c="dimmed">
+                    {HINT[status]}
                   </Text>
-                )}
-              </Stack>
-            </ScrollArea.Autosize>
-          </Paper>
+                </Group>
+                <ScrollArea.Autosize mah="calc(100vh - 160px)" offsetScrollbars>
+                  <Stack gap="xs" mih={60}>
+                    {column.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        draggable={canDrag(task)}
+                        dragging={dragId === task.id}
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = 'move';
+                          setDragId(task.id);
+                        }}
+                        onDragEnd={() => {
+                          setDragId(null);
+                          setOver(null);
+                        }}
+                        onDragOver={(event) => {
+                          if (!dragId || !canDrop(status) || task.id === dragId) return;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          // Upper half: above this card; lower half: above the next one.
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          const index = column.indexOf(task);
+                          const beforeId = event.clientY < rect.top + rect.height / 2 ? task.id : column[index + 1]?.id;
+                          if (over?.status !== status || over.beforeId !== beforeId) setOver({ status, beforeId });
+                        }}
+                      />
+                    ))}
+                    {column.length === 0 && (
+                      <Text size="sm" c="dimmed" ta="center" py="lg">
+                        {status === 'needs-me' ? 'Nothing waiting for you' : 'Empty'}
+                      </Text>
+                    )}
+                  </Stack>
+                </ScrollArea.Autosize>
+              </div>
+            </Paper>
+          </div>
         );
       })}
-    </SimpleGrid>
+    </div>
   );
 }
