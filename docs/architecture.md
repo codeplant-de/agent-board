@@ -11,11 +11,10 @@ PR review was the first use. A task is any prompt you would type into Claude Cod
 ## Components
 
 ```
-              ┌───────────────────── board.codeplant.de (k3s) ─────────────────────┐
- browser ───▶ Traefik ── Authelia login ──▶ Caddy ── /trpc ──────────▶ backend ──▶ Postgres
-              Traefik ── bearer route, ───▶ Caddy ── /api/machine/* ─▶ backend
-                         no Authelia
-              └────────────────────────────────────────────────────────────────────┘
+              ┌─────────────────────────────── board server ──────────────────────────────┐
+ browser ───▶ auth proxy: login, sets Remote-User ──▶ Caddy ── /trpc ──────────▶ backend ──▶ Postgres
+ workers ───▶ auth proxy: bearer route, no login ───▶ Caddy ── /api/machine/* ─▶ backend
+              └───────────────────────────────────────────────────────────────────────────┘
                     ▲ machine API (POST, sealed)        │ SSE "tasks changed"
                     │                                   ▼
  worker machine:  board internal listen ──▶ dispatch tick ──▶ systemd-run ──▶ worker ──▶ claude -p
@@ -28,7 +27,7 @@ PR review was the first use. A task is any prompt you would type into Claude Cod
 | Frontend  | `apps/frontend`          | React 19, Mantine, TanStack Query over tRPC. Derives the keys from the passphrase (Argon2id), seals and opens every content field. Polls every 5 s. Served by Caddy, which also proxies the backend and strips every response header the backend sets.                            |
 | CLI       | `apps/cli`               | One program for people, agents and the worker machine. Runs from source on Node 24 or as a Bun-compiled binary. Its `internal` subcommands `dispatch`, `intake`, `listen` and `worker` run from systemd user units; `hook` is the PreToolUse hook Claude Code calls during a run. |
 | Shared    | `packages/shared`        | No dependencies, consumed as source. The contract (`contract.mts`), the sealing rules (`sealing.mts`), crypto, key slots, the fixed server event texts, question and transcript shapes.                                                                                           |
-| Infra     | `infra/`, `*/Dockerfile` | Postgres init for compose, and a patch for the separate `codeplant-de/cloud-infra` repo (Flux, Authelia, backups).                                                                                                                                                                |
+| Infra     | `infra/`, `*/Dockerfile` | Postgres init for compose, and a patch for the separate `codeplant-de/cloud-infra` repo (cluster, login proxy, backups).                                                                                                                                                          |
 
 ## A task's life
 
@@ -55,7 +54,9 @@ The design assumes the server and database may be hostile, and that any PR text 
 
 What the server can still do: decide when and where a task runs, reorder or withhold notes, and replay older values of the same task. [encryption.md](encryption.md#encryption) lists all of it.
 
-**Multi-tenancy.** Each signed-in user (Authelia `Remote-User`) has a private board. Requests run as the unprivileged `board_app` role with row-level security on `app.owner`, set per request transaction (`apps/backend/src/db/scope.ts`). The privileged `DATABASE_URL` is used only at start, for role setup and migrations. There is deliberately no fallback to it, because a superuser or table owner bypasses RLS.
+**Sign-in is the proxy's job.** The backend has no login of its own. It takes the user from the `Remote-User` header and checks `Remote-Groups` against `ALLOWED_GROUPS`. That is only safe behind a proxy that signs the user in, strips any `Remote-*` header the client sent, and sets its own. Never expose the backend's `/trpc` without one. The machine API is the exception: the proxy lets `/api/machine/*` through without a login, and the backend checks the bearer token itself. Which proxy does this is a deployment choice; [operations.md](operations.md#the-board-server) describes the current one.
+
+**Multi-tenancy.** Each signed-in user (`Remote-User`) has a private board. Requests run as the unprivileged `board_app` role with row-level security on `app.owner`, set per request transaction (`apps/backend/src/db/scope.ts`). The privileged `DATABASE_URL` is used only at start, for role setup and migrations. There is deliberately no fallback to it, because a superuser or table owner bypasses RLS.
 
 **No sandbox.** A worker runs as you. A sandbox per command could not support implementation work (worktrees, installs, pushes), and once an agent may push, the boundary that matters is the machine and its credentials. Permission rules are not a security boundary. A dedicated OS user for workers is the planned way to get one.
 
