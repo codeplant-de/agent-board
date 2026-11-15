@@ -11,9 +11,12 @@ await ensureAppRole(admin.db, config.appDatabaseUrl);
 await runMigrations(admin.db);
 await admin.pool.end();
 
-const { db, pool } = createDb(config.appDatabaseUrl);
+// Logs to the console until the server, and with it the request logger, exists.
+let logPoolError = (err: Error) => console.error('idle database client failed:', err);
+const { db, pool } = createDb(config.appDatabaseUrl, { onError: (err) => logPoolError(err) });
 await assertUnprivileged(db);
 const app = await buildServer(config, db);
+logPoolError = (err) => app.log.error({ err }, 'idle database client failed');
 
 // At start and every hour, for every board.
 const cleanup = () => cleanupAllBoards(db, app.log).catch((err: unknown) => app.log.error({ err }, 'cleanup failed'));
@@ -21,10 +24,13 @@ void cleanup();
 setInterval(cleanup, 60 * 60_000).unref();
 await app.listen({ host: '0.0.0.0', port: config.port });
 
-const shutdown = async () => {
-  await app.close();
-  await pool.end();
-  process.exit(0);
-};
+// A second signal while closing must not call `pool.end()` again, which rejects.
+let closing: Promise<void> | undefined;
+const shutdown = () =>
+  (closing ??= (async () => {
+    await app.close();
+    await pool.end();
+    process.exit(0);
+  })());
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
