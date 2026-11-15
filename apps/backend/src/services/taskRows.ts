@@ -7,7 +7,7 @@ import { AppError } from './errors';
 
 const ID_ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
-/** 8 characters, safe for a systemd unit name; never "dispatch" or "intake". */
+/** 8 characters, safe for a systemd unit name; never one of the CLI's own unit names. */
 export function newId(length = 8): string {
   for (;;) {
     const bytes = randomBytes(length);
