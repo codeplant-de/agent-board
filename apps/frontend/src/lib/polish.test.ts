@@ -1,7 +1,7 @@
 import { deriveKeys, open } from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
 import { canPolish, isOpenPolishOf, polishTask } from './polish';
-import { InputError, previousText, sealApply, type PolishTarget } from './sealing';
+import { InputError, previousText, sealApply, sealNewTask, type PolishTarget } from './sealing';
 import type { BoardTask } from './trpc';
 
 const keys = await deriveKeys(
@@ -21,11 +21,33 @@ const target: PolishTarget = {
 describe('polishTask', () => {
   it('is a child of the task, with its priority, and a title cut to a sensible length', () => {
     const long = 'x'.repeat(200);
-    const polish = polishTask({ id: 'target01', title: long, priority: 'low' });
+    const polish = polishTask({ id: 'target01', title: long, priority: 'low', machine: null, workdir: null });
     expect(polish).toMatchObject({ parentId: 'target01', priority: 'low' });
     expect(Array.from(polish.title ?? '')).toHaveLength('Polish prompt: '.length + 80);
     expect(polish.title?.endsWith('…')).toBe(true);
-    expect(polishTask({ id: 'a', title: 'short', priority: 'normal' }).title).toBe('Polish prompt: short');
+    expect(polishTask({ id: 'a', title: 'short', priority: 'normal', machine: null, workdir: null }).title).toBe(
+      'Polish prompt: short',
+    );
+  });
+
+  it('runs where the task would run when it has a directory of its own, and anywhere otherwise', () => {
+    const base = { id: 'a', title: 't', priority: 'normal' } as const;
+    expect(polishTask({ ...base, machine: 'deskwork', workdir: '/home/me/code' }).place).toEqual({
+      machine: 'deskwork',
+      workdir: '/home/me/code',
+    });
+    expect(polishTask({ ...base, machine: null, workdir: null }).place).toBeUndefined();
+    expect(polishTask({ ...base, machine: 'deskwork', workdir: null }).place).toBeUndefined();
+    expect(polishTask({ ...base, machine: '⚠ invalid', workdir: '/home/me/code' }).place).toBeUndefined();
+  });
+
+  it('seals the directory for the new task, which the worker opens as the task’s own', async () => {
+    const sealed = await sealNewTask(keys, { input: 'q', place: { machine: 'deskwork', workdir: '/home/me/code' } });
+    expect(sealed.place?.machine).toBe('deskwork');
+    expect(await open(keys, 'workdir', `task:${sealed.id}`, sealed.place?.workdir ?? '')).toBe('/home/me/code');
+    await expect(
+      sealNewTask(keys, { input: 'q', when: { every: 60_000 }, place: { machine: 'deskwork', workdir: '/x' } }),
+    ).rejects.toThrow(InputError);
   });
 });
 
