@@ -29,6 +29,21 @@ import { MARKERS, sealed, useDataKey } from './test/sealed';
 
 const { db, admin } = useTestDb();
 
+// Dispatch ticks here never look for a newer CLI.
+const NO_UPDATES: DispatchDeps['update'] = {
+  compiled: false,
+  version: '0.0.0',
+  advertised: () => undefined,
+  state: {
+    hintShownAt: () => undefined,
+    markHintShown: () => undefined,
+    retryAfter: () => undefined,
+    deferUpdateUntil: () => undefined,
+    clearDeferral: () => undefined,
+  },
+  update: async () => 'unchanged',
+};
+
 const OWNER = 'jascha';
 const PASSPHRASE = 'correct horse battery staple';
 const BOARD_URL = 'https://board.test';
@@ -277,6 +292,7 @@ describe('an agent’s proposal', () => {
     notify: async () => undefined,
     waits: fakeWaitStore(),
     runCheck: async () => ({ exitCode: 1, timedOut: false, output: '' }),
+    update: NO_UPDATES,
   });
   const workerDeps = (invocations: { args: string[]; prompt: string }[], failures: string[]): WorkerDeps => ({
     backend: ctx.cli,
@@ -410,6 +426,7 @@ describe('a wait', () => {
       logTail: () => '',
       notify: async () => undefined,
       waits,
+      update: NO_UPDATES,
       runCheck: async (check) => {
         checks.push(check.command);
         return { exitCode: checkExit, timedOut: false, output: checkExit === 0 ? 'all checks passed' : 'pending' };

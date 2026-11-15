@@ -11,7 +11,10 @@ import {
 import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { schedules, tasks } from './db/schema';
+import { appRouter } from './trpc/router';
+import { Changes } from './services/changes';
 import { buildServer } from './server';
+import { recordClient } from './services/machines';
 import { archiveStaleDone } from './services/tasks';
 import { plainMachine, plainUi, type MachineAnswer } from './test/client';
 import { sealed } from './test/sealed';
@@ -356,6 +359,112 @@ describe('board UI', () => {
     const listed = await ui.machines.list();
     expect(listed.find((m) => m.name === 'new-box')?.lastSeenAt).not.toBeNull();
     expect(JSON.stringify(listed)).not.toContain('token');
+  });
+});
+
+describe('what machines report about their CLI', () => {
+  const CURRENT = String(API_VERSION);
+  async function advertising(cliVersion: string | null) {
+    const config = { ...testConfig, cliVersion };
+    const app = await buildServer(config, db);
+    const ui = appRouter.createCaller({ root: db, config, changes: new Changes(), username: 'jascha' });
+    const { token } = await ui.machines.issue({ name: 'laptop' });
+    const call = (command: string, headers: Record<string, string> = {}) =>
+      app.inject({
+        method: 'POST',
+        url: `/api/machine/${command}`,
+        headers: { authorization: `Bearer ${token}`, ...headers },
+        payload: {},
+      });
+    return { ui, call };
+  }
+  const reported = async (ui: Awaited<ReturnType<typeof advertising>>['ui']) => {
+    const [machine] = await ui.machines.list();
+    return { version: machine?.clientVersion, status: machine?.clientStatus };
+  };
+
+  it('advertises the newest CLI in the version answer only when it knows one', async () => {
+    const known = await advertising('0.7.0');
+    expect((await known.call('version')).json().result).toMatchObject({ cli: '0.7.0' });
+    expect(await known.ui.machines.advertisedCli()).toBe('0.7.0');
+    const unknown = await advertising(null);
+    expect((await unknown.call('version')).json().result).not.toHaveProperty('cli');
+    expect(await unknown.ui.machines.advertisedCli()).toBeNull();
+  });
+
+  it('is unknown before a machine sends its headers', async () => {
+    const { ui, call } = await advertising('0.7.0');
+    await call('list-tasks');
+    expect(await reported(ui)).toEqual({ version: null, status: 'unknown' });
+  });
+
+  it('takes the headers of `version` only, so a long-running worker’s heartbeats do not undo an update', async () => {
+    const { ui, call } = await advertising('0.7.0');
+    await call('version', { 'x-board-client': '0.7.0', 'x-board-client-api': CURRENT });
+    await call('list-tasks', { 'x-board-client': '0.1.0', 'x-board-client-api': '1' });
+    expect(await reported(ui)).toEqual({ version: '0.7.0', status: 'current' });
+  });
+
+  it('stores the version and API level, and judges outdated, current, development and incompatible', async () => {
+    const { ui, call } = await advertising('0.7.0');
+    const send = (version: string, api = CURRENT) =>
+      call('version', { 'x-board-client': version, 'x-board-client-api': api });
+    await send('0.6.0');
+    expect(await reported(ui)).toEqual({ version: '0.6.0', status: 'outdated' });
+    await send('0.7.0');
+    expect(await reported(ui)).toEqual({ version: '0.7.0', status: 'current' });
+    await send('0.7.0-dev');
+    expect(await reported(ui)).toEqual({ version: '0.7.0-dev', status: 'current' });
+    await send('0.6.0-dev');
+    expect((await reported(ui)).status).toBe('outdated');
+    await send('0.6.0', String(MIN_CLIENT - 1));
+    expect((await reported(ui)).status).toBe('incompatible');
+    await send('0.6.0', String(MIN_CLIENT));
+    expect((await reported(ui)).status).toBe('outdated');
+    await send('0.6.0', String(API_VERSION + 5));
+    expect((await reported(ui)).status).toBe('outdated');
+  });
+
+  it('is never outdated when the server knows no newest CLI', async () => {
+    const { ui, call } = await advertising(null);
+    await call('version', { 'x-board-client': '0.1.0', 'x-board-client-api': CURRENT });
+    expect((await reported(ui)).status).toBe('current');
+  });
+
+  it('ignores malformed headers instead of refusing the request', async () => {
+    const { ui, call } = await advertising('0.7.0');
+    await call('version', { 'x-board-client': '0.6.0', 'x-board-client-api': CURRENT });
+    for (const headers of [
+      { 'x-board-client': 'hello', 'x-board-client-api': '0' },
+      { 'x-board-client': '1.2.3-' + 'x'.repeat(30), 'x-board-client-api': '10001' },
+      { 'x-board-client': '1.2', 'x-board-client-api': '1.5' },
+    ]) {
+      expect((await call('version', headers)).statusCode).toBe(200);
+    }
+    expect(await reported(ui)).toEqual({ version: '0.6.0', status: 'outdated' });
+  });
+
+  it('writes only when what a machine reports changes', async () => {
+    const { ui } = await advertising('0.7.0');
+    const record = (version: string) =>
+      asOwner(db, 'jascha', (tx) => recordClient(tx, 'laptop', { version, api: API_VERSION }));
+    const xmin = async () =>
+      (await admin.execute<{ xmin: string }>(sql`select xmin::text from machine where name = 'laptop'`)).rows[0]?.xmin;
+    await record('0.6.0');
+    const before = await xmin();
+    await record('0.6.0');
+    await record('0.6.0');
+    expect(await xmin()).toBe(before);
+    await record('0.7.0');
+    expect(await xmin()).not.toBe(before);
+    expect(await reported(ui)).toEqual({ version: '0.7.0', status: 'current' });
+  });
+
+  it('a new token forgets what the old one reported', async () => {
+    const { ui, call } = await advertising('0.7.0');
+    await call('version', { 'x-board-client': '0.6.0', 'x-board-client-api': CURRENT });
+    await ui.machines.issue({ name: 'laptop' });
+    expect(await reported(ui)).toEqual({ version: null, status: 'unknown' });
   });
 });
 

@@ -3,6 +3,8 @@
  * then run the checks of waiting tasks that are due.
  * No LLM calls. Add --dry-run to read everything and print every write and process start instead.
  */
+import { isBehind, tryUpdate } from './auto-update.mts';
+import type { UpdateDeps } from './auto-update.mts';
 import { BackendError, isVocabularyRefusal, updateCliHint } from './backend.mts';
 import { buildContext, print, skipTickWhileServerOlder } from './cli.mts';
 import type { Context } from './cli.mts';
@@ -25,6 +27,8 @@ import {
 import type { LaneRun } from './decide.mts';
 import { createRunFiles } from './runtime.mts';
 import type { RunFiles } from './runtime.mts';
+import { EXEC_PATH, isCompiledBinary } from './self.mts';
+import { realGh, realListenerRestart, selfUpdate } from './self-update.mts';
 import { createSystem } from './system.mts';
 import type { System } from './system.mts';
 import { postSlack, slackText } from './notify.mts';
@@ -33,6 +37,9 @@ import { sendToNeedsMe } from './report.mts';
 import { fence } from './text.mts';
 import type { CheckResult, WaitCheck, WaitStore } from './waits.mts';
 import { CHECK_TIME_LIMIT_MS, createWaitStore, runCheck } from './waits.mts';
+import { createUpdateState, updateStateFile } from './update-state.mts';
+import { cliVersion, releaseVersion } from './version.mts';
+import { getPaths } from './config.mts';
 
 export interface DispatchDeps extends Context {
   system: System;
@@ -42,6 +49,7 @@ export interface DispatchDeps extends Context {
   notify: (task: Task, text: string) => Promise<void>;
   waits: WaitStore;
   runCheck: (check: WaitCheck) => Promise<CheckResult>;
+  update: UpdateDeps;
 }
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -143,10 +151,31 @@ async function runChecks(deps: DispatchDeps, checks: Task[], tickStart: Date): P
   );
 }
 
+const updateRun = ({ update, now, print: log, dryRun }: DispatchDeps) => ({ ...update, now, log, dryRun });
+
 export async function runDispatch(deps: DispatchDeps): Promise<void> {
   const { backend, config, system, files, print: log } = deps;
   const tickStart = deps.now();
-  const listed = await backend.listTasks();
+  let listed: Task[];
+  try {
+    listed = await backend.listTasks();
+  } catch (error) {
+    // A board that has moved on refuses this CLI; with the config's leave the dispatcher fetches the CLI that fits.
+    if (!(error instanceof BackendError) || error.contractMismatch !== 'cli-older' || config.autoUpdate === 'never')
+      throw error;
+    const outcome = await tryUpdate(updateRun(deps), 'this CLI is too old for the board');
+    // Failing or waiting out a failure ends the tick quietly: it must not alert on every tick.
+    if (outcome === 'unavailable') throw error;
+    return;
+  }
+  const advertised = deps.update.advertised();
+  if (config.autoUpdate === 'always' && isBehind({ advertised, version: deps.update.version })) {
+    const workers = await system.activeWorkers();
+    const why = `board ${advertised} is available (this is ${deps.update.version})`;
+    // Workers call this binary again (their hook), so it is replaced only while none runs; the next tick looks again.
+    if (workers.length > 0) log(`UPDATE-WAIT ${why}; ${workers.length} worker(s) running`);
+    else if ((await tryUpdate(updateRun(deps), why)) === 'updated') return;
+  }
   // The unit of a task lives on the machine that claimed it; another machine's tasks are its own business.
   const running = listed.filter(
     (task) => task.status === 'running' && (task.machine === null || task.machine === config.machine),
@@ -302,10 +331,33 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
 
 export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<void> {
   const context = buildContext(dryRun);
+  const compiled = isCompiledBinary();
   await skipTickWhileServerOlder(() =>
     runDispatch({
       ...context,
       print,
+      update: {
+        compiled,
+        version: cliVersion(),
+        advertised: () => context.serverCli?.(),
+        state: createUpdateState(updateStateFile(getPaths().stateDir)),
+        update: () =>
+          selfUpdate(
+            {
+              compiled,
+              version: releaseVersion(),
+              execPath: EXEC_PATH,
+              platform: process.platform,
+              arch: process.arch,
+              // Below the tick's 110 s limit, so a stalled download fails instead of being killed with the tick.
+              gh: realGh(process.env, 90_000),
+              // The dispatcher runs inside the listener's unit, whose stop waits for it: asking must not wait for the stop.
+              restartListener: realListenerRestart({ block: false }),
+              print,
+            },
+            {},
+          ),
+      },
       system: createSystem({ dryRun, print }),
       files: createRunFiles(),
       now: () => new Date(),

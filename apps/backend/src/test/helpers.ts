@@ -16,6 +16,7 @@ export const testConfig: Config = {
   backfillOwner: null,
   allowedGroups: ['admins'],
   devAuthUser: null,
+  cliVersion: null,
 };
 
 /** `db` is the unprivileged handle that serves requests; `admin` bypasses row-level security. The tables are wiped before each test. */
