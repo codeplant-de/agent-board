@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { BackendError, checkBoardUrl, checkDataKey, looksLikeMachineToken, verifyContract } from './backend.mts';
 import type { ServerIdentity, WebConfig } from './backend.mts';
 import { ConfigError, isSafeMode, parseConfig } from './config.mts';
-import { decodeDataKey } from '@agent-board/shared';
+import { API_VERSION, decodeDataKey } from '@agent-board/shared';
 import { parseEnv } from './env-file.mts';
 import { LISTEN_SERVICE, parseExecStart, UNIT_NAMES, UNIT_PATH, whichOnPath } from './setup.mts';
 
@@ -206,7 +206,12 @@ const checkServer: Check = async (deps) => {
   if (url === undefined || token === undefined) return [];
   try {
     const identity = await deps.verifyServer({ url, token });
-    const results = [ok('server', `${url} answers, contract matches`)];
+    const results = [
+      ok(
+        'server',
+        `${url} answers, api ${API_VERSION}, server api ${identity.api.version} (serves clients from ${identity.api.minClient})`,
+      ),
+    ];
     // A board without a key cannot be matched, whatever env holds: say so first, with the way out.
     if (identity.keyId === null)
       return [
@@ -249,7 +254,7 @@ const checkServer: Check = async (deps) => {
           'create a new machine token on the board\'s Settings page and run "board init --force": it keeps the URL and the data key unless you give them again, and asks for the token',
         ),
       ];
-    // Which update hint to show comes from the two contract numbers, never from text the server wrote.
+    // Which update hint to show comes from the two API numbers, never from text the server wrote.
     if (error instanceof BackendError && error.contractMismatch !== undefined)
       return [
         problem(
@@ -257,7 +262,7 @@ const checkServer: Check = async (deps) => {
           'fail',
           message,
           error.contractMismatch === 'server-older'
-            ? "update the board server to this CLI's contract"
+            ? "update the board server to this CLI's API version"
             : 'update this CLI: "board self-update" for a binary; "git pull" and "pnpm install" in the checkout for a checkout',
         ),
       ];

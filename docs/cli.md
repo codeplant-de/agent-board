@@ -550,8 +550,8 @@ fix), ! is a warning. Exit 1 if any check fails; warnings alone exit 0. The
 token is never printed.
 
 Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600
-or 400, token, data key), the board (reachable, token accepted, contract
-version, and whether it has a data key and this machine holds the same one),
+or 400, token, data key), the board (reachable, token accepted, API version
+range, and whether it has a data key and this machine holds the same one),
 config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl
 and the installed units with their timers and the listener. The worker checks
 only warn on a machine with no unit installed.

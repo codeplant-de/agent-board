@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  CONTRACT_VERSION,
+  API_VERSION,
   ContractError,
   decodeDataKey,
   deriveKeys,
@@ -10,6 +10,7 @@ import {
   isSafeMachineName,
   MACHINE_NAME_RULE,
   isSafeTaskId,
+  MIN_SERVER,
   parseVersion,
   parseVersionIdentity,
   parseWireAddScheduleResult,
@@ -24,7 +25,16 @@ import {
   QuestionError,
   taskLabels,
 } from '@agent-board/shared';
-import type { Backend, Keys, Schedule, Task, TaskDraft, WireBackend } from '@agent-board/shared';
+import type {
+  Backend,
+  Keys,
+  ListOptions,
+  Schedule,
+  SkippedItem,
+  Task,
+  TaskDraft,
+  WireBackend,
+} from '@agent-board/shared';
 import { ConfigError } from './config.mts';
 import { loadEnvFile } from './env-file.mts';
 import { isCompiledBinary } from './self.mts';
@@ -38,7 +48,7 @@ export class BackendError extends Error {
   status: number | undefined;
   // Whether the status came in a JSON answer of the machine API; a login page or a proxy has a status too, and means something else.
   fromApi: boolean;
-  // Set when the contract numbers differ, from those numbers and nothing the server wrote: which side is the older one.
+  // Set when the API ranges do not fit, from those numbers and nothing the server wrote: which side is the older one.
   contractMismatch: 'cli-older' | 'server-older' | undefined;
 
   constructor(message: string, status?: number, fromApi = false) {
@@ -178,26 +188,31 @@ export interface WebBackendOptions {
   fetch?: Fetch;
   // Per request; commands that must answer quickly, such as completion, shorten it.
   timeoutMs?: number;
+  // Called for each task, note or schedule a list answer leaves out because of an enum value this CLI does not know.
+  onSkip?: (skipped: SkippedItem) => void;
 }
 
-// How to bring this CLI up to the board's contract: a binary updates itself, a checkout is pulled.
-const updateCliHint = (): string =>
+// How to bring this CLI up to the board's API: a binary updates itself, a checkout is pulled.
+export const updateCliHint = (): string =>
   isCompiledBinary() ? 'run "board self-update"' : 'run "git pull" and "pnpm install" in the checkout';
 
 // Whose board this is and which data key it expects (null before encryption is set up).
 export interface ServerIdentity {
   owner: string;
   keyId: string | null;
+  // The API range the server speaks: its own version and the oldest client version it serves.
+  api: { version: number; minClient: number };
 }
 
-// Asks the server for its contract version and refuses a mismatch in either direction; returns whose board it is.
+// Asks the server for its API range and refuses a CLI the server no longer serves and a server older than the CLI
+// works with; returns whose board it is.
 export async function verifyContract(
   config: Pick<WebConfig, 'url' | 'token'>,
   fetcher?: Fetch,
   timeoutMs?: number,
 ): Promise<ServerIdentity> {
   let version: unknown;
-  let served: number;
+  let served: { version: number; minClient: number };
   try {
     version = await callServer(config, 'version', {}, fetcher, timeoutMs);
     served = parseVersion(version);
@@ -206,24 +221,24 @@ export async function verifyContract(
     if (error instanceof BackendError && error.status === 404 && error.fromApi) {
       throw mismatch(
         'server-older',
-        `the board server is older than this CLI: it does not know the version command; the CLI needs contract ${CONTRACT_VERSION}; update the board server`,
+        `the board server is older than this CLI: it does not know the version command; the CLI needs API ${MIN_SERVER} or newer; update the board server`,
         404,
       );
     }
     throw asBackendError('version', error);
   }
-  if (served < CONTRACT_VERSION)
-    throw mismatch(
-      'server-older',
-      `the board server is older than this CLI: it speaks contract ${served}, the CLI needs ${CONTRACT_VERSION}; update the board server`,
-    );
-  if (served > CONTRACT_VERSION)
+  if (API_VERSION < served.minClient)
     throw mismatch(
       'cli-older',
-      `this CLI is older than the board server: it speaks contract ${CONTRACT_VERSION}, the server has ${served}; ${updateCliHint()}`,
+      `this CLI is older than the board server: it speaks API ${API_VERSION}, the server serves clients from ${served.minClient}; ${updateCliHint()}`,
+    );
+  if (served.version < MIN_SERVER)
+    throw mismatch(
+      'server-older',
+      `the board server is older than this CLI: it speaks API ${served.version}, the CLI needs ${MIN_SERVER} or newer; update the board server`,
     );
   try {
-    return parseVersionIdentity(version);
+    return { ...parseVersionIdentity(version), api: served };
   } catch (error) {
     throw asBackendError('version', error);
   }
@@ -257,7 +272,7 @@ interface Connection {
 }
 
 export function createWebBackend(options: WebBackendOptions): WebBackend {
-  // Loads the config, checks the contract version and the data key once, before the first real call.
+  // Loads the config, checks the API range and the data key once, before the first real call.
   let ready: Promise<Connection> | undefined;
   const connect = (): Promise<Connection> => {
     ready ??= (async () => {
@@ -283,6 +298,8 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     await callServer((await connect()).config, command, request, options.fetch, options.timeoutMs);
   };
 
+  const listOptions: ListOptions = options.onSkip === undefined ? {} : { onSkip: options.onSkip };
+
   const taskId = (id: string): string => {
     if (!isSafeTaskId(id)) throw new BackendError(`"${id.slice(0, 40)}" is not a valid task id`);
     return id;
@@ -296,7 +313,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
   return {
     keys: async () => (await connect()).keys,
     listTasks: async ({ all = false } = {}) => {
-      const tasks = await call('list-tasks', { all }, parseWireTasks);
+      const tasks = await call('list-tasks', { all }, (value) => parseWireTasks(value, listOptions));
       return all ? tasks : tasks.filter((task) => !task.closed);
     },
     getTask: async (id) => call('get-task', { id: taskId(id) }, parseWireTask),
@@ -324,9 +341,9 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     wait: async (id, wait) => call('wait', { id: taskId(id), body: wait }, parseWireTask),
     wake: async (id, note) => call('wake', { id: taskId(id), body: note }, parseWireWakeResult),
     transcript: async (id, batch) => send('transcript', { id: taskId(id), body: batch }),
-    readNotes: async (id) => call('read-notes', { id: taskId(id) }, parseWireNotes),
+    readNotes: async (id) => call('read-notes', { id: taskId(id) }, (value) => parseWireNotes(value, listOptions)),
     addSchedule: async (draft) => call('add-schedule', { body: draft }, parseWireAddScheduleResult),
-    listSchedules: async () => call('list-schedules', {}, parseWireSchedules),
+    listSchedules: async () => call('list-schedules', {}, (value) => parseWireSchedules(value, listOptions)),
     updateSchedule: async (id, patch) =>
       call('update-schedule', { id: scheduleId(id), body: patch }, parseWireSchedule),
     removeSchedule: async (id) => send('remove-schedule', { id: scheduleId(id) }),

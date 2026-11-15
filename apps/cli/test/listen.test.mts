@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CONTRACT_VERSION } from '@agent-board/shared';
+import { API_VERSION, MIN_SERVER } from '@agent-board/shared';
 import { verifyContract } from '../src/backend.mts';
 import type { Fetch } from '../src/backend.mts';
 import {
@@ -327,27 +327,44 @@ test('a 401 is logged clearly and backs off like any failure', async () => {
   await done;
 });
 
-test('a contract mismatch is logged with the older side and ends the listener with a failure', async () => {
-  const served =
-    (contract: number): Fetch =>
-    async () =>
-      new Response(JSON.stringify({ result: { contract, owner: 'alice', keyId: null } }));
-  for (const [contract, older] of [
-    [CONTRACT_VERSION + 1, /this CLI is older than the board server/],
-    [CONTRACT_VERSION - 1, /the board server is older than this CLI/],
-  ] as const) {
-    const { clock, log, requests, done } = listener([], () =>
-      verifyContract({ url: 'https://board.example', token: 'abm_x' }, served(contract)).then(() => ({
-        url: 'https://board.example',
-        token: 'abm_x',
-      })),
-    );
-    assert.equal(await done, 1);
-    assert.equal(requests.length, 0);
-    assert.match(log.join('\n'), older);
-    await clock.advance(100_000);
-    assert.equal(requests.length, 0);
-  }
+const servedApi =
+  (api: { version: number; minClient: number }): Fetch =>
+  async () =>
+    new Response(JSON.stringify({ result: { contract: 9, owner: 'alice', keyId: null, api } }));
+const verifyAgainst = (fetcher: Fetch) => () =>
+  verifyContract({ url: 'https://board.example', token: 'abm_x' }, fetcher).then(() => ({
+    url: 'https://board.example',
+    token: 'abm_x',
+  }));
+
+test('a server that no longer serves this CLI is logged and ends the listener with a failure', async () => {
+  const { clock, log, requests, done } = listener(
+    [],
+    verifyAgainst(servedApi({ version: API_VERSION + 1, minClient: API_VERSION + 1 })),
+  );
+  assert.equal(await done, 1);
+  assert.equal(requests.length, 0);
+  assert.match(log.join('\n'), /this CLI is older than the board server/);
+  await clock.advance(100_000);
+  assert.equal(requests.length, 0);
+});
+
+test('a server older than the CLI keeps the listener reconnecting, saying so once', async () => {
+  let api = { version: MIN_SERVER - 1, minClient: 1 };
+  const stream = openStream();
+  const { clock, log, requests, stop, done } = listener([stream], () => verifyAgainst(servedApi(api))());
+  await clock.advance(100_000);
+  assert.equal(requests.length, 0);
+  const older = log.filter((line) => /the board server is older than this CLI/.test(line));
+  assert.equal(older.length, 1, log.join('\n'));
+  assert.ok(log.filter((line) => line.startsWith('reconnecting in')).length > 2);
+  assert.ok(!log.some((line) => line.startsWith('disconnected')));
+  api = { version: API_VERSION, minClient: API_VERSION };
+  await clock.advance(100_000);
+  assert.ok(requests.length > 0);
+  assert.ok(log.includes('connected'));
+  stop.abort();
+  await done;
 });
 
 test('SIGTERM stops the reconnecting and the pending tick, and exits 0', async () => {

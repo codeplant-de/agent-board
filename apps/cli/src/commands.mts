@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { Argument, Command, CommanderError } from 'commander';
-import { CONTRACT_VERSION, STATUSES } from '@agent-board/shared';
+import { API_VERSION, STATUSES } from '@agent-board/shared';
 import {
   attach,
   add,
@@ -140,11 +140,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     .showSuggestionAfterError()
     .configureOutput({ writeOut, writeErr, outputError: () => undefined })
     .configureHelp({ subcommandTerm: overviewTerm })
-    .version(
-      `board ${options.version ?? cliVersion()} (contract ${CONTRACT_VERSION})`,
-      '-V, --version',
-      'print the version',
-    )
+    .version(`board ${options.version ?? cliVersion()} (api ${API_VERSION})`, '-V, --version', 'print the version')
     .option('--dry-run', 'read everything, print every write instead of doing it')
     .description(
       'Work with the agent board from a terminal, and from inside a run: comment on tasks, move them, schedule new ones.',
@@ -660,7 +656,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       .description(
         paragraphs(
           'Check this machine, read-only, one line per check: ✓ passes, ✗ fails (with a fix), ! is a warning. Exit 1 if any check fails; warnings alone exit 0. The token is never printed.',
-          'Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600 or 400, token, data key), the board (reachable, token accepted, contract version, and whether it has a data key and this machine holds the same one), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers and the listener. The worker checks only warn on a machine with no unit installed.',
+          'Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600 or 400, token, data key), the board (reachable, token accepted, API version range, and whether it has a data key and this machine holds the same one), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers and the listener. The worker checks only warn on a machine with no unit installed.',
         ),
       )
       .addHelpText('after', examples('board doctor', 'board doctor --json')),

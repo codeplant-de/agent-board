@@ -5,7 +5,7 @@
  * A PR whose data cannot be read is skipped and its task left alone.
  * Add --dry-run to read everything and print every write instead.
  */
-import { buildContext, print } from './cli.mts';
+import { buildContext, print, skipTickWhileServerOlder } from './cli.mts';
 import type { Context } from './cli.mts';
 import type { Backend, Task, TaskPatch } from '@agent-board/shared';
 import { parsePrUrl, prUrlIn } from '@agent-board/shared';
@@ -170,5 +170,7 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
 }
 
 export async function intakeMain({ dryRun }: { dryRun: boolean }): Promise<void> {
-  await runIntake({ ...buildContext(dryRun), print, github: createGitHub(), now: () => new Date() });
+  await skipTickWhileServerOlder(() =>
+    runIntake({ ...buildContext(dryRun), print, github: createGitHub(), now: () => new Date() }),
+  );
 }

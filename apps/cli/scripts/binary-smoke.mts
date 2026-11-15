@@ -24,7 +24,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  CONTRACT_VERSION,
+  API_VERSION,
+  LEGACY_CONTRACT,
+  MIN_CLIENT,
   dedupeKeyIndex,
   headIndex,
   deriveKeys,
@@ -116,7 +118,7 @@ const foreign = {
 };
 // What the fake board answers; a check changes it and puts it back.
 const fake = {
-  contract: CONTRACT_VERSION,
+  api: { version: API_VERSION, minClient: MIN_CLIENT },
   keyId: KEYS.keyId as string | null,
   tasks: [todo] as unknown[],
   // What get-task answers; a worker's run changes it to the task it runs.
@@ -142,7 +144,7 @@ const server = createServer((request: IncomingMessage, response: ServerResponse)
       return response.end();
     }
     const results: Record<string, unknown> = {
-      version: { contract: fake.contract, owner: OWNER, keyId: fake.keyId },
+      version: { contract: LEGACY_CONTRACT, owner: OWNER, keyId: fake.keyId, api: fake.api },
       'list-tasks': fake.tasks,
       'get-task': fake.current,
       fail: { applied: true, task: fake.current },
@@ -250,7 +252,7 @@ mkdirSync(empty);
 
 await check('--version shows the injected version', async () => {
   const result = await board(['--version'], empty);
-  assert.deepEqual([result.code, result.stdout], [0, `board ${version} (contract ${CONTRACT_VERSION})\n`]);
+  assert.deepEqual([result.code, result.stdout], [0, `board ${version} (api ${API_VERSION})\n`]);
 });
 await check('help and help schedule', async () => {
   const help = await board(['help'], empty);
@@ -381,8 +383,8 @@ await check('the binary computes the same blind index for a dedupe key as node d
   );
   assert.ok(!sent.includes('github.com'), 'the PR URL must not reach the server');
 });
-await check('a board of another contract says how to update this binary', async () => {
-  await withBoard({ contract: CONTRACT_VERSION + 1 }, async () => {
+await check('a board that no longer serves this binary says how to update it', async () => {
+  await withBoard({ api: { version: API_VERSION + 1, minClient: API_VERSION + 1 } }, async () => {
     const result = await board(['tasks'], config());
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /this CLI is older than the board server: .*run "board self-update"/);

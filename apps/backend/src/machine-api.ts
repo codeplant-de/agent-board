@@ -3,11 +3,13 @@
  * The body carries the command's arguments; the answer is {result} or {error}.
  */
 import {
-  CONTRACT_VERSION,
+  API_VERSION,
   ContractError,
   isRecord,
   isSafeMachineName,
   isSafeTaskId,
+  LEGACY_CONTRACT,
+  MIN_CLIENT,
   parseHeartbeat,
   parseSchedulePatch,
   parseWireAsk,
@@ -86,7 +88,13 @@ export async function handleMachineCall(
   const task = toTask;
   switch (command) {
     case 'version':
-      return { contract: CONTRACT_VERSION, owner: identity.owner, keyId: (await getKeys(db))?.keyId ?? null };
+      return {
+        // A pre-0.6.0 CLI compares this exactly: once a break raises MIN_CLIENT above it, it must stop those CLIs too.
+        contract: Math.max(LEGACY_CONTRACT, MIN_CLIENT),
+        owner: identity.owner,
+        keyId: (await getKeys(db))?.keyId ?? null,
+        api: { version: API_VERSION, minClient: MIN_CLIENT },
+      };
     case 'list-tasks':
       return (await listTasks(db, { all: body['all'] === true })).map(task);
     case 'get-task':
