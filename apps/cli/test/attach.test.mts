@@ -145,3 +145,9 @@ test('board show names the session, its machine and directory only when there is
   assert.match(unknown, new RegExp(`session: ${SESSION} · -:-\n`));
   assert.equal(renderThread(task({ id: 'a', title: 'T' }), []).includes('session:'), false);
 });
+
+test('board show names the PR the agent reported, when there is one', () => {
+  const url = 'https://github.com/acme/app/pull/9';
+  assert.match(renderThread(task({ id: 'a', title: 'T', pr: url }), []), new RegExp(`labels: -\npr: ${url}\n`));
+  assert.equal(renderThread(task({ id: 'a', title: 'T' }), []).includes('pr:'), false);
+});

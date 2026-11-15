@@ -110,6 +110,8 @@ export const tasks = pgTable(
     sessionId: text('session_id'),
     /** Where the session was when it last stopped, on `machine`. */
     workdir: text('workdir'),
+    /** The sealed URL of the pull request the task's agent opened for it (`board pr`). */
+    pr: text('pr'),
     next: nextRun('next').notNull().default('fresh'),
     /** Reported by the worker while the task runs; stale once it stops running. */
     lane: text('lane'),
@@ -149,6 +151,7 @@ export const tasks = pgTable(
     check('task_title_sealed', isEnvelope(t.title)),
     check('task_input_sealed', isEnvelope(t.input)),
     check('task_workdir_sealed', isEnvelope(t.workdir)),
+    check('task_pr_sealed', isEnvelope(t.pr)),
     check('task_dedupe_key_blind', isBlindIndex(t.dedupeKey)),
     check('task_head_blind', isBlindIndex(t.head)),
     unique('task_owner_dedupe_key_unique').on(t.owner, t.dedupeKey),

@@ -37,6 +37,7 @@ export function toTask(row: TaskRow): WireTask {
     machine: row.machine,
     sessionId: row.sessionId,
     workdir: row.workdir,
+    pr: row.pr,
     next: row.next,
     head: row.head,
     openQuestion: row.openQuestionNoteId !== null,
@@ -658,6 +659,13 @@ export async function heartbeat(db: DbOrTx, taskId: string, beat: Heartbeat): Pr
     .update(tasks)
     .set({ lane: beat.lane, borrowed: beat.borrowed, lastActiveAt: new Date() })
     .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running')));
+}
+
+/** The pull request the task's agent reported, sealed; the last one wins. */
+export async function setPr(db: DbOrTx, taskId: string, pr: string): Promise<void> {
+  requireSealed(pr, 'the pull request');
+  await getTask(db, taskId);
+  await db.update(tasks).set({ pr, updatedAt: new Date() }).where(eq(tasks.id, taskId));
 }
 
 /**

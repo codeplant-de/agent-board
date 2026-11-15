@@ -61,6 +61,17 @@ test('a comment takes a suggested reply before the task, and never reads one out
   ]);
 });
 
+test('board pr reports the pull request of a task, and refuses anything but a GitHub pull request URL', async () => {
+  const { backend, printed, go } = setup();
+  const url = 'https://github.com/acme/app/pull/17741';
+  await go(['pr', ID, url]);
+  assert.deepEqual(backend.writes, [`pr ${ID} ${url}`]);
+  assert.match(printed.join('\n'), new RegExp(`reported ${url} for ${ID}`));
+  for (const bad of [`${url}/files`, 'https://github.com/acme/app/issues/3', 'http://github.com/acme/app/pull/1', 'x'])
+    await assert.rejects(go(['pr', ID, bad]), UsageError, bad);
+  assert.equal(backend.writes.length, 1);
+});
+
 test('a suggested reply can come from a file in /tmp, and not from both', async () => {
   const dir = mkdtempSync('/tmp/board-commands-test-');
   try {
@@ -277,6 +288,7 @@ function words(command: string, files: { questions: string; prompt: string }): s
     .replaceAll('${taskId}', ID)
     .replaceAll('<task>', ID)
     .replace(/<path>/g, files.prompt)
+    .replace(/<url>/g, 'https://github.com/acme/app/pull/1')
     .replace(/\/tmp\/pr-[^/]*-questions\.json/, files.questions)
     .replace(/<[^>]*>/g, 'x');
   return [...concrete.matchAll(/"([^"]*)"|(\S+)/g)].map((match) => match[1] ?? match[2] ?? '').slice(1);
@@ -326,6 +338,7 @@ test('every board command in the run rules, the hook messages and the selftest s
             .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( \\[suggest: .*\\])?$`,
         ),
         move: /^status Zt0Test1 -> needs-me$/,
+        pr: /^pr Zt0Test1 https:\/\/github\.com\/acme\/app\/pull\/1$/,
         ask: /^ask Zt0Test1: Color$/,
         add: /^create .* \| do the thing \| $/,
         wait: /^wait Zt0Test1 until \S+( check)?: x/,
@@ -334,7 +347,7 @@ test('every board command in the run rules, the hook messages and the selftest s
       if (verb in expected) assert.match(action, expected[verb] as RegExp, command);
       else assert.deepEqual(backend.writes, [], command);
     }
-    for (const verb of ['comment', 'move', 'ask', 'add', 'show', 'wait'])
+    for (const verb of ['comment', 'move', 'ask', 'add', 'show', 'wait', 'pr'])
       assert.ok(verbs.has(verb), `no ${verb} command found in the sources`);
   } finally {
     rmSync(dir, { recursive: true });
