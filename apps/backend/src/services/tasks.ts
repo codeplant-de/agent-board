@@ -32,6 +32,7 @@ export function toTask(row: TaskRow): WireTask {
     input: row.input,
     status: row.status,
     priority: row.priority,
+    model: row.model,
     closed: row.closed,
     machine: row.machine,
     sessionId: row.sessionId,

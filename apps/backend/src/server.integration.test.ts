@@ -1244,6 +1244,42 @@ describe('schedules', () => {
     expect(await listed()).toHaveLength(1);
   });
 
+  it('a schedule keeps its model and every card it creates inherits it', async () => {
+    const { json } = await addSchedule({ model: 'claude-opus-5-5', times: 3 });
+    expect(json.result.schedule.model).toBe('claude-opus-5-5');
+    expect(json.result.task.model).toBe('claude-opus-5-5');
+    expect((await listed())[0]).toMatchObject({ model: 'claude-opus-5-5' });
+    expect((await claim(json.result.task.id)).status).toBe(200);
+    const [, second] = await scheduled(json.result.schedule.id);
+    expect(second?.model).toBe('claude-opus-5-5');
+    const plain = await addSchedule({});
+    expect(plain.json.result).toMatchObject({ schedule: { model: null }, task: { model: null } });
+  });
+
+  it('a model that is not a model name is refused, for a schedule and a task', async () => {
+    for (const model of ['--x', 'a b', '', null, 5]) {
+      expect((await addSchedule({ model })).status, JSON.stringify(model)).toBe(400);
+      const refused = await ctx.call('laptop', 'add-task', { body: { title: 't', input: 'x', model } });
+      expect(refused.status, JSON.stringify(model)).toBe(400);
+    }
+  });
+
+  it('a task made through the machine API or the browser keeps its model; none is the default', async () => {
+    const viaApi = await ctx.call('laptop', 'add-task', { body: { title: 't', input: 'x', model: 'sonnet' } });
+    expect(viaApi.json.result.task.model).toBe('sonnet');
+    expect((await ctx.call('laptop', 'get-task', { id: viaApi.json.result.task.id })).json.result.model).toBe('sonnet');
+    expect(
+      (await ctx.call('laptop', 'add-task', { body: { title: 't', input: 'x' } })).json.result.task.model,
+    ).toBeNull();
+    const ui = plainUi(db);
+    expect((await ui.tasks.create({ title: 'ui', input: 'x', model: 'haiku' })).model).toBe('haiku');
+    expect((await ui.tasks.create({ title: 'ui', input: 'x' })).model).toBeNull();
+    const repeating = await ui.tasks.create({ title: 'ui', input: 'x', model: 'fable', when: { every: hour } });
+    expect(repeating.model).toBe('fable');
+    expect((await listed()).find((row) => row.id === repeating.scheduleId)).toMatchObject({ model: 'fable' });
+    await expect(ui.tasks.create({ title: 'ui', input: 'x', model: '--bad' })).rejects.toThrow();
+  });
+
   it('claiming the pending card creates the next one on the grid and counts down the runs', async () => {
     const { json } = await addSchedule({ times: 3 });
     const first = json.result.task;

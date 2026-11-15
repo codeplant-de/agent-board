@@ -25,6 +25,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     labels: [],
     status: 'todo',
     priority: 'normal',
+    model: null,
     closed: false,
     machine: null,
     sessionId: null,
@@ -72,6 +73,7 @@ export function schedule(overrides: Partial<Schedule> & { id: string }): Schedul
     title: `schedule ${overrides.id}`,
     input: '/sweep',
     priority: 'normal',
+    model: null,
     machine: null,
     workdir: null,
     everyMs: 7_200_000,
@@ -273,12 +275,14 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       state.writes.push(
         `add-schedule ${draft.title} | ${draft.input} | ${draft.everyMs ?? `${draft.cron} ${draft.timezone}`}` +
           `${draft.startAt ? ` | start ${draft.startAt.toISOString()}` : ''}${draft.times ? ` | times ${draft.times}` : ''}` +
-          `${draft.until ? ` | until ${draft.until.toISOString()}` : ''}${draft.machine ? ` | ${draft.machine}:${draft.workdir}` : ''}`,
+          `${draft.until ? ` | until ${draft.until.toISOString()}` : ''}${draft.machine ? ` | ${draft.machine}:${draft.workdir}` : ''}` +
+          `${draft.model ? ` | model ${draft.model}` : ''}`,
       );
       const pending = task({
         id: 'pending',
         title: draft.title,
         input: draft.input,
+        model: draft.model ?? null,
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
         notBefore: draft.startAt ?? new Date('2027-01-01T08:00:00Z'),
@@ -288,6 +292,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         id: 'sched',
         title: draft.title,
         input: draft.input,
+        model: draft.model ?? null,
         everyMs: draft.everyMs ?? null,
         cron: draft.cron ?? null,
         timezone: draft.timezone ?? null,

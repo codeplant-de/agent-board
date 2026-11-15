@@ -372,6 +372,8 @@ Arguments:
 
 Options:
   --priority <priority>  urgent, high, normal, low (default normal)
+  --model <model>        claude model alias or full name, e.g. fable, opus,
+                         sonnet, haiku (default: claude's default)
   --title <title>        the task's title (default: the prompt's first line)
   --hold                 land it in needs-me instead of Todo
   --backlog              park it in backlog instead of Todo
@@ -392,6 +394,7 @@ Options:
 Examples:
   board schedule /review-pr 17741
   board schedule --priority high /review-pr cosuno/cosuno#17741 --auto
+  board schedule --model opus "Find out why the bidder export is slow and propose a fix"
   board schedule "Find out why the bidder export is slow and propose a fix"
   board schedule --in 2h /review-pr 17741
   board schedule --at 09:00 /grill the plan in docs/x.md

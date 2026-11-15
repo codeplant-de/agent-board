@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   ContractError,
+  isModelName,
   notePreview,
   NOTE_KINDS,
   parseBlindIndex,
@@ -62,6 +63,7 @@ const task = {
   input: INPUT,
   status: 'todo',
   priority: 'normal',
+  model: null,
   closed: false,
   machine: null,
   sessionId: null,
@@ -288,6 +290,7 @@ const schedule = {
   title: TITLE,
   input: INPUT,
   priority: 'normal',
+  model: null,
   machine: null,
   workdir: null,
   everyMs: 7_200_000,
@@ -722,4 +725,39 @@ test('versions compare numerically, and a suffix counts as its base', () => {
   assert.equal(compareVersions('0.7.0-dev', '0.7.0'), 0);
   assert.equal(compareVersions('1.2.3-rc.1', '1.2.3'), 0);
   assert.equal(compareVersions('0.6.0-dev', '0.7.0'), -1);
+});
+
+test('a model is a name of a safe shape, and a server that sends none means the default', () => {
+  const { model: _model, ...legacyTask } = task;
+  assert.equal(parseWireTask(legacyTask).model, null);
+  const { model: _scheduleModel, ...legacySchedule } = schedule;
+  assert.equal(parseWireSchedule(legacySchedule).model, null);
+  assert.equal(parseWireTask({ ...task, model: 'claude-sonnet-5-5[1m]' }).model, 'claude-sonnet-5-5[1m]');
+  assert.equal(parseWireSchedule({ ...schedule, model: 'opus' }).model, 'opus');
+  for (const bad of ['--model', 'a b', '', 'x'.repeat(65), 'opus\n', 5])
+    assert.throws(() => parseWireTask({ ...task, model: bad }), /task.model is not a model name/, String(bad));
+  assert.throws(() => parseWireSchedule({ ...schedule, model: '-x' }), /schedule.model is not a model name/);
+});
+
+test('isModelName accepts aliases and full ids only', () => {
+  for (const good of ['fable', 'opus', 'opusplan', 'claude-opus-5-5', 'claude-sonnet-5-5[1m]', 'a.b_c-d'])
+    assert.ok(isModelName(good), good);
+  for (const bad of ['', '-opus', '[1m]', 'op us', 'opus;rm', '$(x)', 'o'.repeat(65)])
+    assert.ok(!isModelName(bad), bad);
+});
+
+test('a draft carries a model that is checked, in add-task and add-schedule', () => {
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, model: 'haiku' }).model, 'haiku');
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT }).model, undefined);
+  assert.throws(
+    () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, model: '--x' }),
+    /draft.model is not a model name/,
+  );
+  assert.throws(
+    () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, model: null }),
+    /draft.model is not a model name/,
+  );
+  const rule = { id: ID, title: TITLE, input: INPUT, everyMs: 60_000 };
+  assert.equal(parseWireScheduleDraft({ ...rule, model: 'opus' }).model, 'opus');
+  assert.throws(() => parseWireScheduleDraft({ ...rule, model: 'a b' }), /schedule draft.model is not a model name/);
 });

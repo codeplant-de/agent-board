@@ -1,5 +1,5 @@
 import type { Command } from 'commander';
-import { PRIORITIES, STATUSES } from '@agent-board/shared';
+import { MODEL_ALIASES, PRIORITIES, STATUSES } from '@agent-board/shared';
 
 export const SHELLS = ['bash', 'zsh', 'fish'] as const;
 export type Shell = (typeof SHELLS)[number];
@@ -25,7 +25,11 @@ export interface CompletionModel {
   freeFlags: string[];
 }
 
-const FLAG_VALUES: Record<string, string[]> = { '--status': [...STATUSES], '--priority': [...PRIORITIES] };
+const FLAG_VALUES: Record<string, string[]> = {
+  '--status': [...STATUSES],
+  '--priority': [...PRIORITIES],
+  '--model': MODEL_ALIASES.map((alias) => alias.value),
+};
 
 function positionalsOf(command: Command): CommandModel['positionals'] {
   if (command.name() === 'help') return ['command'];

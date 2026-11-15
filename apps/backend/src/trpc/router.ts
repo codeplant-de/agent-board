@@ -1,5 +1,6 @@
 import {
   ContractError,
+  isModelName,
   isSafeMachineName,
   isSafeTaskId,
   parseKeyId,
@@ -45,6 +46,7 @@ import { procedure, router } from './trpc';
 const id = z.string().refine(isSafeTaskId, 'not a task id');
 const status = z.enum(STATUSES);
 const priority = z.enum(PRIORITIES);
+const model = z.string().refine(isModelName, 'not a model name');
 const repeatEnd = {
   at: z.coerce.date().optional(),
   times: z.number().int().positive().optional(),
@@ -148,6 +150,8 @@ const tasksRouter = router({
           title: sealed('title', 'title'),
           input: sealed('input', 'input'),
           priority: priority.default('normal'),
+          /** The Claude model of its runs; absent is claude's default. */
+          model: model.optional(),
           /** The task this one follows from, which must be on the board. */
           parentId: id.optional(),
           when: z.union([repeat, z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
@@ -167,6 +171,7 @@ const tasksRouter = router({
           title,
           input: input.input,
           priority: input.priority,
+          ...(input.model === undefined ? {} : { model: input.model }),
           ...('every' in when ? { everyMs: when.every } : { cron: when.cron, timezone: when.timezone }),
           ...(when.at ? { startAt: when.at } : {}),
           ...(when.times ? { times: when.times } : {}),
@@ -179,6 +184,7 @@ const tasksRouter = router({
         title,
         input: input.input,
         priority: input.priority,
+        ...(input.model === undefined ? {} : { model: input.model }),
         status: typeof when === 'string' ? createStatus[when] : 'todo',
         notBefore: typeof when === 'string' ? undefined : when.at,
         createdBy: 'user',
