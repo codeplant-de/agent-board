@@ -44,10 +44,3 @@ export const SEALED_COLUMNS: readonly SealedColumn[] = [
   envelope('transcript_event', 'data'),
   envelope('transcript_event', 'output'),
 ];
-
-/** A note body is the only column that may hold plain text, and only on the events the server writes itself. */
-export const PLAIN_NOTE_BODY = `(author::text = 'server' and kind = 'event')`;
-
-/** The pattern a column must match. */
-export const patternOf = ({ kind }: SealedColumn): string =>
-  kind === 'envelope' ? ENVELOPE_PATTERN : BLIND_INDEX_PATTERN;
