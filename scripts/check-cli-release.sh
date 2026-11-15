@@ -1,7 +1,7 @@
 #!/bin/sh
 # Compares the newest released CLI (the newest strict cli-v<x.y.z> tag) with MIN_CLIENT at HEAD
 # (packages/shared/src/contract.mts), the oldest client break level the server serves. Only a breaking change raises it:
-# an additive one adds a feature name (README, "Features") and leaves this script, and the CLI version, alone.
+# an additive one adds a feature name (docs/machine-api.md#features) and leaves this script, and the CLI version, alone.
 #
 #   check-cli-release.sh                the pull request rule: if the newest release is below MIN_CLIENT, the CLI version
 #                                       in apps/cli/package.json must be above the newest tag; otherwise it passes
@@ -58,7 +58,7 @@ if [ "$version" = "$newest" ] || [ "$highest" != "$version" ]; then
   cat >&2 <<MESSAGE
 MIN_CLIENT is $head_min, but the newest release cli-v$newest speaks API $released_api, so it stops working against this
 server. apps/cli/package.json is at $version, not above that release. Raise the CLI version there, and roll the change
-out in the order of the README's "Upgrading" list: the CLI release (a cli-v<version> tag on main) and the machines come
+out in the order of the "Upgrading" list in docs/setup.md: the CLI release (a cli-v<version> tag on main) and the machines come
 first where the old CLIs must not see the new server.
 MESSAGE
   exit 1

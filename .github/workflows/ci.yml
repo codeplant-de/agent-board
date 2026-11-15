@@ -102,7 +102,7 @@ jobs:
         run: pnpm --filter @agent-board/cli test:binary
 
   # A change that raises MIN_CLIENT above the newest release makes that CLI fail against the server, so it must come
-  # with a higher CLI version. The rollout order is the README's "Upgrading" list.
+  # with a higher CLI version. The rollout order is the "Upgrading" list in docs/setup.md.
   cli-release:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -192,9 +192,11 @@ jobs:
           DATABASE_URL: postgresql://board:board@localhost:5432/board_prevcli
         run: scripts/run-previous-cli-smoke.sh "$RUNNER_TEMP/previous-cli/board-linux-x64"
 
-  # Images are built only after the tests pass, so Flux never rolls out a commit that failed them.
+  # Images are built only after the tests and the previous-CLI smoke test pass, so Flux never rolls out a commit that failed
+  # them. A declared break skips previous-cli's steps and the job still succeeds, so only a red run blocks. A failed release
+  # download is red too and holds the push until a rerun.
   build-and-push:
-    needs: test
+    needs: [test, previous-cli]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:

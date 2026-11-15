@@ -75,3 +75,7 @@ test('a sendable value names the server feature it needs', () => {
   assert.equal(neededServerFeature({ status: 'todo', priority: 'high' }, table), undefined);
   assert.equal(neededServerFeature({ status: 'waiting' }), undefined);
 });
+
+test('the server reads every name the CLI sends', () => {
+  assert.equal(parseClientFeatures(clientVocabulary().join(',')).size, clientVocabulary().length);
+});

@@ -44,7 +44,9 @@ export function warnSkippedOnce(warn: (line: string) => void = console.error): (
     const key = `${what}.${field}=${value}`;
     if (seen.has(key)) return;
     seen.add(key);
-    warn(`board: skipped a ${what} with ${field} ${JSON.stringify(value)} this CLI does not know; ${updateCliHint()}`);
+    warn(
+      `board: skipped a ${what} with ${field} ${JSON.stringify(value)} this CLI does not know (text in quotes is the server's, not part of the board); ${updateCliHint()}`,
+    );
   };
 }
 
