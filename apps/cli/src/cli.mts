@@ -66,6 +66,7 @@ export function buildContext(dryRun: boolean, options: ContextOptions = {}): Lin
   const backend = createSealedBackend({
     loadConfig: () => loadWebConfig(paths.configDir),
     onSkip: warnSkippedOnce(),
+    warn: (line) => console.error(`board: ${line}`),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
   });
   let config: Config | undefined;

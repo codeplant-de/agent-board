@@ -5,7 +5,7 @@
  */
 import { spawn } from 'node:child_process';
 import { ConfigError, getPaths } from './config.mts';
-import { BackendError, loadWebConfig, verifyContract } from './backend.mts';
+import { BackendError, loadWebConfig, machineHeaders, requireFeature, verifyContract } from './backend.mts';
 import type { Fetch, WebConfig } from './backend.mts';
 import { print } from './cli.mts';
 import { selfCommand } from './self.mts';
@@ -243,7 +243,7 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
   const options = { ...LISTENER_OPTIONS, ...deps.options };
   const ticker = createTicker({ run: deps.runTick, timers, log, ...options });
   let attempt = 0;
-  // A board server older than this CLI is a rollout in progress: the listener keeps trying, saying so once per state.
+  // A board server older than this CLI, or without the event stream, is a rollout in progress: the listener keeps trying, saying so once per state.
   let loggedOlder: string | undefined;
   try {
     while (!signal.aborted) {
@@ -255,7 +255,7 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
         const target = await deps.verify();
         const response = await within(
           deps.fetch(`${target.url}/api/machine/events`, {
-            headers: { authorization: `Bearer ${target.token}`, accept: 'text/event-stream' },
+            headers: { ...machineHeaders(target.token), accept: 'text/event-stream' },
             signal: connection.signal,
             redirect: 'error',
           }),
@@ -292,7 +292,10 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
           log(error.message);
           return 1;
         }
-        if (error instanceof BackendError && error.contractMismatch === 'server-older') {
+        if (
+          error instanceof BackendError &&
+          (error.contractMismatch === 'server-older' || error.missingFeature !== undefined)
+        ) {
           if (error.message !== loggedOlder) log(error.message);
           loggedOlder = error.message;
         } else {
@@ -358,7 +361,7 @@ export async function listenMain(): Promise<void> {
     signal: stop.signal,
     verify: async () => {
       const config = loadWebConfig(configDir);
-      await verifyContract(config);
+      requireFeature((await verifyContract(config)).features, 'events');
       return config;
     },
     fetch: (url, init) => fetch(url, init),

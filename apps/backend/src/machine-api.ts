@@ -4,12 +4,15 @@
  */
 import {
   API_VERSION,
+  CLIENT_FEATURES_HEADER,
   ContractError,
+  findUnknownVocabulary,
   isRecord,
   isSafeMachineName,
   isSafeTaskId,
   LEGACY_CONTRACT,
   MIN_CLIENT,
+  parseClientFeatures,
   parseHeartbeat,
   parseSchedulePatch,
   parseWireAsk,
@@ -20,9 +23,11 @@ import {
   parseWireTranscriptBatch,
   parseWireWait,
   TranscriptError,
+  SERVER_FEATURES,
   serializeSchedule,
   serializeWireNote,
 } from '@agent-board/shared';
+import type { VocabularyFeatures, VocabularyItem } from '@agent-board/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Config } from './config';
 import type { Db, DbOrTx } from './db/client';
@@ -77,26 +82,49 @@ function parsed<T>(parse: () => T): T {
 
 type MachineIdentity = NonNullable<Awaited<ReturnType<typeof machineForToken>>>;
 
+/** What a client that sent these features can be shown: an item with an enum value it has no feature for is left out. */
+function knownTo(clientFeatures: ReadonlySet<string>, vocabulary: VocabularyFeatures | undefined) {
+  const unknownTo = (item: VocabularyItem) => findUnknownVocabulary(item, clientFeatures, vocabulary);
+  return {
+    /** A list leaves out what the client cannot read. */
+    only: <T extends VocabularyItem>(items: T[]): T[] => items.filter((item) => unknownTo(item) === undefined),
+    /** A single object the client cannot read is a refusal, and the write behind it rolls back with the request. */
+    one: <T extends VocabularyItem>(item: T, what: 'task' | 'schedule'): T => {
+      const unknown = unknownTo(item);
+      if (unknown !== undefined)
+        throw new AppError(
+          'UNPROCESSABLE',
+          `this ${what} uses ${unknown.field} ${JSON.stringify(unknown.value)}, which this CLI does not know; update the CLI`,
+        );
+      return item;
+    },
+  };
+}
+
 export async function handleMachineCall(
   db: DbOrTx,
   config: Config,
   identity: MachineIdentity,
   command: string,
   body: Record<string, unknown>,
+  client: { features: ReadonlySet<string>; vocabulary?: VocabularyFeatures } = { features: new Set() },
 ): Promise<unknown> {
   const machine = identity.name;
-  const task = toTask;
+  const visible = knownTo(client.features, client.vocabulary);
+  const task = (row: Parameters<typeof toTask>[0]) => visible.one(toTask(row), 'task');
+  const schedule = (row: Parameters<typeof toSchedule>[0]) => visible.one(toSchedule(row), 'schedule');
   switch (command) {
     case 'version':
       return {
-        // A pre-0.6.0 CLI compares this exactly: once a break raises MIN_CLIENT above it, it must stop those CLIs too.
+        // A CLI up to 0.7.0 compares this exactly: once a break raises MIN_CLIENT above it, it must stop those CLIs too.
         contract: Math.max(LEGACY_CONTRACT, MIN_CLIENT),
         owner: identity.owner,
         keyId: (await getKeys(db))?.keyId ?? null,
         api: { version: API_VERSION, minClient: MIN_CLIENT },
+        features: SERVER_FEATURES,
       };
     case 'list-tasks':
-      return (await listTasks(db, { all: body['all'] === true })).map(task);
+      return visible.only((await listTasks(db, { all: body['all'] === true })).map(toTask));
     case 'get-task':
       return task(await getTask(db, taskId(body)));
     case 'attach-session':
@@ -181,17 +209,17 @@ export async function handleMachineCall(
       );
       return null;
     case 'read-notes':
-      return (await readNotes(db, taskId(body))).map((row) => serializeWireNote(toNote(row)));
+      return visible.only((await readNotes(db, taskId(body))).map(toNote)).map(serializeWireNote);
     case 'add-schedule': {
       const draft = parsed(() => parseWireScheduleDraft(body['body']));
-      const { schedule, task: pending } = await addSchedule(db, draft);
-      return { schedule: serializeSchedule(toSchedule(schedule)), task: task(pending) };
+      const { schedule: created, task: pending } = await addSchedule(db, draft);
+      return { schedule: serializeSchedule(schedule(created)), task: task(pending) };
     }
     case 'list-schedules':
-      return (await listSchedules(db)).map((row) => serializeSchedule(toSchedule(row)));
+      return visible.only((await listSchedules(db)).map(toSchedule)).map(serializeSchedule);
     case 'update-schedule': {
       const { paused } = parsed(() => parseSchedulePatch(body['body']));
-      return serializeSchedule(toSchedule(await setPaused(db, scheduleId(body), paused)));
+      return serializeSchedule(schedule(await setPaused(db, scheduleId(body), paused)));
     }
     case 'remove-schedule':
       await removeSchedule(db, scheduleId(body));
@@ -220,6 +248,8 @@ const DISPATCH_WRITES = new Set([
 export interface MachineApiOptions {
   /** How often an open event stream gets a ping and has its token checked again. */
   pingMs: number;
+  /** Which client feature each enum value needs; tests hand in a table with a value added after the baseline. */
+  vocabulary?: VocabularyFeatures;
 }
 
 function bearerToken(req: FastifyRequest): string {
@@ -239,7 +269,7 @@ export function registerMachineApi(
   db: Db,
   config: Config,
   changes: Changes,
-  { pingMs }: MachineApiOptions,
+  { pingMs, vocabulary }: MachineApiOptions,
 ): void {
   const streams = new Set<() => void>();
   // The server waits for open connections to end before it closes; these never would.
@@ -286,7 +316,10 @@ export function registerMachineApi(
     const { identity: machine } = await authenticate(db, req);
     const body = isRecord(req.body) ? req.body : {};
     const result = await withOwner(db, machine.owner, (tx) =>
-      handleMachineCall(tx, config, machine, req.params.command, body),
+      handleMachineCall(tx, config, machine, req.params.command, body, {
+        features: parseClientFeatures(req.headers[CLIENT_FEATURES_HEADER]),
+        ...(vocabulary === undefined ? {} : { vocabulary }),
+      }),
     );
     if (DISPATCH_WRITES.has(req.params.command)) changes.notify(machine.owner);
     return { result };

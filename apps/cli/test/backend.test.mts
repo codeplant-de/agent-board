@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   API_VERSION,
+  BASELINE_SERVER_FEATURES,
+  CLIENT_FEATURES_HEADER,
   deriveKeys,
   encodeDataKey,
   generateDataKey,
@@ -284,6 +286,7 @@ test('a legacy server answer without api counts its contract as the whole range'
       owner: 'alice',
       keyId: null,
       api: { version: API_VERSION, minClient: API_VERSION },
+      features: new Set(BASELINE_SERVER_FEATURES),
     },
   );
 });
@@ -474,6 +477,7 @@ test('a mismatch says how to fix the older side, for a checkout', async () => {
     owner: 'alice',
     keyId: null,
     api: { version: API_VERSION, minClient: API_VERSION },
+    features: new Set(BASELINE_SERVER_FEATURES),
   });
 });
 
@@ -491,4 +495,105 @@ test('what the server says in an error is quoted, bounded to one line, and marke
   });
   const { backend: silent } = board({ 'get-task': { status: 502, body: {} } });
   await assert.rejects(silent.getTask('abc'), /\(HTTP 502\).*"\(no reason given\)"/);
+});
+
+// The test board answers `version` with these features instead of every feature the server has.
+function boardWith(features: unknown, answers: Record<string, { body: unknown }>) {
+  const seen: Seen[] = [];
+  const fetcher: Fetch = async (url, init) => {
+    const command = url.slice(`${config.url}/api/machine/`.length);
+    seen.push({
+      command,
+      body: JSON.parse(String(init.body)) as Record<string, unknown>,
+      headers: new Headers(init.headers),
+    });
+    const answer = command === 'version' ? { body: { result: { ...VERSION_ANSWER, features } } } : answers[command];
+    return new Response(JSON.stringify(answer?.body ?? { error: 'unknown' }), { status: 200 });
+  };
+  const warnings: string[] = [];
+  const backend = createWebBackend({ loadConfig: () => config, fetch: fetcher, warn: (line) => warnings.push(line) });
+  return { seen, backend, warnings };
+}
+
+test('a command whose feature the server lacks refuses with a clear message and sends nothing; the rest still works', async () => {
+  const { seen, backend } = boardWith(['events'], { 'list-tasks': { body: { result: [] } } });
+  await assert.rejects(
+    backend.attachSession('abc'),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'attach-session' &&
+      error.message === 'the board server does not support attaching to a task session yet; update the board server',
+  );
+  await assert.rejects(
+    backend.wait('abc', { body: 'abe1.x', wakeAt: new Date(), check: false }),
+    /does not support waiting yet/,
+  );
+  await assert.rejects(backend.wake('abc', noteInput), /does not support waiting yet/);
+  await assert.rejects(backend.addNote('abc', noteInput, { kind: 'polish' }), /does not support polish notes yet/);
+  assert.deepEqual(await backend.listTasks(), []);
+  assert.deepEqual(
+    seen.map((request) => request.command),
+    ['version', 'list-tasks'],
+  );
+});
+
+test('a suggested reply the server cannot take is dropped from the comment, with a warning', async () => {
+  const without = boardWith(['events'], { 'add-note': { body: { result: null } } });
+  await without.backend.addNote('abc', { ...noteInput, suggestion: 'abe1.yes' });
+  assert.deepEqual(without.seen[1]?.body['body'], noteInput);
+  assert.match(without.warnings.join('\n'), /does not support suggested replies yet; the comment is posted without it/);
+  const withIt = boardWith(['note.suggestion'], { 'add-note': { body: { result: null } } });
+  await withIt.backend.addNote('abc', { ...noteInput, suggestion: 'abe1.yes' });
+  assert.deepEqual(withIt.seen[1]?.body['body'], { ...noteInput, suggestion: 'abe1.yes' });
+  assert.deepEqual(withIt.warnings, []);
+});
+
+test('a server that names no features has the baseline: every gated command goes through', async () => {
+  const { seen, backend } = boardWith(undefined, { 'attach-session': { body: { result: await taskJson('abc') } } });
+  await backend.attachSession('abc');
+  assert.deepEqual(
+    seen.map((request) => request.command),
+    ['version', 'attach-session'],
+  );
+});
+
+test('a server that names features it has and this CLI has no name for is fine, and a malformed list is refused', async () => {
+  const known = boardWith(['wait', 'from-the-future'], { 'list-tasks': { body: { result: [] } } });
+  assert.deepEqual(await known.backend.listTasks(), []);
+  const junk = boardWith('wait', {});
+  await assert.rejects(junk.backend.listTasks(), /version.features must be a list of feature names/);
+  const unclean = boardWith(['wait', 'Not A Name'], {});
+  await assert.rejects(unclean.backend.listTasks(), /version.features must be a list of feature names/);
+});
+
+test('every request names the client vocabulary, empty while the baseline is all there is', async () => {
+  const { seen, backend } = board({ 'list-tasks': { body: { result: [] } } });
+  await backend.listTasks();
+  assert.deepEqual(
+    seen.map((request) => request.headers.get(CLIENT_FEATURES_HEADER)),
+    ['', ''],
+  );
+});
+
+test('a status or priority that needs a server feature is sent only when the server names it', async () => {
+  // `waiting` stands in for a value added later that needs the `wait` feature.
+  const sendable = { status: { waiting: 'wait' } } as const;
+  const make = (features: string[]) => {
+    const seen: string[] = [];
+    const fetcher: Fetch = async (url) => {
+      const command = url.slice(`${config.url}/api/machine/`.length);
+      seen.push(command);
+      const result = command === 'version' ? { ...VERSION_ANSWER, features } : taskJson('abc');
+      return new Response(JSON.stringify({ result: await result }));
+    };
+    return { seen, backend: createWebBackend({ loadConfig: () => config, fetch: fetcher, sendable }) };
+  };
+  const lacking = make(['events']);
+  await assert.rejects(lacking.backend.updateTask('abc', { status: 'waiting' }), /does not support waiting yet/);
+  await lacking.backend.updateTask('abc', { status: 'todo' });
+  await lacking.backend.updateTask('abc', { priority: 'high' });
+  assert.deepEqual(lacking.seen, ['version', 'update-task', 'update-task']);
+  const having = make(['wait']);
+  await having.backend.updateTask('abc', { status: 'waiting' });
+  assert.deepEqual(having.seen, ['version', 'update-task']);
 });

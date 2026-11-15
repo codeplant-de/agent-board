@@ -5,7 +5,8 @@
 #   BOARD_URL=http://127.0.0.1:4000 BOARD_ENV_FILE=<file with AGENT_BOARD_TOKEN and AGENT_BOARD_DATA_KEY> \
 #     scripts/previous-cli-smoke.sh <path to board binary>
 #
-# The binary reads a temporary configuration, never the one of the user running this.
+# A binary from before the named features sends no X-Board-Features header, so this also checks that the server serves it
+# as a client that knows the baseline vocabulary. The binary reads a temporary configuration, never the one of the user running this.
 set -eu
 
 binary=${1:?usage: previous-cli-smoke.sh <board binary>}

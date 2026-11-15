@@ -47,7 +47,7 @@ Parallel branches collide on the migration number. When you rebase onto a `main`
 
 ## Contract and CLI versions
 
-`API_VERSION`, `MIN_CLIENT` and `MIN_SERVER` in `packages/shared/src/contract.mts` are the version range between the server and the CLIs (see [machine-api.md](machine-api.md#version-handshake)). An addition old clients can ignore, such as a new command or an optional field, raises `API_VERSION` only. Anything an old client would misread, including a new value of an enum the server returns, raises `MIN_CLIENT`, which breaks every older CLI until it is updated. [architecture.md](architecture.md#versioning) has the reasoning. `LEGACY_CONTRACT` stays 9 for the CLIs up to 0.7.0 and is never changed.
+`API_VERSION`, `MIN_CLIENT` and `MIN_SERVER` in `packages/shared/src/contract.mts` are a break level between the server and the CLIs (see [machine-api.md](machine-api.md#version-handshake)); they are not a count of changes. An addition old clients can ignore, such as a new command, an optional field or a new enum value with a vocabulary row, adds a feature name in `packages/shared/src/features.mts` and bumps nothing ([machine-api.md](machine-api.md#features)). Anything an old client would misread, including a new enum value without a vocabulary row, raises `API_VERSION`, then `MIN_CLIENT` to it, which breaks every older CLI until it is updated. [architecture.md](architecture.md#versioning) has the reasoning. `LEGACY_CONTRACT` stays 9 for the CLIs up to 0.7.0 and is never changed.
 
 When you raise `MIN_CLIENT`:
 

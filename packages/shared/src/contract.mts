@@ -10,11 +10,13 @@ import type { TranscriptBatch, WireTranscriptBatch } from './transcript.mts';
 // until the first breaking change, which then refuses those CLIs as well. Never change this number.
 export const LEGACY_CONTRACT = 9;
 
-// The API version this build speaks: raised by every change to the wire, additive or not.
+// The break level of the wire, not a count of changes: it rises only with a change an older client cannot survive. An
+// additive change adds a feature name (features.mts) and touches none of the three numbers. They start at 9, the
+// contract number of the servers and CLIs out there, so a server that answers no `api` (its contract is taken as both ends) fits.
 export const API_VERSION = 9;
-// The oldest client API version the server serves: raised only by a breaking change. One line, read by scripts/check-cli-release.sh.
+// The oldest client break level the server serves. One line, read by scripts/check-cli-release.sh.
 export const MIN_CLIENT = 9;
-// The oldest server API version this CLI works with.
+// The oldest server break level this CLI works with.
 export const MIN_SERVER = 9;
 
 export const STATUSES = ['backlog', 'todo', 'running', 'waiting', 'needs-me', 'done'] as const;

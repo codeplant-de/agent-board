@@ -27,6 +27,7 @@ import {
   API_VERSION,
   LEGACY_CONTRACT,
   MIN_CLIENT,
+  SERVER_FEATURES,
   dedupeKeyIndex,
   headIndex,
   deriveKeys,
@@ -119,6 +120,7 @@ const foreign = {
 // What the fake board answers; a check changes it and puts it back.
 const fake = {
   api: { version: API_VERSION, minClient: MIN_CLIENT },
+  features: [...SERVER_FEATURES] as string[],
   keyId: KEYS.keyId as string | null,
   tasks: [todo] as unknown[],
   // What get-task answers; a worker's run changes it to the task it runs.
@@ -144,7 +146,7 @@ const server = createServer((request: IncomingMessage, response: ServerResponse)
       return response.end();
     }
     const results: Record<string, unknown> = {
-      version: { contract: LEGACY_CONTRACT, owner: OWNER, keyId: fake.keyId, api: fake.api },
+      version: { contract: LEGACY_CONTRACT, owner: OWNER, keyId: fake.keyId, api: fake.api, features: fake.features },
       'list-tasks': fake.tasks,
       'get-task': fake.current,
       fail: { applied: true, task: fake.current },
@@ -388,6 +390,17 @@ await check('a board that no longer serves this binary says how to update it', a
     const result = await board(['tasks'], config());
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /this CLI is older than the board server: .*run "board self-update"/);
+  });
+});
+await check('a board without a feature refuses that command alone', async () => {
+  await withBoard({ features: ['events'] }, async () => {
+    const attached = await board(['attach', 'Ab3dEf9x'], config());
+    assert.notEqual(attached.code, 0);
+    assert.match(
+      attached.stderr,
+      /the board server does not support attaching to a task session yet; update the board server/,
+    );
+    assert.equal((await board(['tasks'], config())).code, 0);
   });
 });
 await check('doctor compares this machine’s key with the board’s', async () => {

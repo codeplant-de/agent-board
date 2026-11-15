@@ -1,0 +1,121 @@
+// Named features, so an additive change never needs a version number: the server answers the capabilities it has, the
+// client sends the vocabulary it understands, and each side checks for the one name it needs. README: "Features".
+import { ContractError } from './contract.mts';
+import type { NextRun, NoteAuthor, NoteKind, Priority, Status, TaskCreator } from './contract.mts';
+import { isRecord } from './guards.mts';
+
+// What a server has: the capabilities the CLI conditionally relies on. The baseline is what every server at API 9
+// (main at defd8fe) has, and what a server that answers no `features` key is taken to have.
+export const BASELINE_SERVER_FEATURES = ['attach-session', 'events', 'note.polish', 'note.suggestion', 'wait'] as const;
+
+// An additive change to the machine API appends its name here, in the same commit that makes the server do it.
+export const ADDED_SERVER_FEATURES = [] as const;
+
+export const SERVER_FEATURES = [...BASELINE_SERVER_FEATURES, ...ADDED_SERVER_FEATURES] as const;
+export type ServerFeature = (typeof SERVER_FEATURES)[number];
+
+// How a client says what is missing: "the board server does not support <label> yet".
+export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
+  'attach-session': 'attaching to a task session',
+  events: 'the event stream',
+  'note.polish': 'polish notes',
+  'note.suggestion': 'suggested replies',
+  wait: 'waiting',
+};
+
+const MAX_FEATURE_NAME = 64;
+const MAX_SERVER_FEATURES = 256;
+
+export function isFeatureName(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9._-]*$/.test(value) && value.length <= MAX_FEATURE_NAME;
+}
+
+/** The features of a `version` answer: its `features` list, or the baseline for a server that has none. */
+export function parseVersionFeatures(value: unknown): ReadonlySet<string> {
+  const features = isRecord(value) ? value['features'] : undefined;
+  if (features === undefined) return new Set(BASELINE_SERVER_FEATURES);
+  if (!Array.isArray(features) || features.length > MAX_SERVER_FEATURES || !features.every(isFeatureName))
+    throw new ContractError('version.features must be a list of feature names');
+  return new Set(features);
+}
+
+// The enum fields of the wire whose values a client may not know yet.
+export interface Vocabulary {
+  status: Status;
+  priority: Priority;
+  next: NextRun;
+  createdBy: TaskCreator;
+  author: NoteAuthor | 'server';
+  kind: NoteKind;
+}
+
+// Enum value -> the client feature that understands it. Only values added after the baseline appear here: every client
+// from 0.7.0 on knows today's. Adding a value to an enum means adding its row, and the server then withholds the value
+// from a client that did not send the feature.
+export type VocabularyFeatures = { [Field in keyof Vocabulary]?: Partial<Record<Vocabulary[Field], string>> };
+export const VOCABULARY_FEATURES: VocabularyFeatures = {};
+
+/** Every client feature this build understands: what the CLI sends in `X-Board-Features`. */
+export function clientVocabulary(table: VocabularyFeatures = VOCABULARY_FEATURES): string[] {
+  return [...new Set(Object.values(table).flatMap((values) => Object.values(values)))].sort();
+}
+
+export const CLIENT_FEATURES_HEADER = 'x-board-features';
+
+const MAX_HEADER_CHARS = 1024;
+const MAX_HEADER_FEATURES = 64;
+
+/** The client features a request header names. Lenient: it is capped, junk is ignored, and it never fails the request. */
+export function parseClientFeatures(header: string | string[] | undefined): ReadonlySet<string> {
+  const text = Array.isArray(header) ? header.join(',') : (header ?? '');
+  return new Set(
+    text
+      .slice(0, MAX_HEADER_CHARS)
+      .split(',')
+      .map((name) => name.trim())
+      .filter(isFeatureName)
+      .slice(0, MAX_HEADER_FEATURES),
+  );
+}
+
+export interface UnknownVocabulary {
+  field: keyof Vocabulary;
+  value: string;
+  feature: string;
+}
+
+export type VocabularyItem = Partial<Record<keyof Vocabulary, unknown>>;
+
+/** The first enum value of `item` that needs a client feature `known` lacks. */
+export function findUnknownVocabulary(
+  item: VocabularyItem,
+  known: ReadonlySet<string>,
+  table: VocabularyFeatures = VOCABULARY_FEATURES,
+): UnknownVocabulary | undefined {
+  for (const [field, features] of Object.entries(table) as [keyof Vocabulary, Record<string, string | undefined>][]) {
+    const value = item[field];
+    const feature = typeof value === 'string' && Object.hasOwn(features, value) ? features[value] : undefined;
+    if (typeof value === 'string' && feature !== undefined && !known.has(feature)) return { field, value, feature };
+  }
+  return undefined;
+}
+
+// Enum values the CLI can send (`board move`, `--priority`) that only a server with a feature accepts. Same rule as the
+// vocabulary, the other way round: the CLI sends such a value only when the server's `features` names the feature.
+export type SendableFeatures = {
+  status?: Partial<Record<Status, ServerFeature>>;
+  priority?: Partial<Record<Priority, ServerFeature>>;
+};
+export const SENDABLE_SERVER_FEATURES: SendableFeatures = {};
+
+/** The server feature that `values` needs, if any. */
+export function neededServerFeature(
+  values: { status?: Status | undefined; priority?: Priority | undefined },
+  table: SendableFeatures = SENDABLE_SERVER_FEATURES,
+): ServerFeature | undefined {
+  const { status, priority } = values;
+  return (
+    (status === undefined ? undefined : table.status?.[status]) ??
+    (priority === undefined ? undefined : table.priority?.[priority])
+  );
+}

@@ -3,6 +3,7 @@ import {
   inputBinding,
   LEGACY_CONTRACT,
   MIN_CLIENT,
+  SERVER_FEATURES,
   sealFields,
   sealNote,
   TAKE_BACK_AFTER_MS,
@@ -64,7 +65,7 @@ describe('machine API', () => {
     expect((await ctx.call('workstation', 'list-tasks')).status).toBe(200);
   });
 
-  it('answers the API range it speaks, and the legacy contract number for older CLIs', async () => {
+  it('answers the break level range and features it has, and the legacy contract number for older CLIs', async () => {
     const { status, json } = await ctx.call('laptop', 'version');
     expect(status).toBe(200);
     expect(json.result).toEqual({
@@ -72,6 +73,7 @@ describe('machine API', () => {
       owner: 'jascha',
       keyId: null,
       api: { version: API_VERSION, minClient: MIN_CLIENT },
+      features: [...SERVER_FEATURES],
     });
     expect(LEGACY_CONTRACT).toBe(9);
   });
