@@ -13,6 +13,7 @@ const takeBack = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const setNotBefore = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const answer = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
+const reply = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 
 vi.mock('../lib/trpc', () => {
   const procedure = (mutationFn: (variables: unknown) => Promise<unknown>) => ({
@@ -23,7 +24,7 @@ vi.mock('../lib/trpc', () => {
     useTRPC: () => ({
       tasks: {
         answer: procedure(answer),
-        reply: idle,
+        reply: procedure(reply),
         done: idle,
         rerun: idle,
         setClosed: idle,
@@ -323,6 +324,104 @@ describe('ActionPanel of an open question', () => {
     renderPanel(running({ status: 'needs-me', openQuestion: true }), [duplicate, duplicate]);
     expect(screen.queryByRole('button', { name: /Answer & continue/ })).not.toBeInTheDocument();
     expect(screen.queryByText('Add a regression test for the fix?')).not.toBeInTheDocument();
+  });
+});
+
+describe('ActionPanel with a suggested reply', () => {
+  const note = (overrides: Partial<ThreadNote>): ThreadNote =>
+    ({
+      id: 'n1',
+      kind: 'comment',
+      author: 'agent',
+      text: 'Ready for review.',
+      createdAt: new Date().toISOString(),
+      by: 'laptop',
+      unreadable: false,
+      ...overrides,
+    }) as ThreadNote;
+  const suggested = note({ suggestion: 'Yes, open the PR.' });
+  const waiting = () => running({ status: 'needs-me' });
+  const box = () => screen.getByRole('textbox');
+
+  it('offers it as ghost text in the empty editor and a row above it', () => {
+    renderPanel(waiting(), [suggested]);
+    const row = screen.getByTestId('suggested-reply');
+    expect(within(row).getByText('Suggested reply')).toBeInTheDocument();
+    expect(within(row).getByText('Yes, open the PR.')).toBeInTheDocument();
+    expect(box()).toHaveAttribute('placeholder', 'Yes, open the PR.');
+    expect(box()).toHaveValue('');
+  });
+
+  it('fills the editor on Tab, once, and only while it is empty', async () => {
+    renderPanel(waiting(), [suggested]);
+    await userEvent.click(box());
+    await userEvent.tab();
+    expect(box()).toHaveValue('Yes, open the PR.');
+    await userEvent.clear(box());
+    await userEvent.type(box(), 'No');
+    await userEvent.keyboard('{Tab}');
+    expect(box()).toHaveValue('No');
+  });
+
+  it('puts it in the editor for editing with Use', async () => {
+    reply.mockClear();
+    renderPanel(waiting(), [suggested]);
+    await userEvent.click(within(screen.getByTestId('suggested-reply')).getByRole('button', { name: 'Use' }));
+    expect(box()).toHaveValue('Yes, open the PR.');
+    expect(screen.queryByTestId('suggested-reply')).not.toBeInTheDocument();
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it('sends it in one click and resumes the agent, like Send & continue', async () => {
+    reply.mockClear();
+    renderPanel(waiting(), [suggested]);
+    await userEvent.click(screen.getByRole('button', { name: 'Send suggested reply' }));
+    await waitFor(() => expect(reply).toHaveBeenCalled());
+    expect(reply.mock.calls[0]?.[0]).toEqual({ id: 'abc12345', message: 'Yes, open the PR.', resume: true });
+  });
+
+  it('is not offered once a note of the user follows it', () => {
+    const user = note({ id: 'n2', author: 'user', text: 'wait' });
+    renderPanel(waiting(), [suggested, user]);
+    expect(screen.queryByTestId('suggested-reply')).not.toBeInTheDocument();
+    expect(box()).not.toHaveAttribute('placeholder', 'Yes, open the PR.');
+  });
+
+  it('is not offered when a newer agent comment has none', () => {
+    renderPanel(waiting(), [suggested, note({ id: 'n3', text: 'More news.' })]);
+    expect(screen.queryByTestId('suggested-reply')).not.toBeInTheDocument();
+  });
+
+  it('is not offered on a done task, whose last agent comment is stale', () => {
+    renderPanel(running({ status: 'done' }), [suggested]);
+    expect(screen.queryByTestId('suggested-reply')).not.toBeInTheDocument();
+  });
+
+  it('is not offered on a proposal', () => {
+    renderPanel(running({ status: 'needs-me', createdBy: 'agent', proposed: true }), [suggested]);
+    expect(screen.queryByTestId('suggested-reply')).not.toBeInTheDocument();
+  });
+
+  it('is not offered with an open question, which has its own options', () => {
+    const question = note({
+      id: 'q1',
+      kind: 'question',
+      text: '',
+      suggestion: undefined,
+      questions: [
+        {
+          header: 'Go',
+          question: 'Go on?',
+          multiSelect: false,
+          options: [
+            { label: 'Yes', description: '' },
+            { label: 'No', description: '' },
+          ],
+        },
+      ],
+    });
+    renderPanel(running({ status: 'needs-me', openQuestion: true }), [suggested, question]);
+    expect(screen.queryByTestId('suggested-reply')).not.toBeInTheDocument();
   });
 });
 

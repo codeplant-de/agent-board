@@ -70,8 +70,13 @@ function confirm(context: Context, line: string): void {
   if (!context.dryRun) context.print(line);
 }
 
-export async function comment(context: LinkingContext, id: string, text: string): Promise<void> {
-  await context.backend.addNote(id, text);
+export async function comment(
+  context: LinkingContext,
+  id: string,
+  text: string,
+  options: { suggestion?: string } = {},
+): Promise<void> {
+  await context.backend.addNote(id, text, options);
   confirm(context, `commented on ${id}  ${context.taskLink(id)}`);
 }
 
@@ -87,6 +92,11 @@ async function sendNotification(context: LinkingContext, id: string, text: strin
 export async function notify(context: LinkingContext, id: string, text: string): Promise<void> {
   await sendNotification(context, id, text);
   confirm(context, `notified about ${id}  ${context.taskLink(id)}`);
+}
+
+export interface CommentFlags {
+  suggest?: string;
+  suggestFile?: string;
 }
 
 export interface TasksFlags {

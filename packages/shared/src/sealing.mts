@@ -16,7 +16,14 @@
 // The plumbing stays with the callers: `Sealer` and `Opener` seal and open one value (the browser memoises opening), and
 // everything here is the rules around them. A value that does not open under exactly its binding is unreadable, and an
 // unreadable value is never replaced by a looser reading.
-import { ContractError, isSafeWorkdir, notePreview, SEALED_LIMITS, UNREADABLE_TITLE } from './contract.mts';
+import {
+  ContractError,
+  isSafeWorkdir,
+  NOTE_SUGGESTION_CHARS,
+  notePreview,
+  SEALED_LIMITS,
+  UNREADABLE_TITLE,
+} from './contract.mts';
 import type { NoteKind, TaskCreator, UnreadableField, WireNoteAuthor, WireNoteInput } from './contract.mts';
 import { blindIndex } from './crypto.mts';
 import type { Field, Keys } from './crypto.mts';
@@ -68,7 +75,7 @@ export function workdirOpenBindings(row: RowRef): Binding[] {
 
 // A note is bound to its task, its author and its kind, so one author's text can never be served as another's.
 export function noteBinding(
-  field: 'note.body' | 'note.preview' | 'note.questions' | 'note.answers',
+  field: 'note.body' | 'note.preview' | 'note.suggestion' | 'note.questions' | 'note.answers',
   taskId: string,
   author: WireNoteAuthor,
   kind: NoteKind,
@@ -142,15 +149,34 @@ export async function sealNote(
   seal: Sealer,
   note: { taskId: string; author: Exclude<WireNoteAuthor, 'server'>; kind: NoteKind },
   text: string,
+  options: { suggestion?: string } = {},
 ): Promise<WireNoteInput> {
   const { taskId, author, kind } = note;
   const preview = notePreview(text);
+  const { suggestion } = options;
+  if (suggestion !== undefined) {
+    if (author !== 'agent' || kind !== 'comment')
+      throw new ContractError('only a comment by the agent can carry a suggestion');
+    if (suggestion.trim() === '') throw new ContractError('the suggestion is empty');
+    if (Array.from(suggestion).length > NOTE_SUGGESTION_CHARS)
+      throw new ContractError(`the suggestion is too long: at most ${NOTE_SUGGESTION_CHARS} characters`);
+  }
   return {
     body: await sealChecked(seal, noteBinding('note.body', taskId, author, kind), text, 'the note'),
     ...(preview === null
       ? {}
       : {
           preview: await sealChecked(seal, noteBinding('note.preview', taskId, author, kind), preview, 'the preview'),
+        }),
+    ...(suggestion === undefined
+      ? {}
+      : {
+          suggestion: await sealChecked(
+            seal,
+            noteBinding('note.suggestion', taskId, author, kind),
+            suggestion,
+            'the suggestion',
+          ),
         }),
   };
 }
@@ -240,6 +266,7 @@ export interface WireNoteParts {
   preview: string | null;
   questions?: string | undefined;
   answers?: string | undefined;
+  suggestion?: string | undefined;
 }
 
 export interface OpenedNote {
@@ -250,6 +277,8 @@ export interface OpenedNote {
   // A question note's questions; an answer note's own copy of the questions it answered.
   questions?: Question[];
   answers?: Answer[];
+  // A comment by the agent: the reply it drafted for the user.
+  suggestion?: string;
 }
 
 async function openJson<T>(
@@ -293,7 +322,8 @@ export async function openNote(open: Opener, taskId: string, wire: WireNoteParts
   if (!isKnownPair(author, kind)) return unreadable;
   if ((wire.questions !== undefined) !== (kind === 'question')) return unreadable;
   if ((wire.answers !== undefined) !== (kind === 'answer')) return unreadable;
-  const [text, questions, envelope] = await Promise.all([
+  if (wire.suggestion !== undefined && (author !== 'agent' || kind !== 'comment')) return unreadable;
+  const [text, questions, envelope, suggestion] = await Promise.all([
     open(noteBinding('note.body', taskId, author, kind), wire.body),
     wire.questions === undefined
       ? null
@@ -301,14 +331,17 @@ export async function openNote(open: Opener, taskId: string, wire: WireNoteParts
     wire.answers === undefined
       ? null
       : openJson(open, noteBinding('note.answers', taskId, author, kind), wire.answers, openAnswerEnvelope),
+    wire.suggestion === undefined ? null : open(noteBinding('note.suggestion', taskId, author, kind), wire.suggestion),
   ]);
-  if (text === undefined || questions === undefined || envelope === undefined) return unreadable;
+  if (text === undefined || questions === undefined || envelope === undefined || suggestion === undefined)
+    return unreadable;
   return {
     text,
     author,
     unreadable: false,
     ...(questions ? { questions } : {}),
     ...(envelope ? { questions: envelope.questions, answers: envelope.answers } : {}),
+    ...(suggestion === null ? {} : { suggestion }),
   };
 }
 

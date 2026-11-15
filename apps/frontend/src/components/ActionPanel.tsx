@@ -15,6 +15,7 @@ import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { canTakeBack } from '../lib/liveness';
+import { currentSuggestion } from '../lib/suggestion';
 import { startsIn } from '../lib/startsIn';
 import { ago, stamp } from '../lib/time';
 import { useNow } from '../lib/useNow';
@@ -255,10 +256,12 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
     );
   }
 
-  const send = () => {
-    if (!message.trim() || isProposal) return;
-    actions.reply.mutate({ id: task.id, message, resume: true }, { onSuccess: () => setMessage('') });
+  const suggestion = isProposal || task.status !== 'needs-me' ? undefined : currentSuggestion(thread);
+  const sendMessage = (text: string) => {
+    if (!text.trim() || isProposal || actions.reply.isPending) return;
+    actions.reply.mutate({ id: task.id, message: text, resume: true }, { onSuccess: () => setMessage('') });
   };
+  const send = () => sendMessage(message);
   const confirmRerun = () =>
     modals.openConfirmModal({
       title: 'Re-run from scratch?',
@@ -293,11 +296,33 @@ export function ActionPanel({ task, thread }: { task: BoardTask; thread: ThreadN
             </Group>
           </Alert>
         )}
+        {suggestion !== undefined && message === '' && (
+          <Group gap="sm" wrap="nowrap" data-testid="suggested-reply">
+            <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
+              Suggested reply
+            </Text>
+            <Text size="sm" style={{ flex: 1, minWidth: 0, whiteSpace: 'pre-wrap' }}>
+              {suggestion}
+            </Text>
+            <Button size="compact-sm" variant="default" onClick={() => setMessage(suggestion)}>
+              Use
+            </Button>
+            <Button
+              size="compact-sm"
+              onClick={() => sendMessage(suggestion)}
+              loading={actions.reply.isPending}
+              aria-label="Send suggested reply"
+            >
+              Send
+            </Button>
+          </Group>
+        )}
         <MarkdownEditor
           value={message}
           onChange={setMessage}
           minRows={3}
           onSubmit={send}
+          suggestion={suggestion}
           placeholder={
             task.sessionId
               ? 'Steer the agent: a follow-up, a correction, a new instruction…'

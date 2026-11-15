@@ -429,7 +429,10 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
       return { ...task, status: 'running', machine };
     },
     async addNote(id, text, options) {
-      print(`DRY add-note ${id}${options?.author === 'system' ? ' --author system' : ''} ${oneLine(text, 160)}`);
+      const suggested = options?.suggestion === undefined ? '' : ` --suggest ${oneLine(options.suggestion, 160)}`;
+      print(
+        `DRY add-note ${id}${options?.author === 'system' ? ' --author system' : ''}${suggested} ${oneLine(text, 160)}`,
+      );
     },
     async heartbeat(id, beat) {
       print(`DRY heartbeat ${id} ${JSON.stringify(beat)}`);

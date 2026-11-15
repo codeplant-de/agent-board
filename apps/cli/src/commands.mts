@@ -22,7 +22,7 @@ import {
   show,
   tasks,
 } from './board.mts';
-import type { AddFlags, AttachFlags, DelayFlags, Spawner, TasksFlags } from './board.mts';
+import type { AddFlags, AttachFlags, CommentFlags, DelayFlags, Spawner, TasksFlags } from './board.mts';
 import { buildContext, readStdin, ReportedFailure, UsageError } from './cli.mts';
 import type { ContextOptions, LinkingContext } from './cli.mts';
 import { verifyContract } from './backend.mts';
@@ -254,12 +254,15 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         paragraphs(
           "Add a note to the task's thread. The text is every word after the task, quoted or not, and is never read as a flag.",
           '`-` reads the text from stdin; `--file <path>` right after the task reads it from a regular file in /tmp, for long text.',
+          '`--suggest <text>` (or `--suggest-file <path>`, a file in /tmp) attaches the reply you expect the user to send next, which the board offers as a one-click answer. Give it before the task, because everything after the task is the note.',
           ID_NOTE,
         ),
       )
       .usage('[options] <task> <text...|-|--file <path>>')
       .argument('<task>', TASK_ARGUMENT)
       .argument('[text...]', 'the note')
+      .option('--suggest <text>', "a ready-to-send reply in the user's voice, offered on the board")
+      .option('--suggest-file <path>', 'like --suggest, from a regular file in /tmp')
       .passThroughOptions()
       .addHelpText(
         'after',
@@ -269,13 +272,17 @@ export function buildProgram(options: ProgramOptions = {}): Command {
           'board comment Ab3dEf9x --file /tmp/review.md',
           'echo "from a script" | board comment Ab3dEf9x -',
           'board comment Ab3 looks good',
+          'board comment --suggest "Yes, open the PR." Ab3dEf9x "Ready: tests pass, diff reviewed."',
         ),
       ),
-  ).action(async (arg: string, words: string[], _options, command: Command) => {
+  ).action(async (arg: string, words: string[], flags: CommentFlags, command: Command) => {
     refuseDryRunInText(words, 'board comment --dry-run <task> <text...>');
+    if (flags.suggest !== undefined && flags.suggestFile !== undefined)
+      throw new UsageError('give --suggest or --suggest-file, not both');
     const text = await textOf(words, { allowFile: true });
+    const suggestion = flags.suggestFile === undefined ? flags.suggest : readNoteFile(flags.suggestFile);
     const context = contextOf(command);
-    await comment(context, await taskIdOf(context, arg), text);
+    await comment(context, await taskIdOf(context, arg), text, suggestion === undefined ? {} : { suggestion });
   });
 
   dryRunOption(

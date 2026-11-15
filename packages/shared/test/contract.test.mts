@@ -395,6 +395,34 @@ test('the server refuses plaintext in every sealed field of a draft, a patch, a 
   assert.throws(() => parseWireAsk({ body: BODY, questions: '[{"header":"x"}]' }), /must be encrypted/);
 });
 
+test('a suggestion is a sealed field of add-note only, and an older note without one parses as before', async () => {
+  const SUGGESTION = await sealed('note.suggestion');
+  assert.throws(
+    () => parseWireNoteInput({ body: BODY, suggestion: PLAINTEXT }, 'note', { allowSuggestion: true }),
+    /note.suggestion must be encrypted/,
+  );
+  assert.deepEqual(parseWireNoteInput({ body: BODY, suggestion: SUGGESTION }, 'note', { allowSuggestion: true }), {
+    body: BODY,
+    suggestion: SUGGESTION,
+  });
+  for (const what of ['pause note', 'fail note'])
+    assert.throws(() => parseWireNoteInput({ body: BODY, suggestion: SUGGESTION }, what), /unknown key "suggestion"/);
+  const note = {
+    id: 'n1',
+    body: BODY,
+    preview: null,
+    createdAt: '2026-11-13T10:00:00Z',
+    author: 'agent',
+    kind: 'comment',
+  };
+  assert.equal(parseWireNote(note).suggestion, undefined);
+  const withSuggestion = parseWireNote({ ...note, suggestion: SUGGESTION });
+  assert.equal(withSuggestion.suggestion, SUGGESTION);
+  assert.deepEqual(parseWireNote(serializeWireNote(withSuggestion)), withSuggestion);
+  assert.throws(() => parseWireNote({ ...note, suggestion: 5 }), /suggestion/);
+  assert.equal(SEALED_LIMITS['note.suggestion'], 4 * 2000);
+});
+
 test('the server accepts envelopes in every sealed field, and a note without a preview', () => {
   assert.deepEqual(parseWireNoteInput({ body: BODY, preview: PREVIEW }, 'note'), { body: BODY, preview: PREVIEW });
   assert.deepEqual(parseWireNoteInput({ body: BODY }, 'note'), { body: BODY });
