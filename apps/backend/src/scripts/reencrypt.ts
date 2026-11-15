@@ -1,5 +1,5 @@
 // One-off: seals the plain text that a board held before end-to-end encryption, for the single user who owned it. Run it with
-// the admin database URL, once that user has set up their key in the browser. See "Cutover" in the README.
+// the admin database URL, once that user has set up their key in the browser. See "Cutover to encryption" in docs/operations.md.
 //
 //   DATABASE_URL=postgresql://admin:...@localhost:5432/board \
 //   AGENT_BOARD_DATA_KEY=abk1_... \
