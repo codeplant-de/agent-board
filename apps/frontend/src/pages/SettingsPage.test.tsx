@@ -4,7 +4,7 @@ import { ModalsProvider } from '@mantine/modals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KeyProvider } from '../crypto/KeyProvider';
 import { createKeySetup } from '../crypto/keySlots';
 import { SettingsPage } from './SettingsPage';
@@ -193,5 +193,59 @@ describe('what the machines list says about each CLI', () => {
     expect(screen.getByText('0.4.0 · incompatible — run board self-update')).toBeInTheDocument();
     expect(screen.getByText('version unknown')).toBeInTheDocument();
     expect(screen.getByText(/The newest CLI is 0\.7\.0/)).toBeInTheDocument();
+  });
+});
+
+describe('desktop notifications', () => {
+  const requestPermission = vi.fn<() => Promise<NotificationPermission>>();
+
+  const mockNotification = (permission: NotificationPermission) => {
+    requestPermission.mockResolvedValue(permission);
+    vi.stubGlobal('Notification', Object.assign(vi.fn(), { permission, requestPermission }));
+  };
+
+  beforeEach(() => localStorage.clear());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('turns on after the browser grants permission, and remembers it', async () => {
+    mockNotification('default');
+    requestPermission.mockResolvedValue('granted');
+    renderPage();
+    await userEvent.click(await screen.findByRole('switch', { name: 'Notify me when a task needs me' }));
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Notify me when a task needs me' })).toBeChecked());
+    expect(localStorage.getItem('agent-board.desktopNotifications')).toBe('on');
+    expect(screen.getByRole('button', { name: 'Send a test' })).toBeInTheDocument();
+  });
+
+  it('stays off when the browser refuses permission', async () => {
+    mockNotification('default');
+    requestPermission.mockResolvedValue('denied');
+    renderPage();
+    await userEvent.click(await screen.findByRole('switch', { name: 'Notify me when a task needs me' }));
+    expect(await screen.findByText(/blocks notifications for this site/)).toBeInTheDocument();
+    expect(localStorage.getItem('agent-board.desktopNotifications')).toBeNull();
+  });
+
+  it('is disabled and says why when notifications are blocked', async () => {
+    mockNotification('denied');
+    renderPage();
+    expect(await screen.findByRole('switch', { name: 'Notify me when a task needs me' })).toBeDisabled();
+    expect(screen.getByText(/blocks notifications for this site/)).toBeInTheDocument();
+  });
+
+  it('explains that a browser without notifications needs https or localhost', async () => {
+    vi.stubGlobal('Notification', undefined);
+    renderPage();
+    expect(await screen.findByRole('switch', { name: 'Notify me when a task needs me' })).toBeDisabled();
+    expect(screen.getByText(/need https or localhost/)).toBeInTheDocument();
+  });
+
+  it('turns off without asking the browser again', async () => {
+    mockNotification('granted');
+    localStorage.setItem('agent-board.desktopNotifications', 'on');
+    renderPage();
+    await userEvent.click(await screen.findByRole('switch', { name: 'Notify me when a task needs me' }));
+    await waitFor(() => expect(localStorage.getItem('agent-board.desktopNotifications')).toBeNull());
+    expect(requestPermission).not.toHaveBeenCalled();
   });
 });
