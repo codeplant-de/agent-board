@@ -251,6 +251,7 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     async setPr(id, url) {
       await inner.setPr(id, { pr: await checked('set-pr', () => sealPr(sealer, id, url)) });
     },
+    setPrState: (id, prState) => inner.setPrState(id, { prState }),
     async pause(id, note) {
       return opened(await inner.pause(id, await noteInput('pause', id, 'system', note.trim())), openTask);
     },

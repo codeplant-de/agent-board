@@ -25,6 +25,7 @@ export const taskStatus = pgEnum('task_status', ['backlog', 'todo', 'running', '
 /** Declared highest first, so ordering by the enum puts urgent on top. */
 export const taskPriority = pgEnum('task_priority', ['urgent', 'high', 'normal', 'low']);
 export const nextRun = pgEnum('next_run', ['fresh', 'resume']);
+export const prState = pgEnum('pr_state', ['open', 'merged', 'closed']);
 export const taskCreator = pgEnum('task_creator', ['intake', 'user', 'agent']);
 /** "server" is the only author whose body is plain text: the events the server writes itself. Every other note body is sealed. */
 export const noteAuthor = pgEnum('note_author', ['agent', 'user', 'system', 'server']);
@@ -112,6 +113,8 @@ export const tasks = pgTable(
     workdir: text('workdir'),
     /** The sealed URL of the pull request the task's agent opened for it (`board pr`). */
     pr: text('pr'),
+    /** GitHub's state of that PR or of the one the prompt names, as a worker's intake last saw it. Clear on purpose: it says only that some PR of the task merged. */
+    prState: prState('pr_state'),
     next: nextRun('next').notNull().default('fresh'),
     /** Reported by the worker while the task runs; stale once it stops running. */
     lane: text('lane'),

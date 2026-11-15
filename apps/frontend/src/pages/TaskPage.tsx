@@ -15,13 +15,14 @@ import {
   Text,
   Title,
 } from '@mantine/core';
-import { IconBrandGithub, IconCornerDownRight, IconLockOff, IconTerminal2 } from '@tabler/icons-react';
+import { IconCornerDownRight, IconLockOff, IconTerminal2 } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ActionPanel } from '../components/ActionPanel';
 import { Markdown } from '../components/Markdown';
 import { PriorityPicker } from '../components/PriorityPicker';
+import { PrStateIcon } from '../components/PrStateIcon';
 import { PolishItem } from '../components/PolishItem';
 import { TaskBadges } from '../components/TaskBadges';
 import { ThreadItem } from '../components/ThreadItem';
@@ -72,7 +73,7 @@ function TaskView({ id }: { id: string }) {
   }
 
   const { task, thread, followUps, parent } = query.data;
-  // The prompt's PR first; the agent's reported one too when it is another PR.
+  // The prompt's PR first; the agent's reported one too when it is another PR. The first one is the one with a state.
   const prs = [...new Set([prOf(task), task.pr].filter((url): url is string => url != null))];
 
   return (
@@ -133,7 +134,7 @@ function TaskView({ id }: { id: string }) {
           </Group>
           {prs.length > 0 && (
             <Group gap="xs">
-              {prs.map((pr) => (
+              {prs.map((pr, index) => (
                 <Button
                   key={pr}
                   component="a"
@@ -142,7 +143,7 @@ function TaskView({ id }: { id: string }) {
                   rel="noopener noreferrer"
                   variant="default"
                   size="xs"
-                  leftSection={<IconBrandGithub size={14} />}
+                  leftSection={<PrStateIcon state={index === 0 ? task.prState : null} size={14} />}
                 >
                   {pr.replace('https://github.com/', '')}
                 </Button>

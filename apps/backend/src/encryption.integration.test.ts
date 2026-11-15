@@ -499,6 +499,41 @@ describe('the pull request of a task', () => {
   });
 });
 
+describe('the PR state of a task', () => {
+  const PR_URL = 'https://github.com/acme/app/pull/17';
+
+  it('is null until intake writes it, is served in clear to the browser and the CLI, and a new PR resets it', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    expect((await ctx.raw('get-task', { id: task.id })).json.result.prState).toBeNull();
+    await ctx.raw('set-pr', { id: task.id, body: { pr: await sealPr(sealed.seal, task.id, PR_URL) } });
+    expect((await ctx.raw('set-pr-state', { id: task.id, body: { prState: 'merged' } })).status).toBe(200);
+    expect((await admin.select().from(tasks))[0]?.prState).toBe('merged');
+    expect((await ctx.raw('get-task', { id: task.id })).json.result.prState).toBe('merged');
+    expect((await ctx.ui.tasks.get({ id: task.id })).task.prState).toBe('merged');
+    expect((await ctx.ui.tasks.list()).find(({ id }) => id === task.id)?.prState).toBe('merged');
+    const second = await sealPr(sealed.seal, task.id, 'https://github.com/acme/app/pull/18');
+    await ctx.raw('set-pr', { id: task.id, body: { pr: second } });
+    expect((await ctx.raw('get-task', { id: task.id })).json.result.prState).toBeNull();
+  });
+
+  it('is written without moving the task or touching a running task’s pause', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    await ctx.call('claim-task', { id: task.id, machine: 'laptop' });
+    const before = (await admin.select().from(tasks))[0]!;
+    await ctx.raw('set-pr-state', { id: task.id, body: { prState: 'closed' } });
+    const after = (await admin.select().from(tasks))[0]!;
+    expect(after).toMatchObject({ status: 'running', prState: 'closed', updatedAt: before.updatedAt });
+  });
+
+  it('refuses anything but a state, extra keys and an unknown task', async () => {
+    const { id } = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    for (const body of [{}, { prState: 'draft' }, { prState: null }, { prState: 'merged', extra: 1 }])
+      expect((await ctx.raw('set-pr-state', { id, body })).status).toBe(400);
+    expect((await ctx.raw('set-pr-state', { id: 'Nope1234', body: { prState: 'merged' } })).status).toBe(404);
+    expect((await admin.select().from(tasks))[0]?.prState).toBeNull();
+  });
+});
+
 describe('answers', () => {
   async function asking() {
     const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });

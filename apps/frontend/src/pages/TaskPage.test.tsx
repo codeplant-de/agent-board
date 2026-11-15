@@ -52,6 +52,7 @@ const task = (id: string, title: string): BoardTask =>
     workdir: null,
     model: null,
     pr: null,
+    prState: null,
     next: 'resume',
     head: null,
     openQuestion: false,
