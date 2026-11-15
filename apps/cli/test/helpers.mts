@@ -105,6 +105,11 @@ export function note(text: string, createdAt: Date, overrides: Partial<Note> = {
 }
 
 // In-memory task store; the array order is the priority. Every write lands in `writes` as a short string, so tests assert on what was done.
+// As the board's `toTask` shows a task: only a running task has a run start.
+function asBoardShows(task: Task): Task {
+  return { ...task, runStartedAt: task.status === 'running' ? task.runStartedAt : null };
+}
+
 export function fakeBackend(tasks: Task[]): FakeBackend {
   const state: FakeBackend = {
     tasks,
@@ -113,12 +118,12 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     writes: [],
     lostClaims: [],
     async listTasks({ all = false } = {}) {
-      return state.tasks.filter((t) => all || !t.closed).map((t) => ({ ...t }));
+      return state.tasks.filter((t) => all || !t.closed).map(asBoardShows);
     },
     async getTask(id) {
       const found = state.tasks.find((t) => t.id === id);
       if (!found) throw new Error(`no task ${id}`);
-      return { ...found };
+      return asBoardShows(found);
     },
     // The server's rules, for a token of the machine `CONFIG.machine`.
     async attachSession(id) {
