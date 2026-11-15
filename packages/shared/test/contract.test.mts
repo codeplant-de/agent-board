@@ -19,6 +19,8 @@ import {
   parseWireFailResult,
   parseWireNote,
   parseWireNoteInput,
+  parseWirePr,
+  parseWirePrState,
   parseWireSchedule,
   parseWireScheduleDraft,
   parseWireNotes,
@@ -68,6 +70,8 @@ const task = {
   machine: null,
   sessionId: null,
   workdir: null,
+  pr: null,
+  prState: null,
   next: 'fresh',
   head: null,
   openQuestion: false,
@@ -109,6 +113,25 @@ test('a task needs every field', () => {
   const { next: _next, ...withoutNext } = task;
   assert.throws(() => parseWireTask(withoutNext), /next must be one of/);
   assert.throws(() => parseWireTask({ ...task, machine: 'bad name' }), /not a safe name/);
+});
+
+test('a task has a sealed PR or none, and a server that does not know the field leaves it out', async () => {
+  const PR = await sealed('pr');
+  assert.equal(parseWireTask({ ...task, pr: PR }).pr, PR);
+  const { pr: _pr, ...older } = task;
+  assert.equal(parseWireTask(older).pr, null);
+  assert.throws(() => parseWireTask({ ...task, pr: 5 }), /pr must be a string/);
+  assert.deepEqual(parseWirePr({ pr: PR }), { pr: PR });
+  assert.throws(() => parseWirePr({ pr: 'https://github.com/o/r/pull/1' }), /pr.pr must be encrypted/);
+  assert.throws(() => parseWirePr({ pr: PR, extra: 1 }), /unknown key "extra"/);
+  assert.throws(() => parseWirePr({}), /pr/);
+  assert.equal(parseWireTask(task).prState, null);
+  assert.equal(parseWireTask({ ...task, prState: 'merged' }).prState, 'merged');
+  assert.equal(parseWireTask({ ...task, prState: 'draft' }).prState, null);
+  assert.deepEqual(parseWirePrState({ prState: 'closed' }), { prState: 'closed' });
+  assert.throws(() => parseWirePrState({ prState: null }), /prState.prState must be one of/);
+  assert.throws(() => parseWirePrState({ prState: 'open', extra: 1 }), /unknown key "extra"/);
+  assert.equal(SEALED_LIMITS.pr, 1024);
 });
 
 test('a running task carries its lane, liveness and start', () => {

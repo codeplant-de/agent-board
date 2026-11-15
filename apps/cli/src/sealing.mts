@@ -9,6 +9,7 @@ import {
   open,
   openFields,
   openNote,
+  openPr,
   headIndex,
   parsePolish,
   QuestionError,
@@ -17,6 +18,7 @@ import {
   sealFields,
   sealInput,
   sealNote,
+  sealPr,
   sealQuestions,
   sealWorkdir,
   taskLabels,
@@ -89,8 +91,12 @@ const taskRef = (task: Pick<WireTask, 'id' | 'createdBy' | 'scheduleId'>): RowRe
 });
 
 async function openTask(keys: Keys, wire: WireTask): Promise<Task> {
-  const { title, input, workdir, unreadable } = await openFields(openerFor(keys), taskRef(wire), wire);
-  return { ...wire, title, input, workdir, labels: taskLabels({ input, createdBy: wire.createdBy }), unreadable };
+  const opener = openerFor(keys);
+  const [{ title, input, workdir, unreadable }, pr] = await Promise.all([
+    openFields(opener, taskRef(wire), wire),
+    openPr(opener, wire.id, wire.pr),
+  ]);
+  return { ...wire, title, input, workdir, pr, labels: taskLabels({ input, createdBy: wire.createdBy }), unreadable };
 }
 
 async function openSchedule(keys: Keys, wire: WireSchedule): Promise<Schedule> {
@@ -242,6 +248,10 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       await inner.ask(id, await checked('ask', () => sealQuestions(sealer, id, questions)));
     },
     heartbeat: (id, beat) => inner.heartbeat(id, beat),
+    async setPr(id, url) {
+      await inner.setPr(id, { pr: await checked('set-pr', () => sealPr(sealer, id, url)) });
+    },
+    setPrState: (id, prState) => inner.setPrState(id, { prState }),
     async pause(id, note) {
       return opened(await inner.pause(id, await noteInput('pause', id, 'system', note.trim())), openTask);
     },

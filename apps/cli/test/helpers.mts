@@ -13,6 +13,7 @@ import {
   seal,
   SERVER_FEATURES,
   sealFields,
+  sealPr,
   taskLabels,
 } from '@agent-board/shared';
 import type { Sealer } from '@agent-board/shared';
@@ -30,6 +31,8 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     machine: null,
     sessionId: null,
     workdir: null,
+    pr: null,
+    prState: null,
     next: 'fresh',
     head: null,
     openQuestion: false,
@@ -215,6 +218,18 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     async transcript(id, batch) {
       state.writes.push(`transcript ${id} ${batch.runId} ${batch.events.map((e) => e.kind).join(',')}`);
     },
+    async setPr(id, url) {
+      state.writes.push(`pr ${id} ${url}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`set-pr: no task ${id}`, 404, true);
+      found.pr = url;
+    },
+    async setPrState(id, prState) {
+      state.writes.push(`prState ${id} ${prState}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`set-pr-state: no task ${id}`, 404, true);
+      found.prState = prState;
+    },
     async heartbeat(id, beat) {
       state.writes.push(`heartbeat ${id} ${beat.lane}${beat.borrowed ? ' borrowed' : ''}`);
     },
@@ -367,13 +382,18 @@ const seals: Sealer = async ({ field, context }, text) => seal(KEYS, field, cont
 // A task as the server stores it: title, input and workdir sealed with the test key, for the task's own row (an occurrence's
 // for its schedule).
 export async function wireTask(overrides: Partial<Task> & { id: string }): Promise<WireTask> {
-  const { labels: _labels, unreadable: _unreadable, title, input, workdir, ...rest } = task(overrides);
+  const { labels: _labels, unreadable: _unreadable, title, input, workdir, pr, ...rest } = task(overrides);
   const sealed = await sealFields(
     seals,
     { kind: 'task', id: rest.id, createdBy: rest.createdBy, scheduleId: rest.scheduleId },
     { title, input, workdir: workdir ?? undefined },
   );
-  return { ...rest, ...sealed, workdir: sealed.workdir ?? null };
+  return {
+    ...rest,
+    ...sealed,
+    workdir: sealed.workdir ?? null,
+    pr: pr === null ? null : await sealPr(seals, rest.id, pr),
+  };
 }
 
 export async function wireSchedule(overrides: Partial<Schedule> & { id: string }): Promise<WireSchedule> {
@@ -440,3 +460,6 @@ export function fakeWaitStore(initial: Record<string, WaitCheck> = {}): WaitStor
     list: () => [...checks.keys()],
   };
 }
+
+// The GitHub half that looks up PR states, for a test that is about something else: it knows no PR.
+export const NO_PR_STATES = { prStates: async () => ({ states: new Map(), unreadable: [] }) };

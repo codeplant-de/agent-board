@@ -1,11 +1,12 @@
-import { prUrlIn } from '@agent-board/shared';
+import { prOf, statePrOf } from '@agent-board/shared';
 import { ActionIcon, Card, Group, Stack, Text, Tooltip } from '@mantine/core';
-import { IconBrandGithub, IconTerminal2, IconWand } from '@tabler/icons-react';
+import { IconTerminal2, IconWand } from '@tabler/icons-react';
 import type { DragEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ago } from '../lib/time';
 import type { LastNote, ListedTask } from '../lib/trpc';
 import { LivenessText } from './LivenessText';
+import { PrStateIcon } from './PrStateIcon';
 import { TaskBadges } from './TaskBadges';
 
 /** The latest note as one line: who said what, how long ago. */
@@ -48,7 +49,7 @@ export function TaskCard({
   onPolish,
   polishDisabled = false,
 }: Props) {
-  const pr = prUrlIn(task.input);
+  const pr = prOf(task);
   const navigate = useNavigate();
   return (
     <Card
@@ -69,7 +70,11 @@ export function TaskCard({
     >
       <Stack gap={6}>
         <Group gap={6} wrap="nowrap" align="flex-start">
-          {pr && <IconBrandGithub size={16} style={{ flexShrink: 0, marginTop: 2 }} />}
+          {pr && (
+            <span style={{ display: 'flex', marginTop: 2 }}>
+              <PrStateIcon state={statePrOf(task) === undefined ? null : task.prState} />
+            </span>
+          )}
           <Text size="sm" fw={500} lineClamp={2} style={{ flex: 1 }}>
             {task.title}
           </Text>

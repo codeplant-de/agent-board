@@ -26,6 +26,9 @@ export type Status = (typeof STATUSES)[number];
 export const NEXT_RUNS = ['fresh', 'resume'] as const;
 export type NextRun = (typeof NEXT_RUNS)[number];
 
+export const PR_STATES = ['open', 'merged', 'closed'] as const;
+export type PrState = (typeof PR_STATES)[number];
+
 export const NOTE_AUTHORS = ['agent', 'user', 'system'] as const;
 export type NoteAuthor = (typeof NOTE_AUTHORS)[number];
 
@@ -122,6 +125,11 @@ export interface Task {
   // The task left Waiting for Todo (its wait ended) and has not run since. Like `paused`, kept through the claim so the
   // worker that resumes it can tell the agent, and cleared by that worker's first `update-task` of the run.
   woken: boolean;
+  // The PR the task's agent reported with `board pr`; null for none, or for one that is not a GitHub PR URL.
+  pr: string | null;
+  // GitHub's state of the task's PR (`statePrOf`) as intake last saw it; null while unknown. Clear, not sealed: it tells the
+  // board only that some PR of the task merged, never which.
+  prState: PrState | null;
   unreadable: UnreadableField[];
 }
 
@@ -332,14 +340,25 @@ export interface Backend {
   removeSchedule(id: string): Promise<void>;
   // The value `Task.head` has for a PR head sha: the board holds only a blind index of it.
   indexHead(sha: string): Promise<string>;
+  // The agent of a task reports the PR it opened for it; the last one wins. `url` must be a GitHub PR URL.
+  setPr(id: string, url: string): Promise<void>;
+  // Intake records GitHub's state of the task's PR (`statePrOf`).
+  setPrState(id: string, prState: PrState): Promise<void>;
 }
 
 // What the board server stores and returns: the sealed fields are envelopes (`abe1.…`) it cannot read. Values the server
 // returns may also be legacy plain text from before encryption; only what a client sends is checked to be sealed.
 
-type SealedTaskFields = 'title' | 'input' | 'workdir' | 'labels' | 'unreadable';
+type SealedTaskFields = 'title' | 'input' | 'workdir' | 'pr' | 'labels' | 'unreadable';
 
-export type WireTask = Omit<Task, SealedTaskFields> & { title: string; input: string; workdir: string | null };
+// `pr` is the sealed "pr", or null; a server without the `task.pr` feature leaves it out, and without `task.pr-state`
+// it leaves out `prState`.
+export type WireTask = Omit<Task, SealedTaskFields> & {
+  title: string;
+  input: string;
+  workdir: string | null;
+  pr: string | null;
+};
 
 export type WireSchedule = Omit<Schedule, 'title' | 'input' | 'workdir' | 'unreadable'> & {
   title: string;
@@ -379,6 +398,16 @@ export interface WireNoteInput {
   preview?: string | null;
   // Sealed "note.suggestion"; only an agent comment (add-note) may carry one.
   suggestion?: string;
+}
+
+// Body of set-pr: the sealed "pr".
+export interface WirePr {
+  pr: string;
+}
+
+// Body of set-pr-state.
+export interface WirePrState {
+  prState: PrState;
 }
 
 export interface WireAsk {
@@ -440,6 +469,8 @@ export interface WireBackend {
   listSchedules(): Promise<WireSchedule[]>;
   updateSchedule(id: string, patch: SchedulePatch): Promise<WireSchedule>;
   removeSchedule(id: string): Promise<void>;
+  setPr(id: string, body: WirePr): Promise<void>;
+  setPrState(id: string, body: WirePrState): Promise<void>;
 }
 
 // The characters of a suggested reply the board takes.
@@ -451,6 +482,7 @@ export const SEALED_LIMITS: Record<Field, number> = {
   title: 4 * 300,
   input: 4 * 200_000,
   workdir: 4096,
+  pr: 1024,
   'note.body': 4 * 100_000,
   'note.preview': 4 * 300,
   'note.suggestion': 4 * NOTE_SUGGESTION_CHARS,
@@ -747,6 +779,8 @@ export function parseWireTask(value: unknown): WireTask {
     machine,
     sessionId: sessionId(nullableString(obj, 'sessionId', 'task'), 'task'),
     workdir: nullableString(obj, 'workdir', 'task'),
+    pr: obj['pr'] === undefined ? null : nullableString(obj, 'pr', 'task'),
+    prState: PR_STATES.find((state) => state === obj['prState']) ?? null,
     next: member(obj, 'next', 'task', NEXT_RUNS),
     head: obj['head'] === null ? null : head(obj['head'], 'task'),
     openQuestion: boolean(obj, 'openQuestion', 'task'),
@@ -967,6 +1001,20 @@ function sealedField(obj: Record<string, unknown>, key: string, what: string, fi
 
 function nullableSealedField(obj: Record<string, unknown>, key: string, what: string, field: Field): string | null {
   return obj[key] === null ? null : sealedField(obj, key, what, field);
+}
+
+// Body of set-pr: a sealed PR URL.
+export function parseWirePr(value: unknown): WirePr {
+  const obj = record(value, 'pr');
+  rejectUnknownKeys(obj, ['pr'], 'pr');
+  return { pr: sealedField(obj, 'pr', 'pr', 'pr') };
+}
+
+// Body of set-pr-state.
+export function parseWirePrState(value: unknown): WirePrState {
+  const obj = record(value, 'prState');
+  rejectUnknownKeys(obj, ['prState'], 'prState');
+  return { prState: member(obj, 'prState', 'prState', PR_STATES) };
 }
 
 // Body of add-task. `id`, `title` and `input` are required.
