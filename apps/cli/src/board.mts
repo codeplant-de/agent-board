@@ -14,6 +14,7 @@ import {
   describeRule,
   formatQuestions,
   isPriority,
+  isPrUrl,
   isSafeTaskId,
   isSafeWorkdir,
   isStatus,
@@ -85,6 +86,15 @@ export async function comment(
 ): Promise<void> {
   await context.backend.addNote(id, text, options);
   confirm(context, `commented on ${id}  ${context.taskLink(id)}`);
+}
+
+export async function reportPr(context: LinkingContext, id: string, url: string): Promise<void> {
+  if (!isPrUrl(url))
+    throw new UsageError(
+      `"${url.slice(0, 80)}" is not a pull request URL: use https://github.com/<owner>/<repo>/pull/<number>`,
+    );
+  await context.backend.setPr(id, url);
+  confirm(context, `reported ${url} for ${id}  ${context.taskLink(id)}`);
 }
 
 export interface CommentFlags {
@@ -175,6 +185,7 @@ export function renderThread(task: Task, notes: Note[]): string {
     `# ${task.title}`,
     '',
     `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(', ') || '-'}`,
+    ...(task.pr === null ? [] : [`pr: ${task.pr}`]),
     ...(task.sessionId ? [`session: ${task.sessionId} · ${task.machine ?? '-'}:${task.workdir ?? '-'}`] : []),
     '',
     '## Input',

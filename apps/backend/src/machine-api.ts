@@ -21,6 +21,8 @@ import {
   parseSchedulePatch,
   parseWireAsk,
   parseWireNoteInput,
+  parseWirePr,
+  parseWirePrState,
   parseWireScheduleDraft,
   parseWireTaskDraft,
   parseWireTaskPatch,
@@ -54,6 +56,8 @@ import {
   listTasks,
   pause,
   readNotes,
+  setPr,
+  setPrState,
   toNote,
   toTask,
   updateTask,
@@ -175,6 +179,16 @@ export async function handleMachineCall(
       });
       return null;
     }
+    case 'set-pr': {
+      const { pr } = parsed(() => parseWirePr(body['body']));
+      await setPr(db, taskId(body), pr);
+      return null;
+    }
+    case 'set-pr-state': {
+      const { prState } = parsed(() => parseWirePrState(body['body']));
+      await setPrState(db, taskId(body), prState);
+      return null;
+    }
     case 'ask': {
       const asked = parsed(() => parseWireAsk(body['body']));
       await ask(db, taskId(body), asked, machine);
@@ -240,6 +254,7 @@ const DISPATCH_WRITES = new Set([
   'update-task',
   'claim-task',
   'add-note',
+  'set-pr',
   'ask',
   'pause',
   'fail',
