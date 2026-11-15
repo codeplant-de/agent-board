@@ -7,6 +7,7 @@ import {
   open,
   parseWireAsk,
   parseWireNoteInput,
+  parseWirePr,
   parseWireScheduleDraft,
   parseWireTaskDraft,
   parseWireTaskPatch,
@@ -116,6 +117,13 @@ function fakeWire(): FakeWire {
       push(state, id, { body: sent.body }, 'agent', 'question', sent.questions);
     },
     async heartbeat() {},
+    async setPr(id, body) {
+      const sent = parseWirePr(JSON.parse(record(state, body)));
+      Object.assign(
+        state.tasks.find((t) => t.id === id)!,
+        { pr: sent.pr },
+      );
+    },
     async pause(id, note) {
       push(state, id, parseWireNoteInput(JSON.parse(record(state, note)), 'note'), 'system', 'event');
       return state.tasks.find((t) => t.id === id)!;
@@ -828,4 +836,32 @@ test('the key is resolved on first use, once', async () => {
   assert.equal(resolved, 1);
   assert.deepEqual(task({ id: 'x' }).unreadable, []);
   assert.deepEqual(schedule({ id: 'x' }).unreadable, []);
+});
+
+test('the PR an agent reports is sealed for its task and agent, and opens on the task; another value is no PR', async () => {
+  const wire = fakeWire();
+  wire.tasks.push(await wireTask({ id: 't1' }), await wireTask({ id: 't2' }));
+  const board = sealingBackend(wire, KEYS);
+  assert.equal((await board.getTask('t1')).pr, null);
+  await board.setPr('t1', PR_URL);
+  const sent = wire.tasks[0]!.pr!;
+  assert.equal(await open(KEYS, 'pr', 'task:t1:agent', sent), PR_URL);
+  assert.equal((await board.getTask('t1')).pr, PR_URL);
+  // Another task serving the same ciphertext, or a value sealed for another purpose, is not shown.
+  wire.tasks[1]!.pr = sent;
+  assert.equal((await board.getTask('t2')).pr, null);
+  wire.tasks[0]!.pr = await seal(KEYS, 'pr', 'task:t1:agent', 'https://example.com/x');
+  assert.equal((await board.getTask('t1')).pr, null);
+  wire.tasks[0]!.pr = await seal(KEYS, 'workdir', 'task:t1', PR_URL);
+  assert.equal((await board.getTask('t1')).pr, null);
+  noMarkers(wire);
+});
+
+test('a PR that is not a GitHub pull request URL is refused before sealing', async () => {
+  const wire = fakeWire();
+  wire.tasks.push(await wireTask({ id: 't1' }));
+  const board = sealingBackend(wire, KEYS);
+  await assert.rejects(board.setPr('t1', 'https://github.com/acme/repo/issues/3'), /set-pr: the pull request must be/);
+  assert.equal(wire.requests.length, 0);
+  assert.equal(wire.tasks[0]!.pr, null);
 });

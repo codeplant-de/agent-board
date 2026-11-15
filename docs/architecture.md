@@ -37,7 +37,7 @@ PR review was the first use. A task is any prompt you would type into Claude Cod
 2. **Todo.** The server emits a `tasks` event on the SSE stream of every machine of that owner. Each machine's listener runs a dispatch tick; the 2-minute timer is the fallback.
 3. **Claimed.** The dispatch tick plans free lane slots, calls `claim-task` (atomic, one machine wins) and starts the worker as a transient systemd unit `agent-board-<id>`.
 4. **Running.** The worker opens the sealed prompt and starts `claude -p` with the board's rules (`--append-system-prompt`) and a PreToolUse hook (`--settings`). The prompt goes in on stdin. The hook keeps a heartbeat, records the working directory, and enforces pauses. The worker streams condensed, sealed transcript events to the board every 15 s.
-5. **Reporting.** The agent uses `board comment`, `board ask`, `board wait` and `board add`. These are the same CLI, authenticated by the machine's token, which reaches every task of the owner. `AGENT_BOARD_TASK` marks the process as a run, so `board schedule` refuses and `board polish` posts on the run's own task.
+5. **Reporting.** The agent uses `board comment`, `board ask`, `board wait`, `board pr` and `board add`. These are the same CLI, authenticated by the machine's token, which reaches every task of the owner. `AGENT_BOARD_TASK` marks the process as a run, so `board schedule` refuses and `board polish` posts on the run's own task.
 6. **Needs me.** The run ends. You answer, reply, re-run or mark it done in the browser. A reply puts the task back in Todo with `next: resume`, and the machine that holds the Claude session resumes it, in the directory the agent last worked in.
 
 ## Trust model

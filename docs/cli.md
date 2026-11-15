@@ -25,6 +25,7 @@ Tasks:
   show <task>               a task and its thread as markdown
   attach <task>             open a task's Claude session in the terminal
   comment <task> [text...]  add a note to a task
+  pr <task> <url>           report the pull request you opened for a task
   move <task> <status...>   move a task to the bottom of a status
   ask <task>                ask the user 1-4 questions
   wait <task>               park a running task in Waiting until a time or a
@@ -181,6 +182,36 @@ Examples:
   echo "from a script" | board comment Ab3dEf9x -
   board comment Ab3 looks good
   board comment --suggest "Yes, open the PR." Ab3dEf9x "Ready: tests pass, diff reviewed."
+```
+
+### board pr
+
+```
+Usage: board pr [options] <task> <url>
+
+Inside a run: after you open a pull request for this task, report its URL. The
+board then shows it on the task's card and page, like the pull request of a
+review task. A later call replaces the earlier URL.
+
+The URL must be a GitHub pull request,
+https://github.com/<owner>/<repo>/pull/<number>, and nothing else.
+
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
+
+Arguments:
+  task        the task: its id, a board task link or the start of its id
+  url         the pull request URL
+
+Options:
+  --dry-run   read everything, print every write instead of doing it
+  -h, --help  display help for command
+
+Examples:
+  board pr Ab3dEf9x https://github.com/acme/app/pull/17741
 ```
 
 ### board move

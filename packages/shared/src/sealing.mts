@@ -7,6 +7,7 @@
 //   title          <origin>
 //   input          <origin>:<creator>
 //   workdir        <origin>, or for a scheduled task also task:<id>:schedule:<scheduleId> (the worker's rewrite)
+//   pr             task:<id>:agent (the PR URL the task's agent reported)
 //   note.*         note:<taskId>:<author>:<kind>
 //   tr.*           <taskId>:<runId>:<seq>
 //
@@ -28,6 +29,7 @@ import type { NoteKind, TaskCreator, UnreadableField, WireNoteAuthor, WireNoteIn
 import { blindIndex } from './crypto.mts';
 import type { Field, Keys } from './crypto.mts';
 import { isServerEventText } from './events.mts';
+import { isPrUrl } from './prompt.mts';
 import { parseAnswers, parseQuestions, QuestionError } from './questions.mts';
 import type { Answer, Question } from './questions.mts';
 
@@ -71,6 +73,23 @@ export function workdirOpenBindings(row: RowRef): Binding[] {
   if (row.kind === 'task' && row.scheduleId !== null)
     return [{ field: 'workdir', context: origin(row) }, workdirBinding(row)];
   return [workdirBinding(row)];
+}
+
+/** The PR URL an agent reports for its task: bound to the task and to the agent, so nothing else's ciphertext opens as one. */
+export const prBinding = (taskId: string): Binding => ({ field: 'pr', context: `task:${taskId}:agent` });
+
+/** Seals the PR URL the agent of `taskId` opened; refuses anything that is not a GitHub pull request URL. */
+export async function sealPr(seal: Sealer, taskId: string, url: string): Promise<string> {
+  if (!isPrUrl(url))
+    throw new ContractError('the pull request must be a URL like https://github.com/<owner>/<repo>/pull/<number>');
+  return sealChecked(seal, prBinding(taskId), url, 'the pull request');
+}
+
+/** The PR URL of a task, or null when there is none or what opens is not a GitHub PR URL. */
+export async function openPr(open: Opener, taskId: string, wire: string | null | undefined): Promise<string | null> {
+  if (wire === null || wire === undefined) return null;
+  const url = await open(prBinding(taskId), wire);
+  return url !== undefined && isPrUrl(url) ? url : null;
 }
 
 // A note is bound to its task, its author and its kind, so one author's text can never be served as another's.

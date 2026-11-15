@@ -1,4 +1,4 @@
-import { prUrlIn } from '@agent-board/shared';
+import { prOf } from '@agent-board/shared';
 import { ActionIcon, Card, Group, Stack, Text, Tooltip } from '@mantine/core';
 import { IconBrandGithub, IconTerminal2, IconWand } from '@tabler/icons-react';
 import type { DragEvent } from 'react';
@@ -48,7 +48,7 @@ export function TaskCard({
   onPolish,
   polishDisabled = false,
 }: Props) {
-  const pr = prUrlIn(task.input);
+  const pr = prOf(task);
   const navigate = useNavigate();
   return (
     <Card

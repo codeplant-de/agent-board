@@ -655,3 +655,21 @@ test('a model is sent only to a server that names task.model', async () => {
   await having.backend.addSchedule({ ...schedule, model: 'opus' });
   assert.deepEqual(having.seen, ['version', 'add-task', 'add-schedule']);
 });
+
+test('reporting a PR needs the task.pr feature and is refused without it, before anything is sent', async () => {
+  const without = boardWith(['events'], {});
+  await assert.rejects(
+    without.backend.setPr('abc', { pr: 'abe1.pr' }),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'task.pr' &&
+      error.message === 'the board server does not support reporting a pull request yet; update the board server',
+  );
+  assert.deepEqual(
+    without.seen.map((request) => request.command),
+    ['version'],
+  );
+  const withIt = boardWith(['task.pr'], { 'set-pr': { body: { result: null } } });
+  await withIt.backend.setPr('abc', { pr: 'abe1.pr' });
+  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { pr: 'abe1.pr' } });
+});

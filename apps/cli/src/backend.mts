@@ -337,6 +337,7 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   'attach-session': 'attach-session',
   wait: 'wait',
   wake: 'wait',
+  'set-pr': 'task.pr',
 };
 
 export function createWebBackend(options: WebBackendOptions): WebBackend {
@@ -454,6 +455,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     },
     ask: async (id, asked) => send('ask', { id: taskId(id), body: asked }),
     heartbeat: async (id, beat) => send('heartbeat', { id: taskId(id), body: beat }),
+    setPr: async (id, body) => send('set-pr', { id: taskId(id), body }),
     pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
     fail: async (id, note) => call('fail', { id: taskId(id), body: note }, parseWireFailResult),
     wait: async (id, wait) => call('wait', { id: taskId(id), body: wait }, parseWireTask),
@@ -497,6 +499,7 @@ function dryTask(draft: TaskDraft): Task {
     machine: machine ?? null,
     sessionId: null,
     workdir: workdir ?? null,
+    pr: null,
     next: 'fresh',
     head: head ?? null,
     openQuestion: false,
@@ -583,6 +586,9 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
       print(
         `DRY add-note ${id}${options?.author === 'system' ? ' --author system' : ''}${kind}${suggested} ${oneLine(text, 160)}`,
       );
+    },
+    async setPr(id, url) {
+      print(`DRY set-pr ${id} ${url}`);
     },
     async heartbeat(id, beat) {
       print(`DRY heartbeat ${id} ${JSON.stringify(beat)}`);
