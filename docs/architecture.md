@@ -88,7 +88,7 @@ The CLI sends `version` once per process and checks the server's API range (see 
 
 - The numbers are a break level, not a count of changes. An additive change adds a **feature name** and bumps no number, so parallel branches do not collide: a new machine command, a new optional request field, a new enum value with a vocabulary row (see [machine-api.md](machine-api.md#features)). The server answers the features it has, the CLI checks the one it needs and a missing one disables only that command; the CLI sends the vocabulary it understands, and the server leaves out what the client cannot read. `board attach` and suggested replies shipped this way.
 - A new enum value in a response is additive if it gets a vocabulary feature, and breaking if it does not or if it changes what an existing value means: then older CLIs parse it strictly (a list skips an item it does not know, a single object fails). Contracts 8 (`polish` notes) and 9 (`waiting`) were bumped for this, before the vocabulary features existed.
-- A break (`API_VERSION` raised, then `MIN_CLIENT` to it) ships with a CLI version bump, an Upgrading note in [setup.md](setup.md#upgrading), and a CLI release right after the merge. CI fails a pull request that raises it without a CLI version above the newest `cli-v*` tag, and runs the newest release against the pull request's server.
+- A break (`API_VERSION` raised, then `MIN_CLIENT` to it) ships with a CLI version bump, an Upgrading note in [setup.md](setup.md#upgrading), and a CLI release, which CI makes after the merge, before the images. CI fails a pull request, and a push to `main`, that raises it without a CLI version above the newest `cli-v*` tag, and runs the newest release against the pull request's server.
 
 ## Design decisions
 
