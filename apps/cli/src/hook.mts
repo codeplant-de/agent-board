@@ -2,8 +2,7 @@
  * The PreToolUse hook of every run: `board internal hook <run dir> <task>`, with the hook input on stdin.
  * It touches the task's heartbeat, records the agent's working directory (a worktree it entered shows up here), turns
  * AskUserQuestion into a question on the board (dormant: Claude Code 2.1.323 offers no AskUserQuestion to a headless run,
- * so the board's rules have the agent use `board ask` instead), and while a pause is requested it refuses every tool call but
- * `board comment`, telling the agent to post a status and end its turn. It never fails the tool call for its own errors: a broken
+ * so the board's rules have the agent use `board ask` instead). It never fails the tool call for its own errors: a broken
  * hook must not break a run.
  */
 import { isRecord, isSafeTaskId, isSafeWorkdir, parseQuestions, QuestionError } from '@agent-board/shared';
@@ -11,19 +10,6 @@ import type { Question } from '@agent-board/shared';
 import { buildContext, readStdin } from './cli.mts';
 import { createRunFiles } from './runtime.mts';
 import { oneLine } from './text.mts';
-
-export const PAUSE_REASON =
-  'Pause requested: this machine needs the slot for other work. Post a one-line status of where you are with `board comment <task> "..."`, then end your turn without any other tool call. You will be resumed later in this same session.';
-
-// The only call let through during a pause: the status note the reason asks for. Anything chained to it is still
-// checked part by part by Claude Code's own permission rules, so the text after `board comment` is not inspected
-// (a status note may well contain a `;`).
-export function allowedDuringPause(input: unknown): boolean {
-  if (!isRecord(input) || input['tool_name'] !== 'Bash') return false;
-  const toolInput = input['tool_input'];
-  const command = isRecord(toolInput) ? toolInput['command'] : undefined;
-  return typeof command === 'string' && /^board comment \S+ /.test(command.trim());
-}
 
 function deny(reason: string): string {
   return JSON.stringify({
@@ -67,12 +53,6 @@ export function askedDecision(taskId: string, failure: string | undefined): stri
   );
 }
 
-// What the hook prints for every call but AskUserQuestion: nothing to let the call run, or a deny decision.
-export function hookDecision(input: unknown, pauseRequested: boolean, taskId: string): string {
-  if (!pauseRequested || allowedDuringPause(input)) return '';
-  return deny(PAUSE_REASON.replace('<task>', taskId));
-}
-
 export async function runHook(args: string[]): Promise<void> {
   const [dir, taskId] = args;
   try {
@@ -87,29 +67,23 @@ export async function runHook(args: string[]): Promise<void> {
     }
     if (isRecord(input) && typeof input['cwd'] === 'string' && isSafeWorkdir(input['cwd']))
       files.writeCwd(taskId, input['cwd']);
-    const pauseRequested = files.pauseRequestedAt(taskId) !== undefined;
-    let decision = hookDecision(input, pauseRequested, taskId);
-    if (!pauseRequested) {
-      let questions: Question[] | undefined;
-      let failure: string | undefined;
+    let questions: Question[] | undefined;
+    let failure: string | undefined;
+    try {
+      questions = askedQuestions(input);
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    if (questions === undefined && failure === undefined) return;
+    if (questions !== undefined) {
       try {
-        questions = askedQuestions(input);
+        const context = buildContext(false);
+        await context.backend.ask(taskId, questions);
       } catch (error) {
         failure = error instanceof Error ? error.message : String(error);
       }
-      if (questions !== undefined || failure !== undefined) {
-        if (questions !== undefined) {
-          try {
-            const context = buildContext(false);
-            await context.backend.ask(taskId, questions);
-          } catch (error) {
-            failure = error instanceof Error ? error.message : String(error);
-          }
-        }
-        decision = askedDecision(taskId, failure);
-      }
     }
-    if (decision) process.stdout.write(decision);
+    process.stdout.write(askedDecision(taskId, failure));
   } catch (error) {
     // stderr of a hook that exits 0 only shows in verbose mode; the call goes ahead.
     console.error(`agent-hook: ${error instanceof Error ? error.message : String(error)}`);

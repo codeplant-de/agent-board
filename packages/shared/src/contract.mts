@@ -130,6 +130,9 @@ export interface Task {
   // GitHub's state of the task's PR (`statePrOf`) as intake last saw it; null while unknown. Clear, not sealed: it tells the
   // board only that some PR of the task merged, never which.
   prState: PrState | null;
+  // While it runs: the user asked for the run to be interrupted and no worker has acted on it yet. Absent from a server
+  // without the `run-inbox` feature.
+  stopRequested?: boolean;
   unreadable: UnreadableField[];
 }
 
@@ -164,6 +167,30 @@ export interface Note {
   questionNoteId?: string;
   // kind "comment" by the agent: a ready-to-send reply in the user's voice, for the user to use or edit.
   suggestion?: string;
+  // A message the user sent to the running agent that no worker has handed over yet.
+  pending?: boolean;
+  // When a worker handed the message to the running agent (`ack-messages`); a resume prompt does not repeat it.
+  deliveredAt?: Date;
+  // The user wrote it to a running agent. Never cleared: a resume carries the ones that were never handed over, wherever they
+  // fall in the thread.
+  queued?: boolean;
+}
+
+// What the user sent to a running task since the worker last looked: stop asks the worker to interrupt the run, and the
+// messages (oldest first) are for it to hand to the agent.
+export interface RunInbox {
+  stop: boolean;
+  // With `stop`: the message that belongs to the request (Stop & send), among `messages`. Without it the stop is plain: the
+  // run ends, and the pending messages stay pending.
+  stopMessage?: string;
+  messages: Note[];
+}
+
+export interface AckMessages {
+  // Messages handed to the agent; they stop being pending.
+  ids: string[];
+  // The worker acted on the stop request: it is cleared, so one request is acted on once.
+  stop?: boolean;
 }
 
 export interface TaskDraft {
@@ -327,6 +354,14 @@ export interface Backend {
   // A wait ended: if the task is still waiting (and not closed), adds the text as a system event and moves it to the top of
   // Todo, resumed next in its session, in one step.
   wake(id: string, text: string): Promise<WakeResult>;
+  // The user's stop request and pending messages for a running task of this machine; the server refuses with 409 when the
+  // task is not running and 403 for another machine's task.
+  runInbox(id: string): Promise<RunInbox>;
+  // Marks messages as handed to the agent and, with `stop`, the stop request as acted on.
+  ackMessages(id: string, ack: AckMessages): Promise<void>;
+  // The run was ended on the user's request: while the task still runs, adds the text as a system event and moves it to
+  // needs-me (or, with messages that were not handed over, back to Todo to resume with them).
+  stopped(id: string, text: string): Promise<Task>;
   // Appends events to a run's transcript; an event already stored (same run and seq) is kept as it is.
   transcript(id: string, batch: TranscriptBatch): Promise<void>;
   // Oldest first.
@@ -383,6 +418,16 @@ export interface WireNote {
   questionNoteId?: string;
   // Sealed "note.suggestion", on a comment by the agent only.
   suggestion?: string;
+  // Absent on a server without the `run-inbox` feature.
+  pending?: boolean;
+  deliveredAt?: Date;
+  queued?: boolean;
+}
+
+export interface WireRunInbox {
+  stop: boolean;
+  stopMessage?: string;
+  messages: WireNote[];
 }
 
 // A task draft with its id; title, input and workdir are sealed, dedupeKey and head are blind indexes.
@@ -463,6 +508,9 @@ export interface WireBackend {
   fail(id: string, note: WireNoteInput): Promise<WireFailResult>;
   wait(id: string, wait: WireWait): Promise<WireTask>;
   wake(id: string, note: WireNoteInput): Promise<WireWakeResult>;
+  runInbox(id: string): Promise<WireRunInbox>;
+  ackMessages(id: string, ack: AckMessages): Promise<void>;
+  stopped(id: string, note: WireNoteInput): Promise<WireTask>;
   transcript(id: string, batch: WireTranscriptBatch): Promise<void>;
   readNotes(id: string): Promise<WireNote[]>;
   addSchedule(draft: WireScheduleDraft): Promise<WireAddScheduleResult>;
@@ -795,6 +843,7 @@ export function parseWireTask(value: unknown): WireTask {
     wakeAt: nullableDate(obj, 'wakeAt', 'task'),
     waitCheck: boolean(obj, 'waitCheck', 'task'),
     woken: boolean(obj, 'woken', 'task'),
+    ...(obj['stopRequested'] === undefined ? {} : { stopRequested: boolean(obj, 'stopRequested', 'task') }),
   };
 }
 
@@ -903,6 +952,13 @@ export function parseWireNote(value: unknown): WireNote {
   if (obj['answers'] !== undefined) note.answers = string(obj, 'answers', 'note');
   if (obj['questionNoteId'] !== undefined) note.questionNoteId = noteId('questionNoteId');
   if (obj['suggestion'] !== undefined) note.suggestion = string(obj, 'suggestion', 'note');
+  if (obj['pending'] !== undefined) note.pending = boolean(obj, 'pending', 'note');
+  if (obj['queued'] !== undefined) note.queued = boolean(obj, 'queued', 'note');
+  if (obj['deliveredAt'] !== undefined && obj['deliveredAt'] !== null) {
+    const deliveredAt = new Date(string(obj, 'deliveredAt', 'note'));
+    if (Number.isNaN(deliveredAt.getTime())) throw new ContractError('note.deliveredAt is not a date');
+    note.deliveredAt = deliveredAt;
+  }
   return note;
 }
 
@@ -916,7 +972,42 @@ export function parseWireNotes(value: unknown, options: ListOptions = {}): WireN
 
 // The JSON form of a note, as `read-notes` sends it.
 export function serializeWireNote(note: WireNote): Record<string, unknown> {
-  return { ...note, createdAt: note.createdAt.toISOString() };
+  const { deliveredAt, ...rest } = note;
+  return {
+    ...rest,
+    createdAt: note.createdAt.toISOString(),
+    ...(deliveredAt === undefined ? {} : { deliveredAt: deliveredAt.toISOString() }),
+  };
+}
+
+// The answer of run-inbox.
+export function parseWireRunInbox(value: unknown): WireRunInbox {
+  const obj = record(value, 'run-inbox result');
+  if (!Array.isArray(obj['messages'])) throw new ContractError('run-inbox result.messages must be a list');
+  const stopMessage = obj['stopMessage'];
+  if (stopMessage !== undefined && !(typeof stopMessage === 'string' && isSafeNoteId(stopMessage)))
+    throw new ContractError('run-inbox result.stopMessage must be a note id');
+  return {
+    stop: boolean(obj, 'stop', 'run-inbox result'),
+    ...(stopMessage === undefined ? {} : { stopMessage }),
+    messages: obj['messages'].map(parseWireNote),
+  };
+}
+
+// At most this many notes are acknowledged in one call.
+const MAX_ACK_IDS = 100;
+
+// Body of ack-messages.
+export function parseAckMessages(value: unknown): AckMessages {
+  const obj = record(value, 'ack-messages');
+  rejectUnknownKeys(obj, ['ids', 'stop'], 'ack-messages');
+  const ids = obj['ids'];
+  if (!Array.isArray(ids) || ids.length > MAX_ACK_IDS || !ids.every((id) => typeof id === 'string' && isSafeNoteId(id)))
+    throw new ContractError(`ack-messages.ids must be a list of at most ${MAX_ACK_IDS} note ids`);
+  return {
+    ids: ids as string[],
+    ...(obj['stop'] === undefined ? {} : { stop: boolean(obj, 'stop', 'ack-messages') }),
+  };
 }
 
 /** The API range a server answers with: `api` when present, else the legacy `contract` as both ends. */

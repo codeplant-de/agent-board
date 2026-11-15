@@ -34,6 +34,14 @@ const renderBadges = (overrides: Partial<BoardTask>) =>
   );
 
 describe('TaskBadges', () => {
+  it('shows Stopping… on a running task with a stop request, and not otherwise', () => {
+    const { unmount } = renderBadges({ status: 'running', stopRequested: true });
+    expect(screen.getByText('Stopping…')).toBeInTheDocument();
+    unmount();
+    renderBadges({ status: 'running', stopRequested: false });
+    expect(screen.queryByText('Stopping…')).not.toBeInTheDocument();
+  });
+
   it('shows Paused on a task waiting in Todo', () => {
     renderBadges({ paused: true });
     expect(screen.getByText('Paused')).toBeInTheDocument();

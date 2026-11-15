@@ -3,6 +3,10 @@ import { test } from 'node:test';
 import {
   boardRules,
   buildInvocation,
+  buildResumePrompt,
+  inboxMessageText,
+  pauseMessageText,
+  userReply,
   ownLane,
   decideOutcome,
   isPermanentRefusal,
@@ -63,8 +67,10 @@ test('a scheduled task runs its prompt as written, in its directory, as the user
   assert.equal(args[args.indexOf('--permission-mode') + 1], 'auto');
   assert.ok(!args.includes('--setting-sources'), "all of the user's settings load");
   assert.ok(!args.includes('--allowedTools'));
-  assert.deepEqual(args.slice(args.indexOf('--output-format'), args.indexOf('--output-format') + 3), [
+  assert.deepEqual(args.slice(args.indexOf('--output-format'), args.indexOf('--output-format') + 5), [
     '--output-format',
+    'stream-json',
+    '--input-format',
     'stream-json',
     '--verbose',
   ]);
@@ -377,7 +383,7 @@ test('stale: a gone unit at once; an active one only past the limits plus grace'
 });
 
 test('supervision: inactivity, the ceiling and an ignored pause stop a run; activity keeps it going', () => {
-  const run = { now: NOW, limits: LIMITS, pauseGraceMinutes: 5, pauseRequestedAt: undefined };
+  const run = { now: NOW, limits: LIMITS, pauseGraceMinutes: 2, pauseRequestedAt: undefined };
   assert.equal(supervise({ ...run, startedAt: ago(120), lastActive: ago(1) }).kind, 'continue');
   assert.equal(supervise({ ...run, startedAt: ago(10), lastActive: undefined }).kind, 'continue');
   const inactive = supervise({ ...run, startedAt: ago(120), lastActive: ago(16) });
@@ -387,10 +393,10 @@ test('supervision: inactivity, the ceiling and an ignored pause stop a run; acti
   const ceiling = supervise({ ...run, startedAt: ago(6 * 60 + 1), lastActive: ago(0) });
   assert.ok(ceiling.kind === 'stop' && ceiling.why === 'ceiling');
   assert.equal(
-    supervise({ ...run, startedAt: ago(30), lastActive: ago(0), pauseRequestedAt: ago(4) }).kind,
+    supervise({ ...run, startedAt: ago(30), lastActive: ago(0), pauseRequestedAt: ago(1) }).kind,
     'continue',
   );
-  const forced = supervise({ ...run, startedAt: ago(30), lastActive: ago(0), pauseRequestedAt: ago(6) });
+  const forced = supervise({ ...run, startedAt: ago(30), lastActive: ago(0), pauseRequestedAt: ago(3) });
   assert.ok(forced.kind === 'stop' && forced.why === 'pause-forced');
 });
 
@@ -411,7 +417,7 @@ test('a run whose task left Running is still its own: the board drops runStarted
 });
 
 test('outcomes: a pause wins over the stop it caused, a report wins over a pause', () => {
-  const base = { signal: null, stopped: undefined, pauseRequested: false, reported: false };
+  const base = { signal: null, stopped: undefined, pauseRequested: false, stopRequested: false, reported: false };
   const forced = { kind: 'stop' as const, why: 'pause-forced' as const, message: 'forced' };
   const inactive = { kind: 'stop' as const, why: 'inactive' as const, message: 'Stopped: no tool call' };
   assert.equal(decideOutcome({ ...base, exitCode: 1 }).kind, 'failed');
@@ -427,6 +433,14 @@ test('outcomes: a pause wins over the stop it caused, a report wins over a pause
     'paused',
   );
   assert.equal(decideOutcome({ ...base, exitCode: 0, pauseRequested: true, reported: true }).kind, 'ok');
+});
+
+test('outcomes: a stop the user asked for ends in Needs me, and a report still wins', () => {
+  const base = { signal: null, stopped: undefined, pauseRequested: false, stopRequested: true, reported: false };
+  assert.equal(decideOutcome({ ...base, exitCode: 0 }).kind, 'stopped');
+  assert.equal(decideOutcome({ ...base, exitCode: 143 }).kind, 'stopped', 'whatever the exit code says');
+  assert.equal(decideOutcome({ ...base, exitCode: 0, pauseRequested: true }).kind, 'stopped');
+  assert.equal(decideOutcome({ ...base, exitCode: 1, reported: true }).kind, 'ok');
 });
 
 const LANES = [
@@ -779,4 +793,65 @@ test('an intake tool rule that would read as an option stops the run', () => {
       assert.ok(!plan.ok && /starts with "-"/.test(plan.reason), `${list} ${rule}`);
     }
   }
+});
+
+test('a reply leaves out the notes the agent was handed while it ran, and the resume prompt does not repeat them', () => {
+  const user = (text: string, minute: number, extra: Partial<Parameters<typeof makeNote>[2]> = {}) =>
+    makeNote(text, at(minute), { author: 'user', ...extra });
+  const notes = [
+    makeNote('Working on it', at(1), { author: 'agent' }),
+    user('handed over mid-run', 2, { deliveredAt: at(3) }),
+    user('said after the stop', 4),
+  ];
+  assert.deepEqual(
+    userReply(notes).map((note) => note.text),
+    ['said after the stop'],
+  );
+  const prompt = buildResumePrompt(task({ id: 'p', next: 'resume', sessionId: SESSION }), notes);
+  assert.match(prompt ?? '', /said after the stop/);
+  assert.doesNotMatch(prompt ?? '', /handed over mid-run/);
+  assert.equal(
+    buildResumePrompt(task({ id: 'p', next: 'resume', sessionId: SESSION }), notes.slice(0, 2)),
+    undefined,
+    'a thread whose only reply was handed over has nothing to resume with',
+  );
+});
+
+test('a resume carries the messages the agent was never handed, even from before its last note, once', () => {
+  const user = (text: string, minute: number, extra: Partial<Parameters<typeof makeNote>[2]> = {}) =>
+    makeNote(text, at(minute), { author: 'user', ...extra });
+  const start = (minute: number) =>
+    makeNote(`${START_MARKER} on laptop`, at(minute), { author: 'system', kind: 'event' });
+  const notes = [
+    user('before the previous run', 0, { queued: true }),
+    start(1),
+    user('never handed over', 2, { queued: true }),
+    user('handed over', 3, { queued: true, deliveredAt: at(4) }),
+    makeNote('Done, here is the summary', at(5), { author: 'agent' }),
+    user('and after it', 6),
+    start(7),
+  ];
+  const reply = userReply(notes, at(7));
+  assert.deepEqual(
+    reply.map((note) => note.text),
+    ['never handed over', 'and after it'],
+  );
+  const ordinary = userReply(
+    [...notes.slice(0, 6)].map((n) => (n.text === 'and after it' ? { ...n, queued: true } : n)),
+    at(7),
+  );
+  assert.equal(new Set(ordinary.map((n) => n.id)).size, ordinary.length, 'a note found twice is listed once');
+});
+
+test('the messages an agent is sent say who wrote them, and an interruption says it was one', () => {
+  const message = makeNote('use the other table', at(1), { author: 'user' });
+  assert.match(
+    inboxMessageText('abc', message, false),
+    /sent you a message on board task abc while you work:\n\nuse the other table/,
+  );
+  assert.match(
+    inboxMessageText('abc', message, true),
+    /interrupted you on board task abc to correct you:\n\nuse the other table/,
+  );
+  assert.match(pauseMessageText('abc'), /Pause requested.*`board comment abc "..."`.*end your turn/);
 });

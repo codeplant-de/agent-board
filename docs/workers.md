@@ -27,7 +27,7 @@ A machine splits its parallel runs into lanes by skill, configured in its config
 - **Own work first.** A task belongs to the lane that names the skill its prompt starts with (`/review-pr` and `/pr-review:review-pr` both count as `review-pr`), else to the lane with `*`, which also takes prompts without a skill. A lane with a free slot takes the first Todo task of its own: resumes first (answered, replied to or paused), then by priority. A skill belongs to at most one lane, and at most one lane has `*`.
 - **Borrowing.** A lane with nothing of its own borrows the first task any other lane would run, so idle slots do not wait. The run is marked borrowed.
 - **Taking the slot back.** When a full lane has its own work waiting and runs borrowed work that has gone on for `pauseAfterMinutes` (default 5), the dispatcher asks the newest such run to pause, one per lane at a time. Lane bias beats priority: a borrowed urgent run gives way to its lane's own low task. An urgent task only has guaranteed room in its own lane.
-- **Pausing is cooperative.** The dispatcher drops a pause flag. The agent's `PreToolUse` hook then refuses every tool call but `board comment`, telling the agent to post a one-line status and end its turn. When the run ends, the worker notes "Paused on <machine>: …" and puts the task back in Todo, ahead of new work, to resume in its session on the same machine. A run that has not stopped within five minutes of the request is stopped by force and paused all the same. The resumed run is told it was paused and checks its state before it goes on.
+- **Pausing is cooperative.** The dispatcher drops a pause flag. The worker sees it on its next 15-second tick and writes a message to the agent's stdin: post a one-line status and end your turn. Nothing is refused, so the session stays clean and the agent finishes the step it is on. When the turn ends, the worker notes "Paused on <machine>: …" and puts the task back in Todo, ahead of new work, to resume in its session on the same machine. A turn that has not ended 2 minutes after the message is interrupted (see [Talking to a running agent](#talking-to-a-running-agent)) and the task is paused all the same. The resumed run is told it was paused and checks its state before it goes on.
 
 A lane may also name a `cwd`: where its tasks run when they have no directory of their own (see [Where a task runs](#where-a-task-runs)), say `"reviews": { "skills": ["review-pr"], "slots": 2, "cwd": "~/workspace/cosuno/cosuno" }`, so `/review-pr 17766` from the New task form runs in the checkout and gets its settings.
 
@@ -37,12 +37,24 @@ Without `lanes`, a machine runs one lane, `general`, with `*` and three slots.
 
 The hook also touches a heartbeat file on every tool call. The worker checks it every 15 seconds:
 
-- no tool call for `inactivityMinutes` (default 15): the run is stopped as stuck and the task goes to `needs-me` with the end of the log. Claude Code caps a foreground Bash call at ten minutes, so a long command does not trip it.
-- a run longer than `maxRunHours` (default 6): stopped, however busy. A guard against an agent looping on tool calls.
+- no tool call for `inactivityMinutes` (default 15): the run is interrupted as stuck and the task goes to `needs-me` with the end of the log. Claude Code caps a foreground Bash call at ten minutes, so a long command does not trip it.
+- a run longer than `maxRunHours` (default 6): interrupted, however busy. A guard against an agent looping on tool calls.
 
 The worker passes the heartbeat on to the board every 15 seconds while the agent is active, with the lane. A running card counts the seconds since ("active 12s ago", then "active 1m 5s ago"), amber after 5 quiet minutes, red after 10, and its lane with a "borrowed" badge when it runs in another lane's slot.
 
+Every stop is an interrupt first: the worker sends `claude` an interrupt on stdin, which ends what the agent is doing at once and keeps the session resumable, then closes stdin so the process exits. Only a process that is still there 30 seconds after the interrupt is killed (SIGTERM, then SIGKILL).
+
 The heartbeat, pause flag, lane and working directory of a run live in `$XDG_RUNTIME_DIR/agent-board/` (`AGENT_BOARD_RUN_DIR` overrides it), private to your user.
+
+## Talking to a running agent
+
+The worker starts `claude -p` with `--input-format stream-json` and keeps its stdin open for the whole run. The prompt is the first user message, written as a JSON line. Three things follow it on stdin, all written by the worker:
+
+- **A pause message**, when the dispatcher wants the slot back (see [Lanes](#lanes)).
+- **Your messages.** **Send** on a running task (see [Ask and resume](usage.md#ask-and-resume)) stores a pending note on the board. The worker reads the task's run inbox on every 15-second tick and whenever the board's event stream says tasks changed (so a message usually arrives within seconds), writes the notes to stdin as user messages and acknowledges them. Claude Code takes a user message up at its next tool boundary, so the agent is not interrupted; the note shows **Delivered** in the thread.
+- **An interrupt**, for **Stop**, **Stop & send** and the limits above. Plain Stop ends the run: the worker reports it stopped and the task goes to Needs me with "Stopped by you.". With Stop & send the worker interrupts, writes your message after it and the run carries on in the same session. The stop request is cleared once the worker has acted on it.
+
+A message that has not been handed over when the run ends (the agent had finished or the worker had closed stdin) is not lost: the task goes to the top of Todo to resume in its session with the message, and a note in the thread says so. If you stop the run or take the task back instead, the message becomes an ordinary reply that the next Send & continue carries. A worker whose server does not offer the run inbox runs as before and never reads it; a CLI too old to know the inbox ignores stop requests, and the task page says so after a minute (Take back still works).
 
 ## Transcripts
 
@@ -83,7 +95,7 @@ Permission rules match the text of a call: they keep an agent on its task, but t
 A fresh run is
 
 ```
-claude -p --session-id=<new uuid> --append-system-prompt "<the board's rules>" --settings '<hook>' <permissions>
+claude -p --session-id=<new uuid> --input-format stream-json --append-system-prompt "<the board's rules>" --settings '<hook>' <permissions>
 ```
 
 in the task's directory (see [Where a task runs](#where-a-task-runs)). The prompt is the task's `input`, as written, and goes to `claude` on stdin, never as an argument. The appended rules tell the agent its task id, to report with `board comment`, to ask with `board ask` instead of AskUserQuestion, to finish with `board move <task> needs-me`, to wait for CI and the like with `board wait` (not in an intake review), and how to propose follow-ups. Outside an intake review they also set how far the agent goes alone:
@@ -95,7 +107,7 @@ The rules only ask; `--permission-mode auto` can still refuse a push or `gh pr c
 
 A task that names a model (`board schedule --model`, or the Model select of the New task form) adds `--model=<model>` as one argument, on a fresh run and on a resume; a name that is not of a model name's shape (a clear value from the server) refuses the run instead. Without one, claude uses its own default.
 
-The hook is the [heartbeat, pause and question hook](#liveness-and-limits). A resumed run is `claude -p --resume=<session>` with the same flags and your reply on stdin (see [Ask and resume](usage.md#ask-and-resume)).
+The hook is the [heartbeat and question hook](#liveness-and-limits), and `--input-format stream-json` keeps stdin open for [messages, pauses and interrupts](#talking-to-a-running-agent). A resumed run is `claude -p --resume=<session>` with the same flags and your reply on stdin (see [Ask and resume](usage.md#ask-and-resume)).
 
 In intake's rules, `Bash(` rules expand `~/` to your home directory and `{<plugin>}` (such as `{pr-review}` or `{engineering}`) to the root Claude Code gives `<plugin>@ccc` as `${CLAUDE_PLUGIN_ROOT}`, resolved when the worker starts: for a marketplace added as a directory (`~/.claude/plugins/known_marketplaces.json`) that is the plugin's `source` in the marketplace's `.claude-plugin/marketplace.json` (Claude Code loads it from the checkout, not from the cache copy), otherwise the `installPath` in `~/.claude/plugins/installed_plugins.json`. A rule must not start with `*` before a script path: a leading `*` matches any command that merely contains the path. If the plugin path cannot be resolved the task goes to `needs-me` with the reason. `Read(...)` rules are passed on unchanged (they take `~/` themselves). Old `backend`, `labels`, `intakeLabel` and `sandbox` entries in a config are ignored.
 

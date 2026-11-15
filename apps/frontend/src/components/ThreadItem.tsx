@@ -6,6 +6,22 @@ import { ago, stamp } from '../lib/time';
 import type { ThreadNote } from '../lib/trpc';
 import { Markdown } from './Markdown';
 
+/** Where a message to a running agent stands: not yet handed over, or delivered. */
+function DeliveryState({ note }: { note: ThreadNote }) {
+  if (note.pending)
+    return (
+      <Badge size="xs" color="gray" variant="light" tt="none">
+        Waiting for the agent
+      </Badge>
+    );
+  if (note.deliveredAt === undefined) return null;
+  return (
+    <Text size="xs" c="dimmed" title={stamp(new Date(note.deliveredAt))}>
+      · Delivered
+    </Text>
+  );
+}
+
 function Meta({ who, by, at }: { who: string; by: string | null; at: Date }) {
   return (
     <Group gap={6}>
@@ -210,6 +226,7 @@ export function ThreadItem({ note, thread }: Props) {
           by={fromUser ? null : note.by}
           at={at}
         />
+        {fromUser && <DeliveryState note={note} />}
       </Group>
       {note.kind === 'answer' && note.answers && (
         <Text size="sm" style={{ whiteSpace: 'pre-wrap' }} mb={note.text.trim() ? 6 : 0}>

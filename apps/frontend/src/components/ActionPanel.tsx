@@ -9,6 +9,7 @@ import {
   IconChevronDown,
   IconMessage,
   IconPlayerPlay,
+  IconPlayerStop,
   IconRefresh,
   IconSparkles,
   IconWand,
@@ -18,6 +19,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { canTakeBack } from '../lib/liveness';
 import { canPolish, isOpenPolishOf } from '../lib/polish';
+import { isStopHintDue, isStopping, STOP_LABEL, stopKind } from '../lib/stopping';
 import { currentSuggestion } from '../lib/suggestion';
 import { startsIn } from '../lib/startsIn';
 import { ago, stamp } from '../lib/time';
@@ -34,6 +36,8 @@ function useActions(id: string) {
   return {
     answer: useMutation(trpc.tasks.answer.mutationOptions()),
     reply: useMutation(trpc.tasks.reply.mutationOptions()),
+    send: useMutation(trpc.tasks.send.mutationOptions()),
+    stop: useMutation(trpc.tasks.stop.mutationOptions()),
     done: useMutation(trpc.tasks.done.mutationOptions()),
     rerun: useMutation(trpc.tasks.rerun.mutationOptions()),
     close: useMutation(trpc.tasks.setClosed.mutationOptions()),
@@ -74,6 +78,126 @@ function CommentOnly({
         >
           Comment
         </Button>
+      </Group>
+    </Stack>
+  );
+}
+
+/** Stop for a task that is not running: it holds an answer back (Todo) or ends a wait. */
+function StopButton({ task, actions }: { task: BoardTask; actions: ReturnType<typeof useActions> }) {
+  const kind = stopKind(task);
+  if (kind === null || kind === 'run') return null;
+  return (
+    <Button
+      size="xs"
+      variant="default"
+      color="red"
+      leftSection={<IconPlayerStop size={14} />}
+      onClick={() => actions.stop.mutate({ id: task.id })}
+      loading={actions.stop.isPending}
+      title={STOP_LABEL[kind]}
+    >
+      Stop
+    </Button>
+  );
+}
+
+/** The composer of a running task: a message the agent gets while it works, or a stop, with or without a message. */
+function RunComposer({
+  task,
+  actions,
+  draft: { message, setMessage },
+}: {
+  task: BoardTask;
+  actions: ReturnType<typeof useActions>;
+  draft: Draft;
+}) {
+  const [stopClickedAt, setStopClickedAt] = useState<number | null>(null);
+  const now = useNow(5_000);
+  const stopping = isStopping(task);
+  const hasText = message.trim() !== '';
+  const clear = { onSuccess: () => setMessage('') };
+  const send = () => hasText && !actions.send.isPending && actions.send.mutate({ id: task.id, message }, clear);
+  const stop = (text?: string) => {
+    if (actions.stop.isPending) return;
+    setStopClickedAt(Date.now());
+    actions.stop.mutate({ id: task.id, message: text }, text === undefined ? undefined : clear);
+  };
+  const stopDisabled = stopping || actions.stop.isPending;
+  return (
+    <Stack gap="xs">
+      {stopping && (
+        <Group gap="xs">
+          <Loader size="xs" color="red" />
+          <Text size="sm" c="red">
+            Stopping…
+          </Text>
+        </Group>
+      )}
+      {stopping && isStopHintDue(stopClickedAt, now) && (
+        <Alert color="yellow" variant="light">
+          <Text size="sm">
+            The stop request has not been acted on for a minute. The CLI on {task.machine ?? 'its machine'} may be too
+            old to stop runs. Take back, offered once the agent has been quiet for 20 minutes, is the fallback.
+          </Text>
+        </Alert>
+      )}
+      <MarkdownEditor
+        value={message}
+        onChange={setMessage}
+        minRows={2}
+        onSubmit={send}
+        placeholder="Message the running agent: it gets it at its next tool call, without being interrupted"
+      />
+      <Group justify="space-between" wrap="wrap">
+        <Group gap="xs">
+          <Button
+            variant="default"
+            color="red"
+            leftSection={<IconPlayerStop size={16} />}
+            onClick={() => stop()}
+            disabled={stopDisabled}
+            title={STOP_LABEL.run}
+          >
+            Stop
+          </Button>
+          <Button
+            variant="subtle"
+            color="gray"
+            leftSection={<IconMessage size={16} />}
+            onClick={() =>
+              hasText &&
+              !actions.reply.isPending &&
+              actions.reply.mutate({ id: task.id, message, resume: false }, clear)
+            }
+            disabled={!hasText || actions.reply.isPending}
+            loading={actions.reply.isPending}
+          >
+            Comment without continuing
+          </Button>
+        </Group>
+        <Group gap="xs">
+          <Text size="xs" c="dimmed" visibleFrom="sm">
+            <Kbd size="xs">⌘</Kbd>+<Kbd size="xs">Enter</Kbd>
+          </Text>
+          <Button
+            variant="default"
+            leftSection={<IconPlayerStop size={16} />}
+            onClick={() => stop(message)}
+            disabled={!hasText || stopDisabled}
+            title="Interrupt the agent, then give it this message"
+          >
+            Stop & send
+          </Button>
+          <Button
+            leftSection={<IconPlayerPlay size={16} />}
+            onClick={send}
+            disabled={!hasText || actions.send.isPending}
+            loading={actions.send.isPending}
+          >
+            Send
+          </Button>
+        </Group>
       </Group>
     </Stack>
   );
@@ -173,11 +297,7 @@ export function ActionPanel({
             </Text>
           </Group>
           <TakeBack task={task} actions={actions} />
-          <CommentOnly
-            actions={actions}
-            draft={draft}
-            hint="Leave a note for later (does not reach the running agent)"
-          />
+          <RunComposer task={task} actions={actions} draft={draft} />
         </Stack>
       </Paper>
     );
@@ -294,12 +414,15 @@ export function ActionPanel({
               </Button>
             </Group>
           )}
-          <Text size="sm">
-            {task.paused ? 'Paused to free its slot.' : task.woken ? 'Its wait is over.' : 'Queued.'}{' '}
-            {task.next === 'resume'
-              ? `The next run resumes the agent's session${task.machine ? ` on ${task.machine}` : ''}${task.woken ? '' : ' with your reply'}.`
-              : 'The next free worker starts it.'}
-          </Text>
+          <Group justify="space-between" wrap="nowrap">
+            <Text size="sm">
+              {task.paused ? 'Paused to free its slot.' : task.woken ? 'Its wait is over.' : 'Queued.'}{' '}
+              {task.next === 'resume'
+                ? `The next run resumes the agent's session${task.machine ? ` on ${task.machine}` : ''}${task.woken ? '' : ' with your reply'}.`
+                : 'The next free worker starts it.'}
+            </Text>
+            <StopButton task={task} actions={actions} />
+          </Group>
           <CommentOnly actions={actions} draft={draft} hint="Add to the thread before it starts" />
         </Stack>
       </Paper>
@@ -334,14 +457,17 @@ export function ActionPanel({
                 : ''}
               . Its slot is free; then it resumes the agent’s session. Send & continue ends the wait with your reply.
             </Text>
-            <Button
-              size="xs"
-              leftSection={<IconAlarm size={14} />}
-              onClick={() => actions.wakeNow.mutate({ id: task.id })}
-              loading={actions.wakeNow.isPending}
-            >
-              Wake now
-            </Button>
+            <Group gap="xs" wrap="nowrap">
+              <StopButton task={task} actions={actions} />
+              <Button
+                size="xs"
+                leftSection={<IconAlarm size={14} />}
+                onClick={() => actions.wakeNow.mutate({ id: task.id })}
+                loading={actions.wakeNow.isPending}
+              >
+                Wake now
+              </Button>
+            </Group>
           </Group>
         )}
         {isProposal && (

@@ -132,6 +132,12 @@ export const tasks = pgTable(
     waitCheck: boolean('wait_check').notNull().default(false),
     /** When the task's wait ended into Todo; kept through the claim until the run's first update, like `paused_at`. */
     wokenAt: timestamp('woken_at', { withTimezone: true }),
+    /** Running only: when the user asked for the run to be interrupted; the worker clears it when it acts on it, and any move out of Running does. */
+    stopRequestedAt: timestamp('stop_requested_at', { withTimezone: true }),
+    /** Running only: this run's worker has read the run inbox, so it hands messages over; a CLI that never does leaves them to the resume. Cleared when the task leaves Running. */
+    inboxRead: boolean('inbox_read').notNull().default(false),
+    /** With a stop request: the pending note that goes with it (Stop & send); null for a plain stop. */
+    stopMessageId: text('stop_message_id'),
     /** The blind index (abh1.…) of the PR head sha an intake review was made for. */
     head: text('head'),
     /** The question note waiting for an answer, if any. */
@@ -224,6 +230,12 @@ export const notes = pgTable(
     questionNoteId: text('question_note_id'),
     /** The signed-in user for author "user", the machine for agent and system notes. */
     by: text('by'),
+    /** A message the user sent to a running agent that no worker has handed over yet; cleared when the worker acknowledges it or the run ends. */
+    pending: boolean('pending').notNull().default(false),
+    /** Written to a running agent (Send, Stop & send); never cleared, so a resume can find messages that were never handed over. */
+    queued: boolean('queued').notNull().default(false),
+    /** When a worker handed the message to the running agent. The resume prompt does not repeat it. */
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
     createdAt: createdAt(),
   },
   (t) => [
