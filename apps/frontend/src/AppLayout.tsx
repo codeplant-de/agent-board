@@ -14,6 +14,7 @@ import { useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useLock } from './crypto/KeyContext';
 import { NewTaskModal } from './components/NewTaskModal';
+import { useDesktopNotifications } from './components/useDesktopNotifications';
 
 const NAV = [
   { to: '/', label: 'Board', icon: IconLayoutKanban },
@@ -31,6 +32,7 @@ export function AppLayout() {
   const active = (to: string) =>
     to === '/' ? pathname === '/' || pathname.startsWith('/t/') : pathname.startsWith(to);
   useHotkeys([['c', () => setCreating(true)]]);
+  useDesktopNotifications();
 
   return (
     <AppShell header={{ height: 56 }} padding="md">

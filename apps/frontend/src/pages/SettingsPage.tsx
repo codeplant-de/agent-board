@@ -9,6 +9,7 @@ import {
   Paper,
   PasswordInput,
   Stack,
+  Switch,
   Table,
   Text,
   TextInput,
@@ -20,13 +21,19 @@ import { modals } from '@mantine/modals';
 import { notifications } from '@mantine/notifications';
 import { IconCheck, IconCopy, IconKey } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { KeyError } from '../crypto/kdf';
 import { exportDataKey, replacePassphrase, type StoredKey } from '../crypto/keySlots';
 import { useKeys } from '../crypto/KeyContext';
 import { PASSPHRASE_ADVICE, passphraseProblem, samePassphrase } from '../crypto/passphrase';
 import { PassphraseModal } from '../crypto/PassphraseModal';
 import { CLIENT_COLOR, clientText } from '../lib/clientStatus';
+import {
+  isNotificationSupported,
+  readDesktopNotificationsPreference,
+  subscribeToDesktopNotificationsPreference,
+  writeDesktopNotificationsPreference,
+} from '../lib/desktopNotifications';
 import { ago } from '../lib/time';
 import { errorMessage, useTRPC } from '../lib/trpc';
 
@@ -326,11 +333,67 @@ function Encryption() {
   );
 }
 
+function DesktopNotifications() {
+  const on = useSyncExternalStore(subscribeToDesktopNotificationsPreference, readDesktopNotificationsPreference);
+  const supported = isNotificationSupported();
+  const [permission, setPermission] = useState(() => (supported ? Notification.permission : 'denied'));
+  const blocked = supported && permission === 'denied';
+
+  // The permission prompt needs the click that calls this.
+  const toggle = async (next: boolean) => {
+    if (!next) return writeDesktopNotificationsPreference(false);
+    const result = await Notification.requestPermission();
+    setPermission(result);
+    writeDesktopNotificationsPreference(result === 'granted');
+  };
+
+  return (
+    <Paper withBorder p="md">
+      <Stack>
+        <div>
+          <Title order={5}>Desktop notifications</Title>
+          <Text size="sm" c="dimmed">
+            Get a notification when a task needs you. It works while a board tab is open, in the background too.
+          </Text>
+        </div>
+        <Switch
+          label="Notify me when a task needs me"
+          checked={on && permission === 'granted'}
+          disabled={!supported || blocked}
+          onChange={(event) => void toggle(event.currentTarget.checked)}
+        />
+        {!supported && (
+          <Text size="sm" c="dimmed">
+            This browser does not offer notifications here. They need https or localhost.
+          </Text>
+        )}
+        {blocked && (
+          <Text size="sm" c="red">
+            The browser blocks notifications for this site. Allow them in the site settings, then reload the page.
+          </Text>
+        )}
+        {on && permission === 'granted' && (
+          <Group>
+            <Button
+              size="xs"
+              variant="default"
+              onClick={() => new Notification('Agent Board', { body: 'Notifications work.', icon: '/favicon.svg' })}
+            >
+              Send a test
+            </Button>
+          </Group>
+        )}
+      </Stack>
+    </Paper>
+  );
+}
+
 export function SettingsPage() {
   return (
     <Stack maw={900} mx="auto">
       <Title order={3}>Settings</Title>
       <Machines />
+      <DesktopNotifications />
       <Encryption />
     </Stack>
   );

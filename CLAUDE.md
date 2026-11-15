@@ -30,7 +30,7 @@ mise exec -- node apps/cli/src/main.mts <command>  # the CLI from source
 
 ## Traps
 
-- **`~/workspace/agent-board` is the live checkout.** The user's installed CLI and systemd timers may run from it. Never do unfinished work there. Work in a worktree under `.claude/worktrees/`, branched from `origin/main` (the local `main` is often behind).
+- **`~/workspace/agent-board` is the live checkout.** The user's installed CLI and systemd timers may run from it. Never do unfinished work there. Work in a worktree (see Worktrees), branched from `origin/main` (the local `main` is often behind).
 - **`MIN_CLIENT` is a coordinated rollout.** The server deploys on every merge to `main`. Raising `MIN_CLIENT` (in `packages/shared/src/contract.mts`, after `API_VERSION`) breaks every older installed CLI until a `cli-v*` release is out and machines run `board self-update`; CLIs up to 0.7.0 compare `contract` exactly, which `LEGACY_CONTRACT` keeps at 9. The numbers are a break level: an additive change (new command, optional field, new enum value with a vocabulary row, but only once every machine runs CLI 0.8.0 or newer: 0.7.0 does not survive the 422 for a task it cannot read) adds a feature name in `packages/shared/src/features.mts` and bumps nothing. A raised `MIN_CLIENT` also raises `apps/cli/package.json` and adds an Upgrading note to `docs/setup.md`. See `docs/architecture.md#versioning` and `docs/machine-api.md#features`.
 - **Parallel branches collide** on the migration number, the version numbers and the CLI version. On rebase take `main`'s `drizzle/meta` files, regenerate the migration with `pnpm db:generate --name <same name>`, copy any hand-written SQL over from the old file, and renumber the versions.
 - **Backend tests reset `board_test`** on every run. Two worktrees testing at once need separate databases through `TEST_DATABASE_URL`.
@@ -39,6 +39,13 @@ mise exec -- node apps/cli/src/main.mts <command>  # the CLI from source
 - **CLI code must run on Node and Bun.** Use `node:` APIs only.
 - **The listener keeps its old code** after a `git pull` or `self-update` until `systemctl --user restart agent-board-listen`.
 - **Headless `claude -p` has no AskUserQuestion.** Board runs use `board ask`.
+
+## Worktrees
+
+- Every worktree lives at `.claude/worktrees/<branch with / as +>`. Create or enter one with `scripts/worktree.sh open <pr|branch> [base]` (or `create`), never `git worktree add` by hand.
+- A new branch has no upstream until `git push -u origin HEAD`.
+- Run `scripts/worktree.sh elevate` before tests, lint or typecheck: a fresh worktree has no `node_modules`. The backend dev server and `db:migrate` also need `apps/backend/.env`, which elevate does not copy.
+- A worktree outside that folder (the older `../agent-board-*` siblings) is moved with `scripts/worktree.sh open <branch> --move` when next used.
 
 ## Working conventions
 

@@ -72,4 +72,4 @@ The tag must match `apps/cli/package.json`, and the commit must be on `main`. `.
 
 - Commits and tags are SSH-signed. Never bypass signing; if it fails, ask the user to run `ssh-add-signing`.
 - PRs merge with merge commits.
-- `~/workspace/agent-board` is a live checkout: the installed timers may run from it. Do unfinished work in a worktree under `.claude/worktrees/`.
+- `~/workspace/agent-board` is a live checkout: the installed timers may run from it. Do unfinished work in a worktree under `.claude/worktrees/`, made with `scripts/worktree.sh open <pr|branch>`.
