@@ -1,4 +1,4 @@
-import { STATUSES, type Status } from '@agent-board/shared';
+import type { Status } from '@agent-board/shared';
 import { Badge, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState, type DragEvent } from 'react';
@@ -28,6 +28,19 @@ interface DropTarget {
 const canDrag = (task: ListedTask) => task.status !== 'running';
 const canDrop = (status: Status) => status !== 'running' && status !== 'waiting';
 
+/** The board's cells in order; Waiting sits above Todo in one cell, so a wait never takes a column of its own. */
+const CELLS: Status[][] = [['backlog'], ['waiting', 'todo'], ['running'], ['needs-me'], ['done']];
+
+/**
+ * How tall a column's cards may grow before it scrolls. Waiting is capped at under a third of the viewport, and Todo below it
+ * gets what Waiting leaves: the rest of a full column less Waiting's box at its cap, or less only its empty box (~110px).
+ */
+const scrollMaxHeight = (status: Status, waitingEmpty: boolean): string => {
+  if (status === 'waiting') return '30vh';
+  if (status === 'todo') return waitingEmpty ? 'calc(100vh - 270px)' : 'calc(70vh - 230px)';
+  return 'calc(100vh - 160px)';
+};
+
 /** Narrow on a wide screen until hovered, then they float over their neighbors at full width. */
 const COLLAPSIBLE = new Set<Status>(['backlog', 'done']);
 
@@ -55,95 +68,104 @@ export function BoardPage() {
     setOver(null);
   };
 
+  const renderColumn = (status: Status) => {
+    const column = byStatus(status);
+    return (
+      <Paper
+        withBorder
+        p="sm"
+        radius="md"
+        className="board-column"
+        data-over={dragId !== null && over?.status === status && canDrop(status)}
+        bg="var(--mantine-color-default-hover)"
+        style={
+          status === 'needs-me' && column.length > 0
+            ? { borderTop: '3px solid var(--mantine-color-orange-5)' }
+            : undefined
+        }
+        onDragOver={(event: DragEvent) => {
+          if (!dragId || !canDrop(status)) return;
+          event.preventDefault();
+          if (over?.status !== status) setOver({ status });
+        }}
+        onDragLeave={(event: DragEvent) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(null);
+        }}
+        onDrop={(event: DragEvent) => {
+          event.preventDefault();
+          drop(status);
+        }}
+      >
+        <div className="board-column-content">
+          <Group justify="space-between" mb="sm">
+            <Group gap={6}>
+              <Badge color={STATUS_COLOR[status]} variant="light">
+                {STATUS_LABEL[status]}
+              </Badge>
+              <Text size="sm" c="dimmed">
+                {column.length}
+              </Text>
+            </Group>
+            <Text size="xs" c="dimmed">
+              {HINT[status]}
+            </Text>
+          </Group>
+          <ScrollArea.Autosize mah={scrollMaxHeight(status, byStatus('waiting').length === 0)} offsetScrollbars>
+            <Stack gap="xs" mih={status === 'waiting' ? undefined : 60}>
+              {column.map((task) => (
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  draggable={canDrag(task)}
+                  dragging={dragId === task.id}
+                  {...(canPolish(task) ? { onPolish: () => polish.polish(task) } : {})}
+                  polishDisabled={
+                    polish.isPending || (tasks.data ?? []).some((child) => isOpenPolishOf(child, task.id))
+                  }
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'move';
+                    setDragId(task.id);
+                  }}
+                  onDragEnd={() => {
+                    setDragId(null);
+                    setOver(null);
+                  }}
+                  onDragOver={(event) => {
+                    if (!dragId || !canDrop(status) || task.id === dragId) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    // Upper half: above this card; lower half: above the next one.
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const index = column.indexOf(task);
+                    const beforeId = event.clientY < rect.top + rect.height / 2 ? task.id : column[index + 1]?.id;
+                    if (over?.status !== status || over.beforeId !== beforeId) setOver({ status, beforeId });
+                  }}
+                />
+              ))}
+              {column.length === 0 && (
+                <Text size="sm" c="dimmed" ta="center" py={status === 'waiting' ? 'xs' : 'lg'}>
+                  {status === 'needs-me' ? 'Nothing waiting for you' : 'Empty'}
+                </Text>
+              )}
+            </Stack>
+          </ScrollArea.Autosize>
+        </div>
+      </Paper>
+    );
+  };
+
   return (
     <div className="board">
-      {STATUSES.map((status) => {
-        const column = byStatus(status);
-        return (
-          <div key={status} className="board-cell" data-collapsible={COLLAPSIBLE.has(status)} data-status={status}>
-            <Paper
-              withBorder
-              p="sm"
-              radius="md"
-              className="board-column"
-              data-over={dragId !== null && over?.status === status && canDrop(status)}
-              bg="var(--mantine-color-default-hover)"
-              style={
-                status === 'needs-me' && column.length > 0
-                  ? { borderTop: '3px solid var(--mantine-color-orange-5)' }
-                  : undefined
-              }
-              onDragOver={(event: DragEvent) => {
-                if (!dragId || !canDrop(status)) return;
-                event.preventDefault();
-                if (over?.status !== status) setOver({ status });
-              }}
-              onDragLeave={(event: DragEvent) => {
-                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(null);
-              }}
-              onDrop={(event: DragEvent) => {
-                event.preventDefault();
-                drop(status);
-              }}
-            >
-              <div className="board-column-content">
-                <Group justify="space-between" mb="sm">
-                  <Group gap={6}>
-                    <Badge color={STATUS_COLOR[status]} variant="light">
-                      {STATUS_LABEL[status]}
-                    </Badge>
-                    <Text size="sm" c="dimmed">
-                      {column.length}
-                    </Text>
-                  </Group>
-                  <Text size="xs" c="dimmed">
-                    {HINT[status]}
-                  </Text>
-                </Group>
-                <ScrollArea.Autosize mah="calc(100vh - 160px)" offsetScrollbars>
-                  <Stack gap="xs" mih={60}>
-                    {column.map((task) => (
-                      <TaskCard
-                        key={task.id}
-                        task={task}
-                        draggable={canDrag(task)}
-                        dragging={dragId === task.id}
-                        {...(canPolish(task) ? { onPolish: () => polish.polish(task) } : {})}
-                        polishDisabled={
-                          polish.isPending || (tasks.data ?? []).some((child) => isOpenPolishOf(child, task.id))
-                        }
-                        onDragStart={(event) => {
-                          event.dataTransfer.effectAllowed = 'move';
-                          setDragId(task.id);
-                        }}
-                        onDragEnd={() => {
-                          setDragId(null);
-                          setOver(null);
-                        }}
-                        onDragOver={(event) => {
-                          if (!dragId || !canDrop(status) || task.id === dragId) return;
-                          event.preventDefault();
-                          event.stopPropagation();
-                          // Upper half: above this card; lower half: above the next one.
-                          const rect = event.currentTarget.getBoundingClientRect();
-                          const index = column.indexOf(task);
-                          const beforeId = event.clientY < rect.top + rect.height / 2 ? task.id : column[index + 1]?.id;
-                          if (over?.status !== status || over.beforeId !== beforeId) setOver({ status, beforeId });
-                        }}
-                      />
-                    ))}
-                    {column.length === 0 && (
-                      <Text size="sm" c="dimmed" ta="center" py="lg">
-                        {status === 'needs-me' ? 'Nothing waiting for you' : 'Empty'}
-                      </Text>
-                    )}
-                  </Stack>
-                </ScrollArea.Autosize>
-              </div>
-            </Paper>
-          </div>
-        );
-      })}
+      {CELLS.map((statuses) => (
+        <div
+          key={statuses.join()}
+          className="board-cell"
+          data-collapsible={statuses.length === 1 && COLLAPSIBLE.has(statuses[0]!)}
+          data-status={statuses.join(' ')}
+        >
+          {statuses.map(renderColumn)}
+        </div>
+      ))}
     </div>
   );
 }
