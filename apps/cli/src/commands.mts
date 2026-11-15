@@ -9,7 +9,6 @@ import {
   ask,
   comment,
   delay,
-  notify,
   move,
   parseStatus,
   readNoteFile,
@@ -196,9 +195,9 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   const notInRun = (message: string): void => {
     if (env['AGENT_BOARD_TASK']) throw new UsageError(message);
   };
-  // The text of `comment` and `notify`: the words as written, or stdin for `-`; `comment` also reads a file for `--file <path>`.
-  const textOf = async (words: string[], { allowFile }: { allowFile: boolean }): Promise<string> => {
-    if (allowFile && words[0] === '--file') {
+  // The text of `comment`: the words as written, or stdin for `-`, or a file for `--file <path>`.
+  const textOf = async (words: string[]): Promise<string> => {
+    if (words[0] === '--file') {
       if (words.length !== 2) throw new UsageError('--file takes one path');
       return readNoteFile(words[1] ?? '');
     }
@@ -307,7 +306,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     refuseDryRunInText(words, 'board comment --dry-run <task> <text...>');
     if (flags.suggest !== undefined && flags.suggestFile !== undefined)
       throw new UsageError('give --suggest or --suggest-file, not both');
-    const text = await textOf(words, { allowFile: true });
+    const text = await textOf(words);
     const suggestion = flags.suggestFile === undefined ? flags.suggest : readNoteFile(flags.suggestFile);
     const context = contextOf(command);
     await comment(context, await taskIdOf(context, arg), text, suggestion === undefined ? {} : { suggestion });
@@ -338,34 +337,12 @@ export function buildProgram(options: ProgramOptions = {}): Command {
 
   dryRunOption(
     program
-      .command('notify')
-      .helpGroup(TASKS)
-      .summary('Slack message with the task link')
-      .description(
-        paragraphs(
-          'Send a Slack message with the task link. The text is every word after the task; `-` reads it from stdin.',
-          ID_NOTE,
-        ),
-      )
-      .argument('<task>', TASK_ARGUMENT)
-      .argument('<text...>', 'the message')
-      .passThroughOptions()
-      .addHelpText('after', examples('board notify Ab3dEf9x "needs your decision"')),
-  ).action(async (arg: string, words: string[], _options, command: Command) => {
-    refuseDryRunInText(words, 'board notify --dry-run <task> <text...>');
-    const text = await textOf(words, { allowFile: false });
-    const context = contextOf(command);
-    await notify(context, await taskIdOf(context, arg), text);
-  });
-
-  dryRunOption(
-    program
       .command('ask')
       .helpGroup(TASKS)
       .summary('ask the user 1-4 questions')
       .description(
         paragraphs(
-          'Ask the user 1-4 questions and move the task to needs-me; Slack is told. The user answers on the board and the run is resumed with the answers.',
+          'Ask the user 1-4 questions and move the task to needs-me. The user answers on the board and the run is resumed with the answers.',
           'The questions are JSON in a regular file in /tmp: {"questions": [{"header", "question", "multiSelect", "options": [{"label", "description", "recommended"?}]}]}',
           ID_NOTE,
         ),

@@ -4,6 +4,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState, type DragEvent } from 'react';
 import { moveConfirmed } from '../components/confirmStart';
 import { IncompatibleMachinesBanner } from '../components/IncompatibleMachinesBanner';
+import { SlackInbox } from '../components/SlackInbox';
 import { TaskCard } from '../components/TaskCard';
 import { usePolish } from '../components/usePolish';
 import { canPolish, isOpenPolishOf } from '../lib/polish';
@@ -156,8 +157,9 @@ export function BoardPage() {
   };
 
   return (
-    <>
+    <Stack gap="md">
       <IncompatibleMachinesBanner />
+      <SlackInbox />
       <div className="board">
         {CELLS.map((statuses) => (
           <div
@@ -170,6 +172,6 @@ export function BoardPage() {
           </div>
         ))}
       </div>
-    </>
+    </Stack>
   );
 }

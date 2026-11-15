@@ -1,5 +1,5 @@
 {
-  "id": "c330f541-b123-4cb8-a4fb-ea2d3986107d",
+  "id": "bc4edbc7-4076-44cc-9295-28ede3a31329",
   "prevId": "e3c6cf5d-d3d1-435c-a65d-030e8eeb0d18",
   "version": "7",
   "dialect": "postgresql",
@@ -95,18 +95,6 @@
         "last_seen_at": {
           "name": "last_seen_at",
           "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "client_version": {
-          "name": "client_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "client_api": {
-          "name": "client_api",
-          "type": "integer",
           "primaryKey": false,
           "notNull": false
         },
@@ -534,6 +522,225 @@
           "value": "\"schedule\".\"workdir\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
         }
       },
+      "isRLSEnabled": true
+    },
+    "public.slack_inbox": {
+      "name": "slack_inbox",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner": {
+          "name": "owner",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "current_setting('app.owner', true)"
+        },
+        "text": {
+          "name": "text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "slack_user_id": {
+          "name": "slack_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "slack_inbox_owner_created_idx": {
+          "name": "slack_inbox_owner_created_idx",
+          "columns": [
+            {
+              "expression": "owner",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "slack_inbox_owner_app_user_username_fk": {
+          "name": "slack_inbox_owner_app_user_username_fk",
+          "tableFrom": "slack_inbox",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "owner"
+          ],
+          "columnsTo": [
+            "username"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "tenant": {
+          "name": "tenant",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "board_app"
+          ],
+          "using": "owner = (select current_setting('app.owner', true))",
+          "withCheck": "owner = (select current_setting('app.owner', true))"
+        }
+      },
+      "checkConstraints": {
+        "slack_inbox_text_length": {
+          "name": "slack_inbox_text_length",
+          "value": "char_length(\"slack_inbox\".\"text\") between 1 and 4000"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.slack_link_code": {
+      "name": "slack_link_code",
+      "schema": "",
+      "columns": {
+        "code_hash": {
+          "name": "code_hash",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "slack_user_id": {
+          "name": "slack_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": true
+    },
+    "public.slack_link": {
+      "name": "slack_link",
+      "schema": "",
+      "columns": {
+        "owner": {
+          "name": "owner",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "current_setting('app.owner', true)"
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "slack_user_id": {
+          "name": "slack_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "slack_link_owner_app_user_username_fk": {
+          "name": "slack_link_owner_app_user_username_fk",
+          "tableFrom": "slack_link",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "owner"
+          ],
+          "columnsTo": [
+            "username"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "slack_link_slack_user_unique": {
+          "name": "slack_link_slack_user_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "team_id",
+            "slack_user_id"
+          ]
+        }
+      },
+      "policies": {
+        "tenant": {
+          "name": "tenant",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "board_app"
+          ],
+          "using": "owner = (select current_setting('app.owner', true))",
+          "withCheck": "owner = (select current_setting('app.owner', true))"
+        }
+      },
+      "checkConstraints": {},
       "isRLSEnabled": true
     },
     "public.task": {

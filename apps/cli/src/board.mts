@@ -26,7 +26,6 @@ import {
   UNREADABLE_TEXT,
 } from '@agent-board/shared';
 import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
-import { postSlack, slackText } from './notify.mts';
 import { createStyle } from './style.mts';
 import { SystemError } from './system.mts';
 import { plainLine, plainText } from './terminal.mts';
@@ -86,20 +85,6 @@ export async function comment(
 ): Promise<void> {
   await context.backend.addNote(id, text, options);
   confirm(context, `commented on ${id}  ${context.taskLink(id)}`);
-}
-
-// Sends the Slack message; returns the task, which the command read to write it.
-async function sendNotification(context: LinkingContext, id: string, text: string): Promise<Task> {
-  const task = await context.backend.getTask(id);
-  const message = slackText({ title: task.title, url: context.taskLink(task.id) }, text);
-  if (context.dryRun) context.print(`DRY slack ${message.replaceAll('\n', ' | ')}`);
-  else await postSlack(context.config.slackWebhookFile, message);
-  return task;
-}
-
-export async function notify(context: LinkingContext, id: string, text: string): Promise<void> {
-  await sendNotification(context, id, text);
-  confirm(context, `notified about ${id}  ${context.taskLink(id)}`);
 }
 
 export interface CommentFlags {
@@ -181,15 +166,6 @@ export async function ask(context: LinkingContext, id: string, path: string): Pr
     throw error;
   }
   await context.backend.ask(id, questions);
-  // Best effort: the question is on the board either way.
-  const first = questions[0];
-  await sendNotification(
-    context,
-    id,
-    `Question: ${first?.question ?? ''}${questions.length > 1 ? ` (+${questions.length - 1} more)` : ''}`,
-  ).catch((error: unknown) => {
-    context.print(`WARN notify failed: ${error instanceof Error ? error.message : String(error)}`);
-  });
   const count = `${questions.length} question${questions.length > 1 ? 's' : ''}`;
   confirm(context, `asked ${count} on ${id}, now in needs-me  ${context.taskLink(id)}`);
 }

@@ -1,0 +1,21 @@
+# The Slack app of the board (docs/operations.md, "The Slack app"). Create it from this file in the Cosuno workspace:
+# api.slack.com/apps, "Create New App", "From a manifest". Then generate an app-level token with the scope connections:write
+# (SLACK_APP_TOKEN) and install the app. It answers /board only; the board needs no bot token, so none is read.
+display_information:
+  name: Agent Board
+  description: Sends task ideas to your agent board.
+  background_color: '#1f2937'
+features:
+  slash_commands:
+    - command: /board
+      description: Send a task idea to the agent board, or link your Slack account
+      usage_hint: '<task text> | link | unlink | help'
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - commands
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
