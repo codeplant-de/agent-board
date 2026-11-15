@@ -30,7 +30,7 @@ export function parseUnitState(stdout: string): boolean {
   throw new SystemError(`systemctl gave no known unit state (got "${state.slice(0, 40)}")`);
 }
 
-const NON_WORKER_UNITS = ['agent-board-dispatch', 'agent-board-intake'];
+const NON_WORKER_UNITS = ['agent-board-dispatch', 'agent-board-intake', 'agent-board-listen'];
 
 export function parseWorkerUnits(stdout: string): string[] {
   const taskIds: string[] = [];

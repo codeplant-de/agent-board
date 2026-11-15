@@ -10,11 +10,12 @@ test('only known unit states answer; anything else throws', () => {
   }
 });
 
-test('worker units are listed by short link, the dispatcher and intake units are not', () => {
+test('worker units are listed by short link, the dispatcher, intake and listener units are not', () => {
   const out = [
     'agent-board-abc12345.service loaded active running agent-board-abc12345.service',
     'agent-board-dispatch.service loaded active running agent-board dispatcher: one tick',
     'agent-board-intake.service loaded active running intake',
+    'agent-board-listen.service loaded active running agent-board listener',
     'other.service loaded active running other',
   ].join('\n');
   assert.deepEqual(parseWorkerUnits(out), ['abc12345']);
