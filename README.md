@@ -8,7 +8,7 @@ All content is end-to-end encrypted. The server never sees a prompt, a note or a
 
 ```
  browser ──tRPC──▶ backend (Fastify, Postgres) ◀──machine API + SSE── board CLI on each worker machine
-                   board.codeplant.de, behind Authelia                  dispatch · intake · listen · worker
+                   board.codeplant.de, behind a login proxy             dispatch · intake · listen · worker
                                                                           └─ starts `claude -p` per task
 ```
 
