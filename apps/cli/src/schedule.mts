@@ -16,7 +16,7 @@ import {
   PRIORITIES,
 } from '@agent-board/shared';
 import type { Command } from 'commander';
-import type { Backend, Priority, Status, Task } from '@agent-board/shared';
+import type { Backend, DraftStatus, Priority, Task } from '@agent-board/shared';
 import { UsageError } from './cli.mts';
 import { plainLine } from './terminal.mts';
 
@@ -164,7 +164,7 @@ function parseInterval(text: string): number {
   }
 }
 
-function startStatus(args: Pick<ScheduleArgs, 'hold' | 'backlog'>): Status {
+function startStatus(args: Pick<ScheduleArgs, 'hold' | 'backlog'>): DraftStatus {
   if (args.hold) return 'needs-me';
   return args.backlog ? 'backlog' : 'todo';
 }

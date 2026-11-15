@@ -104,7 +104,7 @@ const result = {
 const batch = {
   runId: '1b9a7c6e-aaaa',
   startedAt: at.toISOString(),
-  sessionId: 's',
+  sessionId: '7c1e2f0a-3b4d-4e5f-8a9b-0c1d2e3f4a5b',
   resumed: true,
   events: [note, result],
 };
@@ -119,8 +119,33 @@ test('a batch is checked for shape', () => {
   );
 });
 
+test('a parent the board would refuse is dropped, not sent', () => {
+  const condenser = new StreamCondenser(() => at);
+  const text = (parent: string) =>
+    JSON.stringify({
+      type: 'assistant',
+      parent_tool_use_id: parent,
+      message: { content: [{ type: 'text', text: 'hi' }] },
+    });
+  assert.equal(condenser.line(text('toolu_01abc'))[0]?.parent, 'toolu_01abc');
+  assert.equal(condenser.line(text('not an id'))[0]?.parent, null);
+  assert.equal(condenser.line(text('x'.repeat(300)))[0]?.parent, 'x'.repeat(256));
+});
+
+test('a batch holds its session id to a UUID and an event parent to a tool use id', () => {
+  assert.equal(parseWireTranscriptBatch({ ...batch, sessionId: null }).sessionId, null);
+  for (const sessionId of ['s', '--resume', 5]) {
+    assert.throws(() => parseWireTranscriptBatch({ ...batch, sessionId }), /sessionId must be a UUID/);
+  }
+  const child = { ...note, parent: 'toolu_01ABCdef-2' };
+  assert.deepEqual(parseWireTranscriptBatch({ ...batch, events: [child] }).events, [child]);
+  for (const parent of ['', 'a b', 'x'.repeat(257), 'toolu\n', 5]) {
+    assert.throws(() => parseWireTranscriptBatch({ ...batch, events: [{ ...note, parent }] }), /tool use id/);
+  }
+});
+
 test('a batch needs an integer seq from 0, a date and at most the batch limit', () => {
-  for (const bad of [{ seq: -1 }, { seq: 1.5 }, { seq: '1' }, { at: 'soon' }, { at: 5 }]) {
+  for (const bad of [{ seq: -1 }, { seq: 1.5 }, { seq: '1' }, { seq: 2 ** 31 }, { at: 'soon' }, { at: 5 }]) {
     assert.throws(() => parseWireTranscriptBatch({ ...batch, events: [{ ...note, ...bad }] }), TranscriptError);
   }
   assert.equal(

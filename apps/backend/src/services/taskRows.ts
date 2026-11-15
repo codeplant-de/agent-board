@@ -1,4 +1,4 @@
-import { DEFAULT_PRIORITY, isSafeTaskId, type Status, type WireTaskDraft } from '@agent-board/shared';
+import { DEFAULT_PRIORITY, isDraftStatus, isSafeTaskId, type Status, type WireTaskDraft } from '@agent-board/shared';
 import { eq, max, min } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import type { DbOrTx } from '../db/client';
@@ -48,8 +48,8 @@ export async function insertTask(
   const status = proposed ? 'needs-me' : (draft.status ?? 'todo');
   if (draft.notBefore !== undefined && status !== 'todo')
     throw new AppError('BAD_REQUEST', 'Only a task in Todo can have a start time.');
-  // A wait needs its end and a run that waits; `wait` is the only way in.
-  if (status === 'waiting') throw new AppError('BAD_REQUEST', 'A new task cannot start in Waiting.');
+  // Running and Waiting need a run behind them and Done a close; their own commands are the only way in.
+  if (!isDraftStatus(status)) throw new AppError('BAD_REQUEST', 'A new task starts in Backlog, Todo or Needs me.');
   const [row] = await tx
     .insert(tasks)
     .values({
