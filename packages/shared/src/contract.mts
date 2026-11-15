@@ -866,6 +866,48 @@ export function parseVersionIdentity(value: unknown): { owner: string; keyId: st
   return { owner, keyId };
 }
 
+/** The headers every machine API request carries: the CLI's version and the API level it speaks. */
+export const CLIENT_VERSION_HEADER = 'x-board-client';
+export const CLIENT_API_HEADER = 'x-board-client-api';
+
+const RELEASE_VERSION = /^\d+\.\d+\.\d+$/;
+const CLIENT_VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.]{1,20})?$/;
+
+/** A release as `cli-v<x.y.z>` names it. */
+export function isReleaseVersion(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 40 && RELEASE_VERSION.test(value);
+}
+
+/** Orders versions by their x.y.z; a suffix such as `-dev` counts as its base. Negative, zero or positive like a subtraction. */
+export function compareVersions(a: string, b: string): number {
+  const parts = (version: string): number[] =>
+    (version.split('-')[0] ?? version).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const [left, right] = [parts(a), parts(b)];
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return Math.sign(difference);
+  }
+  return 0;
+}
+
+/** A CLI version a client reports: a release, or a checkout's `x.y.z-dev`. Anything else is ignored, never refused. */
+export function parseClientVersion(value: unknown): string | null {
+  return typeof value === 'string' && value.length <= 40 && CLIENT_VERSION.test(value) ? value : null;
+}
+
+/** The API level a client reports: an integer from 1 to 10000, else ignored. */
+export function parseClientApi(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^\d{1,5}$/.test(value)) return null;
+  const level = Number(value);
+  return level >= 1 && level <= 10_000 ? level : null;
+}
+
+/** The newest CLI release the server advertises in the `version` answer; null when it names none or something else. */
+export function parseVersionCli(value: unknown): string | null {
+  const cli = record(value, 'version')['cli'];
+  return isReleaseVersion(cli) ? cli : null;
+}
+
 // What the server checks of every request: the shape, the sealed fields being envelopes, and nothing about their content.
 
 function sealedField(obj: Record<string, unknown>, key: string, what: string, field: Field): string {

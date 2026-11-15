@@ -41,6 +41,10 @@ RUN pnpm install --frozen-lockfile --prod --filter @agent-board/backend...
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production
 
+# The newest CLI release (apps/cli/package.json), which the machine API advertises; CI passes it, empty means unknown.
+ARG CLI_VERSION=
+ENV CLI_VERSION=$CLI_VERSION
+
 # Non-root. All state is in Postgres.
 RUN groupadd --system --gid 1001 board \
     && useradd --system --uid 1001 --gid board --home-dir /home/board --create-home board

@@ -4,7 +4,9 @@
  */
 import {
   API_VERSION,
+  CLIENT_API_HEADER,
   CLIENT_FEATURES_HEADER,
+  CLIENT_VERSION_HEADER,
   ContractError,
   findUnknownVocabulary,
   isRecord,
@@ -12,7 +14,9 @@ import {
   isSafeTaskId,
   LEGACY_CONTRACT,
   MIN_CLIENT,
+  parseClientApi,
   parseClientFeatures,
+  parseClientVersion,
   parseHeartbeat,
   parseSchedulePatch,
   parseWireAsk,
@@ -35,7 +39,7 @@ import { withOwner } from './db/scope';
 import type { Changes } from './services/changes';
 import { AppError } from './services/errors';
 import { getKeys } from './services/keys';
-import { machineForToken } from './services/machines';
+import { machineForToken, recordClient } from './services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
 import { appendTranscript } from './services/transcripts';
 import {
@@ -122,6 +126,7 @@ export async function handleMachineCall(
         keyId: (await getKeys(db))?.keyId ?? null,
         api: { version: API_VERSION, minClient: MIN_CLIENT },
         features: SERVER_FEATURES,
+        ...(config.cliVersion === null ? {} : { cli: config.cliVersion }),
       };
     case 'list-tasks':
       return visible.only((await listTasks(db, { all: body['all'] === true })).map(toTask));
@@ -257,6 +262,12 @@ function bearerToken(req: FastifyRequest): string {
   return header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : '';
 }
 
+/** A header sent once; a repeated one is ignored along with anything malformed. */
+function headerValue(req: FastifyRequest, name: string): string | undefined {
+  const value = req.headers[name];
+  return typeof value === 'string' ? value : undefined;
+}
+
 async function authenticate(db: Db, req: FastifyRequest): Promise<{ identity: MachineIdentity; token: string }> {
   const token = bearerToken(req);
   const identity = token ? await machineForToken(db, token) : null;
@@ -315,12 +326,19 @@ export function registerMachineApi(
   app.post<{ Params: { command: string } }>('/api/machine/:command', async (req) => {
     const { identity: machine } = await authenticate(db, req);
     const body = isRecord(req.body) ? req.body : {};
-    const result = await withOwner(db, machine.owner, (tx) =>
-      handleMachineCall(tx, config, machine, req.params.command, body, {
+    const result = await withOwner(db, machine.owner, async (tx) => {
+      // Only `version`, which every CLI process sends first: a worker that started before an update keeps sending
+      // heartbeats from the old binary, and those must not make the machine look outdated again.
+      if (req.params.command === 'version')
+        await recordClient(tx, machine.name, {
+          version: parseClientVersion(headerValue(req, CLIENT_VERSION_HEADER)),
+          api: parseClientApi(headerValue(req, CLIENT_API_HEADER)),
+        });
+      return handleMachineCall(tx, config, machine, req.params.command, body, {
         features: parseClientFeatures(req.headers[CLIENT_FEATURES_HEADER]),
         ...(vocabulary === undefined ? {} : { vocabulary }),
-      }),
-    );
+      });
+    });
     if (DISPATCH_WRITES.has(req.params.command)) changes.notify(machine.owner);
     return { result };
   });

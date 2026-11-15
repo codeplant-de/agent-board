@@ -1,3 +1,5 @@
+import { isReleaseVersion } from '@agent-board/shared';
+
 const requireEnv = (name: string): string => {
   const value = process.env[name];
   if (!value) throw new Error(`Missing required environment variable ${name}`);
@@ -17,6 +19,14 @@ export interface Config {
   allowedGroups: string[];
   /** Local development only: act as this user instead of reading Authelia headers. */
   devAuthUser: string | null;
+  /** The newest CLI release, x.y.z, which the machine API advertises; null when this build does not know it. */
+  cliVersion: string | null;
+}
+
+/** An unset or malformed value is "unknown", not a start failure: the advertisement is a convenience. */
+function parseCliVersion(value: string | undefined): string | null {
+  const version = value?.trim();
+  return isReleaseVersion(version) ? version : null;
 }
 
 export function loadConfig(): Config {
@@ -37,5 +47,6 @@ export function loadConfig(): Config {
       .map((g) => g.trim())
       .filter(Boolean),
     devAuthUser,
+    cliVersion: parseCliVersion(process.env.CLI_VERSION),
   };
 }

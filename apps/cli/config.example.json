@@ -16,6 +16,7 @@
   "inactivityMinutes": 15,
   "maxRunHours": 6,
   "slackWebhookFile": "~/.config/watch-review-requests/slack-webhook",
+  "autoUpdate": "incompatible",
   "repos": {
     "cosuno/cosuno": "~/workspace/cosuno/cosuno"
   },

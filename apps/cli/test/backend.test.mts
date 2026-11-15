@@ -41,7 +41,7 @@ type Answer =
 function board(
   answers: Record<string, Answer>,
   api: { version: number; minClient: number } | undefined = SERVER_API,
-  served: { owner?: string; keyId?: string | null } = {},
+  served: { owner?: string; keyId?: string | null; cli?: string } = {},
 ) {
   const seen: Seen[] = [];
   const fetcher: Fetch = async (url, init) => {
@@ -566,13 +566,38 @@ test('a server that names features it has and this CLI has no name for is fine, 
   await assert.rejects(unclean.backend.listTasks(), /version.features must be a list of feature names/);
 });
 
-test('every request names the client vocabulary, empty while the baseline is all there is', async () => {
-  const { seen, backend } = board({ 'list-tasks': { body: { result: [] } } });
+test('every request names this CLI, its API level and the client vocabulary, which is empty while the baseline is all there is', async () => {
+  const { backend, seen } = board({ 'list-tasks': { body: { result: [] } } });
   await backend.listTasks();
-  assert.deepEqual(
-    seen.map((request) => request.headers.get(CLIENT_FEATURES_HEADER)),
-    ['', ''],
-  );
+  assert.equal(seen.length, 2);
+  for (const { headers } of seen) {
+    assert.match(headers.get('x-board-client') ?? '', /^\d+\.\d+\.\d+(-dev)?$/);
+    assert.equal(headers.get('x-board-client-api'), String(API_VERSION));
+    assert.equal(headers.get(CLIENT_FEATURES_HEADER), '');
+  }
+});
+
+test('the newest CLI the server advertises is part of what verifyContract returns, and a bad one is ignored', async () => {
+  const answering =
+    (cli: unknown): Fetch =>
+    async () =>
+      new Response(JSON.stringify({ result: { contract: API_VERSION, owner: 'alice', keyId: null, cli } }));
+  assert.equal((await verifyContract(config, answering('0.7.0'))).cli, '0.7.0');
+  for (const bad of ['next', '0.7', '0.7.0-dev', 7, null, undefined])
+    assert.equal('cli' in (await verifyContract(config, answering(bad))), false, String(bad));
+});
+
+test('the web backend tells its owner what the board advertised, once', async () => {
+  const told: (string | undefined)[] = [];
+  const { fetcher } = board({ 'list-tasks': { body: { result: [] } } }, SERVER_API, { cli: '0.7.0' });
+  const backend = createWebBackend({
+    loadConfig: () => config,
+    fetch: fetcher,
+    onServer: (identity) => told.push(identity.cli),
+  });
+  await backend.listTasks();
+  await backend.listTasks();
+  assert.deepEqual(told, ['0.7.0']);
 });
 
 test('a status or priority that needs a server feature is sent only when the server names it', async () => {
