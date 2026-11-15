@@ -1,4 +1,4 @@
-import type { WireSchedule, WireScheduleDraft } from '@agent-board/shared';
+import { MAX_INTERVAL_MS, type WireSchedule, type WireScheduleDraft } from '@agent-board/shared';
 import { Cron } from 'croner';
 import { asc, count, eq, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
@@ -17,14 +17,16 @@ function cronOf(rule: Pick<Rule, 'cron' | 'timezone'>): Cron {
 
 /**
  * The first run after `after` (at or after it with `inclusive`): the next point on the interval's grid, or the next
- * cron match in the rule's time zone. Null when there is none, because `until` or the expression rules it out.
+ * cron match in the rule's time zone. Null when there is none, because `until` or the expression rules it out, or
+ * when it lies beyond the dates a Date can hold.
  */
 export function nextOccurrence(rule: Rule, after: Date, inclusive: boolean): Date | null {
   const next =
     rule.everyMs === null
       ? nextMatch(rule, after, inclusive)
       : nextOnGrid(rule.anchorAt, rule.everyMs, after, inclusive);
-  return next !== null && rule.until !== null && next.getTime() > rule.until.getTime() ? null : next;
+  if (next === null || Number.isNaN(next.getTime())) return null;
+  return rule.until !== null && next.getTime() > rule.until.getTime() ? null : next;
 }
 
 function nextOnGrid(anchor: Date, everyMs: number, after: Date, inclusive: boolean): Date {
@@ -41,6 +43,7 @@ function nextMatch(rule: Rule, after: Date, inclusive: boolean): Date | null {
 function validRule(draft: Pick<WireScheduleDraft, 'everyMs' | 'cron' | 'timezone'>): Rule['everyMs'] {
   if (draft.everyMs !== undefined) {
     if (draft.everyMs < MIN_INTERVAL_MS) throw new AppError('BAD_REQUEST', 'An interval must be at least 1 minute.');
+    if (draft.everyMs > MAX_INTERVAL_MS) throw new AppError('BAD_REQUEST', 'An interval must be at most 10 years.');
     return draft.everyMs;
   }
   const cron = draft.cron ?? '';

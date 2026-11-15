@@ -1,6 +1,6 @@
 // A run's transcript: Claude Code's `--output-format stream-json` events, condensed to what a person reads when
 // they want to know why the agent did something. The worker sends them to the board in batches while the run goes on.
-import { ContractError, MAX_OUTPUT_SIZE, parseSealed } from './contract.mts';
+import { ContractError, isSessionId, MAX_INT32, MAX_OUTPUT_SIZE, parseSealed } from './contract.mts';
 import { isRecord } from './guards.mts';
 
 interface EventBase {
@@ -120,7 +120,13 @@ function resultText(content: unknown): string {
     .join('\n');
 }
 
-const capId = (id: string | null): string | null => (id === null ? null : id.slice(0, MAX_ID_CHARS));
+// A tool use id as the board accepts it for an event's `parent`; anything else is dropped rather than refused.
+const PARENT_ID = new RegExp(`^[A-Za-z0-9_-]{1,${MAX_ID_CHARS}}$`);
+const isParentId = (id: string): boolean => PARENT_ID.test(id);
+const capId = (id: string | null): string | null => {
+  const capped = id?.slice(0, MAX_ID_CHARS) ?? null;
+  return capped !== null && isParentId(capped) ? capped : null;
+};
 
 // Every string of an event is bounded, so that its sealed JSON stays under the board's limit for `tr.data` whatever the
 // stream holds: one event past it would be refused for good.
@@ -363,8 +369,8 @@ export function parseWireTranscriptBatch(value: unknown): WireTranscriptBatch {
   if (typeof startedAt !== 'string' || Number.isNaN(Date.parse(startedAt)))
     throw new TranscriptError('transcript startedAt must be a date');
   const sessionId = value['sessionId'] ?? null;
-  if (sessionId !== null && typeof sessionId !== 'string')
-    throw new TranscriptError('transcript sessionId must be a string or null');
+  if (sessionId !== null && (typeof sessionId !== 'string' || !isSessionId(sessionId)))
+    throw new TranscriptError('transcript sessionId must be a UUID or null');
   const rawEvents = value['events'];
   if (!Array.isArray(rawEvents) || rawEvents.length > MAX_BATCH_EVENTS)
     throw new TranscriptError(`transcript events must be a list of at most ${MAX_BATCH_EVENTS}`);
@@ -373,12 +379,12 @@ export function parseWireTranscriptBatch(value: unknown): WireTranscriptBatch {
     const kind = KINDS.find((candidate) => candidate === event['kind']);
     if (kind === undefined) throw new TranscriptError('transcript event needs a known kind');
     const { seq, at, parent } = event;
-    if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0)
-      throw new TranscriptError('transcript event seq must be an integer from 0');
+    if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0 || seq > MAX_INT32)
+      throw new TranscriptError(`transcript event seq must be an integer from 0 to ${MAX_INT32}`);
     if (typeof at !== 'string' || Number.isNaN(Date.parse(at)))
       throw new TranscriptError('transcript event at must be a date');
-    if (parent !== null && typeof parent !== 'string')
-      throw new TranscriptError('transcript event parent must be a string or null');
+    if (parent !== null && (typeof parent !== 'string' || !isParentId(parent)))
+      throw new TranscriptError('transcript event parent must be a tool use id or null');
     const data = sealedOrBust(event['data'], 'tr.data', 'transcript event data');
     const base = { seq, at, kind, parent, data };
     if (kind !== 'tool_result') {

@@ -653,7 +653,7 @@ describe('transcripts', () => {
   const batch = (runId: string, events: unknown[]) => ({
     runId,
     startedAt: at(0),
-    sessionId: 'sess',
+    sessionId: '7c1e2f0a-3b4d-4e5f-8a9b-0c1d2e3f4a5b',
     resumed: false,
     events,
   });
@@ -674,7 +674,12 @@ describe('transcripts', () => {
       body: batch('run-0001-aaaa', [{ seq: 3, at: at(9), parent: null, kind: 'text', text: 'done' }]),
     });
     const [run] = await ui.transcript.runs({ id: task.id });
-    expect(run).toMatchObject({ id: 'run-0001-aaaa', machine: 'laptop', eventCount: 4, sessionId: 'sess' });
+    expect(run).toMatchObject({
+      id: 'run-0001-aaaa',
+      machine: 'laptop',
+      eventCount: 4,
+      sessionId: '7c1e2f0a-3b4d-4e5f-8a9b-0c1d2e3f4a5b',
+    });
     expect(run?.lastEventAt.toISOString()).toBe(at(9));
     const listed = await ui.transcript.events({ taskId: task.id, runId: 'run-0001-aaaa' });
     expect(listed.map((e) => e.kind)).toEqual(['note', 'tool_use', 'tool_result', 'text']);
@@ -696,7 +701,7 @@ describe('transcripts', () => {
 
   it('refuses an event with a bad seq or date instead of failing in the database', async () => {
     const task = await plainUi(db).tasks.create({ input: '/grill' });
-    for (const bad of [{ seq: -1 }, { seq: 1.5 }, { at: 'soon' }]) {
+    for (const bad of [{ seq: -1 }, { seq: 1.5 }, { seq: 2 ** 31 }, { at: 'soon' }, { parent: 'a b' }]) {
       const body = batch('run-bad-00001', [{ ...events[0], ...bad }]);
       expect((await ctx.call('laptop', 'transcript', { id: task.id, body })).status).toBe(400);
     }
@@ -766,8 +771,8 @@ describe('proposals', () => {
     (await ctx.call('laptop', 'add-task', { body: { title: 'idea', input: 'do Y', createdBy: 'agent', ...body } })).json
       .result.task;
 
-  it('an agent task lands in needs-me as a proposal whatever status it names', async () => {
-    for (const status of ['todo', 'running', 'done', 'needs-me']) {
+  it('an agent task lands in needs-me as a proposal whatever start status it names', async () => {
+    for (const status of ['backlog', 'todo', 'needs-me']) {
       expect(await propose({ status })).toMatchObject({ status: 'needs-me', createdBy: 'agent' });
     }
     expect((await plainUi(db).tasks.list()).every((t) => t.proposed)).toBe(true);
@@ -1488,6 +1493,8 @@ describe('schedules', () => {
     expect(cron.scheduleId).not.toBeNull();
     await expect(ui.tasks.create({ input: 'x', when: { cron: 'nope', timezone: 'UTC' } })).rejects.toThrow(/cron/);
     await expect(ui.tasks.create({ input: 'x', when: { every: 1000 } })).rejects.toThrow();
+    await expect(ui.tasks.create({ input: 'x', when: { every: 7e15 } })).rejects.toThrow();
+    await expect(ui.tasks.create({ input: 'x', when: { every: hour, times: 3_000_000_000 } })).rejects.toThrow();
     await expect(
       ui.tasks.create({ input: 'x', when: { every: hour, times: 2, until: new Date(Date.now() + 5 * hour) } }),
     ).rejects.toThrow(/not both/);
@@ -1553,6 +1560,13 @@ describe('waiting', () => {
     expect((await ctx.call('laptop', 'add-task', { body: { title: 't', input: 'x', status: 'waiting' } })).status).toBe(
       400,
     );
+  });
+
+  it('a new task cannot start in Running or Done', async () => {
+    for (const status of ['running', 'done']) {
+      const { status: code } = await ctx.call('laptop', 'add-task', { body: { title: 't', input: 'x', status } });
+      expect(code).toBe(400);
+    }
   });
 
   it('a wake puts the task on top of Todo as a resume on its machine, and the worker sees `woken` until its first update', async () => {

@@ -21,6 +21,9 @@ export const MIN_SERVER = 9;
 
 export const STATUSES = ['backlog', 'todo', 'running', 'waiting', 'needs-me', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
+// Where a new task may start. Running and Waiting need a run behind them and Done a close, which only their own commands do.
+export const DRAFT_STATUSES = ['backlog', 'todo', 'needs-me'] as const satisfies readonly Status[];
+export type DraftStatus = (typeof DRAFT_STATUSES)[number];
 
 // What the next run of a task does: start over, or resume the Claude session of the last run with the user's reply.
 export const NEXT_RUNS = ['fresh', 'resume'] as const;
@@ -63,6 +66,12 @@ export const TAKE_BACK_AFTER_MS = 20 * 60_000;
 
 // How far ahead an agent may set a wait's end: the longest it can park a task in Waiting.
 export const MAX_WAIT_MS = 7 * 24 * 60 * 60_000;
+
+// The largest count the database holds in an `integer` column (a schedule's runs left, a transcript event's seq).
+export const MAX_INT32 = 2_147_483_647;
+
+// The longest interval a schedule may repeat at; far beyond it, the date arithmetic of the next run breaks.
+export const MAX_INTERVAL_MS = 10 * 365 * 24 * 60 * 60_000;
 
 export const TASK_CREATORS = ['intake', 'user', 'agent'] as const;
 export type TaskCreator = (typeof TASK_CREATORS)[number];
@@ -199,7 +208,7 @@ export interface TaskDraft {
   title: string;
   input: string;
   // Default: todo. A task an agent proposes is always created in needs-me, whatever it names.
-  status?: Status;
+  status?: DraftStatus;
   // Default: the parent's priority for a follow-up, otherwise normal.
   priority?: Priority;
   // Default: claude's default model.
@@ -645,6 +654,7 @@ function oneOf<T extends string>(values: readonly T[]): (value: unknown) => valu
 }
 
 export const isStatus = oneOf(STATUSES);
+export const isDraftStatus = oneOf(DRAFT_STATUSES);
 export const isNextRun = oneOf(NEXT_RUNS);
 export const isWireNoteAuthor = oneOf(WIRE_NOTE_AUTHORS);
 export const isNoteKind = oneOf(NOTE_KINDS);
@@ -719,10 +729,11 @@ function date(obj: Record<string, unknown>, key: string, what: string): Date {
   return value;
 }
 
-function positiveInt(obj: Record<string, unknown>, key: string, what: string): number {
+function positiveInt(obj: Record<string, unknown>, key: string, what: string, max = Number.MAX_SAFE_INTEGER): number {
   const value = obj[key];
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
     throw new ContractError(`${what}.${key} must be a positive integer`);
+  if (value > max) throw new ContractError(`${what}.${key} must be at most ${max}`);
   return value;
 }
 
@@ -1134,7 +1145,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
     id: safeId(string(obj, 'id', 'draft'), 'draft.id'),
     title: sealedField(obj, 'title', 'draft', 'title'),
     input: sealedField(obj, 'input', 'draft', 'input'),
-    status: 'status' in obj ? member(obj, 'status', 'draft', STATUSES) : 'todo',
+    status: 'status' in obj ? member(obj, 'status', 'draft', DRAFT_STATUSES) : 'todo',
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', 'draft', PRIORITIES);
   if ('model' in obj) draft.model = modelName(obj, 'draft');
@@ -1194,14 +1205,14 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   if ((draft.machine === undefined) !== (draft.workdir === undefined))
     throw new ContractError('schedule draft.machine and schedule draft.workdir go together');
   if ('everyMs' in obj === 'cron' in obj) throw new ContractError('a schedule needs exactly one of everyMs and cron');
-  if ('everyMs' in obj) draft.everyMs = positiveInt(obj, 'everyMs', what);
+  if ('everyMs' in obj) draft.everyMs = positiveInt(obj, 'everyMs', what, MAX_INTERVAL_MS);
   if ('cron' in obj) {
     draft.cron = string(obj, 'cron', what);
     draft.timezone = string(obj, 'timezone', what);
     if (draft.timezone === '') throw new ContractError('schedule draft.timezone must not be empty');
   } else if ('timezone' in obj) throw new ContractError('schedule draft.timezone only goes with cron');
   if ('startAt' in obj) draft.startAt = date(obj, 'startAt', what);
-  if ('times' in obj) draft.times = positiveInt(obj, 'times', what);
+  if ('times' in obj) draft.times = positiveInt(obj, 'times', what, MAX_INT32);
   if ('until' in obj) draft.until = date(obj, 'until', what);
   if ('times' in obj && 'until' in obj)
     throw new ContractError('schedule draft.times and schedule draft.until exclude each other');
