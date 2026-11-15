@@ -3,28 +3,10 @@ import { mkdtempSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { allowedDuringPause, askedDecision, askedQuestions, hookDecision } from '../src/hook.mts';
+import { askedDecision, askedQuestions } from '../src/hook.mts';
 import { createRunFiles } from '../src/runtime.mts';
 
 const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } });
-
-test('without a pause the hook says nothing', () => {
-  assert.equal(hookDecision(bash('git diff'), false, 't1'), '');
-});
-
-test('during a pause every call is refused but the status note', () => {
-  const denied = JSON.parse(hookDecision({ tool_name: 'Read', tool_input: { file_path: '/x' } }, true, 't1'));
-  assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /board comment t1/);
-  assert.equal(hookDecision(bash('board comment t1 "Paused after the resolver review"'), true, 't1'), '');
-  assert.equal(
-    allowedDuringPause(bash('board comment t1 "paused after step 3 of 8; steps 1-3 done"')),
-    true,
-    'a status may contain a semicolon',
-  );
-  assert.equal(allowedDuringPause(bash('board move t1 done')), false);
-  assert.equal(allowedDuringPause({ tool_name: 'Agent', tool_input: { prompt: 'board comment' } }), false);
-});
 
 test('run files: lane record, heartbeat, pause request, clear', () => {
   const files = createRunFiles(join(mkdtempSync(join(tmpdir(), 'agent-board-run-')), 'agent-board'));

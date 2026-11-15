@@ -15,6 +15,7 @@ const SAMPLES: ServerEvent[] = [
   { type: 'start-cleared' },
   { type: 'start-set', at: new Date('2027-01-01T12:00:00Z') },
   { type: 'woken' },
+  { type: 'late-message' },
   { type: 'taken-back', machine: 'laptop' },
   { type: 'taken-back', machine: 'work-station_2.local' },
   { type: 'taken-back', machine: null },

@@ -4,7 +4,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { act } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BoardTask, ThreadNote } from '../lib/trpc';
 import { stamp } from '../lib/time';
 import { ActionPanel } from './ActionPanel';
@@ -16,6 +17,8 @@ const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const reply = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const create = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const wakeNow = vi.hoisted(() => vi.fn(async (_: unknown) => null));
+const send = vi.hoisted(() => vi.fn(async (_: unknown) => null));
+const stop = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 
 vi.mock('../lib/trpc', () => {
   const procedure = (mutationFn: (variables: unknown) => Promise<unknown>) => ({
@@ -27,6 +30,8 @@ vi.mock('../lib/trpc', () => {
       tasks: {
         answer: procedure(answer),
         reply: procedure(reply),
+        send: procedure(send),
+        stop: procedure(stop),
         done: idle,
         rerun: idle,
         setClosed: idle,
@@ -79,18 +84,22 @@ function running(overrides: Partial<BoardTask>): BoardTask {
   } as BoardTask;
 }
 
+const panel = (task: BoardTask, thread: ThreadNote[], followUps: BoardTask[], client: QueryClient) => (
+  <MemoryRouter>
+    <MantineProvider>
+      <ModalsProvider>
+        <QueryClientProvider client={client}>
+          <ActionPanel task={task} thread={thread} followUps={followUps} />
+        </QueryClientProvider>
+      </ModalsProvider>
+    </MantineProvider>
+  </MemoryRouter>
+);
+
 function renderPanel(task: BoardTask, thread: ThreadNote[] = [], followUps: BoardTask[] = []) {
-  return render(
-    <MemoryRouter>
-      <MantineProvider>
-        <ModalsProvider>
-          <QueryClientProvider client={new QueryClient()}>
-            <ActionPanel task={task} thread={thread} followUps={followUps} />
-          </QueryClientProvider>
-        </ModalsProvider>
-      </MantineProvider>
-    </MemoryRouter>,
-  );
+  const client = new QueryClient();
+  const view = render(panel(task, thread, followUps, client));
+  return { ...view, update: (next: BoardTask) => view.rerender(panel(next, thread, followUps, client)) };
 }
 
 describe('ActionPanel of a running task', () => {
@@ -141,6 +150,107 @@ describe('ActionPanel draft', () => {
       expect(screen.getByRole('textbox')).toHaveValue('half a sent');
     },
   );
+});
+
+describe('ActionPanel of a running task: messages and stopping', () => {
+  const button = (name: string) => screen.getByRole('button', { name });
+
+  afterEach(() => vi.useRealTimers());
+
+  it('offers Send and Stop & send only with text, Stop always, and keeps the comment', async () => {
+    renderPanel(running({}));
+    expect(button('Send')).toBeDisabled();
+    expect(button('Stop & send')).toBeDisabled();
+    expect(button('Stop')).toBeEnabled();
+    expect(button('Comment without continuing')).toBeDisabled();
+    await userEvent.type(screen.getByRole('textbox'), 'use the other branch');
+    expect(button('Send')).toBeEnabled();
+    expect(button('Stop & send')).toBeEnabled();
+    expect(button('Comment without continuing')).toBeEnabled();
+  });
+
+  it('sends the message without stopping', async () => {
+    send.mockClear();
+    stop.mockClear();
+    renderPanel(running({}));
+    await userEvent.type(screen.getByRole('textbox'), 'hello');
+    await userEvent.click(button('Send'));
+    await waitFor(() => expect(send).toHaveBeenCalled());
+    expect(send.mock.calls[0]?.[0]).toEqual({ id: 'abc12345', message: 'hello' });
+    expect(stop).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
+  });
+
+  it('sends with the submit shortcut', async () => {
+    send.mockClear();
+    renderPanel(running({}));
+    await userEvent.type(screen.getByRole('textbox'), 'hello{Control>}{Enter}{/Control}');
+    await waitFor(() => expect(send).toHaveBeenCalled());
+  });
+
+  it('stops with the message for Stop & send, and without one for Stop', async () => {
+    stop.mockClear();
+    renderPanel(running({}));
+    await userEvent.click(button('Stop'));
+    await waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
+    expect(stop.mock.calls[0]?.[0]).toEqual({ id: 'abc12345' });
+    await userEvent.type(screen.getByRole('textbox'), 'instead do this');
+    await userEvent.click(button('Stop & send'));
+    await waitFor(() => expect(stop).toHaveBeenCalledTimes(2));
+    expect(stop.mock.calls[1]?.[0]).toEqual({ id: 'abc12345', message: 'instead do this' });
+  });
+
+  it('says Stopping… and disables both stop buttons while the request is set', async () => {
+    renderPanel(running({ stopRequested: true }));
+    expect(screen.getByText('Stopping…')).toBeInTheDocument();
+    await userEvent.type(screen.getByRole('textbox'), 'x');
+    expect(button('Stop')).toBeDisabled();
+    expect(button('Stop & send')).toBeDisabled();
+    expect(button('Send')).toBeEnabled();
+    expect(screen.queryByText(/may be too old/)).not.toBeInTheDocument();
+  });
+
+  it('hints at an old CLI when the request is still set a minute after the click', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    stop.mockClear();
+    const view = renderPanel(running({}));
+    await userEvent.click(button('Stop'));
+    expect(stop).toHaveBeenCalled();
+    view.update(running({ stopRequested: true }));
+    expect(screen.queryByText(/may be too old/)).not.toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(61_000);
+    });
+    expect(screen.getByText(/may be too old to stop runs/)).toBeInTheDocument();
+    expect(screen.getByText(/Take back/)).toBeInTheDocument();
+  });
+});
+
+describe('ActionPanel: Stop outside a run', () => {
+  it('holds back an answer that no worker has picked up', async () => {
+    stop.mockClear();
+    renderPanel(running({ status: 'todo', next: 'resume' }));
+    const button = screen.getByRole('button', { name: 'Stop' });
+    expect(button).toHaveAttribute('title', expect.stringMatching(/Hold back: move to Needs me/));
+    await userEvent.click(button);
+    await waitFor(() => expect(stop).toHaveBeenCalled());
+    expect(stop.mock.calls[0]?.[0]).toEqual({ id: 'abc12345' });
+  });
+
+  it('moves a waiting task to Backlog', () => {
+    renderPanel(running({ status: 'waiting', wakeAt: new Date(Date.now() + 3_600_000).toISOString() }));
+    expect(screen.getByRole('button', { name: 'Stop' })).toHaveAttribute('title', expect.stringMatching(/Backlog/));
+  });
+
+  it.each([
+    ['todo', 'fresh'],
+    ['backlog', 'fresh'],
+    ['needs-me', 'fresh'],
+    ['done', 'fresh'],
+  ] as const)('offers no Stop on a %s task without a queued answer', (status, next) => {
+    renderPanel(running({ status, next }));
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
+  });
 });
 
 describe('ActionPanel of a proposal', () => {

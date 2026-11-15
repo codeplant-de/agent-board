@@ -15,6 +15,7 @@ import {
   LEGACY_CONTRACT,
   MIN_CLIENT,
   parseClientApi,
+  parseAckMessages,
   parseClientFeatures,
   parseClientVersion,
   parseHeartbeat,
@@ -45,6 +46,7 @@ import { machineForToken, recordClient } from './services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
 import { appendTranscript } from './services/transcripts';
 import {
+  ackMessages,
   addNote,
   addTask,
   ask,
@@ -56,8 +58,10 @@ import {
   listTasks,
   pause,
   readNotes,
+  runInbox,
   setPr,
   setPrState,
+  stopped,
   toNote,
   toTask,
   updateTask,
@@ -219,6 +223,23 @@ export async function handleMachineCall(
       const { applied, row } = await wake(db, taskId(body), note, machine);
       return { applied, task: task(row) };
     }
+    case 'run-inbox': {
+      const inbox = await runInbox(db, taskId(body), machine);
+      return {
+        stop: inbox.stop,
+        ...(inbox.stopMessage === undefined ? {} : { stopMessage: inbox.stopMessage }),
+        messages: visible.only(inbox.messages.map(toNote)).map(serializeWireNote),
+      };
+    }
+    case 'ack-messages': {
+      const ack = parsed(() => parseAckMessages(body['body']));
+      await ackMessages(db, taskId(body), { ids: ack.ids, stop: ack.stop === true }, machine);
+      return null;
+    }
+    case 'stopped': {
+      const note = parsed(() => parseWireNoteInput(body['body'], 'stopped note'));
+      return task(await stopped(db, taskId(body), note, machine));
+    }
     case 'transcript':
       await appendTranscript(
         db,
@@ -257,6 +278,7 @@ const DISPATCH_WRITES = new Set([
   'set-pr',
   'ask',
   'pause',
+  'stopped',
   'fail',
   'wait',
   'wake',

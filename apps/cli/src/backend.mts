@@ -25,6 +25,7 @@ import {
   parseWireWakeResult,
   parseWireFailResult,
   parseWireNotes,
+  parseWireRunInbox,
   parseWireSchedule,
   parseWireSchedules,
   parseWireTask,
@@ -174,7 +175,7 @@ export interface MachineRequest {
   all?: boolean;
   machine?: string;
   author?: string;
-  // The command's payload, JSON: sealed values for add-task, update-task, add-schedule, add-note, ask, pause, fail, wait, wake and transcript.
+  // The command's payload, JSON: sealed values for add-task, update-task, add-schedule, add-note, ask, pause, stopped, fail, wait, wake and transcript; ack-messages takes plain ids.
   body?: unknown;
 }
 
@@ -339,6 +340,9 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   wake: 'wait',
   'set-pr': 'task.pr',
   'set-pr-state': 'task.pr-state',
+  'run-inbox': 'run-inbox',
+  'ack-messages': 'run-inbox',
+  stopped: 'run-inbox',
 };
 
 export function createWebBackend(options: WebBackendOptions): WebBackend {
@@ -462,6 +466,9 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     fail: async (id, note) => call('fail', { id: taskId(id), body: note }, parseWireFailResult),
     wait: async (id, wait) => call('wait', { id: taskId(id), body: wait }, parseWireTask),
     wake: async (id, note) => call('wake', { id: taskId(id), body: note }, parseWireWakeResult),
+    runInbox: async (id) => call('run-inbox', { id: taskId(id) }, parseWireRunInbox),
+    ackMessages: async (id, ack) => send('ack-messages', { id: taskId(id), body: ack }),
+    stopped: async (id, note) => call('stopped', { id: taskId(id), body: note }, parseWireTask),
     transcript: async (id, batch) => send('transcript', { id: taskId(id), body: batch }),
     readNotes: async (id) => call('read-notes', { id: taskId(id) }, (value) => parseWireNotes(value, listOptions)),
     addSchedule: async (draft) => {
@@ -602,6 +609,13 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     async pause(id, note) {
       print(`DRY pause ${id} ${oneLine(note, 160)}`);
       return { ...(await inner.getTask(id)), status: 'todo', next: 'resume' };
+    },
+    async ackMessages(id, ack) {
+      print(`DRY ack-messages ${id} ${ack.ids.join(',')}${ack.stop === true ? ' --stop' : ''}`);
+    },
+    async stopped(id, note) {
+      print(`DRY stopped ${id} ${oneLine(note, 160)}`);
+      return { ...(await inner.getTask(id)), status: 'needs-me' };
     },
     async fail(id, text) {
       print(`DRY fail ${id} ${oneLine(text, 160)}`);

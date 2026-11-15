@@ -83,7 +83,7 @@ export function supervise(input: {
     return {
       kind: 'stop',
       why: 'pause-forced',
-      message: `The run did not stop within ${input.pauseGraceMinutes} minutes of the pause request and was stopped.`,
+      message: `The run did not end its turn within ${input.pauseGraceMinutes} minutes of the pause request and was interrupted.`,
     };
   }
   if (minutesSince(input.startedAt) > input.limits.maxRunHours * 60) {
@@ -261,10 +261,37 @@ const byTime = (notes: Note[]): Note[] => [...notes].sort((a, b) => a.createdAt.
 const userNotes = (notes: Note[]): Note[] =>
   notes.filter((note) => note.author === 'user' && (note.kind === 'answer' || note.kind === 'comment'));
 
-// The user's reply since the agent last spoke, oldest first.
-export function userReply(notes: Note[]): Note[] {
+/**
+ * The user's reply, oldest first: what they wrote since the agent last spoke, and the messages they sent the running agent
+ * since the previous run started that it was never handed (they may sit before the agent's last note). Without what the agent
+ * already got while the run went on. `runStartedAt` is when this run was claimed.
+ */
+export function userReply(notes: Note[], runStartedAt: Date | null = null): Note[] {
   const sorted = byTime(notes);
-  return userNotes(sorted.slice(sorted.findLastIndex((note) => note.author === 'agent') + 1));
+  const lastStart = previousRunStart(notes, runStartedAt);
+  const spoken = userNotes(sorted.slice(sorted.findLastIndex((note) => note.author === 'agent') + 1));
+  const queued = userNotes(
+    sorted.filter((note) => note.queued === true && (lastStart === undefined || note.createdAt > lastStart)),
+  );
+  const seen = new Set<string>();
+  return byTime([...spoken, ...queued]).filter((note) => {
+    if (note.deliveredAt !== undefined || seen.has(note.id)) return false;
+    seen.add(note.id);
+    return true;
+  });
+}
+
+// A message of the user's, as the running agent gets it. After an interruption it is the correction to what it was doing.
+export function inboxMessageText(taskId: string, note: Note, afterInterrupt: boolean): string {
+  const lead = afterInterrupt
+    ? `The user interrupted you on board task ${taskId} to correct you:`
+    : `The user sent you a message on board task ${taskId} while you work:`;
+  return `${lead}\n\n${noteText(note)}`;
+}
+
+// What the agent is told when its lane's slot is needed; it ends its turn and is resumed in this session.
+export function pauseMessageText(taskId: string): string {
+  return `Pause requested: this machine needs the slot for other work. Post a one-line status of where you are with \`board comment ${taskId} "..."\`, then end your turn without any other tool call. You will be resumed later in this same session.`;
 }
 
 // A note as the agent reads it; an answer comes with the questions the user was shown, from its own envelope.
@@ -327,7 +354,7 @@ function wokenLine(task: Task, notes: Note[]): string {
 }
 
 export function buildResumePrompt(task: Task, notes: Note[]): string | undefined {
-  const reply = userReply(notes);
+  const reply = userReply(notes, task.runStartedAt);
   const paused = task.paused;
   const woken = task.woken;
   if (reply.length === 0 && !paused && !woken) return undefined;
@@ -370,7 +397,8 @@ export function planRun(task: Task, notes: Note[], options: RunPlanOptions): Run
           kind: 'blocked',
           reason: `The board asks to resume Claude session ${task.sessionId}, which this machine did not start for this task, so the run was not started. Use Re-run fresh to start over.`,
         };
-      if (userReply(notes).some((note) => note.unreadable)) return { kind: 'blocked', reason: UNREADABLE_NOTE_REASON };
+      if (userReply(notes, task.runStartedAt).some((note) => note.unreadable))
+        return { kind: 'blocked', reason: UNREADABLE_NOTE_REASON };
       return { kind: 'resume', sessionId: task.sessionId.toLowerCase(), prompt };
     }
   }
@@ -393,7 +421,12 @@ export function isRunOver(
   return after.status === 'running' && after.runStartedAt?.getTime() !== started.runStartedAt?.getTime();
 }
 
-export type Outcome = { kind: 'ok' } | { kind: 'failed'; reason: string } | { kind: 'unreported' } | { kind: 'paused' };
+export type Outcome =
+  | { kind: 'ok' }
+  | { kind: 'failed'; reason: string }
+  | { kind: 'unreported' }
+  | { kind: 'paused' }
+  | { kind: 'stopped' };
 
 export function decideOutcome(input: {
   exitCode: number | null;
@@ -402,11 +435,15 @@ export function decideOutcome(input: {
   stopped: Exclude<Supervision, { kind: 'continue' }> | undefined;
   // The dispatcher asked the run to give up its slot.
   pauseRequested: boolean;
+  // The worker ended the run because the user asked it to stop.
+  stopRequested: boolean;
   // The task is no longer Running: the agent reported, the user answered, or the task was taken back.
   reported: boolean;
 }): Outcome {
-  // A run that reported before it noticed the pause is simply done.
-  if (input.reported) return input.exitCode === 0 || input.pauseRequested ? { kind: 'ok' } : failed(input);
+  // A run that reported before it noticed the pause or the stop is simply done.
+  if (input.reported)
+    return input.exitCode === 0 || input.pauseRequested || input.stopRequested ? { kind: 'ok' } : failed(input);
+  if (input.stopRequested) return { kind: 'stopped' };
   if (input.pauseRequested) return { kind: 'paused' };
   if (input.stopped) return { kind: 'failed', reason: input.stopped.message };
   if (input.exitCode !== 0) return failed(input);
@@ -474,7 +511,8 @@ export interface Invocation {
   // Options only, and never the prompt: `claude` would read a prompt that starts with a dash as an option, and some options
   // start things (`--mcp-config`) before any permission applies.
   args: string[];
-  // The prompt, from the board (a sealed prompt, a reply). It reaches `claude` on stdin, which is only ever text.
+  // The prompt, from the board (a sealed prompt, a reply). It reaches `claude` on stdin as the first user message of the
+  // stream-json input, JSON-encoded, so it is only ever text.
   prompt: string;
   cwd: string;
 }
@@ -490,7 +528,8 @@ export function boardRules(task: Task): string {
     `- When the work is done, post a short summary with \`board comment\`, then \`board move ${task.id} needs-me\`. Attach to that comment the reply you expect the user to send next, in their voice (for example a go-ahead for your proposed next step): \`board comment --suggest "<reply>" ${task.id} "<summary>"\`. Skip it when no single reply is obvious, and if the board refuses \`--suggest\`, post the comment without it.`,
     `- To suggest follow-up work, write it to a file in /tmp and run \`board add --title "<title>" --file <path> --parent ${task.id}\`; the user starts it.`,
     '- Do not end your turn while a background agent or background command you started is still running: this run ends when your turn does. Run subagents in the foreground, or wait for their result before ending your turn.',
-    '- If a tool call is refused with "Pause requested", post a one-line status with `board comment` and end your turn; you will be resumed here.',
+    '- If you are told that a pause was requested, post a one-line status with `board comment` and end your turn; you will be resumed here.',
+    '- The user may send you a message while you work, or interrupt you with a correction. Take it as the latest instruction on the task.',
     ...(task.createdBy === 'intake'
       ? []
       : [
@@ -519,7 +558,7 @@ export function buildInvocation(input: {
   home: string;
   // Roots of the plugins intake's rules name ({pr-review} and the like).
   pluginRoots: Record<string, string>;
-  // The PreToolUse hook command (heartbeat, pause, questions).
+  // The PreToolUse hook command (heartbeat, working directory, questions).
   hookCommand?: string;
 }): InvocationPlan {
   const { task, intake } = input;
@@ -574,10 +613,13 @@ export function buildInvocation(input: {
     // Every event as a JSON line: the worker keeps a readable log and sends the transcript to the board.
     '--output-format',
     'stream-json',
+    // Messages and an interrupt can follow the prompt on stdin while the run goes on.
+    '--input-format',
+    'stream-json',
     '--verbose',
     '--append-system-prompt',
     boardRules(task),
-    // The heartbeat, pause and question hook, inline.
+    // The heartbeat and question hook, inline.
     '--settings',
     JSON.stringify(settings),
   ];

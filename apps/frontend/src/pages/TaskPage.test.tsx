@@ -20,6 +20,8 @@ vi.mock('../lib/trpc', () => {
         setPriority: idle,
         answer: idle,
         reply: idle,
+        send: idle,
+        stop: idle,
         done: idle,
         rerun: idle,
         setClosed: idle,

@@ -143,6 +143,7 @@ async function sealRequest(command: string, request: Json, sealing: Sealing, raw
         },
       };
     case 'pause':
+    case 'stopped':
     case 'fail':
     case 'wake':
       return typeof body === 'string' ? { ...request, body: await note('system', 'event', body) } : request;
@@ -301,6 +302,28 @@ export function plainUi(db: Db, owner = 'jascha') {
             id: input.id,
             message: await sealNote(sealing.seal, { taskId: input.id, author: 'user', kind: 'comment' }, input.message),
             resume: input.resume,
+          }),
+        ),
+      send: async (input: { id: string; message: string }) =>
+        openTask(
+          await raw.tasks.send({
+            id: input.id,
+            message: await sealNote(sealing.seal, { taskId: input.id, author: 'user', kind: 'comment' }, input.message),
+          }),
+        ),
+      stop: async (input: { id: string; message?: string }) =>
+        openTask(
+          await raw.tasks.stop({
+            id: input.id,
+            ...(input.message === undefined
+              ? {}
+              : {
+                  message: await sealNote(
+                    sealing.seal,
+                    { taskId: input.id, author: 'user', kind: 'comment' },
+                    input.message,
+                  ),
+                }),
           }),
         ),
       // As the browser does: the polished title and prompt sealed as the task's own and the user's, the old text as a note.
