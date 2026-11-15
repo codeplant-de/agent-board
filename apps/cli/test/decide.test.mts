@@ -200,6 +200,27 @@ test("the board's rules tell the agent to ask through the board, and an intake r
   );
 });
 
+test("the board's rules let the agent act alone on local, reversible steps and ask before visible or lasting ones", () => {
+  const rules = boardRules(task({ id: 'abc' }));
+  assert.match(rules, /Decide and act without asking on whatever is easy to undo and stays on this machine/);
+  assert.match(
+    rules,
+    /Use `board ask` only before a step that is hard to undo or that other people see.*force-pushing.*merging/s,
+  );
+  assert.doesNotMatch(boardRules(task({ id: 'abc', createdBy: 'intake' })), /Work on your own/);
+});
+
+test("the board's rules make an implementation task end in a pushed branch, a PR and CI", () => {
+  const rules = boardRules(task({ id: 'abc' }));
+  assert.match(rules, /implement, fix or change code.*request to commit, push and open a PR/s);
+  assert.match(
+    rules,
+    /never the default branch.*git push -u origin HEAD.*gh pr create.*started or approved by hand.*Wait for CI.*PR link in your final `board comment`/s,
+  );
+  assert.match(rules, /only for a plan, an investigation or a review opens no PR/);
+  assert.doesNotMatch(boardRules(task({ id: 'abc', createdBy: 'intake' })), /gh pr create/);
+});
+
 test("the board's rules tell the agent not to end its turn while background work runs", () => {
   assert.match(boardRules(task({ id: 'abc' })), /Do not end your turn while a background agent .* in the foreground/s);
 });
