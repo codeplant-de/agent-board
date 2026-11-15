@@ -1,12 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { BackendError } from '../src/backend.mts';
-import { GitHubError, parseSearchPage, searchQuery } from '../src/github.mts';
+import {
+  GitHubError,
+  parsePrStates,
+  parseSearchPage,
+  prStatesQuery,
+  prStatesVariables,
+  searchQuery,
+} from '../src/github.mts';
 import { STATUSES } from '@agent-board/shared';
-import type { Status } from '@agent-board/shared';
+import type { PrState, Status } from '@agent-board/shared';
 import type { LivePr } from '../src/github.mts';
-import { planIntake, runIntake } from '../src/intake.mts';
-import { CONFIG, fakeBackend, task } from './helpers.mts';
+import { planIntake, planPrStates, prsToCheck, runIntake } from '../src/intake.mts';
+import { CONFIG, fakeBackend, NO_PR_STATES, task } from './helpers.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
 const url = (n: number) => `https://github.com/cosuno/cosuno/pull/${n}`;
@@ -83,7 +90,7 @@ test('running intake twice creates the task once', async () => {
     config: CONFIG,
     dryRun: false,
     print: (line: string) => logs.push(line),
-    github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+    github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
     now: () => NOW,
   };
   await runIntake(deps);
@@ -107,7 +114,7 @@ test('a PR whose task the board hides from this CLI is skipped with one line, an
     config: CONFIG,
     dryRun: false,
     print: (line: string) => logs.push(line),
-    github: { listReviewRequested: async () => ({ prs: [pr(1), pr(2)], unreadable: [] }) },
+    github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: [pr(1), pr(2)], unreadable: [] }) },
     now: () => NOW,
   });
   assert.ok(logs.some((line) => line.startsWith('SKIP #1 its task on the board uses a value this CLI does not know')));
@@ -123,7 +130,7 @@ test('a PR whose task the board hides from this CLI is skipped with one line, an
       config: CONFIG,
       dryRun: false,
       print: () => undefined,
-      github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+      github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
       now: () => NOW,
     }),
     /HTTP 500/,
@@ -137,7 +144,7 @@ test('requeue moves the task, updates the head and comments', async () => {
     config: CONFIG,
     dryRun: false,
     print: () => undefined,
-    github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+    github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
     now: () => NOW,
   });
   assert.deepEqual(
@@ -155,6 +162,7 @@ test('a failed listing changes nothing and fails the run', async () => {
       dryRun: false,
       print: () => undefined,
       github: {
+        ...NO_PR_STATES,
         listReviewRequested: async () => {
           throw new GitHubError('gh search failed: boom');
         },
@@ -179,7 +187,7 @@ test('intake reads every task closed included', async () => {
     config: CONFIG,
     dryRun: false,
     print: () => undefined,
-    github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+    github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
     now: () => NOW,
   });
   assert.deepEqual(backend.writes, []);
@@ -194,6 +202,7 @@ test('the search is asked per configured repo', async () => {
     dryRun: false,
     print: () => undefined,
     github: {
+      ...NO_PR_STATES,
       listReviewRequested: async (repos) => {
         asked.push(repos);
         return { prs: [], unreadable: [] };
@@ -257,7 +266,7 @@ test('a todo review whose PR no longer asks for the review is done', async () =>
     config: CONFIG,
     dryRun: false,
     print: (line) => logs.push(line),
-    github: { listReviewRequested: async () => ({ prs: [], unreadable: [] }) },
+    github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: [], unreadable: [] }) },
     now: () => NOW,
   });
   assert.deepEqual(backend.writes, ['status c1 -> done', 'note c1 (system): The PR no longer asks for your review.']);
@@ -288,6 +297,7 @@ test('a failed listing closes nothing', async () => {
       dryRun: false,
       print: () => undefined,
       github: {
+        ...NO_PR_STATES,
         listReviewRequested: async () => {
           throw new GitHubError('gh api failed');
         },
@@ -310,7 +320,7 @@ test('a failed backend listing creates nothing and fails the run', async () => {
       config: CONFIG,
       dryRun: false,
       print: () => undefined,
-      github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+      github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
       now: () => NOW,
     }),
     /list-tasks failed/,
@@ -331,7 +341,7 @@ test('intake creates its tasks with the configured priority', async () => {
     config: { ...CONFIG, intake: { ...CONFIG.intake, priority: 'high' } },
     dryRun: false,
     print: () => undefined,
-    github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+    github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
     now: () => NOW,
   });
   assert.equal((drafts[0] as { priority: string }).priority, 'high');
@@ -356,7 +366,7 @@ test('intake logs an unreadable PR and neither creates nor closes a task for it'
     config: CONFIG,
     dryRun: false,
     print: (line) => logs.push(line),
-    github: { listReviewRequested: async () => ({ prs: [], unreadable: [url(1), url(2)] }) },
+    github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: [], unreadable: [url(1), url(2)] }) },
     now: () => NOW,
   });
   assert.deepEqual(backend.writes, []);
@@ -378,7 +388,7 @@ test('intake logs an unreadable PR and neither creates nor closes a task for it'
 test('a task closed as gone loses its head and comes back when the PR is listed again', async () => {
   const backend = fakeBackend([taskFor(1, 'todo', 'bbbbbbb1')]);
   const asked = { prs: [] as LivePr[], unreadable: [] as string[] };
-  const github = { listReviewRequested: async () => asked };
+  const github = { ...NO_PR_STATES, listReviewRequested: async () => asked };
   const deps = { backend, config: CONFIG, dryRun: false, print: () => undefined, github, now: () => NOW };
   await runIntake(deps);
   assert.equal(backend.tasks[0]?.status, 'done');
@@ -415,7 +425,7 @@ test('a task claimed since the listing is neither closed nor requeued: the updat
       config: CONFIG,
       dryRun: false,
       print: (line) => logs.push(line),
-      github: { listReviewRequested: async () => ({ prs: listed ? [listed] : [], unreadable: [] }) },
+      github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: listed ? [listed] : [], unreadable: [] }) },
       now: () => NOW,
     });
     assert.equal(backend.tasks[0]?.status, 'running');
@@ -460,7 +470,7 @@ test('a requeue seals the new prompt as intake’s own and stores the head throu
     config: CONFIG,
     dryRun: false,
     print: () => undefined,
-    github: { listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
+    github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }) },
     now: () => NOW,
   });
   assert.deepEqual(patches[0], {
@@ -471,4 +481,154 @@ test('a requeue seals the new prompt as intake’s own and stores the head throu
     seal: { createdBy: 'intake', scheduleId: null },
     expect: 'needs-me',
   });
+});
+
+const lookup = (states: Record<string, PrState> = {}, unreadable: string[] = []) => ({
+  states: new Map(Object.entries(states)),
+  unreadable,
+});
+
+test('the PR states asked for are those of the open tasks’ PRs, the agent’s and the prompt’s, each once', () => {
+  const agents = task({ id: 'a1', status: 'needs-me', input: 'fix it', pr: url(7) });
+  const tasks = [
+    taskFor(1, 'needs-me'),
+    taskFor(1, 'todo'),
+    taskFor(2, 'done'),
+    { ...taskFor(3, 'needs-me'), closed: true },
+    agents,
+    task({ id: 'plain', status: 'needs-me', input: 'no pr' }),
+  ];
+  assert.deepEqual(prsToCheck(tasks), [url(1), url(7)]);
+});
+
+test('a task is written only when GitHub’s state differs from the stored one, and an unanswered PR changes nothing', () => {
+  const tasks = [
+    taskFor(1, 'needs-me'),
+    { ...taskFor(2, 'needs-me'), prState: 'open' as const },
+    { ...taskFor(3, 'needs-me'), prState: 'merged' as const },
+    taskFor(4, 'needs-me'),
+    { ...taskFor(5, 'done'), prState: 'open' as const },
+  ];
+  const planned = planPrStates(
+    tasks,
+    lookup({ [url(1)]: 'merged', [url(2)]: 'open', [url(3)]: 'closed', [url(5)]: 'merged' }, [url(4)]),
+  );
+  assert.deepEqual(
+    planned.map(({ task: { id }, prState }) => `${id}:${prState}`),
+    ['c1:merged', 'c3:closed'],
+  );
+});
+
+test('the PR states query has an alias and variables per PR, and no URL text in it', () => {
+  const urls = [url(1), 'https://github.com/o/r.x/pull/22'];
+  assert.equal(
+    prStatesQuery(2),
+    [
+      'query($o0: String!, $n0: String!, $k0: Int!, $o1: String!, $n1: String!, $k1: Int!) {',
+      '  p0: repository(owner: $o0, name: $n0) { pullRequest(number: $k0) { state } }',
+      '  p1: repository(owner: $o1, name: $n1) { pullRequest(number: $k1) { state } }',
+      '}',
+    ].join('\n'),
+  );
+  assert.deepEqual(prStatesVariables(urls), {
+    o0: 'cosuno',
+    n0: 'cosuno',
+    k0: 1,
+    o1: 'o',
+    n1: 'r.x',
+    k1: 22,
+  });
+  assert.equal(prStatesVariables(['https://github.com/o"x/r/pull/1']), undefined);
+});
+
+test('the PR states answer maps GitHub’s states, and a PR it found nothing for is unreadable', () => {
+  const urls = [url(1), url(2), url(3), url(4)];
+  const answer = {
+    data: {
+      p0: { pullRequest: { state: 'MERGED' } },
+      p1: { pullRequest: { state: 'CLOSED' } },
+      p2: null,
+      p3: { pullRequest: { state: 'SOMETHING_NEW' } },
+    },
+    errors: [{ type: 'NOT_FOUND' }],
+  };
+  const found = parsePrStates(answer, urls);
+  assert.deepEqual(
+    [...found.states],
+    [
+      [url(1), 'merged'],
+      [url(2), 'closed'],
+    ],
+  );
+  assert.deepEqual(found.unreadable, [url(3), url(4)]);
+  assert.deepEqual(
+    [...parsePrStates({ data: { p0: { pullRequest: { state: 'OPEN' } } } }, [url(1)]).states],
+    [[url(1), 'open']],
+  );
+  assert.throws(() => parsePrStates({ errors: [] }, urls), GitHubError);
+  assert.throws(() => parsePrStates('nope', urls), GitHubError);
+});
+
+test('intake writes the changed PR states after the review work, and logs the PRs it has no state for', async () => {
+  const backend = fakeBackend([taskFor(1, 'needs-me'), taskFor(2, 'needs-me'), taskFor(3, 'needs-me')]);
+  const logs: string[] = [];
+  await runIntake({
+    backend,
+    config: CONFIG,
+    dryRun: false,
+    print: (line) => logs.push(line),
+    github: {
+      listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }),
+      prStates: async () => lookup({ [url(1)]: 'merged', [url(2)]: 'closed' }, [url(3)]),
+    },
+    now: () => NOW,
+  });
+  assert.deepEqual(
+    backend.writes.map((write) => write.split(':')[0]),
+    ['status c1 -> todo', 'input c1', 'next c1', 'note c1 (system)', 'prState c1 merged', 'prState c2 closed'],
+  );
+  assert.ok(logs.includes(`WARN no state for ${url(3)}`));
+  assert.ok(logs.includes('PRSTATES changed=2'));
+});
+
+test('a failed PR state query is logged and the review work is kept', async () => {
+  const backend = fakeBackend([taskFor(1, 'needs-me')]);
+  const logs: string[] = [];
+  await runIntake({
+    backend,
+    config: CONFIG,
+    dryRun: false,
+    print: (line) => logs.push(line),
+    github: {
+      listReviewRequested: async () => ({ prs: [pr(1)], unreadable: [] }),
+      prStates: async () => {
+        throw new GitHubError('gh api graphql failed: boom');
+      },
+    },
+    now: () => NOW,
+  });
+  assert.equal(backend.writes.length, 4);
+  assert.ok(logs.includes('WARN PR states not refreshed: gh api graphql failed: boom'));
+});
+
+test('a board server without PR states is told once and intake still finishes', async () => {
+  const backend = fakeBackend([taskFor(1, 'needs-me'), taskFor(2, 'needs-me')]);
+  backend.setPrState = async () => {
+    throw Object.assign(new BackendError('the board server does not support PR states yet'), {
+      missingFeature: 'task.pr-state' as const,
+    });
+  };
+  const logs: string[] = [];
+  await runIntake({
+    backend,
+    config: CONFIG,
+    dryRun: false,
+    print: (line) => logs.push(line),
+    github: {
+      listReviewRequested: async () => ({ prs: [], unreadable: [] }),
+      prStates: async () => lookup({ [url(1)]: 'merged', [url(2)]: 'merged' }),
+    },
+    now: () => NOW,
+  });
+  assert.equal(logs.filter((line) => line.startsWith('WARN PR states not written')).length, 1);
 });

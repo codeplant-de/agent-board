@@ -6,6 +6,7 @@ import {
   type ServerEvent,
   type Heartbeat,
   type Priority,
+  type PrState,
   type Status,
   type WireNote,
   type WireNoteInput,
@@ -38,6 +39,7 @@ export function toTask(row: TaskRow): WireTask {
     sessionId: row.sessionId,
     workdir: row.workdir,
     pr: row.pr,
+    prState: row.prState,
     next: row.next,
     head: row.head,
     openQuestion: row.openQuestionNoteId !== null,
@@ -665,7 +667,14 @@ export async function heartbeat(db: DbOrTx, taskId: string, beat: Heartbeat): Pr
 export async function setPr(db: DbOrTx, taskId: string, pr: string): Promise<void> {
   requireSealed(pr, 'the pull request');
   await getTask(db, taskId);
-  await db.update(tasks).set({ pr, updatedAt: new Date() }).where(eq(tasks.id, taskId));
+  // The new PR's state is unknown; the server cannot tell whether the sealed URL is another one, so it always resets.
+  await db.update(tasks).set({ pr, prState: null, updatedAt: new Date() }).where(eq(tasks.id, taskId));
+}
+
+/** GitHub's state of the task's PR, from a worker's intake. */
+export async function setPrState(db: DbOrTx, taskId: string, prState: PrState): Promise<void> {
+  await getTask(db, taskId);
+  await db.update(tasks).set({ prState }).where(eq(tasks.id, taskId));
 }
 
 /**

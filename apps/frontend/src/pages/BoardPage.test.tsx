@@ -10,6 +10,7 @@ import { BoardPage } from './BoardPage';
 
 const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const create = vi.hoisted(() => vi.fn(async (_: unknown) => null));
+const done = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const listed = vi.hoisted(() => ({ tasks: [] as unknown[], machines: [] as unknown[] }));
 
 vi.mock('../lib/trpc', () => ({
@@ -19,6 +20,7 @@ vi.mock('../lib/trpc', () => ({
       list: { queryOptions: () => ({ queryKey: ['tasks.list'], queryFn: async () => listed.tasks }) },
       move: { mutationOptions: () => ({ mutationFn: move }) },
       create: { mutationOptions: () => ({ mutationFn: create }) },
+      done: { mutationOptions: () => ({ mutationFn: done }) },
     },
     machines: {
       list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => listed.machines }) },
@@ -37,6 +39,8 @@ const task = (overrides: Partial<ListedTask>): ListedTask =>
     id: 'p1',
     title: 'proposal',
     input: 'delete everything',
+    pr: null,
+    prState: null,
     status: 'needs-me',
     priority: 'normal',
     createdBy: 'agent',
@@ -94,6 +98,7 @@ async function drag(title: string, to: string) {
 beforeEach(() => {
   move.mockClear();
   create.mockClear();
+  done.mockClear();
   listed.machines = [];
 });
 
@@ -156,6 +161,46 @@ describe('BoardPage drop position', () => {
     await waitFor(() => expect(move).toHaveBeenCalledTimes(1));
     expect(move.mock.calls[0]?.[0]).toMatchObject({ id: 'A', afterId: 'D' });
     expect(move.mock.calls[0]?.[0]).not.toHaveProperty('beforeId');
+  });
+});
+
+describe('BoardPage move merged to Done', () => {
+  const merged = (id: string, overrides: Partial<ListedTask> = {}) =>
+    task({
+      id,
+      title: `merged ${id}`,
+      createdBy: 'user',
+      proposed: false,
+      pr: `https://github.com/acme/app/pull/${id.length}${id}`,
+      prState: 'merged',
+      ...overrides,
+    });
+
+  it('moves the merged tasks of Needs me to Done and leaves the others', async () => {
+    listed.tasks = [
+      merged('m1'),
+      merged('m2'),
+      merged('m3', { status: 'todo' }),
+      merged('m4', { prState: 'open' }),
+      merged('m5', { pr: null }),
+    ];
+    renderBoard();
+    await userEvent.click(await screen.findByRole('button', { name: /Move merged to Done/ }));
+    await waitFor(() => expect(done).toHaveBeenCalledTimes(2));
+    expect(done.mock.calls.map(([variables]) => variables)).toEqual([{ id: 'm1' }, { id: 'm2' }]);
+  });
+
+  it('is only there while Needs me has a merged PR', async () => {
+    listed.tasks = [merged('m1', { prState: 'closed' }), merged('m2', { status: 'done' }), merged('m3', { pr: null })];
+    renderBoard();
+    await screen.findByText('merged m1');
+    expect(screen.queryByRole('button', { name: /Move merged to Done/ })).not.toBeInTheDocument();
+  });
+
+  it('counts a review task whose prompt names the PR', async () => {
+    listed.tasks = [merged('r1', { pr: null, input: '/review-pr https://github.com/acme/app/pull/9 --auto' })];
+    renderBoard();
+    expect(await screen.findByRole('button', { name: 'Move merged to Done (1)' })).toBeInTheDocument();
   });
 });
 

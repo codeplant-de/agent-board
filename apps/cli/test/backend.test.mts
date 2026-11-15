@@ -673,3 +673,18 @@ test('reporting a PR needs the task.pr feature and is refused without it, before
   await withIt.backend.setPr('abc', { pr: 'abe1.pr' });
   assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { pr: 'abe1.pr' } });
 });
+
+test('recording a PR state needs the task.pr-state feature and is refused without it, before anything is sent', async () => {
+  const without = boardWith(['task.pr'], {});
+  await assert.rejects(
+    without.backend.setPrState('abc', { prState: 'merged' }),
+    (error: unknown) => error instanceof BackendError && error.missingFeature === 'task.pr-state',
+  );
+  assert.deepEqual(
+    without.seen.map((request) => request.command),
+    ['version'],
+  );
+  const withIt = boardWith(['task.pr-state'], { 'set-pr-state': { body: { result: null } } });
+  await withIt.backend.setPrState('abc', { prState: 'merged' });
+  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { prState: 'merged' } });
+});
