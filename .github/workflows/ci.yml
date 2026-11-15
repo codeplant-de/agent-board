@@ -102,8 +102,9 @@ jobs:
         run: pnpm --filter @agent-board/cli test:binary
 
   # A change that raises MIN_CLIENT above the newest release makes that CLI fail against the server, so it must come
-  # with a higher CLI version. The rollout order is the "Upgrading" list in docs/setup.md.
-  cli-release:
+  # with a higher CLI version. The rollout order is the "Upgrading" list in docs/setup.md. This check cannot be made
+  # required on the Free plan; the hard stop is the gate of cli-release-plan on main.
+  cli-release-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
@@ -116,6 +117,48 @@ jobs:
 
       - name: Check the CLI version against MIN_CLIENT
         run: scripts/check-cli-release.sh
+
+  # On main: the gate stops a merged break without a CLI version bump before it reaches Flux, and the plan says whether the
+  # package version has a published release yet.
+  cli-release-plan:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Gate
+        run: scripts/check-cli-release.sh
+
+      - name: Plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r .version apps/cli/package.json)
+          draft=$(gh release view "cli-v$version" --json isDraft --jq .isDraft 2>/dev/null || echo missing)
+          if [ "$draft" = false ]; then
+            echo "cli-v$version is published"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "cli-v$version has no published release"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # A CLI version without a published release is released here, from the commit under test.
+  cli-release:
+    needs: [test, cli-release-plan]
+    if: needs.cli-release-plan.outputs.release == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-cli.yml
 
   # The newest released CLI must keep working against this commit's server, unless MIN_CLIENT is above it (a declared
   # break). It adds and reads tasks, schedules and notes, runs a real dispatch tick with stubbed systemd-run and claude, and
@@ -194,10 +237,15 @@ jobs:
 
   # Images are built only after the tests and the previous-CLI smoke test pass, so Flux never rolls out a commit that failed
   # them. A declared break skips previous-cli's steps and the job still succeeds, so only a red run blocks. A failed release
-  # download is red too and holds the push until a rerun.
+  # download is red too and holds the push until a rerun. On every CLI version bump the images also wait for the release, so
+  # a machine told to update (the backend advertises CLI_VERSION) finds it; a failed release holds them until it is retried.
   build-and-push:
-    needs: [test, previous-cli]
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [test, previous-cli, cli-release-plan, cli-release]
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      && needs.test.result == 'success' && needs.previous-cli.result == 'success'
+      && needs.cli-release-plan.result == 'success'
+      && contains(fromJSON('["success","skipped"]'), needs.cli-release.result)
     runs-on: ubuntu-latest
     permissions:
       contents: read
