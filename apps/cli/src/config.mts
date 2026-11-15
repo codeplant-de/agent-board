@@ -203,6 +203,72 @@ export function parseConfig(raw: unknown): Config {
   };
 }
 
+// The keys parseConfig reads at each level. Anything else is ignored, so a misspelt key would silently keep its default.
+const TOP_KEYS = [
+  'machine',
+  'lanes',
+  'defaultCwd',
+  'pauseAfterMinutes',
+  'inactivityMinutes',
+  'maxRunHours',
+  'autoUpdate',
+  'intake',
+  'repos',
+] as const;
+const LANE_KEYS = ['skills', 'slots', 'cwd'] as const;
+const INTAKE_KEYS = ['prompt', 'priority', 'allowedTools', 'disallowedTools', 'env', 'mcpServers'] as const;
+
+function editDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min((previous[j] ?? 0) + 1, (current[j - 1] ?? 0) + 1, (previous[j - 1] ?? 0) + cost);
+    }
+    previous = current;
+  }
+  return previous[b.length] ?? 0;
+}
+
+function unknownKeys(obj: Record<string, unknown>, known: readonly string[], where: string): string[] {
+  return Object.keys(obj)
+    .filter((key) => !known.includes(key))
+    .map((key) => {
+      const [nearest] = known
+        .map((name) => ({ name, distance: editDistance(key.toLowerCase(), name.toLowerCase()) }))
+        .sort((a, b) => a.distance - b.distance);
+      const close = nearest !== undefined && nearest.distance <= Math.max(2, Math.floor(nearest.name.length / 3));
+      const shown = JSON.stringify(`${where}${key}`.slice(0, 80));
+      return close
+        ? `unknown key ${shown}, ignored; did you mean "${where}${nearest.name}"?`
+        : `unknown key ${shown}, ignored; known here: ${known.join(', ')}`;
+    });
+}
+
+// The keys of a config parseConfig ignores, one line each. Not an error: every machine reads this file, and a key a newer
+// or older CLI dropped must not stop its workers; doctor and dispatch print these instead.
+export function configWarnings(raw: unknown): string[] {
+  if (!isRecord(raw)) return [];
+  const warnings = unknownKeys(raw, TOP_KEYS, '');
+  const lanes = raw['lanes'];
+  if (isRecord(lanes))
+    for (const [name, entry] of Object.entries(lanes))
+      if (isRecord(entry)) warnings.push(...unknownKeys(entry, LANE_KEYS, `lanes.${name.slice(0, 40)}.`));
+  const intake = raw['intake'];
+  if (isRecord(intake)) warnings.push(...unknownKeys(intake, INTAKE_KEYS, 'intake.'));
+  return warnings;
+}
+
+// configWarnings for the file at path; nothing when it is missing or does not parse, which loadConfig reports.
+export function loadConfigWarnings(path: string): string[] {
+  try {
+    return configWarnings(JSON.parse(readFileSync(path, 'utf8')));
+  } catch {
+    return [];
+  }
+}
+
 export function loadConfig(path: string, options: { optionalConfig?: boolean } = {}): Config {
   let content: string;
   try {

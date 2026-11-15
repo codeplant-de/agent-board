@@ -162,6 +162,21 @@ test('a config.json that does not parse is a failure, a missing Node 24 too', as
   assert.equal('node' in levels(bun), false);
 });
 
+test('an unknown key in config.json is a warning with the nearest known key; the machine line stays', async () => {
+  const results = await runChecks(
+    machine({ ...GOOD, [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box", "inactivityMinuts": 60}' } }),
+  );
+  const config = results.filter((result) => result.name === 'config.json');
+  assert.deepEqual(
+    config.map((result) => [result.level, result.message]),
+    [
+      ['ok', 'machine box'],
+      ['warn', 'unknown key "inactivityMinuts", ignored; did you mean "inactivityMinutes"?'],
+    ],
+  );
+  assert.equal(hasFailure(results), false);
+});
+
 test('with units installed a missing tool or a vanished program fails; a disabled timer only warns', async () => {
   const units = unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch']);
   const present = new Set([

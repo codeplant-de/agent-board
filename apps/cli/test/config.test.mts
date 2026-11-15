@@ -3,7 +3,15 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { ConfigError, isSafeMode, loadConfig, parseConfig, readSecretFile } from '../src/config.mts';
+import {
+  ConfigError,
+  configWarnings,
+  isSafeMode,
+  loadConfig,
+  loadConfigWarnings,
+  parseConfig,
+  readSecretFile,
+} from '../src/config.mts';
 
 const valid = {
   repos: { 'cosuno/cosuno': '~/x' },
@@ -126,4 +134,47 @@ test('autoUpdate defaults to incompatible, takes the three modes and refuses any
       () => parseConfig({ ...valid, autoUpdate: bad }),
       /config: autoUpdate must be one of incompatible, always, never/,
     );
+});
+
+test('a misspelt key at any level is a warning naming the nearest known key, not an error', () => {
+  const raw = {
+    ...valid,
+    inactivityMinuts: 60,
+    lane: { reviews: { skills: ['review-pr'] } },
+    lanes: { reviews: { skills: ['review-pr'], slot: 2 } },
+    intake: { allowedTool: ['Read'] },
+  };
+  assert.doesNotThrow(() => parseConfig(raw));
+  assert.deepEqual(configWarnings(raw), [
+    'unknown key "inactivityMinuts", ignored; did you mean "inactivityMinutes"?',
+    'unknown key "lane", ignored; did you mean "lanes"?',
+    'unknown key "lanes.reviews.slot", ignored; did you mean "lanes.reviews.slots"?',
+    'unknown key "intake.allowedTool", ignored; did you mean "intake.allowedTools"?',
+  ]);
+});
+
+test('an unknown key close to no known one lists the keys of its level', () => {
+  assert.deepEqual(configWarnings({ backend: { command: ['/x'] } }), [
+    'unknown key "backend", ignored; known here: machine, lanes, defaultCwd, pauseAfterMinutes, inactivityMinutes, maxRunHours, autoUpdate, intake, repos',
+  ]);
+});
+
+test('a config with only known keys, or no object at all, has no warnings', () => {
+  assert.deepEqual(configWarnings(valid), []);
+  assert.deepEqual(configWarnings({ lanes: { a: { skills: ['*'], slots: 2, cwd: '~' } }, intake: { env: ['X'] } }), []);
+  for (const raw of [undefined, null, [], 'x']) assert.deepEqual(configWarnings(raw), []);
+});
+
+test('loadConfigWarnings reads the file and is quiet when it is missing or broken', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cfg-warn-'));
+  try {
+    const path = join(dir, 'config.json');
+    assert.deepEqual(loadConfigWarnings(path), []);
+    writeFileSync(path, '{ nope');
+    assert.deepEqual(loadConfigWarnings(path), []);
+    writeFileSync(path, '{"maxRunHour": 2}');
+    assert.deepEqual(loadConfigWarnings(path), ['unknown key "maxRunHour", ignored; did you mean "maxRunHours"?']);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });

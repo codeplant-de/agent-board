@@ -37,7 +37,7 @@ import type { CheckResult, WaitCheck, WaitStore } from './waits.mts';
 import { CHECK_TIME_LIMIT_MS, createWaitStore, runCheck } from './waits.mts';
 import { createUpdateState, updateStateFile } from './update-state.mts';
 import { cliVersion, releaseVersion } from './version.mts';
-import { getPaths } from './config.mts';
+import { getPaths, loadConfigWarnings } from './config.mts';
 
 export interface DispatchDeps extends Context {
   system: System;
@@ -47,6 +47,8 @@ export interface DispatchDeps extends Context {
   waits: WaitStore;
   runCheck: (check: WaitCheck) => Promise<CheckResult>;
   update: UpdateDeps;
+  // Keys of config.json the CLI ignores (see configWarnings), logged at the start of every tick.
+  configWarnings: () => string[];
 }
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -153,6 +155,7 @@ const updateRun = ({ update, now, print: log, dryRun }: DispatchDeps) => ({ ...u
 export async function runDispatch(deps: DispatchDeps): Promise<void> {
   const { backend, config, system, files, print: log } = deps;
   const tickStart = deps.now();
+  for (const warning of deps.configWarnings()) log(`WARN config.json: ${warning}`);
   let listed: Task[];
   try {
     listed = await backend.listTasks();
@@ -361,6 +364,7 @@ export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<voi
       logTail: readLogTail,
       waits: createWaitStore(),
       runCheck: (check) => runCheck(check),
+      configWarnings: () => loadConfigWarnings(getPaths().configFile),
     }),
   );
 }
