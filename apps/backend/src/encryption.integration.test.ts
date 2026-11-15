@@ -403,6 +403,46 @@ describe('note previews and server events', () => {
   });
 });
 
+describe('suggested replies', () => {
+  const comment = async (id: string, text: string, suggestion?: string) =>
+    sealNote(sealed.seal, { taskId: id, author: 'agent', kind: 'comment' }, text, suggestion ? { suggestion } : {});
+
+  it('an agent comment keeps its sealed suggestion, and the thread serves it back to the browser', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    await ctx.call('claim-task', { id: task.id, machine: 'laptop' });
+    const note = await comment(task.id, 'Ready for review.', 'Yes, open the PR.');
+    expect((await ctx.raw('add-note', { id: task.id, body: note })).status).toBe(200);
+    const [row] = await admin.select().from(notes);
+    expect(isEnvelope(row?.suggestion ?? '')).toBe(true);
+    expect(JSON.stringify(row)).not.toContain('open the PR');
+    const [served] = (await ctx.ui.tasks.get({ id: task.id })).thread;
+    expect(served).toMatchObject({ text: 'Ready for review.', suggestion: 'Yes, open the PR.' });
+    const read = await ctx.raw('read-notes', { id: task.id });
+    expect(read.json.result[0].suggestion).toBe(note.suggestion);
+  });
+
+  it('is refused in plain text, on a system note, and on pause and fail, and a reply of the user never keeps one', async () => {
+    const id = (await ctx.ui.tasks.create({ title: 't', input: 'i' })).id;
+    await ctx.call('claim-task', { id, machine: 'laptop' });
+    const note = await comment(id, 'n', 'Yes.');
+    expect((await ctx.raw('add-note', { id, body: { ...note, suggestion: PLAIN } })).status).toBe(400);
+    expect((await ctx.raw('add-note', { id, author: 'system', body: note })).status).toBe(400);
+    for (const command of ['pause', 'fail'])
+      expect((await ctx.raw(command, { id, body: note })).status, command).toBe(400);
+    const reply = await sealNote(sealed.seal, { taskId: id, author: 'user', kind: 'comment' }, 'hi');
+    await ctx.rawUi.tasks.reply({ id, message: { ...reply, suggestion: note.suggestion } as never, resume: false });
+    expect((await admin.select().from(notes)).map((row) => [row.author, row.suggestion])).toEqual([['user', null]]);
+  });
+
+  it('is refused when too long for the board', async () => {
+    const id = (await ctx.ui.tasks.create({ title: 't', input: 'i' })).id;
+    const huge = `abe1.${'A'.repeat(20_000)}`;
+    expect(
+      (await ctx.raw('add-note', { id, body: { ...(await comment(id, 'n')), suggestion: huge } })).json.error,
+    ).toMatch(/too long/);
+  });
+});
+
 describe('answers', () => {
   async function asking() {
     const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });

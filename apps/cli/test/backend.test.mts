@@ -294,13 +294,14 @@ test('a dry run reads through and prints every write instead of sending it', asy
   );
   await dry.updateTask('a', { next: 'fresh' });
   await dry.addNote('a', 'hi', { author: 'system' });
+  await dry.addNote('a', 'done', { suggestion: 'Yes' });
   assert.equal((await dry.claimTask('a', 'laptop'))?.status, 'running');
   const added = await dry.addSchedule({ title: 't', input: 'i', cron: '0 9 * * *', timezone: 'UTC', times: 3 });
   assert.deepEqual([added.schedule.cron, added.schedule.remaining, added.task.scheduleId], ['0 9 * * *', 2, 'dry']);
   await dry.removeSchedule('sch1');
   assert.deepEqual(
     lines.map((line) => line.split(' ').slice(0, 2).join(' ')),
-    ['DRY update-task', 'DRY add-note', 'DRY claim-task', 'DRY add-schedule', 'DRY remove-schedule'],
+    ['DRY update-task', 'DRY add-note', 'DRY add-note', 'DRY claim-task', 'DRY add-schedule', 'DRY remove-schedule'],
   );
   assert.deepEqual([...new Set(seen.map((request) => request.command))], ['version', 'get-task']);
 });

@@ -104,7 +104,7 @@ function fakeWire(): FakeWire {
       return state.tasks.find((t) => t.id === id);
     },
     async addNote(id, note, options) {
-      const sent = parseWireNoteInput(JSON.parse(record(state, note)), 'note');
+      const sent = parseWireNoteInput(JSON.parse(record(state, note)), 'note', { allowSuggestion: true });
       const system = options?.author === 'system';
       push(state, id, sent, system ? 'system' : 'agent', system ? 'event' : 'comment');
     },
@@ -171,6 +171,7 @@ function push(
     author,
     kind,
     ...(questions === undefined ? {} : { questions }),
+    ...(input.suggestion === undefined ? {} : { suggestion: input.suggestion }),
   };
   state.notes.set(taskId, [...(state.notes.get(taskId) ?? []), note]);
 }
@@ -287,6 +288,44 @@ test('notes are sealed for their task, author and kind; the preview is the start
     ],
   );
   noMarkers(wire);
+});
+
+test('a suggested reply is sealed apart under the comment’s binding, and opens with the note', async () => {
+  const wire = fakeWire();
+  wire.tasks.push(await wireTask({ id: 't1' }), await wireTask({ id: 't2' }));
+  const board = sealingBackend(wire, KEYS);
+  await board.addNote('t1', 'MARKER-summary', { suggestion: 'MARKER-reply: yes, open the PR' });
+  const [sent] = wire.notes.get('t1')!;
+  assert.equal(
+    await open(KEYS, 'note.suggestion', 'note:t1:agent:comment', sent!.suggestion!),
+    'MARKER-reply: yes, open the PR',
+  );
+  assert.deepEqual(
+    (await board.readNotes('t1')).map((note) => [note.text, note.suggestion, note.unreadable]),
+    [['MARKER-summary', 'MARKER-reply: yes, open the PR', false]],
+  );
+  // Another task, another author or another kind does not open it.
+  for (const served of [
+    { ...sent!, author: 'user', kind: 'comment' },
+    { ...sent!, author: 'system', kind: 'event' },
+  ] as const) {
+    wire.notes.set('t1', [served]);
+    assert.equal((await board.readNotes('t1'))[0]?.unreadable, true);
+  }
+  wire.notes.set('t2', [sent!]);
+  assert.equal((await board.readNotes('t2'))[0]?.unreadable, true);
+  noMarkers(wire);
+});
+
+test('a suggestion is refused before sealing: on a system note, empty, or too long', async () => {
+  const wire = fakeWire();
+  wire.tasks.push(await wireTask({ id: 't1' }));
+  const board = sealingBackend(wire, KEYS);
+  await assert.rejects(board.addNote('t1', 'x', { author: 'system', suggestion: 'y' }), /only a comment by the agent/);
+  await assert.rejects(board.addNote('t1', 'x', { suggestion: '  ' }), /suggestion is empty/);
+  await assert.rejects(board.addNote('t1', 'x', { suggestion: 'y'.repeat(2001) }), /at most 2000 characters/);
+  await board.addNote('t1', 'x', { suggestion: 'y'.repeat(2000) });
+  assert.equal(wire.notes.get('t1')?.length, 1);
 });
 
 test('pause and fail send the finished sealed text, trimmed', async () => {

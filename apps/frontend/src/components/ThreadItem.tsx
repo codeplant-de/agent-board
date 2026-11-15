@@ -217,6 +217,11 @@ export function ThreadItem({ note, thread }: Props) {
         </Text>
       )}
       {note.text.trim() && <Folded text={note.text} />}
+      {note.suggestion && (
+        <Text size="xs" c="dimmed" fs="italic" mt={6} style={{ whiteSpace: 'pre-wrap' }}>
+          Suggested reply: {note.suggestion}
+        </Text>
+      )}
     </Paper>
   );
 }

@@ -115,13 +115,14 @@ export async function handleMachineCall(
       return task(row);
     }
     case 'add-note': {
-      const note = parsed(() => parseWireNoteInput(body['body'], 'note'));
+      const note = parsed(() => parseWireNoteInput(body['body'], 'note', { allowSuggestion: true }));
       const author = body['author'] === 'system' ? 'system' : 'agent';
       await addNote(db, taskId(body), {
         author,
         kind: author === 'system' ? 'event' : 'comment',
         body: note.body,
         preview: note.preview ?? null,
+        ...(note.suggestion === undefined ? {} : { suggestion: note.suggestion }),
         by: machine,
       });
       return null;

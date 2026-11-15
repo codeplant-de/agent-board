@@ -113,6 +113,8 @@ export interface Note {
   answers?: Answer[];
   // Where the server says the answer belongs; for display only, never used to find the questions.
   questionNoteId?: string;
+  // kind "comment" by the agent: a ready-to-send reply in the user's voice, for the user to use or edit.
+  suggestion?: string;
 }
 
 export interface TaskDraft {
@@ -245,7 +247,8 @@ export interface Backend {
   updateTask(id: string, patch: TaskPatch): Promise<Task>;
   // Moves a todo task to running for `machine`; undefined when another caller got it first or it is pinned elsewhere.
   claimTask(id: string, machine: string): Promise<Task | undefined>;
-  addNote(id: string, text: string, options?: { author?: 'agent' | 'system' }): Promise<void>;
+  // A `suggestion` (agent comments only) is the reply the user will most likely send next.
+  addNote(id: string, text: string, options?: { author?: 'agent' | 'system'; suggestion?: string }): Promise<void>;
   // Adds a question note and moves the task to needs-me.
   ask(id: string, questions: Question[]): Promise<void>;
   // The agent of a running task is alive: sets lastActiveAt to now, with the lane it runs in.
@@ -297,6 +300,8 @@ export interface WireNote {
   // kind "answer": sealed JSON of the questions the user was shown and the answers ("note.answers").
   answers?: string;
   questionNoteId?: string;
+  // Sealed "note.suggestion", on a comment by the agent only.
+  suggestion?: string;
 }
 
 // A task draft with its id; title, input and workdir are sealed, dedupeKey and head are blind indexes.
@@ -310,6 +315,8 @@ export interface WireNoteInput {
   // Sealed note text; sealed empty text for a note without any.
   body: string;
   preview?: string | null;
+  // Sealed "note.suggestion"; only an agent comment (add-note) may carry one.
+  suggestion?: string;
 }
 
 export interface WireAsk {
@@ -354,6 +361,9 @@ export interface WireBackend {
   removeSchedule(id: string): Promise<void>;
 }
 
+// The characters of a suggested reply the board takes.
+export const NOTE_SUGGESTION_CHARS = 2000;
+
 // How much plaintext each sealed field may hold, in UTF-8 bytes: four times the characters the clients allow. The server
 // cannot count characters in what it cannot read, so it bounds the envelope instead (see `envelopeLength`).
 export const SEALED_LIMITS: Record<Field, number> = {
@@ -362,6 +372,7 @@ export const SEALED_LIMITS: Record<Field, number> = {
   workdir: 4096,
   'note.body': 4 * 100_000,
   'note.preview': 4 * 300,
+  'note.suggestion': 4 * NOTE_SUGGESTION_CHARS,
   'note.questions': 256 * 1024,
   'note.answers': 256 * 1024,
   'tr.data': 1024 * 1024,
@@ -693,6 +704,7 @@ export function parseWireNote(value: unknown): WireNote {
   if (obj['questions'] !== undefined) note.questions = string(obj, 'questions', 'note');
   if (obj['answers'] !== undefined) note.answers = string(obj, 'answers', 'note');
   if (obj['questionNoteId'] !== undefined) note.questionNoteId = noteId('questionNoteId');
+  if (obj['suggestion'] !== undefined) note.suggestion = string(obj, 'suggestion', 'note');
   return note;
 }
 
@@ -854,12 +866,17 @@ export function parseWireTaskPatch(value: unknown): WireTaskPatch {
   return patch;
 }
 
-// Body of add-note, pause and fail: a sealed text and, optionally, the sealed start of it.
-export function parseWireNoteInput(value: unknown, what: string): WireNoteInput {
+// Body of add-note, pause and fail: a sealed text and, optionally, the sealed start of it. Only add-note takes a suggestion.
+export function parseWireNoteInput(
+  value: unknown,
+  what: string,
+  { allowSuggestion = false }: { allowSuggestion?: boolean } = {},
+): WireNoteInput {
   const obj = record(value, what);
-  rejectUnknownKeys(obj, ['body', 'preview'], what);
+  rejectUnknownKeys(obj, allowSuggestion ? ['body', 'preview', 'suggestion'] : ['body', 'preview'], what);
   const input: WireNoteInput = { body: sealedField(obj, 'body', what, 'note.body') };
   if (obj['preview'] !== undefined) input.preview = nullableSealedField(obj, 'preview', what, 'note.preview');
+  if (obj['suggestion'] !== undefined) input.suggestion = sealedField(obj, 'suggestion', what, 'note.suggestion');
   return input;
 }
 

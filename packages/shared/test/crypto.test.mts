@@ -24,6 +24,7 @@ const FIELDS: Field[] = [
   'workdir',
   'note.body',
   'note.preview',
+  'note.suggestion',
   'note.questions',
   'note.answers',
   'tr.data',

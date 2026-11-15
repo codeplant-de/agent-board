@@ -11,12 +11,28 @@ interface Props {
   onSubmit?: () => void;
   autoFocus?: boolean;
   label?: string;
+  /** Shown as ghost text while the editor is empty; Tab then fills it in. */
+  suggestion?: string;
 }
 
 /** Markdown with a preview tab; ⌘/Ctrl+Enter submits. */
-export function MarkdownEditor({ value, onChange, placeholder, minRows = 3, onSubmit, autoFocus, label }: Props) {
+export function MarkdownEditor({
+  value,
+  onChange,
+  placeholder,
+  minRows = 3,
+  onSubmit,
+  autoFocus,
+  label,
+  suggestion,
+}: Props) {
   const [tab, setTab] = useState<string | null>('write');
   const onKeyDown = (event: KeyboardEvent) => {
+    if (suggestion !== undefined && value === '' && event.key === 'Tab' && !event.shiftKey) {
+      event.preventDefault();
+      onChange(suggestion);
+      return;
+    }
     if (onSubmit && event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       onSubmit();
@@ -42,7 +58,7 @@ export function MarkdownEditor({ value, onChange, placeholder, minRows = 3, onSu
           <Textarea
             value={value}
             onChange={(event) => onChange(event.currentTarget.value)}
-            placeholder={placeholder}
+            placeholder={value === '' ? (suggestion ?? placeholder) : placeholder}
             autosize
             minRows={minRows}
             maxRows={18}

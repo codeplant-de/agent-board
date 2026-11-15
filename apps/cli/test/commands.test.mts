@@ -48,6 +48,30 @@ test('a comment is every word after the task, flags and --dry-run included', asy
   assert.deepEqual(dryRuns, [false]);
 });
 
+test('a comment takes a suggested reply before the task, and never reads one out of its text', async () => {
+  const { backend, go } = setup();
+  await go(['comment', '--suggest', 'Yes, open the PR.', ID, 'Ready', 'for', 'review']);
+  await go(['comment', ID, 'asks', '--suggest', 'nothing']);
+  assert.deepEqual(backend.writes, [
+    `note ${ID}: Ready for review [suggest: Yes, open the PR.]`,
+    `note ${ID}: asks --suggest nothing`,
+  ]);
+});
+
+test('a suggested reply can come from a file in /tmp, and not from both', async () => {
+  const dir = mkdtempSync('/tmp/board-commands-test-');
+  try {
+    const file = join(dir, 'reply.md');
+    writeFileSync(file, 'Go ahead with option B.');
+    const { backend, go } = setup();
+    await go(['comment', '--suggest-file', file, ID, 'Two options']);
+    assert.deepEqual(backend.writes, [`note ${ID}: Two options [suggest: Go ahead with option B.]`]);
+    await assert.rejects(go(['comment', '--suggest', 'x', '--suggest-file', file, ID, 'y']), UsageError);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test('--dry-run works before the command and among its flags', async () => {
   const { dryRuns, go } = setup();
   await go(['--dry-run', 'tasks']);
@@ -300,9 +324,9 @@ test('every board command in the run rules, the hook messages and the selftest s
       const expected: Record<string, RegExp> = {
         comment: new RegExp(
           `^note ${ID}: ${argv
-            .slice(2)
+            .slice(argv.indexOf(ID) + 1)
             .join(' ')
-            .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+            .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( \\[suggest: .*\\])?$`,
         ),
         move: /^status Zt0Test1 -> needs-me$/,
         ask: /^ask Zt0Test1: Color$/,

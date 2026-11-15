@@ -60,6 +60,7 @@ export function toNote(row: NoteRow): WireNote {
   };
   if (row.questions) note.questions = row.questions;
   if (row.answers) note.answers = row.answers;
+  if (row.suggestion) note.suggestion = row.suggestion;
   if (row.questionNoteId) note.questionNoteId = row.questionNoteId;
   return note;
 }
@@ -269,6 +270,7 @@ export async function addNote(
     kind?: NoteRow['kind'];
     body: string;
     preview?: string | null;
+    suggestion?: string;
     by: string | null;
     questions?: string;
     answers?: string;
@@ -278,6 +280,9 @@ export async function addNote(
   // Only the server's own events are plain text; whatever a client wrote must arrive sealed.
   if (note.author !== 'server') requireSealed(note.body, 'the note body');
   requireSealed(note.preview, 'the note preview');
+  requireSealed(note.suggestion, 'the suggestion');
+  if (note.suggestion !== undefined && (note.author !== 'agent' || (note.kind ?? 'comment') !== 'comment'))
+    throw new AppError('BAD_REQUEST', 'Only a comment by the agent can carry a suggestion.');
   requireSealed(note.questions, 'the questions');
   requireSealed(note.answers, 'the answers');
   await getTask(db, taskId);
@@ -290,6 +295,7 @@ export async function addNote(
       kind: note.kind ?? 'comment',
       body: note.body,
       preview: note.preview ?? null,
+      suggestion: note.suggestion ?? null,
       by: note.by,
       questions: note.questions ?? null,
       answers: note.answers ?? null,

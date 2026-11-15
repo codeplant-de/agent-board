@@ -38,6 +38,11 @@ describe('ThreadItem', () => {
     expect(event.querySelector('[title]')?.getAttribute('title')).toMatch(/board server itself/);
   });
 
+  it('shows the reply the agent suggested under its comment', () => {
+    renderNote(note({ text: 'Ready.', suggestion: 'Yes, open the PR.' }));
+    expect(screen.getByText(/Suggested reply: Yes, open the PR\./)).toBeInTheDocument();
+  });
+
   it('says why a note whose id the board repeated is not shown', () => {
     renderNote(note({ unreadable: true, duplicateId: true, text: '' }));
     expect(screen.getByText(/several notes with this id/)).toBeInTheDocument();

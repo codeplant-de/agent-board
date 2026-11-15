@@ -38,6 +38,7 @@ export const SEALED_COLUMNS: readonly SealedColumn[] = [
   envelope('schedule', 'workdir'),
   envelope('note', 'body'),
   envelope('note', 'preview'),
+  envelope('note', 'suggestion'),
   envelope('note', 'questions'),
   envelope('note', 'answers'),
   envelope('transcript_event', 'data'),

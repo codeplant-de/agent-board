@@ -78,6 +78,8 @@ export interface ThreadNote {
   questions?: Question[];
   answers?: Answer[];
   questionNoteId?: string;
+  // On a comment by the agent: the reply it drafted for you.
+  suggestion?: string;
 }
 
 export interface TaskDetail {
