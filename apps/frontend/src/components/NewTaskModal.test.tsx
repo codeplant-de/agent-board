@@ -104,3 +104,21 @@ describe('NewTaskModal When', () => {
     expect(create).not.toHaveBeenCalled();
   });
 });
+
+describe('NewTaskModal model', () => {
+  it('sends no model by default', async () => {
+    await open();
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).not.toHaveProperty('model');
+  });
+
+  it('sends the chosen alias', async () => {
+    await open();
+    await userEvent.click(screen.getByRole('combobox', { name: 'Model' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'Opus', hidden: true }));
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ model: 'opus', when: 'now' });
+  });
+});

@@ -52,6 +52,7 @@ test('the model lists the visible commands only, with their flags', () => {
     ['--in', '--at', '--check', '--every', '--timeout', '--reason'].every((flag) => flags('wait').includes(flag)),
   );
   assert.deepEqual(model.flagValues['--priority'], ['urgent', 'high', 'normal', 'low']);
+  assert.deepEqual(model.flagValues['--model'], ['fable', 'opus', 'sonnet', 'haiku']);
 });
 
 for (const shell of SHELLS) {
@@ -149,6 +150,7 @@ test('the bash script completes commands, task ids, statuses, priorities and sch
   assert.deepEqual(bashOffers(['move', 'Ab3dEf9x'], 'n'), ['needs-me']);
   assert.deepEqual(bashOffers(['tasks', '--status'], 'd'), ['done']);
   assert.deepEqual(bashOffers(['add', '--priority'], 'h'), ['high']);
+  assert.deepEqual(bashOffers(['schedule', '--model'], 'o'), ['opus']);
   assert.deepEqual(bashOffers(['add', '--parent'], 'Z'), ['Zk7mNp2q']);
   assert.deepEqual(bashOffers(['schedules'], 'p'), ['pause']);
   assert.deepEqual(bashOffers(['schedules', 'rm'], ''), ['Sc1aBcDe']);

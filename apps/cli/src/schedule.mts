@@ -1,4 +1,4 @@
-// `board schedule [--priority p] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
+// `board schedule [--priority p] [--model m] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
 // [--times <n> | --until <time>] [--new] <prompt...>`: a task from a prompt, written as you would type it into Claude Code,
 // bound to this machine and the directory it was scheduled from. Before it creates one, a quick Haiku call checks whether
 // an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead.
@@ -7,8 +7,10 @@ import {
   ContractError,
   defaultTitle,
   describeRule,
+  isModelName,
   isPriority,
   isRecord,
+  MODEL_ALIASES,
   parseDuration,
   parseWhen,
   PRIORITIES,
@@ -21,6 +23,8 @@ import { plainLine } from './terminal.mts';
 export interface ScheduleArgs {
   prompt: string;
   priority: Priority | undefined;
+  // The Claude model of the run; undefined is claude's default.
+  model: string | undefined;
   title: string | undefined;
   // Waits in Needs me instead of Todo.
   hold: boolean;
@@ -40,6 +44,7 @@ export interface ScheduleArgs {
 // The flags `board schedule` takes before the prompt, as commander hands them over.
 export interface ScheduleFlags {
   priority?: string;
+  model?: string;
   title?: string;
   hold?: boolean;
   backlog?: boolean;
@@ -55,6 +60,10 @@ export interface ScheduleFlags {
 export function addScheduleOptions(command: Command): Command {
   return command
     .option('--priority <priority>', `${PRIORITIES.join(', ')} (default normal)`)
+    .option(
+      '--model <model>',
+      `claude model alias or full name, e.g. ${MODEL_ALIASES.map((alias) => alias.value).join(', ')} (default: claude's default)`,
+    )
     .option('--title <title>', "the task's title (default: the prompt's first line)")
     .option('--hold', 'land it in needs-me instead of Todo')
     .option('--backlog', 'park it in backlog instead of Todo')
@@ -79,6 +88,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
   const result: ScheduleArgs = {
     prompt: '',
     priority: undefined,
+    model: undefined,
     title: flags.title?.trim(),
     hold,
     backlog,
@@ -93,6 +103,13 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     if (!isPriority(flags.priority))
       throw new UsageError(`unknown priority "${flags.priority.slice(0, 20)}"; use one of ${PRIORITIES.join(', ')}`);
     result.priority = flags.priority;
+  }
+  if (flags.model !== undefined) {
+    if (!isModelName(flags.model))
+      throw new UsageError(
+        `"${flags.model.slice(0, 70)}" is not a model name (a claude alias such as opus, or a full name such as claude-opus-5-5)`,
+      );
+    result.model = flags.model;
   }
   if (hold && backlog) throw new UsageError('--hold and --backlog cannot be combined');
   if (delay !== undefined && at !== undefined) throw new UsageError('--in and --at cannot be combined');
@@ -264,6 +281,7 @@ async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<T
     machine: deps.machine,
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
+    ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.every !== undefined ? { everyMs: args.every } : { cron: args.cron ?? '', timezone: deps.timezone }),
     ...(args.notBefore ? { startAt: args.notBefore } : {}),
     ...(args.times ? { times: args.times } : {}),
@@ -295,6 +313,10 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
         return undefined;
       }
       if (choice === 'requeue') {
+        if (args.model !== undefined && args.model !== existing.model)
+          deps.print(
+            `${existing.id} keeps its model (${existing.model ?? 'the default'}); --model applies only to a new task`,
+          );
         if (existing.status === 'todo' && args.notBefore) {
           const delayed = await backend.updateTask(existing.id, { notBefore: args.notBefore, expect: 'todo' });
           (deps.confirm ?? deps.print)(
@@ -334,6 +356,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     machine: deps.machine,
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
+    ...(args.model === undefined ? {} : { model: args.model }),
   });
   if (warning) await backend.addNote(task.id, warning, { author: 'system' });
   (deps.confirm ?? deps.print)(

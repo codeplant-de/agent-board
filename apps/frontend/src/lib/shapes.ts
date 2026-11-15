@@ -7,6 +7,7 @@ import {
   isBlindIndex,
   isCronExpression,
   isKeyId,
+  isModelName,
   isNextRun,
   isPriority,
   isSafeLane,
@@ -73,6 +74,7 @@ export interface TaskShapes {
   priority: Priority;
   next: NextRun;
   createdBy: TaskCreator;
+  model: string | null;
   machine: string | null;
   lane: string | null;
   sessionId: string | null;
@@ -90,6 +92,7 @@ export function checkTaskShapes(wire: {
   priority: unknown;
   next: unknown;
   createdBy: unknown;
+  model: string | null;
   machine: string | null;
   lane: string | null;
   sessionId: string | null;
@@ -102,6 +105,7 @@ export function checkTaskShapes(wire: {
   const priority = guarded(wire.priority, isPriority, NEUTRAL_PRIORITY);
   const next = guarded(wire.next, isNextRun, NEUTRAL_NEXT);
   const createdBy = guarded(wire.createdBy, isTaskCreator, NEUTRAL_CREATOR);
+  const model = checked(wire.model === null || isModelName(wire.model), wire.model, null);
   const machine = checked(wire.machine === null || isSafeMachineName(wire.machine), wire.machine, INVALID_VALUE);
   const lane = checked(wire.lane === null || isSafeLane(wire.lane), wire.lane, INVALID_VALUE);
   const sessionId = checked(wire.sessionId === null || isSessionId(wire.sessionId), wire.sessionId, null);
@@ -111,6 +115,7 @@ export function checkTaskShapes(wire: {
     ['priority', priority],
     ['next', next],
     ['createdBy', createdBy],
+    ['model', model],
     ['machine', machine],
     ['lane', lane],
     ['sessionId', sessionId],
@@ -121,6 +126,7 @@ export function checkTaskShapes(wire: {
     priority: priority.value,
     next: next.value,
     createdBy: createdBy.value,
+    model: model.value,
     machine: machine.value,
     lane: lane.value,
     sessionId: sessionId.value,
