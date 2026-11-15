@@ -231,7 +231,7 @@ function config(
   if (options.config)
     writeFileSync(
       join(dir, 'config.json'),
-      JSON.stringify({ machine: 'smoke', ...(options.repos ? { repos: { 'o/r': '/tmp' } } : {}) }),
+      JSON.stringify({ machine: 'smoke', ...(options.repos ? { repos: { 'o/r': '/tmp' }, intake: {} } : {}) }),
     );
   return dir;
 }

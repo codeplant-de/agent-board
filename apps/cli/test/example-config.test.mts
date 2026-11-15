@@ -8,10 +8,28 @@ import { task } from './helpers.mts';
 
 const FRESH = { kind: 'fresh', sessionId: '11111111-1111-4111-8111-111111111111' } as const;
 
-const raw: unknown = JSON.parse(readFileSync(new URL('../config.example.json', import.meta.url), 'utf8'));
+const raw: unknown = JSON.parse(readFileSync(new URL('../examples/config.reviews.json', import.meta.url), 'utf8'));
 const config = parseConfig(raw);
 // Intake reviews run unattended on PR text: these are the only rules with a job to do.
 const entry = config.intake;
+
+const neutral = parseConfig(
+  JSON.parse(readFileSync(new URL('../config.example.json', import.meta.url), 'utf8')) as unknown,
+);
+
+test('the config board init copies is neutral: one general lane, no repos, no intake', () => {
+  assert.deepEqual(
+    neutral.lanes.map((lane) => [lane.name, lane.skills, lane.slots]),
+    [['general', ['*'], 3]],
+  );
+  assert.deepEqual(neutral.repos, {});
+  assert.equal(neutral.intakeEnabled, false);
+  assert.ok(!readFileSync(new URL('../config.example.json', import.meta.url), 'utf8').includes('cosuno'));
+});
+
+test('the reviews example has an intake block', () => {
+  assert.equal(config.intakeEnabled, true);
+});
 
 test('the example has no backend entry: the CLI talks to the board directly', () => {
   assert.ok(!(isRecord(raw) && 'backend' in raw));

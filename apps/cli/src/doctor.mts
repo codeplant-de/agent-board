@@ -5,7 +5,7 @@ import type { ServerIdentity, WebConfig } from './backend.mts';
 import { ConfigError, isSafeMode, parseConfig } from './config.mts';
 import { API_VERSION, decodeDataKey, SERVER_FEATURE_LABELS, SERVER_FEATURES } from '@agent-board/shared';
 import { parseEnv } from './env-file.mts';
-import { LISTEN_SERVICE, parseExecStart, UNIT_NAMES, UNIT_PATH, whichOnPath } from './setup.mts';
+import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
 
 export type Level = 'ok' | 'fail' | 'warn';
 
@@ -339,16 +339,29 @@ function checkCommand(deps: DoctorDeps, service: string): CheckResult[] {
 
 const TOOLS = ['claude', 'gh', 'flock', 'timeout', 'systemd-run', 'systemctl'];
 
-function installedUnits(deps: DoctorDeps): string[] {
+// An intake machine is one whose config.json has an `intake` key; any other config problem is checkConfig's to report.
+function hasIntake({ configDir, readText }: DoctorDeps): boolean {
+  const text = readText(join(configDir, 'config.json'));
+  if (text === undefined) return false;
+  try {
+    const raw: unknown = JSON.parse(text);
+    return typeof raw === 'object' && raw !== null && 'intake' in raw;
+  } catch {
+    return false;
+  }
+}
+
+function installedUnits(deps: DoctorDeps, intake: boolean): string[] {
   return [
-    ...UNIT_NAMES.flatMap((name) => [`agent-board-${name}.service`, `agent-board-${name}.timer`]),
+    ...activeUnitNames(intake).flatMap((name) => [`agent-board-${name}.service`, `agent-board-${name}.timer`]),
     LISTEN_SERVICE,
   ].filter((file) => deps.exists(join(deps.unitDir, file)));
 }
 
 // A worker machine's tools and units: a warning on a machine that has installed no unit, a failure on one that has.
 const checkWorker: Check = async (deps) => {
-  const installed = installedUnits(deps);
+  const intake = hasIntake(deps);
+  const installed = installedUnits(deps, intake);
   const level = installed.length > 0 ? 'fail' : 'warn';
   const results: CheckResult[] = [];
   for (const tool of TOOLS) {
@@ -375,11 +388,21 @@ const checkWorker: Check = async (deps) => {
             ),
       );
   }
+  const timer = 'agent-board-intake.timer';
+  if (!intake && deps.exists(join(deps.unitDir, timer)))
+    results.push(
+      problem(
+        `unit ${timer}`,
+        'warn',
+        'installed, but config.json has no intake key, so `board internal intake` refuses',
+        `systemctl --user disable --now ${timer}`,
+      ),
+    );
   if (installed.length === 0) {
     results.push(problem('units', 'warn', 'no agent-board unit is installed', 'run "board setup" on a worker machine'));
     return results;
   }
-  for (const name of UNIT_NAMES) {
+  for (const name of activeUnitNames(intake)) {
     const service = `agent-board-${name}.service`;
     const timer = `agent-board-${name}.timer`;
     for (const file of [service, timer]) {
