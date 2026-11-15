@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   ContractError,
   isModelName,
+  MAX_INTERVAL_MS,
   notePreview,
   NOTE_KINDS,
   parseAckMessages,
@@ -160,6 +161,13 @@ test('a draft takes the dedupe key, parent and creator; unknown keys fail', () =
     { id: ID, title: TITLE, input: INPUT, status: 'todo', dedupeKey: KEY, parentId: 'abc', createdBy: 'agent' },
   );
   assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, status: 'backlog' }).status, 'backlog');
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, status: 'needs-me' }).status, 'needs-me');
+  for (const status of ['running', 'waiting', 'done']) {
+    assert.throws(
+      () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, status }),
+      /draft.status must be one of/,
+    );
+  }
   assert.deepEqual(parseWireTaskPatch({ status: 'backlog' }), { status: 'backlog' });
   assert.throws(() => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, rank: 1 }), ContractError);
   assert.throws(() => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, labels: [] }), /unknown key "labels"/);
@@ -420,6 +428,11 @@ test('a schedule draft needs sealed title and input and one rule', () => {
   );
   assert.throws(() => parseWireScheduleDraft({ ...draft, timezone: 'UTC' }), /only goes with cron/);
   assert.throws(() => parseWireScheduleDraft({ ...draft, times: 0 }), /positive integer/);
+  assert.equal(parseWireScheduleDraft({ ...draft, times: 2 ** 31 - 1 }).times, 2 ** 31 - 1);
+  assert.throws(() => parseWireScheduleDraft({ ...draft, times: 2 ** 31 }), /times must be at most 2147483647/);
+  assert.equal(parseWireScheduleDraft({ ...draft, everyMs: MAX_INTERVAL_MS }).everyMs, MAX_INTERVAL_MS);
+  assert.throws(() => parseWireScheduleDraft({ ...draft, everyMs: MAX_INTERVAL_MS + 1 }), /everyMs must be at most/);
+  assert.throws(() => parseWireScheduleDraft({ ...draft, everyMs: 7e15 }), /everyMs must be at most/);
   assert.throws(
     () => parseWireScheduleDraft({ ...draft, times: 2, until: '2027-01-01T00:00:00Z' }),
     /exclude each other/,

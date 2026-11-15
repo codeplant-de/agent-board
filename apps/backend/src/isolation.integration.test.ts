@@ -19,7 +19,7 @@ const at = (s: number) => new Date(Date.UTC(2026, 10, 13, 12, 0, s)).toISOString
 const transcript = (runId: string) => ({
   runId,
   startedAt: at(0),
-  sessionId: 'sess',
+  sessionId: '7c1e2f0a-3b4d-4e5f-8a9b-0c1d2e3f4a5b',
   resumed: false,
   events: [
     { seq: 0, at: at(1), parent: null, kind: 'tool_use', toolUseId: 'tu1', name: 'Bash', input: { command: 'ls' } },

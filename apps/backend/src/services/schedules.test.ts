@@ -42,6 +42,16 @@ describe('nextOccurrence on an interval', () => {
   });
 });
 
+describe('nextOccurrence past the dates a Date holds', () => {
+  it('is null instead of an invalid date', () => {
+    // The first run, about 222,000 years out, is still a date; the second is past the 8.64e15 ms a Date holds.
+    const rule = grid({ everyMs: 7e15 });
+    const first = nextOccurrence(rule, at('2027-01-01T10:00:00Z'), false);
+    expect(first?.getTime()).toBe(at('2027-01-01T10:00:00Z').getTime() + 7e15);
+    expect(nextOccurrence(rule, first!, false)).toBeNull();
+  });
+});
+
 describe('nextOccurrence on a cron expression', () => {
   it('matches in the time zone, at or after the time', () => {
     const rule = cron('0 9 * * 1-5');

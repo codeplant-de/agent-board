@@ -11,6 +11,8 @@ import {
   type Field,
   type WireNote,
   type WireTask,
+  MAX_INT32,
+  MAX_INTERVAL_MS,
 } from '@agent-board/shared';
 import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -51,13 +53,13 @@ const priority = z.enum(PRIORITIES);
 const model = z.string().refine(isModelName, 'not a model name');
 const repeatEnd = {
   at: z.coerce.date().optional(),
-  times: z.number().int().positive().optional(),
+  times: z.number().int().positive().max(MAX_INT32).optional(),
   until: z.coerce.date().optional(),
 };
 /** A repeat: an interval in ms, or a cron expression with its time zone; `at` is the first run. */
 const repeat = z
   .union([
-    z.object({ every: z.number().int().min(60_000), ...repeatEnd }),
+    z.object({ every: z.number().int().min(60_000).max(MAX_INTERVAL_MS), ...repeatEnd }),
     z.object({ cron: z.string().trim().min(1), timezone: z.string().trim().min(1), ...repeatEnd }),
   ])
   .refine(
