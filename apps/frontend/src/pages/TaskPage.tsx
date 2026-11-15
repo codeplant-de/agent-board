@@ -35,6 +35,12 @@ const UNREADABLE_LABEL = (field: UnreadableField): string =>
 
 export function TaskPage() {
   const { id = '' } = useParams();
+  // The route element stays mounted from one /t/:id to the next. Keyed by the id, nothing of task A (the reply
+  // draft, pending buttons, the transcript's selected run) shows up on task B, even when B comes from the cache.
+  return <TaskView key={id} id={id} />;
+}
+
+function TaskView({ id }: { id: string }) {
   const trpc = useTRPC();
   const query = useQuery({ ...trpc.tasks.get.queryOptions({ id }), refetchInterval: POLL_MS });
   const setPriority = useMutation(trpc.tasks.setPriority.mutationOptions());
