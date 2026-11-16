@@ -183,16 +183,57 @@ test('a worker refuses an intake task on a machine without an intake block', asy
   assert.ok(calls.some((c) => c.startsWith('append w1:')));
 });
 
-test('a worker refuses an intake task without an agent when intake here runs as an agent', async () => {
-  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, agent: 'reviewer' }, agents: { reviewer: REVIEWER } };
-  Object.assign(backend.tasks[0]!, {
+test('an agentless intake task on a machine whose intake runs as an agent runs as that agent', async () => {
+  const { deps, backend, seen } = setupAgent({
+    createdBy: 'intake',
+    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
+    machine: null,
+    workdir: null,
+  });
+  deps.pluginPath = () => '/plugins/pr';
+  deps.config = { ...deps.config, intake: { ...CONFIG.intake, agent: 'reviewer' } };
+  await runWorker(deps, 'w1');
+  const args = seen.invocation?.args ?? [];
+  assert.ok(args.includes('--agent=reviewer'));
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
+  assert.ok(args.some((arg) => arg.startsWith('--tools=')) && args.some((arg) => arg.startsWith('--agents=')));
+  assert.ok(args.includes('Read'), 'the agent allowedTools');
+  assert.ok(
+    args.some((arg) => arg.includes('git push')),
+    'the agent disallowedTools',
+  );
+  assert.equal(seen.env?.['AGENT_BOARD_RESTRICTED'], '1');
+  assert.ok(seen.agentsFile?.includes('Reviews') || seen.agentsFile?.includes('You review'));
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail w1:')));
+});
+
+test('a task with its own agent runs as it, whatever intake here names', async () => {
+  const { deps, seen } = setupAgent({
+    agent: 'reviewer',
+    createdBy: 'intake',
+    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
+    machine: null,
+    workdir: null,
+  });
+  deps.pluginPath = () => '/plugins/pr';
+  deps.config = {
+    ...deps.config,
+    intake: { ...CONFIG.intake, agent: 'other' },
+    agents: { reviewer: REVIEWER, other: { ...REVIEWER, description: 'Other.' } },
+  };
+  await runWorker(deps, 'w1');
+  assert.ok(seen.invocation?.args.includes('--agent=reviewer'));
+});
+
+test('an agentless intake task on a machine with neither lists nor an intake agent still fails closed', async () => {
+  const { deps, backend, seen } = setupAgent({
     createdBy: 'intake',
     input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
   });
+  deps.config = { ...deps.config, intakeEnabled: false };
   await runWorker(deps, 'w1');
-  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('runs as an agent')));
-  assert.ok(calls.some((c) => c.startsWith('append w1:')));
+  assert.equal(seen.invocation, undefined);
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('no intake block')));
 });
 
 test('a missing working directory is named in the error', async () => {

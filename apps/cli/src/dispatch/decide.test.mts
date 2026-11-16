@@ -9,16 +9,22 @@ const PR = 'https://github.com/cosuno/cosuno/pull/17741';
 test('a machine without an intake block leaves intake-created tasks to another machine', () => {
   const intakeTask = task({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
   assert.equal(
-    notServableHere(intakeTask, 'here', CONFIG.repos, { intakeEnabled: false, agents: {}, agentErrors: {} }),
+    notServableHere(intakeTask, 'here', CONFIG.repos, {
+      intakeEnabled: false,
+      intake: {},
+      agents: {},
+      agentErrors: {},
+    }),
     'no intake block in config.json here',
   );
   assert.equal(
-    notServableHere(intakeTask, 'here', CONFIG.repos, { intakeEnabled: true, agents: {}, agentErrors: {} }),
+    notServableHere(intakeTask, 'here', CONFIG.repos, { intakeEnabled: true, intake: {}, agents: {}, agentErrors: {} }),
     undefined,
   );
   assert.equal(
     notServableHere(task({ id: 'b', input: 'Find out X' }), 'here', CONFIG.repos, {
       intakeEnabled: false,
+      intake: {},
       agents: {},
       agentErrors: {},
     }),
@@ -28,7 +34,12 @@ test('a machine without an intake block leaves intake-created tasks to another m
 
 test("a machine leaves a task to another when it is pinned there or lacks the PR's checkout", () => {
   const here = (overrides: Parameters<typeof task>[0]) =>
-    notServableHere(task(overrides), 'here', CONFIG.repos, { intakeEnabled: true, agents: {}, agentErrors: {} });
+    notServableHere(task(overrides), 'here', CONFIG.repos, {
+      intakeEnabled: true,
+      intake: {},
+      agents: {},
+      agentErrors: {},
+    });
   assert.equal(here({ id: 'a', input: 'Find out X' }), undefined);
   assert.match(here({ id: 'a', input: '/grill', machine: 'there', workdir: '/x' }) ?? '', /pinned to there/);
   assert.equal(here({ id: 'a', input: '/grill', machine: 'here', workdir: '/x' }), undefined);
@@ -168,14 +179,17 @@ test('decideWake: a timer wakes at its end; a check runs when due, wakes on time
   assert.equal(decideWake({ ...base, task: { wakeAt: at(50), waitCheck: true }, check: undefined }).kind, 'wake');
 });
 
-test('a machine whose intake runs as an agent does not serve an intake task without one', () => {
+test('an agentless intake task is served by a machine whose intake runs as an agent, and by none without that or lists', () => {
   const agent = { description: 'd', tools: ['Read'], allowedTools: [], disallowedTools: [], env: [], mcpServers: [] };
   const config = { intakeEnabled: true, intake: { agent: 'reviewer' }, agents: { reviewer: agent }, agentErrors: {} };
   const old = task({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
+  assert.equal(notServableHere(old, 'here', CONFIG.repos, config), undefined);
   assert.equal(
-    notServableHere(old, 'here', CONFIG.repos, config),
-    'intake here runs as an agent, and this task has none',
+    notServableHere(old, 'here', CONFIG.repos, { ...config, agents: {} }),
+    'no agents.reviewer in config.json here',
   );
-  assert.equal(notServableHere({ ...old, agent: 'reviewer' }, 'here', CONFIG.repos, config), undefined);
-  assert.equal(notServableHere(old, 'here', CONFIG.repos, { ...config, intake: {} }), undefined);
+  assert.equal(
+    notServableHere(old, 'here', CONFIG.repos, { ...config, intakeEnabled: false, intake: {}, agents: {} }),
+    'no intake block in config.json here',
+  );
 });

@@ -120,10 +120,6 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     return fail(
       'This task came from intake, and config.json on this machine has no intake block: its rules would be missing.',
     );
-  if (fromIntake && agent.kind === 'none' && config.intake.agent !== undefined)
-    return fail(
-      'This task came from intake without an agent, and intake on this machine runs as an agent: it never had the permission of one.',
-    );
   // The lists a restricted run holds to: an agent's, else intake's; none for a run as the user.
   const restricted = agent.kind === 'found' ? agent.agent : fromIntake ? config.intake : undefined;
   // What a new directory is sealed against: the task's own creator and schedule, as the board has them.

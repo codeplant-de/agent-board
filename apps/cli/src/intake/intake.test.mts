@@ -686,10 +686,10 @@ test('without intake.agent, a new task is created without an agent', async () =>
   assert.deepEqual(drafts, [undefined]);
 });
 
-test('a requeue keeps the agent of the task', async () => {
+test('a requeue keeps the agent of the task, not the one intake names', async () => {
   const queued = { ...taskFor(1, 'needs-me'), agent: 'reviewer' };
   const backend = fakeBackend([queued]);
-  await runWith(backend, AGENT_CONFIG, [pr(1)]).done;
+  await runWith(backend, CONFIG, [pr(1)]).done;
   assert.deepEqual(
     backend.writes.map((w) => w.split(':')[0]),
     ['status c1 -> todo', 'input c1', 'next c1', 'note c1 (system)'],
@@ -701,12 +701,11 @@ test('a requeue keeps the agent of the task', async () => {
   });
 });
 
-test('with intake.agent, a task without an agent is not queued again', async () => {
+test('with intake.agent, a task without an agent is queued again and stays without one', async () => {
   const backend = fakeBackend([taskFor(1, 'needs-me')]);
-  const { logs, done } = runWith(backend, AGENT_CONFIG, [pr(1)]);
-  await done;
-  assert.deepEqual(backend.writes, []);
-  assert.ok(logs.includes('SKIP #1 its task has no agent, so this machine would not run it'));
+  await runWith(backend, AGENT_CONFIG, [pr(1)]).done;
+  assert.ok(backend.writes.includes('status c1 -> todo'));
+  assert.equal((backend.tasks[0] as { seal?: { agent: unknown } }).seal?.agent, null);
 });
 
 test('a legacy intake queues a task without an agent again', async () => {

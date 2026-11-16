@@ -44,9 +44,14 @@ const agentLabel = (name: string): string => (isAgentName(name) ? name : JSON.st
 
 export function agentFor(
   task: Task,
-  config: { agents: Record<string, AgentConfig>; agentErrors: Record<string, string> },
+  config: {
+    intake: { agent?: string };
+    agents: Record<string, AgentConfig>;
+    agentErrors: Record<string, string>;
+  },
 ): AgentLookup {
-  const name = task.agent ?? null;
+  // An intake task that names no agent runs as the one this machine's intake names, as it did under intake's own lists.
+  const name = task.agent ?? (task.createdBy === 'intake' ? (config.intake.agent ?? null) : null);
   if (name === null) return { kind: 'none' };
   const agent = Object.hasOwn(config.agents, name) ? config.agents[name] : undefined;
   if (agent === undefined) {

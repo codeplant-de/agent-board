@@ -129,7 +129,7 @@ export function notServableHere(
   repos: Record<string, string>,
   config: {
     intakeEnabled: boolean;
-    intake?: { agent?: string };
+    intake: { agent?: string };
     agents: Record<string, AgentConfig>;
     agentErrors: Record<string, string>;
   },
@@ -142,8 +142,6 @@ export function notServableHere(
   if (task.createdBy === 'intake') {
     // Intake's tasks run on untrusted PR text under intake's rules, which only an `intake` block holds, or under an agent's.
     if (agent.kind === 'none' && !config.intakeEnabled) return 'no intake block in config.json here';
-    if (agent.kind === 'none' && config.intake?.agent !== undefined)
-      return 'intake here runs as an agent, and this task has none';
     const pr = parsePrUrl(prUrlIn(task.input) ?? '');
     // An intake task without a PR URL is claimed and fails with the reason; one for a repo without a checkout here waits.
     if (pr !== undefined && !Object.hasOwn(repos, pr.repo)) return `no checkout of ${pr.repo} here`;
