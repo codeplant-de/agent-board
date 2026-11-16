@@ -32,7 +32,7 @@ import { SystemError } from './system.mts';
 import { plainLine, plainText } from './terminal.mts';
 import type { Style } from './style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
-import type { Choice, ScheduleFlags } from './schedule.mts';
+import type { Choice, Scheduled, ScheduleFlags } from './schedule.mts';
 import type { WaitStore } from './waits.mts';
 import { isPermanentRefusal } from './decide.mts';
 
@@ -300,7 +300,7 @@ export function parseAddFlags(flags: AddFlags): {
   return { title, file, parent, priority };
 }
 
-// The board puts a proposal in Needs me itself, so no status is sent.
+// The board puts a proposal in Backlog itself, so no status is sent.
 export async function add(context: LinkingContext, flags: AddFlags): Promise<Task> {
   const { title, file, parent, priority } = parseAddFlags(flags);
   // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
@@ -351,7 +351,7 @@ export async function move(context: LinkingContext, id: string, status: Status):
     await context.backend.updateTask(id, { status });
   } catch (error) {
     if (error instanceof BackendError && error.status === 403)
-      throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Needs me.`);
+      throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Backlog.`);
     throw error;
   }
   confirm(context, `moved ${id} to ${status}  ${context.taskLink(id)}`);
@@ -553,7 +553,7 @@ export async function scheduleCommand(
   context: LinkingContext,
   flags: ScheduleFlags,
   words: string[],
-): Promise<Task | undefined> {
+): Promise<Scheduled | undefined> {
   const args = parseScheduleArgs(flags, words);
   return schedule(
     {

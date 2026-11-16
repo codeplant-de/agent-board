@@ -4,7 +4,7 @@ import { MutationCache, QueryClient } from '@tanstack/react-query';
 import { createTRPCClient, httpBatchLink, TRPCClientError } from '@trpc/client';
 import { useMemo } from 'react';
 import { useKeys } from '../crypto/KeyContext';
-import { createPlainClient, createPlainTRPC, type PlainTRPC } from './plainTrpc';
+import { createPlainTRPC, type PlainTRPC } from './plainTrpc';
 import { useRawTRPC, useRawTRPCClient } from './rawTrpc';
 
 export type { BoardTask, LastNote, ListedTask, Schedule, TaskDetail, ThreadNote } from './opening';
@@ -17,12 +17,6 @@ export function useTRPC(): PlainTRPC {
   const client = useRawTRPCClient();
   const keys = useKeys();
   return useMemo(() => createPlainTRPC(raw, client, keys), [raw, client, keys]);
-}
-
-export function useTRPCClient(): ReturnType<typeof createPlainClient> {
-  const client = useRawTRPCClient();
-  const keys = useKeys();
-  return useMemo(() => createPlainClient(client, keys), [client, keys]);
 }
 
 export const errorMessage = (err: unknown): string => {

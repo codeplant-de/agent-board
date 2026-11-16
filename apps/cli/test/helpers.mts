@@ -68,6 +68,7 @@ export const CONFIG: Config = {
     env: [],
     mcpServers: [],
   },
+  intakeEnabled: true,
   repos: { 'cosuno/cosuno': '/work/cosuno' },
 };
 

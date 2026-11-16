@@ -241,7 +241,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     // notServableHere so no other machine logs a SKIP line for every delayed card on every tick.
     if (task.notBefore !== null && task.notBefore > deps.now()) continue;
     // Another machine may have the checkout, the directory or the session.
-    const elsewhere = notServableHere(task, config.machine, config.repos);
+    const elsewhere = notServableHere(task, config.machine, config.repos, config.intakeEnabled);
     if (elsewhere !== undefined) {
       log(`SKIP ${task.id} ${elsewhere}`);
       continue;

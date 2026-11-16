@@ -42,8 +42,8 @@ Setup:
   init                      write web.json, env and config.json for this machine
   doctor                    check this machine: config, token, server, worker
                             tools and units
-  setup                     install the dispatch and intake timers and the
-                            listener as systemd user units
+  setup                     install the dispatch timer (and intake, if
+                            configured) and the listener as systemd user units
   self-update               replace this binary with the newest release
   completion <shell>        print a shell completion script
   help [command]            show the help of a command
@@ -322,7 +322,7 @@ Examples:
 ```
 Usage: board add [options]
 
-Propose a follow-up task; the file is its prompt. It waits in needs-me until the
+Propose a follow-up task; the file is its prompt. It waits in backlog until the
 user starts it, and runs in this directory on this machine. With --json, print
 {"id", "url"} on stdout.
 
@@ -394,9 +394,14 @@ dashes, put -- before it.
 repeating schedule instead, starting at --in/--at (default now), for --times
 runs or until --until, else forever.
 
-With --json, print {"id", "url"} of the task on stdout; everything else goes to
-stderr. Not available inside a board run: there, propose follow-up work with
-`board add`.
+--polish parks the task in Backlog and queues a second task, "Polish prompt:
+<title>", that asks an agent to turn the prompt into a complete plan, as the
+Polish prompt button on the board does. Apply the result from that task's page.
+It cannot be combined with --hold, --in, --at or a repeat.
+
+With --json, print {"id", "url"} of the task on stdout (and "polishId",
+"polishUrl" with --polish); everything else goes to stderr. Not available inside
+a board run: there, propose follow-up work with `board add`.
 
 Arguments:
   prompt                 what the task should do
@@ -417,6 +422,8 @@ Options:
                          time zone ("0 9 * * 1-5")
   --times <n>            end a repeat after this many runs, the first included
   --until <time>         end a repeat after this time
+  --polish               park it in backlog and queue a task that polishes its
+                         prompt, as "Polish prompt" on the board
   --new                  skip the duplicate check
   --dry-run              read everything, print every write instead of doing it
   --json                 print JSON on stdout instead of text
@@ -431,6 +438,7 @@ Examples:
   board schedule --at 09:00 /grill the plan in docs/x.md
   board schedule --every 2h --times 5 /sweep the stale branches
   board schedule --cron "0 9 * * 1-5" /review-pr --auto
+  board schedule --polish "bidder export should include postal codes"
   board schedule --hold -- --weird prompt
   board schedule --json /review-pr 17741
 ```
@@ -577,13 +585,14 @@ Examples:
 ```
 Usage: board setup [options]
 
-Install this machine as a worker: write the dispatch and intake services and
-timers and the listener service into ~/.config/systemd/user (or
-$XDG_CONFIG_HOME/systemd/user) as copies, run `systemctl --user daemon-reload`
-and print the line that enables them. The listener holds a stream to the board
-and starts a dispatch tick within a second of a change; the timers stay as the
-fallback. Run it again after moving the binary or the checkout, or upgrading
-Node. It needs Linux with systemd and flock.
+Install this machine as a worker: write the dispatch service and timer, the
+intake service and timer when config.json has an `intake` key, and the listener
+service into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as
+copies, run `systemctl --user daemon-reload` and print the line that enables
+them. The listener holds a stream to the board and starts a dispatch tick within
+a second of a change; the timers stay as the fallback. Run it again after moving
+the binary or the checkout, or upgrading Node. It needs Linux with systemd and
+flock.
 
 The services run this CLI the way `board setup` was started: the binary, or the
 checkout with its Node. --print shows the units and changes nothing; --enable
@@ -591,8 +600,9 @@ also enables and starts the timers and the listener. When an installed unit
 differs from what it writes, the differing lines are shown. It refuses unless
 --force when this checkout is not the one the installed ~/.local/bin/board runs
 from (a worktree, a scratch copy), or when a binary runs from the temp
-directory, so it cannot take over the live timers. Not available inside a board
-run.
+directory, so it cannot take over the live timers. Without an `intake` key it
+leaves installed intake units alone and does not enable them. Not available
+inside a board run.
 
 Options:
   --enable    also enable and start the timers and the listener

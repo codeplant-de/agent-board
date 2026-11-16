@@ -20,15 +20,12 @@ import {
   notServableHere,
   planRun,
   freshThreadBlock,
-  splitBatches,
   START_MARKER,
   decideWake,
   WAKE_MARKER,
 } from '../src/decide.mts';
 import type { LaneRun } from '../src/decide.mts';
-import { MAX_BATCH_EVENTS } from '@agent-board/shared';
 import { BackendError } from '../src/backend.mts';
-import type { TranscriptEvent } from '@agent-board/shared';
 import { tail } from '../src/text.mts';
 import { CONFIG, note as makeNote, OTHER_SESSION, SESSION, task } from './helpers.mts';
 
@@ -196,8 +193,15 @@ test("a prompt's skill picks its lane; anything else goes to the lane with *", (
   assert.equal(ownLane(task({ id: 'a', input: 'Find out X' }), [lanes[0]!]), undefined);
 });
 
+test('a machine without an intake block leaves intake-created tasks to another machine', () => {
+  const intakeTask = task({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
+  assert.equal(notServableHere(intakeTask, 'here', CONFIG.repos, false), 'no intake block in config.json here');
+  assert.equal(notServableHere(intakeTask, 'here', CONFIG.repos, true), undefined);
+  assert.equal(notServableHere(task({ id: 'b', input: 'Find out X' }), 'here', CONFIG.repos, false), undefined);
+});
+
 test("a machine leaves a task to another when it is pinned there or lacks the PR's checkout", () => {
-  const here = (overrides: Parameters<typeof task>[0]) => notServableHere(task(overrides), 'here', CONFIG.repos);
+  const here = (overrides: Parameters<typeof task>[0]) => notServableHere(task(overrides), 'here', CONFIG.repos, true);
   assert.equal(here({ id: 'a', input: 'Find out X' }), undefined);
   assert.match(here({ id: 'a', input: '/grill', machine: 'there', workdir: '/x' }) ?? '', /pinned to there/);
   assert.equal(here({ id: 'a', input: '/grill', machine: 'here', workdir: '/x' }), undefined);
@@ -646,36 +650,6 @@ test('earlier findings alone point the fresh run at the thread; a first message 
   );
   const proposal = freshThreadBlock(task({ id: 'a' }), [makeNote('start with the API', at(1), { author: 'user' })]);
   assert.match(proposal ?? '', /start with the API/);
-});
-
-test('a backlog goes out in batches under the event and size limits', () => {
-  const event = (seq: number): TranscriptEvent => ({
-    kind: 'text',
-    seq,
-    at: '2026-01-01T00:00:00Z',
-    parent: null,
-    text: 'x'.repeat(100),
-  });
-  const events = Array.from({ length: 7 }, (_, seq) => event(seq));
-  const size = Buffer.byteLength(JSON.stringify(event(0)));
-  assert.deepEqual(
-    splitBatches(events, { maxEvents: 3 }).map((batch) => batch.length),
-    [3, 3, 1],
-  );
-  assert.deepEqual(
-    splitBatches(events, { maxBytes: size * 2 + 5 }).map((batch) => batch.length),
-    [2, 2, 2, 1],
-  );
-  assert.deepEqual(
-    splitBatches(events, { maxBytes: 10 }).map((batch) => batch.length),
-    [1, 1, 1, 1, 1, 1, 1],
-    'an event over the limit goes alone',
-  );
-  assert.deepEqual(splitBatches([]), []);
-  assert.deepEqual(
-    splitBatches(Array.from({ length: MAX_BATCH_EVENTS + 1 }, (_, seq) => event(seq))).map((batch) => batch.length),
-    [MAX_BATCH_EVENTS, 1],
-  );
 });
 
 test('a session id that is not a UUID, or a directory that is not a path, never reaches an argument (flag injection)', () => {

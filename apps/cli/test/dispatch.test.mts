@@ -150,6 +150,19 @@ test('a task this machine cannot serve is left in Todo for another machine', asy
   assert.ok(logs.some((line) => line.startsWith('SKIP elsewhere pinned to there')));
 });
 
+test('a machine without an intake block skips intake tasks', async () => {
+  const review = task({
+    id: 'rev',
+    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
+    createdBy: 'intake',
+  });
+  const { deps, started, logs } = setup([review, todo('t1')]);
+  deps.config = { ...CONFIG, intakeEnabled: false };
+  await runDispatch(deps);
+  assert.deepEqual(started, ['t1']);
+  assert.ok(logs.some((line) => line.startsWith('SKIP rev no intake block in config.json here')));
+});
+
 test('a claim lost to another machine starts nothing and the next task gets the slot', async () => {
   const { deps, started, backend } = setup([todo('t1'), todo('t2'), todo('t3')]);
   backend.lostClaims.push('t1');

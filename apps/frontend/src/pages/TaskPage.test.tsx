@@ -13,7 +13,6 @@ vi.mock('../lib/trpc', () => {
   return {
     POLL_MS: 60_000,
     errorMessage: () => 'error',
-    useTRPCClient: () => ({}),
     useTRPC: () => ({
       tasks: {
         get: { queryOptions: ({ id }: { id: string }) => ({ queryKey: ['tasks.get', id] }) },

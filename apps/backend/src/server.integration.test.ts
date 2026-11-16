@@ -302,7 +302,7 @@ describe('board UI', () => {
     await ui.tasks.reply({ id: task.id, message: 'fyi', resume: false });
   });
 
-  it('agent proposals wait in needs-me until started; moving into Todo starts them', async () => {
+  it('agent proposals wait in backlog until started; moving into Todo starts them', async () => {
     const ui = plainUi(db);
     const parent = await ui.tasks.create({ title: 'parent', input: 'do it' });
     const proposed = await ctx.call('laptop', 'add-task', {
@@ -317,10 +317,20 @@ describe('board UI', () => {
     });
     const id = proposed.json.result.task.id;
     const before = await ui.tasks.get({ id });
-    expect(before.task).toMatchObject({ proposed: true, status: 'needs-me', parentId: parent.id });
+    expect(before.task).toMatchObject({ proposed: true, status: 'backlog', parentId: parent.id });
     expect((await ui.tasks.get({ id: parent.id })).followUps.map((t) => t.id)).toEqual([id]);
     const started = await ui.tasks.move({ id, status: 'todo' });
     expect(started).toMatchObject({ proposed: false, status: 'todo', createdBy: 'user', input: 'do Y' });
+  });
+
+  it('a proposal in backlog goes below the user’s backlog tasks, and stays startable and closable there', async () => {
+    const ui = plainUi(db);
+    const mine = await ui.tasks.create({ title: 'mine', input: 'do it', when: 'backlog' });
+    const { id } = (
+      await ctx.call('laptop', 'add-task', { body: { title: 'idea', input: 'do Y', createdBy: 'agent' } })
+    ).json.result.task;
+    expect((await ui.tasks.list()).filter((t) => t.status === 'backlog').map((t) => t.id)).toEqual([mine.id, id]);
+    await expect(ui.tasks.setClosed({ id, closed: true })).resolves.toMatchObject({ closed: true });
   });
 
   it('drag and drop places a task between its neighbours', async () => {
@@ -771,9 +781,9 @@ describe('proposals', () => {
     (await ctx.call('laptop', 'add-task', { body: { title: 'idea', input: 'do Y', createdBy: 'agent', ...body } })).json
       .result.task;
 
-  it('an agent task lands in needs-me as a proposal whatever start status it names', async () => {
+  it('an agent task lands in backlog as a proposal whatever start status it names', async () => {
     for (const status of ['backlog', 'todo', 'needs-me']) {
-      expect(await propose({ status })).toMatchObject({ status: 'needs-me', createdBy: 'agent' });
+      expect(await propose({ status })).toMatchObject({ status: 'backlog', createdBy: 'agent' });
     }
     expect((await plainUi(db).tasks.list()).every((t) => t.proposed)).toBe(true);
   });
@@ -786,13 +796,13 @@ describe('proposals', () => {
     }
     // Other fields are fine, and so is staying put.
     expect(
-      (await ctx.call('laptop', 'update-task', { id, body: { status: 'needs-me', sessionId: SESSION } })).status,
+      (await ctx.call('laptop', 'update-task', { id, body: { status: 'backlog', sessionId: SESSION } })).status,
     ).toBe(200);
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
     // Even a proposal that somehow sits in Todo is not claimable.
     await admin.update(tasks).set({ status: 'todo' }).where(eq(tasks.id, id));
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(409);
-    await admin.update(tasks).set({ status: 'needs-me' }).where(eq(tasks.id, id));
+    await admin.update(tasks).set({ status: 'backlog' }).where(eq(tasks.id, id));
     const started = await plainUi(db).tasks.move({ id, status: 'todo' });
     expect(started).toMatchObject({ status: 'todo', proposed: false, createdBy: 'user' });
     expect((await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).status).toBe(200);
@@ -848,7 +858,7 @@ describe('proposals', () => {
     expect(asked.status).toBe(403);
     expect(asked.json.error).toMatch(/only you start it/);
     const { task, thread } = await plainUi(db).tasks.get({ id });
-    expect(task).toMatchObject({ status: 'needs-me', proposed: true, openQuestion: false });
+    expect(task).toMatchObject({ status: 'backlog', proposed: true, openQuestion: false });
     expect(thread.filter((n) => n.kind === 'question')).toEqual([]);
   });
 });
@@ -1613,6 +1623,67 @@ describe('waiting', () => {
     });
     expect((await ctx.call('laptop', 'wake', { id: parked, body: 'late' })).json.result).toMatchObject({
       applied: false,
+    });
+  });
+});
+
+describe('a run taken back and claimed by another machine', () => {
+  /** The laptop's run, taken back after it went quiet and run again fresh, now runs on the workstation. */
+  async function movedToWorkstation() {
+    const ui = plainUi(db);
+    const task = await ui.tasks.create({ title: 't', input: 'do it' });
+    await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
+    await admin
+      .update(tasks)
+      .set({ lastActiveAt: new Date(Date.now() - TAKE_BACK_AFTER_MS - 60_000) })
+      .where(eq(tasks.id, task.id));
+    await ui.tasks.takeBack({ id: task.id });
+    await ui.tasks.move({ id: task.id, status: 'todo' });
+    expect((await ctx.call('workstation', 'claim-task', { id: task.id, machine: 'workstation' })).status).toBe(200);
+    return task.id;
+  }
+  const get = async (id: string) => (await ctx.call('workstation', 'get-task', { id })).json.result;
+
+  it('ignores the old machine’s heartbeats, and keeps the new machine’s', async () => {
+    const id = await movedToWorkstation();
+    await ctx.call('workstation', 'heartbeat', { id, body: { lane: 'reviews', borrowed: false } });
+    const before = await get(id);
+    await ctx.call('laptop', 'heartbeat', { id, body: { lane: 'implement', borrowed: true } });
+    expect(await get(id)).toMatchObject({ lane: 'reviews', borrowed: false, lastActiveAt: before.lastActiveAt });
+  });
+
+  it('refuses a pause, wait or fail from the old machine as if the task had stopped running', async () => {
+    const id = await movedToWorkstation();
+    const wakeAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    expect(await ctx.call('laptop', 'pause', { id, body: 'Paused on laptop.' })).toMatchObject({
+      status: 409,
+      json: { error: 'the task is running on workstation, not on laptop' },
+    });
+    expect((await ctx.call('laptop', 'wait', { id, body: { text: 'CI', wakeAt } })).status).toBe(409);
+    expect(
+      (await ctx.call('laptop', 'fail', { id, body: 'The worker exited with code 1.' })).json.result,
+    ).toMatchObject({
+      applied: false,
+      task: { status: 'running', machine: 'workstation' },
+    });
+    const { thread } = await plainUi(db).tasks.get({ id });
+    expect(thread.some((n) => ['Paused on laptop.', 'CI', 'The worker exited with code 1.'].includes(n.text))).toBe(
+      false,
+    );
+    expect((await ctx.call('workstation', 'fail', { id, body: 'x' })).json.result.applied).toBe(true);
+  });
+
+  it('lets only the machine the task waits on end the wait', async () => {
+    const id = await movedToWorkstation();
+    const wakeAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    await ctx.call('workstation', 'wait', { id, body: { text: 'CI', wakeAt, check: true } });
+    expect((await ctx.call('laptop', 'wake', { id, body: 'check passed' })).json.result).toMatchObject({
+      applied: false,
+      task: { status: 'waiting' },
+    });
+    expect((await ctx.call('workstation', 'wake', { id, body: 'check passed' })).json.result).toMatchObject({
+      applied: true,
+      task: { status: 'todo', machine: 'workstation' },
     });
   });
 });

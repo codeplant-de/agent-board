@@ -38,15 +38,15 @@ function machine(
 const GOOD = {
   [`${CONFIG_DIR}/web.json`]: { text: '{"url": "https://board.example.com"}' },
   [`${CONFIG_DIR}/env`]: { text: `AGENT_BOARD_TOKEN=${TOKEN}\nAGENT_BOARD_DATA_KEY=${KEY_TEXT}\n`, mode: 0o100600 },
-  [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box"}' },
+  [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box", "intake": {}}' },
 };
 
 const levels = (results: CheckResult[]): Record<string, string> =>
   Object.fromEntries(results.map((result) => [result.name, result.level]));
 
-function unitFiles(command: string[]): Record<string, { text: string }> {
+function unitFiles(command: string[], intake = true): Record<string, { text: string }> {
   return Object.fromEntries(
-    renderUnits({ flock: '/usr/bin/flock', command: () => command }).map((unit) => [
+    renderUnits({ flock: '/usr/bin/flock', command: () => command, intake }).map((unit) => [
       `${UNIT_DIR}/${unit.file}`,
       { text: unit.text },
     ]),
@@ -401,4 +401,46 @@ test('a board with no key yet says so even when env has no key either, and the h
     other.find((result) => result.name === 'board key')?.hint ?? '',
     /board init --force": it keeps the URL and the token/,
   );
+});
+
+test('an installed intake timer on a machine without an intake key warns with how to stop it', async () => {
+  const noIntake = { ...GOOD, [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box"}' } };
+  const files = { ...noIntake, ...unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch'], true) };
+  const results = await runChecks(machine(files, { exists: () => true }));
+  const found = results.find((result) => result.name === 'unit agent-board-intake.timer');
+  assert.equal(found?.level, 'warn');
+  assert.match(found?.hint ?? '', /systemctl --user disable --now agent-board-intake\.timer/);
+  assert.equal(hasFailure(results), false);
+});
+
+test('an unrelated config error does not drop the intake checks of an intake machine', async () => {
+  const broken = {
+    ...GOOD,
+    [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box", "intake": {}, "slots": "x", "lanes": 3}' },
+  };
+  const results = await runChecks(
+    machine(
+      { ...broken, ...unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch']) },
+      { exists: () => true },
+    ),
+  );
+  assert.ok(results.some((result) => result.name === 'unit agent-board-intake.timer'));
+});
+
+test('without an intake key, doctor checks gh but no intake unit', async () => {
+  const noIntake = { ...GOOD, [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box"}' } };
+  const worker = ['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch'];
+  const results = await runChecks(
+    machine(
+      { ...noIntake, ...unitFiles(worker, false) },
+      {
+        exists: (path) => !path.includes('intake'),
+        whichInUnits: (program) => (program === 'gh' ? undefined : `/usr/bin/${program}`),
+      },
+    ),
+  );
+  assert.equal(levels(results)['tool gh'], 'fail');
+  assert.ok(results.every((result) => !result.name.includes('intake')));
+  const withIntake = await runChecks(machine({ ...GOOD, ...unitFiles(worker) }, { exists: () => true }));
+  assert.ok(Object.keys(levels(withIntake)).some((name) => name.includes('intake.timer')));
 });

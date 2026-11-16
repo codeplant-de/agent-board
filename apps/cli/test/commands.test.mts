@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { API_VERSION } from '@agent-board/shared';
@@ -399,6 +400,24 @@ test('internal dispatch, intake and worker say they need Linux elsewhere', async
       /needs Linux with systemd; this is darwin/,
       argv.join(' '),
     );
+});
+
+test('internal intake refuses with a usage error when config.json has no intake key', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-intake-off-'));
+  try {
+    writeFileSync(join(dir, 'config.json'), '{"machine": "box"}');
+    await assert.rejects(
+      runBoard(['internal', 'intake'], { env: { AGENT_BOARD_CONFIG_DIR: dir }, platform: 'linux' }),
+      (error) =>
+        error instanceof UsageError && /intake is not enabled: config\.json has no intake key/.test(error.message),
+    );
+    await assert.rejects(
+      runBoard(['internal', 'intake'], { env: { AGENT_BOARD_CONFIG_DIR: join(dir, 'none') }, platform: 'linux' }),
+      UsageError,
+    );
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });
 
 test('wait --in parks a running task until then, and stores no check', async () => {

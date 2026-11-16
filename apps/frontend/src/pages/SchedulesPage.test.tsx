@@ -89,6 +89,20 @@ describe('SchedulesPage', () => {
     expect(await screen.findByText('No schedules yet.')).toBeInTheDocument();
   });
 
+  it('shows why the list did not load instead of saying there are no schedules', async () => {
+    list.mockRejectedValue(new Error('board is locked'));
+    renderPage();
+    expect(await screen.findByText(/Could not load schedules: .*board is locked/)).toBeInTheDocument();
+    expect(screen.queryByText('No schedules yet.')).not.toBeInTheDocument();
+  });
+
+  it('does not say there are no schedules while they load', () => {
+    list.mockReturnValue(new Promise(() => undefined));
+    renderPage();
+    expect(screen.getByText('Loading schedules…')).toBeInTheDocument();
+    expect(screen.queryByText('No schedules yet.')).not.toBeInTheDocument();
+  });
+
   it('lists the rule, next run, runs left, machine and a link to the waiting card', async () => {
     list.mockResolvedValue([
       row({}),

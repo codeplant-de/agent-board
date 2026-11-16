@@ -346,7 +346,7 @@ describe('an agent’s proposal', () => {
 
   it('is not run by dispatch or the worker when the server serves it as Todo, and runs as the user’s task once started in the browser', async () => {
     const proposal = await propose();
-    expect(proposal).toMatchObject({ createdBy: 'agent', status: 'needs-me', unreadable: [] });
+    expect(proposal).toMatchObject({ createdBy: 'agent', status: 'backlog', unreadable: [] });
     // The operator moves it to Todo and clears every flag it controls.
     await admin.update(tasks).set({ status: 'todo', proposed: false, position: 0 }).where(eq(tasks.id, proposal.id));
 
@@ -368,7 +368,7 @@ describe('an agent’s proposal', () => {
     // Put it back as an honest board has it, and start it the way the Start button does.
     await admin
       .update(tasks)
-      .set({ status: 'needs-me', proposed: true, machine: null })
+      .set({ status: 'backlog', proposed: true, machine: null })
       .where(eq(tasks.id, proposal.id));
     const shown = await ctx.fetchQuery<any>(ctx.trpc.tasks.get.queryOptions({ id: proposal.id }));
     expect(shown.task).toMatchObject({ createdBy: 'agent', input: 'delete everything under /tmp' });

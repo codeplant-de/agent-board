@@ -24,7 +24,7 @@ A task moves through `backlog → todo → running → needs-me → done`, with 
 
 ## Install a worker machine
 
-You need Linux with systemd, plus `gh` and `claude`, both logged in. On macOS the `board` commands work except `ask`, `add`, `polish` and `setup`; the worker needs Linux.
+You need Linux with systemd and `claude`, logged in, plus `gh`, both logged in. On macOS the `board` commands work except `ask`, `add`, `polish` and `setup`; the worker needs Linux.
 
 1. Open the board in the browser and set up encryption (passphrase and recovery key). On **Settings**, create a token for this machine and copy the data key.
 2. Install the CLI from the newest release:
@@ -37,11 +37,11 @@ You need Linux with systemd, plus `gh` and `claude`, both logged in. On macOS th
 
    ```sh
    board init            # board URL, machine token, data key, machine name
-   board setup --enable  # systemd user units: dispatch, intake, listener
+   board setup --enable  # systemd user units: dispatch, listener (and intake, if config.json has an intake block)
    board doctor          # checks config, token, key, server version and units
    ```
 
-4. Edit `~/.config/agent-board/config.json`: map `repos` to your local checkouts, and adjust `lanes` if you want parallel runs split by skill.
+4. Edit `~/.config/agent-board/config.json`: map `repos` to your local checkouts, adjust `lanes` if you want parallel runs split by skill. To turn PR review requests into tasks, add an `intake` block (see `apps/cli/examples/config.reviews.json`) and run `board setup --enable` again.
 
 For runs after you log out, enable lingering with `loginctl enable-linger $USER`. Update later with `board self-update`.
 
