@@ -1,7 +1,8 @@
-import type { Lane } from '../config/config.mts';
+import type { AgentConfig, Lane } from '../config/config.mts';
 import { parsePrUrl, prUrlIn } from '@agent-board/shared';
 import type { Task } from '@agent-board/shared';
 import { fence } from '../output/text.mts';
+import { agentFor } from '../task-rules.mts';
 import type { RunLimits } from '../worker/plan.mts';
 
 // The worker enforces the timeout itself; the sweep only catches a worker that cannot.
@@ -126,13 +127,16 @@ export function notServableHere(
   task: Task,
   machine: string,
   repos: Record<string, string>,
-  intakeEnabled: boolean,
+  config: { intakeEnabled: boolean; agents: Record<string, AgentConfig>; agentErrors: Record<string, string> },
 ): string | undefined {
   const pinned = pinnedMachine(task);
   if (pinned !== undefined && pinned !== machine) return `pinned to ${pinned}`;
+  const agent = agentFor(task, config);
+  // A pinned task is claimed here and refused by the worker with a note: skipped, it would sit in Todo for good.
+  if (agent.kind === 'missing' && pinned === undefined) return agent.reason;
   if (task.createdBy === 'intake') {
-    // Intake's tasks run on untrusted PR text under intake's rules, which only an `intake` block holds.
-    if (!intakeEnabled) return 'no intake block in config.json here';
+    // Intake's tasks run on untrusted PR text under intake's rules, which only an `intake` block holds, or under an agent's.
+    if (agent.kind === 'none' && !config.intakeEnabled) return 'no intake block in config.json here';
     const pr = parsePrUrl(prUrlIn(task.input) ?? '');
     // An intake task without a PR URL is claimed and fails with the reason; one for a repo without a checkout here waits.
     if (pr !== undefined && !Object.hasOwn(repos, pr.repo)) return `no checkout of ${pr.repo} here`;

@@ -9,7 +9,14 @@ import { isRecord } from './guards.mts';
 export const BASELINE_SERVER_FEATURES = ['attach-session', 'events', 'note.polish', 'note.suggestion', 'wait'] as const;
 
 // An additive change to the machine API appends its name here, in the same commit that makes the server do it.
-export const ADDED_SERVER_FEATURES = ['task.model', 'task.pr', 'task.pr-state', 'run-inbox', 'machine.dirs'] as const;
+export const ADDED_SERVER_FEATURES = [
+  'task.model',
+  'task.pr',
+  'task.pr-state',
+  'run-inbox',
+  'machine.dirs',
+  'task.agent',
+] as const;
 
 export const SERVER_FEATURES = [...BASELINE_SERVER_FEATURES, ...ADDED_SERVER_FEATURES] as const;
 export type ServerFeature = (typeof SERVER_FEATURES)[number];
@@ -25,6 +32,7 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'task.pr-state': 'the state of a task’s pull request',
   'run-inbox': 'messages and stop requests for a running task',
   'machine.dirs': 'directory lists',
+  'task.agent': 'running a task as an agent',
   wait: 'waiting',
 };
 

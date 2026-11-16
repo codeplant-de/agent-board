@@ -187,6 +187,7 @@ export function renderThread(task: Task, notes: Note[]): string {
     `# ${task.title}`,
     '',
     `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(', ') || '-'}`,
+    ...(task.agent == null ? [] : [`agent: ${task.agent}`]),
     ...(task.pr === null ? [] : [`pr: ${task.pr}`]),
     ...(task.sessionId ? [`session: ${task.sessionId} · ${task.machine ?? '-'}:${task.workdir ?? '-'}`] : []),
     '',
@@ -461,16 +462,19 @@ export async function wait(
   id: string,
   flags: WaitFlags,
   // `settingsDir`: the directory the run started in (AGENT_BOARD_START_DIR), whose settings the check takes its `env` from.
-  deps: { waits: WaitStore; cwd: string; settingsDir?: string; now?: Date },
+  // `restricted`: the run's AGENT_BOARD_RESTRICTED marker, which the worker sets on this machine for an agent's run.
+  deps: { waits: WaitStore; cwd: string; settingsDir?: string; restricted?: boolean; now?: Date },
 ): Promise<void> {
   const now = deps.now ?? new Date();
   const plan = parseWaitFlags(flags, now);
   if (plan.check !== undefined) {
     const task = await context.backend.getTask(id);
     if (task.status !== 'running') throw new UsageError(`${id} is ${task.status}: only a running task can wait`);
-    // An intake review runs on PR text nobody chose to read, with a fixed list of commands; a check would run any command.
+    // An intake review and an agent's run allow a fixed list of commands; a check would run any command.
     if (task.createdBy === 'intake')
       throw new UsageError(`${id} is an intake review: it may wait with --in or --at only`);
+    if (deps.restricted === true)
+      throw new UsageError(`${id} runs as an agent with a fixed list of commands: it may wait with --in or --at only`);
     if (task.machine !== context.config.machine)
       throw new UsageError(
         `${id} runs on ${task.machine ?? 'no machine'}, not on ${context.config.machine}: a check runs on the task's machine`,
@@ -562,6 +566,16 @@ async function chooseInTerminal(): Promise<Choice> {
   }
 }
 
+// A typo fails here, before the board holds a task that no machine could run.
+function requireLocalAgent(config: Pick<Config, 'agents' | 'agentErrors' | 'machine'>, name: string): void {
+  if (Object.hasOwn(config.agents, name)) return;
+  const known = Object.keys(config.agents);
+  const broken = Object.hasOwn(config.agentErrors, name) ? ` (${config.agentErrors[name]})` : '';
+  throw new UsageError(
+    `no agents.${name} in config.json on ${config.machine}${broken}; ${known.length === 0 ? 'it defines no agents' : `it defines ${known.join(', ')}`}`,
+  );
+}
+
 export async function scheduleCommand(
   context: LinkingContext,
   flags: ScheduleFlags,
@@ -569,6 +583,7 @@ export async function scheduleCommand(
   cwd: string,
 ): Promise<Scheduled | undefined> {
   const args = parseScheduleArgs(flags, words);
+  if (args.agent !== undefined) requireLocalAgent(context.config, args.agent);
   if (!isAllowedDir(context.config.dirs, cwd))
     throw new UsageError(
       `${plainLine(cwd)} is not a listed directory on ${context.config.machine}, so a task scheduled here would stop in Needs me. Run "board dirs add" here first, or schedule from a listed directory.`,

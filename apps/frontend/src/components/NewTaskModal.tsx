@@ -1,4 +1,4 @@
-import { MODEL_ALIASES, PRIORITIES, type Priority } from '@agent-board/shared';
+import { AGENT_NAME_RULE, isAgentName, MODEL_ALIASES, PRIORITIES, type Priority } from '@agent-board/shared';
 import {
   Button,
   Code,
@@ -66,6 +66,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const [priority, setPriority] = useState<Priority>('normal');
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [directory, setDirectory] = useState<string | null>(null);
+  const [agent, setAgent] = useState('');
   const machines = useQuery(trpc.machines.list.queryOptions());
   const create = useMutation(trpc.tasks.create.mutationOptions());
 
@@ -78,6 +79,8 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
     [machines.data, now],
   );
   const place = choices.find(({ value }) => value === directory);
+  const agentName = agent.trim();
+  const agentError = agentName !== '' && !isAgentName(agentName) ? `Use ${AGENT_NAME_RULE}` : undefined;
   const startsLater = when === 'later' || when === 'repeat';
   const atError = startsLater && at !== '' && !(start.getTime() > now) ? 'Pick a time in the future' : undefined;
   const timesError =
@@ -86,6 +89,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const repeat = 'error' in parsedRule ? undefined : parsedRule;
   const ready =
     input.trim() !== '' &&
+    agentError === undefined &&
     (when !== 'later' || (at !== '' && atError === undefined)) &&
     (when !== 'repeat' || (repeat !== undefined && atError === undefined && timesError === undefined));
   const submit = () => {
@@ -105,6 +109,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
         priority,
         ...(model === DEFAULT_MODEL ? {} : { model }),
         ...(place === undefined ? {} : { place: { machine: place.machine, workdir: place.path } }),
+        ...(agentName === '' ? {} : { agent: agentName }),
       },
       {
         onSuccess: (task) => {
@@ -114,6 +119,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           setPriority('normal');
           setModel(DEFAULT_MODEL);
           setDirectory(null);
+          setAgent('');
           setAt('');
           setRule('');
           setTimes('');
@@ -151,6 +157,14 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           disabled={machines.isPending || machines.isError || choices.length === 0}
           error={machines.isError ? errorMessage(machines.error) : undefined}
           description={directoryDescription(choices.length === 0 && !machines.isPending, unreadable)}
+        />
+        <TextInput
+          label="Agent"
+          placeholder="Runs as you, with your permissions"
+          value={agent}
+          onChange={(e) => setAgent(e.currentTarget.value)}
+          error={agentError}
+          description="The name of an agent in the config.json of the machine that runs it: only its tools and lists, never asking. A machine without it does not run the task. The board cannot read the name."
         />
         <TextInput
           label="Title"

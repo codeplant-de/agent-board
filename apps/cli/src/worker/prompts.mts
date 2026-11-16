@@ -120,8 +120,10 @@ export function buildResumePrompt(task: Task, notes: Note[]): string | undefined
   ].join('\n');
 }
 
-// What every run is told about the board, on top of its prompt.
-export function boardRules(task: Task): string {
+// What every run is told about the board, on top of its prompt. `asAgent`: the run is an agent's, which gets the reduced rules
+// of an intake review whoever made the task.
+export function boardRules(task: Task, options: { asAgent?: boolean } = {}): string {
+  const restricted = task.createdBy === 'intake' || options.asAgent === true;
   return [
     `You are running headless as agent-board task ${task.id}. Nobody watches this terminal; the user reads the task's thread on the board.`,
     `- Report progress and results with \`board comment ${task.id} "<text>"\` (markdown; \`--file <path>\` for long text in /tmp, or \`-\` for stdin).`,
@@ -131,7 +133,7 @@ export function boardRules(task: Task): string {
     '- Do not end your turn while a background agent or background command you started is still running: this run ends when your turn does. Run subagents in the foreground, or wait for their result before ending your turn.',
     '- If you are told that a pause was requested, post a one-line status with `board comment` and end your turn; you will be resumed here.',
     '- The user may send you a message while you work, or interrupt you with a correction. Take it as the latest instruction on the task.',
-    ...(task.createdBy === 'intake'
+    ...(restricted
       ? []
       : [
           `- Work on your own. Decide and act without asking on whatever is easy to undo and stays on this machine: reading, editing files, running tests and builds, local branches, worktrees and commits, scratch files in /tmp. Where the prompt leaves a gap, make a reasonable choice and name it in your report. Use \`board ask\` only before a step that is hard to undo or that other people see, unless the prompt asked for that step: force-pushing, deleting branches or data, merging, deploying, posting to Slack, Shortcut, email or someone else's PR or issue.`,
@@ -139,7 +141,7 @@ export function boardRules(task: Task): string {
           `- Right after you open a pull request for this task, run \`board pr ${task.id} <url>\`: the board shows it on the task's card and page. A later PR replaces the earlier one.`,
           `- When you have to wait for something outside that takes minutes or longer (CI, a deploy, a review), do not sleep or poll in this run: run \`board wait ${task.id} --check '<command>' --reason "<what you wait for>"\` with a command that exits 0 once the wait is over (\`--every <dur>\` how often it runs, default 2m; \`--timeout <dur>\` when to give up, default 2h), or \`board wait ${task.id} --in 30m --reason "<what you wait for>"\` for a plain timer, then end your turn. The task frees its slot, and you are resumed in this session when the check passes or the time is up.`,
         ]),
-    ...(task.createdBy === 'intake'
+    ...(restricted
       ? [
           "- This run allows only a fixed list of commands, and each matches only when it stands alone: run every Bash command on its own, without pipes, `;`, `&&`, redirects or `cd`, by its full path, and filter output with the command's own options. A refused call is a result; report it instead of working around it, and go on with the other steps.",
         ]

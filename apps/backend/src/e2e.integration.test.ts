@@ -158,7 +158,7 @@ describe('what the database holds, after a scenario run by the real clients', ()
       workdir: `/${WORKDIR}/sub`,
       input: PROMPT,
       head: HEAD,
-      seal: { createdBy: 'user', scheduleId: null },
+      seal: { createdBy: 'user', scheduleId: null, agent: null },
     });
     await cli.ask(id, [{ ...question, header: 'Scope', question: QUESTION }]);
     expect(await cli.attachSession(id)).toEqual({ sessionId: SESSION, workdir: `/${WORKDIR}/sub` });

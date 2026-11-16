@@ -412,6 +412,9 @@ Options:
   --priority <priority>  urgent, high, normal, low (default normal)
   --model <model>        claude model alias or full name, e.g. fable, opus,
                          sonnet, haiku (default: claude's default)
+  --agent <name>         run the task as this agent of this machine's
+                         config.json (its tools and lists only, never asking);
+                         the board keeps the name sealed
   --title <title>        the task's title (default: the prompt's first line)
   --hold                 land it in needs-me instead of Todo
   --backlog              park it in backlog instead of Todo

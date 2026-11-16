@@ -582,3 +582,97 @@ test('doctor says whether the board has the current directory list, comparing in
   assert.deepEqual(dirsOnBoard(results), []);
   assert.match(results.find(({ name }) => name === 'server features')?.message ?? '', /directory lists/);
 });
+
+const PLUGINS = '/home/me/.claude/plugins';
+const agentsConfig = (agents: unknown, plugins?: unknown) => ({
+  ...GOOD,
+  [`${CONFIG_DIR}/config.json`]: { text: JSON.stringify({ machine: 'box', agents }) },
+  ...(plugins === undefined ? {} : { [`${PLUGINS}/installed_plugins.json`]: { text: JSON.stringify(plugins) } }),
+});
+const agent = (override: Record<string, unknown> = {}) => ({
+  description: 'Reviews.',
+  tools: ['Read', 'Bash'],
+  allowedTools: ['Read', 'Bash(gh pr view *)'],
+  ...override,
+});
+const agentResults = async (files: ReturnType<typeof agentsConfig>) =>
+  (await runChecks(machine(files))).filter((result) => result.name === 'agents' || result.name.startsWith('agent '));
+
+test('doctor lists the agents of a config that resolves and finds nothing to say about them', async () => {
+  const results = await agentResults(agentsConfig({ reviewer: agent(), 'other-1': agent() }));
+  assert.deepEqual(
+    results.map((result) => [result.name, result.level, result.message]),
+    [['agents', 'ok', 'reviewer, other-1']],
+  );
+});
+
+test('an agent that cannot be read is a failure naming it and its key, and the rest of config.json still loads', async () => {
+  const results = await runChecks(
+    machine(agentsConfig({ reviewer: agent({ disallowedTool: ['Bash(rm *)'] }), ok1: agent() })),
+  );
+  const broken = results.find((result) => result.name === 'agent reviewer');
+  assert.equal(broken?.level, 'fail');
+  assert.match(broken?.message ?? '', /agents\.reviewer has no key "disallowedTool"; did you mean "disallowedTools"\?/);
+  assert.equal(results.find((result) => result.name === 'config.json')?.level, 'ok');
+  assert.equal(results.find((result) => result.name === 'agents')?.message, 'ok1');
+  assert.equal(hasFailure(results), true);
+});
+
+test("intake's plugin placeholders are checked too on a machine with an intake block", async () => {
+  const intake = { allowedTools: ['Bash({pr-review}/x.sh *)'] };
+  const text = (withIntake: boolean) => JSON.stringify({ machine: 'box', ...(withIntake ? { intake } : {}) });
+  const files = (withIntake: boolean, plugins: unknown) => ({
+    ...GOOD,
+    [`${CONFIG_DIR}/config.json`]: { text: text(withIntake) },
+    [`${PLUGINS}/installed_plugins.json`]: { text: JSON.stringify(plugins) },
+  });
+  const warned = async (withIntake: boolean, plugins: unknown) =>
+    (await runChecks(machine(files(withIntake, plugins)))).filter((result) => result.name === 'config.json intake');
+  assert.deepEqual(await warned(true, { plugins: { 'pr-review@ccc': [{ installPath: '/p' }] } }), []);
+  const several = await warned(true, {
+    plugins: { 'pr-review@a': [{ installPath: '/a' }], 'pr-review@b': [{ installPath: '/b' }] },
+  });
+  assert.match(several[0]?.message ?? '', /several marketplaces/);
+  assert.deepEqual(await warned(false, { plugins: {} }), []);
+});
+
+test('an allow rule for a tool the agent does not have is a warning naming the tool', async () => {
+  const results = await agentResults(
+    agentsConfig({
+      reviewer: agent({
+        tools: ['Read'],
+        allowedTools: ['Read', 'Bash(gh pr view *)', 'Edit(//tmp/x)', 'mcp__shortcut__get_story'],
+      }),
+    }),
+  );
+  const warning = results.find((result) => result.level === 'warn');
+  assert.equal(warning?.name, 'agent reviewer');
+  assert.match(warning?.message ?? '', /allowedTools has rules for Bash, Edit, which tools leaves out/);
+  assert.equal(warning?.hint, 'add them to agents.reviewer.tools');
+  assert.equal(hasFailure(results), false);
+});
+
+test("an agent's plugin placeholder that does not resolve is a warning: unreadable list, not installed, several marketplaces", async () => {
+  const withPlugin = { reviewer: agent({ allowedTools: ['Bash({pr-review}/x.sh *)'] }) };
+  const warn = async (plugins?: unknown) =>
+    (await agentResults(agentsConfig(withPlugin, plugins))).filter((result) => result.level === 'warn');
+  assert.deepEqual(await warn({ plugins: { 'pr-review@ccc': [{ installPath: '/p' }] } }), []);
+  assert.match(
+    (await warn())[0]?.message ?? '',
+    /\{pr-review\}.*cannot read .*installed_plugins\.json.*a run as reviewer fails/,
+  );
+  assert.match((await warn({ plugins: {} }))[0]?.message ?? '', /plugin pr-review is not installed/);
+  assert.match(
+    (await warn({ plugins: { 'pr-review@a': [{ installPath: '/a' }], 'pr-review@b': [{ installPath: '/b' }] } }))[0]
+      ?.message ?? '',
+    /several marketplaces \(pr-review@a, pr-review@b\)/,
+  );
+  const named = { reviewer: agent({ allowedTools: ['Bash({pr-review@b}/x.sh *)'] }) };
+  const files = agentsConfig(named, {
+    plugins: { 'pr-review@a': [{ installPath: '/a' }], 'pr-review@b': [{ installPath: '/b' }] },
+  });
+  assert.deepEqual(
+    (await agentResults(files)).filter((result) => result.level === 'warn'),
+    [],
+  );
+});

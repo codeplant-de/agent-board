@@ -1,6 +1,6 @@
-import { promptSkill, shortSkill } from '@agent-board/shared';
+import { isAgentName, promptSkill, shortSkill } from '@agent-board/shared';
 import type { Task, UnreadableField } from '@agent-board/shared';
-import type { Lane } from './config/config.mts';
+import type { AgentConfig, Lane } from './config/config.mts';
 
 export const START_MARKER = 'agent-board: started';
 // The start of the note that ends a wait; the rest of it is why, and the resumed agent is told.
@@ -32,4 +32,32 @@ export function neverRun(task: Task): string | undefined {
   return task.createdBy === 'agent'
     ? 'An agent proposed this task and you have not started it: a worker only runs what you started or your own machines created.'
     : undefined;
+}
+
+// The agent a task runs as. `none`: it names none and runs by its creator's rules. `missing`: it names one this machine does
+// not define or could not read, so it must not run here at all: its restrictions would be missing.
+export type AgentLookup =
+  { kind: 'none' } | { kind: 'found'; name: string; agent: AgentConfig } | { kind: 'missing'; reason: string };
+
+// A name from the board, safe to print.
+const agentLabel = (name: string): string => (isAgentName(name) ? name : JSON.stringify(name.slice(0, 40)));
+
+export function agentFor(
+  task: Task,
+  config: { agents: Record<string, AgentConfig>; agentErrors: Record<string, string> },
+): AgentLookup {
+  const name = task.agent ?? null;
+  if (name === null) return { kind: 'none' };
+  const agent = Object.hasOwn(config.agents, name) ? config.agents[name] : undefined;
+  if (agent === undefined) {
+    const unreadable = Object.hasOwn(config.agentErrors, name) ? config.agentErrors[name] : undefined;
+    return {
+      kind: 'missing',
+      reason:
+        unreadable === undefined
+          ? `no agents.${agentLabel(name)} in config.json here`
+          : `agents.${agentLabel(name)} in config.json here cannot be used (${unreadable})`,
+    };
+  }
+  return { kind: 'found', name, agent };
 }

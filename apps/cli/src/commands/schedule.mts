@@ -1,13 +1,15 @@
-// `board schedule [--priority p] [--model m] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
+// `board schedule [--priority p] [--model m] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
 // [--times <n> | --until <time>] [--polish] [--new] <prompt...>`: a task from a prompt, written as you would type it into Claude Code,
 // bound to this machine and the directory it was scheduled from. Before it creates one, a quick Haiku call checks whether
 // an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead. With `--polish` the
 // task goes to Backlog and a child task that polishes its prompt is queued, as the board's "Polish prompt" button does.
 import { execFile } from 'node:child_process';
 import {
+  AGENT_NAME_RULE,
   ContractError,
   defaultTitle,
   describeRule,
+  isAgentName,
   isModelName,
   isPriority,
   isRecord,
@@ -27,6 +29,8 @@ export interface ScheduleArgs {
   priority: Priority | undefined;
   // The Claude model of the run; undefined is claude's default.
   model: string | undefined;
+  // The agent of this machine's config.json the task runs as; undefined runs it by its creator's rules.
+  agent: string | undefined;
   title: string | undefined;
   // Waits in Needs me instead of Todo.
   hold: boolean;
@@ -49,6 +53,7 @@ export interface ScheduleArgs {
 export interface ScheduleFlags {
   priority?: string;
   model?: string;
+  agent?: string;
   title?: string;
   hold?: boolean;
   backlog?: boolean;
@@ -68,6 +73,10 @@ export function addScheduleOptions(command: Command): Command {
     .option(
       '--model <model>',
       `claude model alias or full name, e.g. ${MODEL_ALIASES.map((alias) => alias.value).join(', ')} (default: claude's default)`,
+    )
+    .option(
+      '--agent <name>',
+      "run the task as this agent of this machine's config.json (its tools and lists only, never asking); the board keeps the name sealed",
     )
     .option('--title <title>', "the task's title (default: the prompt's first line)")
     .option('--hold', 'land it in needs-me instead of Todo')
@@ -112,6 +121,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     prompt: '',
     priority: undefined,
     model: undefined,
+    agent: undefined,
     title: flags.title?.trim(),
     hold,
     backlog,
@@ -134,6 +144,11 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
         `"${flags.model.slice(0, 70)}" is not a model name (a claude alias such as opus, or a full name such as claude-opus-5-5)`,
       );
     result.model = flags.model;
+  }
+  if (flags.agent !== undefined) {
+    if (!isAgentName(flags.agent))
+      throw new UsageError(`"${flags.agent.slice(0, 40)}" is not an agent name (${AGENT_NAME_RULE})`);
+    result.agent = flags.agent;
   }
   if (hold && backlog) throw new UsageError('--hold and --backlog cannot be combined');
   if (delay !== undefined && at !== undefined) throw new UsageError('--in and --at cannot be combined');
@@ -306,6 +321,7 @@ async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<T
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.agent === undefined ? {} : { agent: args.agent }),
     ...(args.every !== undefined ? { everyMs: args.every } : { cron: args.cron ?? '', timezone: deps.timezone }),
     ...(args.notBefore ? { startAt: args.notBefore } : {}),
     ...(args.times ? { times: args.times } : {}),
@@ -330,7 +346,10 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
   let warning: string | undefined;
   if (!args.forceNew) {
     // A task this machine cannot read says nothing to the check, and the model must not see its placeholder.
-    const open = (await backend.listTasks()).filter((task) => task.status !== 'done' && task.unreadable.length === 0);
+    // A task that runs as another agent (or as none) is not the same work, so it is never a duplicate of this one.
+    const open = (await backend.listTasks()).filter(
+      (task) => task.status !== 'done' && task.unreadable.length === 0 && (task.agent ?? null) === (args.agent ?? null),
+    );
     const duplicate = await deps.check(args.prompt, deps.workdir, open);
     const existing = duplicate === undefined ? undefined : open.find((task) => task.id === duplicate.taskId);
     if (duplicate && existing) {
@@ -389,6 +408,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.agent === undefined ? {} : { agent: args.agent }),
   });
   if (warning) await backend.addNote(task.id, warning, { author: 'system' });
   (deps.confirm ?? deps.print)(

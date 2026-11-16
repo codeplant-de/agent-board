@@ -46,10 +46,17 @@ async function openRow<T extends Json>(row: T, ref: RowRef, sealing: Sealing): P
     title: row['title'],
     input: row['input'],
     workdir: row['workdir'],
+    agent: row['agent'],
   });
   if (fields.unreadable.length > 0)
     throw new Error(`${ref.kind} ${ref.id}: cannot open ${fields.unreadable.join(', ')}`);
-  return { ...row, title: fields.title, input: fields.input, workdir: fields.workdir };
+  return {
+    ...row,
+    title: fields.title,
+    input: fields.input,
+    workdir: fields.workdir,
+    ...(fields.agent === null ? {} : { agent: fields.agent }),
+  };
 }
 
 /** Opens the sealed fields of any task, schedule or note found in a machine API result. */
@@ -73,16 +80,22 @@ async function sealDraft(body: Json, sealing: Sealing, row: (id: string) => RowR
   const { labels: _labels, ...rest } = body;
   const out: Json = { ...rest };
   const id: string = rest['id'] ?? newTaskId();
+  const agent = typeof rest['agent'] === 'string' ? rest['agent'] : null;
   if (typeof rest['title'] === 'string') {
     Object.assign(
       out,
-      await sealFields(sealing.seal, row(id), {
-        title: rest['title'],
-        input: rest['input'] ?? '',
-        workdir: typeof rest['workdir'] === 'string' ? rest['workdir'] : undefined,
-      }),
+      await sealFields(
+        sealing.seal,
+        { ...row(id), agent },
+        {
+          title: rest['title'],
+          input: rest['input'] ?? '',
+          workdir: typeof rest['workdir'] === 'string' ? rest['workdir'] : undefined,
+        },
+      ),
       { id },
     );
+    if (typeof rest['agent'] !== 'string') delete out['agent'];
   }
   if (typeof rest['dedupeKey'] === 'string') out['dedupeKey'] = await sealing.blind(rest['dedupeKey']);
   if (typeof rest['head'] === 'string') out['head'] = await sealing.headIndex(rest['head']);
@@ -113,7 +126,8 @@ async function sealRequest(command: string, request: Json, sealing: Sealing, raw
     case 'update-task': {
       const patch: Json = { ...body };
       if (typeof patch['input'] === 'string' || typeof patch['workdir'] === 'string') {
-        const row = taskRowOf((await raw('get-task', { id })).json.result);
+        const wire = (await raw('get-task', { id })).json.result;
+        const row = { ...taskRowOf(wire), agent: (await openFields(sealing.open, taskRowOf(wire), wire)).agent };
         if (typeof patch['input'] === 'string') patch['input'] = await sealInput(sealing.seal, row, patch['input']);
         if (typeof patch['workdir'] === 'string')
           patch['workdir'] = await sealWorkdir(sealing.seal, row, patch['workdir']);
@@ -191,7 +205,9 @@ export function plainMachine(raw: MachineCall, owner = 'jascha'): MachineCall {
   };
 }
 
-type CreateInput = Omit<Parameters<Raw['tasks']['create']>[0], 'id' | 'title' | 'input' | 'place'> & {
+type CreateInput = Omit<Parameters<Raw['tasks']['create']>[0], 'id' | 'title' | 'input' | 'place' | 'agent'> & {
+  /** The agent's name in plaintext; it is sealed like the browser seals it. */
+  agent?: string;
   id?: string;
   title?: string;
   input: string;
@@ -257,12 +273,13 @@ export function plainUi(db: Db, owner = 'jascha') {
           parent: parent === null ? null : await openTask(parent),
         };
       },
-      create: async ({ id: chosen, title, input, place, ...rest }: CreateInput) => {
+      create: async ({ id: chosen, title, input, place, agent: agentName, ...rest }: CreateInput) => {
         const id = chosen ?? newTaskId();
         const repeats = typeof rest.when === 'object' && ('every' in rest.when || 'cron' in rest.when);
+        const agent = agentName ?? null;
         const row: RowRef = repeats
-          ? { kind: 'schedule', id }
-          : { kind: 'task', id, createdBy: 'user', scheduleId: null };
+          ? { kind: 'schedule', id, agent }
+          : { kind: 'task', id, createdBy: 'user', scheduleId: null, agent };
         const { workdir, ...fields } = await sealFields(sealing.seal, row, {
           title: title ?? defaultTitle(input),
           input,

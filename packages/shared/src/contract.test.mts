@@ -154,6 +154,17 @@ test('a running task carries its lane, liveness and start', () => {
   assert.throws(() => parseHeartbeat({ lane: 'a b', borrowed: false }), /heartbeat.lane/);
 });
 
+test('a draft may carry a sealed agent, but not together with createdBy agent (a proposal runs under no agent)', () => {
+  const agent = `abe1.${'A'.repeat(40)}`;
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, agent }).agent, agent);
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, agent, createdBy: 'intake' }).agent, agent);
+  assert.throws(
+    () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, agent, createdBy: 'agent' }),
+    /draft.agent cannot go with createdBy agent/,
+  );
+  assert.throws(() => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, agent: 'reviewer' }), /agent/);
+});
+
 test('a draft takes the dedupe key, parent and creator; unknown keys fail', () => {
   assert.deepEqual(
     parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, dedupeKey: KEY, parentId: 'abc', createdBy: 'agent' }),

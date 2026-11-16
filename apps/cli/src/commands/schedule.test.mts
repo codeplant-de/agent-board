@@ -34,6 +34,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     prompt: '/review-pr 17741 --auto',
     priority: 'high',
     model: undefined,
+    agent: undefined,
     title: undefined,
     hold: false,
     backlog: false,
@@ -49,6 +50,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     prompt: 'Find out why',
     priority: undefined,
     model: undefined,
+    agent: undefined,
     title: 'Export',
     hold: true,
     backlog: false,
@@ -320,6 +322,44 @@ test('--model is checked and sent for a plain task and for a repeat', async () =
     ?.task;
   assert.equal(first?.model, 'fable');
   assert.ok(repeat.backend.writes[0]?.endsWith('| here:/work/cosuno | model fable'));
+});
+
+test('--agent is checked and sent for a plain task and for a repeat', async () => {
+  assert.equal(parseScheduleArgs(['--agent', 'reviewer', 'x']).agent, 'reviewer');
+  assert.equal(parseScheduleArgs(['x']).agent, undefined);
+  for (const bad of ['Reviewer', 'a b', '-x', 'a'.repeat(33), '../x', 'a;ls'])
+    assert.throws(() => parseScheduleArgs(['--agent', bad, 'x']), /is not an agent name/, bad);
+
+  const plain = setup(undefined);
+  const created = (await schedule(plain.deps, parseScheduleArgs(['--agent', 'reviewer', '--new', '/sweep'])))?.task;
+  assert.equal(created?.agent, 'reviewer');
+  const none = setup(undefined);
+  assert.equal((await schedule(none.deps, parseScheduleArgs(['--new', '/sweep'])))?.task.agent ?? null, null);
+
+  const repeat = setup(undefined);
+  const first = (await schedule(repeat.deps, parseScheduleArgs(['--agent', 'sweeper', '--every', '2h', '/sweep'], NOW)))
+    ?.task;
+  assert.equal(first?.agent, 'sweeper');
+  assert.ok(repeat.backend.writes[0]?.endsWith('| here:/work/cosuno | agent sweeper'));
+});
+
+test('only a task with the same agent can be a duplicate of a new one', async () => {
+  const seen: string[][] = [];
+  const make = (agent: string | null) => {
+    const made = setup({ taskId: 'old', reason: 'same PR' }, 'abort');
+    Object.assign(made.backend.tasks[0]!, { agent });
+    made.deps.check = async (_prompt, _dir, open) => {
+      seen.push(open.map((task) => task.id));
+      return undefined;
+    };
+    return made;
+  };
+  await schedule(make('reviewer').deps, parseScheduleArgs(['--agent', 'reviewer', '/review-pr', '17741']));
+  await schedule(make('reviewer').deps, parseScheduleArgs(['--agent', 'writer', '/review-pr', '17741']));
+  await schedule(make('reviewer').deps, parseScheduleArgs(['/review-pr', '17741']));
+  await schedule(make(null).deps, parseScheduleArgs(['--agent', 'reviewer', '/review-pr', '17741']));
+  await schedule(make(null).deps, parseScheduleArgs(['/review-pr', '17741']));
+  assert.deepEqual(seen, [['old'], [], [], [], ['old']]);
 });
 
 test('a requeue keeps the existing task model and says --model was not applied', async () => {

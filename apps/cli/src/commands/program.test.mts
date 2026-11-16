@@ -142,6 +142,36 @@ test('schedule: a prompt after -- may start with dashes, and everything after th
   ]);
 });
 
+test('schedule --agent: the agent must be defined in this machine’s config.json, so a typo fails before anything is written', async () => {
+  const backend = fakeBackend([]);
+  const configs = {
+    agents: { reviewer: { ...CONFIG.intake, description: 'Reviews.', prompt: 'You review.', tools: ['Read'] } },
+    agentErrors: { broken: 'tools must be a list' },
+  };
+  const go = (argv: string[]) =>
+    runBoard(argv, {
+      env: {},
+      context: (dryRun) => ({
+        config: { ...CONFIG, ...configs },
+        backend,
+        dryRun,
+        taskLink: linkTo,
+        print: () => undefined,
+      }),
+      writeOut: () => undefined,
+      writeErr: () => undefined,
+    });
+  await assert.rejects(go(['schedule', '--new', '--agent', 'reveiwer', 'x']), (error: Error) => {
+    assert.ok(error instanceof UsageError);
+    assert.match(error.message, /no agents\.reveiwer in config\.json on here; it defines reviewer/);
+    return true;
+  });
+  await assert.rejects(go(['schedule', '--new', '--agent', 'broken', 'x']), /\(tools must be a list\)/);
+  assert.deepEqual(backend.writes, []);
+  await go(['schedule', '--new', '--agent', 'reviewer', 'x']);
+  assert.deepEqual(backend.writes, ['create x | x | ']);
+});
+
 test('schedule: an unknown flag before the prompt fails, and says how to start a prompt with dashes', async () => {
   const { backend, go } = setup();
   await assert.rejects(go(['schedule', '--hodl', 'x']), (error: Error) => {
@@ -453,6 +483,20 @@ test('wait --check stores the check on this machine, keeps the command off the b
   assert.equal(backend.writes.length, 1);
   assert.match(backend.writes[0] ?? '', /^wait Zt0Test1 until 2026-01-01T14:00:00.000Z check: Waiting for a check\./);
   assert.ok(!(backend.writes[0] ?? '').includes('gh pr checks'));
+});
+
+test('wait --check is refused in an agent run (AGENT_BOARD_RESTRICTED), and a timer is not', async () => {
+  const { backend, go } = setup();
+  Object.assign(backend.tasks[0]!, { status: 'running', machine: CONFIG.machine });
+  const waits = fakeWaitStore();
+  await assert.rejects(
+    go(['wait', ID, '--check', 'true'], { waits, cwd: '/w', now: () => NOW, env: { AGENT_BOARD_RESTRICTED: '1' } }),
+    /runs as an agent.*--in or --at only/,
+  );
+  assert.deepEqual(waits.list(), []);
+  assert.deepEqual(backend.writes, []);
+  await go(['wait', ID, '--in', '20m'], { waits, cwd: '/w', now: () => NOW, env: { AGENT_BOARD_RESTRICTED: '1' } });
+  assert.equal(backend.tasks[0]?.status, 'waiting');
 });
 
 test('wait --check is refused for a task of another machine, and a refused wait drops its check', async () => {

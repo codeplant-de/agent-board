@@ -3,6 +3,7 @@
 //   <task>.alive  touched by the hook on every tool call: its mtime is the agent's last sign of life
 //   <task>.pause  present while the dispatcher asks the run to give up its slot
 //   <task>.cwd    the agent's working directory at its last tool call (it may have entered a worktree)
+//   <task>.agents the definition of the agent the run is, for `claude --agents` (mode 0600)
 // They live in $XDG_RUNTIME_DIR, private to the user, apart from any checkout.
 import { mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -23,6 +24,9 @@ export interface RunFiles {
   touchAlive(taskId: string, at?: Date): void;
   writeCwd(taskId: string, cwd: string): void;
   lastCwd(taskId: string): string | undefined;
+  // Where the agent definition of the task's run is written.
+  agentsPath(taskId: string): string;
+  writeAgents(taskId: string, content: string): void;
   requestPause(taskId: string): void;
   // When the pause was asked for; undefined when it was not.
   pauseRequestedAt(taskId: string): Date | undefined;
@@ -41,7 +45,8 @@ function mtime(path: string): Date | undefined {
 }
 
 export function createRunFiles(dir: string = runDir()): RunFiles {
-  const path = (taskId: string, kind: 'run' | 'alive' | 'pause' | 'cwd'): string => join(dir, `${taskId}.${kind}`);
+  const path = (taskId: string, kind: 'run' | 'alive' | 'pause' | 'cwd' | 'agents'): string =>
+    join(dir, `${taskId}.${kind}`);
   const ensureDir = (): void => {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   };
@@ -91,13 +96,19 @@ export function createRunFiles(dir: string = runDir()): RunFiles {
         return undefined;
       }
     },
+    agentsPath: (taskId) => path(taskId, 'agents'),
+    writeAgents(taskId, content) {
+      ensureDir();
+      writeFileSync(path(taskId, 'agents'), content, { mode: 0o600 });
+    },
     requestPause(taskId) {
       ensureDir();
       writeFileSync(path(taskId, 'pause'), '', { mode: 0o600, flag: 'wx' });
     },
     pauseRequestedAt: (taskId) => mtime(path(taskId, 'pause')),
     clear(taskId) {
-      for (const kind of ['run', 'alive', 'pause', 'cwd'] as const) rmSync(path(taskId, kind), { force: true });
+      for (const kind of ['run', 'alive', 'pause', 'cwd', 'agents'] as const)
+        rmSync(path(taskId, kind), { force: true });
     },
   };
 }

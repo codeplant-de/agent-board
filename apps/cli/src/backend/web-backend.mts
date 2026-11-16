@@ -97,6 +97,11 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     if (draft.model !== undefined) requireFeature((await connect()).features, 'task.model');
   };
 
+  // Refuses to send an agent to a server that would reject the field, or that would not keep it with the task.
+  const requireAgentSupport = async (draft: { agent?: string }): Promise<void> => {
+    if (draft.agent !== undefined) requireFeature((await connect()).features, 'task.agent');
+  };
+
   async function call<T>(command: string, request: MachineRequest, parse: (value: unknown) => T): Promise<T> {
     const result = await callServer(
       (await connectFor(command)).config,
@@ -139,6 +144,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     addTask: async (draft) => {
       await requireSendable(draft);
       await requireModelSupport(draft);
+      await requireAgentSupport(draft);
       return call('add-task', { body: draft }, parseWireAddTaskResult);
     },
     updateTask: async (id, patch) => {
@@ -197,6 +203,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     addSchedule: async (draft) => {
       await requireSendable(draft);
       await requireModelSupport(draft);
+      await requireAgentSupport(draft);
       return call('add-schedule', { body: draft }, parseWireAddScheduleResult);
     },
     listSchedules: async () => call('list-schedules', {}, (value) => parseWireSchedules(value, listOptions)),

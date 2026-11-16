@@ -47,7 +47,11 @@ export function PolishItem({ note, task, parent }: { note: ThreadNote; task: Boa
               loading={apply.isPending}
               onClick={() =>
                 confirmApply({ targetTitle: state.target.title, rewrite: state.rewrite }, () =>
-                  apply.mutate({ polishId: task.id, target: state.target, rewrite: state.rewrite }),
+                  apply.mutate({
+                    polishId: task.id,
+                    target: { ...state.target, agent: state.target.agent ?? null },
+                    rewrite: state.rewrite,
+                  }),
                 )
               }
             >

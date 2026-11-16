@@ -1,5 +1,6 @@
 import {
   defaultTitle,
+  agentBinding,
   inputBinding,
   isEnvelope,
   noteBinding,
@@ -189,6 +190,44 @@ describe('sealing what is sent', () => {
     expect(await openAs(keys, titleBinding(schedule), sent.title)).toBe('Nightly');
     expect(await openAs(keys, inputBinding(schedule), sent.input)).toBe('/sweep');
     await expect(openAs(keys, titleBinding(taskRow(sent.id)), sent.title)).rejects.toThrow();
+  });
+
+  it('seals the agent of a task for its row, and the prompt under it, and the name is in no request in clear', async () => {
+    handle.mockResolvedValue(await wireTask());
+    const { trpc } = plain();
+    await mutate(trpc.tasks.create.mutationOptions(), { title: 'Review', input: '/review-pr 1', agent: 'reviewer' });
+    const sent = calls[0]?.input as { id: string; input: string; agent: string };
+    const row = { ...taskRow(sent.id), agent: 'reviewer' };
+    expect(isEnvelope(sent.agent)).toBe(true);
+    expect(await openAs(keys, agentBinding(row), sent.agent)).toBe('reviewer');
+    expect(await openAs(keys, inputBinding(row), sent.input)).toBe('/review-pr 1');
+    await expect(openAs(keys, inputBinding(taskRow(sent.id)), sent.input)).rejects.toThrow();
+    expect(strings(calls[0]?.input).join(' ')).not.toContain('reviewer');
+  });
+
+  it('seals the agent of a repeating task for its schedule, and sends none for a task without one', async () => {
+    handle.mockResolvedValue(await wireTask());
+    const { trpc } = plain();
+    await mutate(trpc.tasks.create.mutationOptions(), {
+      title: 'Nightly',
+      input: '/sweep',
+      agent: 'sweeper',
+      when: { every: 3_600_000 },
+    });
+    const sent = calls[0]?.input as { id: string; input: string; agent: string };
+    const schedule: RowRef = { kind: 'schedule', id: sent.id, agent: 'sweeper' };
+    expect(await openAs(keys, agentBinding(schedule), sent.agent)).toBe('sweeper');
+    expect(await openAs(keys, inputBinding(schedule), sent.input)).toBe('/sweep');
+    await mutate(trpc.tasks.create.mutationOptions(), { title: 'Plain', input: 'go' });
+    expect(calls[1]?.input).not.toHaveProperty('agent');
+  });
+
+  it('refuses a name that is not an agent name, and nothing is sent', async () => {
+    const { trpc } = plain();
+    await expect(
+      mutate(trpc.tasks.create.mutationOptions(), { title: 'x', input: 'y', agent: 'Not An Agent' }),
+    ).rejects.toThrow(/an agent name must be/);
+    expect(calls).toEqual([]);
   });
 
   it('refuses a prompt past what the board takes, and nothing is sent', async () => {
@@ -1018,6 +1057,19 @@ describe('starting an agent’s proposal', () => {
     });
     const sent = calls.find((call) => call.path === 'tasks.move')?.input as { startInput?: string };
     expect(sent.startInput).toBeUndefined();
+  });
+
+  it('refuses to start a proposal that names an agent, which a proposal never does', async () => {
+    const { opened } = await proposal();
+    const { trpc } = plain();
+    await expect(
+      mutate(trpc.tasks.move.mutationOptions(), {
+        id: 'task1',
+        status: 'todo',
+        task: { ...opened, agent: 'reviewer' },
+      }),
+    ).rejects.toThrow(/names an agent/);
+    expect(calls).toEqual([]);
   });
 
   it('refuses to start a proposal whose prompt could not be read, since the placeholder would be started instead', async () => {

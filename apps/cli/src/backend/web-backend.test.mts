@@ -516,6 +516,40 @@ test('a model is sent only to a server that names task.model', async () => {
   assert.deepEqual(having.seen, ['version', 'add-task', 'add-schedule']);
 });
 
+test('an agent is sent only to a server that names task.agent, and refused before anything is sent otherwise', async () => {
+  const make = (features: string[]) => {
+    const seen: string[] = [];
+    const fetcher: Fetch = async (url) => {
+      const command = url.slice(`${config.url}/api/machine/`.length);
+      seen.push(command);
+      const result =
+        command === 'version'
+          ? { ...VERSION_ANSWER, features }
+          : command === 'add-task'
+            ? { task: await taskJson('abc'), created: true }
+            : { schedule: serializeSchedule(await wireSchedule({ id: 'sch1' })), task: await taskJson('abc') };
+      return new Response(JSON.stringify({ result }));
+    };
+    return { seen, backend: createWebBackend({ loadConfig: () => config, fetch: fetcher }) };
+  };
+  const task = { id: 'abc', title: 'abe1.t', input: 'abe1.i' };
+  const schedule = { ...task, everyMs: 7_200_000 };
+  const lacking = make(['task.model']);
+  const refusal = (error: unknown): boolean =>
+    error instanceof BackendError &&
+    error.missingFeature === 'task.agent' &&
+    error.message === 'the board server does not support running a task as an agent yet; update the board server';
+  await assert.rejects(lacking.backend.addTask({ ...task, agent: 'abe1.a' }), refusal);
+  await assert.rejects(lacking.backend.addSchedule({ ...schedule, agent: 'abe1.a' }), refusal);
+  assert.deepEqual(lacking.seen, ['version'], 'nothing else was sent');
+  await lacking.backend.addTask(task);
+  assert.deepEqual(lacking.seen, ['version', 'add-task']);
+  const having = make(['task.agent']);
+  await having.backend.addTask({ ...task, agent: 'abe1.a' });
+  await having.backend.addSchedule({ ...schedule, agent: 'abe1.a' });
+  assert.deepEqual(having.seen, ['version', 'add-task', 'add-schedule']);
+});
+
 test('reporting a PR needs the task.pr feature and is refused without it, before anything is sent', async () => {
   const without = boardWith(['events'], {});
   await assert.rejects(

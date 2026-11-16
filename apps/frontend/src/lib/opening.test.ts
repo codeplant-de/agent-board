@@ -1,4 +1,12 @@
-import { deriveKeys, machineDirsBinding, prBinding, seal, sealPr } from '@agent-board/shared';
+import {
+  agentBinding,
+  deriveKeys,
+  inputBinding,
+  machineDirsBinding,
+  prBinding,
+  seal,
+  sealPr,
+} from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
 import { openBoardTask, openMachines } from './opening';
 import { sealerFor } from './contexts';
@@ -66,6 +74,45 @@ describe('the PR of a task, as the browser opens it', () => {
       PR_URL,
     ])
       expect((await openBoardTask(keys, await wireTask(value))).pr).toBeNull();
+  });
+});
+
+describe('the agent of a task, as the browser opens it', () => {
+  const row = { kind: 'task', id: 'task0001', createdBy: 'user', scheduleId: null } as const;
+  const sealedFor = async (agent: string | null) => {
+    const sealer = sealerFor(keys);
+    const wire = await wireTask(null);
+    return {
+      ...wire,
+      input: await sealer(inputBinding({ ...row, agent }), 'Fix the bug'),
+      ...(agent === null ? {} : { agent: await sealer(agentBinding(row), agent) }),
+    };
+  };
+
+  it('is the name the task was sealed with, and the prompt opens under it', async () => {
+    const task = await openBoardTask(keys, await sealedFor('reviewer'));
+    expect([task.agent, task.input, task.unreadable]).toEqual(['reviewer', 'Fix the bug', []]);
+  });
+
+  it('is none for a task without one', async () => {
+    const task = await openBoardTask(keys, await sealedFor(null));
+    expect([task.agent, task.unreadable]).toEqual([null, []]);
+  });
+
+  it('makes the task unreadable when the board dropped it, so the page never shows a prompt that would run unrestricted', async () => {
+    const { agent: _dropped, ...stripped } = await sealedFor('reviewer');
+    const task = await openBoardTask(keys, stripped);
+    expect([task.agent, task.input, task.unreadable]).toEqual([null, '', ['input']]);
+  });
+
+  it('is unreadable when it was sealed for another task or is not a name', async () => {
+    const sealer = sealerFor(keys);
+    const elsewhere = await sealer(agentBinding({ ...row, id: 'other001' }), 'reviewer');
+    expect((await openBoardTask(keys, { ...(await sealedFor('reviewer')), agent: elsewhere })).unreadable).toContain(
+      'agent',
+    );
+    const notAName = await sealer(agentBinding(row), '../etc');
+    expect((await openBoardTask(keys, { ...(await sealedFor('reviewer')), agent: notAName })).agent).toBeNull();
   });
 });
 

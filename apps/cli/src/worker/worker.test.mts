@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MAX_BATCH_EVENTS } from '@agent-board/shared';
-import type { Note, Task } from '@agent-board/shared';
+import type { Note, Task, WireBackend } from '@agent-board/shared';
+import type { AgentConfig } from '../config/config.mts';
 import { BackendError } from '../backend/backend.mts';
+import { sealingBackend } from '../backend/sealing.mts';
 import { START_MARKER } from '../task-rules.mts';
 import type { Invocation, Supervision } from './plan.mts';
 import { runWorker } from './worker.mts';
@@ -13,10 +15,12 @@ import {
   fakeBackend,
   fakeRunFiles,
   fakeSessions,
+  KEYS,
   note,
   OTHER_SESSION,
   SESSION,
   task,
+  wireTask,
 } from '../__tests__/helpers/fakes.mts';
 
 function setup(result: RunResult | Error, moveDuringRun = false) {
@@ -1571,4 +1575,250 @@ test('a note that cannot be added does not lose the run, and an end inside the l
     inside.backend.writes.filter((w) => w.startsWith('workdir w1')),
     ['workdir w1: /tmp/.claude/worktrees/feat-x'],
   );
+});
+
+const REVIEWER: AgentConfig = {
+  description: 'Reviews a PR.',
+  prompt: 'You review.',
+  tools: ['Read', 'Bash'],
+  allowedTools: ['Read', 'Bash({pr-review}/x.sh *)'],
+  disallowedTools: ['Bash(git push *)'],
+  env: ['CIRCLECI_TOKEN'],
+  mcpServers: ['shortcut', 'gone'],
+};
+
+function setupAgent(overrides: Partial<Task> = { agent: 'reviewer' }) {
+  const made = setup({ exitCode: 0, signal: null });
+  made.deps.config = { ...CONFIG, agents: { reviewer: REVIEWER } };
+  Object.assign(made.backend.tasks[0]!, overrides);
+  const seen: { invocation?: Invocation; env?: Record<string, string>; agentsFile?: string } = {};
+  made.deps.run = async (invocation, taskId, env) => {
+    seen.invocation = invocation;
+    seen.env = env;
+    seen.agentsFile = (made.deps.files as ReturnType<typeof fakeRunFiles>).agents.get(taskId);
+    made.backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  return { ...made, seen };
+}
+
+test('a task that names an agent runs as it: its file, its lists, its variables and servers, and the restricted marker', async () => {
+  const { deps, backend, calls, seen } = setupAgent();
+  const pluginAsked: string[] = [];
+  deps.pluginPath = (name) => {
+    pluginAsked.push(name);
+    return '/plugins/pr';
+  };
+  const read: string[] = [];
+  deps.settingsEnv = (dir) => {
+    read.push(dir);
+    return { CIRCLECI_TOKEN: 'ci-secret', OTHER: 'not asked for' };
+  };
+  deps.mcpServers = (dir, names) => {
+    assert.equal(dir, '/tmp');
+    assert.deepEqual(names, ['shortcut', 'gone']);
+    return { config: { mcpServers: { shortcut: { type: 'http', url: 'https://mcp.example' } } }, missing: ['gone'] };
+  };
+  await runWorker(deps, 'w1');
+  const args = seen.invocation?.args ?? [];
+  assert.deepEqual(pluginAsked, ['pr-review']);
+  assert.equal(
+    args[args.indexOf('--agents=/run/test/agent-board/w1.agents')],
+    '--agents=/run/test/agent-board/w1.agents',
+  );
+  assert.ok(args.includes('--agent=reviewer'));
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
+  assert.equal(args[args.indexOf('--allowedTools') + 2], 'Bash(/plugins/pr/x.sh *)');
+  assert.equal(
+    args[args.indexOf('--mcp-config') + 1],
+    '{"mcpServers":{"shortcut":{"type":"http","url":"https://mcp.example"}}}',
+  );
+  assert.deepEqual(JSON.parse(seen.agentsFile ?? ''), {
+    reviewer: { description: 'Reviews a PR.', prompt: 'You review.', tools: ['Read', 'Bash'] },
+  });
+  assert.deepEqual(read, ['/tmp']);
+  assert.deepEqual(seen.env, {
+    CIRCLECI_TOKEN: 'ci-secret',
+    AGENT_BOARD_TASK: 'w1',
+    AGENT_BOARD_RESTRICTED: '1',
+    AGENT_BOARD_START_DIR: '/tmp',
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
+  });
+  assert.ok(calls.some((c) => c.includes("not in the checkout's .mcp.json: gone")));
+  assert.ok(!calls.some((c) => c.includes('ci-secret')), 'values never reach the log');
+  assert.deepEqual((deps.files as ReturnType<typeof fakeRunFiles>).agents.size, 0, 'the file goes with the run');
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail ')));
+});
+
+test("the agent's own variables cannot override the restricted marker or the task", async () => {
+  const { deps, seen } = setupAgent();
+  deps.config = {
+    ...CONFIG,
+    agents: { reviewer: { ...REVIEWER, env: ['AGENT_BOARD_RESTRICTED', 'AGENT_BOARD_TASK'], allowedTools: [] } },
+  };
+  deps.settingsEnv = () => ({ AGENT_BOARD_RESTRICTED: '0', AGENT_BOARD_TASK: 'other' });
+  await runWorker(deps, 'w1');
+  assert.equal(seen.env?.['AGENT_BOARD_RESTRICTED'], '1');
+  assert.equal(seen.env?.['AGENT_BOARD_TASK'], 'w1');
+});
+
+test('only an agent run gets the restricted marker: intake and user runs do not', async () => {
+  for (const overrides of [
+    {},
+    {
+      createdBy: 'intake' as const,
+      input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
+      machine: null,
+      workdir: null,
+    },
+  ]) {
+    const { deps, seen } = setupAgent(overrides);
+    await runWorker(deps, 'w1');
+    assert.ok(seen.env !== undefined && !('AGENT_BOARD_RESTRICTED' in seen.env), JSON.stringify(overrides));
+    assert.equal(seen.agentsFile, undefined);
+  }
+});
+
+test('a task naming an agent this machine lacks fails closed with the reason, and nothing starts, a resume included', async () => {
+  for (const resume of [false, true]) {
+    const { deps, backend, calls, seen } = setupAgent({ agent: 'ghost' });
+    if (resume) {
+      Object.assign(backend.tasks[0]!, { next: 'resume', sessionId: SESSION });
+      deps.sessions.record('w1', SESSION);
+      backend.notes.set('w1', [
+        note('asked', new Date('2026-11-13T10:00:00Z')),
+        note('go on', new Date('2026-11-13T10:05:00Z'), { author: 'user' }),
+      ]);
+    }
+    await runWorker(deps, 'w1');
+    assert.equal(seen.invocation, undefined, 'nothing started');
+    assert.ok(
+      backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('no agents.ghost in config.json here')),
+      backend.writes.join('\n'),
+    );
+    assert.ok(!backend.writes.some((w) => w.startsWith('next w1')), 'the resume is not used up');
+    assert.ok(calls.some((c) => c.startsWith('append w1:') && c.includes('no agents.ghost')));
+  }
+});
+
+test('a failure to write the agents file fails the task with the reason, gives the session back and clears the files', async () => {
+  const { deps, backend, seen } = setupAgent();
+  deps.pluginPath = () => '/plugins/pr';
+  deps.files = {
+    ...deps.files,
+    writeAgents: () => {
+      throw new Error('EACCES: cannot write');
+    },
+  };
+  await runWorker(deps, 'w1');
+  assert.equal(seen.invocation, undefined);
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('EACCES: cannot write')));
+  assert.deepEqual(
+    backend.writes.filter((w) => w.startsWith('session w1')),
+    [`session w1: ${SESSION}`, 'session w1: null'],
+  );
+});
+
+test("an agent's plugin that cannot be resolved sends the task to Needs me with the reason", async () => {
+  const { deps, backend, seen } = setupAgent();
+  deps.pluginPath = () => {
+    throw new Error('plugin pr-review is installed from several marketplaces (a@x, b@y)');
+  };
+  await runWorker(deps, 'w1');
+  assert.equal(seen.invocation, undefined);
+  assert.ok(
+    backend.writes.some(
+      (w) =>
+        w.startsWith('fail w1:') &&
+        w.includes('Cannot resolve the pr-review plugin: plugin pr-review is installed from several'),
+    ),
+  );
+});
+
+test("an agent run's settings and servers are read only once its directory is a listed one", async () => {
+  const { deps, backend, seen } = setupAgent({ agent: 'reviewer', workdir: '/srv/other', machine: 'here' });
+  deps.config = { ...deps.config, dirs: [{ path: '/srv/app' }] };
+  deps.pluginPath = () => '/plugins/pr';
+  let touched = false;
+  deps.settingsEnv = () => ((touched = true), {});
+  deps.mcpServers = () => ((touched = true), { config: { mcpServers: {} }, missing: [] });
+  await runWorker(deps, 'w1');
+  assert.equal(seen.invocation, undefined);
+  assert.equal(touched, false);
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('not a listed directory')));
+});
+
+test('an agent run with an intake task as its creator needs no intake block', async () => {
+  const { deps, backend, seen } = setupAgent({
+    agent: 'reviewer',
+    createdBy: 'intake',
+    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
+    machine: null,
+    workdir: null,
+  });
+  deps.config = { ...deps.config, intakeEnabled: false };
+  deps.pluginPath = () => '/plugins/pr';
+  await runWorker(deps, 'w1');
+  assert.ok(seen.invocation?.args.includes('--agent=reviewer'));
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail ')));
+});
+
+// The task as the board hands it over: sealed with the test key, taken through the CLI's own opening, as the worker gets it.
+function boardTask(
+  overrides: () => Partial<Task>,
+  strip: (wire: Awaited<ReturnType<typeof wireTask>>) => void = () => undefined,
+) {
+  const wire = async () => {
+    const sealed = await wireTask({
+      id: 'w1',
+      status: 'running',
+      input: '/selftest go',
+      machine: 'here',
+      workdir: '/tmp',
+      runStartedAt: new Date('2026-01-01T10:00:00Z'),
+      ...overrides(),
+    });
+    strip(sealed);
+    return sealed;
+  };
+  return sealingBackend({ getTask: async () => wire() } as unknown as WireBackend, KEYS);
+}
+
+test('a task the board sealed with an agent runs as that agent, end to end', async () => {
+  const { deps, seen, backend } = setupAgent({});
+  const sealed = boardTask(() => ({ agent: 'reviewer', status: backend.tasks[0]!.status }));
+  deps.backend = { ...backend, getTask: (id) => sealed.getTask(id) };
+  await runWorker(deps, 'w1');
+  const args = seen.invocation?.args ?? [];
+  assert.ok(args.includes('--agent=reviewer'));
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
+  assert.equal(seen.env?.['AGENT_BOARD_RESTRICTED'], '1');
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail ')));
+});
+
+test('a board that drops the sealed agent of a task cannot make it run unrestricted: the prompt no longer opens, and nothing starts', async () => {
+  for (const strip of [
+    (wire: { agent?: string | null }) => void delete wire.agent,
+    (wire: { agent?: string | null }) => void (wire.agent = null),
+  ]) {
+    const { deps, seen, backend } = setupAgent({});
+    const stripped = boardTask(() => ({ agent: 'reviewer', status: backend.tasks[0]!.status }), strip);
+    deps.backend = { ...backend, getTask: (id) => stripped.getTask(id) };
+    await runWorker(deps, 'w1');
+    assert.equal(seen.invocation, undefined, 'claude was not started');
+    assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('input could not be decrypted')));
+  }
+});
+
+test('an agent the board sealed for another task is unreadable, and the task is not run', async () => {
+  const { deps, seen, backend } = setupAgent({});
+  const other = await wireTask({ id: 'zzz', agent: 'reviewer', status: 'running' });
+  const moved = boardTask(
+    () => ({ agent: 'reviewer', status: backend.tasks[0]!.status }),
+    (wire) => void (wire.agent = other.agent ?? null),
+  );
+  deps.backend = { ...backend, getTask: (id) => moved.getTask(id) };
+  await runWorker(deps, 'w1');
+  assert.equal(seen.invocation, undefined);
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('agent could not be decrypted')));
 });

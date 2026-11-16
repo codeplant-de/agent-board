@@ -8,13 +8,27 @@ const PR = 'https://github.com/cosuno/cosuno/pull/17741';
 
 test('a machine without an intake block leaves intake-created tasks to another machine', () => {
   const intakeTask = task({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
-  assert.equal(notServableHere(intakeTask, 'here', CONFIG.repos, false), 'no intake block in config.json here');
-  assert.equal(notServableHere(intakeTask, 'here', CONFIG.repos, true), undefined);
-  assert.equal(notServableHere(task({ id: 'b', input: 'Find out X' }), 'here', CONFIG.repos, false), undefined);
+  assert.equal(
+    notServableHere(intakeTask, 'here', CONFIG.repos, { intakeEnabled: false, agents: {}, agentErrors: {} }),
+    'no intake block in config.json here',
+  );
+  assert.equal(
+    notServableHere(intakeTask, 'here', CONFIG.repos, { intakeEnabled: true, agents: {}, agentErrors: {} }),
+    undefined,
+  );
+  assert.equal(
+    notServableHere(task({ id: 'b', input: 'Find out X' }), 'here', CONFIG.repos, {
+      intakeEnabled: false,
+      agents: {},
+      agentErrors: {},
+    }),
+    undefined,
+  );
 });
 
 test("a machine leaves a task to another when it is pinned there or lacks the PR's checkout", () => {
-  const here = (overrides: Parameters<typeof task>[0]) => notServableHere(task(overrides), 'here', CONFIG.repos, true);
+  const here = (overrides: Parameters<typeof task>[0]) =>
+    notServableHere(task(overrides), 'here', CONFIG.repos, { intakeEnabled: true, agents: {}, agentErrors: {} });
   assert.equal(here({ id: 'a', input: 'Find out X' }), undefined);
   assert.match(here({ id: 'a', input: '/grill', machine: 'there', workdir: '/x' }) ?? '', /pinned to there/);
   assert.equal(here({ id: 'a', input: '/grill', machine: 'here', workdir: '/x' }), undefined);

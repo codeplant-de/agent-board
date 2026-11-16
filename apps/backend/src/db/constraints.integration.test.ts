@@ -99,18 +99,22 @@ describe('what the application role can store afterwards', () => {
       input?: string;
       workdir?: string | null;
       homeWorkdir?: string | null;
+      agent?: string | null;
       pr?: string | null;
       dedupeKey?: string | null;
       head?: string | null;
     } = {},
   ) =>
     tx.execute(sql`
-      insert into task (id, title, input, workdir, home_workdir, pr, dedupe_key, head, position)
-      values ('t1', ${o.title ?? ENVELOPE}, ${o.input ?? ENVELOPE}, ${o.workdir ?? null}, ${o.homeWorkdir ?? null}, ${o.pr ?? null}, ${o.dedupeKey ?? null}, ${o.head ?? null}, 0)`);
-  const schedule = (tx: Tx, o: { title?: string; input?: string; workdir?: string | null } = {}) =>
+      insert into task (id, title, input, workdir, home_workdir, agent, pr, dedupe_key, head, position)
+      values ('t1', ${o.title ?? ENVELOPE}, ${o.input ?? ENVELOPE}, ${o.workdir ?? null}, ${o.homeWorkdir ?? null}, ${o.agent ?? null}, ${o.pr ?? null}, ${o.dedupeKey ?? null}, ${o.head ?? null}, 0)`);
+  const schedule = (
+    tx: Tx,
+    o: { title?: string; input?: string; workdir?: string | null; agent?: string | null } = {},
+  ) =>
     tx.execute(sql`
-      insert into schedule (id, title, input, workdir, every_ms, anchor_at)
-      values ('s1', ${o.title ?? ENVELOPE}, ${o.input ?? ENVELOPE}, ${o.workdir ?? null}, 1000, now())`);
+      insert into schedule (id, title, input, workdir, agent, every_ms, anchor_at)
+      values ('s1', ${o.title ?? ENVELOPE}, ${o.input ?? ENVELOPE}, ${o.workdir ?? null}, ${o.agent ?? null}, 1000, now())`);
   const note = async (
     tx: Tx,
     o: {
@@ -149,6 +153,8 @@ describe('what the application role can store afterwards', () => {
     ['task_input_sealed', 'an empty prompt', (tx) => task(tx, { input: '' })],
     ['task_workdir_sealed', 'a plain directory', (tx) => task(tx, { workdir: '/home/a' })],
     ['task_home_workdir_sealed', 'a plain home directory', (tx) => task(tx, { homeWorkdir: '/home/a' })],
+    ['task_agent_sealed', 'a plain agent name', (tx) => task(tx, { agent: 'reviewer' })],
+    ['schedule_agent_sealed', 'a plain schedule agent name', (tx) => schedule(tx, { agent: 'reviewer' })],
     ['task_pr_sealed', 'a plain PR URL', (tx) => task(tx, { pr: 'https://github.com/o/r/pull/1' })],
     ['task_dedupe_key_blind', 'a plain dedupe key', (tx) => task(tx, { dedupeKey: 'https://github.com/o/r/pull/1' })],
     ['task_head_blind', 'a plain head', (tx) => task(tx, { head: 'abcdef1' })],
@@ -207,11 +213,12 @@ describe('what the application role can store afterwards', () => {
       await task(tx, {
         workdir: ENVELOPE,
         homeWorkdir: ENVELOPE,
+        agent: ENVELOPE,
         pr: ENVELOPE,
         dedupeKey: BLIND_INDEX,
         head: BLIND_INDEX,
       });
-      await schedule(tx, { workdir: ENVELOPE });
+      await schedule(tx, { workdir: ENVELOPE, agent: ENVELOPE });
       await machine(tx, { dirs: ENVELOPE, dirsIndex: BLIND_INDEX });
     });
     await clear();

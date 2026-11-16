@@ -84,6 +84,7 @@ export function toSchedule(row: ScheduleView): WireSchedule {
     model: row.model,
     machine: row.machine,
     workdir: row.workdir,
+    ...(row.agent === null ? {} : { agent: row.agent }),
     everyMs: row.everyMs,
     cron: row.cron,
     timezone: row.timezone,
@@ -152,6 +153,7 @@ async function materializeNext(
     {
       title: schedule.title,
       input: schedule.input,
+      ...(schedule.agent === null ? {} : { agent: schedule.agent }),
       status: 'todo',
       priority: schedule.priority,
       ...(schedule.model === null ? {} : { model: schedule.model }),
@@ -205,6 +207,7 @@ export async function addSchedule(
         model: draft.model ?? null,
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
+        agent: draft.agent ?? null,
         everyMs,
         cron: draft.cron ?? null,
         timezone: draft.timezone ?? null,

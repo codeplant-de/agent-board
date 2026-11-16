@@ -72,6 +72,8 @@ export const CONFIG: Config = {
     mcpServers: [],
   },
   intakeEnabled: true,
+  agents: {},
+  agentErrors: {},
   repos: { 'cosuno/cosuno': '/work/cosuno' },
 };
 
@@ -337,13 +339,14 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         `add-schedule ${draft.title} | ${draft.input} | ${draft.everyMs ?? `${draft.cron} ${draft.timezone}`}` +
           `${draft.startAt ? ` | start ${draft.startAt.toISOString()}` : ''}${draft.times ? ` | times ${draft.times}` : ''}` +
           `${draft.until ? ` | until ${draft.until.toISOString()}` : ''}${draft.machine ? ` | ${draft.machine}:${draft.workdir}` : ''}` +
-          `${draft.model ? ` | model ${draft.model}` : ''}`,
+          `${draft.model ? ` | model ${draft.model}` : ''}${draft.agent ? ` | agent ${draft.agent}` : ''}`,
       );
       const pending = task({
         id: 'pending',
         title: draft.title,
         input: draft.input,
         model: draft.model ?? null,
+        agent: draft.agent ?? null,
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
         notBefore: draft.startAt ?? new Date('2027-01-01T08:00:00Z'),
@@ -354,6 +357,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         title: draft.title,
         input: draft.input,
         model: draft.model ?? null,
+        agent: draft.agent ?? null,
         everyMs: draft.everyMs ?? null,
         cron: draft.cron ?? null,
         timezone: draft.timezone ?? null,
@@ -390,6 +394,7 @@ export interface FakeRunFiles extends RunFiles {
   alive: Map<string, Date>;
   pauses: Map<string, Date>;
   cwds: Map<string, string>;
+  agents: Map<string, string>;
 }
 
 // RunFiles in memory.
@@ -400,12 +405,15 @@ export function fakeRunFiles(now: () => Date = () => new Date()): FakeRunFiles {
     alive: new Map(),
     pauses: new Map(),
     cwds: new Map(),
+    agents: new Map(),
     writeRun: (id, record) => void files.runs.set(id, record),
     readRun: (id) => files.runs.get(id),
     lastActive: (id) => files.alive.get(id),
     touchAlive: (id, at = now()) => void files.alive.set(id, at),
     writeCwd: (id, cwd) => void files.cwds.set(id, cwd),
     lastCwd: (id) => files.cwds.get(id),
+    agentsPath: (id) => `/run/test/agent-board/${id}.agents`,
+    writeAgents: (id, content) => void files.agents.set(id, content),
     requestPause: (id) => void files.pauses.set(id, now()),
     pauseRequestedAt: (id) => files.pauses.get(id),
     clear(id) {
@@ -413,6 +421,7 @@ export function fakeRunFiles(now: () => Date = () => new Date()): FakeRunFiles {
       files.alive.delete(id);
       files.pauses.delete(id);
       files.cwds.delete(id);
+      files.agents.delete(id);
     },
   };
   return files;
@@ -428,10 +437,10 @@ const seals: Sealer = async ({ field, context }, text) => seal(KEYS, field, cont
 // A task as the server stores it: title, input and workdir sealed with the test key, for the task's own row (an occurrence's
 // for its schedule).
 export async function wireTask(overrides: Partial<Task> & { id: string }): Promise<WireTask> {
-  const { labels: _labels, unreadable: _unreadable, title, input, workdir, pr, ...rest } = task(overrides);
+  const { labels: _labels, unreadable: _unreadable, title, input, workdir, agent, pr, ...rest } = task(overrides);
   const sealed = await sealFields(
     seals,
-    { kind: 'task', id: rest.id, createdBy: rest.createdBy, scheduleId: rest.scheduleId },
+    { kind: 'task', id: rest.id, createdBy: rest.createdBy, scheduleId: rest.scheduleId, agent: agent ?? null },
     { title, input, workdir: workdir ?? undefined },
   );
   return {
@@ -443,10 +452,10 @@ export async function wireTask(overrides: Partial<Task> & { id: string }): Promi
 }
 
 export async function wireSchedule(overrides: Partial<Schedule> & { id: string }): Promise<WireSchedule> {
-  const { unreadable: _unreadable, title, input, workdir, ...rest } = schedule(overrides);
+  const { unreadable: _unreadable, title, input, workdir, agent, ...rest } = schedule(overrides);
   const sealed = await sealFields(
     seals,
-    { kind: 'schedule', id: rest.id },
+    { kind: 'schedule', id: rest.id, agent: agent ?? null },
     { title, input, workdir: workdir ?? undefined },
   );
   return { ...rest, ...sealed, workdir: sealed.workdir ?? null };

@@ -203,7 +203,7 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
             head: pr.headSha,
             next: 'fresh',
             // Intake states itself who made the task, so the new prompt is sealed as intake's.
-            seal: { createdBy: 'intake', scheduleId: null },
+            seal: { createdBy: 'intake', scheduleId: null, agent: action.task.agent ?? null },
           },
           log,
         ))

@@ -6,6 +6,7 @@ import type { Keys } from './crypto.mts';
 import {
   dedupeKeyIndex,
   headIndex,
+  agentBinding,
   inputBinding,
   machineDirsBinding,
   machineDirsIndex,
@@ -134,6 +135,7 @@ test('known-answer: every field of a task, an intake task, a schedule, an occurr
     title: 'Fix the build',
     input: 'Fix the build on main',
     workdir: '/home/me/app',
+    agent: null,
     unreadable: [],
   });
   const intake = await openFields(opens, { ...userTask, createdBy: 'intake' }, { ...VECTORS.intake, workdir: null });
@@ -145,6 +147,7 @@ test('known-answer: every field of a task, an intake task, a schedule, an occurr
     title: 'Sweep',
     input: '/sweep',
     workdir: '/home/me/app',
+    agent: null,
     unreadable: [],
   });
   // An occurrence opens what the server copied from its schedule, and a directory the worker sealed for it afterwards.
@@ -324,8 +327,106 @@ test('plain text and legacy values are unreadable in every field', async () => {
     title: '(cannot decrypt this title)',
     input: '',
     workdir: null,
+    agent: null,
     unreadable: ['title', 'input', 'workdir'],
   });
+});
+
+const AGENT_NAMES = ['reviewer', 'a', '0-x', 'a'.repeat(32)];
+
+test('an agent is sealed to its row and written into the context of the input; a row without one keeps its old context', async () => {
+  assert.deepEqual(agentBinding({ ...userTask, agent: 'reviewer' }), { field: 'agent', context: 'task:Ab3dEf9x' });
+  assert.deepEqual(agentBinding({ kind: 'schedule', id: SCHEDULE, agent: 'reviewer' }), {
+    field: 'agent',
+    context: 'schedule:Sc3dEf9x',
+  });
+  assert.equal(agentBinding({ ...occurrence, agent: 'reviewer' }).context, 'schedule:Sc3dEf9x');
+  assert.equal(inputBinding({ ...userTask, agent: 'reviewer' }).context, 'task:Ab3dEf9x:user:agent:reviewer');
+  assert.equal(inputBinding({ kind: 'schedule', id: SCHEDULE, agent: 'x' }).context, 'schedule:Sc3dEf9x:user:agent:x');
+  assert.equal(inputBinding({ ...occurrence, agent: 'x' }).context, 'schedule:Sc3dEf9x:user:agent:x');
+  for (const row of [userTask, { ...userTask, agent: null }, { ...userTask, agent: undefined }])
+    assert.equal(inputBinding(row).context, 'task:Ab3dEf9x:user');
+  assert.equal(inputBinding({ ...userTask, createdBy: 'intake' }).context, 'task:Ab3dEf9x:intake');
+});
+
+test('a sealed agent opens with its input, and with no other agent or none', async () => {
+  for (const name of AGENT_NAMES) {
+    const row = { ...userTask, agent: name };
+    const wire = await sealFields(seals, row, { title: 't', input: 'i' });
+    assert.deepEqual(await openFields(opens, userTask, wire), {
+      title: 't',
+      input: 'i',
+      workdir: null,
+      agent: name,
+      unreadable: [],
+    });
+  }
+  const wire = await sealFields(seals, { ...userTask, agent: 'reviewer' }, { title: 't', input: 'i' });
+  assert.notEqual(wire.agent, undefined);
+  // The board drops the agent: the input was sealed under it and no longer opens, so the task does not run.
+  const stripped = await openFields(opens, userTask, { title: wire.title, input: wire.input });
+  assert.deepEqual([stripped.agent, stripped.input, stripped.unreadable], [null, '', ['input']]);
+  const nulled = await openFields(opens, userTask, { ...wire, agent: null });
+  assert.deepEqual([nulled.agent, nulled.unreadable], [null, ['input']]);
+  // The board swaps in the agent another prompt was sealed for, of this same task.
+  const other = await sealFields(seals, { ...userTask, agent: 'writer' }, { title: 't', input: 'j' });
+  const swapped = await openFields(opens, userTask, { ...wire, agent: other.agent });
+  assert.deepEqual([swapped.agent, swapped.input, swapped.unreadable], ['writer', '', ['input']]);
+  // The board adds an agent to a prompt sealed without one.
+  const plain = await sealFields(seals, userTask, { title: 't', input: 'i' });
+  const added = await openFields(opens, userTask, { ...plain, agent: wire.agent });
+  assert.deepEqual([added.agent, added.input, added.unreadable], ['reviewer', '', ['input']]);
+  // The agent of another task, or of a schedule, does not open here.
+  const elsewhere = await sealFields(
+    seals,
+    { ...userTask, id: 'Zz9dEf9x', agent: 'reviewer' },
+    { title: 't', input: 'i' },
+  );
+  const moved = await openFields(opens, userTask, { ...wire, agent: elsewhere.agent });
+  assert.deepEqual([moved.agent, moved.input, moved.unreadable], [null, '', ['input', 'agent']]);
+  // An input sealed for no agent does not read as another one's, whatever the wire says.
+  assert.deepEqual((await openFields(opens, userTask, { ...plain, agent: plain.title })).unreadable, [
+    'input',
+    'agent',
+  ]);
+});
+
+test("a schedule's agent opens on its occurrences and on no other task", async () => {
+  const wire = await sealFields(
+    seals,
+    { kind: 'schedule', id: SCHEDULE, agent: 'reviewer' },
+    { title: 'Sweep', input: '/sweep' },
+  );
+  assert.equal((await openFields(opens, schedule, wire)).agent, 'reviewer');
+  const copied = await openFields(opens, occurrence, wire);
+  assert.deepEqual([copied.agent, copied.input, copied.unreadable], ['reviewer', '/sweep', []]);
+  const another = await openFields(opens, { ...occurrence, scheduleId: 'Other9xx' }, wire);
+  assert.deepEqual(another.unreadable, ['title', 'input', 'agent']);
+  const own = await openFields(opens, { ...userTask, scheduleId: null }, wire);
+  assert.deepEqual(own.unreadable, ['title', 'input', 'agent']);
+  const stripped = await openFields(opens, occurrence, { title: wire.title, input: wire.input });
+  assert.deepEqual([stripped.input, stripped.unreadable], ['', ['input']]);
+});
+
+test('an agent that does not open or is not a name makes the task unreadable and is never taken for one', async () => {
+  for (const bad of ['Reviewer', '', 'a b', '-x', 'a'.repeat(33), 'a:b', '../x']) {
+    const sealedBad = await seals(agentBinding(userTask), bad);
+    const { title, input } = await sealFields(seals, userTask, { title: 't', input: 'i' });
+    const opened = await openFields(opens, userTask, { title, input, agent: sealedBad });
+    assert.deepEqual(
+      [opened.agent, opened.input, opened.unreadable],
+      [null, '', ['input', 'agent']],
+      JSON.stringify(bad),
+    );
+  }
+  const plain = await openFields(opens, userTask, { title: 't', input: 'i', agent: 'reviewer' });
+  assert.deepEqual(plain.unreadable, ['title', 'input', 'agent']);
+  await assert.rejects(
+    sealFields(seals, { ...userTask, agent: 'Reviewer' }, { title: 't', input: 'i' }),
+    ContractError,
+  );
+  await assert.rejects(sealInput(seals, { ...userTask, agent: 'a:b' }, 'i'), ContractError);
+  await assert.rejects(sealFields(seals, { ...userTask, agent: '' }, { title: 't', input: 'i' }), ContractError);
 });
 
 test('a note opens only under its own task, author and kind', async () => {

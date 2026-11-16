@@ -188,6 +188,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         input: draft.input,
         ...(draft.priority ? { priority: draft.priority } : {}),
         ...(draft.model === undefined ? {} : { model: draft.model }),
+        ...(draft.agent === undefined ? {} : { agent: draft.agent }),
         ...(draft.machine !== undefined && draft.workdir !== undefined
           ? { machine: draft.machine, workdir: draft.workdir }
           : {}),
@@ -202,6 +203,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         model: draft.model ?? null,
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
+        ...(draft.agent === undefined ? {} : { agent: draft.agent }),
         everyMs: draft.everyMs ?? null,
         cron: draft.cron ?? null,
         timezone: draft.timezone ?? null,

@@ -240,6 +240,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
     await wait(context, await taskIdOf(context, arg), flags, {
       waits: options.waits ?? createWaitStore(),
       cwd: options.cwd ?? realpathSync(process.cwd()),
+      restricted: env['AGENT_BOARD_RESTRICTED'] === '1',
       ...(env['AGENT_BOARD_START_DIR'] ? { settingsDir: env['AGENT_BOARD_START_DIR'] } : {}),
       ...(options.now ? { now: options.now() } : {}),
     });

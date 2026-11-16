@@ -76,6 +76,9 @@ test('the plugin placeholder resolves in every shipped script rule', () => {
     repos: config.repos,
     defaultCwd: '/',
     intake: entry,
+    agents: {},
+    agentErrors: {},
+    agentsPath: '/run/ab.agents',
     home: '/h',
     pluginRoots: { 'pr-review': '/p', engineering: '/e' },
   });
@@ -154,4 +157,39 @@ test('an intake run may report and propose through board, but never schedule or 
   assert.ok(entry.disallowedTools.includes('Bash(board schedules *)'));
   assert.ok(entry.disallowedTools.includes('Bash(board dirs *)'));
   assert.ok(entry.disallowedTools.includes('Bash(board internal *)'));
+});
+
+test('the reviewer agent mirrors intake: the same lists, and it may not reschedule itself or touch the machine config', () => {
+  const reviewer = config.agents['reviewer'];
+  assert.ok(reviewer);
+  assert.deepEqual(reviewer.allowedTools, entry.allowedTools);
+  assert.deepEqual(reviewer.disallowedTools, entry.disallowedTools);
+  assert.deepEqual(reviewer.env, entry.env);
+  assert.deepEqual(reviewer.mcpServers, entry.mcpServers);
+  for (const rule of [
+    'Bash(board schedule *)',
+    'Bash(board schedules *)',
+    'Bash(board dirs *)',
+    'Bash(board internal *)',
+  ])
+    assert.ok(reviewer.disallowedTools.includes(rule), rule);
+  assert.ok(reviewer.tools.includes('Bash'));
+});
+
+test("the reviewer agent's run resolves every placeholder and reads no rule as an option", () => {
+  const plan = buildInvocation({
+    run: FRESH,
+    task: task({ id: 'a', input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto', agent: 'reviewer' }),
+    repos: config.repos,
+    defaultCwd: '/',
+    intake: entry,
+    agents: config.agents,
+    agentErrors: config.agentErrors,
+    agentsPath: '/run/a.agents',
+    home: '/h',
+    pluginRoots: { 'pr-review': '/p', engineering: '/e' },
+  });
+  assert.ok(plan.ok);
+  assert.ok(plan.invocation.args.every((arg) => !/\{[a-z-]+\}/.test(arg)));
+  assert.ok(plan.invocation.args.includes('--agent=reviewer'));
 });

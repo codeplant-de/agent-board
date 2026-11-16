@@ -17,6 +17,7 @@ export type Field =
   | 'title'
   | 'input'
   | 'workdir'
+  | 'agent'
   | 'pr'
   | 'machine.dirs'
   | 'note.body'

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseInstallPath, PluginError, resolvePluginRoot } from './plugins.mts';
+import { parseInstallPath, PluginError, resolvePluginKey, resolvePluginRoot } from './plugins.mts';
 import type { PluginFiles } from './plugins.mts';
 
 const file = {
@@ -75,6 +75,25 @@ test('an unreadable manifest, an unknown plugin, a missing directory or an escap
   }
 });
 
-test('a key without a marketplace is refused', () => {
-  assert.throws(() => resolvePluginRoot('pr-review', files()), PluginError);
+test('a bare plugin name resolves to the one marketplace it is installed from', () => {
+  assert.equal(resolvePluginRoot('pr-review', files()), '/work/ccc/plugins/pr-review');
+  assert.equal(resolvePluginKey('pr-review', file), 'pr-review@ccc');
+  assert.equal(resolvePluginKey('pr-review@other', file), 'pr-review@other', 'a named marketplace is taken as written');
+});
+
+test('a bare plugin name that is not installed, or installed from several marketplaces, is refused', () => {
+  assert.throws(() => resolvePluginRoot('engineering', files()), /plugin engineering is not installed/);
+  const both = {
+    plugins: {
+      'pr-review@ccc': [{ installPath: '/a' }],
+      'pr-review@other': [{ installPath: '/b' }],
+      'pr-review-x@ccc': [],
+    },
+  };
+  assert.throws(
+    () => resolvePluginRoot('pr-review', files({ installedPlugins: both })),
+    /several marketplaces \(pr-review@ccc, pr-review@other\); name one as \{pr-review@ccc\}/,
+  );
+  assert.equal(resolvePluginRoot('pr-review@other', files({ installedPlugins: both })), '/b');
+  assert.throws(() => resolvePluginRoot('pr-review', files({ installedPlugins: null })), PluginError);
 });

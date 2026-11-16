@@ -47,6 +47,7 @@ export async function insertTask(
       machine: draft.machine ?? null,
       workdir: draft.workdir ?? null,
       homeWorkdir: draft.workdir ?? null,
+      agent: draft.agent ?? null,
       head: draft.head ?? null,
       notBefore: draft.notBefore ?? null,
       scheduleId: extra.scheduleId ?? null,

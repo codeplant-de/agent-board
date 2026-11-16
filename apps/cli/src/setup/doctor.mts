@@ -16,10 +16,13 @@ import {
   SERVER_FEATURES,
 } from '@agent-board/shared';
 import type { Keys } from '@agent-board/shared';
+import { pluginPlaceholders } from '../worker/plan.mts';
 import { dirsToSend, isAllowedDir, isDirectory, routedDirs, UNCOVERED_HINT } from '../config/dirs.mts';
 import { parseEnv } from '../config/env-file.mts';
 import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
 import { errorText, shellQuote } from '../output/text.mts';
+import { PluginError, resolvePluginRoot } from '../worker/plugins.mts';
+import type { PluginFiles } from '../worker/plugins.mts';
 
 export type Level = 'ok' | 'fail' | 'warn';
 
@@ -338,7 +341,94 @@ const checkServer: Check = async (deps) => {
   }
 };
 
-const checkConfig: Check = ({ configDir, readText }) => {
+// Where Claude Code keeps its plugin lists, under the home directory doctor was given.
+function readPluginFiles(deps: DoctorDeps): PluginFiles | undefined {
+  const readJson = (file: string): unknown => {
+    const text = deps.readText(file);
+    try {
+      return text === undefined ? undefined : JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  };
+  const installedPlugins = readJson(join(deps.home, '.claude', 'plugins', 'installed_plugins.json'));
+  if (installedPlugins === undefined) return undefined;
+  return {
+    installedPlugins,
+    knownMarketplaces: readJson(join(deps.home, '.claude', 'plugins', 'known_marketplaces.json')),
+    marketplaceManifest: (root) => readJson(join(root, '.claude-plugin', 'marketplace.json')),
+    dirExists: deps.isDirectory,
+  };
+}
+
+// The tool an allow rule is for: "Bash" for `Bash(git status)`. MCP rules name servers and patterns, which `tools` may cover
+// in ways not worth guessing at.
+const ruleTool = (rule: string): string => rule.split('(')[0] ?? rule;
+
+// A plugin placeholder in rules that does not resolve fails every run those rules govern.
+function checkPlugins(
+  name: string,
+  owner: string,
+  lists: { allowedTools: string[]; disallowedTools: string[] },
+  pluginFiles: PluginFiles | undefined,
+): CheckResult[] {
+  return pluginPlaceholders([...lists.allowedTools, ...lists.disallowedTools]).flatMap((placeholder) => {
+    try {
+      if (pluginFiles === undefined) throw new PluginError('cannot read ~/.claude/plugins/installed_plugins.json');
+      resolvePluginRoot(placeholder, pluginFiles);
+      return [];
+    } catch (error) {
+      return [
+        problem(
+          name,
+          'warn',
+          `its rules name {${placeholder}}, which does not resolve (${errorText(error)}), so a run as ${owner} fails`,
+          'install the plugin, or name its marketplace as {plugin@marketplace}',
+        ),
+      ];
+    }
+  });
+}
+
+// What would make an agent's run fail or its rules dead letters: an agent that cannot be read, a plugin it names that does not
+// resolve, an allow rule for a tool its `tools` leave out. Intake's rules name plugins too.
+function checkAgents(config: Config, deps: DoctorDeps): CheckResult[] {
+  const entries = Object.entries(config.agents);
+  const results = [
+    ...Object.entries(config.agentErrors).map(([name, reason]) =>
+      problem(
+        `agent ${plainLine(name.slice(0, 40))}`,
+        'fail',
+        `${reason}; tasks that name it are not run`,
+        'fix the agent in config.json',
+      ),
+    ),
+    ...(entries.length === 0 ? [] : [ok('agents', entries.map(([name]) => name).join(', '))]),
+  ];
+  const pluginFiles = readPluginFiles(deps);
+  if (config.intakeEnabled) results.push(...checkPlugins('config.json intake', 'intake', config.intake, pluginFiles));
+  for (const [name, agent] of entries) {
+    results.push(...checkPlugins(`agent ${name}`, name, agent, pluginFiles));
+    const dead = [
+      ...new Set(
+        agent.allowedTools.map(ruleTool).filter((tool) => !tool.startsWith('mcp__') && !agent.tools.includes(tool)),
+      ),
+    ];
+    if (dead.length > 0)
+      results.push(
+        problem(
+          `agent ${name}`,
+          'warn',
+          `allowedTools has rules for ${dead.join(', ')}, which tools leaves out: the agent does not have ${dead.length === 1 ? 'that tool' : 'those tools'}`,
+          `add ${dead.length === 1 ? 'it' : 'them'} to agents.${name}.tools`,
+        ),
+      );
+  }
+  return results;
+}
+
+const checkConfig: Check = (deps) => {
+  const { configDir, readText } = deps;
   const path = join(configDir, 'config.json');
   const text = readText(path);
   if (text === undefined)
@@ -355,6 +445,7 @@ const checkConfig: Check = ({ configDir, readText }) => {
     const config = parseConfig(raw);
     return [
       ok('config.json', `machine ${config.machine}`),
+      ...checkAgents(config, deps),
       ...configWarnings(raw).map((warning) =>
         problem(
           'config.json',

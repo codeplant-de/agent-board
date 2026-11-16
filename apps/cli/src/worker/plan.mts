@@ -1,12 +1,12 @@
 import { isModelName, isSafeWorkdir, isSessionId, parsePrUrl, prUrlIn } from '@agent-board/shared';
 import type { Note, Task } from '@agent-board/shared';
-import type { IntakeConfig } from '../config/config.mts';
-import { neverRun } from '../task-rules.mts';
+import type { AgentConfig, IntakeConfig } from '../config/config.mts';
+import { agentFor, neverRun } from '../task-rules.mts';
 import { boardRules, buildResumePrompt, freshThreadBlock, userReply, writtenSincePreviousRun } from './prompts.mts';
 
-// `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives `<plugin>@ccc`, such as {pr-review}.
-const PLUGIN_PLACEHOLDER = /\{([a-z0-9][a-z0-9-]*)\}/g;
-export const PLUGIN_MARKETPLACE = 'ccc';
+// `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives the one installed `<plugin>@*`, such as
+// {pr-review}; `{<plugin>@<marketplace>}` names the marketplace.
+const PLUGIN_PLACEHOLDER = /\{([a-z0-9][a-z0-9-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?)\}/g;
 
 export interface RunLimits {
   inactivityMinutes: number;
@@ -52,7 +52,7 @@ export function supervise(input: {
   return { kind: 'continue' };
 }
 
-// The plugins whose roots the rules name, such as ["pr-review", "engineering"].
+// The plugins whose roots the rules name, as written between the braces: ["pr-review", "engineering@ccc"].
 export function pluginPlaceholders(rules: string[]): string[] {
   return [
     ...new Set(rules.flatMap((rule) => [...rule.matchAll(PLUGIN_PLACEHOLDER)].map((match) => match[1] ?? ''))),
@@ -167,7 +167,38 @@ export interface Invocation {
   cwd: string;
 }
 
-export type InvocationPlan = { ok: true; invocation: Invocation } | { ok: false; reason: string };
+// `agents`: for an agent's run, the file `--agents` names and what the worker writes into it (mode 0600) before it starts.
+export type InvocationPlan =
+  { ok: true; invocation: Invocation; agents?: { path: string; content: string } } | { ok: false; reason: string };
+
+// What a restricted run's allow and deny lists become: `~/` and plugin roots expanded, or why the run must not start.
+// `owner` names whose rules they are in the refusals.
+function expandedRules(
+  lists: { allowedTools: string[]; disallowedTools: string[] },
+  owner: { rules: string; rule: string },
+  input: { home: string; pluginRoots: Record<string, string> },
+): { ok: true; allowed: string[]; disallowed: string[] } | { ok: false; reason: string } {
+  const missing = pluginPlaceholders([...lists.allowedTools, ...lists.disallowedTools]).filter(
+    (name) => !Object.hasOwn(input.pluginRoots, name),
+  );
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason: `The path of the plugin ${missing.join(', ')} is unknown, but ${owner.rules} name {${missing[0]}}.`,
+    };
+  }
+  const expand = (rule: string): string => expandRule(rule, input.home, input.pluginRoots);
+  const allowed = lists.allowedTools.map(expand);
+  const disallowed = lists.disallowedTools.map(expand);
+  // The two lists take every following argument that does not start with `-`: a rule that does would read as an option.
+  const optionLike = [...allowed, ...disallowed].find((rule) => rule.startsWith('-'));
+  if (optionLike !== undefined)
+    return {
+      ok: false,
+      reason: `${owner.rule} starts with "-" and would be read as an option: ${optionLike.slice(0, 40)}`,
+    };
+  return { ok: true, allowed, disallowed };
+}
 
 export function buildInvocation(input: {
   task: Task;
@@ -176,19 +207,28 @@ export function buildInvocation(input: {
   // Where a task without a directory of its own runs.
   defaultCwd: string;
   intake: IntakeConfig;
+  // The agents this machine defines. A task that names one runs as it, under its lists, and a task that names an agent not
+  // here is refused.
+  agents: Record<string, AgentConfig>;
+  agentErrors: Record<string, string>;
+  // Where the worker will write the agent's definition for `--agents`, in a private directory.
+  agentsPath: string;
   // The directory a task without its own runs in when no PR in its prompt names a checkout (its lane's, if set).
   laneCwd?: string | undefined;
   home: string;
-  // Roots of the plugins intake's rules name ({pr-review} and the like).
+  // Roots of the plugins the rules name ({pr-review} and the like), by the placeholder as written.
   pluginRoots: Record<string, string>;
   // The PreToolUse hook command (heartbeat, working directory, questions).
   hookCommand?: string;
 }): InvocationPlan {
   const { task, intake } = input;
   const fromIntake = task.createdBy === 'intake';
+  const agent = agentFor(task, input);
   const prompt = task.input.trim();
   const refused = neverRun(task);
   if (refused !== undefined) return { ok: false, reason: refused };
+  if (agent.kind === 'missing')
+    return { ok: false, reason: `The task runs as an agent that is not defined on this machine: ${agent.reason}.` };
   if (input.run.kind === 'blocked') return { ok: false, reason: input.run.reason };
   if (input.run.kind === 'fresh' && prompt === '') return { ok: false, reason: 'The task has no prompt.' };
   if (!isSessionId(input.run.sessionId)) return { ok: false, reason: 'The session id is not a UUID.' };
@@ -241,11 +281,39 @@ export function buildInvocation(input: {
     'stream-json',
     '--verbose',
     '--append-system-prompt',
-    boardRules(task),
+    boardRules(task, { asAgent: agent.kind === 'found' }),
     // The heartbeat and question hook, inline.
     '--settings',
     JSON.stringify(settings),
   ];
+  if (agent.kind === 'found') {
+    // An agent's run is unattended and runs only what the agent's lists allow, in dontAsk mode: the agent's `tools` limit
+    // the tool names only, so the command-level rules take effect only with dontAsk. Only the user's own settings load.
+    const rules = expandedRules(
+      agent.agent,
+      { rules: `agent ${agent.name}'s rules`, rule: `A tool rule of agent ${agent.name}` },
+      input,
+    );
+    if (!rules.ok) return rules;
+    // `--tools` keeps the built-in tools out even if Claude Code cannot load the agent and runs the main thread as itself;
+    // MCP tools are not built in, and the lists govern them.
+    args.push(
+      `--tools=${agent.agent.tools.filter((tool) => !tool.startsWith('mcp__')).join(',')}`,
+      `--agents=${input.agentsPath}`,
+      `--agent=${agent.name}`,
+      '--permission-mode',
+      'dontAsk',
+      '--setting-sources',
+      'user',
+    );
+    if (rules.allowed.length > 0) args.push('--allowedTools', ...rules.allowed);
+    if (rules.disallowed.length > 0) args.push('--disallowedTools', ...rules.disallowed);
+    return {
+      ok: true,
+      invocation: { command: 'claude', args, prompt: promptText, cwd },
+      agents: { path: input.agentsPath, content: agentsFileContent(agent.name, agent.agent) },
+    };
+  }
   if (!fromIntake) {
     // As if the user ran it: their settings (user, project, local) and auto mode, which lets safe actions through and
     // refuses risky ones. Headless, a refusal cannot become a prompt; it shows in the log.
@@ -253,27 +321,23 @@ export function buildInvocation(input: {
     return { ok: true, invocation: { command: 'claude', args, prompt: promptText, cwd } };
   }
   // Intake runs unattended on PR text nobody chose to read: only the user's own settings, and only what intake allows.
-  const missing = pluginPlaceholders([...intake.allowedTools, ...intake.disallowedTools]).filter(
-    (name) => !Object.hasOwn(input.pluginRoots, name),
-  );
-  if (missing.length > 0) {
-    return {
-      ok: false,
-      reason: `The path of the plugin ${missing.join(', ')} is unknown, but intake's rules name {${missing[0]}}.`,
-    };
-  }
-  const expand = (rule: string): string => expandRule(rule, input.home, input.pluginRoots);
-  const allowed = intake.allowedTools.map(expand);
-  const disallowed = intake.disallowedTools.map(expand);
-  // The two lists take every following argument that does not start with `-`: a rule that does would read as an option.
-  const optionLike = [...allowed, ...disallowed].find((rule) => rule.startsWith('-'));
-  if (optionLike !== undefined)
-    return {
-      ok: false,
-      reason: `An intake tool rule starts with "-" and would be read as an option: ${optionLike.slice(0, 40)}`,
-    };
+  const rules = expandedRules(intake, { rules: "intake's rules", rule: 'An intake tool rule' }, input);
+  if (!rules.ok) return rules;
   args.push('--permission-mode', 'dontAsk', '--setting-sources', 'user');
-  if (allowed.length > 0) args.push('--allowedTools', ...allowed);
-  if (disallowed.length > 0) args.push('--disallowedTools', ...disallowed);
+  if (rules.allowed.length > 0) args.push('--allowedTools', ...rules.allowed);
+  if (rules.disallowed.length > 0) args.push('--disallowedTools', ...rules.disallowed);
   return { ok: true, invocation: { command: 'claude', args, prompt: promptText, cwd } };
+}
+
+// The definition `claude --agents` reads: only the keys Claude Code knows. Its servers come with `--mcp-config` instead,
+// and the allow and deny lists are command-line options.
+function agentsFileContent(name: string, agent: AgentConfig): string {
+  return JSON.stringify({
+    [name]: {
+      description: agent.description,
+      prompt: agent.prompt ?? '',
+      tools: agent.tools,
+      ...(agent.model === undefined ? {} : { model: agent.model }),
+    },
+  });
 }

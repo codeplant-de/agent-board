@@ -50,10 +50,25 @@ export interface PluginFiles {
   dirExists: (path: string) => boolean;
 }
 
+// A bare `<plugin>` is completed with the one marketplace installed_plugins.json has it under; none or several is an error.
+export function resolvePluginKey(name: string, installedPlugins: unknown): string {
+  if (name.includes('@')) return name;
+  const plugins = isRecord(installedPlugins) ? installedPlugins['plugins'] : undefined;
+  const keys = isRecord(plugins) ? Object.keys(plugins).filter((key) => key.startsWith(`${name}@`)) : [];
+  const [key] = keys;
+  if (key === undefined) throw new PluginError(`plugin ${name} is not installed`);
+  if (keys.length > 1)
+    throw new PluginError(
+      `plugin ${name} is installed from several marketplaces (${keys.join(', ')}); name one as {${key}}`,
+    );
+  return key;
+}
+
 // The root Claude Code gives a plugin as ${CLAUDE_PLUGIN_ROOT}. For a plugin from a directory marketplace Claude
 // Code loads it straight from that directory, not from the cache copy that installed_plugins.json points at
 // (checked against Claude Code 2.1.x: the Skill tool reports the checkout's path as the base directory).
-export function resolvePluginRoot(key: string, files: PluginFiles): string {
+export function resolvePluginRoot(name: string, files: PluginFiles): string {
+  const key = resolvePluginKey(name, files.installedPlugins);
   const at = key.lastIndexOf('@');
   if (at <= 0) throw new PluginError(`plugin key ${key} is not <plugin>@<marketplace>`);
   const plugin = key.slice(0, at);
@@ -78,10 +93,10 @@ function readJson(file: string): unknown {
   }
 }
 
-export function resolvePluginPath(key: string): string {
+export function resolvePluginPath(name: string): string {
   const installedPlugins = readJson(INSTALLED_PLUGINS_FILE);
   if (installedPlugins === undefined) throw new PluginError(`cannot read ${INSTALLED_PLUGINS_FILE}`);
-  return resolvePluginRoot(key, {
+  return resolvePluginRoot(name, {
     installedPlugins,
     knownMarketplaces: readJson(KNOWN_MARKETPLACES_FILE),
     marketplaceManifest: (root) => readJson(join(root, '.claude-plugin', 'marketplace.json')),
