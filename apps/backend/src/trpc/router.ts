@@ -161,10 +161,12 @@ const tasksRouter = router({
         when: z.union([repeat, z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
         /** The machine and the sealed directory the task runs in, or its schedule's occurrences (sealed for the schedule). */
         place: z.object({ machine: machineName, workdir: sealed('workdir', 'directory') }).optional(),
+        /** The sealed name of the agent the task, or each occurrence of its schedule, runs as; the prompt is sealed under it too. */
+        agent: sealed('agent', 'agent').optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { title, when, place } = input;
+      const { title, when, place, agent } = input;
       if (typeof when === 'object' && ('every' in when || 'cron' in when)) {
         const { task } = await addSchedule(ctx.db, {
           id: input.id,
@@ -173,6 +175,7 @@ const tasksRouter = router({
           priority: input.priority,
           ...(input.model === undefined ? {} : { model: input.model }),
           ...(place === undefined ? {} : { machine: place.machine, workdir: place.workdir }),
+          ...(agent === undefined ? {} : { agent }),
           ...('every' in when ? { everyMs: when.every } : { cron: when.cron, timezone: when.timezone }),
           ...(when.at ? { startAt: when.at } : {}),
           ...(when.times ? { times: when.times } : {}),
@@ -191,6 +194,7 @@ const tasksRouter = router({
         createdBy: 'user',
         ...(input.parentId === undefined ? {} : { parentId: input.parentId }),
         ...(place === undefined ? {} : { machine: place.machine, workdir: place.workdir }),
+        ...(agent === undefined ? {} : { agent }),
       });
       return boardTask(row);
     }),

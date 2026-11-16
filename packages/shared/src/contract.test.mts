@@ -42,10 +42,9 @@ import {
   STATUSES,
   shortSkill,
   taskLabels,
-} from '../src/contract.mts';
-import { blindIndex, deriveKeys, envelopeLength, generateDataKey, seal } from '../src/crypto.mts';
-import type { Field } from '../src/crypto.mts';
-import { describeRule, runsLeft } from '../src/time.mts';
+} from './contract.mts';
+import { blindIndex, deriveKeys, envelopeLength, generateDataKey, seal } from './crypto.mts';
+import type { Field } from './crypto.mts';
 
 const keys = await deriveKeys(generateDataKey(), 'alice', { index: true });
 const sealed = (field: Field, text = 'x', context = ''): Promise<string> => seal(keys, field, context, text);
@@ -153,6 +152,17 @@ test('a running task carries its lane, liveness and start', () => {
   assert.throws(() => parseWireTask({ ...task, lastActiveAt: 'soon' }), /lastActiveAt is not a date/);
   assert.deepEqual(parseHeartbeat({ lane: 'reviews', borrowed: false }), { lane: 'reviews', borrowed: false });
   assert.throws(() => parseHeartbeat({ lane: 'a b', borrowed: false }), /heartbeat.lane/);
+});
+
+test('a draft may carry a sealed agent, but not together with createdBy agent (a proposal runs under no agent)', () => {
+  const agent = `abe1.${'A'.repeat(40)}`;
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, agent }).agent, agent);
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, agent, createdBy: 'intake' }).agent, agent);
+  assert.throws(
+    () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, agent, createdBy: 'agent' }),
+    /draft.agent cannot go with createdBy agent/,
+  );
+  assert.throws(() => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, agent: 'reviewer' }), /agent/);
 });
 
 test('a draft takes the dedupe key, parent and creator; unknown keys fail', () => {
@@ -377,21 +387,6 @@ test('add-schedule results carry the schedule and its pending task', () => {
   const result = parseWireAddScheduleResult({ schedule, task: { ...task, scheduleId: 'Sc3dEf9x' } });
   assert.equal(result.schedule.id, 'Sc3dEf9x');
   assert.equal(result.task.scheduleId, 'Sc3dEf9x');
-});
-
-test('describeRule names an interval or a cron rule with its time zone', () => {
-  assert.equal(describeRule(parseWireSchedule(schedule)), 'every 2h');
-  assert.equal(
-    describeRule({ everyMs: null, cron: '0 9 * * 1-5', timezone: 'Europe/Berlin' }),
-    'cron 0 9 * * 1-5 (Europe/Berlin)',
-  );
-});
-
-test('runsLeft counts the pending run and is null for a schedule that repeats forever', () => {
-  assert.equal(runsLeft({ remaining: null, occurrenceTaskId: 'a' }), null);
-  assert.equal(runsLeft({ remaining: 2, occurrenceTaskId: 'a' }), 3);
-  assert.equal(runsLeft({ remaining: 2, occurrenceTaskId: null }), 2);
-  assert.equal(runsLeft({ remaining: 0, occurrenceTaskId: null }), 0);
 });
 
 test('a schedule draft needs sealed title and input and one rule', () => {

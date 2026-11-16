@@ -10,12 +10,12 @@ import {
   StreamCondenser,
   toolSummary,
   TranscriptError,
-} from '../src/transcript.mts';
-import { deriveKeys, generateDataKey, seal } from '../src/crypto.mts';
+} from './transcript.mts';
+import { deriveKeys, generateDataKey, seal } from './crypto.mts';
 
 // A real `claude -p --output-format stream-json --verbose` run (Claude Code 2.1.325): thinking, two Bash calls (one
 // failing), a subagent with its own Bash call, and the final result.
-const lines = readFileSync(new URL('./fixtures/stream.jsonl', import.meta.url), 'utf8').split('\n');
+const lines = readFileSync(new URL('./__tests__/fixtures/stream.jsonl', import.meta.url), 'utf8').split('\n');
 const at = new Date('2026-11-13T12:00:00Z');
 
 test('a real stream condenses to notes, thinking, tool calls with results, text and the result', () => {

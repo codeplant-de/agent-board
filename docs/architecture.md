@@ -56,7 +56,7 @@ The design assumes the server and database may be hostile, and that any PR text 
 
 What the server can still do: decide when and where a task runs, reorder or withhold notes, and replay older values of the same task. [encryption.md](encryption.md#encryption) lists all of it.
 
-**Sign-in is the proxy's job.** The backend has no login of its own. It takes the user from the `Remote-User` header and checks `Remote-Groups` against `ALLOWED_GROUPS`. That is only safe behind a proxy that signs the user in, strips any `Remote-*` header the client sent, and sets its own. Never expose the backend's `/trpc` without one. The machine API is the exception: the proxy lets `/api/machine/*` through without a login, and the backend checks the bearer token itself. Which proxy does this is a deployment choice; [operations.md](operations.md#the-board-server) describes the current one.
+**Sign-in is the proxy's job.** The backend has no login of its own. It takes the user from the `Remote-User` header and checks `Remote-Groups` against `ALLOWED_GROUPS`. That is only safe behind a proxy that signs the user in, strips any `Remote-*` header the client sent, and sets its own. Stripping at the edge does not cover callers that reach the backend without passing the proxy, such as another pod in the cluster. So the backend also takes those headers only together with `Board-Proxy-Secret`, a shared secret (`PROXY_SECRET`) that the web container's Caddy adds to every request it proxies. The backend compares it in constant time and refuses to start in production without it. Without the secret, a request to `/trpc` is a 403 whatever `Remote-*` headers it carries. Never expose the backend's `/trpc` without such a proxy. The machine API is the exception: the proxy lets `/api/machine/*` through without a login, and the backend checks the bearer token itself. Which proxy does this is a deployment choice; [operations.md](operations.md#the-board-server) describes the current one.
 
 **Multi-tenancy.** Each signed-in user (`Remote-User`) has a private board. Requests run as the unprivileged `board_app` role with row-level security on `app.owner`, set per request transaction (`apps/backend/src/db/scope.ts`). The privileged `DATABASE_URL` is used only at start, for role setup and migrations. There is deliberately no fallback to it, because a superuser or table owner bypasses RLS.
 
@@ -78,7 +78,7 @@ The backend keeps the data and the rules: the `slack_inbox` and `slack_link` tab
 | `link`      | Issues a one-time code for a Slack user and returns the board URL that confirms it.              |
 | `unlink`    | Removes the link of a Slack user.                                                                |
 
-It cannot read or change a task, a note or a machine. A leaked token can fill a linked user's inbox (at most 4000 characters an item, 30 days) and start or remove links, and a link only takes effect when the board user confirms it behind the login. **The limit of that isolation:** it holds only while the backend takes `Remote-User` and `Remote-Groups` from nobody but the login proxy (see [Sign-in is the proxy's job](#trust-model)). Today that is enforced by the network path alone: the backend trusts those headers from any caller that reaches port 4000, so a compromised pod in the cluster, the Slack pod included, could call `/trpc` as any user. Even then it gets only what the board stores, which is ciphertext plus clear metadata, but it is more than the intake token allows. A NetworkPolicy that admits only the web container to `/trpc`, or a shared secret the proxy adds and the backend checks, is the planned hardening and is not built. The route is deliberately not one of the proxy's login bypasses: the Slack app reaches the backend inside the cluster (`BOARD_API_URL`), and from outside the login proxy answers first.
+It cannot read or change a task, a note or a machine. A leaked token can fill a linked user's inbox (at most 4000 characters an item, 30 days) and start or remove links, and a link only takes effect when the board user confirms it behind the login. **What keeps the Slack pod off `/trpc`:** it reaches port 4000, so the network alone cannot stop it from sending its own `Remote-User` and `Remote-Groups`. The backend takes those headers only together with the proxy secret (see [Sign-in is the proxy's job](#trust-model)), and the Slack pod does not have it. The cluster's NetworkPolicy works at the port level: it keeps every other pod off port 4000, but it has to let the Slack pod in for the intake API. A compromised Slack pod therefore gets what the intake token allows and nothing more. The route is deliberately not one of the proxy's login bypasses: the Slack app reaches the backend inside the cluster (`BOARD_API_URL`), and from outside the login proxy answers first.
 
 **Text from Slack is untrusted and never sealed by the server.** An inbox item is a suggestion: the user turns it into a task in the browser, which seals it as theirs, or dismisses it. Nothing creates a task from it by itself (rule 2). The text is kept out of logs on both sides; failures are logged by their reason only.
 
@@ -127,24 +127,25 @@ Break one of these only with a decision recorded here.
 
 ## Where to find things
 
-| Concern                                  | Code                                                             |
-| ---------------------------------------- | ---------------------------------------------------------------- |
-| Wire types, statuses, `API_VERSION` etc. | `packages/shared/src/contract.mts`                               |
-| Sealing bindings, crypto                 | `packages/shared/src/sealing.mts`, `crypto.mts`, `keys.mts`      |
-| Machine API                              | `apps/backend/src/machine-api.ts`                                |
-| UI API                                   | `apps/backend/src/trpc/router.ts`                                |
-| Task logic, schedules, retention         | `apps/backend/src/services/`                                     |
-| Schema, RLS scope, migrations            | `apps/backend/src/db/`, `apps/backend/drizzle/`                  |
-| Change events                            | `apps/backend/src/services/changes.ts` (in-process, one replica) |
-| Dispatch decisions                       | `apps/cli/src/dispatch/decide.mts`, `dispatch.mts`               |
-| Running Claude, transcripts              | `apps/cli/src/worker/worker.mts`, `transcript-upload.mts`        |
-| Hook                                     | `apps/cli/src/worker/hook.mts`                                   |
-| Intake                                   | `apps/cli/src/intake/intake.mts`, `github.mts`                   |
-| Slack app, Slack intake API              | `apps/slack/src/`, `apps/backend/src/intake-api.ts`              |
-| Slack inbox and links                    | `apps/backend/src/services/slack.ts`                             |
-| systemd units                            | `apps/cli/src/setup/setup.mts`, `system.mts`                     |
-| The `board` commands                     | `apps/cli/src/commands/`                                         |
-| Browser keys                             | `apps/frontend/src/crypto/`                                      |
+| Concern                                  | Code                                                                     |
+| ---------------------------------------- | ------------------------------------------------------------------------ |
+| Wire types, statuses, `API_VERSION` etc. | `packages/shared/src/contract.mts`                                       |
+| Sealing bindings, crypto                 | `packages/shared/src/sealing.mts`, `crypto.mts`, `keys.mts`              |
+| Machine API                              | `apps/backend/src/machine-api.ts`                                        |
+| UI API                                   | `apps/backend/src/trpc/router.ts`                                        |
+| Task logic, schedules, retention         | `apps/backend/src/services/`                                             |
+| Schema, RLS scope, migrations            | `apps/backend/src/db/`, `apps/backend/drizzle/`                          |
+| Change events                            | `apps/backend/src/services/changes.ts` (in-process, one replica)         |
+| Dispatch decisions                       | `apps/cli/src/dispatch/decide.mts`, `dispatch.mts`                       |
+| Run plan, prompts, limits                | `apps/cli/src/worker/plan.mts`, `prompts.mts`                            |
+| Running Claude, transcripts              | `apps/cli/src/worker/worker.mts`, `process.mts`, `transcript-upload.mts` |
+| Hook                                     | `apps/cli/src/worker/hook.mts`                                           |
+| Intake                                   | `apps/cli/src/intake/intake.mts`, `github.mts`                           |
+| Slack app, Slack intake API              | `apps/slack/src/`, `apps/backend/src/intake-api.ts`                      |
+| Slack inbox and links                    | `apps/backend/src/services/slack.ts`                                     |
+| systemd units                            | `apps/cli/src/setup/setup.mts`, `system.mts`                             |
+| The `board` commands                     | `apps/cli/src/commands/`                                                 |
+| Browser keys                             | `apps/frontend/src/crypto/`                                              |
 
 ## Known limits
 

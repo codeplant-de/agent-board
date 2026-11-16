@@ -16,6 +16,7 @@ export const testConfig: Config = {
   backfillOwner: null,
   allowedGroups: ['admins'],
   devAuthUser: null,
+  proxySecret: null,
   cliVersion: null,
   intake: null,
 };

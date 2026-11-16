@@ -49,8 +49,9 @@ import type {
   WireTaskPatch,
   WireTranscriptEvent,
 } from '@agent-board/shared';
-import { BackendError, createWebBackend } from './backend.mts';
-import type { WebBackendOptions } from './backend.mts';
+import { BackendError } from './backend.mts';
+import { createWebBackend } from './web-backend.mts';
+import type { WebBackendOptions } from './web-backend.mts';
 
 const invalid = (command: string, message: string): BackendError => new BackendError(`${command}: ${message}`, 400);
 
@@ -94,11 +95,20 @@ const taskRef = (task: Pick<WireTask, 'id' | 'createdBy' | 'scheduleId'>): RowRe
 
 async function openTask(keys: Keys, wire: WireTask): Promise<Task> {
   const opener = openerFor(keys);
-  const [{ title, input, workdir, unreadable }, pr] = await Promise.all([
+  const [{ title, input, workdir, agent, unreadable }, pr] = await Promise.all([
     openFields(opener, taskRef(wire), wire),
     openPr(opener, wire.id, wire.pr),
   ]);
-  return { ...wire, title, input, workdir, pr, labels: taskLabels({ input, createdBy: wire.createdBy }), unreadable };
+  return {
+    ...wire,
+    title,
+    input,
+    workdir,
+    agent,
+    pr,
+    labels: taskLabels({ input, createdBy: wire.createdBy }),
+    unreadable,
+  };
 }
 
 async function openSchedule(keys: Keys, wire: WireSchedule): Promise<Schedule> {
@@ -151,9 +161,15 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     const title = draft.title.trim();
     if (title === '') throw invalid('add-task', 'draft.title must not be empty');
     requireAbsolute('add-task', draft.workdir);
-    const { dedupeKey, workdir, head, id: chosen, ...rest } = draft;
+    const { dedupeKey, workdir, head, agent, id: chosen, ...rest } = draft;
     const id = chosen ?? newTaskId();
-    const row: RowRef = { kind: 'task', id, createdBy: draft.createdBy ?? 'user', scheduleId: null };
+    const row: RowRef = {
+      kind: 'task',
+      id,
+      createdBy: draft.createdBy ?? 'user',
+      scheduleId: null,
+      agent: agent ?? null,
+    };
     const sealed = await checked('add-task', () => sealFields(sealer, row, { title, input: draft.input, workdir }));
     const keysNow = await getKeys();
     return {
@@ -171,11 +187,14 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     const needsRow = input !== undefined || (workdir !== undefined && workdir !== null);
     if (needsRow && writer === undefined)
       throw invalid('update-task', 'sealing an input or a directory needs the task creator and schedule (patch.seal)');
+    if (input !== undefined && writer?.agent === undefined)
+      throw invalid('update-task', 'sealing an input needs the task agent, or null for none (patch.seal.agent)');
     const row: RowRef = {
       kind: 'task',
       id,
       createdBy: writer?.createdBy ?? 'user',
       scheduleId: writer?.scheduleId ?? null,
+      agent: writer?.agent ?? null,
     };
     const sealed = await checked('update-task', async () => ({
       ...(input === undefined ? {} : { input: await sealInput(sealer, row, input) }),
@@ -310,10 +329,10 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       if (title === '') throw invalid('add-schedule', 'schedule draft.title must not be empty');
       if (draft.input.trim() === '') throw invalid('add-schedule', 'schedule draft.input must not be empty');
       requireAbsolute('add-schedule', draft.workdir);
-      const { workdir, id: chosen, ...rest } = draft;
+      const { workdir, agent, id: chosen, ...rest } = draft;
       const id = chosen ?? newTaskId();
       const sealed = await checked('add-schedule', () =>
-        sealFields(sealer, { kind: 'schedule', id }, { title, input: draft.input, workdir }),
+        sealFields(sealer, { kind: 'schedule', id, agent: agent ?? null }, { title, input: draft.input, workdir }),
       );
       const { schedule, task } = await inner.addSchedule({ ...rest, id, ...sealed });
       return { schedule: await opened(schedule, openSchedule), task: await opened(task, openTask) };

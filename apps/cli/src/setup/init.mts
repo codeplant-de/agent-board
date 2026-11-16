@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { decodeDataKey, isSafeMachineName, MACHINE_NAME_RULE } from '@agent-board/shared';
-import { checkBoardUrl, looksLikeMachineToken, webUrlOf } from '../backend/backend.mts';
+import { checkBoardUrl, looksLikeMachineToken, webUrlOf } from '../backend/web-config.mts';
 import { ConfigError, readSecretFile } from '../config/config.mts';
 import { parseEnv } from '../config/env-file.mts';
 import exampleConfig from '../../config.example.json' with { type: 'json' };

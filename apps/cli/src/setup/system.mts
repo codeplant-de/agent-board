@@ -1,8 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isSafeTaskId } from '@agent-board/shared';
-import { requireTaskId } from '../task-id.mts';
-import { unitName } from '../dispatch/decide.mts';
+import { requireTaskId, unitName } from '../task-id.mts';
 import { selfCommand } from '../self/self.mts';
 
 const run = promisify(execFile);

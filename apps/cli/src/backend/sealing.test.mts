@@ -96,6 +96,7 @@ function fakeWire(): FakeWire {
         title: sent.title,
         input: sent.input,
         workdir: sent.workdir ?? null,
+        ...(sent.agent === undefined ? {} : { agent: sent.agent }),
         head: sent.head ?? null,
         createdBy: sent.createdBy ?? 'user',
       };
@@ -187,6 +188,7 @@ function fakeWire(): FakeWire {
         title: sent.title,
         input: sent.input,
         workdir: sent.workdir ?? null,
+        ...(sent.agent === undefined ? {} : { agent: sent.agent }),
       };
       state.schedules.push(added);
       return { schedule: added, task: await wireTask({ id: 'pending' }) };
@@ -257,7 +259,7 @@ test('a task round-trips and the server only ever sees envelopes and a blind ind
   const patched = await board.updateTask(created.id, {
     input: `${INPUT} more`,
     workdir: '/home/me/wt',
-    seal: { createdBy: 'intake', scheduleId: null },
+    seal: { createdBy: 'intake', scheduleId: null, agent: null },
   });
   assert.deepEqual([patched.input, patched.workdir], [`${INPUT} more`, '/home/me/wt']);
   assert.deepEqual((await board.getTask(created.id)).labels, ['review-pr']);
@@ -648,7 +650,7 @@ test('the creator of a new prompt is the writer’s, not the board’s (intake s
   await assert.rejects(board.updateTask('i1', { input: 'new prompt' }), /needs the task creator/);
   const patched = await board.updateTask('i1', {
     input: 'new prompt',
-    seal: { createdBy: 'intake', scheduleId: null },
+    seal: { createdBy: 'intake', scheduleId: null, agent: null },
   });
   assert.deepEqual([patched.input, patched.unreadable], ['new prompt', []]);
   // Sealed as the user's, the same prompt would not open on an intake task.
@@ -776,7 +778,7 @@ test('an occurrence opens against its schedule, also after the schedule is gone,
   // The worker rewrites the directory for the task; that opens, and the schedule's own prompt still does.
   const updated = await board.updateTask('occ1', {
     workdir: '/srv/app/.wt',
-    seal: { createdBy: 'user', scheduleId: s.id },
+    seal: { createdBy: 'user', scheduleId: s.id, agent: null },
   });
   assert.deepEqual([updated.input, updated.workdir, updated.unreadable], ['/sweep', '/srv/app/.wt', []]);
   // Naming another schedule, or none, or a changed creator, leaves the task unreadable.
@@ -842,7 +844,7 @@ test('what the board would refuse for its size is refused before it is sent, nam
     refused(error, /the title is too long/),
   );
   await assert.rejects(
-    board.updateTask('t1', { input: 'x'.repeat(800_001), seal: { createdBy: 'user', scheduleId: null } }),
+    board.updateTask('t1', { input: 'x'.repeat(800_001), seal: { createdBy: 'user', scheduleId: null, agent: null } }),
     (error) => refused(error, /update-task: the prompt is too long/),
   );
   const at = '2026-11-14T10:00:00.000Z';
@@ -934,4 +936,72 @@ test('a directory list the board would refuse is refused before it is sent', asy
     (error: unknown) => error instanceof BackendError && error.status === 400,
   );
   assert.equal(wire.requests.length, 0);
+});
+
+test('an agent is sealed with the task, never reaches the board in clear, and opens again; the prompt is bound to it', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  const { task: created } = await board.addTask({ title: TITLE, input: INPUT, agent: 'reviewer' });
+  const sent = wire.added[0]!;
+  assert.ok(sent.agent?.startsWith('abe1.'));
+  assert.ok(!wire.requests.join('').includes('reviewer'));
+  assert.deepEqual([created.agent, created.input, created.unreadable], ['reviewer', INPUT, []]);
+
+  // The writer of a new prompt states the agent, which keeps the prompt readable.
+  const patched = await board.updateTask(created.id, {
+    input: 'again',
+    seal: { createdBy: 'user', scheduleId: null, agent: 'reviewer' },
+  });
+  assert.deepEqual([patched.input, patched.agent, patched.unreadable], ['again', 'reviewer', []]);
+  // A writer that does not state the agent is refused, so a prompt is never sealed for a task without one by mistake.
+  await assert.rejects(
+    board.updateTask(created.id, { input: 'x', seal: { createdBy: 'user', scheduleId: null } } as never),
+    /sealing an input needs the task agent/,
+  );
+  const sealedWithNone = await board.updateTask(created.id, {
+    input: 'x',
+    seal: { createdBy: 'user', scheduleId: null, agent: null },
+  });
+  assert.deepEqual(
+    [sealedWithNone.agent, sealedWithNone.input, sealedWithNone.unreadable],
+    ['reviewer', '', ['input']],
+  );
+  await assert.rejects(board.addTask({ title: 't', input: 'x', agent: 'Not An Agent' }), /agent name must be/);
+});
+
+test('a task that has lost its agent on the way, or got another, is unreadable (the server cannot lift an agent’s restrictions)', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  const { task: created } = await board.addTask({ title: TITLE, input: INPUT, agent: 'reviewer' });
+  const stored = wire.tasks.find((t) => t.id === created.id)!;
+  const agent = stored.agent;
+  delete stored.agent;
+  const stripped = await board.getTask(created.id);
+  assert.deepEqual([stripped.agent, stripped.input, stripped.unreadable], [null, '', ['input']]);
+  stored.agent = null;
+  assert.deepEqual((await board.getTask(created.id)).unreadable, ['input']);
+  stored.agent = (await wireTask({ id: created.id, agent: 'writer' })).agent ?? null;
+  const swapped = await board.getTask(created.id);
+  assert.deepEqual([swapped.agent, swapped.unreadable], ['writer', ['input']]);
+  stored.agent = agent ?? null;
+  assert.deepEqual((await board.getTask(created.id)).unreadable, []);
+  for (const listed of await board.listTasks()) assert.deepEqual(listed.unreadable, []);
+});
+
+test('a schedule is sealed with its agent, and its occurrences open it', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  const { schedule: made } = await board.addSchedule({
+    title: 'Sweep',
+    input: '/sweep',
+    everyMs: 7_200_000,
+    agent: 'sweeper',
+  });
+  assert.equal(made.agent, 'sweeper');
+  assert.ok(wire.schedules[0]!.agent?.startsWith('abe1.'));
+  // The server copies the schedule's sealed prompt and agent into the occurrence.
+  const { input, agent } = wire.schedules[0]!;
+  const copied = { ...(await wireTask({ id: 'occ1', scheduleId: made.id })), input, agent };
+  const occurrence = await sealingBackend({ ...wire, getTask: async () => copied }, KEYS).getTask('occ1');
+  assert.deepEqual([occurrence.agent, occurrence.input, occurrence.unreadable], ['sweeper', '/sweep', []]);
 });

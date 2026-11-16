@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ContractError } from '../src/contract.mts';
-import { generateDataKey, isWrappedKey, wrapDataKey } from '../src/crypto.mts';
-import { isKeyId, parseKeySetup, parseKeySlots } from '../src/keys.mts';
+import { ContractError } from './contract.mts';
+import { generateDataKey, isWrappedKey, wrapDataKey } from './crypto.mts';
+import { isKeyId, parseKeySetup, parseKeySlots } from './keys.mts';
 
 const wrapped = await wrapDataKey(generateDataKey(), generateDataKey());
 const passphrase = { kind: 'passphrase', kdf: 'argon2id', m: 65536, t: 3, p: 1, salt: 'A'.repeat(22), wrapped };

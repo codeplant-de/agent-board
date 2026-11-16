@@ -64,6 +64,39 @@ beforeEach(() => {
   listed.failure = null;
 });
 
+describe('NewTaskModal Agent', () => {
+  it('sends none when the field is empty', async () => {
+    await open();
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).not.toHaveProperty('agent');
+  });
+
+  it('sends the agent as typed, trimmed', async () => {
+    await open();
+    await userEvent.type(screen.getByLabelText('Agent'), ' reviewer ');
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ input: '/sweep', agent: 'reviewer' });
+  });
+
+  it('holds back a name that is not an agent name', async () => {
+    await open();
+    await userEvent.type(screen.getByLabelText('Agent'), 'Not An Agent');
+    expect(await screen.findByText(/Use lowercase letters, digits and dashes/)).toBeInTheDocument();
+    expect(createButton()).toBeDisabled();
+  });
+
+  it('sends the agent of a repeating task too', async () => {
+    await open('Repeating');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '2h');
+    await userEvent.type(screen.getByLabelText('Agent'), 'sweeper');
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ agent: 'sweeper', when: { every: 2 * 3_600_000 } });
+  });
+});
+
 describe('NewTaskModal When', () => {
   it.each([
     ['Now', 'now'],

@@ -478,7 +478,7 @@ test('a requeue seals the new prompt as intake’s own and stores the head throu
     input: `/review-pr ${url(1)} --auto`,
     head: 'bbbbbbb1',
     next: 'fresh',
-    seal: { createdBy: 'intake', scheduleId: null },
+    seal: { createdBy: 'intake', scheduleId: null, agent: null },
     expect: 'needs-me',
   });
 });

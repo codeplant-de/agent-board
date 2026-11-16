@@ -7,91 +7,40 @@
  * maxRunHours, interrupts it; so does a pause request that the agent does not follow within a few minutes. It passes the
  * agent's liveness on to the board.
  */
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { writeSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import {
-  BackendError,
-  isVocabularyRefusal,
-  loadWebConfig,
-  updateCliHint,
-  verifyContract,
-} from '../backend/backend.mts';
+import { BackendError, isVocabularyRefusal } from '../backend/backend.mts';
+import { updateCliHint, verifyContract } from '../backend/contract-check.mts';
+import { loadWebConfig } from '../backend/web-config.mts';
 import { watchBoardChanges } from './changes.mts';
 import { buildContext, print, UsageError } from '../cli.mts';
 import type { Context } from '../cli.mts';
-import { isRecord } from '@agent-board/shared';
 import { logLine, StreamCondenser } from '@agent-board/shared';
 import type { RunInbox, Task } from '@agent-board/shared';
-import {
-  agentFor,
-  buildInvocation,
-  decideOutcome,
-  inboxMessageText,
-  isRunOver,
-  neverRun,
-  ownLane,
-  pauseMessageText,
-  planRun,
-  pluginPlaceholders,
-  supervise,
-  unreadableForRun,
-} from '../dispatch/decide.mts';
+import { agentFor, neverRun, ownLane, unreadableForRun } from '../task-rules.mts';
+import { buildInvocation, decideOutcome, isRunOver, planRun, pluginPlaceholders, supervise } from './plan.mts';
+import type { Invocation } from './plan.mts';
+import { goneDirNotice, inboxMessageText, pauseMessageText } from './prompts.mts';
 import { getPaths } from '../config/config.mts';
-import { isAllowedDir, isDirectory, tryRealpath } from '../commands/dirs.mts';
+import { checkoutAbove, isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import { selfCommand } from '../self/self.mts';
 import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
-import type { Invocation, Supervision } from '../dispatch/decide.mts';
 import { createRunFiles } from './runtime.mts';
 import type { RunFiles } from './runtime.mts';
 import { createSessionStore } from './sessions.mts';
 import type { SessionStore } from './sessions.mts';
-import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from './logs.mts';
+import { appendLog, logPath, readLogTail, resetLog } from './logs.mts';
 import { resolvePluginPath } from './plugins.mts';
 import { plainLine } from '../output/terminal.mts';
 import { requireTaskId } from '../task-id.mts';
 import { errorText, fence, shellQuote } from '../output/text.mts';
 import { createTranscriptUploader } from './transcript-upload.mts';
-
-export interface RunResult {
-  exitCode: number | null;
-  signal: string | null;
-  // Set when the watch stopped the run.
-  stopped?: Exclude<Supervision, { kind: 'continue' }>;
-}
-
-// The worker's way to a running agent: its stdin.
-export interface RunChannel {
-  // Hands the agent a user message, which it takes up at its next tool boundary. False when stdin was closed already: nothing
-  // was written.
-  send: (text: string) => boolean;
-  // Stops what the agent is doing at once; its session stays resumable, and a message sent after the interrupt carries the run on.
-  interrupt: () => void;
-  // Closes stdin: the agent exits once its turn is over. Nothing can be sent after that.
-  end: () => void;
-  // Interrupt, end, and kill the process if it is still there after the kill grace: what a stop decision does.
-  stop: () => void;
-  readonly open: boolean;
-}
-
-// Called every `everyMs` while the process runs; a stop decision interrupts it and closes its stdin, and kills it (SIGTERM, then
-// SIGKILL) if it is still there `killGraceMs` later. A tick decides from the clock and the run's own files alone: the calls
-// to the board it starts (liveness, transcript, inbox) run on their own, so a board that is slow, down or hostile cannot hold
-// the run's limits back.
-export interface Watch {
-  everyMs: number;
-  // Default: 30 seconds.
-  killGraceMs?: number;
-  // Called once the process runs, with the channel to it.
-  start?: (channel: RunChannel) => void;
-  tick: () => Promise<Supervision>;
-}
+import { runProcess } from './process.mts';
+import type { RunChannel, RunResult, Watch } from './process.mts';
 
 // How long a run may take to end its turn by itself after a pause was asked for.
 const PAUSE_GRACE_MINUTES = 2;
-// How long a stopped process has to exit on its own before it is killed.
-const KILL_GRACE_MS = 30_000;
 // The board's liveness is updated at most this often.
 const HEARTBEAT_EVERY_MS = 15_000;
 
@@ -111,6 +60,8 @@ export interface WorkerDeps extends Context {
   // Root of a plugin, named "pr-review" or "pr-review@ccc"; throws with the reason when it cannot be resolved.
   pluginPath: (key: string) => string;
   dirExists: (path: string) => boolean;
+  // Whether anything is at the path, a file included: a linked worktree's `.git` is a file.
+  pathExists: (path: string) => boolean;
   // The real path of an existing path; undefined when it is not there. Decides whether a directory is in the dirs list.
   realpath: (path: string) => string | undefined;
   // The `env` blocks of a checkout's .claude/settings*.json.
@@ -172,7 +123,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   // The lists a restricted run holds to: an agent's, else intake's; none for a run as the user.
   const restricted = agent.kind === 'found' ? agent.agent : fromIntake ? config.intake : undefined;
   // What a new directory is sealed against: the task's own creator and schedule, as the board has them.
-  const sealing = { createdBy: task.createdBy, scheduleId: task.scheduleId };
+  const sealing = { createdBy: task.createdBy, scheduleId: task.scheduleId, agent: task.agent ?? null };
   const pluginRoots: Record<string, string> = {};
   for (const name of restricted === undefined
     ? []
@@ -205,12 +156,34 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   });
   if (!plan.ok) return fail(plan.reason);
   if (!deps.dirExists(plan.invocation.cwd)) {
-    const own = task.workdir === plan.invocation.cwd;
-    return fail(
-      own
-        ? `This task's directory is gone: ${plan.invocation.cwd}. Recreate it to run there, or use Re-run fresh to start over${task.createdBy === 'intake' ? '' : ' in the directory it was created with, or the default one when it had none'}.`
-        : `The working directory does not exist: ${plan.invocation.cwd}`,
-    );
+    const gone = plan.invocation.cwd;
+    if (task.workdir !== gone) return fail(`The working directory does not exist: ${gone}`);
+    const fresh = `use Re-run fresh to start over${task.createdBy === 'intake' ? '' : ' in the directory it was created with, or the default one when it had none'}`;
+    // A resume keeps its session in another checkout; a fresh run has nothing worth saving, and intake never moves.
+    const recovers = run.kind === 'resume' && task.createdBy !== 'intake';
+    if (!recovers) return fail(`This task's directory is gone: ${gone}. Recreate it to run there, or ${fresh}.`);
+    const fallback = checkoutAbove(gone, deps.pathExists);
+    if (fallback === undefined || !deps.dirExists(fallback))
+      return fail(
+        `This task's directory is gone: ${plainLine(gone)}, and no git checkout above it exists on this machine to continue the session in. Recreate the directory to resume there, or ${fresh}.`,
+      );
+    if (!isAllowedDir(config.dirs, fallback, deps.realpath))
+      return fail(
+        `This task's directory is gone: ${plainLine(gone)}, and ${plainLine(fallback)}, the checkout that held it, is not a listed directory on ${config.machine}. Run "board dirs add" in it on ${config.machine} to continue the session there, recreate the directory to resume there, or ${fresh}.`,
+      );
+    const [oldDir, newDir] = [plainLine(gone), plainLine(fallback)];
+    plan.invocation.cwd = fallback;
+    plan.invocation.prompt = `${goneDirNotice(oldDir, newDir)}\n\n${plan.invocation.prompt}`;
+    deps.appendLog(taskId, `directory ${oldDir} is gone; continuing the session in ${newDir}`);
+    await backend
+      .addNote(
+        task.id,
+        `This task's directory is gone: ${oldDir}. Its session continues in ${newDir}, the git checkout that held it; the agent was told to recreate its worktree there. Changes in ${oldDir} that were not committed and pushed are lost.`,
+        { author: 'system' },
+      )
+      .catch((error: unknown) => {
+        deps.appendLog(taskId, `could not add the note: ${errorText(error)}`);
+      });
   }
   if (!isAllowedDir(config.dirs, plan.invocation.cwd, deps.realpath))
     return fail(
@@ -510,158 +483,6 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   }
 }
 
-// A user message as `claude --input-format stream-json` reads it.
-const userMessageLine = (text: string): string =>
-  `${JSON.stringify({ type: 'user', message: { role: 'user', content: text } })}\n`;
-
-const interruptLine = (): string =>
-  `${JSON.stringify({ type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } })}\n`;
-
-// Whether a line of the agent's output is the end of a turn.
-function isResultLine(line: string): boolean {
-  if (!line.includes('"result"')) return false;
-  try {
-    const parsed: unknown = JSON.parse(line);
-    return isRecord(parsed) && parsed['type'] === 'result';
-  } catch {
-    return false;
-  }
-}
-
-export function runProcess(
-  invocation: Invocation,
-  taskId: string,
-  env: Record<string, string>,
-  watch: Watch,
-  onLine: (line: string) => string | undefined = (line) => line,
-): Promise<RunResult> {
-  const fd = openLog(taskId);
-  return new Promise((resolve, reject) => {
-    // A new process group, so a stop also ends what the worker started. stdout comes here, line by line; stderr goes
-    // straight into the log.
-    const child = spawn(invocation.command, invocation.args, {
-      cwd: invocation.cwd,
-      stdio: ['pipe', 'pipe', fd],
-      detached: true,
-      env: { ...process.env, ...env },
-    });
-    // A process that exits without reading its stdin must not take the worker down.
-    child.stdin?.on('error', () => undefined);
-    let ended = false;
-    let stopping = false;
-    let killTimer: NodeJS.Timeout | undefined;
-    // An interrupt is out and its turn has not ended yet; `carryOn`: a message was sent after it, so the run goes on.
-    let interruptOut = false;
-    let carryOn = false;
-    const channel: RunChannel = {
-      get open() {
-        return !ended;
-      },
-      send(text) {
-        if (ended) return false;
-        child.stdin?.write(userMessageLine(text));
-        if (interruptOut) carryOn = true;
-        return true;
-      },
-      interrupt() {
-        if (ended) return;
-        child.stdin?.write(interruptLine());
-        interruptOut = true;
-      },
-      end() {
-        if (ended) return;
-        ended = true;
-        child.stdin?.end();
-      },
-      stop() {
-        // The agent is asked to stop first, so that its session ends cleanly and stays resumable.
-        channel.interrupt();
-        channel.end();
-        stopping = true;
-        killTimer ??= setTimeout(terminate, watch.killGraceMs ?? KILL_GRACE_MS);
-        killTimer.unref();
-      },
-    };
-    // The prompt goes in on stdin, never in argv, and stdin stays open for what follows.
-    child.stdin?.write(userMessageLine(invocation.prompt));
-    let buffered = '';
-    const emit = (line: string): void => {
-      const text = onLine(line);
-      if (text !== undefined) writeSync(fd, `${text}\n`);
-      // The turn is over and nothing is waiting to be written: close stdin, and the agent exits.
-      if (!isResultLine(line)) return;
-      if (interruptOut) {
-        interruptOut = false;
-        if (carryOn) {
-          carryOn = false;
-          return;
-        }
-      }
-      channel.end();
-    };
-    child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
-      buffered += chunk;
-      let newline = buffered.indexOf('\n');
-      while (newline !== -1) {
-        emit(buffered.slice(0, newline));
-        buffered = buffered.slice(newline + 1);
-        newline = buffered.indexOf('\n');
-      }
-    });
-    let stopped: RunResult['stopped'];
-    const killGroup = (signal: NodeJS.Signals): void => {
-      try {
-        if (child.pid) process.kill(-child.pid, signal);
-      } catch {
-        // already gone
-      }
-    };
-    const terminate = (): void => {
-      killGroup('SIGTERM');
-      setTimeout(() => killGroup('SIGKILL'), 10_000).unref();
-    };
-    let checking = false;
-    const timer = setInterval(() => {
-      if (checking || stopped) return;
-      checking = true;
-      watch
-        .tick()
-        .then((decision) => {
-          if (decision.kind === 'continue' || stopped) return;
-          stopped = decision;
-          channel.stop();
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          checking = false;
-        });
-    }, watch.everyMs);
-    // On a spawn failure both "error" and "close" fire.
-    let finished = false;
-    const finish = (): boolean => {
-      if (finished) return false;
-      finished = true;
-      clearInterval(timer);
-      clearTimeout(killTimer);
-      ended = true;
-      if (buffered !== '') emit(buffered);
-      closeLog(fd);
-      return true;
-    };
-    child.on('error', (error) => {
-      if (!finish()) return;
-      reject(new Error(`could not start ${invocation.command}: ${error.message}`));
-    });
-    child.on('close', (exitCode, signal) => {
-      if (!finish()) return;
-      // What a stopped agent left running goes with it.
-      if (stopping) terminate();
-      resolve(stopped ? { exitCode, signal, stopped } : { exitCode, signal });
-    });
-    watch.start?.(channel);
-  });
-}
-
 // Hook commands run through a shell.
 export function hookCommand(runDir: string, id: string): string {
   return `${selfCommand('internal', 'hook').map(shellQuote).join(' ')} ${shellQuote(runDir)} ${shellQuote(id)}`;
@@ -679,6 +500,7 @@ export async function workerMain(taskId: string): Promise<void> {
     appendLog,
     pluginPath: resolvePluginPath,
     dirExists: isDirectory,
+    pathExists: existsSync,
     realpath: tryRealpath,
     settingsEnv: readSettingsEnv,
     mcpServers: readMcpServers,

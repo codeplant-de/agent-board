@@ -5,7 +5,7 @@
  */
 import { MAX_BATCH_EVENTS } from '@agent-board/shared';
 import type { TranscriptEvent } from '@agent-board/shared';
-import { isPermanentRefusal } from '../dispatch/decide.mts';
+import { isPermanentRefusal } from '../backend/backend.mts';
 import { errorText } from '../output/text.mts';
 
 // Events waiting for the board past this many, or past this many bytes of JSON, lose their oldest tool outputs first and then their

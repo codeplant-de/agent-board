@@ -22,6 +22,7 @@ const task = (overrides: Partial<BoardTask>): BoardTask =>
     status: 'needs-me',
     priority: 'normal',
     createdBy: 'user',
+    agent: null,
     closed: false,
     scheduleId: null,
     parentId: 'target01',

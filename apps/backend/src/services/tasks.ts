@@ -38,6 +38,7 @@ export function toTask(row: TaskRow): WireTask {
     machine: row.machine,
     sessionId: row.sessionId,
     workdir: row.workdir,
+    ...(row.agent === null ? {} : { agent: row.agent }),
     pr: row.pr,
     prState: row.prState,
     next: row.next,

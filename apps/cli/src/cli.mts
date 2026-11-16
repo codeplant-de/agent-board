@@ -1,6 +1,8 @@
 import { GitHubError } from './intake/github.mts';
 import { SystemError } from './setup/system.mts';
-import { BackendError, dryRunBackend, loadWebConfig, updateCliHint } from './backend/backend.mts';
+import { BackendError, dryRunBackend } from './backend/backend.mts';
+import { updateCliHint } from './backend/contract-check.mts';
+import { loadWebConfig } from './backend/web-config.mts';
 import { ConfigError, getPaths, loadConfig } from './config/config.mts';
 import type { Config } from './config/config.mts';
 import { taskLink } from './output/links.mts';

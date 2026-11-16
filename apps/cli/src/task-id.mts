@@ -5,3 +5,7 @@ import { isSafeTaskId } from '@agent-board/shared';
 export function requireTaskId(taskId: string, Failure: new (message: string) => Error = Error): void {
   if (!isSafeTaskId(taskId)) throw new Failure(`"${taskId.slice(0, 40)}" is not a task id`);
 }
+
+export function unitName(taskId: string): string {
+  return `agent-board-${taskId}`;
+}

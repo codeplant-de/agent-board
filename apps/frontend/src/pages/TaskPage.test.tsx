@@ -105,4 +105,30 @@ describe('TaskPage', () => {
     expect(screen.getByRole('textbox')).toHaveValue('');
     expect(screen.getByRole('button', { name: 'Send & continue' })).toBeDisabled();
   });
+
+  it('shows the agent a task runs as, and nothing for a task without one', async () => {
+    const withAgent = { ...task('aaaa1111', 'Task A'), agent: 'reviewer' };
+    const without = { ...task('bbbb2222', 'Task B'), agent: null };
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    client.setQueryData(['tasks.get', withAgent.id], { task: withAgent, thread: [], followUps: [], parent: null });
+    client.setQueryData(['tasks.get', without.id], { task: without, thread: [], followUps: [], parent: null });
+    const view = (id: string) => (
+      <MemoryRouter initialEntries={[`/t/${id}`]}>
+        <MantineProvider>
+          <ModalsProvider>
+            <QueryClientProvider client={client}>
+              <Routes>
+                <Route path="/t/:id" element={<TaskPage />} />
+              </Routes>
+            </QueryClientProvider>
+          </ModalsProvider>
+        </MantineProvider>
+      </MemoryRouter>
+    );
+    const first = render(view(withAgent.id));
+    expect(screen.getByText('Agent: reviewer')).toBeInTheDocument();
+    first.unmount();
+    render(view(without.id));
+    expect(screen.queryByText(/Agent:/)).not.toBeInTheDocument();
+  });
 });

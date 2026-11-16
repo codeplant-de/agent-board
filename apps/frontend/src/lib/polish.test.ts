@@ -15,6 +15,7 @@ const target: PolishTarget = {
   title: 'rough idea',
   input: 'fix thing?? maybe export',
   createdBy: 'user',
+  agent: null,
   unreadable: [],
 };
 
@@ -111,6 +112,18 @@ describe('sealApply', () => {
     expect(kept).toContain('rough idea');
     expect(kept).toContain('fix thing?? maybe export');
     expect(await open(keys, 'input', 'task:target01:agent', sealed.input).catch(() => undefined)).toBeUndefined();
+  });
+
+  it('seals the new prompt under the agent of the task, so it stays readable', async () => {
+    const sealed = await sealApply(keys, {
+      polishId: 'polish01',
+      target: { ...target, agent: 'reviewer' },
+      rewrite: { title: 'Speed up the export', prompt: 'Find out why it is slow.' },
+    });
+    expect(await open(keys, 'input', 'task:target01:user:agent:reviewer', sealed.input)).toBe(
+      'Find out why it is slow.',
+    );
+    await expect(open(keys, 'input', 'task:target01:user', sealed.input)).rejects.toThrow();
   });
 
   it('refuses a task that is not the user’s or cannot be read, since the old text could not be kept', async () => {

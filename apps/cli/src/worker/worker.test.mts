@@ -1,22 +1,26 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MAX_BATCH_EVENTS } from '@agent-board/shared';
-import type { Note, Task } from '@agent-board/shared';
+import type { Note, Task, WireBackend } from '@agent-board/shared';
 import type { AgentConfig } from '../config/config.mts';
 import { BackendError } from '../backend/backend.mts';
-import { START_MARKER } from '../dispatch/decide.mts';
-import type { Invocation, Supervision } from '../dispatch/decide.mts';
+import { sealingBackend } from '../backend/sealing.mts';
+import { START_MARKER } from '../task-rules.mts';
+import type { Invocation, Supervision } from './plan.mts';
 import { runWorker } from './worker.mts';
-import type { RunChannel, RunResult, Watch, WorkerDeps } from './worker.mts';
+import type { RunChannel, RunResult, Watch } from './process.mts';
+import type { WorkerDeps } from './worker.mts';
 import {
   CONFIG,
   fakeBackend,
   fakeRunFiles,
   fakeSessions,
+  KEYS,
   note,
   OTHER_SESSION,
   SESSION,
   task,
+  wireTask,
 } from '../__tests__/helpers/fakes.mts';
 
 function setup(result: RunResult | Error, moveDuringRun = false) {
@@ -46,6 +50,7 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
     appendLog: (shortLink, text) => void calls.push(`append ${shortLink}: ${text}`),
     pluginPath: () => '/plugins/pr-review',
     dirExists: () => true,
+    pathExists: () => false,
     realpath: (path) => path,
     settingsEnv: () => ({}),
     mcpServers: () => ({ config: { mcpServers: {} }, missing: [] }),
@@ -379,7 +384,82 @@ test("a resume starts in the task's directory, and a missing one fails without s
   };
   await runWorker(gone.deps, 'w1');
   assert.equal(started, false);
-  assert.ok(gone.backend.writes.some((w) => w.includes("task's directory is gone: /repo/.claude/worktrees/feat-x")));
+  assert.ok(
+    gone.backend.writes.some(
+      (w) => w.includes("task's directory is gone: /repo/.claude/worktrees/feat-x") && w.includes('no git checkout'),
+    ),
+  );
+});
+
+// A resume of a task whose worktree was deleted, with the checkout `/repo` still there.
+function goneWorktree(overrides: Partial<Task> = {}) {
+  const made = setup({ exitCode: 0, signal: null });
+  Object.assign(made.backend.tasks[0]!, {
+    next: 'resume',
+    sessionId: SESSION,
+    machine: 'here',
+    workdir: '/repo/.claude/worktrees/feat-x',
+    ...overrides,
+  });
+  made.deps.sessions.record('w1', SESSION);
+  made.backend.notes.set('w1', [
+    note('asked', new Date('2026-11-13T10:00:00Z')),
+    note('go on', new Date('2026-11-13T10:05:00Z'), { author: 'user' }),
+  ]);
+  made.deps.dirExists = (path) => path !== '/repo/.claude/worktrees/feat-x';
+  made.deps.pathExists = (path) => path === '/repo/.git';
+  const runs: { invocation: Invocation; startDir: string | undefined }[] = [];
+  made.deps.run = async (invocation, _taskId, env) => {
+    runs.push({ invocation, startDir: env.AGENT_BOARD_START_DIR });
+    made.backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  return { ...made, runs };
+}
+
+test('a resume whose worktree is gone continues the session in the checkout that held it, and says so', async () => {
+  const { deps, backend, runs } = goneWorktree();
+  await runWorker(deps, 'w1');
+  const { invocation, startDir } = runs[0]!;
+  assert.equal(invocation.cwd, '/repo');
+  assert.equal(startDir, '/repo');
+  assert.ok(invocation.prompt.startsWith('The directory this session last worked in, /repo/.claude/worktrees/feat-x,'));
+  assert.ok(invocation.prompt.includes('continues the same session in /repo,'));
+  assert.ok(invocation.prompt.includes('go on'), 'the reply is still there');
+  assert.ok(
+    backend.writes.some(
+      (w) =>
+        w.startsWith('note w1 (system):') &&
+        w.includes('directory is gone: /repo/.claude/worktrees/feat-x') &&
+        w.includes('continues in /repo'),
+    ),
+  );
+  assert.ok(backend.writes.includes('workdir w1: /repo'));
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail ')));
+});
+
+test('a gone worktree whose checkout is not a listed directory is refused, naming the checkout', async () => {
+  const { deps, backend, runs } = goneWorktree();
+  withDirs(deps, '/srv/app');
+  await runWorker(deps, 'w1');
+  assert.equal(runs.length, 0);
+  assert.ok(
+    backend.writes.some(
+      (w) => w.startsWith('fail w1:') && w.includes('/repo, the checkout that held it, is not a listed directory'),
+    ),
+  );
+});
+
+test('a fresh run in a gone directory and an intake resume in one still fail as before', async () => {
+  const fresh = goneWorktree({ next: 'fresh', sessionId: null });
+  await runWorker(fresh.deps, 'w1');
+  assert.equal(fresh.runs.length, 0);
+  assert.ok(fresh.backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('Recreate it to run there')));
+
+  const intake = goneWorktree({ createdBy: 'intake' });
+  await runWorker(intake.deps, 'w1');
+  assert.equal(intake.runs.length, 0);
+  assert.ok(intake.backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('Recreate it to run there')));
 });
 
 test("the run's stream becomes readable log lines and a transcript sent with each check and at the end", async () => {
@@ -1681,4 +1761,64 @@ test('an agent run with an intake task as its creator needs no intake block', as
   await runWorker(deps, 'w1');
   assert.ok(seen.invocation?.args.includes('--agent=reviewer'));
   assert.ok(!backend.writes.some((w) => w.startsWith('fail ')));
+});
+
+// The task as the board hands it over: sealed with the test key, taken through the CLI's own opening, as the worker gets it.
+function boardTask(
+  overrides: () => Partial<Task>,
+  strip: (wire: Awaited<ReturnType<typeof wireTask>>) => void = () => undefined,
+) {
+  const wire = async () => {
+    const sealed = await wireTask({
+      id: 'w1',
+      status: 'running',
+      input: '/selftest go',
+      machine: 'here',
+      workdir: '/tmp',
+      runStartedAt: new Date('2026-01-01T10:00:00Z'),
+      ...overrides(),
+    });
+    strip(sealed);
+    return sealed;
+  };
+  return sealingBackend({ getTask: async () => wire() } as unknown as WireBackend, KEYS);
+}
+
+test('a task the board sealed with an agent runs as that agent, end to end', async () => {
+  const { deps, seen, backend } = setupAgent({});
+  const sealed = boardTask(() => ({ agent: 'reviewer', status: backend.tasks[0]!.status }));
+  deps.backend = { ...backend, getTask: (id) => sealed.getTask(id) };
+  await runWorker(deps, 'w1');
+  const args = seen.invocation?.args ?? [];
+  assert.ok(args.includes('--agent=reviewer'));
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
+  assert.equal(seen.env?.['AGENT_BOARD_RESTRICTED'], '1');
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail ')));
+});
+
+test('a board that drops the sealed agent of a task cannot make it run unrestricted: the prompt no longer opens, and nothing starts', async () => {
+  for (const strip of [
+    (wire: { agent?: string | null }) => void delete wire.agent,
+    (wire: { agent?: string | null }) => void (wire.agent = null),
+  ]) {
+    const { deps, seen, backend } = setupAgent({});
+    const stripped = boardTask(() => ({ agent: 'reviewer', status: backend.tasks[0]!.status }), strip);
+    deps.backend = { ...backend, getTask: (id) => stripped.getTask(id) };
+    await runWorker(deps, 'w1');
+    assert.equal(seen.invocation, undefined, 'claude was not started');
+    assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('input could not be decrypted')));
+  }
+});
+
+test('an agent the board sealed for another task is unreadable, and the task is not run', async () => {
+  const { deps, seen, backend } = setupAgent({});
+  const other = await wireTask({ id: 'zzz', agent: 'reviewer', status: 'running' });
+  const moved = boardTask(
+    () => ({ agent: 'reviewer', status: backend.tasks[0]!.status }),
+    (wire) => void (wire.agent = other.agent ?? null),
+  );
+  deps.backend = { ...backend, getTask: (id) => moved.getTask(id) };
+  await runWorker(deps, 'w1');
+  assert.equal(seen.invocation, undefined);
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('agent could not be decrypted')));
 });

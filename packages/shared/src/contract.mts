@@ -77,7 +77,7 @@ export const TASK_CREATORS = ['intake', 'user', 'agent'] as const;
 export type TaskCreator = (typeof TASK_CREATORS)[number];
 
 // The sealed fields of a task or schedule a client may find it cannot read.
-export type UnreadableField = 'title' | 'input' | 'workdir';
+export type UnreadableField = 'title' | 'input' | 'workdir' | 'agent';
 
 // What a client shows where it could not open a title or a text. Never used as data: an unreadable input is empty, and
 // the task's `unreadable` list says so.
@@ -97,8 +97,9 @@ export interface Task {
   // The Claude model the runs use (`claude --model`): an alias or a full id; null is claude's default. A clear value from the
   // server, so a worker shape-checks it with `isModelName` again before it reaches argv.
   model: string | null;
-  // The agent of the machine's config.json the task runs as, by name. Not part of the wire yet, so absent on every task a
-  // client reads; a worker that sees one runs only that agent, or not at all.
+  // The agent of the machine's config.json the task runs as, by name; null or absent for none. Sealed on the wire, and part
+  // of the context of `input`, so a task whose agent the server dropped or changed is unreadable. A worker that sees one runs
+  // only that agent, or not at all.
   agent?: string | null;
   closed: boolean;
   // The machine that claimed the task last; a resume runs only there, because the Claude session lives on it.
@@ -224,6 +225,8 @@ export interface TaskDraft {
   // Pins the task to a machine and the directory it runs in there (where it was scheduled from).
   machine?: string;
   workdir?: string;
+  // The agent the task runs as (sealed on the wire); the sealer of `input` states it too, so it is part of that context.
+  agent?: string;
   // The PR head sha; the sealing backend turns it into its blind index.
   head?: string;
   // Only with status todo.
@@ -235,6 +238,8 @@ export interface PatchSealing {
   // Who made the task. The writer of a new `input` states it itself (intake: "intake"), never taking it from the board.
   createdBy: TaskCreator;
   scheduleId: string | null;
+  // The task's agent as the writer opened it (null for none): a new `input` is sealed under it too, so it must be stated.
+  agent: string | null;
 }
 
 export interface TaskPatch {
@@ -267,6 +272,8 @@ export interface Schedule {
   // Pins the occurrences to a machine and the directory they run in there.
   machine: string | null;
   workdir: string | null;
+  // The agent every occurrence runs as, by name; null for none.
+  agent?: string | null;
   // The rule: an interval on the grid `anchorAt + k * everyMs`, or a 5-field cron expression in `timezone`.
   everyMs: number | null;
   cron: string | null;
@@ -297,6 +304,8 @@ export interface ScheduleDraft {
   model?: string;
   machine?: string;
   workdir?: string;
+  // The agent every occurrence runs as (sealed on the wire).
+  agent?: string;
   // Exactly one of `everyMs` and `cron`; a cron expression needs its `timezone` (IANA name).
   everyMs?: number;
   cron?: string;
@@ -408,21 +417,23 @@ export type DirsOnBoard = 'unsupported' | 'current' | 'stale';
 // What the board server stores and returns: the sealed fields are envelopes (`abe1.…`) it cannot read. Values the server
 // returns may also be legacy plain text from before encryption; only what a client sends is checked to be sealed.
 
-type SealedTaskFields = 'title' | 'input' | 'workdir' | 'pr' | 'labels' | 'unreadable';
+type SealedTaskFields = 'title' | 'input' | 'workdir' | 'agent' | 'pr' | 'labels' | 'unreadable';
 
 // `pr` is the sealed "pr", or null; a server without the `task.pr` feature leaves it out, and without `task.pr-state`
-// it leaves out `prState`.
+// it leaves out `prState`. `agent` is the sealed "agent"; the server leaves it out of a task without one.
 export type WireTask = Omit<Task, SealedTaskFields> & {
   title: string;
   input: string;
   workdir: string | null;
+  agent?: string | null;
   pr: string | null;
 };
 
-export type WireSchedule = Omit<Schedule, 'title' | 'input' | 'workdir' | 'unreadable'> & {
+export type WireSchedule = Omit<Schedule, 'title' | 'input' | 'workdir' | 'agent' | 'unreadable'> & {
   title: string;
   input: string;
   workdir: string | null;
+  agent?: string | null;
 };
 
 export interface WireNote {
@@ -569,6 +580,7 @@ export const SEALED_LIMITS: Record<Field, number> = {
   title: 4 * 300,
   input: 4 * 200_000,
   workdir: 4096,
+  agent: 256,
   pr: 1024,
   'machine.dirs': 256 * 1024,
   'note.body': 4 * 100_000,
@@ -629,6 +641,13 @@ export function isSafeMachineName(name: string): boolean {
 }
 
 export const isSafeLane = isSafeMachineName;
+
+export const AGENT_NAME_RULE =
+  'lowercase letters, digits and dashes, at most 32 characters, starting with a letter or a digit';
+const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+// The name of an agent of a machine's config.json; it reaches a CLI flag and a file there, so nothing else is taken.
+export const isAgentName = (name: string): boolean => AGENT_NAME.test(name);
 
 /** Whether a text holds a control character (the C0 ones and DEL): newlines and NULs that a line, a path or an argument must not carry. */
 export function hasControlCharacter(text: string): boolean {
@@ -877,6 +896,7 @@ export function parseWireTask(value: unknown): WireTask {
     machine,
     sessionId: sessionId(nullableString(obj, 'sessionId', 'task'), 'task'),
     workdir: nullableString(obj, 'workdir', 'task'),
+    ...(obj['agent'] == null ? {} : { agent: string(obj, 'agent', 'task') }),
     pr: obj['pr'] === undefined ? null : nullableString(obj, 'pr', 'task'),
     prState: PR_STATES.find((state) => state === obj['prState']) ?? null,
     next: member(obj, 'next', 'task', NEXT_RUNS),
@@ -943,6 +963,7 @@ export function parseWireSchedule(value: unknown): WireSchedule {
     model: modelOf(obj, 'schedule'),
     machine,
     workdir: nullableString(obj, 'workdir', 'schedule'),
+    ...(obj['agent'] == null ? {} : { agent: string(obj, 'agent', 'schedule') }),
     everyMs,
     cron,
     timezone,
@@ -1191,6 +1212,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
       'createdBy',
       'machine',
       'workdir',
+      'agent',
       'head',
       'notBefore',
     ],
@@ -1212,6 +1234,11 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
     if (!isSafeMachineName(draft.machine)) throw new ContractError('draft.machine is not a safe name');
   }
   if ('workdir' in obj) draft.workdir = sealedField(obj, 'workdir', 'draft', 'workdir');
+  if ('agent' in obj) draft.agent = sealedField(obj, 'agent', 'draft', 'agent');
+  if (draft.agent !== undefined && draft.createdBy === 'agent')
+    throw new ContractError(
+      'draft.agent cannot go with createdBy agent: a proposal runs under no agent until the user starts it',
+    );
   if ('head' in obj) draft.head = head(obj['head'], 'draft');
   if ('notBefore' in obj) {
     draft.notBefore = date(obj, 'notBefore', 'draft');
@@ -1235,6 +1262,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
       'model',
       'machine',
       'workdir',
+      'agent',
       'everyMs',
       'cron',
       'timezone',
@@ -1257,6 +1285,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
     if (!isSafeMachineName(draft.machine)) throw new ContractError('schedule draft.machine is not a safe name');
   }
   if ('workdir' in obj) draft.workdir = sealedField(obj, 'workdir', what, 'workdir');
+  if ('agent' in obj) draft.agent = sealedField(obj, 'agent', what, 'agent');
   if ((draft.machine === undefined) !== (draft.workdir === undefined))
     throw new ContractError('schedule draft.machine and schedule draft.workdir go together');
   if ('everyMs' in obj === 'cron' in obj) throw new ContractError('a schedule needs exactly one of everyMs and cron');

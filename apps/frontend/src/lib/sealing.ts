@@ -36,6 +36,8 @@ export interface NewTask {
   parentId?: string;
   /** The machine and directory it runs in (every occurrence of a repeat), instead of the default directory of whichever machine takes it. */
   place?: { machine: string; workdir: string };
+  /** The agent of the machine's config.json the task, or each occurrence of a repeat, runs as; absent runs it by its creator's rules. */
+  agent?: string;
 }
 
 /** What the shared sealing refuses (a text past the board's limit, answers that do not fit) is something to tell the user. */
@@ -57,15 +59,17 @@ export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInpu
   const title = (task.title ?? '').trim() || defaultTitle(input);
   // The id is the task's, or the schedule's for a repeat (its occurrences are the server's): the fields are bound to it.
   const id = newTaskId();
+  const agent = task.agent ?? null;
   const row: RowRef = isRepeat(task.when)
-    ? { kind: 'schedule', id }
-    : { kind: 'task', id, createdBy: 'user', scheduleId: null };
+    ? { kind: 'schedule', id, agent }
+    : { kind: 'task', id, createdBy: 'user', scheduleId: null, agent };
   const workdir = task.place?.workdir;
   const sealed = await checked(() => sealFields(sealerFor(keys), row, { title, input, workdir }));
   return {
     id,
     title: sealed.title,
     input: sealed.input,
+    ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
     ...(task.priority === undefined ? {} : { priority: task.priority }),
     ...(task.model === undefined ? {} : { model: task.model }),
     ...(task.when === undefined ? {} : { when: task.when }),
@@ -112,6 +116,8 @@ export interface Proposal {
   input: string;
   createdBy: TaskCreator;
   scheduleId: string | null;
+  /** An agent's proposal never carries one; a proposal that does is not started here. */
+  agent?: string | null;
   unreadable: UnreadableField[];
 }
 
@@ -130,6 +136,8 @@ export function startsProposal(task: Pick<Proposal, 'createdBy' | 'status'>, to:
  */
 export async function sealStart(keys: Keys, proposal: Proposal): Promise<string> {
   if (proposal.createdBy !== 'agent') throw new InputError('Only a task an agent proposed is started this way.');
+  if (proposal.agent)
+    throw new InputError('This proposal names an agent, which a proposal never does, so it cannot be started here.');
   if (proposal.unreadable.includes('input'))
     throw new InputError('This proposal’s prompt cannot be read, so it cannot be started here.');
   const row: RowRef = { kind: 'task', id: proposal.id, createdBy: 'user', scheduleId: proposal.scheduleId };
@@ -142,6 +150,8 @@ export interface PolishTarget {
   title: string;
   input: string;
   createdBy: TaskCreator;
+  /** The agent the task runs as, null for none: its prompt is sealed under it too, so it must be stated. */
+  agent: string | null;
   unreadable: UnreadableField[];
 }
 
@@ -169,7 +179,7 @@ export async function sealApply(
   if (target.createdBy !== 'user') throw new InputError('Only a task you created takes a polished prompt.');
   if (target.unreadable.length > 0)
     throw new InputError('This task cannot be read, so what it says now could not be kept.');
-  const row: RowRef = { kind: 'task', id: target.id, createdBy: 'user', scheduleId: null };
+  const row: RowRef = { kind: 'task', id: target.id, createdBy: 'user', scheduleId: null, agent: target.agent };
   const seal = sealerFor(keys);
   return {
     id: target.id,

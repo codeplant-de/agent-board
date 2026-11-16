@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { API_VERSION, CLIENT_FEATURES_HEADER, MIN_SERVER } from '@agent-board/shared';
-import { requireFeature, verifyContract } from '../backend/backend.mts';
+import { requireFeature } from '../backend/backend.mts';
 import type { Fetch } from '../backend/backend.mts';
+import { verifyContract } from '../backend/contract-check.mts';
 import { backoffMs, createTicker, LISTENER_OPTIONS, runListener, tickCommand } from './listen.mts';
 import type { Timers } from './listen.mts';
 

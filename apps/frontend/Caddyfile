@@ -1,6 +1,8 @@
 # TLS terminates at Traefik in the cluster. Authelia forward-auth runs there for the UI and sets the Remote-*
 # headers, which reverse_proxy passes on to the backend. /api/machine/* is routed past the login (bearer tokens,
-# checked by the backend).
+# checked by the backend). Caddy adds Board-Proxy-Secret (the PROXY_SECRET env var) to every proxy to the backend, which
+# accepts the Remote-* headers only with it, so no other pod that reaches the backend can sign in by setting them. header_up
+# overwrites any value a client sent.
 
 # What the backend serves is data, never a page. Its answers share the app's origin, so a page it made up under /api or
 # /trpc would run under `script-src 'self'` with the app's access to the keys in IndexedDB, and a header of its choosing
@@ -24,6 +26,7 @@
 		>Cache-Control "no-store"
 	}
 	reverse_proxy backend:4000 {
+		header_up Board-Proxy-Secret {env.PROXY_SECRET}
 		header_down -*
 	}
 }

@@ -2,8 +2,10 @@ import { readFileSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
+  AGENT_NAME_RULE,
   DEFAULT_PRIORITY,
   DIR_LABEL_RULE,
+  isAgentName,
   isPriority,
   isModelName,
   isRecord,
@@ -299,10 +301,6 @@ function parseIntake(raw: unknown): IntakeConfig {
     mcpServers: stringList(obj, 'mcpServers', 'intake.'),
   };
 }
-
-export const AGENT_NAME_RULE =
-  'lowercase letters, digits and dashes, at most 32 characters, starting with a letter or a digit';
-export const isAgentName = (name: string): boolean => /^[a-z0-9][a-z0-9-]{0,31}$/.test(name);
 
 // The keys of one `agents` entry. Unlike the rest of config.json an unknown one is an error: a misspelt deny list would
 // leave the agent with no deny list.

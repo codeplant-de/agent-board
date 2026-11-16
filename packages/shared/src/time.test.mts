@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ContractError } from '../src/contract.mts';
-import { formatDuration, parseDuration, parseWhen } from '../src/time.mts';
+import { ContractError } from './contract.mts';
+import { describeRule, formatDuration, parseDuration, parseWhen, runsLeft } from './time.mts';
 
 const MIN = 60_000;
 
@@ -90,4 +90,19 @@ test('parseWhen refuses a local time that does not exist, in every form', () => 
     if (zone === undefined) delete process.env.TZ;
     else process.env.TZ = zone;
   }
+});
+
+test('describeRule names an interval or a cron rule with its time zone', () => {
+  assert.equal(describeRule({ everyMs: 2 * 60 * MIN, cron: null, timezone: null }), 'every 2h');
+  assert.equal(
+    describeRule({ everyMs: null, cron: '0 9 * * 1-5', timezone: 'Europe/Berlin' }),
+    'cron 0 9 * * 1-5 (Europe/Berlin)',
+  );
+});
+
+test('runsLeft counts the pending run and is null for a schedule that repeats forever', () => {
+  assert.equal(runsLeft({ remaining: null, occurrenceTaskId: 'a' }), null);
+  assert.equal(runsLeft({ remaining: 2, occurrenceTaskId: 'a' }), 3);
+  assert.equal(runsLeft({ remaining: 2, occurrenceTaskId: null }), 2);
+  assert.equal(runsLeft({ remaining: 0, occurrenceTaskId: null }), 0);
 });

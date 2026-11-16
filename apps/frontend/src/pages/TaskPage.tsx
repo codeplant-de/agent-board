@@ -109,6 +109,11 @@ function TaskView({ id }: { id: string }) {
                 Model: {modelLabel(task.model)}
               </Badge>
             )}
+            {task.agent ? (
+              <Badge variant="default" tt="none" size="sm" title="The agent of the machine's config.json it runs as">
+                Agent: {task.agent}
+              </Badge>
+            ) : null}
             <TaskBadges task={task} withPriority={false} />
             <Text size="xs" c="dimmed" title={stamp(task.createdAt)}>
               created by {task.createdBy} {ago(task.createdAt)}

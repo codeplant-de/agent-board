@@ -5,12 +5,17 @@
 //
 //   field          context
 //   title          <origin>
-//   input          <origin>:<creator>
+//   input          <origin>:<creator>, or with an agent <origin>:<creator>:agent:<name>
+//   agent          <origin> (the name of the agent the task runs as)
 //   workdir        <origin>, or for a scheduled task also task:<id>:schedule:<scheduleId> (the worker's rewrite)
 //   pr             task:<id>:agent (the PR URL the task's agent reported)
 //   machine.dirs   machine:<name> (the directory list the machine's CLI sends, one JSON document)
 //   note.*         note:<taskId>:<author>:<kind>
 //   tr.*           <taskId>:<runId>:<seq>
+//
+// An agent's name is in the context of the input as well as sealed on its own, so a board that drops or swaps the agent field
+// leaves a prompt that opens under no binding: the task is unreadable and never runs unrestricted. A row without an agent
+// has the context it always had.
 //
 // <origin> is task:<id> for a task, schedule:<id> for a schedule and for a task that is an occurrence of one (the server
 // copies the schedule's ciphertext into it); <creator> is who made the task: intake, user or agent.
@@ -19,9 +24,11 @@
 // everything here is the rules around them. A value that does not open under exactly its binding is unreadable, and an
 // unreadable value is never replaced by a looser reading.
 import {
+  AGENT_NAME_RULE,
   checkSealedSize,
   ContractError,
   DIR_LABEL_RULE,
+  isAgentName,
   isSafeDirLabel,
   isSafeWorkdir,
   NOTE_SUGGESTION_CHARS,
@@ -48,8 +55,10 @@ export type Sealer = (binding: Binding, plaintext: string) => Promise<string>;
 /** Opens one value under its binding; undefined when it cannot be opened: plain text, another key, another binding, damage. */
 export type Opener = (binding: Binding, value: string) => Promise<string | undefined>;
 
+/** `agent` is the name of the agent the row runs as, when it has one. */
 export type RowRef =
-  { kind: 'task'; id: string; createdBy: TaskCreator; scheduleId: string | null } | { kind: 'schedule'; id: string };
+  | { kind: 'task'; id: string; createdBy: TaskCreator; scheduleId: string | null; agent?: string | null }
+  | { kind: 'schedule'; id: string; agent?: string | null };
 
 // The creator an occurrence has: the server makes it as the user's.
 const SCHEDULE_CREATOR: TaskCreator = 'user';
@@ -63,7 +72,21 @@ const creatorOf = (row: RowRef): TaskCreator => (row.kind === 'schedule' ? SCHED
 
 export const titleBinding = (row: RowRef): Binding => ({ field: 'title', context: origin(row) });
 
-export const inputBinding = (row: RowRef): Binding => ({ field: 'input', context: `${origin(row)}:${creatorOf(row)}` });
+/** The agent name a row is sealed with, or null; a name that is not an agent's cannot be sealed. */
+function agentOf(row: RowRef): string | null {
+  const name = row.agent ?? null;
+  if (name !== null && !isAgentName(name)) throw new ContractError(`an agent name must be ${AGENT_NAME_RULE}`);
+  return name;
+}
+
+export function inputBinding(row: RowRef): Binding {
+  const agent = agentOf(row);
+  const context = `${origin(row)}:${creatorOf(row)}`;
+  return { field: 'input', context: agent === null ? context : `${context}:agent:${agent}` };
+}
+
+/** The agent's name is bound to the row's origin, so a schedule's name is the one its occurrences open. */
+export const agentBinding = (row: RowRef): Binding => ({ field: 'agent', context: origin(row) });
 
 /** The binding a new directory is sealed under: an occurrence's own rewrite names its schedule, so it is only an occurrence's. */
 export function workdirBinding(row: RowRef): Binding {
@@ -199,17 +222,26 @@ export interface SealedFields {
   title: string;
   input: string;
   workdir?: string;
+  agent?: string;
 }
 
 export const sealTitle = (seal: Sealer, row: RowRef, text: string): Promise<string> =>
   sealChecked(seal, titleBinding(row), text, 'the title');
 
-export const sealInput = (seal: Sealer, row: RowRef, text: string): Promise<string> =>
+export const sealInput = async (seal: Sealer, row: RowRef, text: string): Promise<string> =>
   sealChecked(seal, inputBinding(row), text, 'the prompt');
 
 export const sealWorkdir = (seal: Sealer, row: RowRef, text: string): Promise<string> =>
   sealChecked(seal, workdirBinding(row), text, 'the directory');
 
+/** Seals the agent name of `row`, which must have one. */
+export async function sealAgent(seal: Sealer, row: RowRef): Promise<string> {
+  const agent = agentOf(row);
+  if (agent === null) throw new ContractError('the row has no agent to seal');
+  return sealChecked(seal, agentBinding(row), agent, 'the agent');
+}
+
+/** Seals a row's fields; the agent of `row`, if it has one, is sealed too and is part of the context of the input. */
 export async function sealFields(
   seal: Sealer,
   row: RowRef,
@@ -219,6 +251,7 @@ export async function sealFields(
     title: await sealTitle(seal, row, fields.title),
     input: await sealInput(seal, row, fields.input),
     ...(fields.workdir === undefined ? {} : { workdir: await sealWorkdir(seal, row, fields.workdir) }),
+    ...(agentOf(row) === null ? {} : { agent: await sealAgent(seal, row) }),
   };
 }
 
@@ -298,6 +331,8 @@ export interface OpenedFields {
   title: string;
   input: string;
   workdir: string | null;
+  // The agent the task runs as; null for none, and for an unreadable one (see `unreadable`).
+  agent: string | null;
   unreadable: UnreadableField[];
 }
 
@@ -310,18 +345,24 @@ async function openFirst(open: Opener, bindings: Binding[], value: string): Prom
 }
 
 /**
- * Opens the title, input and directory of a task or schedule. A field that cannot be opened under its binding (or a directory
- * that is not a safe absolute path) is listed in `unreadable` and replaced: the title by a placeholder, the input by an empty
- * prompt, the directory by none. A task with an unreadable input or directory must never be run.
+ * Opens the title, input, directory and agent of a task or schedule. A field that cannot be opened under its binding (or a
+ * directory that is not a safe absolute path, or an agent name that is not an agent's) is listed in `unreadable` and replaced:
+ * the title by a placeholder, the input by an empty prompt, the directory and the agent by none. A task with an unreadable
+ * input, directory or agent must never be run. The input is opened under the agent the wire names, so an unreadable agent
+ * leaves it unreadable too, and an input sealed for an agent the wire no longer names does not open at all. `row.agent` is
+ * ignored: the wire is the source.
  */
 export async function openFields(
   open: Opener,
   row: RowRef,
-  wire: { title: string; input: string; workdir?: string | null | undefined },
+  wire: { title: string; input: string; workdir?: string | null | undefined; agent?: string | null | undefined },
 ): Promise<OpenedFields> {
+  const agentText = wire.agent == null ? null : await open(agentBinding(row), wire.agent);
+  const agent = agentText != null && isAgentName(agentText) ? agentText : null;
+  const agentReadable = wire.agent == null || agent !== null;
   const [title, input, workdir] = await Promise.all([
     open(titleBinding(row), wire.title),
-    open(inputBinding(row), wire.input),
+    agentReadable ? open(inputBinding({ ...row, agent }), wire.input) : undefined,
     wire.workdir == null ? null : openFirst(open, workdirOpenBindings(row), wire.workdir),
   ]);
   const unreadable: UnreadableField[] = [];
@@ -329,10 +370,12 @@ export async function openFields(
   if (input === undefined) unreadable.push('input');
   const validWorkdir = workdir === undefined || workdir === null || isSafeWorkdir(workdir);
   if (!validWorkdir || workdir === undefined) unreadable.push('workdir');
+  if (!agentReadable) unreadable.push('agent');
   return {
     title: title ?? UNREADABLE_TITLE,
     input: input ?? '',
     workdir: workdir !== undefined && validWorkdir ? workdir : null,
+    agent,
     unreadable,
   };
 }

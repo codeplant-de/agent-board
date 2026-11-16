@@ -122,6 +122,8 @@ export const tasks = pgTable(
     workdir: text('workdir'),
     /** The sealed `workdir` the task was created with, as the same envelope; nothing updates it, and Re-run fresh restores it into `workdir`. */
     homeWorkdir: text('home_workdir'),
+    /** The sealed name of the agent the task runs as; null runs as the user's config says. Written once, at creation. */
+    agent: text('agent'),
     /** The sealed URL of the pull request the task's agent opened for it (`board pr`). */
     pr: text('pr'),
     /** GitHub's state of that PR or of the one the prompt names, as a worker's intake last saw it. Clear on purpose: it says only that some PR of the task merged. */
@@ -172,6 +174,7 @@ export const tasks = pgTable(
     check('task_input_sealed', isEnvelope(t.input)),
     check('task_workdir_sealed', isEnvelope(t.workdir)),
     check('task_home_workdir_sealed', isEnvelope(t.homeWorkdir)),
+    check('task_agent_sealed', isEnvelope(t.agent)),
     check('task_pr_sealed', isEnvelope(t.pr)),
     check('task_dedupe_key_blind', isBlindIndex(t.dedupeKey)),
     check('task_head_blind', isBlindIndex(t.head)),
@@ -196,6 +199,8 @@ export const schedules = pgTable(
     model: text('model'),
     machine: text('machine'),
     workdir: text('workdir'),
+    /** The sealed name of the agent every occurrence runs as; null for none. */
+    agent: text('agent'),
     /** An interval on the grid `anchor_at + k * every_ms`, or a 5-field cron expression in `timezone`. */
     everyMs: bigint('every_ms', { mode: 'number' }),
     cron: text('cron'),
@@ -216,6 +221,7 @@ export const schedules = pgTable(
     check('schedule_title_sealed', isEnvelope(t.title)),
     check('schedule_input_sealed', isEnvelope(t.input)),
     check('schedule_workdir_sealed', isEnvelope(t.workdir)),
+    check('schedule_agent_sealed', isEnvelope(t.agent)),
     unique('schedule_owner_id_unique').on(t.owner, t.id),
     ownerFk('schedule_occurrence_task_fk', [t.owner, t.occurrenceTaskId], [tasks.owner, tasks.id], 'set null'),
     tenant(),
