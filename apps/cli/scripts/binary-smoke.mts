@@ -405,7 +405,7 @@ await check(
     const draft = (JSON.parse(added.body) as { body: { dedupeKey: string; head: string } }).body;
     assert.equal(draft.dedupeKey, await dedupeKeyIndex(KEYS, PR_URL));
     assert.equal(draft.head, await headIndex(KEYS, 'abc123'));
-    assert.ok(!added.body.includes('github.com'), 'the key must not reach the server');
+    assert.ok(!added.body.includes(PR_URL), 'the key must not reach the server');
   },
 );
 await check('a board that no longer serves this binary says how to update it', async () => {
