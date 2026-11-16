@@ -152,5 +152,6 @@ test('an intake run may report and propose through board, but never schedule or 
   assert.ok(!entry.allowedTools.includes('Bash(board *)'));
   assert.ok(entry.disallowedTools.includes('Bash(board schedule *)'));
   assert.ok(entry.disallowedTools.includes('Bash(board schedules *)'));
+  assert.ok(entry.disallowedTools.includes('Bash(board dirs *)'));
   assert.ok(entry.disallowedTools.includes('Bash(board internal *)'));
 });
