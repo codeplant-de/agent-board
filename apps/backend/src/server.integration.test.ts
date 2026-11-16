@@ -564,6 +564,32 @@ describe('priority', () => {
     expect((await ui.tasks.move({ id: n2.id, status: 'todo', beforeId: n1.id })).priority).toBe('normal');
   });
 
+  it('the notes of one move stay in write order, in the thread and on the card', async () => {
+    const ui = plainUi(db);
+    const normal = await ui.tasks.create({ title: 'normal', input: 'do it' });
+    const urgent = await ui.tasks.create({ title: 'urgent', input: 'do it', priority: 'urgent', when: 'backlog' });
+    const card = await ui.tasks.create({ title: 'card', input: 'do it' });
+    for (let i = 0; i < 20; i++) {
+      // Across columns and priorities: two notes in one transaction. Above the urgent one it turns urgent, below the normal one normal.
+      const [from, to, was, now] =
+        i % 2 === 0
+          ? (['todo', 'backlog', 'normal', 'urgent'] as const)
+          : (['backlog', 'todo', 'urgent', 'normal'] as const);
+      await ui.tasks.move(
+        i % 2 === 0
+          ? { id: card.id, status: to, beforeId: urgent.id }
+          : { id: card.id, status: to, afterId: normal.id },
+      );
+      const { thread } = await ui.tasks.get({ id: card.id });
+      expect(thread.slice(-2).map((n) => n.text)).toEqual([
+        `Moved from ${from} to ${to}.`,
+        `Priority ${was} → ${now}.`,
+      ]);
+      const listed = (await ui.tasks.list()).find((t) => t.id === card.id);
+      expect(listed?.lastNote?.text).toBe(`Priority ${was} → ${now}.`);
+    }
+  });
+
   it('follow-ups inherit the parent priority unless the agent sets one', async () => {
     const ui = plainUi(db);
     const parent = await ui.tasks.create({ title: 'parent', input: 'do it', priority: 'high' });
