@@ -10,20 +10,9 @@ import { buildContext, print, skipTickWhileServerOlder } from '../cli.mts';
 import type { Context } from '../cli.mts';
 import type { Task } from '@agent-board/shared';
 import { promptSkill } from '@agent-board/shared';
-import {
-  checkOutputBlock,
-  decideStale,
-  decideWake,
-  neverRun,
-  notServableHere,
-  ownLane,
-  planPauses,
-  planStarts,
-  START_MARKER,
-  unitName,
-  unreadableForRun,
-  WAKE_MARKER,
-} from './decide.mts';
+import { checkOutputBlock, decideStale, decideWake, notServableHere, planPauses, planStarts } from './decide.mts';
+import { neverRun, ownLane, START_MARKER, unreadableForRun, WAKE_MARKER } from '../task-rules.mts';
+import { unitName } from '../task-id.mts';
 import type { LaneRun } from './decide.mts';
 import { syncDirs } from '../config/dirs.mts';
 import { createRunFiles } from '../worker/runtime.mts';

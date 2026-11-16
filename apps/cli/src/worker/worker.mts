@@ -24,25 +24,22 @@ import type { Context } from '../cli.mts';
 import { isRecord } from '@agent-board/shared';
 import { logLine, StreamCondenser } from '@agent-board/shared';
 import type { RunInbox, Task } from '@agent-board/shared';
+import { neverRun, ownLane, unreadableForRun } from '../task-rules.mts';
 import {
   buildInvocation,
   decideOutcome,
-  inboxMessageText,
   isRunOver,
-  neverRun,
-  ownLane,
-  pauseMessageText,
   PLUGIN_MARKETPLACE,
   planRun,
   pluginPlaceholders,
   supervise,
-  unreadableForRun,
-} from '../dispatch/decide.mts';
+} from './plan.mts';
+import type { Invocation, Supervision } from './plan.mts';
+import { inboxMessageText, pauseMessageText } from './prompts.mts';
 import { getPaths } from '../config/config.mts';
 import { isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import { selfCommand } from '../self/self.mts';
 import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
-import type { Invocation, Supervision } from '../dispatch/decide.mts';
 import { createRunFiles } from './runtime.mts';
 import type { RunFiles } from './runtime.mts';
 import { createSessionStore } from './sessions.mts';

@@ -18,6 +18,7 @@ import {
   checkBoardUrl,
   createWebBackend,
   dryRunBackend,
+  isPermanentRefusal,
   parseWebConfig,
   verifyContract,
 } from './backend.mts';
@@ -751,4 +752,11 @@ test('a dry run prints the directory list it would send and sends nothing', asyn
   await dry.setDirs('here', [{ path: '/a' }, { path: '/b' }]);
   assert.deepEqual(lines, ['DRY set-dirs 2 directories']);
   assert.deepEqual(seen, []);
+});
+
+test('a refusal is permanent when sending it again cannot help', () => {
+  for (const status of [400, 404, 409, 413, 422]) assert.equal(isPermanentRefusal(new BackendError('x', status)), true);
+  for (const status of [401, 403, 429, 500, 502, 503, undefined])
+    assert.equal(isPermanentRefusal(new BackendError('x', status)), false);
+  assert.equal(isPermanentRefusal(new Error('ECONNRESET')), false);
 });

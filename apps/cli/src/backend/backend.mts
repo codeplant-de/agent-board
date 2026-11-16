@@ -73,6 +73,12 @@ export class BackendError extends Error {
   }
 }
 
+// A refusal that sending the same thing again cannot change: a malformed, oversized, unknown or conflicting request. Anything
+// else (no network, a 5xx, a revoked token) is worth another try.
+export function isPermanentRefusal(error: unknown): boolean {
+  return error instanceof BackendError && [400, 404, 409, 413, 422].includes(error.status ?? 0);
+}
+
 function missingFeature(feature: ServerFeature): BackendError {
   const error = new BackendError(
     `the board server does not support ${SERVER_FEATURE_LABELS[feature]} yet; update the board server`,

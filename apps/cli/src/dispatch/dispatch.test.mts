@@ -11,7 +11,7 @@ import type { UpdateDeps } from '../self/auto-update.mts';
 import type { AutoUpdate } from '../config/config.mts';
 import { parseWorkerUnits, SystemError } from '../setup/system.mts';
 import type { System } from '../setup/system.mts';
-import { START_MARKER } from './decide.mts';
+import { START_MARKER } from '../task-rules.mts';
 import {
   CONFIG,
   DATA_KEY,

@@ -4,7 +4,7 @@ import { constants as osConstants } from 'node:os';
 import { createInterface } from 'node:readline/promises';
 import { ReportedFailure, UsageError } from '../cli.mts';
 import type { Context, LinkingContext } from '../cli.mts';
-import { BackendError } from '../backend/backend.mts';
+import { BackendError, isPermanentRefusal } from '../backend/backend.mts';
 import type { Config } from '../config/config.mts';
 import { isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import {
@@ -37,7 +37,6 @@ import type { Style } from '../output/style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
 import type { Choice, Scheduled, ScheduleFlags } from './schedule.mts';
 import type { WaitStore } from '../dispatch/waits.mts';
-import { isPermanentRefusal } from '../dispatch/decide.mts';
 
 const NOTE_FILE_DIR = '/tmp/';
 const NOTE_FILE_MAX_BYTES = 1024 * 1024;
