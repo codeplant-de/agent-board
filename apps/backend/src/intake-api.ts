@@ -1,7 +1,8 @@
 /**
  * The Slack intake API, for the Slack companion (`apps/slack`): POST /api/intake/<command> with the shared bearer token
- * INTAKE_TOKEN. The answer is {result} or {error}. The token reaches three things only: an inbox item for the board user a Slack
- * user is linked to, the start of a link, and the removal of a link. It reads and changes no task. Off unless INTAKE_TOKEN is set.
+ * INTAKE_TOKEN. The answer is {result} or {error}. The token reaches four things only: an inbox item for the board user a Slack
+ * user is linked to, whether a Slack user is linked, the start of a link, and the removal of a link. It reads and changes no
+ * task. Off unless INTAKE_TOKEN is set.
  */
 import { INBOX_TEXT_MAX, isRecord, SLACK_ID_PATTERN, SLACK_NAME_MAX } from '@agent-board/shared';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -59,6 +60,10 @@ export async function handleIntakeCall(
       if (owner === null) throw new AppError('CONFLICT', 'not linked');
       await addInboxItem(db, owner, { text, slackUserId: who.slackUserId });
       return { url: config.boardUrl };
+    }
+    case 'link-status': {
+      // Only yes or no: the answer never names the board user.
+      return { linked: (await ownerOf(db, identityOf(body))) !== null };
     }
     case 'link': {
       const code = await createLinkCode(db, identityOf(body), displayNameOf(body));

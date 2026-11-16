@@ -1,5 +1,7 @@
 export interface SlackConfig {
   appToken: string;
+  /** Reads threads for the Send to board shortcut; without it the shortcut only says it is off. */
+  botToken: string | null;
   /** The backend's address without a trailing slash, as this container reaches it. */
   apiUrl: string;
   intakeToken: string;
@@ -16,5 +18,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SlackConfig {
   if (!appToken.startsWith('xapp-')) throw new Error('SLACK_APP_TOKEN must be an app-level token (xapp-…)');
   const apiUrl = read('BOARD_API_URL');
   if (!/^https?:\/\/[^/]/.test(apiUrl)) throw new Error('BOARD_API_URL must be an http(s) URL');
-  return { appToken, apiUrl: apiUrl.replace(/\/+$/, ''), intakeToken: read('INTAKE_TOKEN') };
+  const botToken = env['SLACK_BOT_TOKEN']?.trim() || null;
+  if (botToken !== null && !botToken.startsWith('xoxb-'))
+    throw new Error('SLACK_BOT_TOKEN must be a bot token (xoxb-…)');
+  return { appToken, botToken, apiUrl: apiUrl.replace(/\/+$/, ''), intakeToken: read('INTAKE_TOKEN') };
 }

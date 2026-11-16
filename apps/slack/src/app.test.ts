@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { startSlackApp, type SlashCommandEvent, type SocketLike } from './app';
+import type { InteractiveEvent } from './shortcut';
 import { IntakeError, type IntakeClient } from './intake';
 
 function fakeSocket(starts: (attempt: number) => Promise<unknown> = async () => undefined) {
   let command: (event: SlashCommandEvent) => void = () => undefined;
+  let interactive: (event: InteractiveEvent) => void = () => undefined;
   let error: (error: unknown) => void = () => undefined;
   let attempts = 0;
   const socket: SocketLike = {
     onCommand: (listener) => void (command = listener),
+    onInteractive: (listener) => void (interactive = listener),
     onError: (listener) => void (error = listener),
     start: () => starts((attempts += 1)),
     disconnect: async () => undefined,
@@ -15,6 +18,7 @@ function fakeSocket(starts: (attempt: number) => Promise<unknown> = async () => 
   return {
     socket,
     send: (event: SlashCommandEvent) => command(event),
+    sendInteractive: (event: InteractiveEvent) => interactive(event),
     fail: (e: unknown) => error(e),
     attempts: () => attempts,
   };
@@ -22,6 +26,7 @@ function fakeSocket(starts: (attempt: number) => Promise<unknown> = async () => 
 
 const intake: IntakeClient = {
   addToInbox: async () => ({ boardUrl: 'https://board' }),
+  isLinked: async () => true,
   startLink: async () => ({ url: 'https://board/slack/link?code=c', minutes: 15 }),
   unlink: async () => true,
 };

@@ -11,9 +11,20 @@ describe('loadConfig', () => {
   it('reads the three settings and drops a trailing slash', () => {
     expect(loadConfig(env)).toEqual({
       appToken: 'xapp-1-A-2',
+      botToken: null,
       apiUrl: 'http://agent-board-backend:4000',
       intakeToken: 'secret-token',
     });
+  });
+
+  it('reads an optional bot token', () => {
+    expect(loadConfig({ ...env, SLACK_BOT_TOKEN: ' xoxb-1-2 ' }).botToken).toBe('xoxb-1-2');
+    expect(loadConfig({ ...env, SLACK_BOT_TOKEN: ' ' }).botToken).toBeNull();
+  });
+
+  it('rejects a bot token of another kind, without echoing it', () => {
+    expect(() => loadConfig({ ...env, SLACK_BOT_TOKEN: 'xapp-1-A-2' })).toThrow(/SLACK_BOT_TOKEN must be/);
+    expect(() => loadConfig({ ...env, SLACK_BOT_TOKEN: 'xapp-1-A-2' })).not.toThrow(/xapp-1-A-2/);
   });
 
   it('names a missing setting', () => {

@@ -1,0 +1,2 @@
+ALTER TABLE "slack_inbox" DROP CONSTRAINT "slack_inbox_text_length";--> statement-breakpoint
+ALTER TABLE "slack_inbox" ADD CONSTRAINT "slack_inbox_text_length" CHECK (char_length("slack_inbox"."text") between 1 and 20000);

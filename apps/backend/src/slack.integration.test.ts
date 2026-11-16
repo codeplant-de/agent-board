@@ -1,3 +1,4 @@
+import { INBOX_TEXT_MAX } from '@agent-board/shared';
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import { cleanupAllBoards } from './cleanup';
@@ -123,7 +124,7 @@ describe('the Slack inbox', () => {
   it('refuses empty and oversized text in the database', async () => {
     await asOwner(db, 'alice', () => Promise.resolve());
     await expect(addInboxItem(db, 'alice', { ...item, text: '' })).rejects.toThrow();
-    await expect(addInboxItem(db, 'alice', { ...item, text: 'a'.repeat(4001) })).rejects.toThrow();
+    await expect(addInboxItem(db, 'alice', { ...item, text: 'a'.repeat(INBOX_TEXT_MAX + 1) })).rejects.toThrow();
   });
 
   it('loses items after 30 days in the cleanup loop', async () => {

@@ -1,4 +1,5 @@
 import { INBOX_TEXT_MAX } from '@agent-board/shared';
+import { decodeEntities } from './slackText';
 
 export type SlackCommand =
   | { kind: 'help' }
@@ -9,8 +10,7 @@ export type SlackCommand =
 
 /** What follows `/board`. A subcommand is the whole text: `/board link the docs` proposes a task. */
 export function parseCommand(raw: string): SlackCommand {
-  // Slack sends & < > in a command's text as entities; `&amp;` goes last so `&amp;lt;` stays literal.
-  const text = raw.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&').trim();
+  const text = decodeEntities(raw).trim();
   const word = text.toLowerCase();
   if (word === '' || word === 'help') return { kind: 'help' };
   if (word === 'link') return { kind: 'link' };
