@@ -16,7 +16,7 @@
 # leaves a browser that opened one as a page with no origin, no scripts and nothing to load. A script of a service worker
 # must have a JavaScript type and a worker is scoped by its path, so one cannot be registered from here either.
 # Every proxy to the backend is in this snippet, and every handle that proxies imports it.
-(data_only) {
+(data_headers) {
 	header {
 		>Content-Type "application/json; charset=utf-8"
 		>Content-Security-Policy "sandbox; default-src 'none'"
@@ -25,6 +25,10 @@
 		>Content-Disposition "attachment"
 		>Cache-Control "no-store"
 	}
+}
+
+(data_only) {
+	import data_headers
 	reverse_proxy backend:4000 {
 		header_up Board-Proxy-Secret {env.PROXY_SECRET}
 		header_down -*
@@ -57,6 +61,16 @@
 
 	handle /healthz {
 		import data_only
+	}
+
+	# An error Caddy makes itself (502: the backend is down or hung up) leaves the route above without its deferred
+	# headers, so a backend path's error gets them here, with an empty body.
+	handle_errors {
+		@data path /trpc* /api/* /healthz
+		handle @data {
+			import data_headers
+			respond {err.status_code}
+		}
 	}
 
 	handle /assets/* {
