@@ -208,6 +208,8 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   const { backend, config, system, files, print: log } = deps;
   const tickStart = deps.now();
   for (const warning of deps.configWarnings()) log(`WARN config.json: ${warning}`);
+  for (const reason of Object.values(config.agentErrors))
+    log(`WARN config.json: ${reason}; tasks that name this agent are not run`);
   let listed: Task[];
   try {
     listed = await backend.listTasks();
@@ -294,7 +296,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     // notServableHere so no other machine logs a SKIP line for every delayed card on every tick.
     if (task.notBefore !== null && task.notBefore > deps.now()) continue;
     // Another machine may have the checkout, the directory or the session.
-    const elsewhere = notServableHere(task, config.machine, config.repos, config.intakeEnabled);
+    const elsewhere = notServableHere(task, config.machine, config.repos, config);
     if (elsewhere !== undefined) {
       log(`SKIP ${task.id} ${elsewhere}`);
       continue;

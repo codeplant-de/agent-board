@@ -149,6 +149,39 @@ test('a task this machine cannot serve is left in Todo for another machine', asy
   assert.ok(logs.some((line) => line.startsWith('SKIP elsewhere pinned to there')));
 });
 
+test('a task that names an agent this machine does not define is skipped, and one it defines is started', async () => {
+  const ghost = task({ id: 'ghost', input: 'Review it', agent: 'ghost' });
+  const known = task({ id: 'known', input: 'Review it', agent: 'reviewer' });
+  const { deps, started, backend, logs } = setup([ghost, known]);
+  deps.config = {
+    ...CONFIG,
+    agents: {
+      reviewer: { description: 'd', tools: ['Read'], allowedTools: [], disallowedTools: [], env: [], mcpServers: [] },
+    },
+  };
+  await runDispatch(deps);
+  assert.deepEqual(started, ['known']);
+  assert.ok(!backend.writes.some((w) => w.includes('ghost')), 'left in Todo, not claimed or failed');
+  assert.ok(logs.includes('SKIP ghost no agents.ghost in config.json here'));
+});
+
+test('a task pinned here that names a missing agent is claimed, so its worker can fail it', async () => {
+  const pinned = task({ id: 'pin', input: 'Review it', agent: 'ghost', machine: 'here', workdir: '/x' });
+  const { deps, started, logs } = setup([pinned]);
+  await runDispatch(deps);
+  assert.deepEqual(started, ['pin']);
+  assert.ok(!logs.some((line) => line.startsWith('SKIP pin')));
+});
+
+test('an agent that cannot be read is logged as a warning every tick, and the rest of the machine works', async () => {
+  const { deps, started, logs } = setup([todo('t1'), task({ id: 'bad', input: 'x', agent: 'broken' })]);
+  deps.config = { ...CONFIG, agentErrors: { broken: 'config: agents.broken has no key "tool"' } };
+  await runDispatch(deps);
+  assert.deepEqual(started, ['t1']);
+  assert.ok(logs.some((line) => line.startsWith('WARN config.json: config: agents.broken has no key "tool"')));
+  assert.ok(logs.some((line) => line.startsWith('SKIP bad agents.broken in config.json here cannot be used')));
+});
+
 test('a machine without an intake block skips intake tasks', async () => {
   const review = task({
     id: 'rev',

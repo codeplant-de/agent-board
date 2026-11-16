@@ -25,6 +25,7 @@ import { isRecord } from '@agent-board/shared';
 import { logLine, StreamCondenser } from '@agent-board/shared';
 import type { RunInbox, Task } from '@agent-board/shared';
 import {
+  agentFor,
   buildInvocation,
   decideOutcome,
   inboxMessageText,
@@ -32,7 +33,6 @@ import {
   neverRun,
   ownLane,
   pauseMessageText,
-  PLUGIN_MARKETPLACE,
   planRun,
   pluginPlaceholders,
   supervise,
@@ -108,7 +108,7 @@ export interface WorkerDeps extends Context {
   logTail: (taskId: string) => string;
   resetLog: (taskId: string) => void;
   appendLog: (taskId: string, text: string) => void;
-  // Root of a plugin such as "pr-review@ccc"; throws with the reason when it cannot be resolved.
+  // Root of a plugin, named "pr-review" or "pr-review@ccc"; throws with the reason when it cannot be resolved.
   pluginPath: (key: string) => string;
   dirExists: (path: string) => boolean;
   // The real path of an existing path; undefined when it is not there. Decides whether a directory is in the dirs list.
@@ -161,18 +161,24 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   if (refused !== undefined) return fail(refused);
 
   const fromIntake = task.createdBy === 'intake';
-  if (fromIntake && !config.intakeEnabled)
+  // A task that names an agent runs as it or not at all, however it is started: a resume included.
+  const agent = agentFor(task, config);
+  if (agent.kind === 'missing')
+    return fail(`The task runs as an agent that is not defined on this machine: ${agent.reason}, so it was not run.`);
+  if (fromIntake && agent.kind === 'none' && !config.intakeEnabled)
     return fail(
       'This task came from intake, and config.json on this machine has no intake block: its rules would be missing.',
     );
+  // The lists a restricted run holds to: an agent's, else intake's; none for a run as the user.
+  const restricted = agent.kind === 'found' ? agent.agent : fromIntake ? config.intake : undefined;
   // What a new directory is sealed against: the task's own creator and schedule, as the board has them.
   const sealing = { createdBy: task.createdBy, scheduleId: task.scheduleId };
   const pluginRoots: Record<string, string> = {};
-  for (const name of fromIntake
-    ? pluginPlaceholders([...config.intake.allowedTools, ...config.intake.disallowedTools])
-    : []) {
+  for (const name of restricted === undefined
+    ? []
+    : pluginPlaceholders([...restricted.allowedTools, ...restricted.disallowedTools])) {
     try {
-      pluginRoots[name] = deps.pluginPath(`${name}@${PLUGIN_MARKETPLACE}`);
+      pluginRoots[name] = deps.pluginPath(name);
     } catch (error) {
       return fail(`Cannot resolve the ${name} plugin: ${errorText(error)}`);
     }
@@ -190,19 +196,14 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     repos: config.repos,
     defaultCwd: config.defaultCwd,
     intake: config.intake,
+    agents: config.agents,
+    agentErrors: config.agentErrors,
+    agentsPath: deps.files.agentsPath(taskId),
     laneCwd: config.lanes.find((lane) => lane.name === ownLane(task, config.lanes))?.cwd,
     home: deps.home,
     pluginRoots,
   });
   if (!plan.ok) return fail(plan.reason);
-  // Intake's MCP servers come from the checkout's .mcp.json: intake does not load the settings that switch them on.
-  if (fromIntake && config.intake.mcpServers.length > 0) {
-    const servers = deps.mcpServers(plan.invocation.cwd, config.intake.mcpServers);
-    if (servers.missing.length > 0)
-      deps.appendLog(taskId, `not in the checkout's .mcp.json: ${servers.missing.join(', ')}`);
-    if (Object.keys(servers.config.mcpServers).length > 0)
-      plan.invocation.args.push('--mcp-config', JSON.stringify(servers.config));
-  }
   if (!deps.dirExists(plan.invocation.cwd)) {
     const own = task.workdir === plan.invocation.cwd;
     return fail(
@@ -216,21 +217,32 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       `${plainLine(plan.invocation.cwd)} is not a listed directory on ${config.machine}: workers here run only in listed directories. Run "board dirs add" in it on ${config.machine}${fromIntake ? ' (an intake review runs in the checkout named in repos)' : ''}, then use Re-run fresh or Send & continue.`,
     );
   deps.appendLog(taskId, `working directory ${plan.invocation.cwd}`);
+  // A restricted run's MCP servers come from the working directory's .mcp.json: it does not load the settings that switch them on.
+  // Read only now, once the directory is known to be a listed one.
+  if (restricted !== undefined && restricted.mcpServers.length > 0) {
+    const servers = deps.mcpServers(plan.invocation.cwd, restricted.mcpServers);
+    if (servers.missing.length > 0)
+      deps.appendLog(taskId, `not in the checkout's .mcp.json: ${servers.missing.join(', ')}`);
+    if (Object.keys(servers.config.mcpServers).length > 0)
+      plan.invocation.args.push('--mcp-config', JSON.stringify(servers.config));
+  }
   // Bound to the task from now on: it runs here unless the agent moves on (into a worktree, say).
   if (task.workdir !== plan.invocation.cwd)
     await backend.updateTask(task.id, { workdir: plan.invocation.cwd, seal: sealing });
 
-  // Intake loads only the user's settings; the tokens and endpoints it is allowed come from the checkout's.
+  // A restricted run loads only the user's settings; the tokens and endpoints it is allowed come from the working directory's.
   // Print mode kills background work 10 minutes after the last turn; 0 waits for it, and the heartbeat and stop handling still bound the run.
   // AGENT_BOARD_START_DIR: whose settings the run loaded; a check of `board wait` gets their `env` too.
+  // AGENT_BOARD_RESTRICTED: set by this machine for an agent's run, so that `board wait --check` refuses in it.
   const fixedEnv = {
     AGENT_BOARD_TASK: taskId,
+    ...(agent.kind === 'found' ? { AGENT_BOARD_RESTRICTED: '1' } : {}),
     AGENT_BOARD_START_DIR: plan.invocation.cwd,
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
   };
   let env: Record<string, string> = fixedEnv;
-  if (fromIntake && config.intake.env.length > 0) {
-    const picked = pickEnv(deps.settingsEnv(plan.invocation.cwd), config.intake.env);
+  if (restricted !== undefined && restricted.env.length > 0) {
+    const picked = pickEnv(deps.settingsEnv(plan.invocation.cwd), restricted.env);
     env = { ...picked.env, ...fixedEnv };
     if (picked.missing.length > 0)
       deps.appendLog(taskId, `not in the checkout's settings: ${picked.missing.join(', ')}`);
@@ -413,6 +425,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   let result: RunResult;
   const stopListening = deps.watchChanges?.(() => void startLooking());
   try {
+    if (plan.agents !== undefined) deps.files.writeAgents(taskId, plan.agents.content);
     void startBeat();
     result = await deps.run(plan.invocation, taskId, env, watch, onLine);
   } catch (error) {

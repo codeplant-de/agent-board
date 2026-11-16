@@ -462,16 +462,19 @@ export async function wait(
   id: string,
   flags: WaitFlags,
   // `settingsDir`: the directory the run started in (AGENT_BOARD_START_DIR), whose settings the check takes its `env` from.
-  deps: { waits: WaitStore; cwd: string; settingsDir?: string; now?: Date },
+  // `restricted`: the run's AGENT_BOARD_RESTRICTED marker, which the worker sets on this machine for an agent's run.
+  deps: { waits: WaitStore; cwd: string; settingsDir?: string; restricted?: boolean; now?: Date },
 ): Promise<void> {
   const now = deps.now ?? new Date();
   const plan = parseWaitFlags(flags, now);
   if (plan.check !== undefined) {
     const task = await context.backend.getTask(id);
     if (task.status !== 'running') throw new UsageError(`${id} is ${task.status}: only a running task can wait`);
-    // An intake review runs on PR text nobody chose to read, with a fixed list of commands; a check would run any command.
+    // An intake review and an agent's run allow a fixed list of commands; a check would run any command.
     if (task.createdBy === 'intake')
       throw new UsageError(`${id} is an intake review: it may wait with --in or --at only`);
+    if (deps.restricted === true)
+      throw new UsageError(`${id} runs as an agent with a fixed list of commands: it may wait with --in or --at only`);
     if (task.machine !== context.config.machine)
       throw new UsageError(
         `${id} runs on ${task.machine ?? 'no machine'}, not on ${context.config.machine}: a check runs on the task's machine`,

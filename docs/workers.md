@@ -44,7 +44,7 @@ The worker passes the heartbeat on to the board every 15 seconds while the agent
 
 Every stop is an interrupt first: the worker sends `claude` an interrupt on stdin, which ends what the agent is doing at once and keeps the session resumable, then closes stdin so the process exits. Only a process that is still there 30 seconds after the interrupt is killed (SIGTERM, then SIGKILL).
 
-The heartbeat, pause flag, lane and working directory of a run live in `$XDG_RUNTIME_DIR/agent-board/` (`AGENT_BOARD_RUN_DIR` overrides it), private to your user.
+The heartbeat, pause flag, lane, working directory and, for an agent's run, the agent's definition (`<task>.agents`) of a run live in `$XDG_RUNTIME_DIR/agent-board/` (`AGENT_BOARD_RUN_DIR` overrides it), private to your user.
 
 ## Talking to a running agent
 
@@ -101,6 +101,33 @@ A check of `board wait --check` runs later, from the dispatcher, outside Claude 
 
 Permission rules match the text of a call: they keep an agent on its task, but they are not a security boundary. A PR or story whose text turns the agent against you reaches whatever the run allows and whatever those commands can reach. A dedicated OS user for the workers, with its own checkouts and a narrowly scoped GitHub token, would make that a boundary again; it is not set up yet.
 
+## Agents
+
+An agent is a named set of tools and rules in the machine's `config.json`, under `agents`. A task that names one runs as that agent, with only what the agent allows, whoever made the task. A task cannot name an agent yet: the board will store it on tasks and schedules in a later change (planned), and until then no task runs as an agent. This is the part that lives on the machine.
+
+```json
+"agents": {
+  "reviewer": {
+    "description": "Reviews a PR and stages the findings.",
+    "prompt": "You review pull requests.",
+    "tools": ["Read", "Grep", "Bash"],
+    "allowedTools": ["Bash(gh pr view *)", "Bash(board comment *)"],
+    "disallowedTools": ["Bash(git push *)"],
+    "mcpServers": ["shortcut"],
+    "env": ["SHORTCUT_API_TOKEN"],
+    "model": "opus"
+  }
+}
+```
+
+The name is lowercase letters, digits and dashes, at most 32 characters. `description` and `tools` are required; `prompt`, `allowedTools`, `disallowedTools`, `mcpServers`, `env` and `model` are optional. Unlike the rest of `config.json`, an unknown key or a wrong type inside an agent makes that agent unusable instead of being ignored: a misspelt `disallowedTool` must not leave the agent without a deny list. Only that agent is lost: the machine's other work goes on, a task that names it fails closed, the dispatcher logs a warning on every tick and `board doctor` fails. `tools` lists tool names only (`Read`, `Bash`, `mcp__shortcut__get_story`); a pattern such as `Bash(git status)` belongs in `allowedTools`. `env` and `mcpServers` work as in `intake`: the worker copies the named variables from the working directory's `.claude/settings*.json` and the named servers from its `.mcp.json`, after the directory has passed the [list of directories](#where-a-task-runs).
+
+The run is `claude -p --tools=<tools> --agents=<file> --agent=<name> --permission-mode dontAsk --setting-sources user --allowedTools … --disallowedTools …`, in the working directory the task would run in anyway. `<file>` is a private copy (mode 0600) of the agent's `description`, `prompt`, `tools` and `model`, written to `$XDG_RUNTIME_DIR/agent-board/<task>.agents` and removed when the run ends; Claude Code runs the main thread as that agent. `--tools` holds the agent's `tools` without MCP ones, so the built-in tools are withheld even if Claude Code fails to load the agent. `tools` limits the tool names only: with `Bash` in `tools` but no `dontAsk`, the agent could run any command. The command-level rules take effect because of `--permission-mode dontAsk`, which refuses whatever `allowedTools` does not allow; `--setting-sources user` keeps a checkout's own settings out, as for intake. The lists expand `~/` and plugin placeholders as [described below](#how-a-task-runs).
+
+An agent's run gets the reduced board rules of an intake review (no `board wait`, no opening PRs) and `AGENT_BOARD_RESTRICTED=1` in its environment, which the agent's `env` cannot override. `board wait --check` refuses while it is set: a check would run any command outside the agent's list. `--in` and `--at` still work.
+
+It fails closed. A machine whose `config.json` has no `agents.<name>` leaves a task that names it in Todo for another machine (the dispatcher logs `SKIP <id> no agents.<name> in config.json here`), unless the task is pinned here (a resume, or its own directory): then the machine claims it. A worker that gets such a task, a resume included, fails it with a system note and starts nothing. A plugin placeholder that does not resolve fails the run the same way. `board doctor` checks each agent: that its plugins resolve, and that no allow rule is for a tool its `tools` leave out.
+
 ## How a task runs
 
 A fresh run is
@@ -120,9 +147,9 @@ A task that names a model (`board schedule --model`, or the Model select of the 
 
 The hook is the [heartbeat and question hook](#liveness-and-limits), and `--input-format stream-json` keeps stdin open for [messages, pauses and interrupts](#talking-to-a-running-agent). A resumed run is `claude -p --resume=<session>` with the same flags and your reply on stdin (see [Ask and resume](usage.md#ask-and-resume)).
 
-In intake's rules, `Bash(` rules expand `~/` to your home directory and `{<plugin>}` (such as `{pr-review}` or `{engineering}`) to the root Claude Code gives `<plugin>@ccc` as `${CLAUDE_PLUGIN_ROOT}`, resolved when the worker starts: for a marketplace added as a directory (`~/.claude/plugins/known_marketplaces.json`) that is the plugin's `source` in the marketplace's `.claude-plugin/marketplace.json` (Claude Code loads it from the checkout, not from the cache copy), otherwise the `installPath` in `~/.claude/plugins/installed_plugins.json`. A rule must not start with `*` before a script path: a leading `*` matches any command that merely contains the path. If the plugin path cannot be resolved the task goes to `needs-me` with the reason. `Read(...)` rules are passed on unchanged (they take `~/` themselves). Old `backend`, `labels`, `intakeLabel` and `sandbox` entries in a config are ignored.
+In intake's rules and an agent's, `Bash(` rules expand `~/` to your home directory and `{<plugin>}` (such as `{pr-review}` or `{engineering}`) to the root Claude Code gives the one installed `<plugin>@*` as `${CLAUDE_PLUGIN_ROOT}`, resolved when the worker starts (`{<plugin>@<marketplace>}` names the marketplace; a plugin that is not installed, or is installed from several marketplaces, is an error): for a marketplace added as a directory (`~/.claude/plugins/known_marketplaces.json`) that is the plugin's `source` in the marketplace's `.claude-plugin/marketplace.json` (Claude Code loads it from the checkout, not from the cache copy), otherwise the `installPath` in `~/.claude/plugins/installed_plugins.json`. A rule must not start with `*` before a script path: a leading `*` matches any command that merely contains the path. If the plugin path cannot be resolved the task goes to `needs-me` with the reason. `Read(...)` rules are passed on unchanged (they take `~/` themselves). Old `backend`, `labels`, `intakeLabel` and `sandbox` entries in a config are ignored.
 
-A missing allowed tool in an intake review shows up as a failed run: the log says what was denied. Add it to `intake.allowedTools`.
+A missing allowed tool in an intake review shows up as a failed run: the log says what was denied. Add it to `intake.allowedTools` (or the agent's `allowedTools`).
 
 ## How it decides
 

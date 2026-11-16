@@ -1,4 +1,5 @@
-import type { IntakeConfig, Lane } from '../config/config.mts';
+import { isAgentName } from '../config/config.mts';
+import type { AgentConfig, IntakeConfig, Lane } from '../config/config.mts';
 import {
   formatAnswers,
   isModelName,
@@ -13,9 +14,9 @@ import type { Note, Task, UnreadableField } from '@agent-board/shared';
 import { BackendError } from '../backend/backend.mts';
 import { fence } from '../output/text.mts';
 
-// `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives `<plugin>@ccc`, such as {pr-review}.
-const PLUGIN_PLACEHOLDER = /\{([a-z0-9][a-z0-9-]*)\}/g;
-export const PLUGIN_MARKETPLACE = 'ccc';
+// `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives the one installed `<plugin>@*`, such as
+// {pr-review}; `{<plugin>@<marketplace>}` names the marketplace.
+const PLUGIN_PLACEHOLDER = /\{([a-z0-9][a-z0-9-]*(?:@[A-Za-z0-9][A-Za-z0-9._-]*)?)\}/g;
 
 export const START_MARKER = 'agent-board: started';
 // The start of the note that ends a wait; the rest of it is why, and the resumed agent is told.
@@ -188,7 +189,7 @@ export function planPauses(input: {
   return pauses;
 }
 
-// The plugins whose roots the rules name, such as ["pr-review", "engineering"].
+// The plugins whose roots the rules name, as written between the braces: ["pr-review", "engineering@ccc"].
 export function pluginPlaceholders(rules: string[]): string[] {
   return [
     ...new Set(rules.flatMap((rule) => [...rule.matchAll(PLUGIN_PLACEHOLDER)].map((match) => match[1] ?? ''))),
@@ -234,18 +235,49 @@ export function pinnedMachine(task: Task): string | undefined {
   return undefined;
 }
 
+// The agent a task runs as. `none`: it names none and runs by its creator's rules. `missing`: it names one this machine does
+// not define or could not read, so it must not run here at all: its restrictions would be missing.
+export type AgentLookup =
+  { kind: 'none' } | { kind: 'found'; name: string; agent: AgentConfig } | { kind: 'missing'; reason: string };
+
+// A name from the board, safe to print.
+const agentLabel = (name: string): string => (isAgentName(name) ? name : JSON.stringify(name.slice(0, 40)));
+
+export function agentFor(
+  task: Task,
+  config: { agents: Record<string, AgentConfig>; agentErrors: Record<string, string> },
+): AgentLookup {
+  const name = task.agent ?? null;
+  if (name === null) return { kind: 'none' };
+  const agent = Object.hasOwn(config.agents, name) ? config.agents[name] : undefined;
+  if (agent === undefined) {
+    const unreadable = Object.hasOwn(config.agentErrors, name) ? config.agentErrors[name] : undefined;
+    return {
+      kind: 'missing',
+      reason:
+        unreadable === undefined
+          ? `no agents.${agentLabel(name)} in config.json here`
+          : `agents.${agentLabel(name)} in config.json here cannot be used (${unreadable})`,
+    };
+  }
+  return { kind: 'found', name, agent };
+}
+
 // Why this machine leaves a todo task to another one, or undefined when it can run it.
 export function notServableHere(
   task: Task,
   machine: string,
   repos: Record<string, string>,
-  intakeEnabled: boolean,
+  config: { intakeEnabled: boolean; agents: Record<string, AgentConfig>; agentErrors: Record<string, string> },
 ): string | undefined {
   const pinned = pinnedMachine(task);
   if (pinned !== undefined && pinned !== machine) return `pinned to ${pinned}`;
+  const agent = agentFor(task, config);
+  // A pinned task is claimed here and refused by the worker with a note: skipped, it would sit in Todo for good.
+  if (agent.kind === 'missing' && pinned === undefined) return agent.reason;
   if (task.createdBy === 'intake') {
-    // Intake's tasks run on untrusted PR text under intake's rules, which only an `intake` block holds.
-    if (!intakeEnabled) return 'no intake block in config.json here';
+    // Intake's tasks run on untrusted PR text under intake's rules, which only an `intake` block holds, or under an agent's.
+    if (agent.kind === 'none' && !config.intakeEnabled) return 'no intake block in config.json here';
     const pr = parsePrUrl(prUrlIn(task.input) ?? '');
     // An intake task without a PR URL is claimed and fails with the reason; one for a repo without a checkout here waits.
     if (pr !== undefined && !Object.hasOwn(repos, pr.repo)) return `no checkout of ${pr.repo} here`;
@@ -521,10 +553,43 @@ export interface Invocation {
   cwd: string;
 }
 
-export type InvocationPlan = { ok: true; invocation: Invocation } | { ok: false; reason: string };
+// `agents`: for an agent's run, the file `--agents` names and what the worker writes into it (mode 0600) before it starts.
+export type InvocationPlan =
+  { ok: true; invocation: Invocation; agents?: { path: string; content: string } } | { ok: false; reason: string };
 
-// What every run is told about the board, on top of its prompt.
-export function boardRules(task: Task): string {
+// What a restricted run's allow and deny lists become: `~/` and plugin roots expanded, or why the run must not start.
+// `owner` names whose rules they are in the refusals.
+function expandedRules(
+  lists: { allowedTools: string[]; disallowedTools: string[] },
+  owner: { rules: string; rule: string },
+  input: { home: string; pluginRoots: Record<string, string> },
+): { ok: true; allowed: string[]; disallowed: string[] } | { ok: false; reason: string } {
+  const missing = pluginPlaceholders([...lists.allowedTools, ...lists.disallowedTools]).filter(
+    (name) => !Object.hasOwn(input.pluginRoots, name),
+  );
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason: `The path of the plugin ${missing.join(', ')} is unknown, but ${owner.rules} name {${missing[0]}}.`,
+    };
+  }
+  const expand = (rule: string): string => expandRule(rule, input.home, input.pluginRoots);
+  const allowed = lists.allowedTools.map(expand);
+  const disallowed = lists.disallowedTools.map(expand);
+  // The two lists take every following argument that does not start with `-`: a rule that does would read as an option.
+  const optionLike = [...allowed, ...disallowed].find((rule) => rule.startsWith('-'));
+  if (optionLike !== undefined)
+    return {
+      ok: false,
+      reason: `${owner.rule} starts with "-" and would be read as an option: ${optionLike.slice(0, 40)}`,
+    };
+  return { ok: true, allowed, disallowed };
+}
+
+// What every run is told about the board, on top of its prompt. `asAgent`: the run is an agent's, which gets the reduced rules
+// of an intake review whoever made the task.
+export function boardRules(task: Task, options: { asAgent?: boolean } = {}): string {
+  const restricted = task.createdBy === 'intake' || options.asAgent === true;
   return [
     `You are running headless as agent-board task ${task.id}. Nobody watches this terminal; the user reads the task's thread on the board.`,
     `- Report progress and results with \`board comment ${task.id} "<text>"\` (markdown; \`--file <path>\` for long text in /tmp, or \`-\` for stdin).`,
@@ -534,7 +599,7 @@ export function boardRules(task: Task): string {
     '- Do not end your turn while a background agent or background command you started is still running: this run ends when your turn does. Run subagents in the foreground, or wait for their result before ending your turn.',
     '- If you are told that a pause was requested, post a one-line status with `board comment` and end your turn; you will be resumed here.',
     '- The user may send you a message while you work, or interrupt you with a correction. Take it as the latest instruction on the task.',
-    ...(task.createdBy === 'intake'
+    ...(restricted
       ? []
       : [
           `- Work on your own. Decide and act without asking on whatever is easy to undo and stays on this machine: reading, editing files, running tests and builds, local branches, worktrees and commits, scratch files in /tmp. Where the prompt leaves a gap, make a reasonable choice and name it in your report. Use \`board ask\` only before a step that is hard to undo or that other people see, unless the prompt asked for that step: force-pushing, deleting branches or data, merging, deploying, posting to Slack, Shortcut, email or someone else's PR or issue.`,
@@ -542,7 +607,7 @@ export function boardRules(task: Task): string {
           `- Right after you open a pull request for this task, run \`board pr ${task.id} <url>\`: the board shows it on the task's card and page. A later PR replaces the earlier one.`,
           `- When you have to wait for something outside that takes minutes or longer (CI, a deploy, a review), do not sleep or poll in this run: run \`board wait ${task.id} --check '<command>' --reason "<what you wait for>"\` with a command that exits 0 once the wait is over (\`--every <dur>\` how often it runs, default 2m; \`--timeout <dur>\` when to give up, default 2h), or \`board wait ${task.id} --in 30m --reason "<what you wait for>"\` for a plain timer, then end your turn. The task frees its slot, and you are resumed in this session when the check passes or the time is up.`,
         ]),
-    ...(task.createdBy === 'intake'
+    ...(restricted
       ? [
           "- This run allows only a fixed list of commands, and each matches only when it stands alone: run every Bash command on its own, without pipes, `;`, `&&`, redirects or `cd`, by its full path, and filter output with the command's own options. A refused call is a result; report it instead of working around it, and go on with the other steps.",
         ]
@@ -557,19 +622,28 @@ export function buildInvocation(input: {
   // Where a task without a directory of its own runs.
   defaultCwd: string;
   intake: IntakeConfig;
+  // The agents this machine defines. A task that names one runs as it, under its lists, and a task that names an agent not
+  // here is refused.
+  agents: Record<string, AgentConfig>;
+  agentErrors: Record<string, string>;
+  // Where the worker will write the agent's definition for `--agents`, in a private directory.
+  agentsPath: string;
   // The directory a task without its own runs in when no PR in its prompt names a checkout (its lane's, if set).
   laneCwd?: string | undefined;
   home: string;
-  // Roots of the plugins intake's rules name ({pr-review} and the like).
+  // Roots of the plugins the rules name ({pr-review} and the like), by the placeholder as written.
   pluginRoots: Record<string, string>;
   // The PreToolUse hook command (heartbeat, working directory, questions).
   hookCommand?: string;
 }): InvocationPlan {
   const { task, intake } = input;
   const fromIntake = task.createdBy === 'intake';
+  const agent = agentFor(task, input);
   const prompt = task.input.trim();
   const refused = neverRun(task);
   if (refused !== undefined) return { ok: false, reason: refused };
+  if (agent.kind === 'missing')
+    return { ok: false, reason: `The task runs as an agent that is not defined on this machine: ${agent.reason}.` };
   if (input.run.kind === 'blocked') return { ok: false, reason: input.run.reason };
   if (input.run.kind === 'fresh' && prompt === '') return { ok: false, reason: 'The task has no prompt.' };
   if (!isSessionId(input.run.sessionId)) return { ok: false, reason: 'The session id is not a UUID.' };
@@ -622,11 +696,39 @@ export function buildInvocation(input: {
     'stream-json',
     '--verbose',
     '--append-system-prompt',
-    boardRules(task),
+    boardRules(task, { asAgent: agent.kind === 'found' }),
     // The heartbeat and question hook, inline.
     '--settings',
     JSON.stringify(settings),
   ];
+  if (agent.kind === 'found') {
+    // An agent's run is unattended and runs only what the agent's lists allow, in dontAsk mode: the agent's `tools` limit
+    // the tool names only, so the command-level rules take effect only with dontAsk. Only the user's own settings load.
+    const rules = expandedRules(
+      agent.agent,
+      { rules: `agent ${agent.name}'s rules`, rule: `A tool rule of agent ${agent.name}` },
+      input,
+    );
+    if (!rules.ok) return rules;
+    // `--tools` keeps the built-in tools out even if Claude Code cannot load the agent and runs the main thread as itself;
+    // MCP tools are not built in, and the lists govern them.
+    args.push(
+      `--tools=${agent.agent.tools.filter((tool) => !tool.startsWith('mcp__')).join(',')}`,
+      `--agents=${input.agentsPath}`,
+      `--agent=${agent.name}`,
+      '--permission-mode',
+      'dontAsk',
+      '--setting-sources',
+      'user',
+    );
+    if (rules.allowed.length > 0) args.push('--allowedTools', ...rules.allowed);
+    if (rules.disallowed.length > 0) args.push('--disallowedTools', ...rules.disallowed);
+    return {
+      ok: true,
+      invocation: { command: 'claude', args, prompt: promptText, cwd },
+      agents: { path: input.agentsPath, content: agentsFileContent(agent.name, agent.agent) },
+    };
+  }
   if (!fromIntake) {
     // As if the user ran it: their settings (user, project, local) and auto mode, which lets safe actions through and
     // refuses risky ones. Headless, a refusal cannot become a prompt; it shows in the log.
@@ -634,27 +736,23 @@ export function buildInvocation(input: {
     return { ok: true, invocation: { command: 'claude', args, prompt: promptText, cwd } };
   }
   // Intake runs unattended on PR text nobody chose to read: only the user's own settings, and only what intake allows.
-  const missing = pluginPlaceholders([...intake.allowedTools, ...intake.disallowedTools]).filter(
-    (name) => !Object.hasOwn(input.pluginRoots, name),
-  );
-  if (missing.length > 0) {
-    return {
-      ok: false,
-      reason: `The path of the plugin ${missing.join(', ')} is unknown, but intake's rules name {${missing[0]}}.`,
-    };
-  }
-  const expand = (rule: string): string => expandRule(rule, input.home, input.pluginRoots);
-  const allowed = intake.allowedTools.map(expand);
-  const disallowed = intake.disallowedTools.map(expand);
-  // The two lists take every following argument that does not start with `-`: a rule that does would read as an option.
-  const optionLike = [...allowed, ...disallowed].find((rule) => rule.startsWith('-'));
-  if (optionLike !== undefined)
-    return {
-      ok: false,
-      reason: `An intake tool rule starts with "-" and would be read as an option: ${optionLike.slice(0, 40)}`,
-    };
+  const rules = expandedRules(intake, { rules: "intake's rules", rule: 'An intake tool rule' }, input);
+  if (!rules.ok) return rules;
   args.push('--permission-mode', 'dontAsk', '--setting-sources', 'user');
-  if (allowed.length > 0) args.push('--allowedTools', ...allowed);
-  if (disallowed.length > 0) args.push('--disallowedTools', ...disallowed);
+  if (rules.allowed.length > 0) args.push('--allowedTools', ...rules.allowed);
+  if (rules.disallowed.length > 0) args.push('--disallowedTools', ...rules.disallowed);
   return { ok: true, invocation: { command: 'claude', args, prompt: promptText, cwd } };
+}
+
+// The definition `claude --agents` reads: only the keys Claude Code knows. Its servers come with `--mcp-config` instead,
+// and the allow and deny lists are command-line options.
+function agentsFileContent(name: string, agent: AgentConfig): string {
+  return JSON.stringify({
+    [name]: {
+      description: agent.description,
+      prompt: agent.prompt ?? '',
+      tools: agent.tools,
+      ...(agent.model === undefined ? {} : { model: agent.model }),
+    },
+  });
 }

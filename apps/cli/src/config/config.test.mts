@@ -195,7 +195,7 @@ test('a misspelt key at any level is a warning naming the nearest known key, not
 
 test('an unknown key close to no known one lists the keys of its level', () => {
   assert.deepEqual(configWarnings({ backend: { command: ['/x'] } }), [
-    'unknown key "backend", ignored; known here: machine, lanes, defaultCwd, pauseAfterMinutes, inactivityMinutes, maxRunHours, autoUpdate, intake, repos, dirs',
+    'unknown key "backend", ignored; known here: machine, lanes, defaultCwd, pauseAfterMinutes, inactivityMinutes, maxRunHours, autoUpdate, intake, agents, repos, dirs',
   ]);
 });
 
@@ -218,4 +218,106 @@ test('loadConfigWarnings reads the file and is quiet when it is missing or broke
   } finally {
     rmSync(dir, { recursive: true });
   }
+});
+
+const REVIEWER = {
+  description: 'Reviews a PR.',
+  prompt: 'You review.',
+  tools: ['Read', 'Bash'],
+  allowedTools: ['Bash(gh pr view *)'],
+  disallowedTools: ['Bash(git push *)'],
+  mcpServers: ['shortcut'],
+  env: ['CIRCLECI_TOKEN'],
+  model: 'opus',
+};
+
+test('a config without agents has none', () => {
+  assert.deepEqual(parseConfig({}).agents, {});
+});
+
+test('an agent is read with every key it takes', () => {
+  assert.deepEqual(parseConfig({ agents: { reviewer: REVIEWER } }).agents, { reviewer: REVIEWER });
+});
+
+test('an agent needs only a description and tools, and the rest is empty', () => {
+  assert.deepEqual(parseConfig({ agents: { 'a-1': { description: 'd', tools: ['Read'] } } }).agents, {
+    'a-1': { description: 'd', tools: ['Read'], allowedTools: [], disallowedTools: [], env: [], mcpServers: [] },
+  });
+});
+
+// What parseConfig says about the agents it could not read.
+const failing = (make: () => ReturnType<typeof parseConfig>, expected: RegExp, message?: string): void =>
+  assert.match(Object.values(make().agentErrors).join('\n'), expected, message);
+
+test('one agent that cannot be read does not stop the config: the others and the rest load, and the reason is kept by name', () => {
+  const config = parseConfig({
+    repos: { 'a/b': '/x' },
+    agents: { good: REVIEWER, broken: { ...REVIEWER, disallowedTool: [] }, Bad: REVIEWER },
+  });
+  assert.deepEqual(Object.keys(config.agents), ['good']);
+  assert.deepEqual(Object.keys(config.agentErrors), ['broken', 'Bad']);
+  assert.match(config.agentErrors['broken'] ?? '', /agents\.broken has no key "disallowedTool"/);
+  assert.deepEqual(Object.keys(config.repos), ['a/b']);
+  assert.throws(() => parseConfig({ agents: { a: REVIEWER }, defaultCwd: 'rel' }), /defaultCwd/);
+});
+
+test('agents is an object of objects named by lowercase names of at most 32 characters', () => {
+  const agent = { description: 'd', tools: ['Read'] };
+  for (const bad of [[], 'x', null]) assert.throws(() => parseConfig({ agents: bad }), /agents must be an object/);
+  for (const name of ['Reviewer', '-a', 'a_b', 'a b', '', 'a'.repeat(33), 'ü'])
+    failing(() => parseConfig({ agents: { [name]: agent } }), /agent name .* must be lowercase letters/, name);
+  assert.deepEqual(
+    parseConfig({ agents: { ['a'.repeat(32)]: agent, '0': agent, constructor: agent } }).agentErrors,
+    {},
+  );
+  failing(() => parseConfig({ agents: { a: 'x' } }), /agents\.a must be an object/);
+});
+
+test('an unknown key in an agent is an error, with the nearest known key', () => {
+  failing(
+    () => parseConfig({ agents: { a: { ...REVIEWER, disallowedTool: ['Bash(rm *)'] } } }),
+    /agents\.a has no key "disallowedTool"; did you mean "disallowedTools"\?/,
+  );
+  failing(
+    () => parseConfig({ agents: { a: { ...REVIEWER, zzzzzzzz: 1 } } }),
+    /no key "zzzzzzzz"; it takes description/,
+  );
+});
+
+test('an agent needs a description and a non-empty tools list of plain tool names', () => {
+  const { description: _d, ...noDescription } = REVIEWER;
+  const { tools: _t, ...noTools } = REVIEWER;
+  failing(() => parseConfig({ agents: { a: noDescription } }), /agents\.a\.description must be a non-empty string/);
+  failing(() => parseConfig({ agents: { a: { ...REVIEWER, description: ' ' } } }), /description/);
+  failing(() => parseConfig({ agents: { a: noTools } }), /agents\.a\.tools must be a non-empty list of tool names/);
+  failing(() => parseConfig({ agents: { a: { ...REVIEWER, tools: [] } } }), /non-empty list of tool names/);
+  failing(() => parseConfig({ agents: { a: { ...REVIEWER, tools: ['Read', 5] } } }), /tools must be a list of strings/);
+  failing(
+    () => parseConfig({ agents: { a: { ...REVIEWER, tools: ['Bash(git status)'] } } }),
+    /tools names "Bash\(git status\)", which is not a tool name; rules with arguments belong in allowedTools/,
+  );
+  failing(() => parseConfig({ agents: { a: { ...REVIEWER, tools: ['-x'] } } }), /not a tool name/);
+  assert.deepEqual(
+    parseConfig({ agents: { a: { ...REVIEWER, tools: ['mcp__shortcut__get_story', 'Edit'] } } }).agentErrors,
+    {},
+  );
+});
+
+test("an agent's other keys are type-checked", () => {
+  const bad = (override: Record<string, unknown>) => parseConfig({ agents: { a: { ...REVIEWER, ...override } } });
+  failing(() => bad({ prompt: 3 }), /agents\.a\.prompt must be a string/);
+  failing(() => bad({ model: 'bad model!' }), /agents\.a\.model must be a model name/);
+  failing(() => bad({ model: 3 }), /model name/);
+  failing(() => bad({ allowedTools: 'Bash' }), /agents\.a\.allowedTools must be a list of strings/);
+  failing(() => bad({ disallowedTools: [1] }), /agents\.a\.disallowedTools must be a list of strings/);
+  failing(() => bad({ allowedTools: ['--debug'] }), /take tool rules, not "--debug"/);
+  failing(() => bad({ disallowedTools: [' '] }), /take tool rules/);
+  failing(() => bad({ mcpServers: 'shortcut' }), /agents\.a\.mcpServers must be a list of strings/);
+  failing(() => bad({ mcpServers: [''] }), /mcpServers must name servers/);
+  failing(() => bad({ env: ['1BAD'] }), /agents\.a\.env names "1BAD", which is not a variable name/);
+  failing(() => bad({ env: 'X' }), /agents\.a\.env must be a list of strings/);
+});
+
+test('agents is a known top-level key, so it draws no warning', () => {
+  assert.deepEqual(configWarnings({ agents: {} }), []);
 });

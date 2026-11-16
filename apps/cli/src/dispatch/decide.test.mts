@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  agentFor,
   boardRules,
   buildInvocation,
   buildResumePrompt,
@@ -27,6 +28,7 @@ import {
 import type { LaneRun } from './decide.mts';
 import { BackendError } from '../backend/backend.mts';
 import { tail } from '../output/text.mts';
+import type { AgentConfig } from '../config/config.mts';
 import { CONFIG, note as makeNote, OTHER_SESSION, SESSION, task } from '../__tests__/helpers/fakes.mts';
 
 // What a worker knows of this machine's sessions: by default, every session it is asked for is its own.
@@ -49,6 +51,9 @@ const invoke = (
     defaultCwd: CONFIG.defaultCwd,
     intake: CONFIG.intake,
     laneCwd,
+    agents: {},
+    agentErrors: {},
+    agentsPath: '/run/ab.agents',
     home: '/h',
     pluginRoots: { 'pr-review': '/plugins/pr' },
     hookCommand: "'/x/agent-hook' '/run/ab' abc",
@@ -162,6 +167,9 @@ test('intake rules naming a plugin need its path', () => {
     repos: CONFIG.repos,
     defaultCwd: '/',
     intake: { ...CONFIG.intake, allowedTools: ['Bash({pr-review}/x.sh *)', 'Bash({engineering}/y.sh *)'] },
+    agents: {},
+    agentErrors: {},
+    agentsPath: '/run/ab.agents',
     home: '/h',
     pluginRoots: { 'pr-review': '/p' },
   });
@@ -195,13 +203,27 @@ test("a prompt's skill picks its lane; anything else goes to the lane with *", (
 
 test('a machine without an intake block leaves intake-created tasks to another machine', () => {
   const intakeTask = task({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
-  assert.equal(notServableHere(intakeTask, 'here', CONFIG.repos, false), 'no intake block in config.json here');
-  assert.equal(notServableHere(intakeTask, 'here', CONFIG.repos, true), undefined);
-  assert.equal(notServableHere(task({ id: 'b', input: 'Find out X' }), 'here', CONFIG.repos, false), undefined);
+  assert.equal(
+    notServableHere(intakeTask, 'here', CONFIG.repos, { intakeEnabled: false, agents: {}, agentErrors: {} }),
+    'no intake block in config.json here',
+  );
+  assert.equal(
+    notServableHere(intakeTask, 'here', CONFIG.repos, { intakeEnabled: true, agents: {}, agentErrors: {} }),
+    undefined,
+  );
+  assert.equal(
+    notServableHere(task({ id: 'b', input: 'Find out X' }), 'here', CONFIG.repos, {
+      intakeEnabled: false,
+      agents: {},
+      agentErrors: {},
+    }),
+    undefined,
+  );
 });
 
 test("a machine leaves a task to another when it is pinned there or lacks the PR's checkout", () => {
-  const here = (overrides: Parameters<typeof task>[0]) => notServableHere(task(overrides), 'here', CONFIG.repos, true);
+  const here = (overrides: Parameters<typeof task>[0]) =>
+    notServableHere(task(overrides), 'here', CONFIG.repos, { intakeEnabled: true, agents: {}, agentErrors: {} });
   assert.equal(here({ id: 'a', input: 'Find out X' }), undefined);
   assert.match(here({ id: 'a', input: '/grill', machine: 'there', workdir: '/x' }) ?? '', /pinned to there/);
   assert.equal(here({ id: 'a', input: '/grill', machine: 'here', workdir: '/x' }), undefined);
@@ -627,6 +649,9 @@ test("a fresh run reads the user's notes since the previous run started, and is 
     repos: {},
     defaultCwd: '/',
     intake: CONFIG.intake,
+    agents: {},
+    agentErrors: {},
+    agentsPath: '/run/ab.agents',
     home: '/h',
     pluginRoots: {},
   });
@@ -660,6 +685,9 @@ test('a session id that is not a UUID, or a directory that is not a path, never 
       repos: {},
       defaultCwd: '/',
       intake: CONFIG.intake,
+      agents: {},
+      agentErrors: {},
+      agentsPath: '/run/ab.agents',
       home: '/h',
       pluginRoots: {},
     });
@@ -680,6 +708,9 @@ test('a blocked plan never becomes an invocation', () => {
     repos: {},
     defaultCwd: '/',
     intake: CONFIG.intake,
+    agents: {},
+    agentErrors: {},
+    agentsPath: '/run/ab.agents',
     home: '/h',
     pluginRoots: {},
   });
@@ -761,6 +792,9 @@ test('an intake tool rule that would read as an option stops the run', () => {
         repos: CONFIG.repos,
         defaultCwd: CONFIG.defaultCwd,
         intake: { ...CONFIG.intake, [list]: [rule] },
+        agents: {},
+        agentErrors: {},
+        agentsPath: '/run/ab.agents',
         home: '/h',
         pluginRoots: {},
       });
@@ -828,4 +862,241 @@ test('the messages an agent is sent say who wrote them, and an interruption says
     /interrupted you on board task abc to correct you:\n\nuse the other table/,
   );
   assert.match(pauseMessageText('abc'), /Pause requested.*`board comment abc "..."`.*end your turn/);
+});
+
+const REVIEWER: AgentConfig = {
+  description: 'Reviews a PR.',
+  prompt: 'You review.',
+  tools: ['Read', 'Bash'],
+  allowedTools: ['Read', 'Bash(gh pr view *)', 'Bash({pr-review}/x.sh *)', 'Bash(~/bin/t *)'],
+  disallowedTools: ['Bash(git push *)', 'Read(~/.ssh/**)'],
+  env: [],
+  mcpServers: [],
+  model: 'opus',
+};
+
+const invokeAgent = (
+  overrides: Parameters<typeof task>[0],
+  agents: Record<string, AgentConfig> = { reviewer: REVIEWER },
+  run: Parameters<typeof buildInvocation>[0]['run'] = FRESH,
+  agentErrors: Record<string, string> = {},
+) =>
+  buildInvocation({
+    run,
+    task: task(overrides),
+    repos: CONFIG.repos,
+    defaultCwd: CONFIG.defaultCwd,
+    intake: CONFIG.intake,
+    agents,
+    agentErrors,
+    agentsPath: '/run/ab.agents',
+    home: '/h',
+    pluginRoots: { 'pr-review': '/plugins/pr' },
+  });
+
+test('a task that names an agent runs as it: its file, dontAsk, user settings only, its lists, expanded', () => {
+  const plan = invokeAgent({
+    id: 'abc',
+    input: 'Review it',
+    agent: 'reviewer',
+    workdir: '/work/cosuno',
+    machine: 'here',
+  });
+  assert.ok(plan.ok);
+  const { args, prompt, cwd } = plan.invocation;
+  assert.equal(prompt, 'Review it');
+  assert.equal(cwd, '/work/cosuno');
+  assert.deepEqual(args.slice(args.indexOf('--tools=Read,Bash')), [
+    '--tools=Read,Bash',
+    '--agents=/run/ab.agents',
+    '--agent=reviewer',
+    '--permission-mode',
+    'dontAsk',
+    '--setting-sources',
+    'user',
+    '--allowedTools',
+    'Read',
+    'Bash(gh pr view *)',
+    'Bash(/plugins/pr/x.sh *)',
+    'Bash(/h/bin/t *)',
+    '--disallowedTools',
+    'Bash(git push *)',
+    'Read(~/.ssh/**)',
+  ]);
+  assert.ok(!args.includes('auto'));
+  assert.deepEqual(plan.agents, {
+    path: '/run/ab.agents',
+    content: JSON.stringify({
+      reviewer: { description: 'Reviews a PR.', prompt: 'You review.', tools: ['Read', 'Bash'], model: 'opus' },
+    }),
+  });
+});
+
+test("an agent's file holds only the keys Claude Code takes: no lists, servers or env, an empty prompt when none is set", () => {
+  const { prompt: _prompt, model: _model, ...bare } = REVIEWER;
+  const plan = invokeAgent(
+    { id: 'abc', input: 'x', agent: 'reviewer' },
+    { reviewer: { ...bare, env: ['TOKEN'], mcpServers: ['shortcut'] } },
+  );
+  assert.ok(plan.ok);
+  assert.deepEqual(JSON.parse(plan.agents?.content ?? ''), {
+    reviewer: { description: 'Reviews a PR.', prompt: '', tools: ['Read', 'Bash'] },
+  });
+});
+
+test('an agent run gets the reduced board rules, whoever made the task', () => {
+  const plan = invokeAgent({ id: 'abc', input: 'x', agent: 'reviewer' });
+  assert.ok(plan.ok);
+  const rules = plan.invocation.args[plan.invocation.args.indexOf('--append-system-prompt') + 1] ?? '';
+  assert.equal(rules, boardRules(task({ id: 'abc' }), { asAgent: true }));
+  assert.doesNotMatch(rules, /board wait|board pr|gh pr create|Work on your own/);
+  assert.match(rules, /stands alone/);
+  assert.match(boardRules(task({ id: 'abc' })), /board wait abc --check/);
+});
+
+test('a task naming an agent this machine lacks is refused, a resume included, even when it has an intake block', () => {
+  for (const run of [FRESH, { kind: 'resume', sessionId: SESSION, prompt: 'the reply' } as const]) {
+    const plan = invokeAgent(
+      { id: 'abc', input: 'x', agent: 'ghost', createdBy: 'intake' },
+      { reviewer: REVIEWER },
+      run,
+    );
+    assert.ok(
+      !plan.ok && /not defined on this machine: no agents\.ghost in config\.json here/.test(plan.reason),
+      run.kind,
+    );
+  }
+  for (const name of ['constructor', 'toString', '__proto__', 'Reviewer'])
+    assert.ok(!invokeAgent({ id: 'abc', input: 'x', agent: name }).ok, name);
+});
+
+test('an agent name from the board that is not a name is shown quoted and cut, never raw', () => {
+  const lookup = agentFor(task({ id: 'a', agent: 'x\ny'.repeat(40) }), { agents: {}, agentErrors: {} });
+  assert.ok(lookup.kind === 'missing' && !lookup.reason.includes('\n') && lookup.reason.length < 90);
+});
+
+test('without an agent the invocation is what it was, whatever agents the machine defines', () => {
+  const agents = { reviewer: REVIEWER };
+  for (const overrides of [
+    { id: 'a', input: 'Find out X' },
+    { id: 'a', input: 'Find out X', agent: null },
+    { id: 'a', input: PR, createdBy: 'intake' as const },
+  ]) {
+    const withAgents = invokeAgent(overrides, agents);
+    const without = invokeAgent(overrides, {});
+    assert.ok(withAgents.ok && without.ok);
+    assert.deepEqual(withAgents.invocation, without.invocation);
+    assert.equal(withAgents.agents, undefined);
+    assert.ok(!withAgents.invocation.args.some((arg) => arg.startsWith('--agent')));
+  }
+  const user = invokeAgent({ id: 'a', input: 'Find out X' });
+  assert.ok(user.ok && user.invocation.args.includes('auto') && !user.invocation.args.includes('dontAsk'));
+  const intake = invokeAgent({ id: 'a', input: PR, createdBy: 'intake' });
+  assert.ok(
+    intake.ok && intake.invocation.args.includes('--allowedTools') && intake.invocation.args.includes('dontAsk'),
+  );
+});
+
+test("an agent's rules naming a plugin need its path, and one that would read as an option stops the run", () => {
+  const needs = invokeAgent(
+    { id: 'a', input: 'x', agent: 'reviewer' },
+    { reviewer: { ...REVIEWER, allowedTools: ['Bash({engineering@ccc}/y.sh *)'] } },
+  );
+  assert.ok(
+    !needs.ok &&
+      /plugin engineering@ccc is unknown, but agent reviewer's rules name \{engineering@ccc\}/.test(needs.reason),
+  );
+  for (const list of ['allowedTools', 'disallowedTools'] as const) {
+    const option = invokeAgent(
+      { id: 'a', input: 'x', agent: 'reviewer' },
+      { reviewer: { ...REVIEWER, [list]: ['-x'] } },
+    );
+    assert.ok(!option.ok && /A tool rule of agent reviewer starts with "-"/.test(option.reason), list);
+  }
+});
+
+test('plugin placeholders may name the marketplace', () => {
+  assert.deepEqual(
+    pluginPlaceholders(['Bash({pr-review}/a *)', 'Bash({engineering@ccc}/b *)', 'Bash({pr-review}/c *)']),
+    ['pr-review', 'engineering@ccc'],
+  );
+  const roots = { 'pr-review': '/p', 'pr-review@other': '/o' };
+  assert.equal(expandRule('Bash({pr-review@other}/x *)', '/h', roots), 'Bash(/o/x *)');
+  assert.equal(expandRule('Bash({pr-review@nope}/x *)', '/h', roots), 'Bash({pr-review@nope}/x *)');
+});
+
+test('a machine leaves a task naming an agent it does not define to another machine', () => {
+  const config = { intakeEnabled: false, agents: { reviewer: REVIEWER }, agentErrors: {} };
+  const named = (agent: string | null, extra: Parameters<typeof task>[0] = { id: 'a' }) =>
+    notServableHere(task({ input: 'x', ...extra, agent }), 'here', CONFIG.repos, config);
+  assert.equal(named('reviewer'), undefined);
+  assert.equal(named('ghost'), 'no agents.ghost in config.json here');
+  assert.equal(named(null), undefined);
+  assert.equal(
+    named('ghost', { id: 'a', machine: 'there', workdir: '/x' }),
+    'pinned to there',
+    'pinning is looked at first',
+  );
+  assert.equal(
+    named('ghost', { id: 'a', createdBy: 'intake', input: `/review-pr ${PR}` }),
+    'no agents.ghost in config.json here',
+  );
+});
+
+test('an intake task that names a defined agent needs the agent, not an intake block, and still a checkout', () => {
+  const config = { intakeEnabled: false, agents: { reviewer: REVIEWER }, agentErrors: {} };
+  const intake = (agent: string | null, input = `/review-pr ${PR}`) =>
+    notServableHere(task({ id: 'a', input, createdBy: 'intake', agent }), 'here', CONFIG.repos, config);
+  assert.equal(intake('reviewer'), undefined);
+  assert.equal(intake(null), 'no intake block in config.json here');
+  assert.equal(intake('reviewer', '/review-pr https://github.com/other/repo/pull/1'), 'no checkout of other/repo here');
+});
+
+test('--tools holds the agent tools without MCP ones, so built-in tools are withheld even if the agent fails to load', () => {
+  const plan = invokeAgent(
+    { id: 'a', input: 'x', agent: 'reviewer' },
+    { reviewer: { ...REVIEWER, tools: ['Read', 'mcp__shortcut__get_story', 'Write', 'Agent'] } },
+  );
+  assert.ok(plan.ok);
+  assert.ok(plan.invocation.args.includes('--tools=Read,Write,Agent'));
+});
+
+test('a resume that runs as a defined agent carries the same agent flags next to --resume', () => {
+  const plan = invokeAgent(
+    { id: 'abc', input: 'x', agent: 'reviewer', next: 'resume', sessionId: SESSION },
+    { reviewer: REVIEWER },
+    { kind: 'resume', sessionId: SESSION, prompt: 'the reply' },
+  );
+  assert.ok(plan.ok);
+  const { args, prompt } = plan.invocation;
+  assert.equal(prompt, 'the reply');
+  assert.ok(args.includes(`--resume=${SESSION}`));
+  for (const arg of ['--tools=Read,Bash', '--agents=/run/ab.agents', '--agent=reviewer', 'dontAsk', 'user'])
+    assert.ok(args.includes(arg), arg);
+  assert.ok(plan.agents !== undefined);
+});
+
+test('an agent that could not be read is missing with the reason, and a task naming it is refused', () => {
+  const errors = { reviewer: 'config: agents.reviewer has no key "disallowedTool"' };
+  const plan = invokeAgent({ id: 'a', input: 'x', agent: 'reviewer' }, {}, FRESH, errors);
+  assert.ok(!plan.ok && /cannot be used \(config: agents\.reviewer has no key "disallowedTool"\)/.test(plan.reason));
+});
+
+test('a pinned task naming a missing agent is not skipped, so a worker here can fail it with the reason', () => {
+  const config = { intakeEnabled: true, agents: {}, agentErrors: {} };
+  const pinned = task({ id: 'a', input: '/grill', agent: 'ghost', machine: 'here', workdir: '/x' });
+  assert.equal(notServableHere(pinned, 'here', CONFIG.repos, config), undefined);
+  const resume = task({
+    id: 'a',
+    input: '/grill',
+    agent: 'ghost',
+    next: 'resume',
+    sessionId: SESSION,
+    machine: 'here',
+  });
+  assert.equal(notServableHere(resume, 'here', CONFIG.repos, config), undefined);
+  assert.equal(
+    notServableHere(task({ id: 'a', input: 'x', agent: 'ghost' }), 'here', CONFIG.repos, config),
+    'no agents.ghost in config.json here',
+  );
 });

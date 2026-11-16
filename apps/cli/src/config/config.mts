@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import {
   DEFAULT_PRIORITY,
   isPriority,
+  isModelName,
   isRecord,
   isSafeMachineName,
   MACHINE_NAME_RULE,
@@ -29,6 +30,24 @@ export interface IntakeConfig {
   env: string[];
   // MCP servers of the checkout's .mcp.json that intake runs get (with `--mcp-config`), such as "shortcut".
   mcpServers: string[];
+}
+
+// A task that runs as this agent (Claude Code's `--agents` and `--agent`), unattended: only its tools, and only what its
+// lists allow. Everything in it is checked when the config loads, since a typo in a deny list must not fail open.
+export interface AgentConfig {
+  // Claude Code requires one.
+  description: string;
+  // The agent's system prompt.
+  prompt?: string;
+  // The tool names the agent has, such as "Read" or "Bash". Rules with arguments belong in allowedTools.
+  tools: string[];
+  allowedTools: string[];
+  disallowedTools: string[];
+  // Variables the worker copies from the working directory's .claude/settings.json and settings.local.json into the run.
+  env: string[];
+  // MCP servers of the working directory's .mcp.json the run gets (with `--mcp-config`).
+  mcpServers: string[];
+  model?: string;
 }
 
 // Slots of one kind of work on this machine. A lane runs its own skills first (a task's skill is the slash command its
@@ -72,6 +91,11 @@ export interface Config {
   intake: IntakeConfig;
   // Whether config.json has an `intake` key: the intake timer and `board internal intake` exist only then.
   intakeEnabled: boolean;
+  // By name; empty when config.json has no `agents` key.
+  agents: Record<string, AgentConfig>;
+  // Why an `agents` entry could not be read, by name. One bad agent must not stop the machine's other work, so it is not a
+  // config error; a task that names it fails closed, and doctor and dispatch report it.
+  agentErrors: Record<string, string>;
   repos: Record<string, string>;
   // The directories workers may run in, in config order; undefined when config.json has no `dirs` key, which is not the
   // same as an empty list: a list that is present will allow only what it names.
@@ -182,6 +206,20 @@ function parseLanes(raw: unknown): Lane[] {
   });
 }
 
+function stringList(obj: Record<string, unknown>, key: string, where: string): string[] {
+  const value = obj[key] ?? [];
+  if (!isStringList(value)) throw new ConfigError(`config: ${where}${key} must be a list of strings`);
+  return value;
+}
+
+function envNames(obj: Record<string, unknown>, where: string): string[] {
+  const env = stringList(obj, 'env', where);
+  const badName = env.find((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+  if (badName !== undefined)
+    throw new ConfigError(`config: ${where}env names "${badName}", which is not a variable name`);
+  return env;
+}
+
 function parseIntake(raw: unknown): IntakeConfig {
   const obj = raw === undefined ? {} : raw;
   if (!isRecord(obj)) throw new ConfigError('config: intake must be an object');
@@ -190,23 +228,100 @@ function parseIntake(raw: unknown): IntakeConfig {
     throw new ConfigError('config: intake.prompt must be a prompt with {url} in it');
   const priority = obj['priority'] ?? DEFAULT_PRIORITY;
   if (!isPriority(priority)) throw new ConfigError(`config: intake.priority must be one of ${PRIORITIES.join(', ')}`);
-  const tools = (key: string): string[] => {
-    const value = obj[key] ?? [];
-    if (!isStringList(value)) throw new ConfigError(`config: intake.${key} must be a list of strings`);
-    return value;
-  };
-  const env = tools('env');
-  const badName = env.find((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
-  if (badName !== undefined)
-    throw new ConfigError(`config: intake.env names "${badName}", which is not a variable name`);
   return {
     prompt,
     priority,
-    allowedTools: tools('allowedTools'),
-    disallowedTools: tools('disallowedTools'),
-    env,
-    mcpServers: tools('mcpServers'),
+    allowedTools: stringList(obj, 'allowedTools', 'intake.'),
+    disallowedTools: stringList(obj, 'disallowedTools', 'intake.'),
+    env: envNames(obj, 'intake.'),
+    mcpServers: stringList(obj, 'mcpServers', 'intake.'),
   };
+}
+
+export const AGENT_NAME_RULE =
+  'lowercase letters, digits and dashes, at most 32 characters, starting with a letter or a digit';
+export const isAgentName = (name: string): boolean => /^[a-z0-9][a-z0-9-]{0,31}$/.test(name);
+
+// The keys of one `agents` entry. Unlike the rest of config.json an unknown one is an error: a misspelt deny list would
+// leave the agent with no deny list.
+const AGENT_KEYS = [
+  'description',
+  'prompt',
+  'tools',
+  'allowedTools',
+  'disallowedTools',
+  'mcpServers',
+  'env',
+  'model',
+] as const;
+
+// A tool name, not a rule: arguments (`Bash(git status)`) belong in allowedTools.
+const isToolName = (tool: string): boolean => /^[A-Za-z][A-Za-z0-9_:.*-]*$/.test(tool);
+
+function parseAgent(name: string, entry: unknown): AgentConfig {
+  const where = `agents.${name}.`;
+  if (!isRecord(entry)) throw new ConfigError(`config: agents.${name} must be an object`);
+  for (const key of Object.keys(entry)) {
+    if (AGENT_KEYS.some((known) => known === key)) continue;
+    const near = nearestKey(key, AGENT_KEYS);
+    throw new ConfigError(
+      `config: agents.${name} has no key "${key.slice(0, 40)}"${near === undefined ? `; it takes ${AGENT_KEYS.join(', ')}` : `; did you mean "${near}"?`}`,
+    );
+  }
+  const description = entry['description'];
+  if (typeof description !== 'string' || description.trim() === '')
+    throw new ConfigError(`config: ${where}description must be a non-empty string`);
+  const prompt = entry['prompt'];
+  if (prompt !== undefined && typeof prompt !== 'string')
+    throw new ConfigError(`config: ${where}prompt must be a string`);
+  const model = entry['model'];
+  if (model !== undefined && (typeof model !== 'string' || !isModelName(model)))
+    throw new ConfigError(`config: ${where}model must be a model name`);
+  const tools = stringList(entry, 'tools', where);
+  if (tools.length === 0) throw new ConfigError(`config: ${where}tools must be a non-empty list of tool names`);
+  const badTool = tools.find((tool) => !isToolName(tool));
+  if (badTool !== undefined)
+    throw new ConfigError(
+      `config: ${where}tools names "${badTool.slice(0, 40)}", which is not a tool name; rules with arguments belong in allowedTools`,
+    );
+  const allowedTools = stringList(entry, 'allowedTools', where);
+  const disallowedTools = stringList(entry, 'disallowedTools', where);
+  const badRule = [...allowedTools, ...disallowedTools].find((rule) => rule.trim() === '' || rule.startsWith('-'));
+  if (badRule !== undefined)
+    throw new ConfigError(
+      `config: ${where}allowedTools and disallowedTools take tool rules, not "${badRule.slice(0, 40)}"`,
+    );
+  const mcpServers = stringList(entry, 'mcpServers', where);
+  if (mcpServers.some((server) => server.trim() === ''))
+    throw new ConfigError(`config: ${where}mcpServers must name servers`);
+  return {
+    description,
+    ...(prompt === undefined ? {} : { prompt }),
+    tools,
+    allowedTools,
+    disallowedTools,
+    env: envNames(entry, where),
+    mcpServers,
+    ...(model === undefined ? {} : { model }),
+  };
+}
+
+function parseAgents(raw: unknown): Pick<Config, 'agents' | 'agentErrors'> {
+  const agents: Record<string, AgentConfig> = {};
+  const agentErrors: Record<string, string> = {};
+  if (raw === undefined) return { agents, agentErrors };
+  if (!isRecord(raw)) throw new ConfigError('config: agents must be an object keyed by agent name');
+  for (const [name, entry] of Object.entries(raw)) {
+    try {
+      if (!isAgentName(name))
+        throw new ConfigError(`config: agent name "${name.slice(0, 40)}" must be ${AGENT_NAME_RULE}`);
+      agents[name] = parseAgent(name, entry);
+    } catch (error) {
+      if (!(error instanceof ConfigError)) throw error;
+      agentErrors[name] = error.message;
+    }
+  }
+  return { agents, agentErrors };
 }
 
 export function parseConfig(raw: unknown): Config {
@@ -243,6 +358,7 @@ export function parseConfig(raw: unknown): Config {
     autoUpdate,
     intake: parseIntake(raw['intake']),
     intakeEnabled: 'intake' in raw,
+    ...parseAgents(raw['agents']),
     repos,
     ...(dirs === undefined ? {} : { dirs }),
   };
@@ -258,6 +374,7 @@ const TOP_KEYS = [
   'maxRunHours',
   'autoUpdate',
   'intake',
+  'agents',
   'repos',
   'dirs',
 ] as const;
@@ -277,18 +394,25 @@ function editDistance(a: string, b: string): number {
   return previous[b.length] ?? 0;
 }
 
+// The known key a misspelt one most likely meant, if any is close.
+function nearestKey(key: string, known: readonly string[]): string | undefined {
+  const [nearest] = known
+    .map((name) => ({ name, distance: editDistance(key.toLowerCase(), name.toLowerCase()) }))
+    .sort((a, b) => a.distance - b.distance);
+  return nearest !== undefined && nearest.distance <= Math.max(2, Math.floor(nearest.name.length / 3))
+    ? nearest.name
+    : undefined;
+}
+
 function unknownKeys(obj: Record<string, unknown>, known: readonly string[], where: string): string[] {
   return Object.keys(obj)
     .filter((key) => !known.includes(key))
     .map((key) => {
-      const [nearest] = known
-        .map((name) => ({ name, distance: editDistance(key.toLowerCase(), name.toLowerCase()) }))
-        .sort((a, b) => a.distance - b.distance);
-      const close = nearest !== undefined && nearest.distance <= Math.max(2, Math.floor(nearest.name.length / 3));
+      const near = nearestKey(key, known);
       const shown = JSON.stringify(`${where}${key}`.slice(0, 80));
-      return close
-        ? `unknown key ${shown}, ignored; did you mean "${where}${nearest.name}"?`
-        : `unknown key ${shown}, ignored; known here: ${known.join(', ')}`;
+      return near === undefined
+        ? `unknown key ${shown}, ignored; known here: ${known.join(', ')}`
+        : `unknown key ${shown}, ignored; did you mean "${where}${near}"?`;
     });
 }
 

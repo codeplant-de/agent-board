@@ -455,6 +455,20 @@ test('wait --check stores the check on this machine, keeps the command off the b
   assert.ok(!(backend.writes[0] ?? '').includes('gh pr checks'));
 });
 
+test('wait --check is refused in an agent run (AGENT_BOARD_RESTRICTED), and a timer is not', async () => {
+  const { backend, go } = setup();
+  Object.assign(backend.tasks[0]!, { status: 'running', machine: CONFIG.machine });
+  const waits = fakeWaitStore();
+  await assert.rejects(
+    go(['wait', ID, '--check', 'true'], { waits, cwd: '/w', now: () => NOW, env: { AGENT_BOARD_RESTRICTED: '1' } }),
+    /runs as an agent.*--in or --at only/,
+  );
+  assert.deepEqual(waits.list(), []);
+  assert.deepEqual(backend.writes, []);
+  await go(['wait', ID, '--in', '20m'], { waits, cwd: '/w', now: () => NOW, env: { AGENT_BOARD_RESTRICTED: '1' } });
+  assert.equal(backend.tasks[0]?.status, 'waiting');
+});
+
 test('wait --check is refused for a task of another machine, and a refused wait drops its check', async () => {
   const other = setup();
   Object.assign(other.backend.tasks[0]!, { status: 'running', machine: 'elsewhere' });

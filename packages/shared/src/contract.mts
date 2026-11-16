@@ -97,6 +97,9 @@ export interface Task {
   // The Claude model the runs use (`claude --model`): an alias or a full id; null is claude's default. A clear value from the
   // server, so a worker shape-checks it with `isModelName` again before it reaches argv.
   model: string | null;
+  // The agent of the machine's config.json the task runs as, by name. Not part of the wire yet, so absent on every task a
+  // client reads; a worker that sees one runs only that agent, or not at all.
+  agent?: string | null;
   closed: boolean;
   // The machine that claimed the task last; a resume runs only there, because the Claude session lives on it.
   machine: string | null;

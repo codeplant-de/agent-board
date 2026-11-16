@@ -72,6 +72,8 @@ export const CONFIG: Config = {
     mcpServers: [],
   },
   intakeEnabled: true,
+  agents: {},
+  agentErrors: {},
   repos: { 'cosuno/cosuno': '/work/cosuno' },
 };
 
@@ -388,6 +390,7 @@ export interface FakeRunFiles extends RunFiles {
   alive: Map<string, Date>;
   pauses: Map<string, Date>;
   cwds: Map<string, string>;
+  agents: Map<string, string>;
 }
 
 // RunFiles in memory.
@@ -398,12 +401,15 @@ export function fakeRunFiles(now: () => Date = () => new Date()): FakeRunFiles {
     alive: new Map(),
     pauses: new Map(),
     cwds: new Map(),
+    agents: new Map(),
     writeRun: (id, record) => void files.runs.set(id, record),
     readRun: (id) => files.runs.get(id),
     lastActive: (id) => files.alive.get(id),
     touchAlive: (id, at = now()) => void files.alive.set(id, at),
     writeCwd: (id, cwd) => void files.cwds.set(id, cwd),
     lastCwd: (id) => files.cwds.get(id),
+    agentsPath: (id) => `/run/test/agent-board/${id}.agents`,
+    writeAgents: (id, content) => void files.agents.set(id, content),
     requestPause: (id) => void files.pauses.set(id, now()),
     pauseRequestedAt: (id) => files.pauses.get(id),
     clear(id) {
@@ -411,6 +417,7 @@ export function fakeRunFiles(now: () => Date = () => new Date()): FakeRunFiles {
       files.alive.delete(id);
       files.pauses.delete(id);
       files.cwds.delete(id);
+      files.agents.delete(id);
     },
   };
   return files;
