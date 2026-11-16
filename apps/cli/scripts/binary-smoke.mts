@@ -416,6 +416,33 @@ await check('the binary computes the same blind index for a dedupe key as node d
   );
   assert.ok(!sent.includes('github.com'), 'the PR URL must not reach the server');
 });
+await check(
+  'board schedule --key sends the blind index intake sends for the same PR URL, and --version the head index',
+  async () => {
+    requests.length = 0;
+    const result = await board(
+      ['schedule', '--key', PR_URL, '--version', 'abc123', '--json', '/review-pr', PR_URL, '--auto'],
+      config({ config: true }),
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      id: 'Ab3dEf9x',
+      url: `${url}/t/Ab3dEf9x`,
+      result: 'created',
+      status: 'todo',
+    });
+    const added = requests.find((request) => request.command === 'add-task');
+    assert.ok(added, 'schedule sent no add-task');
+    const draft = (JSON.parse(added.body) as { body: { dedupeKey: string; head: string } }).body;
+    assert.equal(draft.dedupeKey, await dedupeKeyIndex(KEYS, PR_URL));
+    assert.equal(draft.head, await headIndex(KEYS, 'abc123'));
+    // No field of the draft carries the key in clear; dedupeKey and head are blind indexes (checked above).
+    assert.ok(
+      !Object.values(draft as Record<string, unknown>).some((value) => value === PR_URL),
+      'the key must not reach the server',
+    );
+  },
+);
 await check('a board that no longer serves this binary says how to update it', async () => {
   await withBoard({ api: { version: API_VERSION + 1, minClient: API_VERSION + 1 } }, async () => {
     const result = await board(['tasks'], config());

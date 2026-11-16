@@ -1,7 +1,7 @@
 // A run's transcript: Claude Code's `--output-format stream-json` events, condensed to what a person reads when
 // they want to know why the agent did something. The worker sends them to the board in batches while the run goes on.
 import { ContractError, isSessionId, MAX_INT32, MAX_OUTPUT_SIZE, parseSealed } from './contract.mts';
-import { isRecord } from './guards.mts';
+import { isRecord, isStringList } from './guards.mts';
 
 interface EventBase {
   // Order within the run, from 0.
@@ -356,6 +356,53 @@ function sealedOrBust(value: unknown, field: 'tr.data' | 'tr.output', what: stri
     return parseSealed(value, field, what);
   } catch (error) {
     throw error instanceof ContractError ? new TranscriptError(error.message) : error;
+  }
+}
+
+/**
+ * An event as sealed by a worker, read back: the decrypted `tr.data` JSON. The worker that sealed it may be older or
+ * newer than this code, so every field is checked for its kind; a missing optional number is null and missing denials
+ * are none. A tool result's output is sealed apart and absent here, so it reads as ''. Anything else that does not fit
+ * is undefined, for the caller to show as unreadable rather than trust.
+ */
+export function parseTranscriptEvent(value: unknown): TranscriptEvent | undefined {
+  if (!isRecord(value)) return undefined;
+  const kind = KINDS.find((candidate) => candidate === value['kind']);
+  const { seq, at, text, isError } = value;
+  const parent = value['parent'] ?? null;
+  if (kind === undefined || typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0) return undefined;
+  if (typeof at !== 'string' || (parent !== null && typeof parent !== 'string')) return undefined;
+  const base = { seq, at, parent };
+  switch (kind) {
+    case 'text':
+    case 'note':
+      return typeof text === 'string' ? { ...base, kind, text } : undefined;
+    case 'thinking':
+      return typeof text === 'string' ? { ...base, kind, text, tokens: num(value['tokens']) } : undefined;
+    case 'tool_use': {
+      const { toolUseId, name } = value;
+      if (typeof toolUseId !== 'string' || typeof name !== 'string') return undefined;
+      return { ...base, kind, toolUseId, name, input: value['input'] ?? null };
+    }
+    case 'tool_result': {
+      const { toolUseId, output = '' } = value;
+      if (typeof toolUseId !== 'string' || typeof isError !== 'boolean' || typeof output !== 'string') return undefined;
+      return { ...base, kind, toolUseId, isError, output };
+    }
+    case 'result': {
+      const denials = value['denials'] ?? [];
+      if (typeof text !== 'string' || typeof isError !== 'boolean' || !isStringList(denials)) return undefined;
+      return {
+        ...base,
+        kind,
+        text,
+        isError,
+        turns: num(value['turns']),
+        durationMs: num(value['durationMs']),
+        costUsd: num(value['costUsd']),
+        denials,
+      };
+    }
   }
 }
 

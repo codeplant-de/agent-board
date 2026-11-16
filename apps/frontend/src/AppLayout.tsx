@@ -12,6 +12,7 @@ import {
 } from '@tabler/icons-react';
 import { useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { useLock } from './crypto/KeyContext';
 import { NewTaskModal } from './components/NewTaskModal';
 import { useDesktopNotifications } from './components/useDesktopNotifications';
@@ -86,7 +87,10 @@ export function AppLayout() {
         </Group>
       </AppShell.Header>
       <AppShell.Main>
-        <Outlet />
+        {/* A page that throws keeps the header; going to another page tries again. */}
+        <ErrorBoundary what="this page" resetKey={pathname}>
+          <Outlet />
+        </ErrorBoundary>
       </AppShell.Main>
       <NewTaskModal opened={creating} onClose={() => setCreating(false)} />
     </AppShell>

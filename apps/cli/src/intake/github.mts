@@ -7,7 +7,13 @@ import type { PrState } from '@agent-board/shared';
 export type RunCommand = (file: string, args: string[]) => Promise<{ stdout: string }>;
 
 const execFileAsync = promisify(execFile);
-const runCommand: RunCommand = (file, args) => execFileAsync(file, args, { maxBuffer: 32 * 1024 * 1024 });
+const execRunner =
+  (timeoutMs: number | undefined): RunCommand =>
+  (file, args) =>
+    execFileAsync(file, args, {
+      maxBuffer: 32 * 1024 * 1024,
+      ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
+    });
 
 export interface LivePr {
   url: string;
@@ -178,7 +184,9 @@ async function gh(run: RunCommand, args: string[], { keepAnswerOnError = false }
 }
 
 // One search for all repositories. A failed search throws: the caller must not take a partial listing for the whole queue.
-export function createGitHub(run: RunCommand = runCommand): GitHub {
+// `timeoutMs` ends a `gh` call that takes longer (with the default runner), which then fails like any other.
+export function createGitHub(run?: RunCommand, { timeoutMs }: { timeoutMs?: number } = {}): GitHub {
+  const exec = run ?? execRunner(timeoutMs);
   return {
     async listReviewRequested(repos) {
       if (repos.length === 0) return { prs: [], unreadable: [] };
@@ -188,7 +196,7 @@ export function createGitHub(run: RunCommand = runCommand): GitHub {
       let after: string | undefined;
       for (let page = 0; page < MAX_PAGES; page++) {
         const found = parseSearchPage(
-          await gh(run, [
+          await gh(exec, [
             'api',
             'graphql',
             '-f',
@@ -216,7 +224,7 @@ export function createGitHub(run: RunCommand = runCommand): GitHub {
         try {
           const found = parsePrStates(
             await gh(
-              run,
+              exec,
               [
                 'api',
                 'graphql',

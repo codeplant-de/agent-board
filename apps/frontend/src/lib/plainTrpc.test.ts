@@ -690,7 +690,7 @@ describe('opening what arrives', () => {
   });
 
   it('shows an event’s output size only as a whole number', async () => {
-    const event = { seq: 0, at: NOW, kind: 'tool_result', parent: null, name: 'Bash', isError: false };
+    const event = { seq: 0, at: NOW, kind: 'tool_result', parent: null, toolUseId: 'toolu_1', isError: false };
     const sealed = await sealAs(keys, transcriptBinding('tr.data', 'task1', 'run1', 0), JSON.stringify(event));
     const sizeOf = async (outputSize: unknown) => {
       handle.mockResolvedValue([{ seq: 0, at: NOW, kind: 'tool_result', parent: null, data: sealed, outputSize }]);

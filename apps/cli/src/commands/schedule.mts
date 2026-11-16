@@ -1,8 +1,10 @@
 // `board schedule [--priority p] [--model m] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
-// [--times <n> | --until <time>] [--polish] [--new] <prompt...>`: a task from a prompt, written as you would type it into Claude Code,
-// bound to this machine and the directory it was scheduled from. Before it creates one, a quick Haiku call checks whether
-// an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead. With `--polish` the
-// task goes to Backlog and a child task that polishes its prompt is queued, as the board's "Polish prompt" button does.
+// [--times <n> | --until <time>] [--polish] [--new] [--key <k> [--version <v>]] <prompt...>`: a task from a prompt, written as you
+// would type it into Claude Code, bound to this machine and the directory it was scheduled from. Before it creates one, a quick
+// Haiku call checks whether an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead.
+// With `--polish` the task goes to Backlog and a child task that polishes its prompt is queued, as the board's "Polish prompt"
+// button does. With `--key` the board itself dedupes by the key, and `--version` requeues the task when the version moved:
+// what a script that runs `board schedule` again and again needs.
 import { execFile } from 'node:child_process';
 import {
   AGENT_NAME_RULE,
@@ -22,6 +24,7 @@ import {
 import type { Command } from 'commander';
 import type { Backend, DraftStatus, Priority, Task } from '@agent-board/shared';
 import { UsageError } from '../cli.mts';
+import { BackendError } from '../backend/backend.mts';
 import { plainLine } from '../output/terminal.mts';
 
 export interface ScheduleArgs {
@@ -47,6 +50,9 @@ export interface ScheduleArgs {
   forceNew: boolean;
   // Parks it in Backlog and queues a task that polishes its prompt.
   polish: boolean;
+  // The board creates one task per key; asking again finds it. `version` is what the task was made for (a PR's head sha).
+  key: string | undefined;
+  version: string | undefined;
 }
 
 // The flags `board schedule` takes before the prompt, as commander hands them over.
@@ -65,7 +71,12 @@ export interface ScheduleFlags {
   cron?: string;
   times?: string;
   until?: string;
+  key?: string;
+  version?: string;
 }
+
+const KEY_MAX = 500;
+const VERSION_MAX = 200;
 
 export function addScheduleOptions(command: Command): Command {
   return command
@@ -91,7 +102,15 @@ export function addScheduleOptions(command: Command): Command {
     .option('--times <n>', 'end a repeat after this many runs, the first included')
     .option('--until <time>', 'end a repeat after this time')
     .option('--polish', 'park it in backlog and queue a task that polishes its prompt, as "Polish prompt" on the board')
-    .option('--new', 'skip the duplicate check');
+    .option('--new', 'skip the duplicate check')
+    .option(
+      '--key <key>',
+      'one task per key on the board: a second schedule with the same key finds the first instead of making another, with no duplicate check',
+    )
+    .option(
+      '--version <version>',
+      'with --key: what the task was made for (a PR head sha); a task in needs-me or done goes back to Todo when it differs',
+    );
 }
 
 // The flags are the board's own; the words after them are the prompt, flags included (`--auto`).
@@ -132,6 +151,8 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     until: undefined,
     forceNew: flags.new === true,
     polish,
+    key: undefined,
+    version: undefined,
   };
   if (flags.priority !== undefined) {
     if (!isPriority(flags.priority))
@@ -175,9 +196,43 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
   result.until = parseStart({ at: until }, now);
   if (result.until !== undefined && result.until.getTime() < (result.notBefore ?? now).getTime())
     throw new UsageError('--until is before the first run');
+  parseKeyFlags(flags, result, { hold, backlog, delayed: delay !== undefined || at !== undefined });
   result.prompt = words.join(' ').trim();
   if (result.prompt === '') throw new UsageError('a prompt is required');
   return result;
+}
+
+function checkedText(flag: string, value: string, max: number): string {
+  if (value.trim() === '') throw new UsageError(`${flag} must not be empty`);
+  if (/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(value)) throw new UsageError(`${flag} must not contain control characters`);
+  if (value.length > max) throw new UsageError(`${flag} is longer than ${max} characters`);
+  return value;
+}
+
+// `--key` and `--version`: the key is used as given, so the same text from any machine finds the same task.
+function parseKeyFlags(
+  flags: ScheduleFlags,
+  result: ScheduleArgs,
+  other: { hold: boolean; backlog: boolean; delayed: boolean },
+): void {
+  if (flags.key === undefined) {
+    if (flags.version !== undefined) throw new UsageError('--version belongs to --key: add --key');
+    return;
+  }
+  const conflicts = [
+    result.every !== undefined && '--every',
+    result.cron !== undefined && '--cron',
+    result.polish && '--polish',
+    other.hold && '--hold',
+    other.backlog && '--backlog',
+    other.delayed && '--in/--at',
+  ].filter((flag) => flag !== false);
+  if (conflicts.length > 0)
+    throw new UsageError(
+      `--key makes or finds one task in Todo, and requeues it into Todo; it cannot be combined with ${conflicts.join(', ')}`,
+    );
+  result.key = checkedText('--key', flags.key, KEY_MAX);
+  if (flags.version !== undefined) result.version = checkedText('--version', flags.version, VERSION_MAX);
 }
 
 // The time a delayed task starts, from `--in` or `--at`; undefined when neither is given.
@@ -334,14 +389,76 @@ async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<T
   return task;
 }
 
+// Why `--key` found a task and left it as it is.
+export type ExistsReason = 'closed' | 'same-version' | 'no-version' | 'busy' | 'other-agent' | 'changed';
+
+export type KeyedOutcome = { result: 'created' | 'requeued' } | { result: 'exists'; reason: ExistsReason };
+
 export interface Scheduled {
   task: Task;
+  // With `--key`: what became of the task.
+  keyed?: KeyedOutcome;
   // The task that polishes `task`'s prompt (`--polish`).
   polish?: Task;
 }
 
+// A task that waits for the user, or finished, goes back to Todo for a new version; one in any other status is busy with the old.
+const REQUEUEABLE: readonly Task['status'][] = ['needs-me', 'done'];
+
+// Finds or creates the task of the key; a new version requeues one that waits in Needs me or is Done.
+async function scheduleKeyed(deps: ScheduleDeps, args: ScheduleArgs, key: string): Promise<Scheduled> {
+  const { backend } = deps;
+  const { task, created } = await backend.addTask({
+    title: args.title || defaultTitle(args.prompt),
+    input: args.prompt,
+    status: 'todo',
+    dedupeKey: key,
+    createdBy: 'user',
+    machine: deps.machine,
+    workdir: deps.workdir,
+    ...(args.priority ? { priority: args.priority } : {}),
+    ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.agent === undefined ? {} : { agent: args.agent }),
+    ...(args.version === undefined ? {} : { head: args.version }),
+  });
+  const say = (verb: string, shown: Task, reason?: ExistsReason): void =>
+    (deps.confirm ?? deps.print)(`${verb} ${shown.id} ${deps.link(shown.id)}${reason ? ` (${reason})` : ''}`);
+  const exists = (shown: Task, reason: ExistsReason): Scheduled => {
+    say('exists', shown, reason);
+    return { task: shown, keyed: { result: 'exists', reason } };
+  };
+  if (created) {
+    say('created', task);
+    return { task, keyed: { result: 'created' } };
+  }
+  if (task.closed) return exists(task, 'closed');
+  if (args.version === undefined) return exists(task, 'no-version');
+  if (task.head !== null && task.head === (await backend.indexHead(args.version))) return exists(task, 'same-version');
+  if (!REQUEUEABLE.includes(task.status)) return exists(task, 'busy');
+  // The agent is written once; a task of another agent (or none) would run the new version under the wrong rules.
+  if (task.unreadable.includes('agent') || (task.agent ?? null) !== (args.agent ?? null))
+    return exists(task, 'other-agent');
+  let requeued: Task;
+  try {
+    // One atomic update, and only if the task is still as it was read: a head changed without the move would leave it behind.
+    requeued = await backend.updateTask(task.id, {
+      status: 'todo',
+      head: args.version,
+      next: 'fresh',
+      expect: task.status,
+    });
+  } catch (error) {
+    if (error instanceof BackendError && error.status === 409) return exists(task, 'changed');
+    throw error;
+  }
+  await backend.addNote(task.id, `New version ${args.version}. Queued again.`, { author: 'system' });
+  say('requeued', requeued);
+  return { task: requeued, keyed: { result: 'requeued' } };
+}
+
 export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<Scheduled | undefined> {
   const { backend } = deps;
+  if (args.key !== undefined) return scheduleKeyed(deps, args, args.key);
   if (args.every !== undefined || args.cron !== undefined) return { task: await scheduleRepeat(deps, args) };
   let warning: string | undefined;
   if (!args.forceNew) {
