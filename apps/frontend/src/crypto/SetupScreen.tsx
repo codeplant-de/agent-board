@@ -8,7 +8,6 @@ import {
   CopyButton,
   Group,
   Paper,
-  PasswordInput,
   Stack,
   Text,
   TextInput,
@@ -20,8 +19,10 @@ import { useState } from 'react';
 import { useTRPC } from '../lib/trpc';
 import { PRODUCTION_KDF, type KdfParams } from './kdf';
 import { createKeySetup } from './keySlots';
-import { PASSPHRASE_ADVICE, passphraseProblem, samePassphrase } from './passphrase';
+import { NewPassphraseFields, useNewPassphrase } from './NewPassphraseFields';
+import { PASSPHRASE_ADVICE } from './passphrase';
 import { recoveryGroups, sameRecoveryText } from './recoveryKey';
+import { useSubmit } from './useSubmit';
 
 // Which groups of the recovery key the person types back (1-based), to show they have a copy they can read.
 const CONFIRM_GROUPS = [3, 11] as const;
@@ -39,25 +40,12 @@ interface Props {
 }
 
 function PassphraseStep({ owner, kdf, onReady }: { owner: string; kdf: KdfParams; onReady: (ready: Ready) => void }) {
-  const [passphrase, setPassphrase] = useState('');
-  const [again, setAgain] = useState('');
-  const [busy, setBusy] = useState(false);
+  const passphrase = useNewPassphrase();
   const [firstTime, setFirstTime] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const problem = passphrase === '' ? null : passphraseProblem(passphrase);
-  const mismatch = again !== '' && !samePassphrase(again, passphrase);
-  const ready = firstTime && passphrase !== '' && problem === null && samePassphrase(again, passphrase);
-  const submit = async () => {
-    if (!ready || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      onReady(await createKeySetup({ owner, passphrase, kdf }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setBusy(false);
-    }
-  };
+  const ready = firstTime && passphrase.valid;
+  const { busy, error, submit } = useSubmit(async () => {
+    onReady(await createKeySetup({ owner, passphrase: passphrase.passphrase, kdf }));
+  }, ready);
   return (
     <form
       onSubmit={(event) => {
@@ -82,21 +70,7 @@ function PassphraseStep({ owner, kdf, onReady }: { owner: string; kdf: KdfParams
         <Text size="sm" c="dimmed">
           {PASSPHRASE_ADVICE}
         </Text>
-        <PasswordInput
-          label="Passphrase"
-          value={passphrase}
-          onChange={(event) => setPassphrase(event.currentTarget.value)}
-          error={problem}
-          autoComplete="new-password"
-          data-autofocus
-        />
-        <PasswordInput
-          label="Passphrase again"
-          value={again}
-          onChange={(event) => setAgain(event.currentTarget.value)}
-          error={mismatch ? 'The passphrases differ.' : null}
-          autoComplete="new-password"
-        />
+        <NewPassphraseFields state={passphrase} label="Passphrase" autoFocus />
         <Checkbox
           checked={firstTime}
           onChange={(event) => setFirstTime(event.currentTarget.checked)}
