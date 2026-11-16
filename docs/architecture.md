@@ -29,7 +29,7 @@ PR review was the first use. A task is any prompt you would type into Claude Cod
 | CLI       | `apps/cli`               | One program for people, agents and the worker machine. Runs from source on Node 24 or as a Bun-compiled binary. Its `internal` subcommands `dispatch`, `intake`, `listen` and `worker` run from systemd user units; `hook` is the PreToolUse hook Claude Code calls during a run. |
 | Slack app | `apps/slack`             | Optional companion container. Holds the Slack app token and the Socket Mode connection, answers `/board`, and reaches the backend only through the intake API. No state, no ingress, no database access.                                                                          |
 | Shared    | `packages/shared`        | No dependencies, consumed as source. The contract (`contract.mts`), the sealing rules (`sealing.mts`), crypto, key slots, the fixed server event texts, question and transcript shapes.                                                                                           |
-| Infra     | `infra/`, `*/Dockerfile` | Postgres init for compose, and a patch for the separate `codeplant-de/cloud-infra` repo (cluster, login proxy, backups).                                                                                                                                                          |
+| Infra     | `infra/`, `*/Dockerfile` | Postgres init for compose and the Slack app manifest. The cluster lives in the private `codeplant-de/cloud-infra` repo.                                                                                                                                                           |
 
 ## A task's life
 
