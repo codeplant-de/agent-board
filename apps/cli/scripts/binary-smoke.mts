@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -58,7 +59,8 @@ if (prebuilt === undefined)
 
 const root = mkdtempSync(join(tmpdir(), 'board-binary-smoke-'));
 const outside = mkdtempSync('/var/tmp/board-binary-smoke-');
-const binary = join(root, 'board');
+// The real path: the binary reports itself with /private/var, which os.tmpdir() (/var/folders) hides on macOS.
+const binary = join(realpathSync(root), 'board');
 copyFileSync(prebuilt ?? join(dist, `board-${target}`), binary);
 chmodSync(binary, 0o755);
 
@@ -202,6 +204,8 @@ function board(args: string[], configDir: string, env: Record<string, string> = 
         cwd: root,
         env: {
           PATH: path,
+          // As in a shell: without it os.tmpdir() is /tmp, and the temp-directory check could not see the binary on macOS.
+          TMPDIR: tmpdir(),
           HOME: root,
           XDG_CONFIG_HOME: join(root, 'xdg'),
           AGENT_BOARD_CONFIG_DIR: configDir,
