@@ -102,8 +102,8 @@ jobs:
         run: pnpm --filter @agent-board/cli test:binary
 
   # A change that raises MIN_CLIENT above the newest release makes that CLI fail against the server, so it must come
-  # with a higher CLI version. The rollout order is the "Upgrading" list in docs/setup.md. This check cannot be made
-  # required on the Free plan; the hard stop is the gate of cli-release-plan on main.
+  # with a higher CLI version. The rollout order is the "Upgrading" list in docs/setup.md. A required check; the gate of
+  # cli-release-plan on main stops a break that lands anyway.
   cli-release-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -214,7 +214,6 @@ jobs:
         if: steps.declared.outputs.raised == 'false'
         run: pnpm install --frozen-lockfile
 
-      # The repository is private; the workflow token reads its releases with `contents: read`.
       - name: Download the newest released CLI
         if: steps.declared.outputs.raised == 'false'
         env:
