@@ -5,7 +5,15 @@ import { checkDataKey, verifyContract } from '../backend/contract-check.mts';
 import type { ServerIdentity } from '../backend/contract-check.mts';
 import { looksLikeMachineToken, webUrlOf } from '../backend/web-config.mts';
 import type { WebConfig } from '../backend/web-config.mts';
-import { ConfigError, configWarnings, isOverrideWarning, isSafeMode, parseConfig } from '../config/config.mts';
+import {
+  ConfigError,
+  configWarnings,
+  hasIntakeLists,
+  intakeAgentProblem,
+  isOverrideWarning,
+  isSafeMode,
+  parseConfig,
+} from '../config/config.mts';
 import type { Config } from '../config/config.mts';
 import { plainLine } from '../output/terminal.mts';
 import {
@@ -390,6 +398,31 @@ function checkPlugins(
   });
 }
 
+// Intake's tasks run as its agent; the lists of its own are deprecated.
+function checkIntakeAgent(config: Config): CheckResult[] {
+  const reason = intakeAgentProblem(config);
+  if (reason !== undefined)
+    return [
+      problem(
+        'intake agent',
+        'fail',
+        `${reason}, so intake creates no tasks`,
+        'define it in agents or fix intake.agent',
+      ),
+    ];
+  if (config.intake.agent !== undefined) return [ok('intake agent', `tasks run as ${config.intake.agent}`)];
+  if (hasIntakeLists(config.intake))
+    return [
+      problem(
+        'intake agent',
+        'warn',
+        'intake still has its own allowedTools, disallowedTools, env or mcpServers; they are deprecated and a later release drops them',
+        'move them into agents.<name> and set intake.agent',
+      ),
+    ];
+  return [];
+}
+
 // What would make an agent's run fail or its rules dead letters: an agent that cannot be read, a plugin it names that does not
 // resolve, an allow rule for a tool its `tools` leave out. Intake's rules name plugins too.
 function checkAgents(config: Config, deps: DoctorDeps): CheckResult[] {
@@ -406,7 +439,12 @@ function checkAgents(config: Config, deps: DoctorDeps): CheckResult[] {
     ...(entries.length === 0 ? [] : [ok('agents', entries.map(([name]) => name).join(', '))]),
   ];
   const pluginFiles = readPluginFiles(deps);
-  if (config.intakeEnabled) results.push(...checkPlugins('config.json intake', 'intake', config.intake, pluginFiles));
+  if (config.intakeEnabled) {
+    results.push(
+      ...checkIntakeAgent(config),
+      ...checkPlugins('config.json intake', 'intake', config.intake, pluginFiles),
+    );
+  }
   for (const [name, agent] of entries) {
     results.push(...checkPlugins(`agent ${name}`, name, agent, pluginFiles));
     const dead = [

@@ -651,7 +651,7 @@ test('a task naming an agent this machine lacks is refused, a resume included, e
 });
 
 test('an agent name from the board that is not a name is shown quoted and cut, never raw', () => {
-  const lookup = agentFor(task({ id: 'a', agent: 'x\ny'.repeat(40) }), { agents: {}, agentErrors: {} });
+  const lookup = agentFor(task({ id: 'a', agent: 'x\ny'.repeat(40) }), { intake: {}, agents: {}, agentErrors: {} });
   assert.ok(lookup.kind === 'missing' && !lookup.reason.includes('\n') && lookup.reason.length < 90);
 });
 
@@ -706,7 +706,7 @@ test('plugin placeholders may name the marketplace', () => {
 });
 
 test('a machine leaves a task naming an agent it does not define to another machine', () => {
-  const config = { intakeEnabled: false, agents: { reviewer: REVIEWER }, agentErrors: {} };
+  const config = { intakeEnabled: false, intake: {}, agents: { reviewer: REVIEWER }, agentErrors: {} };
   const named = (agent: string | null, extra: Parameters<typeof task>[0] = { id: 'a' }) =>
     notServableHere(task({ input: 'x', ...extra, agent }), 'here', CONFIG.repos, config);
   assert.equal(named('reviewer'), undefined);
@@ -724,7 +724,7 @@ test('a machine leaves a task naming an agent it does not define to another mach
 });
 
 test('an intake task that names a defined agent needs the agent, not an intake block, and still a checkout', () => {
-  const config = { intakeEnabled: false, agents: { reviewer: REVIEWER }, agentErrors: {} };
+  const config = { intakeEnabled: false, intake: {}, agents: { reviewer: REVIEWER }, agentErrors: {} };
   const intake = (agent: string | null, input = `/review-pr ${PR}`) =>
     notServableHere(task({ id: 'a', input, createdBy: 'intake', agent }), 'here', CONFIG.repos, config);
   assert.equal(intake('reviewer'), undefined);
@@ -763,7 +763,7 @@ test('an agent that could not be read is missing with the reason, and a task nam
 });
 
 test('a pinned task naming a missing agent is not skipped, so a worker here can fail it with the reason', () => {
-  const config = { intakeEnabled: true, agents: {}, agentErrors: {} };
+  const config = { intakeEnabled: true, intake: {}, agents: {}, agentErrors: {} };
   const pinned = task({ id: 'a', input: '/grill', agent: 'ghost', machine: 'here', workdir: '/x' });
   assert.equal(notServableHere(pinned, 'here', CONFIG.repos, config), undefined);
   const resume = task({

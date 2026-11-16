@@ -127,7 +127,12 @@ export function notServableHere(
   task: Task,
   machine: string,
   repos: Record<string, string>,
-  config: { intakeEnabled: boolean; agents: Record<string, AgentConfig>; agentErrors: Record<string, string> },
+  config: {
+    intakeEnabled: boolean;
+    intake: { agent?: string };
+    agents: Record<string, AgentConfig>;
+    agentErrors: Record<string, string>;
+  },
 ): string | undefined {
   const pinned = pinnedMachine(task);
   if (pinned !== undefined && pinned !== machine) return `pinned to ${pinned}`;

@@ -7,6 +7,7 @@ import {
   ConfigError,
   configWarnings,
   isOverrideWarning,
+  intakeAgentProblem,
   isSafeMode,
   loadConfig,
   loadConfigWarnings,
@@ -422,4 +423,37 @@ test("an agent's other keys are type-checked", () => {
 
 test('agents is a known top-level key, so it draws no warning', () => {
   assert.deepEqual(configWarnings({ agents: {} }), []);
+});
+
+test('intake.agent names an agent and is kept', () => {
+  const config = parseConfig({ agents: { reviewer: REVIEWER }, intake: { agent: 'reviewer' } });
+  assert.equal(config.intake.agent, 'reviewer');
+  assert.equal(intakeAgentProblem(config), undefined);
+  assert.equal(parseConfig({ intake: {} }).intake.agent, undefined);
+});
+
+test('intake.agent that names no usable agent is not a config error, and intake reports it', () => {
+  const unknown = parseConfig({ intake: { agent: 'reviewer' } });
+  assert.match(intakeAgentProblem(unknown) ?? '', /names "reviewer", which agents in config.json does not define/);
+  const broken = parseConfig({
+    agents: { reviewer: { ...REVIEWER, disallowedTool: [] } },
+    intake: { agent: 'reviewer' },
+  });
+  assert.match(intakeAgentProblem(broken) ?? '', /which cannot be used \(config: agents.reviewer has no key/);
+  assert.equal(intakeAgentProblem(parseConfig({ intake: {} })), undefined);
+});
+
+test('intake.agent must be an agent name, and cannot come with the deprecated lists', () => {
+  for (const bad of ['Bad Name', 3, ''])
+    assert.throws(() => parseConfig({ intake: { agent: bad } }), /intake.agent must be an agent name/);
+  for (const lists of [
+    { allowedTools: ['Read'] },
+    { disallowedTools: ['Bash'] },
+    { env: ['X'] },
+    { mcpServers: ['s'] },
+  ])
+    assert.throws(
+      () => parseConfig({ agents: { reviewer: REVIEWER }, intake: { agent: 'reviewer', ...lists } }),
+      /intake sets both agent and the deprecated/,
+    );
 });
