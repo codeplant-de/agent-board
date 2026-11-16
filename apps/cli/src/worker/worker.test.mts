@@ -46,6 +46,7 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
     appendLog: (shortLink, text) => void calls.push(`append ${shortLink}: ${text}`),
     pluginPath: () => '/plugins/pr-review',
     dirExists: () => true,
+    pathExists: () => false,
     realpath: (path) => path,
     settingsEnv: () => ({}),
     mcpServers: () => ({ config: { mcpServers: {} }, missing: [] }),
@@ -379,7 +380,82 @@ test("a resume starts in the task's directory, and a missing one fails without s
   };
   await runWorker(gone.deps, 'w1');
   assert.equal(started, false);
-  assert.ok(gone.backend.writes.some((w) => w.includes("task's directory is gone: /repo/.claude/worktrees/feat-x")));
+  assert.ok(
+    gone.backend.writes.some(
+      (w) => w.includes("task's directory is gone: /repo/.claude/worktrees/feat-x") && w.includes('no git checkout'),
+    ),
+  );
+});
+
+// A resume of a task whose worktree was deleted, with the checkout `/repo` still there.
+function goneWorktree(overrides: Partial<Task> = {}) {
+  const made = setup({ exitCode: 0, signal: null });
+  Object.assign(made.backend.tasks[0]!, {
+    next: 'resume',
+    sessionId: SESSION,
+    machine: 'here',
+    workdir: '/repo/.claude/worktrees/feat-x',
+    ...overrides,
+  });
+  made.deps.sessions.record('w1', SESSION);
+  made.backend.notes.set('w1', [
+    note('asked', new Date('2026-11-13T10:00:00Z')),
+    note('go on', new Date('2026-11-13T10:05:00Z'), { author: 'user' }),
+  ]);
+  made.deps.dirExists = (path) => path !== '/repo/.claude/worktrees/feat-x';
+  made.deps.pathExists = (path) => path === '/repo/.git';
+  const runs: { invocation: Invocation; startDir: string | undefined }[] = [];
+  made.deps.run = async (invocation, _taskId, env) => {
+    runs.push({ invocation, startDir: env.AGENT_BOARD_START_DIR });
+    made.backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  return { ...made, runs };
+}
+
+test('a resume whose worktree is gone continues the session in the checkout that held it, and says so', async () => {
+  const { deps, backend, runs } = goneWorktree();
+  await runWorker(deps, 'w1');
+  const { invocation, startDir } = runs[0]!;
+  assert.equal(invocation.cwd, '/repo');
+  assert.equal(startDir, '/repo');
+  assert.ok(invocation.prompt.startsWith('The directory this session last worked in, /repo/.claude/worktrees/feat-x,'));
+  assert.ok(invocation.prompt.includes('continues the same session in /repo,'));
+  assert.ok(invocation.prompt.includes('go on'), 'the reply is still there');
+  assert.ok(
+    backend.writes.some(
+      (w) =>
+        w.startsWith('note w1 (system):') &&
+        w.includes('directory is gone: /repo/.claude/worktrees/feat-x') &&
+        w.includes('continues in /repo'),
+    ),
+  );
+  assert.ok(backend.writes.includes('workdir w1: /repo'));
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail ')));
+});
+
+test('a gone worktree whose checkout is not a listed directory is refused, naming the checkout', async () => {
+  const { deps, backend, runs } = goneWorktree();
+  withDirs(deps, '/srv/app');
+  await runWorker(deps, 'w1');
+  assert.equal(runs.length, 0);
+  assert.ok(
+    backend.writes.some(
+      (w) => w.startsWith('fail w1:') && w.includes('/repo, the checkout that held it, is not a listed directory'),
+    ),
+  );
+});
+
+test('a fresh run in a gone directory and an intake resume in one still fail as before', async () => {
+  const fresh = goneWorktree({ next: 'fresh', sessionId: null });
+  await runWorker(fresh.deps, 'w1');
+  assert.equal(fresh.runs.length, 0);
+  assert.ok(fresh.backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('Recreate it to run there')));
+
+  const intake = goneWorktree({ createdBy: 'intake' });
+  await runWorker(intake.deps, 'w1');
+  assert.equal(intake.runs.length, 0);
+  assert.ok(intake.backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('Recreate it to run there')));
 });
 
 test("the run's stream becomes readable log lines and a transcript sent with each check and at the end", async () => {

@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { BackendError } from '../backend/backend.mts';
 import { CONFIG, fakeBackend } from '../__tests__/helpers/fakes.mts';
-import { coveringDir, dirsToSend, isAllowedDir, isDirectory, syncDirs } from './dirs.mts';
+import { checkoutAbove, coveringDir, dirsToSend, isAllowedDir, isDirectory, syncDirs } from './dirs.mts';
 
 const dir = (path: string) => ({ path });
 
@@ -30,6 +30,19 @@ test('isAllowedDir allows everything without a list, nothing with an empty one, 
   assert.equal(isAllowedDir([dir('/a')], '/a/link-out', realpath), false, 'a link inside the list that leaves it');
   assert.equal(isAllowedDir([dir('/alias')], '/a/sub', realpath), true, 'a listed link counts through its target');
   assert.equal(isAllowedDir([dir('/a')], '/gone', realpath), false);
+});
+
+test('checkoutAbove finds the nearest parent with a .git, a worktree included, and never the path itself or the root', () => {
+  const has =
+    (...gits: string[]) =>
+    (path: string) =>
+      gits.includes(path);
+  assert.equal(checkoutAbove('/repo/.claude/worktrees/feat-x', has('/repo/.git')), '/repo');
+  assert.equal(checkoutAbove('/repo/.claude/worktrees/feat-x', has('/repo/.claude/worktrees/feat-x/.git')), undefined);
+  assert.equal(checkoutAbove('/a/b/c', has('/a/.git', '/a/b/.git')), '/a/b', 'the nearest wins');
+  assert.equal(checkoutAbove('/a/b', has('/.git')), undefined, 'not the root');
+  assert.equal(checkoutAbove('/a', has()), undefined);
+  assert.equal(checkoutAbove('/', has('/.git')), undefined);
 });
 
 test('isDirectory is true only for a directory that is there', () => {
