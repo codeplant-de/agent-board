@@ -1,5 +1,5 @@
 // The one line a person at a terminal gets when the board knows of a newer CLI than the one they run.
-import { updateCliHint } from '../backend/backend.mts';
+import { updateCliHint } from '../backend/contract-check.mts';
 import { isBehind } from './auto-update.mts';
 import type { UpdateState } from './update-state.mts';
 

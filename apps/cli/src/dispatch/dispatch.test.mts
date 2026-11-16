@@ -3,15 +3,16 @@ import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { runDispatch } from './dispatch.mts';
 import type { DispatchDeps } from './dispatch.mts';
-import { BackendError, createWebBackend } from '../backend/backend.mts';
+import { BackendError } from '../backend/backend.mts';
 import type { Fetch } from '../backend/backend.mts';
+import { createWebBackend } from '../backend/web-backend.mts';
 import { API_VERSION, MIN_SERVER } from '@agent-board/shared';
 import { RETRY_AFTER_FAILURE_MS, RETRY_AFTER_UNPUBLISHED_MS } from '../self/auto-update.mts';
 import type { UpdateDeps } from '../self/auto-update.mts';
 import type { AutoUpdate } from '../config/config.mts';
 import { parseWorkerUnits, SystemError } from '../setup/system.mts';
 import type { System } from '../setup/system.mts';
-import { START_MARKER } from './decide.mts';
+import { START_MARKER } from '../task-rules.mts';
 import {
   CONFIG,
   DATA_KEY,

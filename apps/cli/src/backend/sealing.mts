@@ -49,8 +49,9 @@ import type {
   WireTaskPatch,
   WireTranscriptEvent,
 } from '@agent-board/shared';
-import { BackendError, createWebBackend } from './backend.mts';
-import type { WebBackendOptions } from './backend.mts';
+import { BackendError } from './backend.mts';
+import { createWebBackend } from './web-backend.mts';
+import type { WebBackendOptions } from './web-backend.mts';
 
 const invalid = (command: string, message: string): BackendError => new BackendError(`${command}: ${message}`, 400);
 

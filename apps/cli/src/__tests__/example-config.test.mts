@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { isRecord } from '@agent-board/shared';
-import { buildInvocation, expandRule } from '../dispatch/decide.mts';
+import { buildInvocation, expandRule } from '../worker/plan.mts';
 import { configWarnings, parseConfig } from '../config/config.mts';
 import { task } from './helpers/fakes.mts';
 

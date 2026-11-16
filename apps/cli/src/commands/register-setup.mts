@@ -1,0 +1,213 @@
+import { execFile } from 'node:child_process';
+import { homedir, hostname } from 'node:os';
+import { Argument } from 'commander';
+import { ReportedFailure } from '../cli.mts';
+import { verifyContract } from '../backend/contract-check.mts';
+import { completionModel, renderCompletion, SHELLS } from './completion.mts';
+import type { Shell } from './completion.mts';
+import { getPaths, loadConfig } from '../config/config.mts';
+import { formatResult, hasFailure, realDoctorDeps, runChecks } from '../setup/doctor.mts';
+import type { CheckResult, DoctorDeps } from '../setup/doctor.mts';
+import { clackPrompts, init } from '../setup/init.mts';
+import type { InitFlags } from '../setup/init.mts';
+import { EXEC_PATH, isCompiledBinary } from '../self/self.mts';
+import { realGh, realListenerRestart, selfUpdate } from '../self/self-update.mts';
+import type { SelfUpdateFlags } from '../self/self-update.mts';
+import { releaseVersion } from '../self/version.mts';
+import { realSetupDeps, setup, unitDirectory, whichOnPath } from '../setup/setup.mts';
+import type { SetupDeps, SetupFlags } from '../setup/setup.mts';
+import { plainLine } from '../output/terminal.mts';
+import { examples, paragraphs, SETUP } from './help-text.mts';
+import type { ProgramShared } from './program-shared.mts';
+
+export function registerSetupCommands(shared: ProgramShared): void {
+  const { program, options, env, inRun, writeOut, out, makeContext, writeJson, jsonOption, notInRun } = shared;
+  const systemctlCode: DoctorDeps['systemctl'] =
+    options.systemctlCode ??
+    ((args) =>
+      new Promise<number>((resolve) => {
+        execFile('systemctl', args, (error) =>
+          resolve(error === null ? 0 : typeof error.code === 'number' ? error.code : 1),
+        );
+      }));
+  const setupDeps = (): SetupDeps => ({
+    ...realSetupDeps(env, out, loadConfig(getPaths(env).configFile, { optionalConfig: true }).intakeEnabled),
+    ...(options.which ? { which: options.which } : {}),
+    ...(options.platform ? { platform: options.platform } : {}),
+    ...(options.runSystem ? { run: options.runSystem } : {}),
+    unitEnabled: async (unit) => (await systemctlCode(['--user', 'is-enabled', unit])) === 0,
+  });
+  const doctorDeps = (): DoctorDeps => {
+    const { configDir } = getPaths(env);
+    const systemctl = systemctlCode;
+    const which = options.which ?? ((program: string) => whichOnPath(program, env['PATH']));
+    return {
+      ...realDoctorDeps(configDir, unitDirectory(env), systemctl, which, homedir(), options.which),
+      verifyServer: options.verifyServer ?? ((config) => verifyContract(config)),
+    };
+  };
+  const reportChecks = (results: CheckResult[], json: boolean): void => {
+    if (json) writeJson(results);
+    else for (const result of results) out(formatResult(result));
+    if (hasFailure(results)) throw new ReportedFailure('a check failed');
+  };
+
+  program
+    .command('init')
+    .helpGroup(SETUP)
+    .summary('write web.json, env and config.json for this machine')
+    .description(
+      paragraphs(
+        "Set this machine up for the board: write web.json (the board's URL), env (the machine token and the data key, mode 600) and, if it is missing, config.json (from the example, with this machine's name). Then run the checks of `board doctor`.",
+        'Set up encryption in the browser first: init asks for the data key from the board\'s Settings page as well as the token. The page offers the env lines to copy (`AGENT_BOARD_TOKEN=…`, `AGENT_BOARD_DATA_KEY=…`). At a prompt paste one line: the bare value, or its own line (a prompt takes one line, so the other line is refused, naming which one it wants); a file or pipe given with --token-file or --data-key-file may hold both lines. Without flags it asks. For a script give --url, --token-file and --data-key-file: a secret never goes on the command line, where it would land in the shell history. A secret file must be mode 600 or 400 like env, which a pipe is: `printf %s "$TOKEN" | board init --url … --token-file /dev/stdin --data-key-file ~/key`; only one of the two can be /dev/stdin. --machine defaults to the host name.',
+        'A file that exists is kept unless --force, which copies it to <name>.bak-<timestamp> first (an env backup is mode 600 at most) and keeps what you do not give again: the URL, the token, the data key and any other line of env. An env that has the token but no data key (or the reverse) is completed without --force: init asks for the missing value only. config.json is never replaced.',
+        'Not available inside a board run.',
+      ),
+    )
+    .option('--url <url>', "the board's URL (https, or http for localhost)")
+    .option(
+      '--token-file <path>',
+      'read the machine token from this file: the bare token or the env line(s) the Settings page offers (mode 600 or 400, or a pipe)',
+    )
+    .option(
+      '--data-key-file <path>',
+      'read the data key from this file: the bare key or the env line(s) the Settings page offers (mode 600 or 400, or a pipe)',
+    )
+    .option('--machine <name>', "this machine's name on the board (default: the host name)")
+    .option('--force', 'replace web.json and env after backing them up')
+    .addHelpText(
+      'after',
+      examples(
+        'board init',
+        'printf %s "$TOKEN" | board init --url https://board.example.com --token-file /dev/stdin --data-key-file ~/key --machine laptop',
+      ),
+    )
+    .action(async (flags: InitFlags) => {
+      notInRun('board init is not available inside a board run');
+      const { configDir } = getPaths(env);
+      await init(
+        {
+          configDir,
+          interactive: options.interactive ?? process.stdin.isTTY === true,
+          prompts: options.prompts ?? clackPrompts(),
+          hostName: options.hostName ?? hostname().split('.')[0] ?? 'machine',
+          now: options.now ?? (() => new Date()),
+          print: out,
+        },
+        flags,
+      );
+      out('');
+      const results = await runChecks(doctorDeps());
+      for (const result of results) out(formatResult(result));
+      out('\nNext, on a worker machine: board setup');
+      if (hasFailure(results)) throw new ReportedFailure('a check failed');
+    });
+
+  jsonOption(
+    program
+      .command('doctor')
+      .helpGroup(SETUP)
+      .summary('check this machine: config, token, server, worker tools and units')
+      .description(
+        paragraphs(
+          'Check this machine, read-only, one line per check: ✓ passes, ✗ fails (with a fix), ! is a warning. Exit 1 if any check fails; warnings alone exit 0. The token is never printed.',
+          'Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600 or 400, token, data key), the board (reachable, token accepted, API version range, and whether it has a data key and this machine holds the same one), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers and the listener. The worker checks only warn on a machine with no unit installed.',
+        ),
+      )
+      .addHelpText('after', examples('board doctor', 'board doctor --json')),
+  ).action(async (flags: { json?: boolean }) => {
+    reportChecks(await runChecks(doctorDeps()), flags.json === true);
+  });
+
+  program
+    .command('setup')
+    .helpGroup(SETUP)
+    .summary('install the dispatch timer (and intake, if configured) and the listener as systemd user units')
+    .description(
+      paragraphs(
+        'Install this machine as a worker: write the dispatch service and timer, the intake service and timer when config.json has an `intake` key, and the listener service into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies, run `systemctl --user daemon-reload` and print the line that enables them. The listener holds a stream to the board and starts a dispatch tick within a second of a change; the timers stay as the fallback. Run it again after moving the binary or the checkout, or upgrading Node. It needs Linux with systemd and flock.',
+        'The services run this CLI the way `board setup` was started: the binary, or the checkout with its Node. --print shows the units and changes nothing; --enable also enables and starts the timers and the listener. When an installed unit differs from what it writes, the differing lines are shown. It refuses unless --force when this checkout is not the one the installed ~/.local/bin/board runs from (a worktree, a scratch copy), or when a binary runs from the temp directory, so it cannot take over the live timers. Without an `intake` key it leaves installed intake units alone and does not enable them. Not available inside a board run.',
+      ),
+    )
+    .option('--enable', 'also enable and start the timers and the listener')
+    .option(
+      '--force',
+      'install although this checkout is not the installed one, or the binary runs from the temp directory',
+    )
+    .option('--print', 'print the units and change nothing')
+    .addHelpText('after', examples('board setup', 'board setup --print', 'board setup --enable'))
+    .action(async (flags: SetupFlags) => {
+      notInRun('board setup is not available inside a board run');
+      await setup(setupDeps(), flags);
+    });
+
+  program
+    .command('self-update')
+    .helpGroup(SETUP)
+    .summary('replace this binary with the newest release')
+    .description(
+      paragraphs(
+        'Download the newest cli-v* release of codeplant-de/agent-board with `gh`, check it against SHA256SUMS and replace this binary with it, then restart the listener if it runs (`systemctl --user try-restart`). Running workers keep the old file until they end. --check only reports whether a newer release exists.',
+        'It needs `gh`, logged in. A checkout is updated with `git pull` and `pnpm install` instead, and says so. Not available inside a board run.',
+      ),
+    )
+    .option('--check', 'only report whether a newer release exists')
+    .addHelpText('after', examples('board self-update --check', 'board self-update'))
+    .action(async (flags: SelfUpdateFlags) => {
+      notInRun('board self-update is not available inside a board run');
+      await selfUpdate(
+        {
+          compiled: isCompiledBinary(),
+          version: releaseVersion(),
+          execPath: EXEC_PATH,
+          platform: options.platform ?? process.platform,
+          arch: process.arch,
+          gh: options.gh ?? realGh(env),
+          restartListener: options.restartListener ?? realListenerRestart({ block: true }),
+          print: out,
+        },
+        flags,
+      );
+    });
+
+  program
+    .command('completion')
+    .helpGroup(SETUP)
+    .summary('print a shell completion script')
+    .description(
+      paragraphs(
+        'Print a completion script for bash, zsh or fish: commands, flags, statuses and priorities, and the ids of your tasks and schedules (asked from the board, with a 2 second limit).',
+        'Install it once:\n  bash: board completion bash > ~/.local/share/bash-completion/completions/board\n  zsh:  board completion zsh > "${fpath[1]}/_board"   (a directory on your fpath)\n  fish: board completion fish > ~/.config/fish/completions/board.fish',
+      ),
+    )
+    .addArgument(new Argument('<shell>', 'bash, zsh or fish').choices(SHELLS))
+    .addHelpText('after', examples('board completion bash', 'eval "$(board completion zsh)"'))
+    .action((shell: Shell) => {
+      writeOut(renderCompletion(shell, completionModel(program)));
+    });
+
+  // What a completion script asks for: `id<TAB>title` lines. Any failure, a missing config, no network or a run, prints nothing.
+  program
+    .command('__complete', { hidden: true })
+    .argument('[kind]')
+    .allowExcessArguments()
+    .action(async (kind: string | undefined) => {
+      if (inRun) return;
+      const limitMs = 2000;
+      try {
+        const context = makeContext(false, { optionalConfig: true, timeoutMs: limitMs });
+        const lines = async (): Promise<string[]> => {
+          const oneLine = (text: string): string => plainLine(text.replace(/\s+/g, ' '));
+          if (kind === 'tasks')
+            return (await context.backend.listTasks()).map((task) => `${task.id}\t${oneLine(task.title)}`);
+          if (kind === 'schedules')
+            return (await context.backend.listSchedules()).map((item) => `${item.id}\t${oneLine(item.title)}`);
+          return [];
+        };
+        const timeout = new Promise<string[]>((resolve) => setTimeout(() => resolve([]), limitMs).unref());
+        for (const line of await Promise.race([lines().catch(() => []), timeout])) out(line);
+      } catch {
+        // Completion stays silent: a broken prompt is worse than a missing suggestion.
+      }
+    });
+}

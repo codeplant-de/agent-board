@@ -3,7 +3,8 @@
  * looks at its run inbox again. The watch's tick is the fallback, so a stream that cannot be had is no failure.
  */
 import { machineHeaders } from '../backend/backend.mts';
-import type { Fetch, WebConfig } from '../backend/backend.mts';
+import type { Fetch } from '../backend/backend.mts';
+import type { WebConfig } from '../backend/web-config.mts';
 import { createSseParser } from '../backend/sse.mts';
 import { errorText } from '../output/text.mts';
 

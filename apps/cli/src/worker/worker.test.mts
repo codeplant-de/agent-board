@@ -3,10 +3,11 @@ import { test } from 'node:test';
 import { MAX_BATCH_EVENTS } from '@agent-board/shared';
 import type { Note, Task } from '@agent-board/shared';
 import { BackendError } from '../backend/backend.mts';
-import { START_MARKER } from '../dispatch/decide.mts';
-import type { Invocation, Supervision } from '../dispatch/decide.mts';
+import { START_MARKER } from '../task-rules.mts';
+import type { Invocation, Supervision } from './plan.mts';
 import { runWorker } from './worker.mts';
-import type { RunChannel, RunResult, Watch, WorkerDeps } from './worker.mts';
+import type { RunChannel, RunResult, Watch } from './process.mts';
+import type { WorkerDeps } from './worker.mts';
 import {
   CONFIG,
   fakeBackend,

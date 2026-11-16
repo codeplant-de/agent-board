@@ -5,8 +5,11 @@
  */
 import { spawn } from 'node:child_process';
 import { ConfigError, getPaths } from '../config/config.mts';
-import { BackendError, loadWebConfig, machineHeaders, requireFeature, verifyContract } from '../backend/backend.mts';
-import type { Fetch, WebConfig } from '../backend/backend.mts';
+import { BackendError, machineHeaders, requireFeature } from '../backend/backend.mts';
+import type { Fetch } from '../backend/backend.mts';
+import { verifyContract } from '../backend/contract-check.mts';
+import { loadWebConfig } from '../backend/web-config.mts';
+import type { WebConfig } from '../backend/web-config.mts';
 import { createSseParser } from '../backend/sse.mts';
 import type { SseEvent } from '../backend/sse.mts';
 import { print } from '../cli.mts';

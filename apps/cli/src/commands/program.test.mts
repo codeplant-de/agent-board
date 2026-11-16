@@ -8,7 +8,7 @@ import { BackendError } from '../backend/backend.mts';
 import { UsageError } from '../cli.mts';
 import type { LinkingContext } from '../cli.mts';
 import { runBoard } from './program.mts';
-import type { ProgramOptions } from './program.mts';
+import type { ProgramOptions } from './program-shared.mts';
 import { CONFIG, fakeBackend, fakeWaitStore, linkTo, task } from '../__tests__/helpers/fakes.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
@@ -270,7 +270,7 @@ test('help for an unknown command and a bare --dry-run are plain', async () => {
 // The invocations agents use today: the run rules and the hook's messages in the source, and the selftest skills.
 function boardCommands(): string[] {
   const sources = [
-    readFileSync(new URL('../dispatch/decide.mts', import.meta.url), 'utf8'),
+    readFileSync(new URL('../worker/prompts.mts', import.meta.url), 'utf8'),
     readFileSync(new URL('../worker/hook.mts', import.meta.url), 'utf8'),
     ...readdirSync(new URL('../__tests__/fixtures/skills/', import.meta.url)).map((name) =>
       readFileSync(new URL(`../__tests__/fixtures/skills/${name}/SKILL.md`, import.meta.url), 'utf8'),

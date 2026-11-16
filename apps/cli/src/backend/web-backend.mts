@@ -1,0 +1,207 @@
+import {
+  isSafeMachineName,
+  MACHINE_NAME_RULE,
+  isSafeTaskId,
+  neededServerFeature,
+  parseWireAddScheduleResult,
+  parseWireAddTaskResult,
+  parseWireWakeResult,
+  parseWireFailResult,
+  parseWireNotes,
+  parseWireRunInbox,
+  parseWireSchedule,
+  parseWireSchedules,
+  parseWireTask,
+  parseWireTasks,
+  SERVER_FEATURE_LABELS,
+} from '@agent-board/shared';
+import type { Keys, ListOptions, SendableFeatures, ServerFeature, SkippedItem, WireBackend } from '@agent-board/shared';
+import { asBackendError, BackendError, callServer, requireFeature } from './backend.mts';
+import type { Fetch, MachineRequest } from './backend.mts';
+import { checkDataKey, keyProblemMessage, verifyContract } from './contract-check.mts';
+import type { ServerIdentity } from './contract-check.mts';
+import type { WebConfig } from './web-config.mts';
+
+export interface WebBackendOptions {
+  // Called on the first request, so a command that fails on usage needs no credentials.
+  loadConfig: () => WebConfig;
+  fetch?: Fetch;
+  // Per request; commands that must answer quickly, such as completion, shorten it.
+  timeoutMs?: number;
+  // Called for each task, note or schedule a list answer leaves out because of an enum value this CLI does not know.
+  onSkip?: (skipped: SkippedItem) => void;
+  // Which values the CLI sends need a server feature; tests hand in a table, the default is the shared one.
+  sendable?: SendableFeatures;
+  // Called with a line for a degraded call, such as a suggested reply the server cannot take.
+  warn?: (line: string) => void;
+  // Told what the board answered to the version check, once per process.
+  onServer?: (identity: ServerIdentity) => void;
+}
+
+// The board over HTTP with sealed values, and the keys of the board it is connected to.
+export interface WebBackend extends WireBackend {
+  keys(): Promise<Keys>;
+}
+
+interface Connection {
+  config: WebConfig;
+  keys: Keys;
+  features: ReadonlySet<string>;
+  dirsIndex: string | null;
+}
+
+// The server feature each command needs; a command not listed works on every server this CLI accepts.
+const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
+  'attach-session': 'attach-session',
+  wait: 'wait',
+  wake: 'wait',
+  'set-pr': 'task.pr',
+  'set-pr-state': 'task.pr-state',
+  'run-inbox': 'run-inbox',
+  'ack-messages': 'run-inbox',
+  stopped: 'run-inbox',
+  'set-dirs': 'machine.dirs',
+};
+
+export function createWebBackend(options: WebBackendOptions): WebBackend {
+  // Loads the config, checks the API range and the data key once, before the first real call.
+  let ready: Promise<Connection> | undefined;
+  const connect = (): Promise<Connection> => {
+    ready ??= (async () => {
+      const config = options.loadConfig();
+      const identity = await verifyContract(config, options.fetch, options.timeoutMs);
+      options.onServer?.(identity);
+      const checked = await checkDataKey(config.dataKey, identity);
+      if ('problem' in checked) throw new BackendError(keyProblemMessage(checked));
+      return { config, keys: checked.keys, features: identity.features, dirsIndex: identity.dirsIndex ?? null };
+    })();
+    return ready;
+  };
+
+  // Connects, then refuses a command the server lacks the feature for, before anything is sent.
+  const connectFor = async (command: string): Promise<Connection> => {
+    const connection = await connect();
+    const feature = COMMAND_FEATURES[command];
+    if (feature !== undefined) requireFeature(connection.features, feature);
+    return connection;
+  };
+
+  // Refuses to send a status or priority that needs a server feature the server lacks.
+  const requireSendable = async (values: Parameters<typeof neededServerFeature>[0]): Promise<void> => {
+    const feature = neededServerFeature(values, options.sendable);
+    if (feature !== undefined) requireFeature((await connect()).features, feature);
+  };
+
+  // Refuses to send a model to a server that would not read it.
+  const requireModelSupport = async (draft: { model?: string }): Promise<void> => {
+    if (draft.model !== undefined) requireFeature((await connect()).features, 'task.model');
+  };
+
+  async function call<T>(command: string, request: MachineRequest, parse: (value: unknown) => T): Promise<T> {
+    const result = await callServer(
+      (await connectFor(command)).config,
+      command,
+      request,
+      options.fetch,
+      options.timeoutMs,
+    );
+    try {
+      return parse(result);
+    } catch (error) {
+      throw asBackendError(command, error);
+    }
+  }
+
+  const send = async (command: string, request: MachineRequest): Promise<void> => {
+    await callServer((await connectFor(command)).config, command, request, options.fetch, options.timeoutMs);
+  };
+
+  const listOptions: ListOptions = options.onSkip === undefined ? {} : { onSkip: options.onSkip };
+
+  const taskId = (id: string): string => {
+    if (!isSafeTaskId(id)) throw new BackendError(`"${id.slice(0, 40)}" is not a valid task id`);
+    return id;
+  };
+
+  const scheduleId = (id: string): string => {
+    if (!isSafeTaskId(id)) throw new BackendError(`"${id.slice(0, 40)}" is not a valid schedule id`);
+    return id;
+  };
+
+  return {
+    keys: async () => (await connect()).keys,
+    listTasks: async ({ all = false } = {}) => {
+      const tasks = await call('list-tasks', { all }, (value) => parseWireTasks(value, listOptions));
+      return all ? tasks : tasks.filter((task) => !task.closed);
+    },
+    getTask: async (id) => call('get-task', { id: taskId(id) }, parseWireTask),
+    attachSession: async (id) => call('attach-session', { id: taskId(id) }, parseWireTask),
+    addTask: async (draft) => {
+      await requireSendable(draft);
+      await requireModelSupport(draft);
+      return call('add-task', { body: draft }, parseWireAddTaskResult);
+    },
+    updateTask: async (id, patch) => {
+      const checkedId = taskId(id);
+      await requireSendable(patch);
+      return call('update-task', { id: checkedId, body: patch }, parseWireTask);
+    },
+    async claimTask(id, machine) {
+      if (!isSafeMachineName(machine))
+        throw new BackendError(`"${machine.slice(0, 40)}" is not a valid machine name: use ${MACHINE_NAME_RULE}`);
+      try {
+        return await call('claim-task', { id: taskId(id), machine }, parseWireTask);
+      } catch (error) {
+        // A lost claim is an answer, not a failure: the caller moves on to the next task. 404: the card was removed
+        // (a paused or deleted schedule's occurrence) after the dispatcher listed it.
+        if (error instanceof BackendError && (error.status === 409 || error.status === 404)) return undefined;
+        throw error;
+      }
+    },
+    async addNote(id, note, { author = 'agent', kind = 'comment' } = {}) {
+      const checkedId = taskId(id);
+      const { features } = await connect();
+      if (kind === 'polish') requireFeature(features, 'note.polish');
+      // A reply the agent expects is advice: without the feature the comment goes out alone, and the agent is told.
+      const { suggestion, ...plain } = note;
+      const unsupported = suggestion !== undefined && !features.has('note.suggestion');
+      if (unsupported)
+        options.warn?.(
+          `the board server does not support ${SERVER_FEATURE_LABELS['note.suggestion']} yet; the comment is posted without it`,
+        );
+      await send('add-note', {
+        id: checkedId,
+        author,
+        ...(kind === 'comment' ? {} : { kind }),
+        body: unsupported ? plain : note,
+      });
+    },
+    ask: async (id, asked) => send('ask', { id: taskId(id), body: asked }),
+    heartbeat: async (id, beat) => send('heartbeat', { id: taskId(id), body: beat }),
+    setPr: async (id, body) => send('set-pr', { id: taskId(id), body }),
+    setPrState: async (id, body) => send('set-pr-state', { id: taskId(id), body }),
+    setDirs: async (body) => send('set-dirs', { body }),
+    dirsState: async () => {
+      const { features, dirsIndex } = await connect();
+      return { supported: features.has('machine.dirs'), index: dirsIndex };
+    },
+    pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
+    fail: async (id, note) => call('fail', { id: taskId(id), body: note }, parseWireFailResult),
+    wait: async (id, wait) => call('wait', { id: taskId(id), body: wait }, parseWireTask),
+    wake: async (id, note) => call('wake', { id: taskId(id), body: note }, parseWireWakeResult),
+    runInbox: async (id) => call('run-inbox', { id: taskId(id) }, parseWireRunInbox),
+    ackMessages: async (id, ack) => send('ack-messages', { id: taskId(id), body: ack }),
+    stopped: async (id, note) => call('stopped', { id: taskId(id), body: note }, parseWireTask),
+    transcript: async (id, batch) => send('transcript', { id: taskId(id), body: batch }),
+    readNotes: async (id) => call('read-notes', { id: taskId(id) }, (value) => parseWireNotes(value, listOptions)),
+    addSchedule: async (draft) => {
+      await requireSendable(draft);
+      await requireModelSupport(draft);
+      return call('add-schedule', { body: draft }, parseWireAddScheduleResult);
+    },
+    listSchedules: async () => call('list-schedules', {}, (value) => parseWireSchedules(value, listOptions)),
+    updateSchedule: async (id, patch) =>
+      call('update-schedule', { id: scheduleId(id), body: patch }, parseWireSchedule),
+    removeSchedule: async (id) => send('remove-schedule', { id: scheduleId(id) }),
+  };
+}

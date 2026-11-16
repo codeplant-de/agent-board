@@ -6,7 +6,7 @@ import { formatTasks } from '../board.mts';
 import { UsageError } from '../../cli.mts';
 import type { LinkingContext } from '../../cli.mts';
 import { runBoard } from '../program.mts';
-import type { ProgramOptions } from '../program.mts';
+import type { ProgramOptions } from '../program-shared.mts';
 import { haikuDuplicateCheck } from '../schedule.mts';
 import { createStyle } from '../../output/style.mts';
 import { CONFIG, fakeBackend, linkTo, note, schedule, task } from '../../__tests__/helpers/fakes.mts';

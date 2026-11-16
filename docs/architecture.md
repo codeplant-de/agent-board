@@ -127,24 +127,25 @@ Break one of these only with a decision recorded here.
 
 ## Where to find things
 
-| Concern                                  | Code                                                             |
-| ---------------------------------------- | ---------------------------------------------------------------- |
-| Wire types, statuses, `API_VERSION` etc. | `packages/shared/src/contract.mts`                               |
-| Sealing bindings, crypto                 | `packages/shared/src/sealing.mts`, `crypto.mts`, `keys.mts`      |
-| Machine API                              | `apps/backend/src/machine-api.ts`                                |
-| UI API                                   | `apps/backend/src/trpc/router.ts`                                |
-| Task logic, schedules, retention         | `apps/backend/src/services/`                                     |
-| Schema, RLS scope, migrations            | `apps/backend/src/db/`, `apps/backend/drizzle/`                  |
-| Change events                            | `apps/backend/src/services/changes.ts` (in-process, one replica) |
-| Dispatch decisions                       | `apps/cli/src/dispatch/decide.mts`, `dispatch.mts`               |
-| Running Claude, transcripts              | `apps/cli/src/worker/worker.mts`, `transcript-upload.mts`        |
-| Hook                                     | `apps/cli/src/worker/hook.mts`                                   |
-| Intake                                   | `apps/cli/src/intake/intake.mts`, `github.mts`                   |
-| Slack app, Slack intake API              | `apps/slack/src/`, `apps/backend/src/intake-api.ts`              |
-| Slack inbox and links                    | `apps/backend/src/services/slack.ts`                             |
-| systemd units                            | `apps/cli/src/setup/setup.mts`, `system.mts`                     |
-| The `board` commands                     | `apps/cli/src/commands/`                                         |
-| Browser keys                             | `apps/frontend/src/crypto/`                                      |
+| Concern                                  | Code                                                                     |
+| ---------------------------------------- | ------------------------------------------------------------------------ |
+| Wire types, statuses, `API_VERSION` etc. | `packages/shared/src/contract.mts`                                       |
+| Sealing bindings, crypto                 | `packages/shared/src/sealing.mts`, `crypto.mts`, `keys.mts`              |
+| Machine API                              | `apps/backend/src/machine-api.ts`                                        |
+| UI API                                   | `apps/backend/src/trpc/router.ts`                                        |
+| Task logic, schedules, retention         | `apps/backend/src/services/`                                             |
+| Schema, RLS scope, migrations            | `apps/backend/src/db/`, `apps/backend/drizzle/`                          |
+| Change events                            | `apps/backend/src/services/changes.ts` (in-process, one replica)         |
+| Dispatch decisions                       | `apps/cli/src/dispatch/decide.mts`, `dispatch.mts`                       |
+| Run plan, prompts, limits                | `apps/cli/src/worker/plan.mts`, `prompts.mts`                            |
+| Running Claude, transcripts              | `apps/cli/src/worker/worker.mts`, `process.mts`, `transcript-upload.mts` |
+| Hook                                     | `apps/cli/src/worker/hook.mts`                                           |
+| Intake                                   | `apps/cli/src/intake/intake.mts`, `github.mts`                           |
+| Slack app, Slack intake API              | `apps/slack/src/`, `apps/backend/src/intake-api.ts`                      |
+| Slack inbox and links                    | `apps/backend/src/services/slack.ts`                                     |
+| systemd units                            | `apps/cli/src/setup/setup.mts`, `system.mts`                             |
+| The `board` commands                     | `apps/cli/src/commands/`                                                 |
+| Browser keys                             | `apps/frontend/src/crypto/`                                              |
 
 ## Known limits
 

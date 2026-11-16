@@ -10,7 +10,8 @@ import { buildContext, print, skipTickWhileServerOlder } from '../cli.mts';
 import type { Context } from '../cli.mts';
 import type { Backend, PrState, Task, TaskPatch } from '@agent-board/shared';
 import { parsePrUrl, prUrlIn, statePrOf } from '@agent-board/shared';
-import { BackendError, isVocabularyRefusal, updateCliHint } from '../backend/backend.mts';
+import { BackendError, isVocabularyRefusal } from '../backend/backend.mts';
+import { updateCliHint } from '../backend/contract-check.mts';
 import { createGitHub, GitHubError } from './github.mts';
 import type { GitHub, LivePr, PrStateLookup } from './github.mts';
 
