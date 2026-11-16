@@ -218,7 +218,7 @@ export function buildInvocation(input: {
   home: string;
   // Roots of the plugins the rules name ({pr-review} and the like), by the placeholder as written.
   pluginRoots: Record<string, string>;
-  // The PreToolUse hook command (heartbeat, working directory, questions).
+  // The PreToolUse hook command (heartbeat, working directory).
   hookCommand?: string;
 }): InvocationPlan {
   const { task, intake } = input;

@@ -3,10 +3,7 @@ import { mkdtempSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { askedDecision, askedQuestions } from './hook.mts';
 import { createRunFiles } from './runtime.mts';
-
-const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } });
 
 test('run files: lane record, heartbeat, pause request, clear', () => {
   const files = createRunFiles(join(mkdtempSync(join(tmpdir(), 'agent-board-run-')), 'agent-board'));
@@ -33,47 +30,4 @@ test("run files keep the agent's last working directory", () => {
   assert.equal(files.lastCwd('t1'), '/repo/.claude/worktrees/feat-x');
   files.clear('t1');
   assert.equal(files.lastCwd('t1'), undefined);
-});
-
-test('AskUserQuestion becomes a board question, with the recommended option flagged', () => {
-  const input = {
-    tool_name: 'AskUserQuestion',
-    tool_input: {
-      questions: [
-        {
-          header: 'Draft',
-          question: 'Append or replace?',
-          multiSelect: false,
-          options: [
-            { label: 'Append (Recommended)', description: 'Keep what is there' },
-            { label: 'Replace', description: 'Start over' },
-          ],
-        },
-      ],
-    },
-  };
-  assert.deepEqual(askedQuestions(input), [
-    {
-      header: 'Draft',
-      question: 'Append or replace?',
-      multiSelect: false,
-      options: [
-        { label: 'Append', description: 'Keep what is there', recommended: true },
-        { label: 'Replace', description: 'Start over' },
-      ],
-    },
-  ]);
-  assert.equal(askedQuestions(bash('ls')), undefined);
-  assert.throws(() => askedQuestions({ tool_name: 'AskUserQuestion', tool_input: {} }), /without questions/);
-  const posted = JSON.parse(askedDecision('t1', undefined));
-  assert.equal(posted.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(posted.hookSpecificOutput.permissionDecisionReason, /on the board now/);
-  assert.match(
-    JSON.parse(askedDecision('t1', 'board down')).hookSpecificOutput.permissionDecisionReason,
-    /board down.*board comment t1/,
-  );
-  // An error text from the server stays one bounded line.
-  const reason = JSON.parse(askedDecision('t1', `ask: error\n${'x'.repeat(2000)}`)).hookSpecificOutput
-    .permissionDecisionReason as string;
-  assert.ok(reason.length < 800 && !reason.includes('\n'));
 });
