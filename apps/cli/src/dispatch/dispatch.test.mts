@@ -19,6 +19,7 @@ import {
   fakeBackend,
   fakeRunFiles,
   fakeTaskFiles,
+  fakeWorktreeLocks,
   fakeUpdateState,
   fakeWaitStore,
   task,
@@ -55,10 +56,12 @@ function setup(
     checks = {},
     checkResult,
     taskFiles: initialFiles = [],
+    locks = {},
     ...updating
   }: {
     checks?: Record<string, WaitCheck>;
     taskFiles?: TaskFile[];
+    locks?: Record<string, string[]>;
     checkResult?: (check: WaitCheck) => CheckResult;
     autoUpdate?: AutoUpdate;
     advertised?: string;
@@ -107,6 +110,7 @@ function setup(
     },
   };
   const taskFiles = fakeTaskFiles(initialFiles);
+  const worktreeLocks = fakeWorktreeLocks(locks);
   const deps: DispatchDeps = {
     backend,
     config: { ...CONFIG, autoUpdate: updating.autoUpdate ?? 'incompatible' },
@@ -118,6 +122,7 @@ function setup(
     logTail: () => 'last log line',
     waits,
     taskFiles,
+    worktreeLocks,
     runCheck: async (check) => {
       ranChecks.push(check.command);
       return checkResult?.(check) ?? { exitCode: 1, timedOut: false, output: 'pending' };
@@ -126,7 +131,7 @@ function setup(
     configWarnings: () => updating.warnings ?? [],
     prRefresh: { github: undefined, state: fakePrRefreshState() },
   };
-  return { backend, deps, started, stopped, logs, files, waits, taskFiles, ranChecks, updates, state };
+  return { backend, deps, started, stopped, logs, files, waits, taskFiles, worktreeLocks, ranChecks, updates, state };
 }
 
 const running = (id: string) => task({ id, status: 'running', input: '/selftest go' });
@@ -807,6 +812,46 @@ test('a dry run prints the files it would drop and removes none', async () => {
   assert.equal(taskFiles.files.length, 2);
   assert.ok(logs.includes('DROP-LOG done its task is finished'));
   assert.ok(logs.includes('DROP-SESSION done its task is finished'));
+});
+
+test('the worktrees of done, closed and deleted tasks are unlocked; those of tasks that may still run stay locked', async () => {
+  const { deps, worktreeLocks, logs } = setup(
+    [
+      task({ id: 'done', status: 'done' }),
+      task({ id: 'closed', status: 'needs-me', closed: true }),
+      task({ id: 'needs', status: 'needs-me' }),
+      task({ id: 'stopping', status: 'done' }),
+    ],
+    ['agent-board-stopping'],
+    {},
+    {
+      locks: Object.fromEntries(
+        ['done', 'closed', 'deleted', 'needs', 'stopping', 'hidden', 'down'].map((id) => [id, [`/wt/${id}`]]),
+      ),
+    },
+  );
+  const getTask = deps.backend.getTask.bind(deps.backend);
+  deps.backend.getTask = async (id) => {
+    if (id === 'hidden') throw vocabularyRefusal();
+    if (id === 'down') throw new BackendError('cannot reach the board');
+    return getTask(id);
+  };
+  await runDispatch(deps);
+  assert.deepEqual(worktreeLocks.tasks().sort(), ['down', 'hidden', 'needs', 'stopping']);
+  assert.ok(logs.includes('UNLOCK done unlocked the worktree /wt/done'));
+  assert.ok(logs.includes('UNLOCK deleted unlocked the worktree /wt/deleted'));
+});
+
+test('a dry run prints the worktrees it would unlock and unlocks none', async () => {
+  const { deps, worktreeLocks, logs } = setup(
+    [task({ id: 'done', status: 'done' })],
+    [],
+    {},
+    { locks: { done: ['/wt/done'] } },
+  );
+  await runDispatch({ ...deps, dryRun: true });
+  assert.deepEqual(worktreeLocks.tasks(), ['done']);
+  assert.ok(logs.includes('DRY unlock the worktrees of done: its task is finished'));
 });
 
 const tooOld = (backend: FakeBackend): void => {
