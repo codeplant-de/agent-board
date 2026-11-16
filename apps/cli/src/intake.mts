@@ -10,7 +10,7 @@ import { buildContext, print, skipTickWhileServerOlder } from './cli.mts';
 import type { Context } from './cli.mts';
 import type { Backend, PrState, Task, TaskPatch } from '@agent-board/shared';
 import { parsePrUrl, prUrlIn, statePrOf } from '@agent-board/shared';
-import { BackendError, isVocabularyRefusal, updateCliHint } from './backend.mts';
+import { BackendError, isVocabularyRefusal, updateCliHint, updateIfUnchanged } from './backend.mts';
 import { createGitHub, GitHubError } from './github.mts';
 import type { GitHub, LivePr, PrStateLookup } from './github.mts';
 
@@ -113,20 +113,15 @@ export interface IntakeDeps extends Context {
 }
 
 // The plan came from an earlier listing: a task that changed status since (a dispatcher claimed it, say) is left alone.
-async function updateIfUnchanged(
+async function updateUnlessChanged(
   backend: Backend,
   task: Task,
   patch: TaskPatch,
   log: (line: string) => void,
 ): Promise<boolean> {
-  try {
-    await backend.updateTask(task.id, { ...patch, expect: task.status });
-    return true;
-  } catch (error) {
-    if (!(error instanceof BackendError && error.status === 409)) throw error;
-    log(`SKIP ${task.id} changed since the listing`);
-    return false;
-  }
+  const applied = await updateIfUnchanged(backend, task, patch);
+  if (!applied) log(`SKIP ${task.id} changed since the listing`);
+  return applied;
 }
 
 export async function runIntake(deps: IntakeDeps): Promise<void> {
@@ -153,7 +148,7 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
   let done = 0;
   for (const action of actions) {
     if (action.kind === 'close') {
-      if (!(await updateIfUnchanged(backend, action.task, { status: 'done', head: null }, log))) continue;
+      if (!(await updateUnlessChanged(backend, action.task, { status: 'done', head: null }, log))) continue;
       await backend.addNote(action.task.id, CLOSE_NOTE, { author: 'system' });
       log(`DONE ${action.task.id} its PR no longer asks for the review`);
       done++;
@@ -193,7 +188,7 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
       // A new head is a new review: a fresh session, not a resume of the last one.
       const prompt = config.intake.prompt.replaceAll('{url}', pr.url);
       if (
-        !(await updateIfUnchanged(
+        !(await updateUnlessChanged(
           backend,
           action.task,
           {

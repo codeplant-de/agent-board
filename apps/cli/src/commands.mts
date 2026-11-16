@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { Argument, Command, CommanderError } from 'commander';
-import { API_VERSION, STATUSES } from '@agent-board/shared';
+import { API_VERSION, PRIORITIES, STATUSES } from '@agent-board/shared';
 import {
   attach,
   add,
@@ -11,6 +11,7 @@ import {
   delay,
   move,
   reportPr,
+  StatusConflict,
   parseStatus,
   readNoteFile,
   readThread,
@@ -73,6 +74,16 @@ import { updateHint } from './update-hint.mts';
 import { createUpdateState, updateStateFile } from './update-state.mts';
 import type { UpdateState } from './update-state.mts';
 import { workerMain } from './worker.mts';
+import { EXAMPLES } from './examples.mts';
+import {
+  createTask,
+  formatSourceTasks,
+  planCreate,
+  printCreateOutcome,
+  readBody,
+  selectSourceTasks,
+} from './sources.mts';
+import type { CreateFlags } from './sources.mts';
 
 export interface ProgramOptions {
   env?: Record<string, string | undefined>;
@@ -237,10 +248,33 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         )
         .option('--all', 'closed tasks too')
         .option('--status <status>', `only this status (${STATUS_LIST}; "Needs me" works too)`)
-        .addHelpText('after', examples('board tasks', 'board tasks --status needs-me', 'board tasks --all --json')),
+        .option(
+          '--source <name>',
+          'only the tasks `board create --source <name>` made that wait for their first run (status Todo unless --status says otherwise); adds "source" and "key" to the JSON, and prints id, source, key and title separated by tabs',
+        )
+        .addHelpText(
+          'after',
+          examples(
+            'board tasks',
+            'board tasks --status needs-me',
+            'board tasks --all --json',
+            'board tasks --source github-reviews --json',
+          ),
+        ),
     ),
-  ).action(async (flags: TasksFlags, command: Command) => {
+  ).action(async (flags: TasksFlags & { source?: string }, command: Command) => {
     const context = contextOf(command, { json: flags.json === true });
+    if (flags.source !== undefined) {
+      if (flags.all)
+        throw new UsageError('--source lists tasks that wait for their first run; it cannot be combined with --all');
+      const found = await selectSourceTasks(context, {
+        source: flags.source,
+        ...(flags.status === undefined ? {} : { status: flags.status }),
+      });
+      if (flags.json) writeJson(found.map(({ task, source, key }) => ({ ...taskJson(task), source, key })));
+      else for (const line of formatSourceTasks(found)) context.print(line);
+      return;
+    }
     if (flags.json) writeJson((await selectTasks(context, flags)).map(taskJson));
     else await tasks(context, flags);
   });
@@ -362,15 +396,48 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       )
       .argument('<task>', TASK_ARGUMENT)
       .argument('<status...>', 'the status to move it to')
+      .option(
+        '--expect <status>',
+        'move it only while it has this status; otherwise leave it, say so and exit with 3 (for scripts that act on an earlier listing)',
+      )
+      .option(
+        '--clear-version',
+        "also forget the version the task was made for (`board create --version`), as one update; needs --expect. A script's prune uses it so the item is reviewed again when it comes back",
+      )
       .addHelpText(
         'after',
-        examples('board move Ab3dEf9x needs-me', 'board move Ab3dEf9x Needs me', 'board move Ab3 todo'),
+        examples(
+          'board move Ab3dEf9x needs-me',
+          'board move Ab3dEf9x Needs me',
+          'board move Ab3 todo',
+          'board move Ab3dEf9x done --expect todo',
+          'board move Ab3dEf9x done --expect todo --clear-version',
+        ),
       ),
-  ).action(async (arg: string, status: string[], _options, command: Command) => {
-    const target = parseStatus(status.join(' '));
-    const context = contextOf(command);
-    await move(context, await taskIdOf(context, arg), target);
-  });
+  ).action(
+    async (arg: string, status: string[], flags: { expect?: string; clearVersion?: boolean }, command: Command) => {
+      if (flags.clearVersion && flags.expect === undefined) throw new UsageError('--clear-version needs --expect');
+      // A restricted profile may allow `board move * needs-me`; these flags would widen that into moves out of any status.
+      if (
+        (flags.expect !== undefined || flags.clearVersion) &&
+        (env['AGENT_BOARD_TASK'] || env['AGENT_BOARD_RESTRICTED'])
+      )
+        throw new UsageError('--expect and --clear-version are for scripts and are not available inside a board run');
+      const target = parseStatus(status.join(' '));
+      const expect = flags.expect === undefined ? undefined : parseStatus(flags.expect);
+      const context = contextOf(command);
+      try {
+        await move(context, await taskIdOf(context, arg), target, {
+          ...(expect === undefined ? {} : { expect }),
+          ...(flags.clearVersion ? { clearVersion: true } : {}),
+        });
+      } catch (error) {
+        if (!(error instanceof StatusConflict)) throw error;
+        writeErr(`board: ${error.message}\n`);
+        throw new ReportedFailure(error.message, 3);
+      }
+    },
+  );
 
   dryRunOption(
     program
@@ -462,6 +529,65 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       { cwd: options.cwd ?? realpathSync(process.cwd()), ...(startDir ? { startDir } : {}) },
     );
     if (flags.json) writeJson({ id: task.id, url: context.taskLink(task.id) });
+  });
+
+  dryRunOption(
+    jsonOption(
+      program
+        .command('create')
+        .helpGroup(TASKS)
+        .summary('make one task for a skill, once per key (for scripts)')
+        .description(
+          paragraphs(
+            'For a script that turns an outside list (pull requests, tickets) into tasks: make the task `/<skill> <args...>`, unless the key already has one. The board never holds the key, only a blind index of `<source>:<key>`. Run outside a board run only: neither inside a run nor inside a restricted one.',
+            "The task runs restricted, as a task of an automation: only under the `skills.<skill>` profile of config.json, never with your own permissions. A skill without a profile is refused; --unrestricted makes a task that runs as you would, and is refused for a skill that has a profile. The flags come first; everything after them (put -- before it when it starts with dashes) is the prompt's arguments, on one line.",
+            '--body-file <path> (or `-` for stdin) appends that text to the prompt, fenced and marked as quoted text, not instructions. --version is what the key stood for when the task was made (a head commit, a ticket revision): when it differs on a later call and the task is in Needs me or Done, the task is queued again in a fresh session. --raw-key uses the key as it is, without the <source>: prefix, to match tasks made another way.',
+            'Prints `<result> <id> <url>` and, for exists, ` (<reason>)`; with --json, {"result","id","url","status","reason"?}. Results: created; exists (reason same-version, no-version, busy: it runs, waits or is in Todo, changed: it changed while this ran, other-creator: it was made with other permissions); requeued; closed (a closed task is never made again). A new task gets a note `agent-board: source <name> key <key>`, which `board tasks --source` reads. Exit 0 for every result, 1 for a failure, 2 for a wrong call.',
+          ),
+        )
+        .usage('[options] [--] [args...]')
+        .argument('[args...]', "the skill's arguments")
+        .requiredOption('--skill <skill>', 'the skill, with or without its plugin: review-pr, pr-review:review-pr')
+        .requiredOption('--key <key>', 'what identifies the item in its source (a pull request URL, a ticket id)')
+        .option(
+          '--source <name>',
+          'the source: lowercase letters, digits and dashes; scopes the key (required without --raw-key)',
+        )
+        .option('--raw-key', 'use the key as it is, without the <source>: prefix')
+        .option('--version <version>', 'what the key stood for when the task was made, such as a head commit')
+        .option('--title <title>', "the task's title (default: the prompt's first line)")
+        .option('--priority <priority>', `${PRIORITIES.join(', ')} (default normal)`)
+        .option('--body-file <path>', 'text to append to the prompt as quoted source text; `-` reads stdin')
+        .option(
+          '--unrestricted',
+          'seal the task as yours: it runs with your own permissions; refused when skills.<skill> exists',
+        )
+        .passThroughOptions()
+        .addHelpText(
+          'after',
+          examples(
+            'board create --source github-reviews --skill review-pr --key "$url" --version "$sha" -- "$url" --auto',
+            'board create --source tickets --skill triage --key SC-123 --body-file ticket.md --json -- SC-123',
+            'board create --raw-key --skill review-pr --key https://github.com/acme/app/pull/17 -- https://github.com/acme/app/pull/17',
+          ),
+        ),
+    ),
+  ).action(async (words: string[], flags: CreateFlags & { json?: boolean }, command: Command) => {
+    notInRun('board create is not available inside a board run; use `board add` to propose follow-up work');
+    if (env['AGENT_BOARD_RESTRICTED']) throw new UsageError('board create is not available inside a restricted run');
+    const context = contextOf(command, { json: flags.json === true });
+    const body = flags.bodyFile === undefined ? undefined : await readBody(flags.bodyFile, stdin);
+    const plan = planCreate(flags, words, body, context.config.skills);
+    const outcome = await createTask(context.backend, plan);
+    if (flags.json)
+      writeJson({
+        result: outcome.result,
+        id: outcome.id,
+        url: context.taskLink(outcome.id),
+        status: outcome.status,
+        ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+      });
+    else printCreateOutcome(context, outcome);
   });
 
   dryRunOption(
@@ -633,6 +759,28 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       await reportDirsSync(deps);
     }
   });
+
+  program
+    .command('example')
+    .helpGroup(SETUP)
+    .summary('list or print the example scripts that ship with the CLI')
+    .description(
+      'Without a name, list the examples. With one, print it on stdout, so `board example github-reviews > ~/bin/github-reviews.sh` saves it. See docs/usage.md, "Scripts".',
+    )
+    .argument('[name]', 'the example to print')
+    .addHelpText('after', examples('board example', 'board example github-reviews > github-reviews.sh'))
+    .action((name: string | undefined) => {
+      if (name === undefined) {
+        const width = Math.max(...EXAMPLES.map((example) => example.name.length));
+        return writeOut(
+          `${EXAMPLES.map((example) => `${example.name.padEnd(width)}  ${example.summary}`).join('\n')}\n`,
+        );
+      }
+      const found = EXAMPLES.find((example) => example.name === name);
+      if (!found)
+        throw new UsageError(`no example "${plainLine(name).slice(0, 40)}"; ${EXAMPLES.map((e) => e.name).join(', ')}`);
+      writeOut(found.content);
+    });
 
   dryRunOption(
     program

@@ -68,6 +68,8 @@ Then work from the task page:
 - **Transcript** shows every tool call of every run, live while it runs.
 - `board attach <task>` opens the session in your terminal on the machine that ran it.
 
+To make tasks from an outside list, such as the PRs that ask for your review, write a script around `board create` and run it from your own timer: [docs/usage.md](docs/usage.md#scripts), with a ready one in `board example`.
+
 Agents report with `board comment`, ask with `board ask`, park on CI with `board wait`, report the PRs they open with `board pr`, and propose follow-up work with `board add`. A proposal only runs after you press **Start**.
 
 With the optional Slack app, `/board <text>` in Slack puts an idea in a **From Slack** box on the board; you turn it into a task in the browser (see [docs/usage.md](docs/usage.md#slack)).

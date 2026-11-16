@@ -31,6 +31,8 @@ Tasks:
   wait <task>               park a running task in Waiting until a time or a
                             check
   add                       propose a follow-up task
+  create [args...]          make one task for a skill, once per key (for
+                            scripts)
   polish <task>             post a polished title and prompt for a task
 
 Scheduling:
@@ -41,6 +43,8 @@ Scheduling:
 Setup:
   dirs [action...]          list, add or remove the directories workers may run
                             in on this machine
+  example [name]            list or print the example scripts that ship with the
+                            CLI
   init                      write web.json, env and config.json for this machine
   doctor                    check this machine: config, token, server, worker
                             tools and units
@@ -67,6 +71,10 @@ Options:
   --all              closed tasks too
   --status <status>  only this status (backlog, todo, running, waiting,
                      needs-me, done; "Needs me" works too)
+  --source <name>    only the tasks `board create --source <name>` made that
+                     wait for their first run (status Todo unless --status says
+                     otherwise); adds "source" and "key" to the JSON, and prints
+                     id, source, key and title separated by tabs
   --json             print JSON on stdout instead of text; a value this machine
                      cannot decrypt is null there and named in "unreadable"
                      (text shows "(cannot decrypt: input)" after the task, and
@@ -78,6 +86,7 @@ Examples:
   board tasks
   board tasks --status needs-me
   board tasks --all --json
+  board tasks --source github-reviews --json
 ```
 
 ### board show
@@ -231,17 +240,26 @@ case does not matter; it must be unique). Inside a board run only the full id is
 accepted.
 
 Arguments:
-  task        the task: its id, a board task link or the start of its id
-  status      the status to move it to
+  task               the task: its id, a board task link or the start of its id
+  status             the status to move it to
 
 Options:
-  --dry-run   read everything, print every write instead of doing it
-  -h, --help  display help for command
+  --expect <status>  move it only while it has this status; otherwise leave it,
+                     say so and exit with 3 (for scripts that act on an earlier
+                     listing)
+  --clear-version    also forget the version the task was made for (`board
+                     create --version`), as one update; needs --expect. A
+                     script's prune uses it so the item is reviewed again when
+                     it comes back
+  --dry-run          read everything, print every write instead of doing it
+  -h, --help         display help for command
 
 Examples:
   board move Ab3dEf9x needs-me
   board move Ab3dEf9x Needs me
   board move Ab3 todo
+  board move Ab3dEf9x done --expect todo
+  board move Ab3dEf9x done --expect todo --clear-version
 ```
 
 ### board ask
@@ -346,6 +364,67 @@ Options:
 
 Examples:
   board add --title "Fix the flaky test" --file /tmp/prompt.md --parent Ab3dEf9x
+```
+
+### board create
+
+```
+Usage: board create [options] [--] [args...]
+
+For a script that turns an outside list (pull requests, tickets) into tasks:
+make the task `/<skill> <args...>`, unless the key already has one. The board
+never holds the key, only a blind index of `<source>:<key>`. Run outside a board
+run only: neither inside a run nor inside a restricted one.
+
+The task runs restricted, as a task of an automation: only under the
+`skills.<skill>` profile of config.json, never with your own permissions. A
+skill without a profile is refused; --unrestricted makes a task that runs as you
+would, and is refused for a skill that has a profile. The flags come first;
+everything after them (put -- before it when it starts with dashes) is the
+prompt's arguments, on one line.
+
+--body-file <path> (or `-` for stdin) appends that text to the prompt, fenced
+and marked as quoted text, not instructions. --version is what the key stood for
+when the task was made (a head commit, a ticket revision): when it differs on a
+later call and the task is in Needs me or Done, the task is queued again in a
+fresh session. --raw-key uses the key as it is, without the <source>: prefix, to
+match tasks made another way.
+
+Prints `<result> <id> <url>` and, for exists, ` (<reason>)`; with --json,
+{"result","id","url","status","reason"?}. Results: created; exists (reason
+same-version, no-version, busy: it runs, waits or is in Todo, changed: it
+changed while this ran, other-creator: it was made with other permissions);
+requeued; closed (a closed task is never made again). A new task gets a note
+`agent-board: source <name> key <key>`, which `board tasks --source` reads. Exit
+0 for every result, 1 for a failure, 2 for a wrong call.
+
+Arguments:
+  args                   the skill's arguments
+
+Options:
+  --skill <skill>        the skill, with or without its plugin: review-pr,
+                         pr-review:review-pr
+  --key <key>            what identifies the item in its source (a pull request
+                         URL, a ticket id)
+  --source <name>        the source: lowercase letters, digits and dashes;
+                         scopes the key (required without --raw-key)
+  --raw-key              use the key as it is, without the <source>: prefix
+  --version <version>    what the key stood for when the task was made, such as
+                         a head commit
+  --title <title>        the task's title (default: the prompt's first line)
+  --priority <priority>  urgent, high, normal, low (default normal)
+  --body-file <path>     text to append to the prompt as quoted source text; `-`
+                         reads stdin
+  --unrestricted         seal the task as yours: it runs with your own
+                         permissions; refused when skills.<skill> exists
+  --json                 print JSON on stdout instead of text
+  --dry-run              read everything, print every write instead of doing it
+  -h, --help             display help for command
+
+Examples:
+  board create --source github-reviews --skill review-pr --key "$url" --version "$sha" -- "$url" --auto
+  board create --source tickets --skill triage --key SC-123 --body-file ticket.md --json -- SC-123
+  board create --raw-key --skill review-pr --key https://github.com/acme/app/pull/17 -- https://github.com/acme/app/pull/17
 ```
 
 ### board polish
@@ -559,6 +638,26 @@ Examples:
   board dirs add --from-config
   board dirs rm ~/workspace/old
   board dirs rm --force ~/workspace/gone
+```
+
+### board example
+
+```
+Usage: board example [options] [name]
+
+Without a name, list the examples. With one, print it on stdout, so `board
+example github-reviews > ~/bin/github-reviews.sh` saves it. See docs/usage.md,
+"Scripts".
+
+Arguments:
+  name        the example to print
+
+Options:
+  -h, --help  display help for command
+
+Examples:
+  board example
+  board example github-reviews > github-reviews.sh
 ```
 
 ### board init

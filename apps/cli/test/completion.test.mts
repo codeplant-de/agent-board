@@ -23,10 +23,12 @@ const VISIBLE = [
   'ask',
   'wait',
   'add',
+  'create',
   'polish',
   'schedule',
   'schedules',
   'dirs',
+  'example',
   'delay',
   'init',
   'doctor',
@@ -54,6 +56,12 @@ test('the model lists the visible commands only, with their flags', () => {
     ['--in', '--at', '--check', '--every', '--timeout', '--reason'].every((flag) => flags('wait').includes(flag)),
   );
   assert.deepEqual(model.flagValues['--priority'], ['urgent', 'high', 'normal', 'low']);
+  assert.ok(
+    ['--skill', '--key', '--source', '--raw-key', '--body-file'].every((flag) => flags('create').includes(flag)),
+  );
+  assert.ok(flags('tasks').includes('--source') && flags('move').includes('--expect'));
+  assert.deepEqual(model.flagValues['--expect'], model.flagValues['--status']);
+  assert.ok(model.fileFlags.includes('--body-file'));
   assert.deepEqual(model.flagValues['--model'], ['fable', 'opus', 'sonnet', 'haiku']);
 });
 

@@ -109,14 +109,12 @@ export interface FakeBackend extends Backend {
   // What the user sent each running task and no worker has acknowledged.
   inboxes: Map<string, { stop: boolean; stopMessage?: string; messages: Note[] }>;
   writes: string[];
+  // The task each dedupe key names, as the board's unique index does: a test that wants a key to exist sets it.
+  dedupeKeys: Map<string, string>;
   // Claims of these ids are lost, as if another machine got there first.
   lostClaims: string[];
   // The directory list the board holds for this machine, and what its server does with a new one.
   boardDirs: { supported: boolean; held: MachineDir[] | undefined; failure: Error | undefined };
-}
-
-function parseFirstLine(input: string): string {
-  return input.split('\n')[0]?.trim() ?? '';
 }
 
 let noteCounter = 0;
@@ -140,6 +138,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     notes: new Map(),
     inboxes: new Map(),
     writes: [],
+    dedupeKeys: new Map(),
     lostClaims: [],
     boardDirs: { supported: true, held: undefined, failure: undefined },
     async listTasks({ all = false } = {}) {
@@ -174,23 +173,36 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       state.writes.push(
         `create ${draft.title} | ${draft.input} | ${taskLabels({ input: draft.input, createdBy: draft.createdBy ?? 'user' }).join(',')}${draft.dedupeKey ? ` | key ${draft.dedupeKey}` : ''}`,
       );
-      const existing = state.tasks.find(
-        (candidate) => draft.dedupeKey !== undefined && parseFirstLine(candidate.input).includes(draft.dedupeKey),
-      );
+      const existingId = draft.dedupeKey === undefined ? undefined : state.dedupeKeys.get(draft.dedupeKey);
+      const existing = state.tasks.find((candidate) => candidate.id === existingId);
       if (existing) return { task: { ...existing }, created: false };
-      const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, ...fields } = draft;
-      return {
-        task: task({
-          id: 'new',
-          ...fields,
-          createdBy: createdBy ?? 'user',
-          machine: machine ?? null,
-          workdir: workdir ?? null,
-          head: head ?? null,
-          notBefore: notBefore ?? null,
-        }),
-        created: true,
-      };
+      const {
+        dedupeKey,
+        parentId: _parent,
+        createdBy,
+        machine,
+        workdir,
+        head,
+        notBefore,
+        id: chosen,
+        ...fields
+      } = draft;
+      const id =
+        chosen ?? (state.tasks.some((candidate) => candidate.id === 'new') ? `new${state.tasks.length}` : 'new');
+      const created = task({
+        ...fields,
+        id,
+        createdBy: createdBy ?? 'user',
+        machine: machine ?? null,
+        workdir: workdir ?? null,
+        head: head ?? null,
+        notBefore: notBefore ?? null,
+      });
+      if (dedupeKey !== undefined) {
+        state.tasks.push(created);
+        state.dedupeKeys.set(dedupeKey, id);
+      }
+      return { task: { ...created }, created: true };
     },
     async updateTask(id, patch) {
       const found = state.tasks.find((t) => t.id === id);

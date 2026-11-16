@@ -27,6 +27,7 @@ export interface CompletionModel {
 
 const FLAG_VALUES: Record<string, string[]> = {
   '--status': [...STATUSES],
+  '--expect': [...STATUSES],
   '--priority': [...PRIORITIES],
   '--model': MODEL_ALIASES.map((alias) => alias.value),
 };
@@ -67,7 +68,7 @@ export function completionModel(program: Command): CompletionModel {
   ];
   const taskFlags: string[] = valueFlags.filter((flag) => flag === '--parent');
   const fileFlags: string[] = valueFlags.filter(
-    (flag) => flag === '--file' || flag === '--token-file' || flag === '--data-key-file',
+    (flag) => flag === '--file' || flag === '--body-file' || flag === '--token-file' || flag === '--data-key-file',
   );
   const flagValues = Object.fromEntries(Object.entries(FLAG_VALUES).filter(([flag]) => valueFlags.includes(flag)));
   return {

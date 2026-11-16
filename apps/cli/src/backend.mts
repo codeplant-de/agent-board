@@ -45,6 +45,7 @@ import type {
   SkippedItem,
   Task,
   TaskDraft,
+  TaskPatch,
   WireBackend,
 } from '@agent-board/shared';
 import { ConfigError } from './config.mts';
@@ -539,6 +540,17 @@ function dryTask(draft: TaskDraft): Task {
     waitCheck: false,
     woken: false,
   };
+}
+
+/** Applies the patch only while the task still has the status it was listed with; false when it changed since (the server's 409). */
+export async function updateIfUnchanged(backend: Backend, task: Task, patch: TaskPatch): Promise<boolean> {
+  try {
+    await backend.updateTask(task.id, { ...patch, expect: task.status });
+    return true;
+  } catch (error) {
+    if (!(error instanceof BackendError && error.status === 409)) throw error;
+    return false;
+  }
 }
 
 // Reads go through; every write is printed instead of run.

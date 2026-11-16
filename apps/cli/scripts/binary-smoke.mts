@@ -263,6 +263,11 @@ await check('help and help schedule', async () => {
   const schedule = await board(['help', 'schedule'], empty);
   assert.match(schedule.stdout, /Usage: board schedule[\s\S]*Examples:/);
 });
+await check('example prints the script embedded in the binary', async () => {
+  const result = await board(['example', 'github-reviews'], empty);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, readFileSync(join(cliDir, 'examples/intakes/github-reviews.sh'), 'utf8'));
+});
 await check('completion bash', async () => {
   const result = await board(['completion', 'bash'], empty);
   assert.equal(result.code, 0);
@@ -384,6 +389,33 @@ await check('the binary computes the same blind index for a dedupe key as node d
     'title and prompt reach the server sealed',
   );
   assert.ok(!sent.includes('github.com'), 'the PR URL must not reach the server');
+});
+await check('board create --raw-key sends the blind index of the bare URL, as the intake of old does', async () => {
+  // A review task made by the built-in intake is found again only when this call hashes the URL the same way.
+  requests.length = 0;
+  const result = await board(
+    [
+      'create',
+      '--raw-key',
+      '--unrestricted',
+      '--skill',
+      'review-pr',
+      '--key',
+      PR_URL,
+      '--version',
+      'abc123',
+      '--',
+      PR_URL,
+    ],
+    config(),
+  );
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`^created Ab3dEf9x \\S+/t/Ab3dEf9x\n$`));
+  const added = requests.find((request) => request.command === 'add-task');
+  assert.ok(added, 'create sent no add-task');
+  const draft = (JSON.parse(added.body) as { body: { dedupeKey: string; head: string } }).body;
+  assert.equal(draft.dedupeKey, await dedupeKeyIndex(KEYS, PR_URL));
+  assert.equal(draft.head, await headIndex(KEYS, 'abc123'));
 });
 await check('a board that no longer serves this binary says how to update it', async () => {
   await withBoard({ api: { version: API_VERSION + 1, minClient: API_VERSION + 1 } }, async () => {

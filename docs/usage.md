@@ -121,3 +121,70 @@ Slack sends you nothing (see [Desktop notifications](#desktop-notifications) for
 3. **Turn it into a task or drop it.** **Create task** opens the New task form with the text filled in. Check it and create the task the normal way: your browser seals it, so the task runs as yours. **Dismiss** deletes the item. Items nobody touches are deleted after 30 days.
 
 The text of an item is stored on the server in clear, because the server cannot seal it, and it passed through Slack on the way. Read an item before you create a task from it, since a task runs with your permissions. The box says so too. No worker ever sees an item.
+
+## Scripts
+
+A script of your own can turn an outside list (pull requests that ask for your review, tickets) into board tasks. The board knows no such source: the script lists, decides and schedules itself, with your own timer or cron, and calls generic `board` commands. `board example` prints the example scripts that ship with the CLI.
+
+**The commands.** Full flags are in [cli.md](cli.md).
+
+- `board create --source <name> --skill <skill> --key <key> [--version <v>] [--title <t>] [--body-file <path>|-] [--] [args...]` makes the task `/<skill> <args...>` unless the key already has one. The board holds only a blind index of `<name>:<key>`, so one script run on two machines makes one task. `--raw-key` indexes the key as it is, to find tasks made another way: the built-in intake keys its tasks by the bare PR URL.
+- `board tasks --source <name> [--status <s>] [--json]` lists the tasks of a source that wait for their first run (Todo unless `--status` says otherwise), with their `source` and `key`. Text output is one line per task: id, source, key and title separated by tabs.
+- `board move <task> <status> --expect <status> [--clear-version]` moves a task only while it has that status. Otherwise it leaves it, says so on stderr and exits 3. `--clear-version` forgets the task's `--version` in the same update, so the item is queued again when it is listed again. Neither flag is available inside a board run.
+
+**What a task is.** The prompt is one line, built by the CLI; `--body-file` text is appended after a line that marks it as quoted source text, in a fence the text cannot close. A task made by `create` is restricted: it runs only under the `skills.<skill>` profile of this machine's `config.json` (see [workers](workers.md)), so a skill without a profile is refused. `--unrestricted` makes the task yours, with your full permissions, and is refused for a skill that has a profile. `create` is not available inside a board run or a restricted run. Keys, versions, titles and arguments may not contain a newline or other control character.
+
+**Outcomes.** `create` exits 0 for all of them, 1 for a failure and 2 for a wrong call, and prints `<result> <id> <url>`, followed by ` (<reason>)` for `exists`. With `--json` it prints `{"result","id","url","status","reason"?}` on stdout.
+
+| Result     | Meaning                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `created`  | A new task, with a system note `agent-board: source <name> key <key>`, which `tasks --source` reads.                                                                                                                                                                                                                                                                                 |
+| `exists`   | The key already has a task, left alone. Reason `same-version`; `no-version` (the call or the task has no `--version`, so there is nothing to compare); `busy` (the version moved but the task is in Todo, running or waiting); `changed` (it left Needs me or Done between the read and the update); `other-creator` (it was made with other permissions than this call would seal). |
+| `requeued` | The version moved and the task was in Needs me or Done, or it is Done without a version (a prune with `--clear-version` cleared it) and never resumed: it is in Todo again in a fresh session, with the new prompt, `--version` and a system note.                                                                                                                                   |
+| `closed`   | The task is closed, and a closed task is never made again.                                                                                                                                                                                                                                                                                                                           |
+
+Whether a version is settled enough to review, and which tasks to retire when the source drops an item, are the script's decisions. `github-reviews.sh` waits until the head commit is 10 minutes old and moves the Todo tasks of PRs that no longer ask for your review to Done with `board move ... done --expect todo --clear-version`; it never prunes when the GitHub listing failed.
+
+From Node:
+
+```js
+import { execFileSync } from 'node:child_process';
+
+const out = execFileSync(
+  'board',
+  ['create', '--source', 'tickets', '--skill', 'triage', '--key', 'SC-123', '--version', '7', '--json', '--', 'SC-123'],
+  { encoding: 'utf8' },
+);
+const { result, id, url, reason } = JSON.parse(out);
+```
+
+`execFileSync` throws on exit 1 and 2; read stderr then.
+
+**Scheduling.** Run the script from a systemd user timer, with `flock` so runs never overlap and a timeout so a hung `gh` cannot hold one:
+
+```ini
+# ~/.config/systemd/user/github-reviews.service
+[Unit]
+Description=Review requests to board tasks
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -n %t/github-reviews.lock /usr/bin/timeout 300 %h/bin/github-reviews.sh acme/app
+```
+
+```ini
+# ~/.config/systemd/user/github-reviews.timer
+[Unit]
+Description=Review requests to board tasks, every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target
+```
+
+Save the script with `board example github-reviews > ~/bin/github-reviews.sh && chmod +x ~/bin/github-reviews.sh`, then `systemctl --user enable --now github-reviews.timer`. The units need `board` and `gh` on their `PATH`: add `Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin`. From cron, whose `PATH` is minimal, set it to include `board` (`~/.local/bin`) and wherever `gh` lives (`/usr/local/bin`, `/usr/bin`, `/opt/homebrew/bin`): `PATH=/home/you/.local/bin:/usr/local/bin:/usr/bin:/bin` on a line of its own (crontab does not expand `$HOME` there; write your home directory) above `*/10 * * * * flock -n /tmp/github-reviews.lock timeout 300 $HOME/bin/github-reviews.sh acme/app`.
+
+**Moving from the built-in intake.** Its tasks are keyed by the bare PR URL, so run the script with `BOARD_RAW_KEY=1` to keep them instead of making a second set, The `skills.review-pr` profile stays. Keep the built-in intake's `intake` block and timer for now, though: it also refreshes the PR state of every open task (merged, closed) and feeds **Move merged to Done**, and nothing else does that yet. Dropping the `intake` key or the timer stops those updates for all tasks, until a later change moves the refresh elsewhere. While both run, they share each PR's key with `BOARD_RAW_KEY=1`, so only one task per PR exists.
