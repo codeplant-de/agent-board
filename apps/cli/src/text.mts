@@ -12,3 +12,7 @@ export function oneLine(text: string, max: number): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
+
+export function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

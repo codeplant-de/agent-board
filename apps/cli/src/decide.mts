@@ -64,7 +64,7 @@ export function decideStale(input: {
 export type Supervision =
   { kind: 'continue' } | { kind: 'stop'; why: 'inactive' | 'ceiling' | 'pause-forced'; message: string };
 
-// What the worker does with a run that is still going, checked every half minute.
+// What the worker does with a run that is still going, checked on every worker tick (15 s).
 export function supervise(input: {
   now: Date;
   startedAt: Date;

@@ -6,6 +6,7 @@ import { ConfigError, configWarnings, isSafeMode, parseConfig } from './config.m
 import { API_VERSION, decodeDataKey, SERVER_FEATURE_LABELS, SERVER_FEATURES } from '@agent-board/shared';
 import { parseEnv } from './env-file.mts';
 import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
+import { errorText } from './text.mts';
 
 export type Level = 'ok' | 'fail' | 'warn';
 
@@ -259,7 +260,7 @@ const checkServer: Check = async (deps) => {
       ),
     ];
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorText(error);
     // Only the API's own answer says the token is refused; a login page or proxy with a 401 is something else.
     if (error instanceof BackendError && error.fromApi && (error.status === 401 || error.status === 403))
       return [
@@ -313,8 +314,7 @@ const checkConfig: Check = ({ configDir, readText }) => {
       ),
     ];
   } catch (error) {
-    const message =
-      error instanceof SyntaxError ? 'is not valid JSON' : error instanceof Error ? error.message : String(error);
+    const message = error instanceof SyntaxError ? 'is not valid JSON' : errorText(error);
     return [
       problem(
         'config.json',

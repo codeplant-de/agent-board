@@ -7,6 +7,7 @@ import { taskLink } from './links.mts';
 import { createSealedBackend } from './sealing.mts';
 import type { Backend, SkippedItem } from '@agent-board/shared';
 import { wantsColor } from './style.mts';
+import { errorText } from './text.mts';
 
 export interface Context {
   config: Config;
@@ -114,7 +115,7 @@ export async function runMain(main: () => Promise<void>, prefix = 'agent-board')
       console.error(`${prefix}: ${error.message}`);
       if (error instanceof UsageError) for (const line of error.details) console.error(line);
     } else {
-      console.error(`${prefix}: unexpected error: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`${prefix}: unexpected error: ${errorText(error)}`);
     }
     process.exitCode = error instanceof UsageError ? 2 : 1;
   }

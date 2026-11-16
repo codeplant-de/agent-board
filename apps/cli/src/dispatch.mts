@@ -32,7 +32,7 @@ import { realGh, realListenerRestart, selfUpdate } from './self-update.mts';
 import { createSystem } from './system.mts';
 import type { System } from './system.mts';
 import { readLogTail } from './logs.mts';
-import { fence } from './text.mts';
+import { errorText, fence } from './text.mts';
 import type { CheckResult, WaitCheck, WaitStore } from './waits.mts';
 import { CHECK_TIME_LIMIT_MS, createWaitStore, runCheck } from './waits.mts';
 import { createUpdateState, updateStateFile } from './update-state.mts';
@@ -50,8 +50,6 @@ export interface DispatchDeps extends Context {
   // Keys of config.json the CLI ignores (see configWarnings), logged at the start of every tick.
   configWarnings: () => string[];
 }
-
-const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 // Ends a wait on the board: the woken task, or undefined when it no longer waited or the call failed.
 async function wakeTask(deps: DispatchDeps, task: Task, why: string): Promise<Task | undefined> {
@@ -274,7 +272,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     try {
       ({ pid } = await system.startWorker(task.id));
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
+      const reason = errorText(error);
       log(`START-FAILED ${task.id} ${reason}`);
       if (!deps.dryRun) files.clear(task.id);
       await deps.backend.fail(task.id, `The worker could not be started: ${reason}`);
@@ -296,7 +294,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
         author: 'system',
       })
       .catch((error: unknown) => {
-        log(`WARN start note failed: ${error instanceof Error ? error.message : String(error)}`);
+        log(`WARN start note failed: ${errorText(error)}`);
       });
   }
 
@@ -319,7 +317,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     try {
       files.requestPause(run.taskId);
     } catch (error) {
-      log(`WARN pause request failed: ${error instanceof Error ? error.message : String(error)}`);
+      log(`WARN pause request failed: ${errorText(error)}`);
     }
   }
   const summary = config.lanes
