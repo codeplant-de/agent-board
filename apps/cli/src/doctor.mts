@@ -2,7 +2,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { BackendError, checkBoardUrl, checkDataKey, looksLikeMachineToken, verifyContract } from './backend.mts';
 import type { ServerIdentity, WebConfig } from './backend.mts';
-import { ConfigError, configWarnings, isSafeMode, parseConfig } from './config.mts';
+import { ConfigError, configWarnings, isOverrideWarning, isSafeMode, parseConfig } from './config.mts';
 import type { Config } from './config.mts';
 import { plainLine } from './terminal.mts';
 import {
@@ -355,7 +355,9 @@ const checkConfig: Check = ({ configDir, readText }) => {
           'config.json',
           'warn',
           warning,
-          'fix or remove the key: the CLI does not read it, so its setting keeps the default',
+          isOverrideWarning(warning)
+            ? 'the directory setting is the one that counts: remove the old key, or make both name the same directory'
+            : 'fix or remove the key: the CLI does not read it, so its setting keeps the default',
         ),
       ),
     ];

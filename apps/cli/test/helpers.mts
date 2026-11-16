@@ -247,8 +247,10 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     },
     async setDirs(machine, dirs) {
       if (state.boardDirs.failure) throw state.boardDirs.failure;
-      state.writes.push(`dirs ${machine}: ${dirs.map(({ path }) => path).join(',')}`);
-      state.boardDirs.held = dirs.map(({ path }) => ({ path }));
+      state.writes.push(
+        `dirs ${machine}: ${dirs.map(({ path, label }) => (label === undefined ? path : `${path}=${label}`)).join(',')}`,
+      );
+      state.boardDirs.held = dirs.map((entry) => ({ ...entry }));
     },
     async heartbeat(id, beat) {
       state.writes.push(`heartbeat ${id} ${beat.lane}${beat.borrowed ? ' borrowed' : ''}`);

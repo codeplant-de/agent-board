@@ -21,6 +21,8 @@
 import {
   checkSealedSize,
   ContractError,
+  DIR_LABEL_RULE,
+  isSafeDirLabel,
   isSafeWorkdir,
   NOTE_SUGGESTION_CHARS,
   notePreview,
@@ -105,24 +107,27 @@ export const MAX_MACHINE_DIRS = 200;
 
 /** The one document a machine's list is sealed as, and the bytes its blind index is made of. */
 export const machineDirsJson = (dirs: readonly MachineDir[]): string =>
-  JSON.stringify({ dirs: dirs.map(({ path }) => ({ path })) });
+  JSON.stringify({ dirs: dirs.map(({ path, label }) => (label === undefined ? { path } : { path, label })) });
 
 /** A machine's `dirs` as the board stores it: the blind index of `dirs:<machine>:<document>`, to tell whether a list changed. */
 export const machineDirsIndex = (keys: Keys, machine: string, dirs: readonly MachineDir[]): Promise<string> =>
   blindIndex(keys, `dirs:${machine}:${machineDirsJson(dirs)}`);
 
-/** Seals the directory list of `machine`; refuses more than the board takes or a path that is not a safe absolute one. */
+/** Seals the directory list of `machine`; refuses more than the board takes, a path that is not a safe absolute one and a label that is not a safe one. */
 export async function sealMachineDirs(seal: Sealer, machine: string, dirs: readonly MachineDir[]): Promise<string> {
   if (dirs.length > MAX_MACHINE_DIRS) throw new ContractError(`the list has more than ${MAX_MACHINE_DIRS} directories`);
   if (!dirs.every(({ path }) => isSafeWorkdir(path)))
     throw new ContractError('a listed directory must be an absolute path');
+  if (!dirs.every(({ label }) => label === undefined || isSafeDirLabel(label)))
+    throw new ContractError(`a directory label must be ${DIR_LABEL_RULE}`);
   return sealChecked(seal, machineDirsBinding(machine), machineDirsJson(dirs), 'the directory list');
 }
 
 /**
  * The directories a machine sent, or undefined when the list is unreadable: it does not open under exactly this machine's
- * binding, is not `{"dirs":[{"path":…}]}`, has more than 200 entries or a path that is not a safe absolute one. Other keys
- * are ignored, so a later CLI can add some. The list is advice for what a form offers and is never acted on.
+ * binding, is not `{"dirs":[{"path":…}]}`, has more than 200 entries or a path that is not a safe absolute one. An entry's
+ * `label` is kept when it is a safe one and dropped otherwise, without losing the list. Other keys are ignored, so a later
+ * CLI can add some. The list is advice for what a form offers and is never acted on.
  */
 export async function openMachineDirs(
   open: Opener,
@@ -140,9 +145,14 @@ export async function openMachineDirs(
   }
   if (!isRecord(json) || !Array.isArray(json['dirs']) || json['dirs'].length > MAX_MACHINE_DIRS) return undefined;
   const entries: unknown[] = json['dirs'];
-  const paths = entries.map((entry) => (isRecord(entry) ? entry['path'] : undefined));
-  if (!paths.every((path) => typeof path === 'string' && isSafeWorkdir(path))) return undefined;
-  return paths.map((path) => ({ path: String(path) }));
+  const opened: MachineDir[] = [];
+  for (const entry of entries) {
+    const path = isRecord(entry) ? entry['path'] : undefined;
+    if (!isRecord(entry) || typeof path !== 'string' || !isSafeWorkdir(path)) return undefined;
+    const label = entry['label'];
+    opened.push(typeof label === 'string' && isSafeDirLabel(label) ? { path, label } : { path });
+  }
+  return opened;
 }
 
 // A note is bound to its task, its author and its kind, so one author's text can never be served as another's.

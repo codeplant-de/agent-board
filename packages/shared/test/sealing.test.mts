@@ -656,8 +656,48 @@ test('a list that is not {"dirs":[{"path":…}]} of safe absolute paths, at most
 });
 
 test('unknown keys of a list and of an entry are ignored on open, so a later CLI can add some', async () => {
-  const wire = await seal(keys, 'machine.dirs', 'machine:laptop', '{"dirs":[{"path":"/a","label":"A"}],"updated":1}');
-  assert.deepEqual(await openMachineDirs(opens, 'laptop', wire), [{ path: '/a' }]);
+  const wire = await seal(
+    keys,
+    'machine.dirs',
+    'machine:laptop',
+    '{"dirs":[{"path":"/a","label":"A","repo":"o/n"}],"updated":1}',
+  );
+  assert.deepEqual(await openMachineDirs(opens, 'laptop', wire), [{ path: '/a', label: 'A' }]);
+});
+
+test('a label travels in the document, opens with its directory and changes the blind index', async () => {
+  const labelled = [{ path: '/home/me/app', label: 'Board' }, { path: '/srv/lib' }];
+  const wire = await sealMachineDirs(seals, 'laptop', labelled);
+  assert.equal(
+    await open(keys, 'machine.dirs', 'machine:laptop', wire),
+    '{"dirs":[{"path":"/home/me/app","label":"Board"},{"path":"/srv/lib"}]}',
+  );
+  assert.deepEqual(await openMachineDirs(opens, 'laptop', wire), labelled);
+  const index = await machineDirsIndex(keys, 'laptop', labelled);
+  assert.notEqual(index, await machineDirsIndex(keys, 'laptop', DIRS));
+  assert.notEqual(index, await machineDirsIndex(keys, 'laptop', [{ path: '/home/me/app', label: 'Other' }, DIRS[1]!]));
+});
+
+test('a label that is not a safe one is dropped on open, not the list, and refused on seal', async () => {
+  const sealed = (text: string) => seal(keys, 'machine.dirs', 'machine:laptop', text);
+  const bad = [1, null, '', ' padded ', 'two\nlines', 'x'.repeat(65), ['A']];
+  for (const label of bad)
+    assert.deepEqual(
+      await openMachineDirs(
+        opens,
+        'laptop',
+        await sealed(JSON.stringify({ dirs: [{ path: '/a', label }, { path: '/b' }] })),
+      ),
+      [{ path: '/a' }, { path: '/b' }],
+      JSON.stringify(label),
+    );
+  const longest = 'x'.repeat(64);
+  assert.deepEqual(
+    await openMachineDirs(opens, 'laptop', await sealMachineDirs(seals, 'laptop', [{ path: '/a', label: longest }])),
+    [{ path: '/a', label: longest }],
+  );
+  for (const label of ['', ' a', 'a\u0007', 'x'.repeat(65)])
+    await assert.rejects(sealMachineDirs(seals, 'laptop', [{ path: '/a', label }]), ContractError);
 });
 
 test('sealing a list refuses too many directories, an unsafe path and more than the board takes', async () => {

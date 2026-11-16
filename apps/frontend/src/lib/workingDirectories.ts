@@ -8,6 +8,7 @@ export interface DirectoryChoice {
   value: string;
   machine: string;
   path: string;
+  label?: string;
 }
 
 export interface DirectoryChoices {
@@ -24,19 +25,27 @@ function groupLabel(machine: Machine, now: number): string {
   return now - seenAt(machine) < RECENT_MS ? machine.shown : `${machine.shown} · last seen ${ago(machine.lastSeenAt)}`;
 }
 
-/** The directories the New task form offers: one group per machine that has a readable list, the most recently seen first. */
+/**
+ * The directories the New task form offers: one group per machine that has a readable list, the most recently seen first.
+ * An option reads `<label> — <path>` when the directory has a label, so a search matches either; its value stays the path.
+ */
 export function directoryChoices(machines: readonly Machine[], now: number): DirectoryChoices {
   const listing = machines
     .filter(({ dirs }) => dirs !== null && dirs.length > 0)
     .sort((a, b) => seenAt(b) - seenAt(a) || a.shown.localeCompare(b.shown));
   const choices = listing.flatMap((machine) =>
-    (machine.dirs ?? []).map((path) => ({ value: JSON.stringify([machine.name, path]), machine: machine.name, path })),
+    (machine.dirs ?? []).map(({ path, label }) => ({
+      value: JSON.stringify([machine.name, path]),
+      machine: machine.name,
+      path,
+      ...(label === undefined ? {} : { label }),
+    })),
   );
   const groups = listing.map((machine) => ({
     group: groupLabel(machine, now),
     items: choices
       .filter(({ machine: name }) => name === machine.name)
-      .map(({ value, path }) => ({ value, label: path })),
+      .map(({ value, path, label }) => ({ value, label: label === undefined ? path : `${label} — ${path}` })),
   }));
   return {
     groups,

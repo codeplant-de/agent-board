@@ -78,7 +78,23 @@ describe('the directory lists of machines, as the browser opens them', () => {
 
   it('opens a good list under the machine own name', async () => {
     const machine = await openOne(wire('laptop', await sealFor('laptop', list(['/a', '/b c']))));
-    expect(machine).toMatchObject({ shown: 'laptop', dirs: ['/a', '/b c'], dirsUnreadable: false });
+    expect(machine).toMatchObject({ shown: 'laptop', dirs: [{ path: '/a' }, { path: '/b c' }], dirsUnreadable: false });
+  });
+
+  it('carries a label with its directory and drops one that is not a safe label, keeping the list', async () => {
+    const text = JSON.stringify({
+      dirs: [
+        { path: '/a', label: 'Board', repo: 'o/n' },
+        { path: '/b', label: ' padded ' },
+        { path: '/c', label: 7 },
+        { path: '/d' },
+      ],
+    });
+    const machine = await openOne(wire('laptop', await sealFor('laptop', text)));
+    expect(machine).toMatchObject({
+      dirs: [{ path: '/a', label: 'Board' }, { path: '/b' }, { path: '/c' }, { path: '/d' }],
+      dirsUnreadable: false,
+    });
   });
 
   it('has no list when the machine sent none', async () => {
