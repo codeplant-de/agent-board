@@ -20,7 +20,7 @@ import { createRunFiles } from '../worker/runtime.mts';
 import type { RunFiles } from '../worker/runtime.mts';
 import { EXEC_PATH, isCompiledBinary } from '../self/self.mts';
 import { realGh, realListenerRestart, selfUpdate } from '../self/self-update.mts';
-import { createSystem } from '../setup/system.mts';
+import { createWorkerSystem } from '../setup/worker-system.mts';
 import type { System } from '../setup/system.mts';
 import { readLogTail } from '../worker/logs.mts';
 import { createTaskFileStore } from './task-files.mts';
@@ -148,8 +148,20 @@ async function pruneTaskFiles(deps: DispatchDeps, listed: Task[], activeWorkers:
 }
 
 // The tick is stopped after 110 s, and the check processes would outlive it: they run in their own process group.
-const TICK_LIMIT_MS = 110_000;
+export const TICK_LIMIT_MS = 110_000;
 const TICK_MARGIN_MS = 10_000;
+// What `timeout` exits with when it stopped a command.
+const TICK_TIMED_OUT = 124;
+// Ticks come every 2 minutes at the least; a longer gap since the last one means the machine slept or was off.
+const TICK_GAP_MS = 10 * 60_000;
+
+// The in-process backstop of the tick's time limit, for a tick no `timeout` or unit limit watches (launchd has none):
+// calls `onLimit` after `limitMs` unless the returned function cancels it first. It does not keep the process alive.
+export function limitTick(limitMs: number, onLimit: () => void): () => void {
+  const timer = setTimeout(onLimit, limitMs);
+  timer.unref();
+  return () => clearTimeout(timer);
+}
 
 // The due checks, side by side; a check that passes wakes its task, any other result is kept for the next attempt. Checks that
 // would not finish before the tick's limit wait for the next tick.
@@ -197,6 +209,10 @@ const updateRun = ({ update, now, print: log, dryRun }: DispatchDeps) => ({ ...u
 export async function runDispatch(deps: DispatchDeps): Promise<void> {
   const { backend, config, system, files, print: log } = deps;
   const tickStart = deps.now();
+  // A gap since the last tick is time the whole machine spent asleep: runs were quiet because their agents slept too.
+  const previousTick = files.lastDispatchTick();
+  const afterGap = previousTick !== undefined && tickStart.getTime() - previousTick.getTime() > TICK_GAP_MS;
+  if (!deps.dryRun) files.markDispatchTick(tickStart);
   for (const warning of deps.configWarnings()) log(`WARN config.json: ${warning}`);
   for (const reason of Object.values(config.agentErrors))
     log(`WARN config.json: ${reason}; tasks that name this agent are not run`);
@@ -226,6 +242,10 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     (task) => task.status === 'running' && (task.machine === null || task.machine === config.machine),
   );
 
+  if (afterGap && running.length > 0)
+    log(
+      `NOTE no tick for ${Math.round((tickStart.getTime() - (previousTick?.getTime() ?? 0)) / 60_000)} minutes: the machine slept, so this sweep does not count quiet time against the runs`,
+    );
   for (const task of running) {
     const unit = unitName(task.id);
     const unitActive = await system.isActive(unit);
@@ -237,6 +257,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
       lastActive: files.lastActive(task.id),
       now: deps.now(),
       limits: config,
+      afterGap,
     });
     if (!decision.stale) continue;
     if (decision.stopUnit) await system.stop(unit);
@@ -382,40 +403,48 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
 export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<void> {
   const context = buildContext(dryRun);
   const compiled = isCompiledBinary();
-  await skipTickWhileServerOlder(() =>
-    runDispatch({
-      ...context,
-      print,
-      update: {
-        compiled,
-        version: cliVersion(),
-        advertised: () => context.serverCli?.(),
-        state: createUpdateState(updateStateFile(getPaths().stateDir)),
-        update: () =>
-          selfUpdate(
-            {
-              compiled,
-              version: releaseVersion(),
-              execPath: EXEC_PATH,
-              platform: process.platform,
-              arch: process.arch,
-              // Below the tick's 110 s limit, so a stalled download fails instead of being killed with the tick.
-              gh: realGh(process.env, 90_000),
-              // The dispatcher runs inside the listener's unit, whose stop waits for it: asking must not wait for the stop.
-              restartListener: realListenerRestart({ block: false }),
-              print,
-            },
-            {},
-          ),
-      },
-      system: createSystem({ dryRun, print }),
-      files: createRunFiles(),
-      now: () => new Date(),
-      logTail: readLogTail,
-      waits: createWaitStore(),
-      taskFiles: createTaskFileStore(),
-      runCheck: (check) => runCheck(check),
-      configWarnings: () => loadConfigWarnings(getPaths().configFile),
-    }),
-  );
+  const cancelLimit = limitTick(TICK_LIMIT_MS, () => {
+    print(`tick stopped after ${TICK_LIMIT_MS / 1000} s`);
+    process.exit(TICK_TIMED_OUT);
+  });
+  try {
+    await skipTickWhileServerOlder(() =>
+      runDispatch({
+        ...context,
+        print,
+        update: {
+          compiled,
+          version: cliVersion(),
+          advertised: () => context.serverCli?.(),
+          state: createUpdateState(updateStateFile(getPaths().stateDir)),
+          update: () =>
+            selfUpdate(
+              {
+                compiled,
+                version: releaseVersion(),
+                execPath: EXEC_PATH,
+                platform: process.platform,
+                arch: process.arch,
+                // Below the tick's 110 s limit, so a stalled download fails instead of being killed with the tick.
+                gh: realGh(process.env, 90_000),
+                // The dispatcher runs inside the listener's unit, whose stop waits for it: asking must not wait for the stop.
+                restartListener: realListenerRestart({ block: false }),
+                print,
+              },
+              {},
+            ),
+        },
+        system: createWorkerSystem({ dryRun, print }),
+        files: createRunFiles(),
+        now: () => new Date(),
+        logTail: readLogTail,
+        waits: createWaitStore(),
+        taskFiles: createTaskFileStore(),
+        runCheck: (check) => runCheck(check),
+        configWarnings: () => loadConfigWarnings(getPaths().configFile),
+      }),
+    );
+  } finally {
+    cancelLimit();
+  }
 }

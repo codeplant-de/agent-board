@@ -592,15 +592,20 @@ export function isSafeMode(mode: number): boolean {
   return permissions === 0o600 || permissions === 0o400;
 }
 
-// Reads a file that holds a secret, refusing anything readable by group or others.
+// Reads a file that holds a secret, refusing a regular file readable by group or others. A pipe or a terminal (what
+// `--token-file /dev/stdin` is) is not a file anyone else can read the secret from, and its mode differs between systems:
+// 600 on Linux, 440 on macOS.
 export function readSecretFile(path: string, what: string): string {
   let mode: number;
+  let isFile: boolean;
   try {
-    mode = statSync(path).mode;
+    const stat = statSync(path);
+    ({ mode } = stat);
+    isFile = stat.isFile();
   } catch {
     throw new ConfigError(`${what} missing: ${path}`);
   }
-  if (!isSafeMode(mode)) {
+  if (isFile && !isSafeMode(mode)) {
     throw new ConfigError(`${what} must be mode 600 or 400, is ${(mode & 0o777).toString(8)}: ${path}`);
   }
   return readFileSync(path, 'utf8');

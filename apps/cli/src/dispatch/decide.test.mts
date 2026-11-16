@@ -64,6 +64,14 @@ const NOW = new Date('2026-01-01T12:00:00Z');
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
 const LIMITS = { inactivityMinutes: 15, maxRunHours: 6 };
 
+test('stale: after a gap between ticks the quiet time is not counted, the dead worker and the hour limit still are', () => {
+  const quiet = { unitActive: true, startedAt: ago(300), lastActive: ago(180), now: NOW, limits: LIMITS };
+  assert.equal(decideStale(quiet).stale, true, 'three quiet hours are stale on an ordinary tick');
+  assert.equal(decideStale({ ...quiet, afterGap: true }).stale, false, 'but not on the tick after the machine slept');
+  assert.equal(decideStale({ ...quiet, afterGap: true, unitActive: false }).stale, true);
+  assert.equal(decideStale({ ...quiet, afterGap: true, startedAt: ago(7 * 60) }).stale, true);
+});
+
 test('stale: a gone unit at once; an active one only past the limits plus grace', () => {
   const gone = decideStale({ unitActive: false, startedAt: NOW, lastActive: undefined, now: NOW, limits: LIMITS });
   assert.equal(gone.stale && !gone.stopUnit, true);

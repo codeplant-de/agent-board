@@ -338,8 +338,10 @@ test("the watch passes liveness on with the run's lane and stops a quiet skill r
   deps.now = () => new Date(clock);
   let decision: unknown;
   deps.run = async (_invocation, _taskId, _env, watch) => {
-    clock += 20 * 60_000;
-    decision = await watch.tick();
+    for (let elapsed = 0; elapsed < 20 * 60_000; elapsed += 15_000) {
+      clock += 15_000;
+      decision = await watch.tick();
+    }
     return {
       exitCode: null,
       signal: 'SIGTERM',
@@ -354,6 +356,38 @@ test("the watch passes liveness on with the run's lane and stops a quiet skill r
     message: 'Stopped: the agent made no tool call for 15 minutes.',
   });
   assert.ok(backend.writes.some((w) => w.includes('no tool call for 15 minutes')));
+});
+
+test('a jump of the clock is a sleep, not inactivity: the idle time starts over, for the worker and for the sweep', async () => {
+  const { deps } = setup({ exitCode: 0, signal: null });
+  let clock = Date.now();
+  deps.now = () => new Date(clock);
+  const decisions: unknown[] = [];
+  const quiet: { kind: string }[] = [];
+  deps.run = async (_invocation, _taskId, _env, watch) => {
+    clock += 15_000;
+    decisions.push(await watch.tick());
+    // Two hours asleep.
+    clock += 2 * 60 * 60_000;
+    decisions.push(await watch.tick());
+    assert.equal(deps.files.lastActive('w1')?.getTime(), clock, "the agent's last sign of life moved up to the wake");
+    // Real quiet counts again from the wake.
+    for (let elapsed = 0; elapsed < 16 * 60_000; elapsed += 15_000) {
+      clock += 15_000;
+      quiet.push(await watch.tick());
+    }
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.deepEqual(
+    decisions.map((decision) => (decision as { kind: string }).kind),
+    ['continue', 'continue'],
+  );
+  // The 61st tick after the wake is the first more than 15 minutes on.
+  assert.equal(
+    quiet.findIndex((decision) => decision.kind === 'stop'),
+    60,
+  );
 });
 
 test("the hook goes into a skill run's settings", async () => {

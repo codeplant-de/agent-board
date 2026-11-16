@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { BackendError } from '../backend/backend.mts';
 import { checkDataKey, verifyContract } from '../backend/contract-check.mts';
 import type { ServerIdentity } from '../backend/contract-check.mts';
@@ -27,7 +27,19 @@ import type { Keys } from '@agent-board/shared';
 import { pluginPlaceholders } from '../worker/plan.mts';
 import { dirsToSend, isAllowedDir, isDirectory, routedDirs, UNCOVERED_HINT } from '../config/dirs.mts';
 import { parseEnv } from '../config/env-file.mts';
+import { runDir } from '../worker/runtime.mts';
 import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
+import {
+  AGENT_NAMES,
+  agentFile,
+  agentLabel,
+  agentPath,
+  bootstrapCommand,
+  isAgentLoaded,
+  launchAgentsDirectory,
+  parseProgramArguments,
+} from './launchd.mts';
+import type { AgentName } from './launchd.mts';
 import { errorText, shellQuote } from '../output/text.mts';
 import { PluginError, resolvePluginRoot } from '../worker/plugins.mts';
 import type { PluginFiles } from '../worker/plugins.mts';
@@ -58,11 +70,25 @@ export interface DoctorDeps {
   which: (program: string) => string | undefined;
   whichInUnits: (program: string) => string | undefined;
   home: string;
-  // process.platform: only a Linux machine can be a worker.
+  // process.platform: only a Linux or a macOS machine can be a worker.
   platform: string;
+  launchd: LaunchdDoctorDeps;
   // A read-only systemctl call: its exit code.
   systemctl: (args: string[]) => Promise<number>;
   verifyServer: (config: Pick<WebConfig, 'url' | 'token'>) => Promise<ServerIdentity>;
+}
+
+// What the macOS worker checks touch.
+export interface LaunchdDoctorDeps {
+  // ~/Library/LaunchAgents
+  agentsDir: string;
+  uid: number;
+  // The run directory.
+  runDir: string;
+  // Whether launchd has loaded the agent (`launchctl print` finds it).
+  loaded: (name: AgentName) => Promise<boolean>;
+  // Whether files can be made in the directory, or in the nearest directory above it that exists.
+  writable: (dir: string) => boolean;
 }
 
 type Check = (deps: DoctorDeps) => CheckResult[] | Promise<CheckResult[]>;
@@ -75,16 +101,42 @@ const problem = (name: string, level: 'fail' | 'warn', message: string, hint: st
   hint,
 });
 
+// Whether a file can be made in `dir`, or in the nearest directory above it that exists (the run directory is made on first use).
+function isWritable(dir: string): boolean {
+  let at = dir;
+  while (!existsSync(at) && dirname(at) !== at) at = dirname(at);
+  try {
+    accessSync(at, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function realLaunchdDoctorDeps(env: Record<string, string | undefined>, home: string): LaunchdDoctorDeps {
+  const uid = process.getuid?.() ?? 0;
+  return {
+    agentsDir: launchAgentsDirectory(home),
+    uid,
+    runDir: runDir(env, 'darwin'),
+    loaded: (name) => isAgentLoaded(uid, name),
+    writable: isWritable,
+  };
+}
+
 export function realDoctorDeps(
   configDir: string,
   unitDir: string,
   systemctl: DoctorDeps['systemctl'],
   which: DoctorDeps['which'],
   home: string,
-  whichInUnits: DoctorDeps['whichInUnits'] = (program) => whichOnPath(program, unitPath(home)),
+  launchd: DoctorDeps['launchd'],
+  whichInUnits: DoctorDeps['whichInUnits'] = (program) =>
+    whichOnPath(program, process.platform === 'darwin' ? agentPath(home) : unitPath(home)),
 ): DoctorDeps {
   return {
     home,
+    launchd,
     platform: process.platform,
     whichInUnits,
     configDir,
@@ -567,7 +619,8 @@ function checkCommand(deps: DoctorDeps, service: string): CheckResult[] {
   ];
 }
 
-const TOOLS = ['claude', 'gh', 'flock', 'timeout', 'systemd-run', 'systemctl'];
+const TOOLS = ['claude', 'gh', 'flock', 'systemd-run', 'systemctl'];
+const MAC_TOOLS = ['claude', 'gh', 'lockf'];
 
 // An intake machine is one whose config.json has an `intake` key; any other config problem is checkConfig's to report.
 function hasIntake({ configDir, readText }: DoctorDeps): boolean {
@@ -588,15 +641,154 @@ function installedUnits(deps: DoctorDeps, intake: boolean): string[] {
   ].filter((file) => deps.exists(join(deps.unitDir, file)));
 }
 
-// The worker's tools and units exist only on Linux, so on another system their checks would only send the user after programs it does not have.
+// The worker's tools and services exist only on Linux (systemd) and macOS (launchd), so on another system their checks would
+// only send the user after programs it does not have.
 const notAWorker = (platform: string): CheckResult =>
   ok(
     'worker',
-    `not checked: a worker needs Linux with systemd, and this is ${platform === 'darwin' ? 'macOS' : platform}. The board commands work here, except ask, add, polish and setup`,
+    `not checked: a worker needs Linux with systemd or macOS, and this is ${platform}. The board commands work here, except ask, add, polish and setup`,
   );
+
+// Under these folders of the home directory macOS lets a background job read only with the user's consent (TCC), which nobody
+// is there to give: a checkout in one fails the run.
+const PROTECTED_FOLDERS = ['Documents', 'Desktop', 'Downloads', 'Library/Mobile Documents'];
+
+function protectedFolderOf(path: string, home: string): string | undefined {
+  return PROTECTED_FOLDERS.find((folder) => path === `${home}/${folder}` || path.startsWith(`${home}/${folder}/`));
+}
+
+// Directories config.json names that a background job on macOS cannot read.
+function checkProtectedFolders(deps: DoctorDeps): CheckResult[] {
+  const text = deps.readText(join(deps.configDir, 'config.json'));
+  let config: Config;
+  try {
+    config = parseConfig(text === undefined ? undefined : JSON.parse(text));
+  } catch {
+    return [];
+  }
+  const named = [...(config.dirs ?? []).map(({ path }) => ({ label: 'dirs', path })), ...routedDirs(config)];
+  return named.flatMap(({ label, path }) => {
+    const folder = protectedFolderOf(path, deps.home) ?? protectedFolderOf(deps.realpath(path) ?? path, deps.home);
+    return folder === undefined
+      ? []
+      : [
+          problem(
+            'folders',
+            'warn',
+            `${label} ${plainLine(path)} is under ~/${folder}, where macOS blocks background jobs (TCC)`,
+            'keep checkouts outside ~/Documents, ~/Desktop, ~/Downloads and iCloud Drive, or give the board binary Full Disk Access in System Settings > Privacy & Security',
+          ),
+        ];
+  });
+}
+
+// A launch agent's absolute program paths must still exist; the lock file is made on the first tick.
+function checkAgentCommand(deps: DoctorDeps, name: AgentName): CheckResult[] {
+  const text = deps.readText(join(deps.launchd.agentsDir, agentFile(name)));
+  const args = text === undefined ? undefined : parseProgramArguments(text);
+  if (args === undefined) return [];
+  const missing = args.filter((arg) => arg.startsWith('/') && !arg.endsWith('.lock') && !deps.exists(arg));
+  return [
+    missing.length === 0
+      ? ok(`${agentFile(name)} command`, 'its programs exist')
+      : problem(
+          `${agentFile(name)} command`,
+          'fail',
+          `${missing.join(', ')} no longer exists`,
+          'run "board setup" again from the installed CLI',
+        ),
+  ];
+}
+
+// A macOS worker machine: its tools, the two launch agents, the run directory and the folders it can read. Like Linux, a warning
+// on a machine that installed no agent and a failure on one that did.
+async function checkMacWorker(deps: DoctorDeps): Promise<CheckResult[]> {
+  const { launchd } = deps;
+  const installed = AGENT_NAMES.filter((name) => deps.exists(join(launchd.agentsDir, agentFile(name))));
+  const level = installed.length > 0 ? 'fail' : 'warn';
+  const results: CheckResult[] = [];
+  for (const tool of MAC_TOOLS) {
+    const found = deps.whichInUnits(tool);
+    const onShell = deps.which(tool);
+    if (found === undefined && onShell !== undefined)
+      results.push(
+        problem(
+          `tool ${tool}`,
+          level,
+          `${tool} is at ${onShell}, on your shell's PATH but not on the agents' (${agentPath(deps.home)})`,
+          `link it into ~/.local/bin (ln -s ${onShell} ~/.local/bin/${tool}), then run "board doctor" again`,
+        ),
+      );
+    else
+      results.push(
+        found
+          ? ok(`tool ${tool}`, found)
+          : problem(
+              `tool ${tool}`,
+              level,
+              `${tool} is not on PATH`,
+              `install ${tool} and make it visible to the launch agents`,
+            ),
+      );
+  }
+  if (hasIntake(deps))
+    results.push(
+      problem(
+        'launchd intake',
+        'warn',
+        'config.json has an intake key, but intake is not supported on macOS and no agent runs it',
+        'run intake on a Linux machine',
+      ),
+    );
+  results.push(
+    launchd.writable(launchd.runDir)
+      ? ok('run directory', launchd.runDir)
+      : problem(
+          'run directory',
+          level,
+          `${launchd.runDir} cannot be written`,
+          'make it writable, or set AGENT_BOARD_RUN_DIR',
+        ),
+  );
+  if (installed.length === 0)
+    results.push(
+      problem(
+        'launchd agents',
+        'warn',
+        'no agent-board launch agent is installed',
+        'run "board setup" on a worker machine',
+      ),
+    );
+  for (const name of AGENT_NAMES) {
+    const file = agentFile(name);
+    const path = join(launchd.agentsDir, file);
+    if (!installed.includes(name)) {
+      // The listener only adds speed to the timer's ticks.
+      if (installed.length > 0)
+        results.push(
+          problem(`launchd ${file}`, name === 'listen' ? 'warn' : 'fail', `${path} is missing`, 'run "board setup"'),
+        );
+      continue;
+    }
+    results.push(ok(`launchd ${file}`, 'installed'), ...checkAgentCommand(deps, name));
+    results.push(
+      (await launchd.loaded(name))
+        ? ok(`${agentLabel(name)} state`, 'loaded')
+        : problem(
+            `${agentLabel(name)} state`,
+            'warn',
+            'not loaded (setup was not run with --enable, or background items are switched off in System Settings > General > Login Items)',
+            bootstrapCommand(launchd.uid, path),
+          ),
+    );
+  }
+  results.push(...checkProtectedFolders(deps));
+  return results;
+}
 
 // A worker machine's tools and units: a warning on a machine that has installed no unit, a failure on one that has.
 const checkWorker: Check = async (deps) => {
+  if (deps.platform === 'darwin') return checkMacWorker(deps);
   if (deps.platform !== 'linux') return [notAWorker(deps.platform)];
   const intake = hasIntake(deps);
   const installed = installedUnits(deps, intake);

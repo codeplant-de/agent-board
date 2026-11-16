@@ -162,7 +162,7 @@ test('a machine without systemctl has no listener to restart, and that is no fai
   const saved = process.env['PATH'];
   try {
     process.env['PATH'] = '/nonexistent';
-    assert.equal(await realListenerRestart({ block: true })(), undefined);
+    assert.equal(await realListenerRestart({ block: true, platform: 'linux' })(), undefined);
   } finally {
     process.env['PATH'] = saved;
   }
@@ -219,12 +219,77 @@ test('a systemctl that does not know the listener unit (exit 5) is no failure ei
   const saved = process.env['PATH'];
   try {
     process.env['PATH'] = `${dir}:${saved ?? ''}`;
-    assert.equal(await realListenerRestart({ block: true })(), undefined);
+    assert.equal(await realListenerRestart({ block: true, platform: 'linux' })(), undefined);
     writeFileSync(join(dir, 'systemctl'), '#!/bin/sh\necho boom >&2\nexit 1\n', { mode: 0o755 });
-    assert.match((await realListenerRestart({ block: true })()) ?? '', /could not restart.*boom/);
+    assert.match((await realListenerRestart({ block: true, platform: 'linux' })()) ?? '', /could not restart.*boom/);
   } finally {
     process.env['PATH'] = saved;
     rmSync(dir, { recursive: true });
+  }
+});
+
+// A launchctl that logs its arguments and says whether the listener agent is loaded (`print` exits 0) or not.
+function fakeLaunchctl(loaded: boolean, kickstartFails = false): { dir: string; log: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'board-fakebin-test-'));
+  const log = join(dir, 'calls.log');
+  const script = [
+    '#!/bin/sh',
+    `echo "$@" >> ${log}`,
+    `[ "$1" = print ] && exit ${loaded ? 0 : 113}`,
+    kickstartFails ? 'echo boom >&2; exit 1' : 'exit 0',
+  ].join('\n');
+  writeFileSync(join(dir, 'launchctl'), script, { mode: 0o755 });
+  return { dir, log };
+}
+
+test('on macOS the listener is restarted with kickstart -k, only when launchd has it loaded', async () => {
+  const saved = process.env['PATH'];
+  const loaded = fakeLaunchctl(true);
+  const notLoaded = fakeLaunchctl(false);
+  const failing = fakeLaunchctl(true, true);
+  const target = 'gui/501/de.codeplant.agent-board.listen';
+  try {
+    process.env['PATH'] = `${loaded.dir}:${saved ?? ''}`;
+    assert.match(
+      (await realListenerRestart({ block: true, platform: 'darwin', uid: 501 })()) ?? '',
+      /^restarted de\.codeplant\.agent-board\.listen, to run the new code$/,
+    );
+    assert.equal(readFileSync(loaded.log, 'utf8'), `print ${target}\nkickstart -k ${target}\n`);
+    process.env['PATH'] = `${notLoaded.dir}:${saved ?? ''}`;
+    assert.equal(await realListenerRestart({ block: true, platform: 'darwin', uid: 501 })(), undefined);
+    assert.equal(
+      readFileSync(notLoaded.log, 'utf8'),
+      `print ${target}\n`,
+      'no kickstart for an agent that is not loaded',
+    );
+    process.env['PATH'] = `${failing.dir}:${saved ?? ''}`;
+    assert.match(
+      (await realListenerRestart({ block: true, platform: 'darwin', uid: 501 })()) ?? '',
+      /could not restart .*\(boom\); run "launchctl kickstart -k gui\/501\/de\.codeplant\.agent-board\.listen"/,
+    );
+    process.env['PATH'] = '/nonexistent';
+    assert.equal(await realListenerRestart({ block: true, platform: 'darwin', uid: 501 })(), undefined, 'no launchctl');
+  } finally {
+    process.env['PATH'] = saved;
+    for (const { dir } of [loaded, notLoaded, failing]) rmSync(dir, { recursive: true });
+  }
+});
+
+test('on macOS a restart that must not block returns at once and kicks the listener on its own', async () => {
+  const saved = process.env['PATH'];
+  const loaded = fakeLaunchctl(true);
+  try {
+    process.env['PATH'] = `${loaded.dir}:${saved ?? ''}`;
+    assert.match(
+      (await realListenerRestart({ block: false, platform: 'darwin', uid: 501 })()) ?? '',
+      /^restarting de\.codeplant\.agent-board\.listen/,
+    );
+    for (let waited = 0; waited < 3000 && !readFileSync(loaded.log, 'utf8').includes('kickstart'); waited += 50)
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.match(readFileSync(loaded.log, 'utf8'), /kickstart -k gui\/501\/de\.codeplant\.agent-board\.listen/);
+  } finally {
+    process.env['PATH'] = saved;
+    rmSync(loaded.dir, { recursive: true });
   }
 });
 

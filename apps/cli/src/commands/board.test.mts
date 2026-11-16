@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -33,26 +33,39 @@ test('board move takes the human status names as well as the neutral ones', () =
   assert.throws(() => parseStatus('Someday'), UsageError);
 });
 
-test('a note file is read only from /tmp, without following links', () => {
-  const dir = mkdtempSync('/tmp/pr-note-test-');
-  const secret = join(mkdtempSync(join(homedir(), '.agent-board-test-')), 'secret');
-  try {
-    writeFileSync(secret, 'TOKEN=1');
-    writeFileSync(join(dir, 'note.md'), '  findings\n');
-    assert.equal(readNoteFile(join(dir, 'note.md')), 'findings');
-    symlinkSync(secret, join(dir, 'link.md'));
-    assert.throws(() => readNoteFile(join(dir, 'link.md')), UsageError);
-    symlinkSync(dirname(secret), join(dir, 'linkdir'));
-    assert.throws(() => readNoteFile(join(dir, 'linkdir', 'secret')), /must be inside \/tmp\//);
-    assert.throws(() => readNoteFile(secret), /must be inside \/tmp\//);
-    writeFileSync(join(dir, 'big.md'), 'x'.repeat(1024 * 1024 + 1));
-    assert.throws(() => readNoteFile(join(dir, 'big.md')), /at most 1 MiB/);
-    assert.throws(() => readNoteFile(join(dir, 'missing.md')), /cannot read/);
-  } finally {
-    rmSync(dir, { recursive: true });
-    rmSync(dirname(secret), { recursive: true });
-  }
-});
+for (const platform of ['linux', 'darwin']) {
+  test(
+    `a note file is read only from /tmp, without following links (${platform} checks)`,
+    { skip: platform === 'linux' && process.platform !== 'linux' },
+    () => {
+      const dir = mkdtempSync('/tmp/pr-note-test-');
+      const secret = join(mkdtempSync(join(homedir(), '.agent-board-test-')), 'secret');
+      try {
+        writeFileSync(secret, 'TOKEN=1');
+        writeFileSync(join(dir, 'note.md'), '  findings\n');
+        assert.equal(readNoteFile(join(dir, 'note.md'), platform), 'findings');
+        symlinkSync(secret, join(dir, 'link.md'));
+        assert.throws(() => readNoteFile(join(dir, 'link.md'), platform), UsageError);
+        symlinkSync(dirname(secret), join(dir, 'linkdir'));
+        assert.throws(() => readNoteFile(join(dir, 'linkdir', 'secret'), platform), /must be inside \/tmp\//);
+        assert.throws(() => readNoteFile(secret, platform), /must be inside \/tmp\//);
+        writeFileSync(join(dir, 'big.md'), 'x'.repeat(1024 * 1024 + 1));
+        assert.throws(() => readNoteFile(join(dir, 'big.md'), platform), /at most 1 MiB/);
+        assert.throws(() => readNoteFile(join(dir, 'missing.md'), platform), /cannot read/);
+        // Not a regular file.
+        assert.throws(() => readNoteFile(dir, platform), /regular file/);
+        // A link inside /tmp that stays inside it is fine, in the file's own place or in a parent directory.
+        symlinkSync(join(dir, 'note.md'), join(dir, 'inside.md'));
+        assert.throws(() => readNoteFile(join(dir, 'inside.md'), platform), UsageError);
+        symlinkSync(dir, join(dir, 'self'));
+        assert.equal(readNoteFile(join(dir, 'self', 'note.md'), platform), 'findings');
+      } finally {
+        rmSync(dir, { recursive: true });
+        rmSync(dirname(secret), { recursive: true });
+      }
+    },
+  );
+}
 
 test('board add needs a title and a file, and checks the parent and the priority', () => {
   assert.deepEqual(parseAddFlags({ file: '/tmp/x.md', title: 'Fix it', parent: 'abc' }), {
@@ -369,9 +382,20 @@ test('board schedules changes are refused inside a board run, listing is not', a
     );
 });
 
-test('a note file needs Linux: elsewhere the command says how to give the text instead', () => {
-  assert.throws(
-    () => readNoteFile('/tmp/x', 'darwin'),
-    /needs Linux: on darwin "board ask" and "board add" are not available, and "board comment" takes its text as arguments, or - to read it from stdin/,
+for (const platform of ['linux', 'darwin'])
+  test(
+    `a note file with another hard link is refused: a link to a secret made in /tmp must not be read (${platform} checks)`,
+    { skip: platform === 'linux' && process.platform !== 'linux' },
+    () => {
+      const dir = mkdtempSync('/tmp/pr-note-test-');
+      try {
+        writeFileSync(join(dir, 'one.md'), 'alone');
+        assert.equal(readNoteFile(join(dir, 'one.md'), platform), 'alone');
+        linkSync(join(dir, 'one.md'), join(dir, 'two.md'));
+        for (const name of ['one.md', 'two.md'])
+          assert.throws(() => readNoteFile(join(dir, name), platform), /hard link/);
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
+    },
   );
-});

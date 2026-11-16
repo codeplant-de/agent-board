@@ -21,8 +21,10 @@ export function registerInternalCommands(shared: ProgramShared): void {
   const refuseInternalInRun = (): void => {
     notInRun('board internal is not available inside a board run');
     const platform = options.platform ?? process.platform;
-    if (platform !== 'linux')
-      throw new SystemError(`board internal runs worker machines and needs Linux with systemd; this is ${platform}`);
+    if (platform !== 'linux' && platform !== 'darwin')
+      throw new SystemError(
+        `board internal runs worker machines and needs Linux with systemd or macOS; this is ${platform}`,
+      );
   };
   dryRunOption(internal.command('dispatch').description('One dispatcher tick')).action((_options, command: Command) => {
     refuseInternalInRun();
@@ -31,6 +33,8 @@ export function registerInternalCommands(shared: ProgramShared): void {
   dryRunOption(internal.command('intake').description('Review requests to tasks')).action(
     (_options, command: Command) => {
       refuseInternalInRun();
+      if ((options.platform ?? process.platform) === 'darwin')
+        throw new SystemError('intake is not supported on macOS; run it on a Linux machine');
       if (!loadConfig(getPaths(env).configFile, { optionalConfig: true }).intakeEnabled)
         throw new UsageError(
           'intake is not enabled: config.json has no intake key (see apps/cli/examples/config.reviews.json)',
