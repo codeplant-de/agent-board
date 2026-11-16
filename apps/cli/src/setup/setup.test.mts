@@ -15,7 +15,16 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { runBoard } from '../commands/program.mts';
-import { parseExecStart, quoteExecArg, renderUnits, setup, treeProblem, enableCommand, UNIT_PATH } from './setup.mts';
+import {
+  parseExecStart,
+  quoteExecArg,
+  renderUnits,
+  setup,
+  treeProblem,
+  enableCommand,
+  UNIT_PATH,
+  whichOnPath,
+} from './setup.mts';
 import type { SetupDeps } from './setup.mts';
 
 const command = (name: string): string[] => [
@@ -405,6 +414,19 @@ test('without an intake key, installed intake units are left alone and not enabl
         ),
       ),
     );
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('whichOnPath finds only an executable file on the path', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-which-'));
+  try {
+    writeFileSync(join(dir, 'tool'), '#!/bin/sh\n', { mode: 0o755 });
+    writeFileSync(join(dir, 'plain'), '', { mode: 0o644 });
+    assert.equal(whichOnPath('tool', `/nowhere::${dir}`), join(dir, 'tool'));
+    assert.equal(whichOnPath('plain', dir), undefined);
+    assert.equal(whichOnPath('tool', undefined), undefined);
   } finally {
     rmSync(dir, { recursive: true });
   }

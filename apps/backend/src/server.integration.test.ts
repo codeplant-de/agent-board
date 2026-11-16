@@ -1255,6 +1255,17 @@ describe('Done archival', () => {
     expect(await asOwner(db, 'jascha', (tx) => archiveStaleDone(tx))).toBe(0);
     expect((await plainUi(db).tasks.get({ id })).task.closed).toBe(false);
   });
+
+  it('leaves tasks with a dedupe key open, whoever made them', async () => {
+    const added = await ctx.call('laptop', 'add-task', {
+      body: { title: 'keyed', input: '/review-pr y', dedupeKey: 'https://github.com/o/r/pull/9' },
+    });
+    const id = added.json.result.task.id;
+    await admin.update(tasks).set({ status: 'done' }).where(eq(tasks.id, id));
+    await idle(id, 40);
+    expect(await asOwner(db, 'jascha', (tx) => archiveStaleDone(tx))).toBe(0);
+    expect((await plainUi(db).tasks.get({ id })).task.closed).toBe(false);
+  });
 });
 
 describe('delayed tasks', () => {

@@ -48,6 +48,8 @@ Setup:
                             configured) and the listener as systemd user units
   self-update               replace this binary with the newest release
   completion <shell>        print a shell completion script
+  example [name]            list or print the example files that ship with the
+                            CLI
   help [command]            show the help of a command
 
 Run "board help <command>" for the details and examples of one command.
@@ -224,6 +226,10 @@ Usage: board move [options] <task> <status...>
 Move a task to the bottom of a status: backlog, todo, running, waiting,
 needs-me, done. "Backlog", "Todo", "Running", "Needs me" and "Done" work too.
 
+--expect <status> moves the task only while it is in that status: for a script
+that decided from a listing. When the task has moved on it prints a message and
+exits 3, writing nothing. It is not available inside a board run.
+
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
 not exactly 8, which counts as a whole older id; an exact-case match wins, else
@@ -231,17 +237,20 @@ case does not matter; it must be unique). Inside a board run only the full id is
 accepted.
 
 Arguments:
-  task        the task: its id, a board task link or the start of its id
-  status      the status to move it to
+  task               the task: its id, a board task link or the start of its id
+  status             the status to move it to
 
 Options:
-  --dry-run   read everything, print every write instead of doing it
-  -h, --help  display help for command
+  --expect <status>  move it only while it is in this status; exit 3 when it is
+                     not
+  --dry-run          read everything, print every write instead of doing it
+  -h, --help         display help for command
 
 Examples:
   board move Ab3dEf9x needs-me
   board move Ab3dEf9x Needs me
   board move Ab3 todo
+  board move Ab3dEf9x done --expect todo
 ```
 
 ### board ask
@@ -401,9 +410,25 @@ runs or until --until, else forever.
 Polish prompt button on the board does. Apply the result from that task's page.
 It cannot be combined with --hold, --in, --at or a repeat.
 
+--key <key> is for scripts that run `board schedule` again and again: the board
+keeps one task per key (the key itself never leaves this machine), so a second
+call finds the first instead of making another, and the duplicate check is
+skipped. It cannot be combined with a repeat, --polish, --hold, --backlog, --in
+or --at. It prints `created`, `exists` or `requeued`, the task id and URL, and
+for exists the reason in parentheses, and exits 0 for all of them. A task that
+was closed is `exists (closed)` and never made again.
+
+With --version <v> (a PR head sha, say) the task remembers what it was made for.
+When it differs and the task waits in Needs me or is Done, the task goes back to
+Todo with a note "New version" (`requeued`). Otherwise it is `exists` with the
+reason same-version, no-version (no --version given), busy (Todo, Running,
+Waiting or Backlog), changed (the task moved while this ran) or other-agent (it
+runs as another --agent than this call names, which cannot be changed later).
+
 With --json, print {"id", "url"} of the task on stdout (and "polishId",
-"polishUrl" with --polish); everything else goes to stderr. Not available inside
-a board run: there, propose follow-up work with `board add`.
+"polishUrl" with --polish; "result", "status" and "reason" with --key);
+everything else goes to stderr. Not available inside a board run: there, propose
+follow-up work with `board add`.
 
 Arguments:
   prompt                 what the task should do
@@ -430,6 +455,12 @@ Options:
   --polish               park it in backlog and queue a task that polishes its
                          prompt, as "Polish prompt" on the board
   --new                  skip the duplicate check
+  --key <key>            one task per key on the board: a second schedule with
+                         the same key finds the first instead of making another,
+                         with no duplicate check
+  --version <version>    with --key: what the task was made for (a PR head sha);
+                         a task in needs-me or done goes back to Todo when it
+                         differs
   --dry-run              read everything, print every write instead of doing it
   --json                 print JSON on stdout instead of text
   -h, --help             display help for command
@@ -446,6 +477,7 @@ Examples:
   board schedule --polish "bidder export should include postal codes"
   board schedule --hold -- --weird prompt
   board schedule --json /review-pr 17741
+  board schedule --agent reviewer --key https://github.com/o/r/pull/7 --version 3f9c2ab --json /review-pr https://github.com/o/r/pull/7 --auto
 ```
 
 ### board schedules
@@ -742,6 +774,30 @@ Options:
 Examples:
   board completion bash
   eval "$(board completion zsh)"
+```
+
+### board example
+
+```
+Usage: board example [options] [name]
+
+Without a name, list the examples: scripts and config files to start from. With
+a name, print that file on stdout, so `board example github-reviews.sh >
+~/bin/github-reviews.sh` saves it. The files are built into the CLI, so they
+match its version.
+
+The scripts and the timer that runs them are described under Scripts in
+docs/usage.md.
+
+Arguments:
+  name        the example to print
+
+Options:
+  -h, --help  display help for command
+
+Examples:
+  board example
+  board example github-reviews.sh > github-reviews.sh
 ```
 
 <!-- commands:end -->

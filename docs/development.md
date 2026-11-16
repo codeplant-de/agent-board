@@ -33,6 +33,7 @@ pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 - **Slack app tests** (`apps/slack`) use vitest with a fake Socket Mode client and a local HTTP server standing in for the backend. The backend's `intake.integration.test.ts` runs the app's real intake client against the real intake API.
 - **Completion tests** need zsh and fish and skip without them, so CI may be their first real run.
 - **The command reference** in [cli.md](cli.md) is generated from the commander program. A test fails when it is stale; regenerate it with `pnpm --filter @agent-board/cli run docs`.
+- **The example files** in `apps/cli/examples` are embedded in the CLI for `board example` through `examples/examples.json`. A test fails when it differs from the files; regenerate it with `pnpm --filter @agent-board/cli run examples`.
 - **The binary**: `pnpm --filter @agent-board/cli test:binary` builds one for this host and runs it the way a worker machine would. CI does the same in its `binary` job.
 
 ## CLI layout

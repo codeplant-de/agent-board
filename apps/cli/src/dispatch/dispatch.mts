@@ -1,6 +1,7 @@
 /**
  * One dispatcher tick: sweep stale Running tasks, wake waiting tasks whose time is up, fill free slots from the top of Todo,
  * then drop the logs and session records of finished tasks and run the checks of waiting tasks that are due.
+ * Last, at most every 10 minutes and only where `gh` is installed, it refreshes the PR state of the open tasks.
  * No LLM calls. Add --dry-run to read everything and print every write and process start instead.
  */
 import { isBehind, tryUpdate } from '../self/auto-update.mts';
@@ -20,6 +21,7 @@ import { createRunFiles } from '../worker/runtime.mts';
 import type { RunFiles } from '../worker/runtime.mts';
 import { EXEC_PATH, isCompiledBinary } from '../self/self.mts';
 import { realGh, realListenerRestart, selfUpdate } from '../self/self-update.mts';
+import { whichOnPath } from '../setup/setup.mts';
 import { createSystem } from '../setup/system.mts';
 import type { System } from '../setup/system.mts';
 import { readLogTail } from '../worker/logs.mts';
@@ -31,6 +33,13 @@ import { CHECK_TIME_LIMIT_MS, createWaitStore, runCheck } from './waits.mts';
 import { createUpdateState, updateStateFile } from '../self/update-state.mts';
 import { cliVersion, releaseVersion } from '../self/version.mts';
 import { getPaths, loadConfigWarnings } from '../config/config.mts';
+import { createGitHub } from '../intake/github.mts';
+import type { GitHub } from '../intake/github.mts';
+import { createPrRefreshState, prRefreshFile, refreshPrStatesIfDue } from './pr-states.mts';
+import type { PrRefreshState } from './pr-states.mts';
+
+// Below the tick's 110 s limit: a stalled gh must not take the tick down with it.
+const PR_REFRESH_GH_TIMEOUT_MS = 30_000;
 
 export interface DispatchDeps extends Context {
   system: System;
@@ -43,6 +52,8 @@ export interface DispatchDeps extends Context {
   update: UpdateDeps;
   // Keys of config.json the CLI ignores (see configWarnings), logged at the start of every tick.
   configWarnings: () => string[];
+  // The PR states of open tasks are looked up here at most every 10 minutes; undefined `github`: `gh` is not installed.
+  prRefresh: { github: GitHub | undefined; state: PrRefreshState };
 }
 
 // Ends a wait on the board: the woken task, or undefined when it no longer waited or the call failed.
@@ -377,6 +388,8 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   }
   await runChecks(deps, checks, tickStart);
   log(`TICK started=${started.size} ${summary}${checks.length > 0 ? ` checks=${checks.length}` : ''}`);
+  // Last, so a slow or failing GitHub never holds back a start.
+  await refreshPrStatesIfDue({ ...deps.prRefresh, backend, now: deps.now, dryRun: deps.dryRun, print: log }, listed);
 }
 
 export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<void> {
@@ -416,6 +429,10 @@ export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<voi
       taskFiles: createTaskFileStore(),
       runCheck: (check) => runCheck(check),
       configWarnings: () => loadConfigWarnings(getPaths().configFile),
+      prRefresh: {
+        github: whichOnPath('gh') === undefined ? undefined : createGitHub({ timeoutMs: PR_REFRESH_GH_TIMEOUT_MS }),
+        state: createPrRefreshState(prRefreshFile(getPaths().stateDir)),
+      },
     }),
   );
 }

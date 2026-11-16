@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { BackendError } from '../backend/backend.mts';
 import {
+  createGitHub,
   GitHubError,
   parsePrStates,
   parseSearchPage,
@@ -12,7 +16,8 @@ import {
 import { STATUSES } from '@agent-board/shared';
 import type { PrState, Status } from '@agent-board/shared';
 import type { LivePr } from './github.mts';
-import { planIntake, planPrStates, prsToCheck, runIntake } from './intake.mts';
+import { planIntake, runIntake } from './intake.mts';
+import { planPrStates, prsToCheck } from '../dispatch/pr-states.mts';
 import { CONFIG, fakeBackend, NO_PR_STATES, task } from '../__tests__/helpers/fakes.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
@@ -748,4 +753,51 @@ test('an intake agent this machine does not define stops the run before any list
   );
   assert.equal(listed, false);
   assert.deepEqual(backend.writes, []);
+});
+
+test('the intake tick stamps the PR refresh time, so the dispatcher does not look the states up again', async () => {
+  const stamps: Date[] = [];
+  const prRefresh = { refreshedAt: () => undefined, markRefreshed: (at: Date) => void stamps.push(at) };
+  const backend = fakeBackend([]);
+  await runIntake({
+    backend,
+    config: CONFIG,
+    dryRun: false,
+    print: () => undefined,
+    github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: [], unreadable: [] }) },
+    now: () => NOW,
+    prRefresh,
+  });
+  assert.deepEqual(stamps, [NOW]);
+  await runIntake({
+    backend,
+    config: CONFIG,
+    dryRun: true,
+    print: () => undefined,
+    github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs: [], unreadable: [] }) },
+    now: () => NOW,
+    prRefresh,
+  });
+  assert.deepEqual(stamps, [NOW], 'a dry run stamps nothing');
+});
+
+test('createGitHub ends a gh call that outlasts timeoutMs, and waits for one without it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-slow-gh-'));
+  const before = process.env['PATH'];
+  try {
+    writeFileSync(
+      join(dir, 'gh'),
+      '#!/bin/sh\nsleep 5\necho \'{"data":{"search":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}\'\n',
+      {
+        mode: 0o755,
+      },
+    );
+    process.env['PATH'] = `${dir}:${before}`;
+    const started = Date.now();
+    await assert.rejects(createGitHub({ timeoutMs: 100 }).listReviewRequested(['o/r']), GitHubError);
+    assert.ok(Date.now() - started < 3000, 'the call was cut off');
+  } finally {
+    process.env['PATH'] = before;
+    rmSync(dir, { recursive: true });
+  }
 });

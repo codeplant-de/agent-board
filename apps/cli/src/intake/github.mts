@@ -152,9 +152,15 @@ export function parsePrStates(value: unknown, urls: string[]): PrStateLookup {
   return lookup;
 }
 
-async function gh(args: string[], { keepAnswerOnError = false } = {}): Promise<unknown> {
+async function gh(
+  args: string[],
+  { keepAnswerOnError = false, timeoutMs }: { keepAnswerOnError?: boolean; timeoutMs?: number | undefined } = {},
+): Promise<unknown> {
   try {
-    const { stdout } = await run('gh', args, { maxBuffer: 32 * 1024 * 1024 });
+    const { stdout } = await run('gh', args, {
+      maxBuffer: 32 * 1024 * 1024,
+      ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
+    });
     return JSON.parse(stdout);
   } catch (error) {
     // gh exits non-zero when the answer carries errors, such as a repository that is gone, and prints it all the same.
@@ -174,7 +180,8 @@ async function gh(args: string[], { keepAnswerOnError = false } = {}): Promise<u
 }
 
 // One search for all repositories. A failed search throws: the caller must not take a partial listing for the whole queue.
-export function createGitHub(): GitHub {
+// `timeoutMs` ends a `gh` call that takes longer, which then fails like any other.
+export function createGitHub({ timeoutMs }: { timeoutMs?: number } = {}): GitHub {
   return {
     async listReviewRequested(repos) {
       if (repos.length === 0) return { prs: [], unreadable: [] };
@@ -184,15 +191,18 @@ export function createGitHub(): GitHub {
       let after: string | undefined;
       for (let page = 0; page < MAX_PAGES; page++) {
         const found = parseSearchPage(
-          await gh([
-            'api',
-            'graphql',
-            '-f',
-            `query=${SEARCH}`,
-            '-f',
-            `q=${query}`,
-            ...(after === undefined ? [] : ['-f', `after=${after}`]),
-          ]),
+          await gh(
+            [
+              'api',
+              'graphql',
+              '-f',
+              `query=${SEARCH}`,
+              '-f',
+              `q=${query}`,
+              ...(after === undefined ? [] : ['-f', `after=${after}`]),
+            ],
+            { timeoutMs },
+          ),
         );
         prs.push(...found.prs);
         unreadable.push(...found.unreadable);
@@ -222,7 +232,7 @@ export function createGitHub(): GitHub {
                   `${name}=${value}`,
                 ]),
               ],
-              { keepAnswerOnError: true },
+              { keepAnswerOnError: true, timeoutMs },
             ),
             chunk,
           );

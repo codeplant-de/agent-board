@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
 import { Argument } from 'commander';
-import { ReportedFailure } from '../cli.mts';
+import { ReportedFailure, UsageError } from '../cli.mts';
 import { verifyContract } from '../backend/contract-check.mts';
 import { completionModel, renderCompletion, SHELLS } from './completion.mts';
 import type { Shell } from './completion.mts';
@@ -17,6 +17,7 @@ import { releaseVersion } from '../self/version.mts';
 import { realSetupDeps, setup, unitDirectory, whichOnPath } from '../setup/setup.mts';
 import type { SetupDeps, SetupFlags } from '../setup/setup.mts';
 import { plainLine } from '../output/terminal.mts';
+import { exampleNames, exampleText } from './example.mts';
 import { examples, paragraphs, SETUP } from './help-text.mts';
 import type { ProgramShared } from './program-shared.mts';
 
@@ -186,6 +187,28 @@ export function registerSetupCommands(shared: ProgramShared): void {
     .addHelpText('after', examples('board completion bash', 'eval "$(board completion zsh)"'))
     .action((shell: Shell) => {
       writeOut(renderCompletion(shell, completionModel(program)));
+    });
+
+  program
+    .command('example')
+    .helpGroup(SETUP)
+    .summary('list or print the example files that ship with the CLI')
+    .description(
+      paragraphs(
+        'Without a name, list the examples: scripts and config files to start from. With a name, print that file on stdout, so `board example github-reviews.sh > ~/bin/github-reviews.sh` saves it. The files are built into the CLI, so they match its version.',
+        'The scripts and the timer that runs them are described under Scripts in docs/usage.md.',
+      ),
+    )
+    .argument('[name]', 'the example to print')
+    .addHelpText('after', examples('board example', 'board example github-reviews.sh > github-reviews.sh'))
+    .action((name: string | undefined) => {
+      if (name === undefined) return exampleNames().forEach((known) => out(known));
+      const text = exampleText(name);
+      if (text === undefined)
+        throw new UsageError(
+          `no example "${plainLine(name).slice(0, 60)}"; the examples are ${exampleNames().join(', ')}`,
+        );
+      writeOut(text);
     });
 
   // What a completion script asks for: `id<TAB>title` lines. Any failure, a missing config, no network or a run, prints nothing.
