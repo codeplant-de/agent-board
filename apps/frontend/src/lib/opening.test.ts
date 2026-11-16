@@ -6,9 +6,11 @@ import {
   prBinding,
   seal,
   sealPr,
+  transcriptBinding,
+  UNREADABLE_TEXT,
 } from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
-import { openBoardTask, openMachines } from './opening';
+import { openBoardTask, openEvent, openMachines } from './opening';
 import { sealerFor } from './contexts';
 import type { RouterOutputs } from './wire';
 
@@ -179,5 +181,49 @@ describe('the directory lists of machines, as the browser opens them', () => {
     const name = 'bad name\n';
     const machine = await openOne(wire(name, await sealFor(name, list(['/a']))));
     expect(machine).toMatchObject({ shown: '(invalid)', name, dirs: null, dirsUnreadable: false });
+  });
+});
+
+describe('the events of a run, as the browser opens them', () => {
+  const run = { taskId: 'task0001', runId: 'run00001' };
+  const AT = '2026-11-16T12:00:00.000Z';
+  const wireEvent = async (data: Record<string, unknown>, outputSize: number | null = null) => ({
+    seq: 3,
+    at: AT,
+    kind: String(data['kind']),
+    parent: null,
+    data: await sealerFor(keys)(transcriptBinding('tr.data', run.taskId, run.runId, 3), JSON.stringify(data)),
+    outputSize,
+  });
+  const base = { seq: 3, at: AT, parent: null };
+
+  it('fills what an older worker did not write: a result without denials or cost', async () => {
+    const event = await openEvent(
+      keys,
+      run,
+      await wireEvent({ ...base, kind: 'result', text: 'done', isError: false }),
+    );
+    expect(event).toEqual({
+      ...base,
+      kind: 'result',
+      text: 'done',
+      isError: false,
+      turns: null,
+      durationMs: null,
+      costUsd: null,
+      denials: [],
+      outputSize: null,
+    });
+  });
+
+  it('shows an event that does not fit its kind as unreadable instead of passing it on', async () => {
+    const event = await openEvent(keys, run, await wireEvent({ ...base, kind: 'result', denials: 'none' }));
+    expect(event).toMatchObject({ seq: 3, kind: 'note', text: UNREADABLE_TEXT });
+  });
+
+  it('lists a tool result with its output size and without an output', async () => {
+    const data = { ...base, kind: 'tool_result', toolUseId: 'toolu_1', isError: false };
+    const event = await openEvent(keys, run, await wireEvent(data, 12));
+    expect(event).toEqual({ ...data, outputSize: 12 });
   });
 });

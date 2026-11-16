@@ -104,6 +104,15 @@ describe('TranscriptDrawer', () => {
     expect(await screen.findByText('Could not load this run: event 2 does not open')).toBeInTheDocument();
   });
 
+  it('shows an event it cannot render as an error in the drawer, not a blank page', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    // Past openEvent's checks, which would have turned it into a note: a result without its denials.
+    fetchPage.mockReset().mockResolvedValue([{ seq: 0, at: NOW, kind: 'result', parent: null, text: 'done' }]);
+    renderDrawer({ opened: true, live: false });
+    expect(await screen.findByText('Could not show this run')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reload' })).toBeInTheDocument();
+  });
+
   it('says so while a run’s events load', async () => {
     fetchPage.mockReset().mockReturnValue(new Promise(() => undefined));
     renderDrawer({ opened: true, live: false });
