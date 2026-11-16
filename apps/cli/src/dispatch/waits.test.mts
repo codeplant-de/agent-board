@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createWaitStore, runCheck } from './waits.mts';
@@ -45,7 +45,7 @@ test('a check runs in its directory with the env of the Claude Code settings, an
     writeFileSync(join(work, '.claude', 'settings.local.json'), JSON.stringify({ env: { BOTH: 'project' } }));
     const check = { cwd: work, everyMs: 60_000, createdAt: new Date() };
     const passed = await runCheck({ ...check, command: 'echo "$PWD $FROM_USER $BOTH"' }, home);
-    assert.deepEqual(passed, { exitCode: 0, timedOut: false, output: `${work} u project\n` });
+    assert.deepEqual(passed, { exitCode: 0, timedOut: false, output: `${realpathSync(work)} u project\n` });
     const failed = await runCheck({ ...check, command: 'echo pending >&2; exit 3' }, home);
     assert.deepEqual(failed, { exitCode: 3, timedOut: false, output: 'pending\n' });
     const long = await runCheck({ ...check, command: 'seq 1 5000' }, home);
