@@ -332,7 +332,7 @@ test('the fish script completes ids, statuses, schedule actions and files, and n
     'waiting',
   ]);
   assert.deepEqual(fishOffers('board schedules '), ['pause', 'resume', 'rm']);
-  assert.deepEqual(fishOffers('board dirs '), ['list', 'add', 'rm']);
+  assert.deepEqual(fishOffers('board dirs '), ['add', 'list', 'rm']);
   assert.deepEqual(fishOffers('board schedules rm '), ['Sc1aBcDe\tSweep']);
   assert.deepEqual(fishOffers('board delay Ab3dEf9x --at '), []);
   assert.deepEqual(fishOffers('board add --title '), []);
