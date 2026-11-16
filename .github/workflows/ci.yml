@@ -64,6 +64,10 @@ jobs:
       - name: Format
         run: pnpm format:check
 
+      # caddyfile.docker.test.ts runs the Caddyfile in the Caddy image the web container ships, and fails on CI without it.
+      - name: Pull the Caddy image
+        run: docker pull "$(sed -n 's/^ARG CADDY_IMAGE=//p' apps/frontend/Dockerfile)"
+
       - name: Tests
         run: pnpm test
 
