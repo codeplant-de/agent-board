@@ -32,6 +32,8 @@ export function userFrom(req: FastifyRequest, config: Config): string | null {
   return groups.some((group) => config.allowedGroups.includes(group)) ? username.toLowerCase() : null;
 }
 
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 const STATUS: Record<AppErrorCode, number> = {
   BAD_REQUEST: 400,
   UNAUTHORIZED: 401,
@@ -76,6 +78,16 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
     if (req.url === '/healthz' || req.url.startsWith('/api/machine/') || req.url.startsWith('/api/intake/')) return;
     req.username = userFrom(req, config);
     if (!req.username) return reply.status(403).send({ error: 'not allowed on this board' });
+  });
+
+  // tRPC's adapter also takes multipart and urlencoded bodies, which a plain HTML form on a sibling subdomain can send
+  // with the user's session cookie: SameSite does not stop a same-site request. Only the JSON the board's own client sends
+  // gets through; a cross-origin JSON POST needs a CORS preflight, which this server never grants.
+  app.addHook('onRequest', async (req, reply) => {
+    if (!req.url.startsWith('/trpc') || SAFE_METHODS.has(req.method)) return;
+    const mediaType = (req.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase();
+    if (mediaType !== 'application/json')
+      return reply.status(415).send({ error: 'the board takes application/json only' });
   });
 
   registerMachineApi(app, root, config, changes, {

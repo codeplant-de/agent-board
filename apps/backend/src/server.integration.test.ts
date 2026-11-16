@@ -214,6 +214,37 @@ describe('machine API', () => {
     expect(spoof.statusCode).toBe(401);
   });
 
+  it('refuses a non-JSON body on /trpc before tRPC reads it: a form post from a sibling subdomain must not run a mutation', async () => {
+    const headers = { 'remote-user': 'jascha', 'remote-groups': 'admins' };
+    const forms = [
+      [
+        'multipart/form-data; boundary=x',
+        '--x\r\nContent-Disposition: form-data; name="input"\r\n\r\n{"input":"/grill"}\r\n--x--\r\n',
+      ],
+      ['application/x-www-form-urlencoded', 'input=%7B%22input%22%3A%22%2Fgrill%22%7D'],
+      ['text/plain', '{"input":"/grill"}'],
+    ] as const;
+    for (const [type, payload] of forms) {
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: '/trpc/tasks.create',
+        headers: { ...headers, 'content-type': type },
+        payload,
+      });
+      expect(res.statusCode).toBe(415);
+    }
+    const none = await ctx.app.inject({ method: 'POST', url: '/trpc/tasks.create', headers });
+    expect(none.statusCode).toBe(415);
+    expect(await db.select().from(tasks)).toHaveLength(0);
+    const ok = await ctx.app.inject({
+      method: 'POST',
+      url: '/trpc/tasks.create',
+      headers: { ...headers, 'content-type': 'application/json; charset=utf-8' },
+      payload: '{}',
+    });
+    expect(ok.statusCode).not.toBe(415);
+  });
+
   it('round-trips the contract: add, list, update, note, read', async () => {
     const added = await ctx.call('laptop', 'add-task', {
       body: { title: '#1 PR', input: pr, head: 'abc1234', labels: ['review-pr'], dedupeKey: pr, createdBy: 'intake' },
