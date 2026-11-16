@@ -1,11 +1,15 @@
 # The Slack app of the board (docs/operations.md, "The Slack app"). Create it from this file in the Cosuno workspace:
 # api.slack.com/apps, "Create New App", "From a manifest". Then generate an app-level token with the scope connections:write
-# (SLACK_APP_TOKEN) and install the app. It answers /board only; the board needs no bot token, so none is read.
+# (SLACK_APP_TOKEN) and install the app. It answers /board only. Slack refuses slash commands without a bot user, so the
+# manifest declares one, but the app never reads the bot token that installing shows.
 display_information:
   name: Agent Board
   description: Sends task ideas to your agent board.
   background_color: '#1f2937'
 features:
+  bot_user:
+    display_name: Agent Board
+    always_online: false
   slash_commands:
     - command: /board
       description: Send a task idea to the agent board, or link your Slack account

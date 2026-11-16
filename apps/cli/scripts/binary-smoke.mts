@@ -37,7 +37,7 @@ import {
   open,
   seal,
 } from '@agent-board/shared';
-import { DATA_KEY, ENV_FILE, KEYS, OWNER, wireTask } from '../test/helpers.mts';
+import { DATA_KEY, ENV_FILE, KEYS, OWNER, wireTask } from '../src/__tests__/helpers/fakes.mts';
 
 const cliDir = fileURLToPath(new URL('..', import.meta.url));
 const version = (JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')) as { version: string }).version;

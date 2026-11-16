@@ -9,6 +9,7 @@ import {
   TAKE_BACK_AFTER_MS,
 } from '@agent-board/shared';
 import { eq, sql } from 'drizzle-orm';
+import { Readable } from 'node:stream';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { schedules, tasks } from './db/schema';
 import { appRouter } from './trpc/router';
@@ -18,7 +19,7 @@ import { recordClient } from './services/machines';
 import { archiveStaleDone } from './services/tasks';
 import { plainMachine, plainUi, type MachineAnswer } from './test/client';
 import { sealed } from './test/sealed';
-import { asOwner, caller, question, SESSION, sessionNamed, testConfig, useTestDb } from './test/helpers';
+import { asOwner, caller, question, SEALED, SESSION, sessionNamed, testConfig, useTestDb } from './test/helpers';
 
 const { db, admin } = useTestDb();
 
@@ -66,6 +67,133 @@ describe('machine API', () => {
     await caller(db).machines.revoke({ name: 'laptop' });
     expect((await ctx.call('laptop', 'list-tasks')).status).toBe(401);
     expect((await ctx.call('workstation', 'list-tasks')).status).toBe(200);
+  });
+
+  describe('body size', () => {
+    const MiB = 1024 * 1024;
+    const bearer = async () => ({
+      authorization: `Bearer ${(await caller(db).machines.issue({ name: 'big' })).token}`,
+    });
+    const json = { 'content-type': 'application/json' };
+    const filler = (bytes: number) => JSON.stringify({ pad: 'x'.repeat(bytes) });
+
+    it('refuses a body over the limit of a normal command, also one without a Content-Length', async () => {
+      const headers = { ...json, ...(await bearer()) };
+      const sized = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/machine/list-tasks',
+        headers,
+        payload: filler(3 * MiB),
+      });
+      expect(sized.statusCode).toBe(413);
+      const chunks = Array.from({ length: 6 }, () => Buffer.from('x'.repeat(MiB)));
+      const chunked = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/machine/list-tasks',
+        headers: { ...headers, 'transfer-encoding': 'chunked' },
+        payload: Readable.from(chunks),
+      });
+      expect(chunked.statusCode).toBe(413);
+    });
+
+    it('takes a body just under the limit of a normal command', async () => {
+      const headers = { ...json, ...(await bearer()) };
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/machine/list-tasks',
+        headers,
+        payload: filler(2 * MiB - 1024),
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('answers a bad token with 401 before reading the body: not 413, and not 400 for a body that is not JSON', async () => {
+      const huge = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/machine/list-tasks',
+        headers: { ...json, authorization: 'Bearer abm_nope' },
+        payload: filler(20 * MiB),
+      });
+      expect(huge.statusCode).toBe(401);
+      expect(huge.json()).toEqual({ error: 'unknown or revoked machine token' });
+      for (const headers of [json, { ...json, authorization: 'Bearer abm_nope' }]) {
+        for (const [method, url] of [
+          ['POST', '/api/machine/transcript'],
+          ['POST', '/api/machine/list-tasks/'],
+          ['POST', '/api/machine/a/b'],
+          ['POST', '/api/machine/'],
+          ['PUT', '/api/machine/list-tasks'],
+          ['PATCH', '/api/machine/list-tasks'],
+          ['DELETE', '/api/machine/list-tasks'],
+        ] as const) {
+          const broken = await ctx.app.inject({ method, url, headers, payload: '{not json' });
+          expect([method, url, broken.statusCode]).toEqual([method, url, 401]);
+        }
+      }
+      const unmatchedHuge = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/machine/a/b',
+        headers: json,
+        payload: filler(15 * MiB),
+      });
+      expect(unmatchedHuge.statusCode).toBe(401);
+      // With a good token the same body reaches the parser.
+      const parsed = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/machine/list-tasks',
+        headers: { ...json, ...(await bearer()) },
+        payload: '{not json',
+      });
+      expect(parsed.statusCode).toBe(400);
+    });
+
+    it('answers an unknown path or method with 404 JSON once the token is good', async () => {
+      const headers = await bearer();
+      for (const [method, url] of [
+        ['POST', '/api/machine/a/b'],
+        ['POST', '/api/machine/list-tasks/'],
+        ['PUT', '/api/machine/list-tasks'],
+      ] as const) {
+        const res = await ctx.app.inject({ method, url, headers });
+        expect([method, url, res.statusCode]).toEqual([method, url, 404]);
+        expect(res.json()).toHaveProperty('error');
+      }
+    });
+
+    it('keeps the 401 on the event stream', async () => {
+      const res = await ctx.app.inject({ method: 'GET', url: '/api/machine/events' });
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toEqual({ error: 'unknown or revoked machine token' });
+    });
+
+    it('lets `transcript` alone take a large body, up to 16 MiB', async () => {
+      const task = await plainUi(db).tasks.create({ input: '/grill' });
+      const output = `abe1.${'A'.repeat(1_350_000)}`;
+      const at = new Date(Date.UTC(2026, 10, 13, 12, 0, 1)).toISOString();
+      const events = Array.from({ length: 11 }, (_, seq) => ({
+        seq,
+        at,
+        parent: null,
+        kind: 'tool_result',
+        data: SEALED,
+        output,
+        outputSize: 1000,
+      }));
+      const batch = { runId: 'run-big-0001', startedAt: at, sessionId: null, resumed: false, events };
+      const payload = JSON.stringify({ id: task.id, body: batch });
+      expect(payload.length).toBeGreaterThan(14 * MiB);
+      expect(payload.length).toBeLessThan(16 * MiB);
+      const headers = { ...json, ...(await bearer()) };
+      const res = await ctx.app.inject({ method: 'POST', url: '/api/machine/transcript', headers, payload });
+      expect(res.statusCode).toBe(200);
+      const over = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/machine/transcript',
+        headers,
+        payload: filler(17 * MiB),
+      });
+      expect(over.statusCode).toBe(413);
+    });
   });
 
   it('answers the break level range and features it has, and the legacy contract number for older CLIs', async () => {
