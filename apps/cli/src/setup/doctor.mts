@@ -1,7 +1,10 @@
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { BackendError, checkDataKey, looksLikeMachineToken, verifyContract, webUrlOf } from '../backend/backend.mts';
-import type { ServerIdentity, WebConfig } from '../backend/backend.mts';
+import { BackendError } from '../backend/backend.mts';
+import { checkDataKey, verifyContract } from '../backend/contract-check.mts';
+import type { ServerIdentity } from '../backend/contract-check.mts';
+import { looksLikeMachineToken, webUrlOf } from '../backend/web-config.mts';
+import type { WebConfig } from '../backend/web-config.mts';
 import { ConfigError, configWarnings, isOverrideWarning, isSafeMode, parseConfig } from '../config/config.mts';
 import type { Config } from '../config/config.mts';
 import { plainLine } from '../output/terminal.mts';

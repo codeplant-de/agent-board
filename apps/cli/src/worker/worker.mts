@@ -9,13 +9,9 @@
  */
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import {
-  BackendError,
-  isVocabularyRefusal,
-  loadWebConfig,
-  updateCliHint,
-  verifyContract,
-} from '../backend/backend.mts';
+import { BackendError, isVocabularyRefusal } from '../backend/backend.mts';
+import { updateCliHint, verifyContract } from '../backend/contract-check.mts';
+import { loadWebConfig } from '../backend/web-config.mts';
 import { watchBoardChanges } from './changes.mts';
 import { buildContext, print, UsageError } from '../cli.mts';
 import type { Context } from '../cli.mts';

@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
 import { Argument } from 'commander';
 import { ReportedFailure } from '../cli.mts';
-import { verifyContract } from '../backend/backend.mts';
+import { verifyContract } from '../backend/contract-check.mts';
 import { completionModel, renderCompletion, SHELLS } from './completion.mts';
 import type { Shell } from './completion.mts';
 import { getPaths, loadConfig } from '../config/config.mts';

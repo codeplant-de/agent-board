@@ -5,7 +5,8 @@
  */
 import { isBehind, tryUpdate } from '../self/auto-update.mts';
 import type { UpdateDeps } from '../self/auto-update.mts';
-import { BackendError, isVocabularyRefusal, updateCliHint } from '../backend/backend.mts';
+import { BackendError, isVocabularyRefusal } from '../backend/backend.mts';
+import { updateCliHint } from '../backend/contract-check.mts';
 import { buildContext, print, skipTickWhileServerOlder } from '../cli.mts';
 import type { Context } from '../cli.mts';
 import type { Task } from '@agent-board/shared';
