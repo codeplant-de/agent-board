@@ -37,6 +37,7 @@ import { createGitHub } from '../intake/github.mts';
 import type { GitHub } from '../intake/github.mts';
 import { createPrRefreshState, prRefreshFile, refreshPrStatesIfDue } from './pr-states.mts';
 import type { PrRefreshState } from './pr-states.mts';
+import { TICK_LIMIT_S } from './tick.mts';
 
 // Below the tick's 110 s limit: a stalled gh must not take the tick down with it.
 const PR_REFRESH_GH_TIMEOUT_MS = 30_000;
@@ -158,8 +159,8 @@ async function pruneTaskFiles(deps: DispatchDeps, listed: Task[], activeWorkers:
   }
 }
 
-// The tick is stopped after 110 s, and the check processes would outlive it: they run in their own process group.
-export const TICK_LIMIT_MS = 110_000;
+// The tick is stopped after its limit, and the check processes would outlive it: they run in their own process group.
+const TICK_LIMIT_MS = TICK_LIMIT_S * 1000;
 const TICK_MARGIN_MS = 10_000;
 // What `timeout` exits with when it stopped a command.
 const TICK_TIMED_OUT = 124;

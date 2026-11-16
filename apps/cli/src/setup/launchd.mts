@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { shellQuote } from '../output/text.mts';
 import { SystemError } from './system.mts';
+import { LISTEN_STOP_TIMEOUT_S, lockFileName } from '../dispatch/tick.mts';
 
 const exec = promisify(execFile);
 
@@ -109,16 +110,16 @@ export function renderAgents({ home, lockf, lockDir, logDir, command, env = {} }
   // lockf -s -t 0 exits 75 when the lock is held, like `flock -E 75`: another tick holds it, which is not a failure.
   const dispatch = render(
     'dispatch',
-    [lockf, '-s', '-t', '0', `${lockDir}/agent-board-dispatch.lock`, ...command('dispatch')],
+    [lockf, '-s', '-t', '0', `${lockDir}/${lockFileName('dispatch')}`, ...command('dispatch')],
     [key('StartInterval', '<integer>120</integer>'), key('RunAtLoad', '<true/>')],
   );
   // The listener exits when the board no longer serves this CLI, until it is updated: launchd restarts it every 10 s.
-  // ExitTimeOut: a stop waits for the tick that runs.
+  // ExitTimeOut: a stop waits for the tick that runs, which may take its limit and grace.
   const listen = render('listen', command('listen'), [
     key('KeepAlive', '<true/>'),
     key('RunAtLoad', '<true/>'),
     key('ThrottleInterval', '<integer>10</integer>'),
-    key('ExitTimeOut', '<integer>120</integer>'),
+    key('ExitTimeOut', `<integer>${LISTEN_STOP_TIMEOUT_S}</integer>`),
   ]);
   return [dispatch, listen];
 }

@@ -96,6 +96,8 @@ Restart=always
 RestartSec=10
 # Stopping signals the listener only; it waits for a running tick, which systemd then no longer cuts off midway.
 KillMode=mixed
+# Long enough for a tick to reach its limit and grace; systemd's 90 s default would kill one midway.
+TimeoutStopSec=130
 
 [Install]
 WantedBy=default.target

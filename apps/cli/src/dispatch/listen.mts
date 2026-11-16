@@ -18,6 +18,7 @@ import { selfCommand } from '../self/self.mts';
 import { errorText } from '../output/text.mts';
 import { signalGroup } from '../worker/process.mts';
 import { lockDir } from '../worker/runtime.mts';
+import { TICK_GRACE_S, TICK_LIMIT_S, lockFileName } from './tick.mts';
 
 export interface Timers {
   now: () => number;
@@ -38,9 +39,6 @@ const LOCKED = 75;
 // What `timeout` answered when it stopped a command, and what runLimited answers in its place: TERM, and after the grace period KILL.
 const TIMED_OUT = 124;
 const KILLED = 137;
-// The dispatch unit's TimeoutStartSec is 110 s: a tick that hangs must not hold the lock for the timer's ticks either.
-const TICK_LIMIT_S = 110;
-const TICK_GRACE_S = 10;
 
 export interface TickerOptions {
   // One dispatch tick: its exit code.
@@ -288,6 +286,7 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
     }
   } finally {
     // A tick between claiming a task and starting its worker must not be cut off: systemd kills what is left once this exits.
+    // The listener unit's stop timeout (LISTEN_STOP_TIMEOUT_S) covers a whole tick.
     await ticker.stop();
   }
   log('stopped');
@@ -301,7 +300,7 @@ export function tickCommand(
   dispatch: string[],
   platform: string = process.platform,
 ): string[] {
-  const lock = `${lockDir(env, platform)}/agent-board-dispatch.lock`;
+  const lock = `${lockDir(env, platform)}/${lockFileName('dispatch')}`;
   if (platform === 'darwin') return ['/usr/bin/lockf', '-s', '-t', '0', lock, ...dispatch];
   return ['flock', '-n', '-E', String(LOCKED), lock, ...dispatch];
 }
