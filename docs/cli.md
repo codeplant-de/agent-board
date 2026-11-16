@@ -644,7 +644,8 @@ or 400, token, data key), the board (reachable, token accepted, API version
 range, and whether it has a data key and this machine holds the same one),
 config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl
 and the installed units with their timers and the listener. The worker checks
-only warn on a machine with no unit installed.
+only warn on a machine with no unit installed, and are left out on a system
+other than Linux, where no worker runs.
 
 Options:
   --json      print JSON on stdout instead of text
