@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { fastifyTRPCPlugin, type FastifyTRPCPluginOptions } from '@trpc/server/adapters/fastify';
 import Fastify, { type FastifyRequest } from 'fastify';
 import type { Config } from './config';
@@ -20,12 +21,20 @@ const header = (req: FastifyRequest, name: string): string | null => {
   return s?.trim() || null;
 };
 
+const sha256 = (value: string): Buffer => createHash('sha256').update(value).digest();
+
 /**
  * Who is using the UI. In production Traefik's Authelia forward-auth sets the Remote-* headers (and strips any
- * a client sends); locally DEV_AUTH_USER stands in. Null when the user is not in an allowed group.
+ * a client sends); locally DEV_AUTH_USER stands in. Any pod that reaches :4000 (the Slack companion, say) could set
+ * Remote-* itself, so they count only together with PROXY_SECRET, which the web container's Caddy adds as
+ * Board-Proxy-Secret. Null when the secret is missing or wrong, or the user is not in an allowed group.
  */
 export function userFrom(req: FastifyRequest, config: Config): string | null {
   if (config.devAuthUser) return config.devAuthUser.toLowerCase();
+  if (config.proxySecret) {
+    const sent = header(req, 'board-proxy-secret');
+    if (!sent || !timingSafeEqual(sha256(sent), sha256(config.proxySecret))) return null;
+  }
   const username = header(req, 'remote-user');
   if (!username) return null;
   const groups = (header(req, 'remote-groups') ?? '').split(',').map((g) => g.trim());

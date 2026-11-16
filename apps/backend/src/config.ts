@@ -26,6 +26,8 @@ export interface Config {
   allowedGroups: string[];
   /** Local development only: act as this user instead of reading Authelia headers. */
   devAuthUser: string | null;
+  /** Shared secret the web proxy adds as Board-Proxy-Secret; the Remote-* headers count only with it. Null outside production means no check. */
+  proxySecret: string | null;
   /** The newest CLI release, x.y.z, which the machine API advertises; null when this build does not know it. */
   cliVersion: string | null;
   /** Null unless INTAKE_TOKEN is set: the Slack intake API is off then. */
@@ -47,6 +49,16 @@ function loadIntakeConfig(): IntakeConfig | null {
   return { token, boardUrl: boardUrl.replace(/\/+$/, '') };
 }
 
+function loadProxySecret(nodeEnv: string): string | null {
+  const secret = process.env.PROXY_SECRET?.trim();
+  if (!secret) {
+    if (nodeEnv === 'production') throw new Error('PROXY_SECRET must be set in production');
+    return null;
+  }
+  if (secret.length < 32) throw new Error('PROXY_SECRET must be at least 32 characters');
+  return secret;
+}
+
 export function loadConfig(): Config {
   const nodeEnv = process.env.NODE_ENV ?? 'development';
   const devAuthUser = process.env.DEV_AUTH_USER?.trim() || null;
@@ -65,6 +77,7 @@ export function loadConfig(): Config {
       .map((g) => g.trim())
       .filter(Boolean),
     devAuthUser,
+    proxySecret: loadProxySecret(nodeEnv),
     cliVersion: parseCliVersion(process.env.CLI_VERSION),
     intake: loadIntakeConfig(),
   };
