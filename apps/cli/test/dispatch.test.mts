@@ -50,6 +50,7 @@ function setup(
     compiled?: boolean;
     retryAfter?: Date;
     fails?: string;
+    warnings?: string[];
   } = {},
 ) {
   const backend: FakeBackend = fakeBackend(tasks);
@@ -105,6 +106,7 @@ function setup(
       return checkResult?.(check) ?? { exitCode: 1, timedOut: false, output: 'pending' };
     },
     update,
+    configWarnings: () => updating.warnings ?? [],
   };
   return { backend, deps, started, stopped, logs, files, waits, ranChecks, updates, state };
 }
@@ -120,6 +122,13 @@ test('starts from the top of Todo up to the cap', async () => {
   assert.ok(
     backend.writes.some((w) => w.startsWith('note t1 (system)') && w.includes(START_MARKER) && w.includes('pid 42')),
   );
+});
+
+test('every tick starts with one WARN line per unknown config key', async () => {
+  const { deps, logs, started } = setup([todo('t1')], [], {}, { warnings: ['unknown key "lane", ignored'] });
+  await runDispatch(deps);
+  assert.equal(logs[0], 'WARN config.json: unknown key "lane", ignored');
+  assert.deepEqual(started, ['t1']);
 });
 
 test('with all slots taken nothing starts', async () => {

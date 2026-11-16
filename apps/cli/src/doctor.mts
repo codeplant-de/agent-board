@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { BackendError, checkBoardUrl, checkDataKey, looksLikeMachineToken, verifyContract } from './backend.mts';
 import type { ServerIdentity, WebConfig } from './backend.mts';
-import { ConfigError, isSafeMode, parseConfig } from './config.mts';
+import { ConfigError, configWarnings, isSafeMode, parseConfig } from './config.mts';
 import { API_VERSION, decodeDataKey, SERVER_FEATURE_LABELS, SERVER_FEATURES } from '@agent-board/shared';
 import { parseEnv } from './env-file.mts';
 import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
@@ -299,8 +299,19 @@ const checkConfig: Check = ({ configDir, readText }) => {
       ),
     ];
   try {
-    const config = parseConfig(JSON.parse(text));
-    return [ok('config.json', `machine ${config.machine}`)];
+    const raw: unknown = JSON.parse(text);
+    const config = parseConfig(raw);
+    return [
+      ok('config.json', `machine ${config.machine}`),
+      ...configWarnings(raw).map((warning) =>
+        problem(
+          'config.json',
+          'warn',
+          warning,
+          'fix or remove the key: the CLI does not read it, so its setting keeps the default',
+        ),
+      ),
+    ];
   } catch (error) {
     const message =
       error instanceof SyntaxError ? 'is not valid JSON' : error instanceof Error ? error.message : String(error);
