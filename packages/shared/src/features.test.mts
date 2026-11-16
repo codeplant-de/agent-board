@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { VocabularyFeatures } from '../src/index.mts';
+import type { VocabularyFeatures } from './index.mts';
 import {
   BASELINE_SERVER_FEATURES,
   clientVocabulary,
@@ -12,7 +12,7 @@ import {
   SERVER_FEATURE_LABELS,
   SERVER_FEATURES,
   VOCABULARY_FEATURES,
-} from '../src/index.mts';
+} from './index.mts';
 
 // Existing values stand in for ones added after the baseline: a client that sends `status.backlog` knows `backlog`.
 const ADDED: VocabularyFeatures = {

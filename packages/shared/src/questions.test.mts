@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { formatAnswers, parseAnswers, parseQuestions, QuestionError } from '../src/questions.mts';
+import { formatAnswers, parseAnswers, parseQuestions, QuestionError } from './questions.mts';
 
 const scope = {
   header: 'Scope',

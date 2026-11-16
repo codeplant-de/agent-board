@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { defaultTitle, isPrUrl, parsePrUrl, prOf, prUrlIn, statePrOf } from '../src/prompt.mts';
+import { defaultTitle, isPrUrl, parsePrUrl, prOf, prUrlIn, statePrOf } from './prompt.mts';
 
 const PR = 'https://github.com/cosuno/cosuno/pull/17741';
 
