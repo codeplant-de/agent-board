@@ -52,12 +52,19 @@ describe('the web container’s Caddyfile', () => {
   });
 
   it('drops every header the backend sends, so Clear-Site-Data, Set-Cookie, Refresh, Link, Location and the like never arrive', () => {
-    expect(snippet).toMatch(/reverse_proxy backend:4000 \{[^}]*header_down -\*[^}]*\}/);
+    const proxy = blockAt(snippet, 'reverse_proxy backend:4000 {');
+    expect(proxy).toMatch(/^\t\theader_down -\*$/m);
     // None of them is let through again by a rule of ours.
     for (const header of ['Clear-Site-Data', 'Set-Cookie', 'Refresh', 'Link', 'Location', 'Service-Worker-Allowed'])
       expect(snippet).not.toMatch(new RegExp(`${header}`, 'i'));
     expect(snippet).not.toMatch(/header_down\s+(?!-\*)/);
-    expect(snippet).not.toContain('header_up');
+    // The proxy secret is the one header added on the way in.
+    expect(snippet.match(/header_up.*/g)).toEqual(['header_up Board-Proxy-Secret {env.PROXY_SECRET}']);
+  });
+
+  it('sends the proxy secret, without which the backend ignores Remote-User and Remote-Groups, on every request to the backend', () => {
+    const proxy = blockAt(snippet, 'reverse_proxy backend:4000 {');
+    expect(proxy).toMatch(/^\t\theader_up Board-Proxy-Secret \{env\.PROXY_SECRET\}$/m);
   });
 
   it('allows no worker in the app, so no service worker can be registered, from a backend path or elsewhere', () => {
