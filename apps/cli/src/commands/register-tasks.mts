@@ -6,6 +6,7 @@ import {
   ask,
   comment,
   move,
+  MoveRefused,
   reportPr,
   parseStatus,
   readNoteFile,
@@ -22,7 +23,7 @@ import {
 } from './board.mts';
 import type { AddFlags, AttachFlags, CommentFlags, PolishFlags, TasksFlags, WaitFlags } from './board.mts';
 import { CHECK_TIME_LIMIT_MS, createWaitStore } from '../dispatch/waits.mts';
-import { UsageError } from '../cli.mts';
+import { ReportedFailure, UsageError } from '../cli.mts';
 import { examples, ID_NOTE, paragraphs, STATUS_LIST, TASK_ARGUMENT, TASKS } from './help-text.mts';
 import type { ProgramShared } from './program-shared.mts';
 
@@ -31,6 +32,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
     program,
     options,
     env,
+    writeErr,
     contextOf,
     writeJson,
     taskIdOf,
@@ -172,19 +174,37 @@ export function registerTaskCommands(shared: ProgramShared): void {
       .description(
         paragraphs(
           `Move a task to the bottom of a status: ${STATUS_LIST}. "Backlog", "Todo", "Running", "Needs me" and "Done" work too.`,
+          '--expect <status> moves the task only while it is in that status: for a script that decided from a listing. When the task has moved on it prints a message and exits 3, writing nothing. It is not available inside a board run.',
           ID_NOTE,
         ),
       )
       .argument('<task>', TASK_ARGUMENT)
       .argument('<status...>', 'the status to move it to')
+      .option('--expect <status>', 'move it only while it is in this status; exit 3 when it is not')
       .addHelpText(
         'after',
-        examples('board move Ab3dEf9x needs-me', 'board move Ab3dEf9x Needs me', 'board move Ab3 todo'),
+        examples(
+          'board move Ab3dEf9x needs-me',
+          'board move Ab3dEf9x Needs me',
+          'board move Ab3 todo',
+          'board move Ab3dEf9x done --expect todo',
+        ),
       ),
-  ).action(async (arg: string, status: string[], _options, command: Command) => {
+  ).action(async (arg: string, status: string[], flags: { expect?: string }, command: Command) => {
+    if (flags.expect !== undefined)
+      notInRun(
+        'board move --expect is not available inside a board run; a restricted run moves a task only to needs-me',
+      );
     const target = parseStatus(status.join(' '));
+    const expect = flags.expect === undefined ? undefined : parseStatus(flags.expect);
     const context = contextOf(command);
-    await move(context, await taskIdOf(context, arg), target);
+    try {
+      await move(context, await taskIdOf(context, arg), target, expect === undefined ? {} : { expect });
+    } catch (error) {
+      if (!(error instanceof MoveRefused)) throw error;
+      writeErr(`board: ${error.message}\n`);
+      throw new ReportedFailure(error.message, 3);
+    }
   });
 
   dryRunOption(

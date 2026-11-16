@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { polishTask } from '@agent-board/shared';
+import { dedupeKeyIndex, headIndex, polishTask } from '@agent-board/shared';
 import type { TaskDraft } from '@agent-board/shared';
 import { Command } from 'commander';
 import {
@@ -10,7 +10,8 @@ import {
   schedule,
 } from './schedule.mts';
 import type { Duplicate, ScheduleArgs, ScheduleDeps, ScheduleFlags } from './schedule.mts';
-import { fakeBackend, task } from '../__tests__/helpers/fakes.mts';
+import { BackendError } from '../backend/backend.mts';
+import { fakeBackend, KEYS, task } from '../__tests__/helpers/fakes.mts';
 
 // The command line as `board schedule` reads it: commander splits flags from the prompt, then the flags are checked.
 function parseScheduleArgs(args: string[], now?: Date): ScheduleArgs {
@@ -45,6 +46,8 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     until: undefined,
     forceNew: false,
     polish: false,
+    key: undefined,
+    version: undefined,
   });
   assert.deepEqual(parseScheduleArgs(['--hold', '--new', '--title', 'Export', 'Find', 'out', 'why']), {
     prompt: 'Find out why',
@@ -61,6 +64,8 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     until: undefined,
     forceNew: true,
     polish: false,
+    key: undefined,
+    version: undefined,
   });
   assert.equal(parseScheduleArgs(['--', '--weird', 'prompt']).prompt, '--weird prompt');
   assert.throws(() => parseScheduleArgs(['--priority', 'asap', 'x']), /unknown priority/);
@@ -436,4 +441,167 @@ test('--polish queues no polish when the duplicate is requeued or the schedule d
   const abort = setup(dup, 'abort');
   assert.equal(await schedule(abort.deps, parseScheduleArgs(['--polish', '/review-pr', '17741'])), undefined);
   assert.deepEqual(abort.backend.writes, []);
+});
+
+const PR = 'https://github.com/o/r/pull/7';
+const KEYED = ['--agent', 'reviewer', '--key', PR, '--version', 'sha2', '/review-pr', PR, '--auto'];
+
+// A board with one task made for PR 7 at `sha1`, whose key is the PR URL, and a check that must never be asked.
+function keyedSetup(existing: Partial<ReturnType<typeof task>> = {}) {
+  const old = task({
+    id: 'old',
+    input: `/review-pr ${PR} --auto`,
+    status: 'needs-me',
+    head: 'sha1',
+    agent: 'reviewer',
+    ...existing,
+  });
+  const { deps, backend, printed } = setup(undefined);
+  backend.tasks.splice(0, backend.tasks.length, old);
+  backend.keys.set('old', PR);
+  deps.check = async () => {
+    throw new Error('the duplicate check must not run with --key');
+  };
+  return { deps, backend, printed, old };
+}
+
+test('--key with --version creates the task with its head, without the duplicate check', async () => {
+  const { deps, backend, printed } = keyedSetup();
+  const outcome = await schedule(
+    deps,
+    parseScheduleArgs(['--agent', 'reviewer', '--key', 'other', '--version', 'sha9', 'x']),
+  );
+  assert.deepEqual(outcome?.keyed, { result: 'created' });
+  assert.equal(outcome?.task.head, 'sha9');
+  assert.equal(outcome?.task.agent, 'reviewer');
+  assert.deepEqual(printed, ['created new https://board.test/t/new']);
+  assert.ok(backend.writes[0]?.endsWith('| key other'));
+});
+
+test('--key finds the task of the same key: the same version, no version, or a task that is busy changes nothing', async () => {
+  const same = keyedSetup({ head: 'sha2' });
+  const outcome = await schedule(same.deps, parseScheduleArgs(KEYED));
+  assert.deepEqual(outcome?.keyed, { result: 'exists', reason: 'same-version' });
+  assert.deepEqual(same.printed, ['exists old https://board.test/t/old (same-version)']);
+
+  const none = keyedSetup();
+  assert.deepEqual((await schedule(none.deps, parseScheduleArgs(['--agent', 'reviewer', '--key', PR, 'x'])))?.keyed, {
+    result: 'exists',
+    reason: 'no-version',
+  });
+
+  for (const status of ['todo', 'running', 'waiting', 'backlog'] as const) {
+    const busy = keyedSetup({ status });
+    assert.deepEqual((await schedule(busy.deps, parseScheduleArgs(KEYED)))?.keyed, {
+      result: 'exists',
+      reason: 'busy',
+    });
+    assert.equal(busy.backend.tasks[0]?.head, 'sha1');
+  }
+  for (const setupResult of [same, none]) assert.ok(!setupResult.backend.writes.some((w) => w.startsWith('status')));
+});
+
+test('a closed task is never made again, whatever the version', async () => {
+  const { deps, backend } = keyedSetup({ closed: true, status: 'done' });
+  assert.deepEqual((await schedule(deps, parseScheduleArgs(KEYED)))?.keyed, { result: 'exists', reason: 'closed' });
+  assert.equal(backend.tasks[0]?.status, 'done');
+});
+
+test('a new version requeues a task from Needs me or Done, or one without a head, in one expecting update', async () => {
+  for (const [status, head] of [
+    ['needs-me', 'sha1'],
+    ['done', 'sha1'],
+    ['done', null],
+  ] as const) {
+    const { deps, backend, printed } = keyedSetup({ status, head });
+    const outcome = await schedule(deps, parseScheduleArgs(KEYED));
+    assert.deepEqual(outcome?.keyed, { result: 'requeued' });
+    assert.deepEqual(
+      [backend.tasks[0]?.status, backend.tasks[0]?.head, backend.tasks[0]?.next],
+      ['todo', 'sha2', 'fresh'],
+    );
+    assert.deepEqual(
+      backend.writes.filter((w) => w.startsWith('status') || w.startsWith('note')),
+      ['status old -> todo', 'note old (system): New version sha2. Queued again.'],
+    );
+    assert.deepEqual(printed, ['requeued old https://board.test/t/old']);
+  }
+});
+
+test('a task of another agent, or one whose agent is unreadable, is not requeued', async () => {
+  for (const existing of [
+    { agent: undefined },
+    { agent: 'other' },
+    { agent: undefined, unreadable: ['agent' as const] },
+  ]) {
+    const { deps, backend } = keyedSetup(existing);
+    assert.deepEqual((await schedule(deps, parseScheduleArgs(KEYED)))?.keyed, {
+      result: 'exists',
+      reason: 'other-agent',
+    });
+    assert.equal(backend.tasks[0]?.status, 'needs-me');
+    assert.ok(!backend.writes.some((w) => w.startsWith('status') || w.startsWith('note')));
+  }
+  const plain = keyedSetup({ agent: undefined });
+  const outcome = await schedule(plain.deps, parseScheduleArgs(['--key', PR, '--version', 'sha2', 'x']));
+  assert.deepEqual(outcome?.keyed, { result: 'requeued' }, 'no agent on either side is the same agent');
+});
+
+test('a task that moved since it was read is left alone: exists (changed)', async () => {
+  const { deps, backend, printed } = keyedSetup();
+  const addTask = backend.addTask.bind(backend);
+  backend.addTask = async (draft) => {
+    const found = await addTask(draft);
+    backend.tasks[0]!.status = 'running';
+    return found;
+  };
+  assert.deepEqual((await schedule(deps, parseScheduleArgs(KEYED)))?.keyed, { result: 'exists', reason: 'changed' });
+  assert.deepEqual(printed, ['exists old https://board.test/t/old (changed)']);
+  assert.ok(!backend.writes.some((w) => w.startsWith('note')));
+  assert.equal(backend.tasks[0]?.head, 'sha1');
+});
+
+test('another failure of the requeue is not swallowed', async () => {
+  const { deps, backend } = keyedSetup();
+  backend.updateTask = async () => {
+    throw new BackendError('update-task: the server answered 500', 500);
+  };
+  await assert.rejects(schedule(deps, parseScheduleArgs(KEYED)), /answered 500/);
+});
+
+test('--key and --version are checked, and refuse what they cannot go with', () => {
+  assert.equal(parseScheduleArgs(['--key', PR, '--version', 'abc', 'x']).key, PR);
+  assert.equal(parseScheduleArgs(['--key', ` ${PR}`, 'x']).key, ` ${PR}`, 'the key is used as given');
+  assert.throws(() => parseScheduleArgs(['--key', '  ', 'x']), /--key must not be empty/);
+  assert.throws(() => parseScheduleArgs(['--key', 'a\nb', 'x']), /--key must not contain control characters/);
+  assert.throws(() => parseScheduleArgs(['--key', 'a\u2028b', 'x']), /control characters/);
+  assert.throws(() => parseScheduleArgs(['--key', 'k'.repeat(501), 'x']), /--key is longer than 500/);
+  assert.throws(() => parseScheduleArgs(['--key', 'k', '--version', '', 'x']), /--version must not be empty/);
+  assert.throws(() => parseScheduleArgs(['--key', 'k', '--version', 'v\u001b[0m', 'x']), /--version must not contain/);
+  assert.throws(
+    () => parseScheduleArgs(['--key', 'k', '--version', 'v'.repeat(201), 'x']),
+    /--version is longer than 200/,
+  );
+  assert.throws(() => parseScheduleArgs(['--version', 'v', 'x']), /--version belongs to --key/);
+  for (const flags of [
+    ['--every', '2h'],
+    ['--cron', '0 9 * * *'],
+    ['--polish'],
+    ['--hold'],
+    ['--backlog'],
+    ['--in', '1h'],
+    ['--at', '14:30'],
+  ])
+    assert.throws(() => parseScheduleArgs(['--key', 'k', ...flags, 'x'], NOW), /--key makes or finds one task in Todo/);
+});
+
+test('the key reaches the board as the blind index intake sends for a PR URL', async () => {
+  const sent: (string | undefined)[] = [];
+  const { deps, backend } = keyedSetup();
+  const addTask = backend.addTask.bind(backend);
+  backend.addTask = async (draft) => (sent.push(draft.dedupeKey), addTask(draft));
+  await schedule(deps, parseScheduleArgs(KEYED));
+  assert.deepEqual(sent, [PR], 'the sealing backend turns the key into the index intake uses');
+  assert.equal(await dedupeKeyIndex(KEYS, sent[0] ?? ''), await dedupeKeyIndex(KEYS, PR));
+  assert.match(await headIndex(KEYS, 'sha2'), /^abh1\./);
 });

@@ -374,12 +374,25 @@ export async function polish(context: LinkingContext, run: string, target: strin
   confirm(context, `posted a polished prompt for ${target} on ${run}  ${context.taskLink(run)}`);
 }
 
-export async function move(context: LinkingContext, id: string, status: Status): Promise<void> {
+// `board move --expect` found the task in another status: nothing was written.
+export class MoveRefused extends Error {}
+
+export async function move(
+  context: LinkingContext,
+  id: string,
+  status: Status,
+  options: { expect?: Status } = {},
+): Promise<void> {
   if (status === 'waiting')
     throw new UsageError(`a wait needs its end: use "board wait ${id} --in <dur>" or "--check '<command>'" instead`);
   try {
-    await context.backend.updateTask(id, { status });
+    await context.backend.updateTask(id, {
+      status,
+      ...(options.expect === undefined ? {} : { expect: options.expect }),
+    });
   } catch (error) {
+    if (options.expect !== undefined && error instanceof BackendError && error.status === 409)
+      throw new MoveRefused(`${id} is not in ${options.expect} any more; nothing was moved`);
     if (error instanceof BackendError && error.status === 403)
       throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Backlog.`);
     throw error;
