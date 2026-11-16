@@ -16,3 +16,8 @@ export function oneLine(text: string, max: number): string {
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+// One argument of a shell command line, whatever it holds.
+export function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}

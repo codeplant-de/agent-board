@@ -126,6 +126,11 @@ export function checkBoardUrl(url: unknown): string {
   return url.replace(/\/+$/, '');
 }
 
+// The board URL in the parsed content of a web.json; a ConfigError when it has none or it is not one.
+export function webUrlOf(raw: unknown): string {
+  return checkBoardUrl(isRecord(raw) ? raw['url'] : undefined);
+}
+
 // A machine token as the board issues them.
 export function looksLikeMachineToken(token: string): boolean {
   return token.startsWith(AGENT_BOARD_TOKEN_PREFIX) && !/\s/.test(token);
@@ -133,7 +138,7 @@ export function looksLikeMachineToken(token: string): boolean {
 
 export function parseWebConfig(raw: unknown, env: Record<string, string>): WebConfig {
   if (!isRecord(raw)) throw new ConfigError('web.json: top level must be an object');
-  const url = checkBoardUrl(raw['url']);
+  const url = webUrlOf(raw);
   const token = env['AGENT_BOARD_TOKEN'];
   if (!token)
     throw new ConfigError(

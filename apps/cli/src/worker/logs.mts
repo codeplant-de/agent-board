@@ -5,8 +5,15 @@ import { tail } from '../output/text.mts';
 
 const TAIL_CHARS = 4000;
 
+export const LOG_SUFFIX = '.log';
+
+// A task's log in a log directory.
+export function logFile(logDir: string, taskId: string): string {
+  return join(logDir, `${taskId}${LOG_SUFFIX}`);
+}
+
 export function logPath(taskId: string): string {
-  return join(getPaths().logDir, `${taskId}.log`);
+  return logFile(getPaths().logDir, taskId);
 }
 
 // One log per task; a new run replaces the previous one (resetLog), then everything appends. Logs can hold review

@@ -1,12 +1,12 @@
 import { spawn } from 'node:child_process';
-import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
 import { createInterface } from 'node:readline/promises';
 import { ReportedFailure, UsageError } from '../cli.mts';
 import type { Context, LinkingContext } from '../cli.mts';
 import { BackendError } from '../backend/backend.mts';
 import type { Config } from '../config/config.mts';
-import { isAllowedDir, tryRealpath } from './dirs.mts';
+import { isAllowedDir, isDirectory, tryRealpath } from './dirs.mts';
 import {
   ContractError,
   formatAnswers,
@@ -31,6 +31,7 @@ import {
 import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
 import { createStyle } from '../output/style.mts';
 import { SystemError } from '../setup/system.mts';
+import { requireTaskId } from '../output/task-id.mts';
 import { plainLine, plainText } from '../output/terminal.mts';
 import type { Style } from '../output/style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
@@ -243,14 +244,6 @@ export interface AttachFlags {
   fork?: boolean;
 }
 
-function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 // Opens the task's Claude session interactively, where it lives. The board decides who may: only the machine whose token
 // ran the task gets the session. A non-zero status of claude is the command's own.
 export async function attach(
@@ -296,7 +289,7 @@ export function parseAddFlags(flags: AddFlags): {
   const { file, parent, priority } = flags;
   if (!title) throw new UsageError('--title needs a title');
   if (!file) throw new UsageError('--file is required');
-  if (parent !== undefined && !isSafeTaskId(parent)) throw new UsageError(`"${parent.slice(0, 40)}" is not a task id`);
+  if (parent !== undefined) requireTaskId(parent, UsageError);
   if (priority !== undefined && !isPriority(priority))
     throw new UsageError(`unknown priority "${priority.slice(0, 20)}"; use one of ${PRIORITIES.join(', ')}`);
   return { title, file, parent, priority };

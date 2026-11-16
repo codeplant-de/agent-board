@@ -9,7 +9,7 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { statSync, writeSync } from 'node:fs';
+import { writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import {
   BackendError,
@@ -21,7 +21,7 @@ import {
 import { watchBoardChanges } from './changes.mts';
 import { buildContext, print, UsageError } from '../cli.mts';
 import type { Context } from '../cli.mts';
-import { isRecord, isSafeTaskId } from '@agent-board/shared';
+import { isRecord } from '@agent-board/shared';
 import { logLine, StreamCondenser } from '@agent-board/shared';
 import type { RunInbox, Task } from '@agent-board/shared';
 import {
@@ -39,7 +39,7 @@ import {
   unreadableForRun,
 } from '../dispatch/decide.mts';
 import { getPaths } from '../config/config.mts';
-import { isAllowedDir, tryRealpath } from '../commands/dirs.mts';
+import { isAllowedDir, isDirectory, tryRealpath } from '../commands/dirs.mts';
 import { selfCommand } from '../self/self.mts';
 import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
 import type { Invocation, Supervision } from '../dispatch/decide.mts';
@@ -50,7 +50,8 @@ import type { SessionStore } from './sessions.mts';
 import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from './logs.mts';
 import { resolvePluginPath } from './plugins.mts';
 import { plainLine } from '../output/terminal.mts';
-import { errorText, fence } from '../output/text.mts';
+import { requireTaskId } from '../output/task-id.mts';
+import { errorText, fence, shellQuote } from '../output/text.mts';
 import { createTranscriptUploader } from './transcript-upload.mts';
 
 export interface RunResult {
@@ -649,16 +650,12 @@ export function runProcess(
 }
 
 // Hook commands run through a shell.
-export function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
-}
-
 export function hookCommand(runDir: string, id: string): string {
   return `${selfCommand('internal', 'hook').map(shellQuote).join(' ')} ${shellQuote(runDir)} ${shellQuote(id)}`;
 }
 
 export async function workerMain(taskId: string): Promise<void> {
-  if (!isSafeTaskId(taskId)) throw new UsageError(`"${taskId.slice(0, 40)}" is not a task id`);
+  requireTaskId(taskId, UsageError);
   const context = buildContext(false);
   print(`worker ${taskId} log=${logPath(taskId)}`);
   const deps: WorkerDeps = {
@@ -668,7 +665,7 @@ export async function workerMain(taskId: string): Promise<void> {
     resetLog,
     appendLog,
     pluginPath: resolvePluginPath,
-    dirExists: (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true,
+    dirExists: isDirectory,
     realpath: tryRealpath,
     settingsEnv: readSettingsEnv,
     mcpServers: readMcpServers,

@@ -55,8 +55,13 @@ export function isAllowedDir(
   return coveringDir([...dirs, ...resolved], real) !== undefined;
 }
 
+// Whether a directory is there; a path that cannot be looked at is not.
 export function isDirectory(path: string): boolean {
-  return statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 // One key of `dirs` as written in the file, and the path it names.

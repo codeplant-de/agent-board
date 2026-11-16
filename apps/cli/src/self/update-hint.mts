@@ -1,6 +1,6 @@
 // The one line a person at a terminal gets when the board knows of a newer CLI than the one they run.
 import { updateCliHint } from '../backend/backend.mts';
-import { compareVersions } from '@agent-board/shared';
+import { isBehind } from './auto-update.mts';
 import type { UpdateState } from './update-state.mts';
 
 export const HINT_EVERY_MS = 24 * 60 * 60 * 1000;
@@ -18,7 +18,7 @@ export interface HintInput {
 
 // The line to show, or undefined; the caller marks it shown once it printed, so it is shown at most once per 24 hours.
 export function updateHint({ advertised, version, state, now, interactive }: HintInput): string | undefined {
-  if (!interactive || advertised === undefined || compareVersions(advertised, version) <= 0) return undefined;
+  if (!interactive || advertised === undefined || !isBehind({ advertised, version })) return undefined;
   const last = state.hintShownAt();
   if (last !== undefined && now.getTime() - last.getTime() < HINT_EVERY_MS) return undefined;
   return `board ${advertised} is available (this is ${version}); ${updateCliHint()}`;

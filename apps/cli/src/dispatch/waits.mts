@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { isRecord, isSafeTaskId, isSafeWorkdir } from '@agent-board/shared';
 import { getPaths } from '../config/config.mts';
 import { readSettingsEnv } from '../worker/settings-env.mts';
+import { requireTaskId } from '../output/task-id.mts';
 import { errorText } from '../output/text.mts';
 
 export interface WaitCheck {
@@ -37,7 +38,7 @@ export interface WaitStore {
 
 export function createWaitStore(dir: string = getPaths().waitDir): WaitStore {
   const file = (taskId: string): string => {
-    if (!isSafeTaskId(taskId)) throw new Error(`"${taskId.slice(0, 40)}" is not a task id`);
+    requireTaskId(taskId);
     return join(dir, `${taskId}.json`);
   };
   return {

@@ -3,8 +3,14 @@
 //   <state dir>/sessions/<task>   the id of the session of the task's newest fresh run
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isSafeTaskId, isSessionId } from '@agent-board/shared';
+import { isSessionId } from '@agent-board/shared';
+import { requireTaskId } from '../output/task-id.mts';
 import { getPaths } from '../config/config.mts';
+
+// A task's session record in a session directory.
+export function sessionFile(sessionDir: string, taskId: string): string {
+  return join(sessionDir, taskId);
+}
 
 export interface SessionStore {
   has(taskId: string, sessionId: string): boolean;
@@ -14,8 +20,8 @@ export interface SessionStore {
 
 export function createSessionStore(dir: string = getPaths().sessionDir): SessionStore {
   const file = (taskId: string): string => {
-    if (!isSafeTaskId(taskId)) throw new Error(`"${taskId.slice(0, 40)}" is not a task id`);
-    return join(dir, taskId);
+    requireTaskId(taskId);
+    return sessionFile(dir, taskId);
   };
   // An older file lists every session the task had, oldest first: the last is the current one.
   const current = (taskId: string): string | undefined => {

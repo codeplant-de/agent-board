@@ -1,21 +1,15 @@
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import {
-  BackendError,
-  checkBoardUrl,
-  checkDataKey,
-  looksLikeMachineToken,
-  verifyContract,
-} from '../backend/backend.mts';
+import { BackendError, checkDataKey, looksLikeMachineToken, verifyContract, webUrlOf } from '../backend/backend.mts';
 import type { ServerIdentity, WebConfig } from '../backend/backend.mts';
 import { ConfigError, configWarnings, isSafeMode, parseConfig } from '../config/config.mts';
 import type { Config } from '../config/config.mts';
 import { plainLine } from '../output/terminal.mts';
 import { API_VERSION, decodeDataKey, SERVER_FEATURE_LABELS, SERVER_FEATURES } from '@agent-board/shared';
-import { isAllowedDir, routedDirs, UNCOVERED_HINT } from '../commands/dirs.mts';
+import { isAllowedDir, isDirectory, routedDirs, UNCOVERED_HINT } from '../commands/dirs.mts';
 import { parseEnv } from '../config/env-file.mts';
 import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
-import { errorText } from '../output/text.mts';
+import { errorText, shellQuote } from '../output/text.mts';
 
 export type Level = 'ok' | 'fail' | 'warn';
 
@@ -81,7 +75,7 @@ export function realDoctorDeps(
     },
     mode: (file) => statSync(file, { throwIfNoEntry: false })?.mode,
     exists: (file) => existsSync(file),
-    isDirectory: (file) => statSync(file, { throwIfNoEntry: false })?.isDirectory() === true,
+    isDirectory,
     realpath: (file) => {
       try {
         return realpathSync(file);
@@ -121,8 +115,7 @@ function readWebUrl({ configDir, readText }: DoctorDeps): { url?: string; result
   const text = readText(path);
   if (text === undefined) return { result: problem('web.json', 'fail', `${path} is missing`, 'run "board init"') };
   try {
-    const raw: unknown = JSON.parse(text);
-    const url = checkBoardUrl(typeof raw === 'object' && raw !== null && 'url' in raw ? raw.url : undefined);
+    const url = webUrlOf(JSON.parse(text));
     return { url, result: ok('web.json', url) };
   } catch (error) {
     const message = error instanceof ConfigError ? error.message : 'is not valid JSON';
@@ -217,7 +210,7 @@ function readCredentials({ configDir, readText, mode }: DoctorDeps): {
 
 const checkEnv: Check = (deps) => readCredentials(deps).results;
 
-const shellQuote = (text: string): string => `'${plainLine(text).replaceAll("'", `'\\''`)}'`;
+const quoted = (text: string): string => shellQuote(plainLine(text));
 
 const unitPath = (home: string): string => UNIT_PATH.replaceAll('%h', () => home);
 
@@ -365,7 +358,7 @@ const checkDirs: Check = (deps) => {
           'dirs',
           'warn',
           `${plainLine(path)} is listed but is not a directory`,
-          `"board dirs rm ${shellQuote(path)}"`,
+          `"board dirs rm ${quoted(path)}"`,
         ),
       );
   for (const { label, path } of routedDirs(config)) {
@@ -376,7 +369,7 @@ const checkDirs: Check = (deps) => {
           'dirs',
           'fail',
           `${label} ${plainLine(path)} is in no listed directory: ${UNCOVERED_HINT}`,
-          `"board dirs add ${shellQuote(real)}", or "board dirs add --from-config"`,
+          `"board dirs add ${quoted(real)}", or "board dirs add --from-config"`,
         ),
       );
   }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { errorText, fence, oneLine, tail } from './text.mts';
+import { errorText, fence, oneLine, shellQuote, tail } from './text.mts';
 
 test('tail returns short text unchanged and keeps the end of long text within the limit, led by an ellipsis', () => {
   assert.equal(tail('abc', 3), 'abc');
@@ -26,4 +26,10 @@ test('errorText gives the message of an error and the string form of anything el
   assert.equal(errorText('plain'), 'plain');
   assert.equal(errorText(42), '42');
   assert.equal(errorText(undefined), 'undefined');
+});
+
+test('shellQuote makes one shell argument of any text', () => {
+  assert.equal(shellQuote('/home/me/a dir'), "'/home/me/a dir'");
+  assert.equal(shellQuote("it's $HOME; `id`"), "'it'\\''s $HOME; `id`'");
+  assert.equal(shellQuote(''), "''");
 });

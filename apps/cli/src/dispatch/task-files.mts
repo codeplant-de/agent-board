@@ -6,6 +6,9 @@ import { lstatSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { isSafeTaskId } from '@agent-board/shared';
 import { getPaths } from '../config/config.mts';
+import { requireTaskId } from '../output/task-id.mts';
+import { LOG_SUFFIX, logFile } from '../worker/logs.mts';
+import { sessionFile } from '../worker/sessions.mts';
 
 export type TaskFileKind = 'log' | 'session';
 
@@ -25,8 +28,8 @@ export function createTaskFileStore(
   { logDir, sessionDir }: { logDir: string; sessionDir: string } = getPaths(),
 ): TaskFileStore {
   const path = ({ kind, taskId }: Pick<TaskFile, 'kind' | 'taskId'>): string => {
-    if (!isSafeTaskId(taskId)) throw new Error(`"${taskId.slice(0, 40)}" is not a task id`);
-    return kind === 'log' ? join(logDir, `${taskId}.log`) : join(sessionDir, taskId);
+    requireTaskId(taskId);
+    return kind === 'log' ? logFile(logDir, taskId) : sessionFile(sessionDir, taskId);
   };
   // Only regular files named for a task: anything else in the directory is not ours to touch.
   const scan = (kind: TaskFileKind, dir: string, suffix: string): TaskFile[] => {
@@ -49,7 +52,7 @@ export function createTaskFileStore(
     });
   };
   return {
-    list: () => [...scan('log', logDir, '.log'), ...scan('session', sessionDir, '')],
+    list: () => [...scan('log', logDir, LOG_SUFFIX), ...scan('session', sessionDir, '')],
     remove(file) {
       rmSync(path(file), { force: true });
     },

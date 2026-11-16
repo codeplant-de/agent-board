@@ -21,7 +21,7 @@ import type { LinkingContext } from '../cli.mts';
 import { runBoard } from './program.mts';
 import type { ProgramOptions } from './program.mts';
 import { ConfigError } from '../config/config.mts';
-import { changeDirs, coveringDir, isAllowedDir } from './dirs.mts';
+import { changeDirs, coveringDir, isAllowedDir, isDirectory } from './dirs.mts';
 import { CONFIG, fakeBackend, linkTo, schedule, task } from '../__tests__/helpers/fakes.mts';
 
 const dir = (path: string) => ({ path });
@@ -539,4 +539,17 @@ test('board add outside the list proposes in the directory the run started in, o
   const unlimited = enforced(fx, undefined, other, { AGENT_BOARD_START_DIR: listed });
   await unlimited.go(argv);
   assert.deepEqual(unlimited.workdirs, [other]);
+});
+
+test('isDirectory is true only for a directory that is there', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-isdir-'));
+  try {
+    writeFileSync(join(dir, 'file'), '');
+    assert.equal(isDirectory(dir), true);
+    assert.equal(isDirectory(join(dir, 'file')), false);
+    assert.equal(isDirectory(join(dir, 'missing')), false);
+    assert.equal(isDirectory(join(dir, 'file', 'below')), false);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });
