@@ -62,12 +62,34 @@ export async function ensureAppRole(adminDb: Db, appUrl: string): Promise<void> 
   if (!password) throw new Error('APP_DATABASE_URL needs a password');
   const { rows: admin } = await adminDb.execute<{ name: string }>(sql`select current_user as name`);
   if (admin[0]?.name === role) throw new Error('APP_DATABASE_URL must use a different user than DATABASE_URL');
-  const { rows } = await adminDb.execute<{ ddl: string }>(sql`
-    select case when exists (select 1 from pg_roles where rolname = ${role}::text)
-      then format('alter role %I with login password %L', ${role}::text, ${password}::text)
-      else format('create role %I with login nosuperuser nobypassrls nocreatedb nocreaterole password %L', ${role}::text, ${password}::text)
-    end as ddl`);
-  await adminDb.execute(sql.raw(rows[0]!.ddl));
+  for (let attempt = 1; ; attempt++) {
+    const { rows } = await adminDb.execute<{ ddl: string }>(sql`
+      select case when exists (select 1 from pg_roles where rolname = ${role}::text)
+        then format('alter role %I with login password %L', ${role}::text, ${password}::text)
+        else format('create role %I with login nosuperuser nobypassrls nocreatedb nocreaterole password %L', ${role}::text, ${password}::text)
+      end as ddl`);
+    try {
+      await adminDb.execute(sql.raw(rows[0]!.ddl));
+      return;
+    } catch (error) {
+      if (attempt >= 5 || !isRoleRace(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50 * attempt));
+    }
+  }
+}
+
+/**
+ * Roles are cluster-wide, so another session can create or alter the same role at the same moment: two servers
+ * starting together, or two test suites on separate databases of one Postgres. The loser fails with "tuple
+ * concurrently updated" (XX000) or a duplicate role (23505, 42710), and simply trying again succeeds.
+ */
+function isRoleRace(error: unknown): boolean {
+  const cause = (error as { cause?: { code?: string; message?: string } }).cause;
+  return (
+    cause?.code === '23505' ||
+    cause?.code === '42710' ||
+    (cause?.code === 'XX000' && cause.message === 'tuple concurrently updated')
+  );
 }
 
 /** Refuses a connection that would bypass row-level security: a superuser, BYPASSRLS, or the owner of (or a member of the role owning) a table in public. */
