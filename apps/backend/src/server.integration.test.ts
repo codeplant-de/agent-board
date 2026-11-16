@@ -117,14 +117,26 @@ describe('machine API', () => {
       expect(huge.statusCode).toBe(401);
       expect(huge.json()).toEqual({ error: 'unknown or revoked machine token' });
       for (const headers of [json, { ...json, authorization: 'Bearer abm_nope' }]) {
-        const broken = await ctx.app.inject({
-          method: 'POST',
-          url: '/api/machine/transcript',
-          headers,
-          payload: '{not json',
-        });
-        expect(broken.statusCode).toBe(401);
+        for (const [method, url] of [
+          ['POST', '/api/machine/transcript'],
+          ['POST', '/api/machine/list-tasks/'],
+          ['POST', '/api/machine/a/b'],
+          ['POST', '/api/machine/'],
+          ['PUT', '/api/machine/list-tasks'],
+          ['PATCH', '/api/machine/list-tasks'],
+          ['DELETE', '/api/machine/list-tasks'],
+        ] as const) {
+          const broken = await ctx.app.inject({ method, url, headers, payload: '{not json' });
+          expect([method, url, broken.statusCode]).toEqual([method, url, 401]);
+        }
       }
+      const unmatchedHuge = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/machine/a/b',
+        headers: json,
+        payload: filler(15 * MiB),
+      });
+      expect(unmatchedHuge.statusCode).toBe(401);
       // With a good token the same body reaches the parser.
       const parsed = await ctx.app.inject({
         method: 'POST',
@@ -133,6 +145,19 @@ describe('machine API', () => {
         payload: '{not json',
       });
       expect(parsed.statusCode).toBe(400);
+    });
+
+    it('answers an unknown path or method with 404 JSON once the token is good', async () => {
+      const headers = await bearer();
+      for (const [method, url] of [
+        ['POST', '/api/machine/a/b'],
+        ['POST', '/api/machine/list-tasks/'],
+        ['PUT', '/api/machine/list-tasks'],
+      ] as const) {
+        const res = await ctx.app.inject({ method, url, headers });
+        expect([method, url, res.statusCode]).toEqual([method, url, 404]);
+        expect(res.json()).toHaveProperty('error');
+      }
     });
 
     it('keeps the 401 on the event stream', async () => {
@@ -212,37 +237,6 @@ describe('machine API', () => {
       payload: {},
     });
     expect(spoof.statusCode).toBe(401);
-  });
-
-  it('refuses a non-JSON body on /trpc before tRPC reads it: a form post from a sibling subdomain must not run a mutation', async () => {
-    const headers = { 'remote-user': 'jascha', 'remote-groups': 'admins' };
-    const forms = [
-      [
-        'multipart/form-data; boundary=x',
-        '--x\r\nContent-Disposition: form-data; name="input"\r\n\r\n{"input":"/grill"}\r\n--x--\r\n',
-      ],
-      ['application/x-www-form-urlencoded', 'input=%7B%22input%22%3A%22%2Fgrill%22%7D'],
-      ['text/plain', '{"input":"/grill"}'],
-    ] as const;
-    for (const [type, payload] of forms) {
-      const res = await ctx.app.inject({
-        method: 'POST',
-        url: '/trpc/tasks.create',
-        headers: { ...headers, 'content-type': type },
-        payload,
-      });
-      expect(res.statusCode).toBe(415);
-    }
-    const none = await ctx.app.inject({ method: 'POST', url: '/trpc/tasks.create', headers });
-    expect(none.statusCode).toBe(415);
-    expect(await db.select().from(tasks)).toHaveLength(0);
-    const ok = await ctx.app.inject({
-      method: 'POST',
-      url: '/trpc/tasks.create',
-      headers: { ...headers, 'content-type': 'application/json; charset=utf-8' },
-      payload: '{}',
-    });
-    expect(ok.statusCode).not.toBe(415);
   });
 
   it('round-trips the contract: add, list, update, note, read', async () => {

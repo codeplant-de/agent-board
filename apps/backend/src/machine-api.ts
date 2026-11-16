@@ -348,18 +348,24 @@ export function registerMachineApi(
   });
   app.decorateRequest('machineAuth', null);
 
-  // Its own scope, so the token check runs in onRequest: before Fastify reads and parses the body, which an
-  // unauthenticated caller must not be able to make it buffer.
-  void app.register(async (machineApp) => {
-    machineApp.addHook('onRequest', async (req) => {
-      req.machineAuth = await authenticate(db, req);
-    });
-    registerRoutes(machineApp);
-  });
+  // Its own scope under the prefix, so the token check runs in onRequest for every URL and method there, unmatched ones
+  // included: before Fastify reads and parses the body, which an unauthenticated caller must not be able to make it buffer.
+  void app.register(
+    async (machineApp) => {
+      machineApp.addHook('onRequest', async (req) => {
+        req.machineAuth = await authenticate(db, req);
+      });
+      machineApp.setNotFoundHandler(async (req) => {
+        throw new AppError('NOT_FOUND', `unknown route ${req.method} ${req.url.slice(0, 40)}`);
+      });
+      registerRoutes(machineApp);
+    },
+    { prefix: '/api/machine' },
+  );
 
   function registerRoutes(app: FastifyInstance): void {
     /** Server-sent events: a bare `tasks` event means "look at the board again"; it carries no data. */
-    app.get('/api/machine/events', async (req, reply) => {
+    app.get('/events', async (req, reply) => {
       const { identity, token } = authOf(req);
       reply.hijack();
       // The client may have left while the token was being looked up; its `close` event is gone by now.
@@ -414,8 +420,8 @@ export function registerMachineApi(
     }
 
     // `transcript` is its own route so that it alone takes a large body; the others share one route and a small limit.
-    app.post('/api/machine/transcript', { bodyLimit: TRANSCRIPT_BODY_LIMIT }, (req) => serve(req, 'transcript'));
-    app.post<{ Params: { command: string } }>('/api/machine/:command', { bodyLimit: MACHINE_BODY_LIMIT }, (req) =>
+    app.post('/transcript', { bodyLimit: TRANSCRIPT_BODY_LIMIT }, (req) => serve(req, 'transcript'));
+    app.post<{ Params: { command: string } }>('/:command', { bodyLimit: MACHINE_BODY_LIMIT }, (req) =>
       serve(req, req.params.command),
     );
   }
