@@ -134,7 +134,8 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
         queryOptions: () =>
           queryOptions({
             queryKey: plainKey(raw.machines.list.queryKey()),
-            queryFn: async ({ signal }) => openMachines(await client.machines.list.query(undefined, { signal })),
+            queryFn: async ({ signal }) =>
+              openMachines(need(), await client.machines.list.query(undefined, { signal })),
           }),
       },
     },

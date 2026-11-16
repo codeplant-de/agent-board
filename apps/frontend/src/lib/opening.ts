@@ -6,6 +6,7 @@ import {
   isSafeNoteId,
   isSessionId,
   openFields,
+  openMachineDirs,
   openNote,
   openPr,
   openPreview,
@@ -108,7 +109,14 @@ export type TranscriptRun = Omit<RouterOutputs['transcript']['runs'][number], 'e
 };
 // `name` is what the board sent, kept to send back (a token with a name that does not pass the shape check can still be revoked);
 // `shown` is what the page may print.
-export type Machine = RouterOutputs['machines']['list'][number] & { shown: string };
+export type Machine = Omit<RouterOutputs['machines']['list'][number], 'dirs'> & {
+  shown: string;
+  // The directories the machine listed, as the user's own text; null when it has no list to offer: none sent, a revoked
+  // machine, or a name that does not pass the shape check.
+  dirs: string[] | null;
+  // The machine has a list that does not open under its name or is not of its shape, so it offers nothing.
+  dirsUnreadable: boolean;
+};
 
 // One envelope always opens to the same text, so the 5 s polls of every task's prompt decrypt only what is new. Transcript
 // values are large and opened once on demand, so they are not kept.
@@ -270,8 +278,20 @@ export function openRuns(wire: RouterOutputs['transcript']['runs']): TranscriptR
   });
 }
 
-export function openMachines(wire: RouterOutputs['machines']['list']): Machine[] {
-  return wire.map((machine) => ({ ...machine, shown: shownName(machine.name) ?? INVALID_VALUE }));
+export async function openMachines(keys: Keys, wire: RouterOutputs['machines']['list']): Promise<Machine[]> {
+  return Promise.all(
+    wire.map(async ({ dirs: sealed, ...machine }) => {
+      const shown = shownName(machine.name) ?? INVALID_VALUE;
+      const offers = machine.revokedAt === null && shown !== INVALID_VALUE && sealed !== null && sealed !== undefined;
+      const opened = offers ? await openMachineDirs(openerFor(keys), machine.name, sealed) : undefined;
+      return {
+        ...machine,
+        shown,
+        dirs: opened?.map(({ path }) => path) ?? null,
+        dirsUnreadable: offers && opened === undefined,
+      };
+    }),
+  );
 }
 
 /** An event that cannot be opened becomes a note saying so, so the rest of the run still reads. */

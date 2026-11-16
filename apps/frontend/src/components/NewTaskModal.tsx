@@ -11,13 +11,14 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
-import { useMutation } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { PRIORITY_LABEL } from '../lib/priority';
 import { parseRepeatRule } from '../lib/repeat';
 import { errorMessage, useTRPC } from '../lib/trpc';
 import { useNow } from '../lib/useNow';
+import { directoryChoices } from '../lib/workingDirectories';
 import { MarkdownEditor } from './MarkdownEditor';
 
 const DEFAULT_MODEL = 'default';
@@ -37,7 +38,24 @@ interface Props {
   onCreated?: () => void;
 }
 
-/** A prompt, as you would type it into Claude Code. `board schedule` does the same from a terminal, in its directory. */
+function directoryDescription(repeating: boolean, noList: boolean, unreadable: string[]): ReactNode {
+  const unreadableNote =
+    unreadable.length === 0
+      ? null
+      : `The directory ${unreadable.length === 1 ? 'list' : 'lists'} of ${unreadable.join(', ')} could not be read.`;
+  if (repeating)
+    return 'A repeating schedule runs in the default directory of whichever machine takes it; it cannot be pinned here yet.';
+  if (noList)
+    return (
+      <>
+        No machine has listed a directory yet. Run <Code>board dirs add</Code> in a checkout.
+        {unreadableNote !== null && ` ${unreadableNote}`}
+      </>
+    );
+  return unreadableNote ?? undefined;
+}
+
+/** A prompt, as you would type it into Claude Code, and optionally the directory of a machine it runs in. */
 export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const trpc = useTRPC();
   const navigate = useNavigate();
@@ -49,12 +67,20 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const [times, setTimes] = useState<number | string>('');
   const [priority, setPriority] = useState<Priority>('normal');
   const [model, setModel] = useState(DEFAULT_MODEL);
+  const [directory, setDirectory] = useState<string | null>(null);
+  const machines = useQuery(trpc.machines.list.queryOptions());
   const create = useMutation(trpc.tasks.create.mutationOptions());
 
   const now = useNow(30_000);
   const start = new Date(at);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const parsedRule = parseRepeatRule(rule, timezone);
+  const { groups, choices, unreadable } = useMemo(
+    () => directoryChoices(machines.data ?? [], now),
+    [machines.data, now],
+  );
+  const repeating = when === 'repeat';
+  const place = repeating ? undefined : choices.find(({ value }) => value === directory);
   const startsLater = when === 'later' || when === 'repeat';
   const atError = startsLater && at !== '' && !(start.getTime() > now) ? 'Pick a time in the future' : undefined;
   const timesError =
@@ -67,15 +93,22 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
     (when !== 'repeat' || (repeat !== undefined && atError === undefined && timesError === undefined));
   const submit = () => {
     if (!ready || create.isPending) return;
-    const repeating = repeat && {
+    const schedule = repeat && {
       ...repeat,
       ...(at !== '' ? { at: start } : {}),
       ...(times !== '' ? { times: Number(times) } : {}),
     };
-    const payload = when === 'later' ? { at: start } : when === 'repeat' ? repeating : when;
+    const payload = when === 'later' ? { at: start } : when === 'repeat' ? schedule : when;
     if (payload === undefined) return;
     create.mutate(
-      { title, input, when: payload, priority, ...(model === DEFAULT_MODEL ? {} : { model }) },
+      {
+        title,
+        input,
+        when: payload,
+        priority,
+        ...(model === DEFAULT_MODEL ? {} : { model }),
+        ...(place === undefined ? {} : { place: { machine: place.machine, workdir: place.path } }),
+      },
       {
         onSuccess: (task) => {
           onCreated?.();
@@ -83,6 +116,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           setInput('');
           setPriority('normal');
           setModel(DEFAULT_MODEL);
+          setDirectory(null);
           setAt('');
           setRule('');
           setTimes('');
@@ -106,9 +140,21 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           placeholder={'/review-pr 17741\n\nor any instruction, as you would type it into Claude Code'}
         />
         <Text size="xs" c="dimmed" mt={-8}>
-          A leading <Code>/skill</Code> picks the lane. It runs in the default directory of whichever machine takes it;
-          to run it in a particular directory, use <Code>board schedule</Code> there.
+          A leading <Code>/skill</Code> picks the lane. Without a working directory it runs in the default directory of
+          whichever machine takes it.
         </Text>
+        <Select
+          label="Working directory"
+          placeholder={machines.isPending ? 'Loading machines…' : 'Default directory of whichever machine takes it'}
+          searchable
+          clearable
+          data={groups}
+          value={repeating ? null : directory}
+          onChange={setDirectory}
+          disabled={repeating || machines.isPending || machines.isError || choices.length === 0}
+          error={machines.isError ? errorMessage(machines.error) : undefined}
+          description={directoryDescription(repeating, choices.length === 0 && !machines.isPending, unreadable)}
+        />
         <TextInput
           label="Title"
           placeholder="Defaults to the prompt's first line"

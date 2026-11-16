@@ -51,7 +51,7 @@ vi.mock('../lib/trpc', () => ({
           queryKey: ['machines'],
           queryFn: async () => {
             if (machines.failure) throw machines.failure;
-            return openMachines(machines.current as never);
+            return openMachines(held, machines.current as never);
           },
         }),
       },
