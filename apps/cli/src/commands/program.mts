@@ -45,7 +45,7 @@ import { verifyContract } from '../backend/backend.mts';
 import { completionModel, renderCompletion, SHELLS } from './completion.mts';
 import type { Shell } from './completion.mts';
 import { getPaths, loadConfig } from '../config/config.mts';
-import { dirsAdd, dirsList, dirsRemove } from './dirs.mts';
+import { dirsAdd, dirsList, dirsRemove, reportDirsSync } from './dirs.mts';
 import type { DirsDeps } from './dirs.mts';
 import { runDir } from '../worker/runtime.mts';
 import { dispatchMain } from '../dispatch/dispatch.mts';
@@ -113,6 +113,9 @@ export interface ProgramOptions {
   updateState?: UpdateState;
 }
 
+// How long `board dirs add` and `rm` wait for the board: the local change is made already, so a dead network must not hold them.
+const DIRS_BOARD_TIMEOUT_MS = 15_000;
+
 const TASKS = 'Tasks:';
 const SCHEDULING = 'Scheduling:';
 const SETUP = 'Setup:';
@@ -167,11 +170,19 @@ export function buildProgram(options: ProgramOptions = {}): Command {
 
   // `strictConfig`: the command binds work to this machine's name, which needs a config.json to mean anything.
   // `json`: stdout holds the JSON document alone, so every other line goes to stderr.
-  const contextOf = (command: Command, { strictConfig = false, json = false } = {}): LinkingContext => {
+  const contextOf = (
+    command: Command,
+    {
+      strictConfig = false,
+      json = false,
+      timeoutMs,
+    }: { strictConfig?: boolean; json?: boolean; timeoutMs?: number } = {},
+  ): LinkingContext => {
     const dryRun =
       program.opts<{ dryRun?: boolean }>().dryRun === true || command.opts<{ dryRun?: boolean }>().dryRun === true;
     return makeContext(dryRun, {
       optionalConfig: !strictConfig,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
       ...(json ? { print: (line: string) => writeErr(`${line}\n`) } : {}),
     });
   };
@@ -576,6 +587,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
           "Manage the `dirs` list of this machine's config.json: the directories workers may run in. Without a `dirs` key nothing is limited; once the key exists, even as `{}`, workers run only in a listed directory or one below it. Without arguments (or with `list`), print the entries, marking one whose directory is gone as missing. `add [path]` lists the real path of a directory (default: the current one); `rm [path]` unlists one. A path is relative to the current directory.",
           '`add` refuses `/` and a path that is not a directory, warns about the home directory (it allows everything below it), and notes when a parent is already listed. `add --from-config` lists the directories the config already routes to: `defaultCwd`, every lane `cwd` and every `repos` checkout that exists, skipping those a listed directory covers and never listing `/` or the home directory.',
           '`rm` asks the board for open tasks and schedules of this machine that run in the directory and in no other listed one, and refuses while there are any, and when the board cannot be reached; --force removes it anyway and needs no board. The list is enforced as soon as it exists, even empty: a worker refuses to start a task outside it, a run that ends outside it keeps the directory it started in, and `board schedule` and `board add` refuse (`board add` falls back to the directory the run started in) outside it. `add` and `rm` rewrite the `dirs` key of config.json and nothing else, and are not available inside a board run.',
+          "The board gets a copy of the list, for the New task form to offer: the listed directories that exist, sent by `add` and `rm` and by every dispatch tick when it changed. The copy is advice; workers read only this machine's config.json. If the board cannot be reached, `add` and `rm` still succeed, warn, and leave it to the next dispatch tick.",
         ),
       )
       .usage('[options] [list | add [path] | rm [path]]')
@@ -602,7 +614,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     if (flags.fromConfig && action !== 'add') throw new UsageError('--from-config belongs to add');
     if (flags.force && action !== 'rm') throw new UsageError('--force belongs to rm');
     if (action !== 'list') notInRun(`board dirs ${action} is not available inside a board run`);
-    const context = contextOf(command, { strictConfig: true });
+    const context = contextOf(command, { strictConfig: true, timeoutMs: DIRS_BOARD_TIMEOUT_MS });
     const deps: DirsDeps = {
       configFile: getPaths(env).configFile,
       cwd: options.cwd ?? realpathSync(process.cwd()),
@@ -614,8 +626,11 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     };
     const [path] = rest;
     if (action === 'list') dirsList(deps);
-    else if (action === 'add') dirsAdd(deps, path, flags);
-    else await dirsRemove(deps, path, flags);
+    else {
+      if (action === 'add') dirsAdd(deps, path, flags);
+      else await dirsRemove(deps, path, flags);
+      await reportDirsSync(deps);
+    }
   });
 
   dryRunOption(

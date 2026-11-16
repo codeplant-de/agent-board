@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { encodeDataKey } from '@agent-board/shared';
+import { encodeDataKey, machineDirsIndex } from '@agent-board/shared';
 import { DATA_KEY, KEYS, OWNER, SERVER_API, SERVER_HAS } from '../__tests__/helpers/fakes.mts';
 import { BackendError } from '../backend/backend.mts';
 import { formatResult, hasFailure, runChecks } from './doctor.mts';
@@ -521,4 +521,39 @@ test('a listed symlink to a route covers it, and a route that is a symlink out o
 
 test('a config that does not parse leaves the dirs section to the config.json check', async () => {
   assert.deepEqual(dirsResults(await runChecks(machine(withConfig({ machine: 'box', dirs: 'x' })))), []);
+});
+
+const dirsOnBoard = (results: CheckResult[]): CheckResult[] =>
+  results.filter((result) => result.name === 'dirs on board');
+
+test('doctor says whether the board has the current directory list, comparing indexes and asking nothing more', async () => {
+  const files = withConfig({ machine: 'box', dirs: { '/home/me/.config/agent-board': {}, '/work/gone': {} } });
+  const index = await machineDirsIndex(KEYS, 'box', [{ path: '/home/me/.config/agent-board' }]);
+  const serving = (dirsIndex?: string): Partial<DoctorDeps> => ({
+    verifyServer: async () => ({
+      owner: OWNER,
+      keyId: KEYS.keyId,
+      api: SERVER_API,
+      features: SERVER_HAS,
+      ...(dirsIndex === undefined ? {} : { dirsIndex }),
+    }),
+  });
+  const current = dirsOnBoard(await runChecks(machine(files, serving(index))));
+  assert.deepEqual(
+    current.map(({ level, message }) => [level, message]),
+    [['ok', 'the board has the current list']],
+  );
+  const behind = dirsOnBoard(await runChecks(machine(files, serving())));
+  assert.deepEqual(
+    behind.map(({ level }) => level),
+    ['warn'],
+  );
+  assert.match(behind[0]?.hint ?? '', /next dispatch tick/);
+  assert.deepEqual(dirsOnBoard(await runChecks(machine(GOOD, serving()))), [], 'no dirs key, nothing to compare');
+  const lacking = machine(files, {
+    verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId, api: SERVER_API, features: new Set(['events']) }),
+  });
+  const results = await runChecks(lacking);
+  assert.deepEqual(dirsOnBoard(results), []);
+  assert.match(results.find(({ name }) => name === 'server features')?.message ?? '', /directory lists/);
 });

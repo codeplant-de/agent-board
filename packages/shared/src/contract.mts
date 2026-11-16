@@ -388,7 +388,18 @@ export interface Backend {
   setPr(id: string, url: string): Promise<void>;
   // Intake records GitHub's state of the task's PR (`statePrOf`).
   setPrState(id: string, prState: PrState): Promise<void>;
+  // Whether the board holds `dirs` as this machine's directory list, by comparing blind indexes; 'unsupported' for a server without the feature.
+  checkDirs(machine: string, dirs: readonly MachineDir[]): Promise<DirsOnBoard>;
+  // Replaces the board's copy of this machine's directory list. The copy is advice for the New task form and is never read back by a CLI.
+  setDirs(machine: string, dirs: readonly MachineDir[]): Promise<void>;
 }
+
+/** A directory the machine lists in its config. */
+export interface MachineDir {
+  path: string;
+}
+
+export type DirsOnBoard = 'unsupported' | 'current' | 'stale';
 
 // What the board server stores and returns: the sealed fields are envelopes (`abe1.…`) it cannot read. Values the server
 // returns may also be legacy plain text from before encryption; only what a client sends is checked to be sealed.
@@ -464,6 +475,19 @@ export interface WirePrState {
   prState: PrState;
 }
 
+// Body of set-dirs: the sealed list ("machine.dirs") and the blind index of what it holds.
+export interface WireDirs {
+  dirs: string;
+  index: string;
+}
+
+// What the `version` answer says of the calling machine's list.
+export interface WireDirsState {
+  supported: boolean;
+  // The blind index the board holds for this machine's list; null when it holds none.
+  index: string | null;
+}
+
 export interface WireAsk {
   // Sealed empty text: a question note carries its content in `questions`.
   body: string;
@@ -528,6 +552,8 @@ export interface WireBackend {
   removeSchedule(id: string): Promise<void>;
   setPr(id: string, body: WirePr): Promise<void>;
   setPrState(id: string, body: WirePrState): Promise<void>;
+  setDirs(body: WireDirs): Promise<void>;
+  dirsState(): Promise<WireDirsState>;
 }
 
 // The characters of a suggested reply the board takes.
@@ -540,6 +566,7 @@ export const SEALED_LIMITS: Record<Field, number> = {
   input: 4 * 200_000,
   workdir: 4096,
   pr: 1024,
+  'machine.dirs': 256 * 1024,
   'note.body': 4 * 100_000,
   'note.preview': 4 * 300,
   'note.suggestion': 4 * NOTE_SUGGESTION_CHARS,
@@ -1095,6 +1122,12 @@ export function parseVersionCli(value: unknown): string | null {
   return isReleaseVersion(cli) ? cli : null;
 }
 
+/** The blind index of the calling machine's list in a `version` answer. Lenient: anything but a blind index is null, never an error. */
+export function parseVersionDirsIndex(value: unknown): string | null {
+  const dirsIndex = isRecord(value) ? value['dirsIndex'] : undefined;
+  return typeof dirsIndex === 'string' && isBlindIndex(dirsIndex) ? dirsIndex : null;
+}
+
 // What the server checks of every request: the shape, the sealed fields being envelopes, and nothing about their content.
 
 function sealedField(obj: Record<string, unknown>, key: string, what: string, field: Field): string {
@@ -1117,6 +1150,16 @@ export function parseWirePrState(value: unknown): WirePrState {
   const obj = record(value, 'prState');
   rejectUnknownKeys(obj, ['prState'], 'prState');
   return { prState: member(obj, 'prState', 'prState', PR_STATES) };
+}
+
+// Body of set-dirs: the sealed list and its blind index.
+export function parseWireDirs(value: unknown): WireDirs {
+  const obj = record(value, 'dirs');
+  rejectUnknownKeys(obj, ['dirs', 'index'], 'dirs');
+  return {
+    dirs: sealedField(obj, 'dirs', 'dirs', 'machine.dirs'),
+    index: parseBlindIndex(obj['index'], 'dirs.index'),
+  };
 }
 
 // Body of add-task. `id`, `title` and `input` are required.

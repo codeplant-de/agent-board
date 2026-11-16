@@ -6,6 +6,7 @@ import {
   generateDataKey,
   open,
   parseWireAsk,
+  parseWireDirs,
   parseWireNoteInput,
   parseWirePr,
   parseWireScheduleDraft,
@@ -22,6 +23,7 @@ import type {
   Question,
   TranscriptEvent,
   WireBackend,
+  WireDirs,
   WireNote,
   WireNoteInput,
   WireSchedule,
@@ -57,6 +59,9 @@ interface FakeWire extends WireBackend {
   schedules: WireSchedule[];
   added: WireTaskDraft[];
   byKey: Map<string, WireTask>;
+  // The directory list the server holds for the machine, as the request that set it carried it.
+  dirs: WireDirs | undefined;
+  dirsSupported: boolean;
 }
 
 let nextId = 0;
@@ -70,6 +75,8 @@ function fakeWire(): FakeWire {
     schedules: [],
     added: [],
     byKey: new Map(),
+    dirs: undefined,
+    dirsSupported: true,
     async listTasks() {
       return state.tasks;
     },
@@ -129,6 +136,12 @@ function fakeWire(): FakeWire {
         state.tasks.find((t) => t.id === id)!,
         { prState: body.prState },
       );
+    },
+    async setDirs(body) {
+      state.dirs = parseWireDirs(JSON.parse(record(state, body)));
+    },
+    async dirsState() {
+      return { supported: state.dirsSupported, index: state.dirs?.index ?? null };
     },
     async pause(id, note) {
       push(state, id, parseWireNoteInput(JSON.parse(record(state, note)), 'note'), 'system', 'event');
@@ -887,4 +900,38 @@ test('the state of a PR goes to the board in clear, as it is', async () => {
   await board.setPrState('t1', 'merged');
   assert.equal(wire.tasks[0]!.prState, 'merged');
   assert.equal((await board.getTask('t1')).prState, 'merged');
+});
+
+test('the directory list is sealed for this machine with an index of the same document, and the board tells whether it holds it', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  const dirs = [{ path: '/home/me/MARKER-app' }, { path: '/srv/lib' }];
+  assert.equal(await board.checkDirs('laptop', dirs), 'stale');
+  await board.setDirs('laptop', dirs);
+  const sent = wire.dirs!;
+  const json = '{"dirs":[{"path":"/home/me/MARKER-app"},{"path":"/srv/lib"}]}';
+  assert.equal(await open(KEYS, 'machine.dirs', 'machine:laptop', sent.dirs), json);
+  assert.equal(sent.index, await blindIndex(KEYS, `dirs:laptop:${json}`));
+  noMarkers(wire);
+  assert.equal(await board.checkDirs('laptop', dirs), 'current');
+  assert.equal(await board.checkDirs('laptop', [...dirs].reverse()), 'stale');
+  assert.equal(await board.checkDirs('laptop', dirs.slice(1)), 'stale');
+  assert.equal(await board.checkDirs('desktop', dirs), 'stale', 'the index is of the machine as well');
+  wire.dirsSupported = false;
+  assert.equal(await board.checkDirs('laptop', dirs), 'unsupported');
+});
+
+test('a directory list the board would refuse is refused before it is sent', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  await assert.rejects(
+    board.setDirs('laptop', [{ path: 'relative' }]),
+    /set-dirs: a listed directory must be an absolute path/,
+  );
+  const many = Array.from({ length: 201 }, (_, index) => ({ path: `/d${index}` }));
+  await assert.rejects(
+    board.setDirs('laptop', many),
+    (error: unknown) => error instanceof BackendError && error.status === 400,
+  );
+  assert.equal(wire.requests.length, 0);
 });

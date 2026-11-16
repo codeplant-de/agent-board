@@ -8,6 +8,7 @@ import { BackendError } from '../../backend/backend.mts';
 import {
   API_VERSION,
   LEGACY_CONTRACT,
+  machineDirsJson,
   MIN_CLIENT,
   deriveKeys,
   encodeDataKey,
@@ -19,7 +20,7 @@ import {
   taskLabels,
 } from '@agent-board/shared';
 import type { Sealer } from '@agent-board/shared';
-import type { Backend, Note, Schedule, Task, WireSchedule, WireTask } from '@agent-board/shared';
+import type { Backend, MachineDir, Note, Schedule, Task, WireSchedule, WireTask } from '@agent-board/shared';
 
 export function task(overrides: Partial<Task> & { id: string }): Task {
   return {
@@ -107,6 +108,8 @@ export interface FakeBackend extends Backend {
   writes: string[];
   // Claims of these ids are lost, as if another machine got there first.
   lostClaims: string[];
+  // The directory list the board holds for this machine, and what its server does with a new one.
+  boardDirs: { supported: boolean; held: MachineDir[] | undefined; failure: Error | undefined };
 }
 
 function parseFirstLine(input: string): string {
@@ -135,6 +138,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     inboxes: new Map(),
     writes: [],
     lostClaims: [],
+    boardDirs: { supported: true, held: undefined, failure: undefined },
     async listTasks({ all = false } = {}) {
       return state.tasks.filter((t) => all || !t.closed).map(asBoardShows);
     },
@@ -235,6 +239,17 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       const found = state.tasks.find((t) => t.id === id);
       if (!found) throw new BackendError(`set-pr-state: no task ${id}`, 404, true);
       found.prState = prState;
+    },
+    async checkDirs(_machine, dirs) {
+      if (state.boardDirs.failure) throw state.boardDirs.failure;
+      if (!state.boardDirs.supported) return 'unsupported';
+      const { held } = state.boardDirs;
+      return held !== undefined && machineDirsJson(held) === machineDirsJson(dirs) ? 'current' : 'stale';
+    },
+    async setDirs(machine, dirs) {
+      if (state.boardDirs.failure) throw state.boardDirs.failure;
+      state.writes.push(`dirs ${machine}: ${dirs.map(({ path }) => path).join(',')}`);
+      state.boardDirs.held = dirs.map(({ path }) => ({ path }));
     },
     async heartbeat(id, beat) {
       state.writes.push(`heartbeat ${id} ${beat.lane}${beat.borrowed ? ' borrowed' : ''}`);

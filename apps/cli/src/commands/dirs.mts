@@ -1,11 +1,12 @@
 import { chmodSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { isRecord } from '@agent-board/shared';
+import { isRecord, isSafeWorkdir } from '@agent-board/shared';
 import type { Backend, Schedule, Task } from '@agent-board/shared';
 import { UsageError } from '../cli.mts';
 import { ConfigError, dirKeyPath, expandHome, MAX_DIRS, parseConfig } from '../config/config.mts';
 import type { Config, DirEntry } from '../config/config.mts';
 import { plainLine } from '../output/terminal.mts';
+import { errorText } from '../output/text.mts';
 
 export const FIRST_ADD_NOTE = [
   'created the dirs list: workers on this machine now run tasks only in listed directories.',
@@ -132,14 +133,40 @@ export function changeDirs(configFile: string, change: (keys: DirKey[]) => strin
   }
 }
 
+/** What `syncDirs` did: sent the list, found the board's copy current, found the server unable to hold one, or had no list. */
+export type DirsSync = { result: 'sent'; count: number } | { result: 'unchanged' | 'unsupported' | 'not-listed' };
+
+/** The listed directories that exist now, as written in the config: what the board is told. */
+export function dirsToSend(dirs: readonly DirEntry[], exists: (path: string) => boolean = isDirectory): DirEntry[] {
+  return dirs.filter(({ path }) => isSafeWorkdir(path) && exists(path)).map(({ path }) => ({ path }));
+}
+
+/**
+ * Tells the board this machine's directory list when it differs from the board's copy (by blind index). The board's copy
+ * is advice for the New task form: nothing here reads it back, and the machine's own config.json stays the only list that
+ * is enforced. Throws what the board call throws; callers decide how loud that is.
+ */
+export async function syncDirs(
+  deps: { backend: Pick<Backend, 'checkDirs' | 'setDirs'>; config: Pick<Config, 'machine' | 'dirs'> },
+  exists?: (path: string) => boolean,
+): Promise<DirsSync> {
+  const { backend, config } = deps;
+  if (config.dirs === undefined) return { result: 'not-listed' };
+  const dirs = dirsToSend(config.dirs, exists);
+  const state = await backend.checkDirs(config.machine, dirs);
+  if (state !== 'stale') return { result: state === 'current' ? 'unchanged' : 'unsupported' };
+  await backend.setDirs(config.machine, dirs);
+  return { result: 'sent', count: dirs.length };
+}
+
 export interface DirsDeps {
   configFile: string;
   cwd: string;
   home: string;
   dryRun: boolean;
   print: (line: string) => void;
-  // Only `rm` asks the board.
-  backend: Pick<Backend, 'listTasks' | 'listSchedules'>;
+  // `rm` asks the board for work, and `add` and `rm` send the list afterwards.
+  backend: Pick<Backend, 'listTasks' | 'listSchedules' | 'checkDirs' | 'setDirs'>;
   bold?: (text: string) => string;
 }
 
@@ -178,6 +205,23 @@ export function dirsList(deps: DirsDeps): void {
   }
   deps.print(bold(`dirs (${config.dirs.length}), enforced: workers on this machine run only in these`));
   for (const { path } of config.dirs) deps.print(`  ${plainLine(path)}${isDirectory(path) ? '' : '  missing'}`);
+}
+
+/**
+ * After `add` or `rm`: sends the new list to the board and says so. A board that cannot be reached or refuses is a warning,
+ * never a failure: the list in config.json is what counts, and the next dispatch tick sends it.
+ */
+export async function reportDirsSync(deps: DirsDeps): Promise<void> {
+  if (deps.dryRun) return;
+  try {
+    const sync = await syncDirs({ backend: deps.backend, config: readConfigFile(deps.configFile).config });
+    if (sync.result === 'unsupported')
+      deps.print('the board cannot show this list yet: its server has no directory lists');
+    else if (sync.result !== 'not-listed') deps.print('the board has the list');
+  } catch (error) {
+    const reason = errorText(error).split('\n')[0] ?? '';
+    warn(deps, `could not send the list to the board (${plainLine(reason)}); the next dispatch tick will send it`);
+  }
 }
 
 function refusal(path: string, real: string | undefined): string | undefined {

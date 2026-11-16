@@ -23,6 +23,9 @@ export async function issueToken(db: DbOrTx, name: string): Promise<string> {
         lastSeenAt: null,
         clientVersion: null,
         clientApi: null,
+        dirs: null,
+        dirsIndex: null,
+        dirsUpdatedAt: null,
       },
     });
   return token;
@@ -86,6 +89,8 @@ export async function listMachines(db: DbOrTx, advertisedCli: string | null) {
       revokedAt: machines.revokedAt,
       clientVersion: machines.clientVersion,
       clientApi: machines.clientApi,
+      dirs: machines.dirs,
+      dirsUpdatedAt: machines.dirsUpdatedAt,
     })
     .from(machines)
     .orderBy(asc(machines.name));
@@ -96,5 +101,22 @@ export async function listMachines(db: DbOrTx, advertisedCli: string | null) {
 }
 
 export async function revokeMachine(db: DbOrTx, name: string): Promise<void> {
-  await db.update(machines).set({ revokedAt: new Date() }).where(eq(machines.name, name));
+  await db
+    .update(machines)
+    .set({ revokedAt: new Date(), dirs: null, dirsIndex: null, dirsUpdatedAt: null })
+    .where(eq(machines.name, name));
+}
+
+/** Stores the sealed directory list a machine sent, with the blind index of what it holds. */
+export async function setMachineDirs(db: DbOrTx, name: string, list: { dirs: string; index: string }): Promise<void> {
+  await db
+    .update(machines)
+    .set({ dirs: list.dirs, dirsIndex: list.index, dirsUpdatedAt: new Date() })
+    .where(eq(machines.name, name));
+}
+
+/** The blind index of the list a machine last sent, or null when it sent none. */
+export async function machineDirsIndex(db: DbOrTx, name: string): Promise<string | null> {
+  const [row] = await db.select({ index: machines.dirsIndex }).from(machines).where(eq(machines.name, name));
+  return row?.index ?? null;
 }
