@@ -25,8 +25,10 @@ import { useState, useSyncExternalStore } from 'react';
 import { KeyError } from '../crypto/kdf';
 import { exportDataKey, replacePassphrase } from '../crypto/keySlots';
 import { useKeys } from '../crypto/KeyContext';
-import { PASSPHRASE_ADVICE, passphraseProblem, samePassphrase } from '../crypto/passphrase';
+import { NewPassphraseFields, useNewPassphrase } from '../crypto/NewPassphraseFields';
+import { PASSPHRASE_ADVICE } from '../crypto/passphrase';
 import { PassphraseModal } from '../crypto/PassphraseModal';
+import { useSubmit } from '../crypto/useSubmit';
 import { CLIENT_COLOR, clientText } from '../lib/clientStatus';
 import {
   isNotificationSupported,
@@ -37,7 +39,7 @@ import {
 import { QueryStatus } from '../components/QueryStatus';
 import { SlackSettings } from '../components/SlackSettings';
 import { ago } from '../lib/time';
-import { errorMessage, useTRPC } from '../lib/trpc';
+import { useTRPC } from '../lib/trpc';
 
 /**
  * The slots the board stores, read as the key this browser is using: the owner and key id are the browser's, not the ones the
@@ -247,38 +249,22 @@ function Encryption() {
   const keys = useKeys();
   const replaceSlots = useMutation(trpc.keys.replaceSlots.mutationOptions());
   const [current, setCurrent] = useState('');
-  const [next, setNext] = useState('');
-  const [again, setAgain] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const problem = next === '' ? null : passphraseProblem(next);
-  const mismatch = again !== '' && !samePassphrase(again, next);
-  const ready = current !== '' && next !== '' && problem === null && samePassphrase(again, next);
-
-  const change = async () => {
-    if (!ready || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const stored = await queryClient.fetchQuery(trpc.keys.get.queryOptions());
-      if (!keys || !stored) throw new KeyError('The key is not available. Reload the page.');
-      const { slots } = await replacePassphrase({
-        owner: keys.owner,
-        stored: asHeld(stored, keys),
-        secret: { kind: 'passphrase', passphrase: current },
-        newPassphrase: next,
-      });
-      await replaceSlots.mutateAsync({ keyId: keys.keyId, slots });
-      setCurrent('');
-      setNext('');
-      setAgain('');
-      notifications.show({ color: 'teal', message: 'Passphrase changed. The recovery key still works.' });
-    } catch (err) {
-      setError(err instanceof KeyError ? err.message : errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const next = useNewPassphrase();
+  const ready = current !== '' && next.valid;
+  const { busy, error, submit } = useSubmit(async () => {
+    const stored = await queryClient.fetchQuery(trpc.keys.get.queryOptions());
+    if (!keys || !stored) throw new KeyError('The key is not available. Reload the page.');
+    const { slots } = await replacePassphrase({
+      owner: keys.owner,
+      stored: asHeld(stored, keys),
+      secret: { kind: 'passphrase', passphrase: current },
+      newPassphrase: next.passphrase,
+    });
+    await replaceSlots.mutateAsync({ keyId: keys.keyId, slots });
+    setCurrent('');
+    next.reset();
+    notifications.show({ color: 'teal', message: 'Passphrase changed. The recovery key still works.' });
+  }, ready);
 
   return (
     <Paper withBorder p="md">
@@ -299,7 +285,7 @@ function Encryption() {
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            void change();
+            void submit();
           }}
         >
           <Stack maw={360}>
@@ -310,20 +296,7 @@ function Encryption() {
               error={error}
               autoComplete="current-password"
             />
-            <PasswordInput
-              label="New passphrase"
-              value={next}
-              onChange={(event) => setNext(event.currentTarget.value)}
-              error={problem}
-              autoComplete="new-password"
-            />
-            <PasswordInput
-              label="New passphrase again"
-              value={again}
-              onChange={(event) => setAgain(event.currentTarget.value)}
-              error={mismatch ? 'The passphrases differ.' : null}
-              autoComplete="new-password"
-            />
+            <NewPassphraseFields state={next} />
             <Group>
               <Button type="submit" disabled={!ready} loading={busy}>
                 Change passphrase
