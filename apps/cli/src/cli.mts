@@ -1,13 +1,13 @@
-import { GitHubError } from './github.mts';
-import { SystemError } from './system.mts';
-import { BackendError, dryRunBackend, loadWebConfig, updateCliHint } from './backend.mts';
-import { ConfigError, getPaths, loadConfig } from './config.mts';
-import type { Config } from './config.mts';
-import { taskLink } from './links.mts';
-import { createSealedBackend } from './sealing.mts';
+import { GitHubError } from './intake/github.mts';
+import { SystemError } from './setup/system.mts';
+import { BackendError, dryRunBackend, loadWebConfig, updateCliHint } from './backend/backend.mts';
+import { ConfigError, getPaths, loadConfig } from './config/config.mts';
+import type { Config } from './config/config.mts';
+import { taskLink } from './output/links.mts';
+import { createSealedBackend } from './backend/sealing.mts';
 import type { Backend, SkippedItem } from '@agent-board/shared';
-import { wantsColor } from './style.mts';
-import { errorText } from './text.mts';
+import { wantsColor } from './output/style.mts';
+import { errorText } from './output/text.mts';
 
 export interface Context {
   config: Config;

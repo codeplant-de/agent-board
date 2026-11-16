@@ -24,7 +24,7 @@ Boards are separated per user: every row belongs to the signed-in user (`Remote-
 
 Three ways in:
 
-- **The UI** (`/trpc`): Traefik runs Authelia's forward-auth and strips client-sent `Remote-*` headers before it; the backend takes the user from `Remote-User` and requires one of `ALLOWED_GROUPS` in `Remote-Groups`.
+- **The UI** (`/trpc`): Traefik runs Authelia's forward-auth and strips client-sent `Remote-*` headers before it; the backend takes the user from `Remote-User` and requires one of `ALLOWED_GROUPS` in `Remote-Groups`. The session cookie covers the whole parent domain, so another subdomain can send a plain HTML form with it; a write to `/trpc` whose `Content-Type` is not `application/json` (a form cannot send that) is a 415, before tRPC reads it.
 - **The machine API** (`POST /api/machine/<subcommand>`): its own Traefik route skips Authelia, matched only for that path with an `Authorization: Bearer` header. The backend looks the token up by its sha256 (tokens are shown once, on the Settings page) and refuses a revoked one. A token claims tasks only under its own machine name.
 - **The intake API** (`POST /api/intake/<command>`): for the Slack app only, with the shared `INTAKE_TOKEN`; see [architecture.md](architecture.md#the-slack-companion). Never add it to the proxy's login bypasses: the Slack app calls the backend directly inside the cluster.
 
@@ -44,7 +44,7 @@ The backend holds no Slack token. Slack outages and backend outages do not stop 
 
 Setting it up:
 
-1. In the Cosuno workspace, create an app from `infra/slack-app-manifest.yaml` (api.slack.com/apps, "Create New App", "From a manifest"). The manifest asks for the `commands` scope and Socket Mode, nothing else. A workspace admin may have to approve it.
+1. In the Cosuno workspace, create an app from `infra/slack-app-manifest.yaml` (api.slack.com/apps, "Create New App", "From a manifest"). The manifest asks for the `commands` scope and Socket Mode, nothing else. It also declares a bot user, because Slack refuses slash commands without one ("Slash Commands requires bot_user"); the app never reads the bot token that installing shows. A workspace admin may have to approve it.
 2. Under Basic Information, "App-Level Tokens", generate a token with the scope `connections:write`. That is `SLACK_APP_TOKEN`. Install the app to the workspace.
 3. Generate an `INTAKE_TOKEN` and put it in the backend's env secret together with `BOARD_URL`, and `SLACK_APP_TOKEN`, `BOARD_API_URL` and `INTAKE_TOKEN` in the Slack app's secret (`agent-board-slack-env`, see the patch). Restart the backend, then the app.
 4. In Slack, send `/board link` and open the link.
