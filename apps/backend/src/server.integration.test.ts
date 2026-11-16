@@ -77,6 +77,7 @@ describe('machine API', () => {
       keyId: null,
       api: { version: API_VERSION, minClient: MIN_CLIENT },
       features: [...SERVER_FEATURES],
+      dirsIndex: null,
     });
     expect(LEGACY_CONTRACT).toBe(9);
   });

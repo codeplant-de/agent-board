@@ -25,6 +25,7 @@ import {
   WAKE_MARKER,
 } from './decide.mts';
 import type { LaneRun } from './decide.mts';
+import { syncDirs } from './dirs.mts';
 import { createRunFiles } from './runtime.mts';
 import type { RunFiles } from './runtime.mts';
 import { EXEC_PATH, isCompiledBinary } from './self.mts';
@@ -191,6 +192,16 @@ async function runChecks(deps: DispatchDeps, checks: Task[], tickStart: Date): P
   );
 }
 
+// Tells the board this machine's directory list when it changed; a server that cannot hold one or a failure costs one line at most.
+async function sendDirs({ backend, config, print: log }: DispatchDeps): Promise<void> {
+  try {
+    const sync = await syncDirs({ backend, config });
+    if (sync.result === 'sent') log(`DIRS sent ${sync.count} directories to the board`);
+  } catch (error) {
+    log(`WARN sending the directory list failed: ${errorText(error)}`);
+  }
+}
+
 const updateRun = ({ update, now, print: log, dryRun }: DispatchDeps) => ({ ...update, now, log, dryRun });
 
 export async function runDispatch(deps: DispatchDeps): Promise<void> {
@@ -217,6 +228,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     if (workers.length > 0) log(`UPDATE-WAIT ${why}; ${workers.length} worker(s) running`);
     else if ((await tryUpdate(updateRun(deps), why)) === 'updated') return;
   }
+  await sendDirs(deps);
   // The unit of a task lives on the machine that claimed it; another machine's tasks are its own business.
   const running = listed.filter(
     (task) => task.status === 'running' && (task.machine === null || task.machine === config.machine),

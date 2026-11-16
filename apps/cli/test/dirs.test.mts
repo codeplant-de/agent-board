@@ -21,7 +21,7 @@ import type { LinkingContext } from '../src/cli.mts';
 import { runBoard } from '../src/commands.mts';
 import type { ProgramOptions } from '../src/commands.mts';
 import { ConfigError } from '../src/config.mts';
-import { changeDirs, coveringDir, isAllowedDir } from '../src/dirs.mts';
+import { changeDirs, coveringDir, dirsToSend, isAllowedDir, syncDirs } from '../src/dirs.mts';
 import { CONFIG, fakeBackend, linkTo, schedule, task } from './helpers.mts';
 
 const dir = (path: string) => ({ path });
@@ -539,4 +539,129 @@ test('board add outside the list proposes in the directory the run started in, o
   const unlimited = enforced(fx, undefined, other, { AGENT_BOARD_START_DIR: listed });
   await unlimited.go(argv);
   assert.deepEqual(unlimited.workdirs, [other]);
+});
+
+const written = (backend: ReturnType<typeof fakeBackend>): string[] =>
+  backend.writes.filter((w) => w.startsWith('dirs '));
+
+test('syncDirs sends only what the board lacks: the listed directories that exist, as written, once', async () => {
+  const backend = fakeBackend([]);
+  const config = { ...CONFIG, dirs: [dir('/a'), dir('/gone'), dir('/b')] };
+  const exists = (path: string): boolean => path !== '/gone';
+  assert.deepEqual(await syncDirs({ backend, config }, exists), { result: 'sent', count: 2 });
+  assert.deepEqual(written(backend), ['dirs here: /a,/b']);
+  assert.deepEqual(await syncDirs({ backend, config }, exists), { result: 'unchanged' });
+  assert.deepEqual(
+    await syncDirs({ backend, config: { ...CONFIG, dirs: [dir('/a'), dir('/b'), dir('/gone')] } }, exists),
+    {
+      result: 'unchanged',
+    },
+  );
+  assert.equal(written(backend).length, 1);
+  assert.deepEqual(await syncDirs({ backend, config: { ...CONFIG, dirs: [dir('/a')] } }, exists), {
+    result: 'sent',
+    count: 1,
+  });
+  assert.deepEqual(written(backend), ['dirs here: /a,/b', 'dirs here: /a']);
+  assert.deepEqual(await syncDirs({ backend, config: { ...CONFIG, dirs: [] } }, exists), { result: 'sent', count: 0 });
+  assert.deepEqual(backend.boardDirs.held, []);
+});
+
+test('syncDirs does nothing without a dirs key, and nothing on a server that cannot hold a list', async () => {
+  const backend = fakeBackend([]);
+  let asked = 0;
+  backend.checkDirs = async () => {
+    asked += 1;
+    return 'unsupported';
+  };
+  assert.deepEqual(await syncDirs({ backend, config: CONFIG }), { result: 'not-listed' });
+  assert.equal(asked, 0, 'no key, no call');
+  assert.deepEqual(await syncDirs({ backend, config: { ...CONFIG, dirs: [dir('/a')] } }, () => true), {
+    result: 'unsupported',
+  });
+  assert.deepEqual(written(backend), []);
+});
+
+test('syncDirs lets a failure of the board through for the caller to word, and drops paths that are not safe', async () => {
+  const backend = fakeBackend([]);
+  backend.boardDirs.failure = new BackendError('cannot reach https://board.example.com');
+  await assert.rejects(
+    syncDirs({ backend, config: { ...CONFIG, dirs: [dir('/a')] } }, () => true),
+    /cannot reach/,
+  );
+  assert.deepEqual(
+    dirsToSend([dir('/a'), dir('/b\nc'), dir('/d')], () => true),
+    [dir('/a'), dir('/d')],
+  );
+});
+
+test('board dirs add and rm send the list afterwards and say so', async (context) => {
+  const fx = fixture(context, {});
+  const a = fx.make('a');
+  const b = fx.make('b');
+  const run = runner(fx);
+  await run.go(['dirs', 'add', a]);
+  assert.deepEqual(run.backend.boardDirs.held, [dir(a)]);
+  assert.match(said(run), /listed [^\n]*\n[\s\S]*the board has the list$/);
+  await run.go(['dirs', 'add', b]);
+  assert.deepEqual(run.backend.boardDirs.held, [dir(a), dir(b)]);
+  await run.go(['dirs', 'rm', a]);
+  assert.deepEqual(run.backend.boardDirs.held, [dir(b)]);
+  assert.deepEqual(written(run.backend), [`dirs here: ${a}`, `dirs here: ${a},${b}`, `dirs here: ${b}`]);
+  await run.go(['dirs', 'add', '--from-config']);
+  assert.match(said(run), /the board has the list/);
+});
+
+test('board dirs add succeeds, warns and leaves the list to the next tick when the board cannot be reached or refuses', async (context) => {
+  const fx = fixture(context, {});
+  const a = fx.make('a');
+  const run = runner(fx);
+  run.backend.boardDirs.failure = new BackendError('cannot reach https://board.example.com: fetch failed');
+  await run.go(['dirs', 'add', a]);
+  assert.deepEqual(dirsOf(fx), [a]);
+  assert.match(said(run), /listed /);
+  assert.match(
+    said(run),
+    /warning: could not send the list to the board \(cannot reach .*fetch failed\); the next dispatch tick will send it/,
+  );
+  assert.ok(!said(run).includes('the board has the list'));
+  const b = fx.make('b');
+  run.backend.boardDirs.failure = new BackendError('set-dirs: no web.json');
+  await run.go(['dirs', 'rm', '--force', a]);
+  await run.go(['dirs', 'add', b]);
+  assert.deepEqual(dirsOf(fx), [b]);
+});
+
+test('board dirs add on a server without directory lists says the board cannot show the list yet', async (context) => {
+  const fx = fixture(context, {});
+  const a = fx.make('a');
+  const run = runner(fx);
+  run.backend.boardDirs.supported = false;
+  await run.go(['dirs', 'add', a]);
+  assert.deepEqual(dirsOf(fx), [a]);
+  assert.match(said(run), /the board cannot show this list yet/);
+  assert.deepEqual(written(run.backend), []);
+});
+
+test('board dirs add --dry-run sends nothing, and an add that changes nothing leaves the board as it is', async (context) => {
+  const fx = fixture(context, {});
+  const a = fx.make('a');
+  const run = runner(fx);
+  await run.go(['dirs', 'add', a, '--dry-run']);
+  assert.deepEqual(dirsOf(fx), []);
+  assert.deepEqual(written(run.backend), []);
+  assert.ok(!said(run).includes('the board'));
+  await run.go(['dirs', 'add', a]);
+  await run.go(['dirs', 'add', a]);
+  assert.equal(written(run.backend).length, 1, 'already listed and already on the board');
+});
+
+test('board dirs list asks nothing of the board', async (context) => {
+  const fx = fixture(context, {});
+  const a = fx.make('a');
+  const run = runner(fx);
+  await run.go(['dirs', 'add', a]);
+  run.backend.boardDirs.failure = new BackendError('the board must not be asked');
+  await run.go(['dirs', 'list']);
+  assert.match(said(run), /dirs \(1\), enforced/);
 });

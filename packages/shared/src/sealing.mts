@@ -8,6 +8,7 @@
 //   input          <origin>:<creator>
 //   workdir        <origin>, or for a scheduled task also task:<id>:schedule:<scheduleId> (the worker's rewrite)
 //   pr             task:<id>:agent (the PR URL the task's agent reported)
+//   machine.dirs   machine:<name> (the directory list the machine's CLI sends, one JSON document)
 //   note.*         note:<taskId>:<author>:<kind>
 //   tr.*           <taskId>:<runId>:<seq>
 //
@@ -25,10 +26,11 @@ import {
   notePreview,
   UNREADABLE_TITLE,
 } from './contract.mts';
-import type { NoteKind, TaskCreator, UnreadableField, WireNoteAuthor, WireNoteInput } from './contract.mts';
+import type { MachineDir, NoteKind, TaskCreator, UnreadableField, WireNoteAuthor, WireNoteInput } from './contract.mts';
 import { blindIndex } from './crypto.mts';
 import type { Field, Keys } from './crypto.mts';
 import { isServerEventText } from './events.mts';
+import { isRecord } from './guards.mts';
 import { isPrUrl } from './prompt.mts';
 import { parseAnswers, parseQuestions, QuestionError } from './questions.mts';
 import type { Answer, Question } from './questions.mts';
@@ -90,6 +92,57 @@ export async function openPr(open: Opener, taskId: string, wire: string | null |
   if (wire === null || wire === undefined) return null;
   const url = await open(prBinding(taskId), wire);
   return url !== undefined && isPrUrl(url) ? url : null;
+}
+
+/** The directory list of a machine: bound to the machine's name, so a list sealed for one machine never opens as another's. */
+export const machineDirsBinding = (machine: string): Binding => ({
+  field: 'machine.dirs',
+  context: `machine:${machine}`,
+});
+
+/** The most directories a machine sends; the CLI's config holds no more. */
+export const MAX_MACHINE_DIRS = 200;
+
+/** The one document a machine's list is sealed as, and the bytes its blind index is made of. */
+export const machineDirsJson = (dirs: readonly MachineDir[]): string =>
+  JSON.stringify({ dirs: dirs.map(({ path }) => ({ path })) });
+
+/** A machine's `dirs` as the board stores it: the blind index of `dirs:<machine>:<document>`, to tell whether a list changed. */
+export const machineDirsIndex = (keys: Keys, machine: string, dirs: readonly MachineDir[]): Promise<string> =>
+  blindIndex(keys, `dirs:${machine}:${machineDirsJson(dirs)}`);
+
+/** Seals the directory list of `machine`; refuses more than the board takes or a path that is not a safe absolute one. */
+export async function sealMachineDirs(seal: Sealer, machine: string, dirs: readonly MachineDir[]): Promise<string> {
+  if (dirs.length > MAX_MACHINE_DIRS) throw new ContractError(`the list has more than ${MAX_MACHINE_DIRS} directories`);
+  if (!dirs.every(({ path }) => isSafeWorkdir(path)))
+    throw new ContractError('a listed directory must be an absolute path');
+  return sealChecked(seal, machineDirsBinding(machine), machineDirsJson(dirs), 'the directory list');
+}
+
+/**
+ * The directories a machine sent, or undefined when the list is unreadable: it does not open under exactly this machine's
+ * binding, is not `{"dirs":[{"path":…}]}`, has more than 200 entries or a path that is not a safe absolute one. Other keys
+ * are ignored, so a later CLI can add some. The list is advice for what a form offers and is never acted on.
+ */
+export async function openMachineDirs(
+  open: Opener,
+  machine: string,
+  wire: string | null | undefined,
+): Promise<MachineDir[] | undefined> {
+  if (wire === null || wire === undefined) return undefined;
+  const text = await open(machineDirsBinding(machine), wire);
+  if (text === undefined) return undefined;
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(json) || !Array.isArray(json['dirs']) || json['dirs'].length > MAX_MACHINE_DIRS) return undefined;
+  const entries: unknown[] = json['dirs'];
+  const paths = entries.map((entry) => (isRecord(entry) ? entry['path'] : undefined));
+  if (!paths.every((path) => typeof path === 'string' && isSafeWorkdir(path))) return undefined;
+  return paths.map((path) => ({ path: String(path) }));
 }
 
 // A note is bound to its task, its author and its kind, so one author's text can never be served as another's.
