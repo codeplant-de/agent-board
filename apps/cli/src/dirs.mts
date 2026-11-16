@@ -7,15 +7,13 @@ import { ConfigError, dirKeyPath, expandHome, MAX_DIRS, parseConfig } from './co
 import type { Config, DirEntry } from './config.mts';
 import { plainLine } from './terminal.mts';
 
-// What `board dirs` says about enforcement, in one place: it is not active yet, and these lines change when it ships.
-const ENFORCEMENT = 'Enforcement is planned and not active in this build';
 export const FIRST_ADD_NOTE = [
-  `created the dirs list. ${ENFORCEMENT}: once it ships, workers on this machine will run tasks only in listed directories.`,
+  'created the dirs list: workers on this machine now run tasks only in listed directories.',
   '"board dirs add --from-config" adds the directories this config already routes to.',
 ];
-export const STOP_NOTE = 'will stop in Needs me at their next run once enforcement ships';
-export const EMPTY_NOTE = 'an empty list will allow nothing once enforcement ships';
-export const UNCOVERED_HINT = 'tasks routed there will stop once enforcement ships';
+export const STOP_NOTE = 'stops in Needs me at its next start';
+export const EMPTY_NOTE = 'it allows nothing, so every task on this machine will stop in Needs me';
+export const UNCOVERED_HINT = 'tasks routed there stop in Needs me';
 
 /** The listed entry that equals `path` or is a parent of it, by path segment; the longest wins. `path` should be a realpath. */
 export function coveringDir(dirs: readonly DirEntry[], path: string): DirEntry | undefined {
@@ -36,6 +34,25 @@ export function tryRealpath(path: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Whether workers may run in `path`: always without a `dirs` list, else when the real path of `path` is in a listed
+ * directory, compared with the entry as written and with its real path. A path that is not there is not allowed.
+ */
+export function isAllowedDir(
+  dirs: readonly DirEntry[] | undefined,
+  path: string,
+  realpath: (path: string) => string | undefined = tryRealpath,
+): boolean {
+  if (dirs === undefined) return true;
+  const real = realpath(path);
+  if (real === undefined) return false;
+  const resolved = dirs.flatMap(({ path: entry }) => {
+    const realEntry = realpath(entry);
+    return realEntry === undefined || realEntry === entry ? [] : [{ path: realEntry }];
+  });
+  return coveringDir([...dirs, ...resolved], real) !== undefined;
 }
 
 export function isDirectory(path: string): boolean {
@@ -146,13 +163,15 @@ export function dirsList(deps: DirsDeps): void {
   const { config } = readConfigFile(deps.configFile);
   const bold = deps.bold ?? ((text: string) => text);
   if (config.dirs === undefined) {
-    deps.print('no directories are listed: workers are not limited to directories.');
+    deps.print(
+      'no directories are listed: the dirs key is not set, so workers on this machine may run in any directory.',
+    );
     deps.print(
       `"board dirs add" lists the current directory; "board dirs add --from-config" lists those the config routes to.`,
     );
     return;
   }
-  deps.print(bold(`dirs (${config.dirs.length})`));
+  deps.print(bold(`dirs (${config.dirs.length}), enforced: workers on this machine run only in these`));
   for (const { path } of config.dirs) deps.print(`  ${plainLine(path)}${isDirectory(path) ? '' : '  missing'}`);
 }
 

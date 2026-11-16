@@ -21,7 +21,7 @@ import type { LinkingContext } from '../src/cli.mts';
 import { runBoard } from '../src/commands.mts';
 import type { ProgramOptions } from '../src/commands.mts';
 import { ConfigError } from '../src/config.mts';
-import { changeDirs, coveringDir } from '../src/dirs.mts';
+import { changeDirs, coveringDir, isAllowedDir } from '../src/dirs.mts';
 import { CONFIG, fakeBackend, linkTo, schedule, task } from './helpers.mts';
 
 const dir = (path: string) => ({ path });
@@ -35,6 +35,17 @@ test('coveringDir finds an equal entry, a parent, never a sibling that shares a 
   assert.deepEqual(coveringDir(dirs, '/a/b/c/d'), dir('/a/b/c'));
   assert.deepEqual(coveringDir([dir('/')], '/anything'), dir('/'));
   assert.equal(coveringDir([], '/a'), undefined);
+});
+
+test('isAllowedDir allows everything without a list, nothing with an empty one, and decides on the real path', () => {
+  const links: Record<string, string> = { '/a/link-out': '/outside', '/alias': '/a', '/gone': '' };
+  const realpath = (path: string): string | undefined => (path === '/gone' ? undefined : (links[path] ?? path));
+  assert.equal(isAllowedDir(undefined, '/anywhere', realpath), true);
+  assert.equal(isAllowedDir([], '/a', realpath), false);
+  assert.equal(isAllowedDir([dir('/a')], '/a/sub', realpath), true);
+  assert.equal(isAllowedDir([dir('/a')], '/a/link-out', realpath), false, 'a link inside the list that leaves it');
+  assert.equal(isAllowedDir([dir('/alias')], '/a/sub', realpath), true, 'a listed link counts through its target');
+  assert.equal(isAllowedDir([dir('/a')], '/gone', realpath), false);
 });
 
 interface Fixture {
@@ -178,7 +189,7 @@ test('dirs lists the entries, marks a missing directory, and says how to start w
   const empty = fixture(context, {});
   const first = runner(empty);
   await first.go(['dirs']);
-  assert.match(said(first), /no directories are listed/);
+  assert.match(said(first), /no directories are listed: the dirs key is not set/);
   assert.match(said(first), /board dirs add/);
 
   const fx = fixture(context, { dirs: { [fixture(context, {}).root]: {} } });
@@ -187,7 +198,7 @@ test('dirs lists the entries, marks a missing directory, and says how to start w
   const run = runner(fx);
   await run.go(['dirs', 'list']);
   const lines = run.printed;
-  assert.equal(lines[0], 'dirs (2)');
+  assert.match(lines[0] ?? '', /^dirs \(2\), enforced/);
   assert.ok(lines[1] !== undefined && !lines[1].includes('missing'));
   assert.equal(lines[2], `  ${gone}  missing`);
 });
@@ -226,12 +237,12 @@ test('add lists the realpath of the working directory, creating the key with a n
   assert.deepEqual(dirsOf(fx), [project]);
   assert.ok(Object.keys(fx.config()).at(-1) === 'dirs');
   assert.match(said(run), new RegExp(`listed ${project}`));
-  assert.match(said(run), /planned and not active/);
+  assert.match(said(run), /now run tasks only in listed directories/);
   assert.match(said(run), /board dirs add --from-config/);
 
   const second = runner(fx, link);
   await second.go(['dirs', 'add', fx.make('other')]);
-  assert.doesNotMatch(said(second), /planned and not active/, 'the note is for the first add only');
+  assert.doesNotMatch(said(second), /now run tasks only in listed directories/, 'the note is for the first add only');
   assert.equal(dirsOf(fx).length, 2);
 });
 
@@ -328,7 +339,7 @@ test('add --from-config lists what the config routes to, skipping what is missin
   assert.match(text, new RegExp(`skipped repos a/inner: ${inside} \\(already allowed through ${checkout}\\)`));
   assert.match(text, /skipped repos a\/gone: .*not an existing directory/);
   assert.match(text, /skipped repos a\/root: \/ \(\/ would allow too much/);
-  assert.match(text, /planned and not active/);
+  assert.match(text, /now run tasks only in listed directories/);
 
   const again = runner(fx);
   const written = fx.text();
@@ -395,7 +406,7 @@ test('rm refuses while an open task or schedule of this machine would be left wi
     assert.match(error.message, /task T1 in .*parent\/x/);
     assert.match(error.message, /schedule S1 in .*parent\/y\u241b\[2J/);
     assert.ok(!error.message.includes(String.fromCharCode(27)));
-    assert.match(error.message, /stop in Needs me at their next run once enforcement ships/);
+    assert.match(error.message, /stops in Needs me at its next start/);
     assert.match(error.message, /--force/);
     return true;
   });
@@ -417,7 +428,7 @@ test('rm refuses without --force when the board cannot be reached, and --force n
   await run.go(['dirs', 'rm', '--force', a]);
   assert.deepEqual(dirsOf(fx), []);
   assert.deepEqual(fx.config()['dirs'], {}, 'the last entry leaves an empty object');
-  assert.match(said(run), /empty list will allow nothing once enforcement ships/);
+  assert.match(said(run), /it allows nothing/);
 });
 
 test('rm matches a directory that is gone by its listed path, a link by its realpath, and errors on one that is not listed', async (context) => {
@@ -446,4 +457,86 @@ test('rm keeps the other keys and the other entries as written', async (context)
   assert.deepEqual(Object.keys(after), Object.keys(before));
   assert.deepEqual(after['dirs'], { '~/keep': {} });
   assert.equal(after['autoUpdate'], 'never');
+});
+
+// `board schedule` and `board add` take the directory from where they run; with a list it has to be an allowed one.
+function enforced(fx: Fixture, dirs: string[] | undefined, cwd: string, env: Record<string, string> = {}) {
+  const backend = fakeBackend([]);
+  const workdirs: (string | undefined)[] = [];
+  const addTask = backend.addTask.bind(backend);
+  backend.addTask = async (draft) => {
+    workdirs.push(draft.workdir);
+    return addTask(draft);
+  };
+  const go = (argv: string[]) =>
+    runBoard(argv, {
+      env,
+      context: (dryRun): LinkingContext => ({
+        config: { ...CONFIG, ...(dirs === undefined ? {} : { dirs: dirs.map(dir) }) },
+        backend,
+        dryRun,
+        taskLink: linkTo,
+        print: () => undefined,
+      }),
+      writeOut: () => undefined,
+      writeErr: () => undefined,
+      cwd,
+      home: fx.home,
+    });
+  return { backend, workdirs, go };
+}
+
+test('board schedule refuses outside the list before it asks the board, and works inside it or without a list', async (context) => {
+  const fx = fixture(context);
+  const listed = fx.make('listed');
+  const other = fx.make('other');
+  const outside = enforced(fx, [listed], other);
+  for (const argv of [
+    ['schedule', '--new', 'x'],
+    ['schedule', '--every', '2h', 'x'],
+    ['schedule', '--cron', '0 9 * * 1', 'x'],
+  ])
+    await assert.rejects(outside.go(argv), (error: Error) => {
+      assert.ok(error instanceof UsageError);
+      assert.ok(
+        error.message.includes(`${other} is not a listed directory`) && error.message.includes('board dirs add'),
+      );
+      return true;
+    });
+  assert.deepEqual(outside.backend.writes, []);
+
+  const inside = enforced(fx, [listed], fx.make('listed/sub'));
+  await inside.go(['schedule', '--new', 'x']);
+  assert.equal(inside.backend.writes.length, 1);
+  const unlimited = enforced(fx, undefined, other);
+  await unlimited.go(['schedule', '--new', 'x']);
+  assert.equal(unlimited.backend.writes.length, 1);
+  await assert.rejects(enforced(fx, [], listed).go(['schedule', '--new', 'x']), /not a listed directory/);
+});
+
+test('board add outside the list proposes in the directory the run started in, or refuses', async (context) => {
+  const fx = fixture(context);
+  const listed = fx.make('listed');
+  const other = fx.make('other');
+  const file = join(fx.root, 'p.md');
+  writeFileSync(file, 'follow up');
+  const argv = ['add', '--title', 'Fix', '--file', file];
+
+  const fallback = enforced(fx, [listed], other, { AGENT_BOARD_START_DIR: listed });
+  await fallback.go(argv);
+  assert.deepEqual(fallback.workdirs, [listed]);
+
+  const inside = enforced(fx, [listed], listed, { AGENT_BOARD_START_DIR: other });
+  await inside.go(argv);
+  assert.deepEqual(inside.workdirs, [listed], 'an allowed directory is used as it is');
+
+  for (const startDir of [undefined, other, 'relative/path', join(fx.root, 'nowhere')]) {
+    const refused = enforced(fx, [listed], other, startDir === undefined ? {} : { AGENT_BOARD_START_DIR: startDir });
+    await assert.rejects(refused.go(argv), /not a listed directory/);
+    assert.deepEqual(refused.workdirs, []);
+  }
+
+  const unlimited = enforced(fx, undefined, other, { AGENT_BOARD_START_DIR: listed });
+  await unlimited.go(argv);
+  assert.deepEqual(unlimited.workdirs, [other]);
 });

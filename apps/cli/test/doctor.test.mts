@@ -461,7 +461,7 @@ test('a config without a dirs key reports it as not set, and nothing warns', asy
   );
 });
 
-test('the dirs list is counted, and a listed directory that is gone or a route no entry covers warns', async () => {
+test('the dirs list is counted, and a listed directory that is gone or a route no entry covers fails', async () => {
   const files = withConfig({
     machine: 'box',
     defaultCwd: '/work/app/sub',
@@ -479,25 +479,44 @@ test('the dirs list is counted, and a listed directory that is gone or a route n
     ),
   );
   assert.equal(results[0]?.message, '2 listed');
-  const warnings = results.slice(1).map((result) => [result.level, result.message]);
-  assert.deepEqual(warnings, [
+  const problems = results.slice(1).map((result) => [result.level, result.message]);
+  assert.deepEqual(problems, [
     ['warn', '/work/gone is listed but is not a directory'],
-    [
-      'warn',
-      'lane general cwd /work/lane is in no listed directory: tasks routed there will stop once enforcement ships',
-    ],
-    ['warn', 'repos a/b /work/repo is in no listed directory: tasks routed there will stop once enforcement ships'],
-    ['warn', 'repos a/c /work/appx is in no listed directory: tasks routed there will stop once enforcement ships'],
+    ['fail', 'lane general cwd /work/lane is in no listed directory: tasks routed there stop in Needs me'],
+    ['fail', 'repos a/b /work/repo is in no listed directory: tasks routed there stop in Needs me'],
+    ['fail', 'repos a/c /work/appx is in no listed directory: tasks routed there stop in Needs me'],
   ]);
   assert.match(results[2]?.hint ?? '', /board dirs add '\/work\/lane'/);
   assert.match(results[3]?.hint ?? '', /board dirs add '\/data\/repo'/, 'the hint names the real path');
 });
 
-test('an empty dirs list is counted and warns about every route', async () => {
+test('an empty dirs list is counted and fails for every route', async () => {
   const results = dirsResults(await runChecks(machine(withConfig({ machine: 'box', dirs: {} }))));
   assert.equal(results[0]?.message, '0 listed');
-  assert.equal(results[1]?.level, 'warn');
+  assert.equal(results[1]?.level, 'fail');
   assert.match(results[1]?.message ?? '', /defaultCwd .* is in no listed directory/);
+});
+
+test('a listed symlink to a route covers it, and a route that is a symlink out of the list does not', async () => {
+  const files = withConfig({
+    machine: 'box',
+    defaultCwd: '/work/app',
+    repos: { 'a/b': '/work/app/link' },
+    dirs: { '/work/app': {} },
+  });
+  const results = dirsResults(
+    await runChecks(
+      machine(files, {
+        isDirectory: (path) => path.startsWith('/work') || path === CONFIG_DIR || path === UNIT_DIR,
+        realpath: (path) => (path === '/work/app/link' ? '/elsewhere' : path),
+      }),
+    ),
+  );
+  assert.deepEqual(
+    results.map((result) => result.level),
+    ['ok', 'fail'],
+  );
+  assert.match(results[1]?.message ?? '', /repos a\/b \/work\/app\/link is in no listed directory/);
 });
 
 test('a config that does not parse leaves the dirs section to the config.json check', async () => {

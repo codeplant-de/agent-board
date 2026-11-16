@@ -443,7 +443,12 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   ).action(async (flags: AddFlags & { json?: boolean }, command: Command) => {
     const context = contextOf(command, { strictConfig: true, json: flags.json === true });
     const parent = flags.parent === undefined ? undefined : await taskIdOf(context, flags.parent);
-    const task = await add(context, { ...flags, ...(parent === undefined ? {} : { parent }) });
+    const startDir = env['AGENT_BOARD_START_DIR'];
+    const task = await add(
+      context,
+      { ...flags, ...(parent === undefined ? {} : { parent }) },
+      { cwd: options.cwd ?? realpathSync(process.cwd()), ...(startDir ? { startDir } : {}) },
+    );
     if (flags.json) writeJson({ id: task.id, url: context.taskLink(task.id) });
   });
 
@@ -511,7 +516,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
           'the prompt ends in --dry-run: put --dry-run before the prompt (board schedule --dry-run <prompt...>), or put -- before a prompt that really ends in it',
         );
       const context = contextOf(command, { strictConfig: true, json: flags.json === true });
-      const scheduled = await scheduleCommand(context, flags, words);
+      const scheduled = await scheduleCommand(context, flags, words, options.cwd ?? realpathSync(process.cwd()));
       if (flags.json) {
         if (scheduled === undefined) return writeJson(null);
         const { task, polish } = scheduled;
@@ -568,9 +573,9 @@ export function buildProgram(options: ProgramOptions = {}): Command {
       .summary('list, add or remove the directories workers may run in on this machine')
       .description(
         paragraphs(
-          "Manage the `dirs` list of this machine's config.json: the directories workers may run in. Without arguments (or with `list`), print the entries, marking one whose directory is gone as missing. `add [path]` lists the real path of a directory (default: the current one); `rm [path]` unlists one. A path is relative to the current directory.",
+          "Manage the `dirs` list of this machine's config.json: the directories workers may run in. Without a `dirs` key nothing is limited; once the key exists, even as `{}`, workers run only in a listed directory or one below it. Without arguments (or with `list`), print the entries, marking one whose directory is gone as missing. `add [path]` lists the real path of a directory (default: the current one); `rm [path]` unlists one. A path is relative to the current directory.",
           '`add` refuses `/` and a path that is not a directory, warns about the home directory (it allows everything below it), and notes when a parent is already listed. `add --from-config` lists the directories the config already routes to: `defaultCwd`, every lane `cwd` and every `repos` checkout that exists, skipping those a listed directory covers and never listing `/` or the home directory.',
-          '`rm` asks the board for open tasks and schedules of this machine that run in the directory and in no other listed one, and refuses while there are any, and when the board cannot be reached; --force removes it anyway and needs no board. Enforcement of the list is planned and not active in this build: today the list changes no run. `add` and `rm` rewrite the `dirs` key of config.json and nothing else, and are not available inside a board run.',
+          '`rm` asks the board for open tasks and schedules of this machine that run in the directory and in no other listed one, and refuses while there are any, and when the board cannot be reached; --force removes it anyway and needs no board. The list is enforced as soon as it exists, even empty: a worker refuses to start a task outside it, a run that ends outside it keeps the directory it started in, and `board schedule` and `board add` refuse (`board add` falls back to the directory the run started in) outside it. `add` and `rm` rewrite the `dirs` key of config.json and nothing else, and are not available inside a board run.',
         ),
       )
       .usage('[options] [list | add [path] | rm [path]]')
