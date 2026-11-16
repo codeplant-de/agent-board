@@ -16,17 +16,17 @@ import { IconLock } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { errorMessage, useTRPC } from '../lib/trpc';
-import { PRODUCTION_KDF, KeyError, type KdfParams } from './kdf';
+import { PRODUCTION_KDF, type KdfParams } from './kdf';
 import { replacePassphrase, unlockKeys, type Secret } from './keySlots';
-import { PASSPHRASE_ADVICE, passphraseProblem, samePassphrase } from './passphrase';
+import { NewPassphraseFields, useNewPassphrase } from './NewPassphraseFields';
+import { PASSPHRASE_ADVICE } from './passphrase';
+import { useSubmit } from './useSubmit';
 
 interface Props {
   owner: string;
   onUnlocked: (keys: Keys) => Promise<void>;
   kdf?: KdfParams;
 }
-
-const messageOf = (error: unknown): string => (error instanceof KeyError ? error.message : errorMessage(error));
 
 function PassphraseForm({
   owner,
@@ -38,19 +38,9 @@ function PassphraseForm({
   onUnlocked: Props['onUnlocked'];
 }) {
   const [passphrase, setPassphrase] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const submit = async () => {
-    if (passphrase === '' || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await onUnlocked(await unlockKeys({ owner, stored, secret: { kind: 'passphrase', passphrase } }));
-    } catch (err) {
-      setError(messageOf(err));
-      setBusy(false);
-    }
-  };
+  const { busy, error, submit } = useSubmit(async () => {
+    await onUnlocked(await unlockKeys({ owner, stored, secret: { kind: 'passphrase', passphrase } }));
+  }, passphrase !== '');
   return (
     <form
       onSubmit={(event) => {
@@ -89,27 +79,15 @@ function RecoveryForm({
   const trpc = useTRPC();
   const replaceSlots = useMutation(trpc.keys.replaceSlots.mutationOptions());
   const [recoveryKey, setRecoveryKey] = useState('');
-  const [passphrase, setPassphrase] = useState('');
-  const [again, setAgain] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const problem = passphrase === '' ? null : passphraseProblem(passphrase);
-  const mismatch = again !== '' && !samePassphrase(again, passphrase);
-  const ready = recoveryKey.trim() !== '' && passphrase !== '' && problem === null && samePassphrase(again, passphrase);
-  const submit = async () => {
-    if (!ready || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const secret: Secret = { kind: 'recovery', recoveryKey };
-      const { keys, slots } = await replacePassphrase({ owner, stored, secret, newPassphrase: passphrase, kdf });
-      await replaceSlots.mutateAsync({ keyId: stored.keyId, slots });
-      await onUnlocked(keys);
-    } catch (err) {
-      setError(messageOf(err));
-      setBusy(false);
-    }
-  };
+  const passphrase = useNewPassphrase();
+  const ready = recoveryKey.trim() !== '' && passphrase.valid;
+  const { busy, error, submit } = useSubmit(async () => {
+    const secret: Secret = { kind: 'recovery', recoveryKey };
+    const newPassphrase = passphrase.passphrase;
+    const { keys, slots } = await replacePassphrase({ owner, stored, secret, newPassphrase, kdf });
+    await replaceSlots.mutateAsync({ keyId: stored.keyId, slots });
+    await onUnlocked(keys);
+  }, ready);
   return (
     <form
       onSubmit={(event) => {
@@ -133,20 +111,7 @@ function RecoveryForm({
         <Text size="sm" c="dimmed">
           {PASSPHRASE_ADVICE}
         </Text>
-        <PasswordInput
-          label="New passphrase"
-          value={passphrase}
-          onChange={(event) => setPassphrase(event.currentTarget.value)}
-          error={problem}
-          autoComplete="new-password"
-        />
-        <PasswordInput
-          label="New passphrase again"
-          value={again}
-          onChange={(event) => setAgain(event.currentTarget.value)}
-          error={mismatch ? 'The passphrases differ.' : null}
-          autoComplete="new-password"
-        />
+        <NewPassphraseFields state={passphrase} />
         {error && (
           <Text c="red" size="sm">
             {error}
