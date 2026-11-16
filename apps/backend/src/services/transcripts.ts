@@ -15,8 +15,6 @@ export async function appendTranscript(
 ): Promise<void> {
   await getTask(db, taskId);
   await db.transaction(async (tx) => {
-    const [existing] = await tx.select().from(transcriptRuns).where(eq(transcriptRuns.id, batch.runId));
-    if (existing && existing.taskId !== taskId) throw new AppError('BAD_REQUEST', 'the run belongs to another task');
     const last = batch.events.at(-1)?.at;
     await tx
       .insert(transcriptRuns)
@@ -65,7 +63,15 @@ export async function appendTranscript(
 
 export async function listRuns(db: DbOrTx, taskId: string) {
   return db
-    .select()
+    .select({
+      id: transcriptRuns.id,
+      machine: transcriptRuns.machine,
+      sessionId: transcriptRuns.sessionId,
+      resumed: transcriptRuns.resumed,
+      startedAt: transcriptRuns.startedAt,
+      lastEventAt: transcriptRuns.lastEventAt,
+      eventCount: transcriptRuns.eventCount,
+    })
     .from(transcriptRuns)
     .where(eq(transcriptRuns.taskId, taskId))
     .orderBy(desc(transcriptRuns.startedAt));
