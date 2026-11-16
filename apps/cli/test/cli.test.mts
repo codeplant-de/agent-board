@@ -128,7 +128,7 @@ test('board add sends no status: the board puts a proposal in Backlog itself', a
   const dir = mkdtempSync('/tmp/pr-add-test-');
   try {
     writeFileSync(join(dir, 'p.md'), 'do the thing');
-    await add(context, { title: 'Do it', file: join(dir, 'p.md'), parent: 'abc' });
+    await add(context, { title: 'Do it', file: join(dir, 'p.md'), parent: 'abc' }, { cwd: dir });
   } finally {
     rmSync(dir, { recursive: true });
   }
