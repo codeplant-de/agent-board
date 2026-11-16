@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -68,6 +68,25 @@ test('the dispatcher marks its ticks in the run directory', () => {
     const at = new Date('2026-01-01T10:00:00Z');
     files.markDispatchTick(at);
     assert.equal(files.lastDispatchTick()?.getTime(), at.getTime());
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
+test('the next due time is written whole, read back, and removed', () => {
+  const root = mkdtempSync(join(tmpdir(), 'board-runtime-test-'));
+  try {
+    const files = createRunFiles(join(root, 'run'));
+    assert.equal(files.nextDue(), undefined);
+    const at = new Date('2026-01-01T10:05:00Z');
+    files.writeNextDue(at);
+    assert.equal(files.nextDue()?.getTime(), at.getTime());
+    assert.deepEqual(readdirSync(join(root, 'run')), ['dispatch.next']);
+    writeFileSync(join(root, 'run', 'dispatch.next'), 'soon');
+    assert.equal(files.nextDue(), undefined);
+    files.writeNextDue(undefined);
+    assert.deepEqual(readdirSync(join(root, 'run')), []);
+    files.writeNextDue(undefined);
   } finally {
     rmSync(root, { recursive: true });
   }

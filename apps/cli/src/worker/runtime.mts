@@ -5,9 +5,13 @@
 //   <task>.cwd    the agent's working directory at its last tool call (it may have entered a worktree)
 //   <task>.agents the definition of the agent the run is, for `claude --agents` (mode 0600)
 //   <task>.pgid   the process group of the claude process (written by the worker), which a stop signals as well as the worker's
+// and two of the dispatcher's own, not a task's:
+//   dispatch.tick  its mtime is when the last dispatch tick started
+//   dispatch.next  when something this machine waits for is next due (ISO time), written at the end of a tick; the listener
+//                  starts a tick then
 // They live in $XDG_RUNTIME_DIR, private to the user, apart from any checkout; without one, in <state dir>/run on macOS.
 // On macOS the process supervisor (setup/process-system.mts) also keeps <task>.pid here.
-import { mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isRecord, isSafeWorkdir } from '@agent-board/shared';
 import { getPaths } from '../config/config.mts';
@@ -36,6 +40,10 @@ export interface RunFiles {
   // The dispatcher's own marker, not a task's: when its last tick started.
   lastDispatchTick(): Date | undefined;
   markDispatchTick(at: Date): void;
+  // When the next tick is due, as the last tick saw it; undefined when nothing is waiting or no tick wrote it.
+  nextDue(): Date | undefined;
+  // Undefined removes it.
+  writeNextDue(at: Date | undefined): void;
   requestPause(taskId: string): void;
   // When the pause was asked for; undefined when it was not.
   pauseRequestedAt(taskId: string): Date | undefined;
@@ -140,6 +148,26 @@ export function createRunFiles(dir: string = runDir()): RunFiles {
       const file = join(dir, 'dispatch.tick');
       writeFileSync(file, '', { mode: 0o600 });
       utimesSync(file, at, at);
+    },
+    nextDue() {
+      try {
+        const at = new Date(readFileSync(join(dir, 'dispatch.next'), 'utf8').trim());
+        return Number.isNaN(at.getTime()) ? undefined : at;
+      } catch {
+        return undefined;
+      }
+    },
+    writeNextDue(at) {
+      const file = join(dir, 'dispatch.next');
+      if (at === undefined) {
+        rmSync(file, { force: true });
+        return;
+      }
+      ensureDir();
+      // The listener reads it at any time: it sees the old file or the new one, never half of one.
+      const temp = `${file}.${process.pid}`;
+      writeFileSync(temp, at.toISOString(), { mode: 0o600 });
+      renameSync(temp, file);
     },
     requestPause(taskId) {
       ensureDir();

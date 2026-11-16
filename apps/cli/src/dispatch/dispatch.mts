@@ -12,7 +12,15 @@ import { buildContext, print, skipTickWhileServerOlder } from '../cli.mts';
 import type { Context } from '../cli.mts';
 import type { Task } from '@agent-board/shared';
 import { promptSkill } from '@agent-board/shared';
-import { checkOutputBlock, decideStale, decideWake, notServableHere, planPauses, planStarts } from './decide.mts';
+import {
+  checkOutputBlock,
+  decideStale,
+  decideWake,
+  nextPauseAt,
+  notServableHere,
+  planPauses,
+  planStarts,
+} from './decide.mts';
 import { neverRun, ownLane, START_MARKER, unreadableForRun, WAKE_MARKER } from '../task-rules.mts';
 import { unitName } from '../task-id.mts';
 import type { LaneRun } from './decide.mts';
@@ -240,6 +248,29 @@ async function sendDirs({ backend, config, print: log }: DispatchDeps): Promise<
   }
 }
 
+/**
+ * When this machine next has something to do that no event announces: a wait here ends or its check is due again. A check that
+ * never ran, or that this tick put off, is due now. A wait whose time is up was woken in this tick or its wake failed; the
+ * timer's tick retries that, so it does not count.
+ */
+function nextWaitDue({ config, waits, now }: DispatchDeps, tasks: Task[]): Date[] {
+  const at = now().getTime();
+  const times: Date[] = [];
+  for (const task of tasks) {
+    if (task.status !== 'waiting' || task.machine !== config.machine) continue;
+    const check = task.waitCheck ? waits.read(task.id) : undefined;
+    // Gone: the check passed and woke the task in this tick, or a wake that failed is the timer's to retry.
+    if (task.waitCheck && check === undefined) continue;
+    if (task.wakeAt !== null && task.wakeAt.getTime() > at) times.push(task.wakeAt);
+    if (check !== undefined) times.push(new Date((check.lastCheckAt?.getTime() ?? at) + check.everyMs));
+  }
+  return times;
+}
+
+function earliest(times: Date[]): Date | undefined {
+  return times.reduce<Date | undefined>((first, at) => (first === undefined || at < first ? at : first), undefined);
+}
+
 const updateRun = ({ update, now, print: log, dryRun }: DispatchDeps) => ({ ...update, now, log, dryRun });
 
 export async function runDispatch(deps: DispatchDeps): Promise<void> {
@@ -248,7 +279,11 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   // A gap since the last tick is time the whole machine spent asleep: runs were quiet because their agents slept too.
   const previousTick = files.lastDispatchTick();
   const afterGap = previousTick !== undefined && tickStart.getTime() - previousTick.getTime() > TICK_GAP_MS;
-  if (!deps.dryRun) files.markDispatchTick(tickStart);
+  if (!deps.dryRun) {
+    files.markDispatchTick(tickStart);
+    // Written again at the end; a tick that stops before must not leave the listener a time that is long past.
+    files.writeNextDue(undefined);
+  }
   for (const warning of deps.configWarnings()) log(`WARN config.json: ${warning}`);
   for (const reason of Object.values(config.agentErrors))
     log(`WARN config.json: ${reason}; tasks that name this agent are not run`);
@@ -321,6 +356,8 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   );
 
   const candidates: Task[] = [];
+  // When the delayed Todo tasks this machine could serve come due.
+  const delayed: Date[] = [];
   // The backend lists Todo with resumes first, then by priority.
   for (const task of tasks.filter((candidate) => candidate.status === 'todo')) {
     // A task put back in Todo (an answer came while the agent was still ending its turn) must not start twice.
@@ -339,9 +376,12 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
       log(`SKIP ${task.id} cannot decrypt its ${unreadable.join(' and ')}`);
       continue;
     }
-    // Not due yet; the board refuses the claim too, this only saves the attempt every tick. Checked before
-    // notServableHere so no other machine logs a SKIP line for every delayed card on every tick.
-    if (task.notBefore !== null && task.notBefore > deps.now()) continue;
+    // Not due yet; the board refuses the claim too, this only saves the attempt every tick. Checked before the SKIP line
+    // of notServableHere, so no other machine logs one for every delayed card on every tick.
+    if (task.notBefore !== null && task.notBefore > deps.now()) {
+      if (notServableHere(task, config.machine, config.repos, config) === undefined) delayed.push(task.notBefore);
+      continue;
+    }
     // Another machine may have the checkout, the directory or the session.
     const elsewhere = notServableHere(task, config.machine, config.repos, config);
     if (elsewhere !== undefined) {
@@ -409,14 +449,11 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     const lane = ownLaneOf(task);
     if (lane !== undefined) waitingOwn.set(lane, (waitingOwn.get(lane) ?? 0) + 1);
   }
-  for (const run of planPauses({
-    lanes: config.lanes,
-    running: runs,
-    waitingOwn,
-    now: deps.now(),
-    pauseAfterMinutes: config.pauseAfterMinutes,
-  })) {
+  const lanes = { lanes: config.lanes, waitingOwn, pauseAfterMinutes: config.pauseAfterMinutes };
+  const paused = new Set<string>();
+  for (const run of planPauses({ ...lanes, running: runs, now: deps.now() })) {
     log(`PAUSE ${run.taskId} lane=${run.lane} (its own work waits)`);
+    paused.add(run.taskId);
     if (deps.dryRun) continue;
     try {
       files.requestPause(run.taskId);
@@ -438,7 +475,17 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     log(`WARN unlocking the worktrees of finished tasks failed: ${errorText(error)}`);
   }
   await runChecks(deps, checks, tickStart);
-  log(`TICK started=${started.size} ${summary}${checks.length > 0 ? ` checks=${checks.length}` : ''}`);
+  // Read after the checks ran: each one that failed is due again `everyMs` from now.
+  const pauseAt = nextPauseAt({
+    ...lanes,
+    running: runs.map((run) => (paused.has(run.taskId) ? { ...run, pauseRequested: true } : run)),
+    now: deps.now(),
+  });
+  const next = earliest([...delayed, ...nextWaitDue(deps, tasks), ...(pauseAt === undefined ? [] : [pauseAt])]);
+  if (!deps.dryRun) files.writeNextDue(next);
+  log(
+    `TICK started=${started.size} ${summary}${checks.length > 0 ? ` checks=${checks.length}` : ''}${next === undefined ? '' : ` next=${next.toISOString()}`}`,
+  );
   // Last, so a slow or failing GitHub never holds back a start.
   await refreshPrStatesIfDue({ ...deps.prRefresh, backend, now: deps.now, dryRun: deps.dryRun, print: log }, listed);
 }
