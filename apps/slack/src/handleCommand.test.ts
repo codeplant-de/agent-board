@@ -1,3 +1,4 @@
+import { INBOX_TEXT_MAX } from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
 import { handleCommand, type SlashCommand } from './handleCommand';
 import { IntakeError, NotLinkedError, type IntakeClient } from './intake';
@@ -43,7 +44,7 @@ describe('handleCommand', () => {
 
   it('refuses text over the limit before asking the board', async () => {
     const { intake, calls } = fakeIntake();
-    expect(await run(intake, 'a'.repeat(4001))).toContain('4001');
+    expect(await run(intake, 'a'.repeat(INBOX_TEXT_MAX + 1))).toContain(String(INBOX_TEXT_MAX + 1));
     expect(calls).toEqual([]);
   });
 

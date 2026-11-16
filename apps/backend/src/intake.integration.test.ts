@@ -1,3 +1,4 @@
+import { INBOX_TEXT_MAX } from '@agent-board/shared';
 import { eq, sql } from 'drizzle-orm';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -116,7 +117,7 @@ describe('the intake API', () => {
     await asOwner(db, 'alice', (tx) => tx.insert(slackLinks).values(who));
     expect((await call('inbox-add', { ...who, text: '' })).statusCode).toBe(400);
     expect((await call('inbox-add', { ...who, text: '   ' })).statusCode).toBe(400);
-    expect((await call('inbox-add', { ...who, text: 'a'.repeat(4001) })).statusCode).toBe(400);
+    expect((await call('inbox-add', { ...who, text: 'a'.repeat(INBOX_TEXT_MAX + 1) })).statusCode).toBe(400);
     expect((await call('inbox-add', { ...who, text: 7 })).statusCode).toBe(400);
     expect((await call('inbox-add', { teamId: 'x y', slackUserId: 'U1', text: 'a' })).statusCode).toBe(400);
     expect((await call('link', { teamId: 'T1' })).statusCode).toBe(400);
