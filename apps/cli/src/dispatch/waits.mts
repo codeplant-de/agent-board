@@ -108,9 +108,14 @@ const OUTPUT_KEEP_CHARS = 2000;
 
 /**
  * Runs a check as the agent would have: in its directory, with the `env` of the user's and the run's Claude Code settings on top
- * of this environment (tokens such as GH_TOKEN or CIRCLECI_TOKEN usually live there).
+ * of this environment (tokens such as GH_TOKEN or CIRCLECI_TOKEN usually live there). After `timeLimitMs` its whole process
+ * group is killed.
  */
-export function runCheck(check: WaitCheck, home: string = homedir()): Promise<CheckResult> {
+export function runCheck(
+  check: WaitCheck,
+  home: string = homedir(),
+  timeLimitMs: number = CHECK_TIME_LIMIT_MS,
+): Promise<CheckResult> {
   const env = { ...process.env, ...readSettingsEnv(home), ...readSettingsEnv(check.settingsDir ?? check.cwd) };
   return new Promise((resolve) => {
     let output = '';
@@ -138,7 +143,7 @@ export function runCheck(check: WaitCheck, home: string = homedir()): Promise<Ch
       } catch {
         child.kill('SIGKILL');
       }
-    }, CHECK_TIME_LIMIT_MS);
+    }, timeLimitMs);
     child.stdout.on('data', keep);
     child.stderr.on('data', keep);
     child.on('error', (error) => {

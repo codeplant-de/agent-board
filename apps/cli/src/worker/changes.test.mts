@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
 import { watchBoardChanges } from './changes.mts';
 import type { ChangeWatchOptions } from './changes.mts';
@@ -248,4 +250,39 @@ test('a signal that is already aborted makes no request', async () => {
   abort.abort();
   await watchBoardChanges(options, abort.signal);
   assert.equal(requests.length, 0);
+});
+
+test('aborting ends a read of a real fetch body at once, though the stream stays quiet', async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write(': ping\n\n');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { port } = server.address() as AddressInfo;
+    const abort = new AbortController();
+    const { options, requests } = setup(() => Promise.reject(new Error('unused')), {
+      config: { url: `http://127.0.0.1:${port}`, token: 'tok' },
+      idleMs: 60_000,
+    });
+    const watch = watchBoardChanges(
+      {
+        ...options,
+        fetch: (url, init) => {
+          requests.push({ url, init });
+          return fetch(url, init);
+        },
+      },
+      abort.signal,
+    );
+    await until(() => requests.length === 1);
+    await tick(50);
+    const aborted = Date.now();
+    abort.abort();
+    await watch;
+    assert.ok(Date.now() - aborted < 1000, 'ended long before idleMs');
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

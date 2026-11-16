@@ -20,6 +20,9 @@ export interface ChangeWatchOptions {
 }
 
 // Reads the stream until it ends or `signal` aborts; throws when it goes quiet for `idleMs`.
+// It does not listen to `signal` itself: `signal` is the fetch's signal, and the Fetch standard errors the response body when
+// the fetch aborts, so a pending read rejects at once and the caller sees `signal.aborted`. changes.test.mts checks that against
+// a real server with Node's fetch. A runtime that missed it would still end the read within `idleMs`, so it needs no listener.
 async function readStream(body: ReadableStream<Uint8Array>, options: ChangeWatchOptions, signal: AbortSignal) {
   const reader = body.getReader();
   const decoder = new TextDecoder();

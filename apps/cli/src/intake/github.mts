@@ -3,7 +3,11 @@ import { promisify } from 'node:util';
 import { isRecord, parsePrUrl } from '@agent-board/shared';
 import type { PrState } from '@agent-board/shared';
 
-const run = promisify(execFile);
+// How the client runs `gh`: resolves with stdout, rejects like `execFile` does (the error carries `stdout` and `stderr`).
+export type RunCommand = (file: string, args: string[]) => Promise<{ stdout: string }>;
+
+const execFileAsync = promisify(execFile);
+const runCommand: RunCommand = (file, args) => execFileAsync(file, args, { maxBuffer: 32 * 1024 * 1024 });
 
 export interface LivePr {
   url: string;
@@ -152,9 +156,9 @@ export function parsePrStates(value: unknown, urls: string[]): PrStateLookup {
   return lookup;
 }
 
-async function gh(args: string[], { keepAnswerOnError = false } = {}): Promise<unknown> {
+async function gh(run: RunCommand, args: string[], { keepAnswerOnError = false } = {}): Promise<unknown> {
   try {
-    const { stdout } = await run('gh', args, { maxBuffer: 32 * 1024 * 1024 });
+    const { stdout } = await run('gh', args);
     return JSON.parse(stdout);
   } catch (error) {
     // gh exits non-zero when the answer carries errors, such as a repository that is gone, and prints it all the same.
@@ -174,7 +178,7 @@ async function gh(args: string[], { keepAnswerOnError = false } = {}): Promise<u
 }
 
 // One search for all repositories. A failed search throws: the caller must not take a partial listing for the whole queue.
-export function createGitHub(): GitHub {
+export function createGitHub(run: RunCommand = runCommand): GitHub {
   return {
     async listReviewRequested(repos) {
       if (repos.length === 0) return { prs: [], unreadable: [] };
@@ -184,7 +188,7 @@ export function createGitHub(): GitHub {
       let after: string | undefined;
       for (let page = 0; page < MAX_PAGES; page++) {
         const found = parseSearchPage(
-          await gh([
+          await gh(run, [
             'api',
             'graphql',
             '-f',
@@ -212,6 +216,7 @@ export function createGitHub(): GitHub {
         try {
           const found = parsePrStates(
             await gh(
+              run,
               [
                 'api',
                 'graphql',
