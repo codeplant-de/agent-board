@@ -9,7 +9,7 @@ interface CommandModel {
   summary: string;
   flags: string[];
   // What the positional words complete to, in order.
-  positionals: ('task' | 'status' | 'schedule-action' | 'schedule' | 'command' | 'shell')[];
+  positionals: ('task' | 'status' | 'schedule-action' | 'schedule' | 'dirs-action' | 'command' | 'shell')[];
 }
 
 export interface CompletionModel {
@@ -35,6 +35,7 @@ function positionalsOf(command: Command): CommandModel['positionals'] {
   if (command.name() === 'help') return ['command'];
   if (command.name() === 'completion') return ['shell'];
   if (command.name() === 'schedules') return ['schedule-action', 'schedule'];
+  if (command.name() === 'dirs') return ['dirs-action'];
   if (command.name() === 'move') return ['task', 'status'];
   return command.registeredArguments[0]?.name() === 'task' ? ['task'] : [];
 }
@@ -93,6 +94,8 @@ function positionalWords(kind: Kind, model: CompletionModel): string | undefined
       return words(STATUSES);
     case 'schedule-action':
       return 'pause resume rm';
+    case 'dirs-action':
+      return 'list add rm';
     case 'command':
       return words(model.commands.map((command) => command.name));
     case 'shell':
@@ -352,6 +355,7 @@ function fish(model: CompletionModel): string {
   lines.push(`complete -c board -n '__board_at 2 move' -a ${fishQuote(words(STATUSES))}`);
   lines.push(`complete -c board -n '__board_at 1 schedules' -a 'pause resume rm'`);
   lines.push(`complete -c board -n '__board_schedule_id' -a '(__board_ids schedules)'`);
+  lines.push(`complete -c board -n '__board_at 1 dirs' -a 'list add rm'`);
   lines.push(`complete -c board -n '__board_at 1 help' -a ${fishQuote(words(names))}`);
   lines.push(`complete -c board -n '__board_at 1 completion' -a ${fishQuote(words(SHELLS))}`);
   return `${lines.join('\n')}\n`;
