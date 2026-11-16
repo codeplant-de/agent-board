@@ -28,7 +28,7 @@ pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 `pnpm format` fixes formatting. Put a pure formatting change in its own commit, so the logic diff stays readable.
 
 - **Backend tests** are integration tests against `board_test`. They use `app.inject` for the machine API and tRPC callers for the UI. The global setup drops and recreates the schema on every run, so two worktrees testing at the same time need separate databases (`TEST_DATABASE_URL`).
-- **CLI tests** use `node --test`. The decision logic (`apps/cli/src/dispatch/decide.mts`, `planIntake`, the `run*` functions) takes the backend, GitHub and the system as arguments, and tests pass fakes from `apps/cli/src/__tests__/helpers/fakes.mts`. Where a test goes is in [CLI layout](#cli-layout). A fake backend must behave like the real one. For example, the server clears `runStartedAt` when a task leaves Running.
+- **CLI tests** use `node --test`. The decision logic (`apps/cli/src/dispatch/decide.mts`, `worker/plan.mts`, `planIntake`, the `run*` functions) takes the backend, GitHub and the system as arguments, and tests pass fakes from `apps/cli/src/__tests__/helpers/fakes.mts`. Where a test goes is in [CLI layout](#cli-layout). A fake backend must behave like the real one. For example, the server clears `runStartedAt` when a task leaves Running.
 - **Slack app tests** (`apps/slack`) use vitest with a fake Socket Mode client and a local HTTP server standing in for the backend. The backend's `intake.integration.test.ts` runs the app's real intake client against the real intake API.
 - **Completion tests** need zsh and fish and skip without them, so CI may be their first real run.
 - **The command reference** in [cli.md](cli.md) is generated from the commander program. A test fails when it is stale; regenerate it with `pnpm --filter @agent-board/cli run docs`.
@@ -36,19 +36,19 @@ pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 
 ## CLI layout
 
-`apps/cli/src` is grouped by area. `main.mts` is the entry and does not move: `bin/`, `build.sh` and the systemd units of installed machines name its path. `cli.mts` holds what every command and tick starts from (`Context`, `buildContext`, `runMain`, `UsageError`). `task-id.mts` is the check every place runs before a task id becomes part of a path, a unit name, an argument or a link.
+`apps/cli/src` is grouped by area. `main.mts` is the entry and does not move: `bin/`, `build.sh` and the systemd units of installed machines name its path. `cli.mts` holds what every command and tick starts from (`Context`, `buildContext`, `runMain`, `UsageError`). `task-id.mts` is the check every place runs before a task id becomes part of a path, a unit name, an argument or a link, and names the unit of a task. `task-rules.mts` holds what both the dispatcher and the worker decide about a task (its own lane, whether it may run) and the markers of the notes the dispatcher writes and the worker reads. A module in `worker/` never imports from `dispatch/` or `commands/`.
 
-| Folder      | What lives there                                                                                               |
-| ----------- | -------------------------------------------------------------------------------------------------------------- |
-| `commands/` | The `board` command: the commander program (`program.mts`), the commands, id shortcuts, completion, `cli.md`   |
-| `backend/`  | The machine API client, sealing, the event-stream parser                                                       |
-| `dispatch/` | The dispatcher: its decisions (`decide.mts`, which the worker uses too), the listener, wait checks, task files |
-| `worker/`   | One run: starting Claude, the hook, run files, logs, sessions, transcripts, plugins                            |
-| `intake/`   | Review requests from GitHub                                                                                    |
-| `setup/`    | `board init`, `board setup`, `board doctor`, systemd                                                           |
-| `self/`     | The CLI about itself: its executable, version, self-update, the update hint                                    |
-| `config/`   | `config.json`, paths, the credentials file                                                                     |
-| `output/`   | Text for a terminal: stand-ins for control characters, colour, links, small text helpers                       |
+| Folder      | What lives there                                                                                                                                                     |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `commands/` | The `board` command: the program (`program.mts`), one `register-*.mts` per command group, the commands, id shortcuts, completion, `cli.md`                           |
+| `backend/`  | The machine API client (`backend.mts`, `web-backend.mts`), `web.json` (`web-config.mts`), the version check (`contract-check.mts`), sealing, the event-stream parser |
+| `dispatch/` | The dispatcher: its decisions (`decide.mts`), the listener, wait checks, task files                                                                                  |
+| `worker/`   | One run: its plan and prompts (`plan.mts`, `prompts.mts`), starting Claude (`process.mts`), the hook, run files, logs, sessions, transcripts, plugins                |
+| `intake/`   | Review requests from GitHub                                                                                                                                          |
+| `setup/`    | `board init`, `board setup`, `board doctor`, systemd                                                                                                                 |
+| `self/`     | The CLI about itself: its executable, version, self-update, the update hint                                                                                          |
+| `config/`   | `config.json`, the `dirs` rules (`dirs.mts`), paths, the credentials file                                                                                            |
+| `output/`   | Text for a terminal: stand-ins for control characters, colour, links, small text helpers                                                                             |
 
 Tests follow the module they test:
 
