@@ -193,7 +193,16 @@ export async function ask(context: LinkingContext, id: string, path: string): Pr
     if (error instanceof QuestionError) throw new UsageError(`the question file: ${error.message}`);
     throw error;
   }
-  await context.backend.ask(id, questions);
+  try {
+    await context.backend.ask(id, questions);
+  } catch (error) {
+    // The task is not running on this machine: the run that would ask was taken back or has ended, and asking again cannot help.
+    if (error instanceof BackendError && error.fromApi && error.status === 409)
+      throw new UsageError(
+        `${id} cannot take a question: ${error.message}. The board takes questions only from the run that holds the task, so nothing was asked. If you are that run, it was taken back or has ended: do not ask again, end your turn.`,
+      );
+    throw error;
+  }
   const count = `${questions.length} question${questions.length > 1 ? 's' : ''}`;
   confirm(context, `asked ${count} on ${id}, now in needs-me  ${context.taskLink(id)}`);
 }
