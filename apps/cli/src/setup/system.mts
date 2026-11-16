@@ -4,7 +4,12 @@ import { isSafeTaskId } from '@agent-board/shared';
 import { requireTaskId, unitName } from '../task-id.mts';
 import { selfCommand } from '../self/self.mts';
 
-const run = promisify(execFile);
+// How the system runs `systemctl` and `systemd-run`: resolves with stdout, rejects like `execFile` does (the error carries
+// `stdout` when the command printed something before it failed).
+export type RunCommand = (file: string, args: string[]) => Promise<{ stdout: string }>;
+
+const execFileAsync = promisify(execFile);
+const runCommand: RunCommand = (file, args) => execFileAsync(file, args);
 
 export class SystemError extends Error {}
 
@@ -52,7 +57,7 @@ export function parseUnixTimestamp(stdout: string): Date | undefined {
   return new Date(Number(seconds) * 1000);
 }
 
-async function systemctl(args: string[]): Promise<string> {
+async function systemctl(run: RunCommand, args: string[]): Promise<string> {
   try {
     return (await run('systemctl', ['--user', ...args])).stdout;
   } catch (error) {
@@ -72,19 +77,20 @@ async function systemctl(args: string[]): Promise<string> {
   }
 }
 
-export function createSystem(input: { dryRun: boolean; print: (line: string) => void }): System {
+export function createSystem(input: { dryRun: boolean; print: (line: string) => void; run?: RunCommand }): System {
+  const run = input.run ?? runCommand;
   return {
     async isActive(unit) {
-      return parseUnitState(await systemctl(['is-active', unit]));
+      return parseUnitState(await systemctl(run, ['is-active', unit]));
     },
     async startedAt(unit) {
       return parseUnixTimestamp(
-        await systemctl(['--timestamp=unix', 'show', '--property=ActiveEnterTimestamp', '--value', unit]),
+        await systemctl(run, ['--timestamp=unix', 'show', '--property=ActiveEnterTimestamp', '--value', unit]),
       );
     },
     async activeWorkers() {
       return parseWorkerUnits(
-        await systemctl([
+        await systemctl(run, [
           'list-units',
           'agent-board-*',
           '--type=service',

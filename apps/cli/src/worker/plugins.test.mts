@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { parseInstallPath, PluginError, resolvePluginKey, resolvePluginRoot } from './plugins.mts';
+import { parseInstallPath, PluginError, resolvePluginKey, resolvePluginPath, resolvePluginRoot } from './plugins.mts';
 import type { PluginFiles } from './plugins.mts';
 
 const file = {
@@ -96,4 +99,38 @@ test('a bare plugin name that is not installed, or installed from several market
   );
   assert.equal(resolvePluginRoot('pr-review@other', files({ installedPlugins: both })), '/b');
   assert.throws(() => resolvePluginRoot('pr-review', files({ installedPlugins: null })), PluginError);
+});
+
+test('resolvePluginPath reads the plugin files from the plugins directory', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-plugins-test-'));
+  try {
+    const plugins = join(dir, 'plugins');
+    const marketplace = join(dir, 'checkout');
+    mkdirSync(plugins);
+    assert.throws(() => resolvePluginPath('pr-review', plugins), {
+      message: `cannot read ${join(plugins, 'installed_plugins.json')}`,
+    });
+    writeFileSync(
+      join(plugins, 'installed_plugins.json'),
+      JSON.stringify({ plugins: { 'pr-review@ccc': [{ installPath: '/cache/pr-review' }] } }),
+    );
+    assert.equal(resolvePluginPath('pr-review', plugins), '/cache/pr-review', 'no known_marketplaces.json');
+    writeFileSync(
+      join(plugins, 'known_marketplaces.json'),
+      JSON.stringify({ ccc: { source: { source: 'directory', path: marketplace } } }),
+    );
+    assert.equal(resolvePluginPath('pr-review', plugins), '/cache/pr-review', 'no marketplace manifest');
+    mkdirSync(join(marketplace, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      join(marketplace, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({ plugins: [{ name: 'pr-review', source: './plugins/pr-review' }] }),
+    );
+    assert.equal(resolvePluginPath('pr-review', plugins), '/cache/pr-review', 'the source directory is missing');
+    mkdirSync(join(marketplace, 'plugins', 'pr-review'), { recursive: true });
+    assert.equal(resolvePluginPath('pr-review', plugins), join(marketplace, 'plugins', 'pr-review'));
+    writeFileSync(join(plugins, 'installed_plugins.json'), '{ broken');
+    assert.throws(() => resolvePluginPath('pr-review', plugins), PluginError);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });

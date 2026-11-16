@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createWaitStore, runCheck } from './waits.mts';
@@ -96,3 +96,51 @@ test('a check killed by a signal reports no exit code and no time out', async ()
     rmSync(dir, { recursive: true });
   }
 });
+
+test('a check over its time limit is stopped with its whole process group', async () => {
+  const dir = mkdtempSync('/tmp/board-waits-test-');
+  try {
+    const pidFile = join(dir, 'child.pid');
+    const started = Date.now();
+    // The background sleep keeps the output pipe open: the check only ends once the group kill reaches it too.
+    const slow = await runCheck(
+      {
+        cwd: dir,
+        everyMs: 60_000,
+        createdAt: new Date(),
+        command: `sleep 30 & echo $! > ${pidFile}; echo waiting; wait`,
+      },
+      dir,
+      200,
+    );
+    assert.deepEqual(slow, { exitCode: null, timedOut: true, output: 'waiting\n' });
+    assert.ok(Date.now() - started < 10_000, 'ended long before the sleep would have');
+    const child = Number(readFileSync(pidFile, 'utf8'));
+    assert.ok(child > 0);
+    for (let waited = 0; isAlive(child); waited += 1) {
+      if (waited > 100) assert.fail(`the check's child ${child} outlived the kill`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a check that ends within its time limit is not marked as timed out', async () => {
+  const dir = mkdtempSync('/tmp/board-waits-test-');
+  try {
+    const quick = await runCheck({ cwd: dir, everyMs: 60_000, createdAt: new Date(), command: 'exit 0' }, dir, 5_000);
+    assert.deepEqual(quick, { exitCode: 0, timedOut: false, output: '' });
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

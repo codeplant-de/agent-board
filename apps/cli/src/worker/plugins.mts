@@ -6,8 +6,6 @@ import { isRecord } from '@agent-board/shared';
 export class PluginError extends Error {}
 
 const CLAUDE_PLUGINS_DIR = join(homedir(), '.claude', 'plugins');
-export const INSTALLED_PLUGINS_FILE = join(CLAUDE_PLUGINS_DIR, 'installed_plugins.json');
-export const KNOWN_MARKETPLACES_FILE = join(CLAUDE_PLUGINS_DIR, 'known_marketplaces.json');
 
 // installed_plugins.json maps "<plugin>@<marketplace>" to a list of installs, each with an installPath.
 export function parseInstallPath(raw: unknown, key: string): string {
@@ -93,12 +91,14 @@ function readJson(file: string): unknown {
   }
 }
 
-export function resolvePluginPath(name: string): string {
-  const installedPlugins = readJson(INSTALLED_PLUGINS_FILE);
-  if (installedPlugins === undefined) throw new PluginError(`cannot read ${INSTALLED_PLUGINS_FILE}`);
+// `pluginsDir` is Claude Code's `~/.claude/plugins`; a test passes its own.
+export function resolvePluginPath(name: string, pluginsDir: string = CLAUDE_PLUGINS_DIR): string {
+  const installedFile = join(pluginsDir, 'installed_plugins.json');
+  const installedPlugins = readJson(installedFile);
+  if (installedPlugins === undefined) throw new PluginError(`cannot read ${installedFile}`);
   return resolvePluginRoot(name, {
     installedPlugins,
-    knownMarketplaces: readJson(KNOWN_MARKETPLACES_FILE),
+    knownMarketplaces: readJson(join(pluginsDir, 'known_marketplaces.json')),
     marketplaceManifest: (root) => readJson(join(root, '.claude-plugin', 'marketplace.json')),
     dirExists: existsSync,
   });
