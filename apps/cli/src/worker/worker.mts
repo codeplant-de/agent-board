@@ -39,7 +39,7 @@ import {
   unreadableForRun,
 } from '../dispatch/decide.mts';
 import { getPaths } from '../config/config.mts';
-import { isAllowedDir, isDirectory, tryRealpath } from '../commands/dirs.mts';
+import { isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import { selfCommand } from '../self/self.mts';
 import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
 import type { Invocation, Supervision } from '../dispatch/decide.mts';

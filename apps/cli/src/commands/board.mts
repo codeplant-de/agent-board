@@ -6,7 +6,7 @@ import { ReportedFailure, UsageError } from '../cli.mts';
 import type { Context, LinkingContext } from '../cli.mts';
 import { BackendError } from '../backend/backend.mts';
 import type { Config } from '../config/config.mts';
-import { isAllowedDir, isDirectory, tryRealpath } from './dirs.mts';
+import { isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import {
   ContractError,
   formatAnswers,

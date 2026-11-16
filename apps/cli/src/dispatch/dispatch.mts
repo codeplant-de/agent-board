@@ -25,7 +25,7 @@ import {
   WAKE_MARKER,
 } from './decide.mts';
 import type { LaneRun } from './decide.mts';
-import { syncDirs } from '../commands/dirs.mts';
+import { syncDirs } from '../config/dirs.mts';
 import { createRunFiles } from '../worker/runtime.mts';
 import type { RunFiles } from '../worker/runtime.mts';
 import { EXEC_PATH, isCompiledBinary } from '../self/self.mts';

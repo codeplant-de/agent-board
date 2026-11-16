@@ -13,7 +13,7 @@ import {
   SERVER_FEATURES,
 } from '@agent-board/shared';
 import type { Keys } from '@agent-board/shared';
-import { dirsToSend, isAllowedDir, isDirectory, routedDirs, UNCOVERED_HINT } from '../commands/dirs.mts';
+import { dirsToSend, isAllowedDir, isDirectory, routedDirs, UNCOVERED_HINT } from '../config/dirs.mts';
 import { parseEnv } from '../config/env-file.mts';
 import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
 import { errorText, shellQuote } from '../output/text.mts';
