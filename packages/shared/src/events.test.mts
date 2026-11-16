@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PRIORITIES, STATUSES } from '../src/contract.mts';
-import { formatServerEvent, isServerEventText } from '../src/events.mts';
-import type { ServerEvent } from '../src/events.mts';
+import { PRIORITIES, STATUSES } from './contract.mts';
+import { formatServerEvent, isServerEventText } from './events.mts';
+import type { ServerEvent } from './events.mts';
 
 const SAMPLES: ServerEvent[] = [
   { type: 'done' },

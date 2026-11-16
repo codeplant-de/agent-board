@@ -6,9 +6,9 @@ import {
   parseVersionDirsIndex,
   parseWireDirs,
   SEALED_LIMITS,
-} from '../src/contract.mts';
-import { blindIndex, deriveKeys, open, seal } from '../src/crypto.mts';
-import type { Keys } from '../src/crypto.mts';
+} from './contract.mts';
+import { blindIndex, deriveKeys, open, seal } from './crypto.mts';
+import type { Keys } from './crypto.mts';
 import {
   dedupeKeyIndex,
   headIndex,
@@ -35,11 +35,11 @@ import {
   titleBinding,
   transcriptBinding,
   workdirOpenBindings,
-} from '../src/sealing.mts';
-import type { Binding, Opener, RowRef, Sealer, WireNoteParts } from '../src/sealing.mts';
-import { QuestionError } from '../src/questions.mts';
-import { parsePolish, serializePolish } from '../src/polish.mts';
-import type { Question } from '../src/questions.mts';
+} from './sealing.mts';
+import type { Binding, Opener, RowRef, Sealer, WireNoteParts } from './sealing.mts';
+import { QuestionError } from './questions.mts';
+import { parsePolish, serializePolish } from './polish.mts';
+import type { Question } from './questions.mts';
 
 const KNOWN_KEY = Uint8Array.from({ length: 32 }, (_, i) => i);
 const keys = await deriveKeys(KNOWN_KEY, 'alice', { index: true });

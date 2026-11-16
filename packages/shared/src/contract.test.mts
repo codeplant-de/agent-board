@@ -42,10 +42,10 @@ import {
   STATUSES,
   shortSkill,
   taskLabels,
-} from '../src/contract.mts';
-import { blindIndex, deriveKeys, envelopeLength, generateDataKey, seal } from '../src/crypto.mts';
-import type { Field } from '../src/crypto.mts';
-import { describeRule, runsLeft } from '../src/time.mts';
+} from './contract.mts';
+import { blindIndex, deriveKeys, envelopeLength, generateDataKey, seal } from './crypto.mts';
+import type { Field } from './crypto.mts';
+import { describeRule, runsLeft } from './time.mts';
 
 const keys = await deriveKeys(generateDataKey(), 'alice', { index: true });
 const sealed = (field: Field, text = 'x', context = ''): Promise<string> => seal(keys, field, context, text);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ContractError } from '../src/contract.mts';
-import { formatDuration, parseDuration, parseWhen } from '../src/time.mts';
+import { ContractError } from './contract.mts';
+import { formatDuration, parseDuration, parseWhen } from './time.mts';
 
 const MIN = 60_000;
 

@@ -16,7 +16,7 @@ import {
   unwrapDataKey,
   wrapDataKey,
   type Field,
-} from '../src/crypto.mts';
+} from './crypto.mts';
 
 const FIELDS: Field[] = [
   'title',
