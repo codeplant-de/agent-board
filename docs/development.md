@@ -84,5 +84,5 @@ CI runs on these PRs like on any other, and merging one deploys the server like 
 ## Git
 
 - Commits and tags are SSH-signed. Never bypass signing; if it fails, ask the user to run `ssh-add-signing`.
-- PRs merge with merge commits.
+- PRs are squash-merged; the repository allows no other merge method.
 - `~/workspace/agent-board` is a live checkout: the installed timers may run from it. Do unfinished work in a worktree under `.claude/worktrees/`, made with `scripts/worktree.sh open <pr|branch>`.
