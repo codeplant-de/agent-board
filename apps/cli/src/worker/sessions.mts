@@ -4,7 +4,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isSessionId } from '@agent-board/shared';
-import { requireTaskId } from '../output/task-id.mts';
+import { requireTaskId } from '../task-id.mts';
 import { getPaths } from '../config/config.mts';
 
 // A task's session record in a session directory.

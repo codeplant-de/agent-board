@@ -36,7 +36,7 @@ pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 
 ## CLI layout
 
-`apps/cli/src` is grouped by area. `main.mts` is the entry and does not move: `bin/`, `build.sh` and the systemd units of installed machines name its path. `cli.mts` holds what every command and tick starts from (`Context`, `buildContext`, `runMain`, `UsageError`).
+`apps/cli/src` is grouped by area. `main.mts` is the entry and does not move: `bin/`, `build.sh` and the systemd units of installed machines name its path. `cli.mts` holds what every command and tick starts from (`Context`, `buildContext`, `runMain`, `UsageError`). `task-id.mts` is the check every place runs before a task id becomes part of a path, a unit name, an argument or a link.
 
 | Folder      | What lives there                                                                                               |
 | ----------- | -------------------------------------------------------------------------------------------------------------- |

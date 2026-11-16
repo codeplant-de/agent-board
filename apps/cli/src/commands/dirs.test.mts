@@ -553,3 +553,16 @@ test('isDirectory is true only for a directory that is there', () => {
     rmSync(dir, { recursive: true });
   }
 });
+
+test('isDirectory is false for a path it may not look at', (context: TestContext) => {
+  if (process.getuid?.() === 0) return context.skip('root can look at any path');
+  const dir = mkdtempSync(join(tmpdir(), 'board-isdir-'));
+  mkdirSync(join(dir, 'locked', 'inner'), { recursive: true });
+  chmodSync(join(dir, 'locked'), 0o000);
+  try {
+    assert.equal(isDirectory(join(dir, 'locked', 'inner')), false);
+  } finally {
+    chmodSync(join(dir, 'locked'), 0o700);
+    rmSync(dir, { recursive: true });
+  }
+});

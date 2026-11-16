@@ -6,7 +6,7 @@ import { lstatSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { isSafeTaskId } from '@agent-board/shared';
 import { getPaths } from '../config/config.mts';
-import { requireTaskId } from '../output/task-id.mts';
+import { requireTaskId } from '../task-id.mts';
 import { LOG_SUFFIX, logFile } from '../worker/logs.mts';
 import { sessionFile } from '../worker/sessions.mts';
 

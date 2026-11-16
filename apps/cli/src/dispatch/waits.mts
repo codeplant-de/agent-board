@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { isRecord, isSafeTaskId, isSafeWorkdir } from '@agent-board/shared';
 import { getPaths } from '../config/config.mts';
 import { readSettingsEnv } from '../worker/settings-env.mts';
-import { requireTaskId } from '../output/task-id.mts';
+import { requireTaskId } from '../task-id.mts';
 import { errorText } from '../output/text.mts';
 
 export interface WaitCheck {

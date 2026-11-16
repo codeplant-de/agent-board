@@ -50,7 +50,7 @@ import type { SessionStore } from './sessions.mts';
 import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from './logs.mts';
 import { resolvePluginPath } from './plugins.mts';
 import { plainLine } from '../output/terminal.mts';
-import { requireTaskId } from '../output/task-id.mts';
+import { requireTaskId } from '../task-id.mts';
 import { errorText, fence, shellQuote } from '../output/text.mts';
 import { createTranscriptUploader } from './transcript-upload.mts';
 

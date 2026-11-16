@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { MODEL_ALIASES, PRIORITIES, STATUSES } from '@agent-board/shared';
+import { shellQuote } from '../output/text.mts';
 
 export const SHELLS = ['bash', 'zsh', 'fish'] as const;
 export type Shell = (typeof SHELLS)[number];
@@ -202,11 +203,9 @@ complete -F _board board
 `;
 }
 
-const zshQuote = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`;
-
 function zsh(model: CompletionModel): string {
   const commandList = model.commands
-    .map((command) => `    ${zshQuote(`${command.name}:${command.summary.replaceAll(':', '\\:')}`)}`)
+    .map((command) => `    ${shellQuote(`${command.name}:${command.summary.replaceAll(':', '\\:')}`)}`)
     .join('\n');
   const flagCases = model.commands
     .map((command) => `      (${command.name}) compadd -- ${words(command.flags)} ;;`)

@@ -31,7 +31,7 @@ import {
 import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
 import { createStyle } from '../output/style.mts';
 import { SystemError } from '../setup/system.mts';
-import { requireTaskId } from '../output/task-id.mts';
+import { requireTaskId } from '../task-id.mts';
 import { plainLine, plainText } from '../output/terminal.mts';
 import type { Style } from '../output/style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
