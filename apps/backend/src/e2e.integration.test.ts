@@ -297,6 +297,7 @@ describe('an agent’s proposal', () => {
     config: { ...CONFIG, machine: 'laptop' },
     dryRun: false,
     configWarnings: () => [],
+    prRefresh: { github: undefined, state: { refreshedAt: () => undefined, markRefreshed: () => undefined } },
     print: (line) => logs.push(line),
     system: {
       isActive: async () => false,
@@ -436,6 +437,7 @@ describe('a wait', () => {
       config,
       dryRun: false,
       configWarnings: () => [],
+      prRefresh: { github: undefined, state: { refreshedAt: () => undefined, markRefreshed: () => undefined } },
       print: (line) => logs.push(line),
       system: {
         isActive: async () => false,

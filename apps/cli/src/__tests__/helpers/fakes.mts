@@ -111,6 +111,9 @@ export interface FakeBackend extends Backend {
   writes: string[];
   // Claims of these ids are lost, as if another machine got there first.
   lostClaims: string[];
+  // The dedupe key of tasks by id. A task listed here is found by exactly that key; any other matches a key that its prompt's
+  // first line contains, which is how intake's tasks (key: the PR URL) are found.
+  keys: Map<string, string>;
   // The directory list the board holds for this machine, and what its server does with a new one.
   boardDirs: { supported: boolean; held: MachineDir[] | undefined; failure: Error | undefined };
 }
@@ -141,6 +144,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     inboxes: new Map(),
     writes: [],
     lostClaims: [],
+    keys: new Map(),
     boardDirs: { supported: true, held: undefined, failure: undefined },
     async listTasks({ all = false } = {}) {
       return state.tasks.filter((t) => all || !t.closed).map(asBoardShows);
@@ -174,10 +178,13 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       state.writes.push(
         `create ${draft.title} | ${draft.input} | ${taskLabels({ input: draft.input, createdBy: draft.createdBy ?? 'user' }).join(',')}${draft.dedupeKey ? ` | key ${draft.dedupeKey}` : ''}`,
       );
-      const existing = state.tasks.find(
-        (candidate) => draft.dedupeKey !== undefined && parseFirstLine(candidate.input).includes(draft.dedupeKey),
-      );
-      if (existing) return { task: { ...existing }, created: false };
+      const { dedupeKey } = draft;
+      const existing = state.tasks.find((candidate) => {
+        if (dedupeKey === undefined) return false;
+        const keyed = state.keys.get(candidate.id);
+        return keyed === undefined ? parseFirstLine(candidate.input).includes(dedupeKey) : keyed === dedupeKey;
+      });
+      if (existing) return { task: asBoardShows(existing), created: false };
       const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, ...fields } = draft;
       return {
         task: task({

@@ -33,6 +33,7 @@ const VISIBLE = [
   'setup',
   'self-update',
   'completion',
+  'example',
   'help',
 ];
 

@@ -32,7 +32,9 @@ export function registerScheduleCommands(shared: ProgramShared): void {
         'The flags come first; everything from the first other word on is the prompt, flags included (`--auto` below goes to the skill). To start the prompt with dashes, put -- before it.',
         '--in or --at keeps the task in Todo until then. --every or --cron makes a repeating schedule instead, starting at --in/--at (default now), for --times runs or until --until, else forever.',
         '--polish parks the task in Backlog and queues a second task, "Polish prompt: <title>", that asks an agent to turn the prompt into a complete plan, as the Polish prompt button on the board does. Apply the result from that task\'s page. It cannot be combined with --hold, --in, --at or a repeat.',
-        'With --json, print {"id", "url"} of the task on stdout (and "polishId", "polishUrl" with --polish); everything else goes to stderr. Not available inside a board run: there, propose follow-up work with `board add`.',
+        '--key <key> is for scripts that run `board schedule` again and again: the board keeps one task per key (the key itself never leaves this machine), so a second call finds the first instead of making another, and the duplicate check is skipped. It cannot be combined with a repeat, --polish, --hold, --backlog, --in or --at. It prints `created`, `exists` or `requeued`, the task id and URL, and for exists the reason in parentheses, and exits 0 for all of them. A task that was closed is `exists (closed)` and never made again.',
+        'With --version <v> (a PR head sha, say) the task remembers what it was made for. When it differs and the task waits in Needs me or is Done, the task goes back to Todo with a note "New version" (`requeued`). Otherwise it is `exists` with the reason same-version, no-version (no --version given), busy (Todo, Running, Waiting or Backlog), changed (the task moved while this ran) or other-agent (it runs as another --agent than this call names, which cannot be changed later).',
+        'With --json, print {"id", "url"} of the task on stdout (and "polishId", "polishUrl" with --polish; "result", "status" and "reason" with --key); everything else goes to stderr. Not available inside a board run: there, propose follow-up work with `board add`.',
       ),
     )
     .usage('[options] <prompt...>')
@@ -53,6 +55,7 @@ export function registerScheduleCommands(shared: ProgramShared): void {
         'board schedule --polish "bidder export should include postal codes"',
         'board schedule --hold -- --weird prompt',
         'board schedule --json /review-pr 17741',
+        'board schedule --agent reviewer --key https://github.com/o/r/pull/7 --version 3f9c2ab --json /review-pr https://github.com/o/r/pull/7 --auto',
       ),
     )
     .action(async (words: string[], flags: ScheduleFlags & { json?: boolean }, command: Command) => {
@@ -67,10 +70,13 @@ export function registerScheduleCommands(shared: ProgramShared): void {
       const scheduled = await scheduleCommand(context, flags, words, options.cwd ?? realpathSync(process.cwd()));
       if (flags.json) {
         if (scheduled === undefined) return writeJson(null);
-        const { task, polish } = scheduled;
+        const { task, polish, keyed } = scheduled;
         writeJson({
           id: task.id,
           url: context.taskLink(task.id),
+          ...(keyed
+            ? { result: keyed.result, status: task.status, ...('reason' in keyed ? { reason: keyed.reason } : {}) }
+            : {}),
           ...(task.scheduleId ? { scheduleId: task.scheduleId } : {}),
           ...(polish ? { polishId: polish.id, polishUrl: context.taskLink(polish.id) } : {}),
         });

@@ -28,8 +28,25 @@ import type { CheckResult, WaitCheck } from './waits.mts';
 import { TASK_FILES_KEEP_MS } from './dispatch.mts';
 import type { TaskFile } from './task-files.mts';
 import type { FakeBackend } from '../__tests__/helpers/fakes.mts';
+import { GitHubError } from '../intake/github.mts';
+import type { GitHub } from '../intake/github.mts';
+import { createPrRefreshState, PR_REFRESH_INTERVAL_MS, prRefreshFile } from './pr-states.mts';
+import type { PrRefreshState } from './pr-states.mts';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
+
+function fakePrRefreshState(at?: Date): PrRefreshState & { at: Date | undefined } {
+  const state = {
+    at,
+    refreshedAt: () => state.at,
+    markRefreshed: (when: Date) => {
+      state.at = when;
+    },
+  };
+  return state;
+}
 
 function setup(
   tasks: ReturnType<typeof task>[],
@@ -112,6 +129,7 @@ function setup(
     },
     update,
     configWarnings: () => updating.warnings ?? [],
+    prRefresh: { github: undefined, state: fakePrRefreshState() },
   };
   return { backend, deps, started, stopped, logs, files, waits, taskFiles, worktreeLocks, ranChecks, updates, state };
 }
@@ -947,4 +965,103 @@ test('a failure to send the directory list costs one WARN line, and the tick goe
   assert.ok(logs.includes('WARN sending the directory list failed: set-dirs: the server answered 502 without JSON'));
   assert.deepEqual(started, ['t1']);
   assert.ok(logs.some((line) => line.startsWith('TICK ')));
+});
+
+const PR = 'https://github.com/cosuno/cosuno/pull/5';
+const withPr = () => task({ id: 'pr1', status: 'needs-me', input: `/review-pr ${PR} --auto` });
+
+function withGitHub(tasks: ReturnType<typeof task>[], github: Partial<GitHub> | undefined, at?: Date) {
+  const setupResult = setup(tasks);
+  const asked: string[][] = [];
+  const state = fakePrRefreshState(at);
+  setupResult.deps.prRefresh = {
+    github:
+      github === undefined
+        ? undefined
+        : {
+            listReviewRequested: async () => ({ prs: [], unreadable: [] }),
+            prStates: async (urls) => {
+              asked.push(urls);
+              return { states: new Map([[PR, 'merged' as const]]), unreadable: [] };
+            },
+            ...github,
+          },
+    state,
+  };
+  return { ...setupResult, asked, state };
+}
+
+test('a tick refreshes the PR state of open tasks and stamps the time', async () => {
+  const { deps, backend, logs, asked, state } = withGitHub([withPr()], {});
+  await runDispatch(deps);
+  assert.deepEqual(asked, [[PR]]);
+  assert.ok(backend.writes.includes('prState pr1 merged'));
+  assert.ok(logs.includes('PRSTATES changed=1'));
+  assert.deepEqual(state.at, NOW);
+});
+
+test('the PR states are looked up once per 10 minutes', async () => {
+  const recent = new Date(NOW.getTime() - PR_REFRESH_INTERVAL_MS + 1000);
+  const fresh = withGitHub([withPr()], {}, recent);
+  await runDispatch(fresh.deps);
+  assert.deepEqual(fresh.asked, []);
+  assert.deepEqual(fresh.state.at, recent, 'a skipped tick does not move the time');
+  const due = withGitHub([withPr()], {}, new Date(NOW.getTime() - PR_REFRESH_INTERVAL_MS));
+  await runDispatch(due.deps);
+  assert.deepEqual(due.asked, [[PR]]);
+});
+
+test('without gh, or without a PR to look up, nothing is looked up or logged', async () => {
+  const noGh = withGitHub([withPr()], undefined);
+  await runDispatch(noGh.deps);
+  assert.equal(noGh.state.at, undefined);
+  assert.ok(!noGh.logs.some((line) => /PR/.test(line)));
+  const noPr = withGitHub([todo('t1')], {});
+  await runDispatch(noPr.deps);
+  assert.deepEqual(noPr.asked, []);
+  assert.equal(noPr.state.at, undefined);
+});
+
+test('a failing lookup costs one WARN line, never the tick, and is not retried before the interval', async () => {
+  const failing = withGitHub([withPr(), todo('t1')], {
+    prStates: async () => {
+      throw new GitHubError('gh api graphql failed: HTTP 502');
+    },
+  });
+  await runDispatch(failing.deps);
+  assert.ok(failing.logs.includes('WARN PR states not refreshed: gh api graphql failed: HTTP 502'));
+  assert.deepEqual(failing.started, ['t1']);
+  assert.deepEqual(failing.state.at, NOW);
+  const crashing = withGitHub([withPr()], {
+    prStates: async () => {
+      throw new Error('boom');
+    },
+  });
+  await runDispatch(crashing.deps);
+  assert.ok(crashing.logs.includes('WARN PR states not refreshed: boom'));
+  assert.ok(crashing.logs.some((line) => line.startsWith('TICK ')));
+});
+
+test('a dry run looks the states up but stamps nothing', async () => {
+  const { deps, state, asked } = withGitHub([withPr()], {});
+  deps.dryRun = true;
+  await runDispatch(deps);
+  assert.deepEqual(asked, [[PR]]);
+  assert.equal(state.at, undefined);
+});
+
+test('the PR refresh time is kept in a small file in the state directory, and a broken file reads as never', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-pr-refresh-'));
+  try {
+    const state = createPrRefreshState(prRefreshFile(join(dir, 'nested')));
+    assert.equal(state.refreshedAt(), undefined);
+    state.markRefreshed(NOW);
+    assert.deepEqual(state.refreshedAt(), NOW);
+    const broken = join(dir, 'broken.json');
+    writeFileSync(broken, 'not json');
+    assert.equal(createPrRefreshState(broken).refreshedAt(), undefined);
+    assert.doesNotThrow(() => createPrRefreshState(join(broken, 'x', 'y.json')).markRefreshed(NOW));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });

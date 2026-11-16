@@ -1,6 +1,6 @@
 {
   "name": "@agent-board/cli",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "private": true,
   "description": "Dispatcher, worker, intake and the board command: run headless Claude Code tasks from the board",
   "type": "module",
@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "build": "./build.sh",
     "test:binary": "node scripts/binary-smoke.mts",
-    "docs": "node scripts/docs.mts"
+    "docs": "node scripts/docs.mts",
+    "examples": "node scripts/examples.mts"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

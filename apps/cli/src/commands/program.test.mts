@@ -545,3 +545,98 @@ test('wait takes exactly one end, --every and --timeout only with --check, and a
   await assert.rejects(go(['move', ID, 'waiting']), /board wait/);
   assert.deepEqual(backend.writes, []);
 });
+
+function keyedRun() {
+  const old = task({
+    id: 'Old0Task',
+    input: '/review-pr https://github.com/o/r/pull/7 --auto',
+    head: 'sha1',
+    agent: 'reviewer',
+  });
+  old.status = 'needs-me';
+  const backend = fakeBackend([old]);
+  backend.keys.set('Old0Task', 'https://github.com/o/r/pull/7');
+  const printed: string[] = [];
+  const out: string[] = [];
+  const err: string[] = [];
+  const go = (argv: string[], overrides: ProgramOptions = {}) =>
+    runBoard(argv, {
+      env: {},
+      context: (dryRun) => ({
+        config: {
+          ...CONFIG,
+          agents: { reviewer: { ...CONFIG.intake, description: 'Reviews.', prompt: 'You review.', tools: ['Read'] } },
+        },
+        backend,
+        dryRun,
+        taskLink: linkTo,
+        print: (line) => printed.push(line),
+      }),
+      writeOut: (text) => out.push(text),
+      writeErr: (text) => err.push(text),
+      ...overrides,
+    });
+  return { backend, printed, out, err, go };
+}
+const PR_FLAGS = ['--agent', 'reviewer', '--key', 'https://github.com/o/r/pull/7'];
+
+test('schedule --key prints created, exists or requeued with the id and URL, and --json adds result, status and reason', async () => {
+  const { backend, printed, out, go } = keyedRun();
+  await go(['schedule', ...PR_FLAGS, '--version', 'sha1', '/review-pr', 'x']);
+  await go(['schedule', ...PR_FLAGS, '--version', 'sha2', '/review-pr', 'x']);
+  await go(['schedule', '--agent', 'reviewer', '--key', 'https://github.com/o/r/pull/8', '/review-pr', 'y']);
+  assert.deepEqual(printed, [
+    `exists Old0Task ${linkTo('Old0Task')} (same-version)`,
+    `requeued Old0Task ${linkTo('Old0Task')}`,
+    `created new ${linkTo('new')}`,
+  ]);
+  assert.equal(backend.tasks[0]?.status, 'todo');
+
+  out.length = 0;
+  await go(['schedule', '--json', ...PR_FLAGS, '--version', 'sha2', '/review-pr', 'x']);
+  await go(['schedule', '--json', '--agent', 'reviewer', '--key', 'k2', 'z']);
+  assert.deepEqual(
+    out.map((text) => JSON.parse(text) as unknown),
+    [
+      { id: 'Old0Task', url: linkTo('Old0Task'), result: 'exists', status: 'todo', reason: 'same-version' },
+      { id: 'new', url: linkTo('new'), result: 'created', status: 'todo' },
+    ],
+  );
+});
+
+test('schedule --key never asks the duplicate check, and is refused inside a board run', async () => {
+  const { backend, go } = keyedRun();
+  await assert.rejects(
+    go(['schedule', ...PR_FLAGS, '--version', 'sha2', 'x'], { env: { AGENT_BOARD_TASK: 'Zt0Test1' } }),
+    /board schedule is not available inside a board run/,
+  );
+  assert.equal(backend.tasks[0]?.status, 'needs-me');
+  assert.deepEqual(backend.writes, []);
+});
+
+test('schedule --version is not the program version, and needs --key', async () => {
+  const { go } = keyedRun();
+  await assert.rejects(go(['schedule', '--version', 'sha', 'x']), /--version belongs to --key/);
+});
+
+test('move --expect moves only while the task is in that status, and exits 3 with a message otherwise', async () => {
+  const { backend, err, go } = setup();
+  await go(['move', ID, 'done', '--expect', 'todo']);
+  assert.deepEqual(backend.writes, [`status ${ID} -> done`]);
+  await assert.rejects(go(['move', ID, 'needs-me', '--expect', 'todo']), (error: Error) => {
+    assert.equal((error as { exitCode?: number }).exitCode, 3);
+    return true;
+  });
+  assert.equal(err.join(''), `board: ${ID} is not in todo any more; nothing was moved\n`);
+  assert.equal(backend.tasks[0]?.status, 'done');
+  await assert.rejects(go(['move', ID, 'done', '--expect', 'soon']), UsageError);
+});
+
+test('move --expect is refused inside a board run', async () => {
+  const { backend, go } = setup();
+  await assert.rejects(
+    go(['move', ID, 'needs-me', '--expect', 'todo'], { env: { AGENT_BOARD_TASK: ID } }),
+    /not available inside a board run/,
+  );
+  assert.deepEqual(backend.writes, []);
+});

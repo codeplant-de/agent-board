@@ -16,7 +16,7 @@ import {
   type WireTaskPatch,
   type WireWait,
 } from '@agent-board/shared';
-import { and, asc, desc, eq, inArray, lt, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
 import { notes, tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
@@ -610,7 +610,8 @@ function closeOrReopen(tx: DbOrTx, task: TaskRow, closed: boolean): Promise<Task
 
 /**
  * Closes what has sat untouched in Done for the archive period. Returns how many tasks it closed.
- * Intake's tasks stay open: intake reads a closed task as "never again", which would block a re-requested review.
+ * Intake's tasks and tasks with a dedupe key stay open: a closed task reads as "never again" to whoever asks for that key,
+ * which would block a re-requested review.
  */
 export async function archiveStaleDone(db: DbOrTx, now: Date = new Date()): Promise<number> {
   const cutoff = daysBefore(now, DONE_ARCHIVE_DAYS);
@@ -622,6 +623,7 @@ export async function archiveStaleDone(db: DbOrTx, now: Date = new Date()): Prom
         eq(tasks.status, 'done'),
         eq(tasks.closed, false),
         ne(tasks.createdBy, 'intake'),
+        isNull(tasks.dedupeKey),
         lt(tasks.updatedAt, cutoff),
       ),
     );
@@ -630,7 +632,14 @@ export async function archiveStaleDone(db: DbOrTx, now: Date = new Date()): Prom
     await db.transaction(async (tx) => {
       // Someone may have touched it since the listing.
       const task = await lockTask(tx, id);
-      if (task.status !== 'done' || task.closed || task.createdBy === 'intake' || task.updatedAt >= cutoff) return;
+      if (
+        task.status !== 'done' ||
+        task.closed ||
+        task.createdBy === 'intake' ||
+        task.dedupeKey !== null ||
+        task.updatedAt >= cutoff
+      )
+        return;
       await systemEvent(tx, id, { type: 'archived', days: DONE_ARCHIVE_DAYS }, null);
       await closeOrReopen(tx, task, true);
       closed += 1;

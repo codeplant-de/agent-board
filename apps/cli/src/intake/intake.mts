@@ -8,13 +8,15 @@
  */
 import { buildContext, print, skipTickWhileServerOlder } from '../cli.mts';
 import type { Context } from '../cli.mts';
-import type { Backend, PrState, Task, TaskPatch } from '@agent-board/shared';
-import { parsePrUrl, prUrlIn, statePrOf } from '@agent-board/shared';
-import { ConfigError, intakeAgentProblem } from '../config/config.mts';
+import type { Backend, Task, TaskPatch } from '@agent-board/shared';
+import { parsePrUrl, prUrlIn } from '@agent-board/shared';
+import { ConfigError, getPaths, intakeAgentProblem } from '../config/config.mts';
 import { BackendError, isVocabularyRefusal } from '../backend/backend.mts';
 import { updateCliHint } from '../backend/contract-check.mts';
-import { createGitHub, GitHubError } from './github.mts';
-import type { GitHub, LivePr, PrStateLookup } from './github.mts';
+import { createGitHub } from './github.mts';
+import type { GitHub, LivePr } from './github.mts';
+import { createPrRefreshState, prRefreshFile, refreshPrStates } from '../dispatch/pr-states.mts';
+import type { PrRefreshState } from '../dispatch/pr-states.mts';
 
 const SETTLE_MS = 10 * 60_000;
 
@@ -66,52 +68,11 @@ export function planIntake(input: {
   return [...actions, ...gone.map((task): IntakeAction => ({ kind: 'close', task }))];
 }
 
-/** The PRs whose state to look up: those of the tasks still on the board, each once. */
-export function prsToCheck(tasks: Task[]): string[] {
-  const urls = tasks.filter((task) => !task.closed && task.status !== 'done').map((task) => statePrOf(task));
-  return [...new Set(urls.filter((url): url is string => url !== undefined))];
-}
-
-/** The tasks whose stored state differs from what GitHub says; a PR GitHub did not answer for changes nothing. */
-export function planPrStates(tasks: Task[], lookup: PrStateLookup): { task: Task; prState: PrState }[] {
-  return tasks.flatMap((task) => {
-    const url = task.closed || task.status === 'done' ? undefined : statePrOf(task);
-    const prState = url === undefined ? undefined : lookup.states.get(url);
-    return prState === undefined || prState === task.prState ? [] : [{ task, prState }];
-  });
-}
-
-async function refreshPrStates(deps: IntakeDeps, tasks: Task[]): Promise<number> {
-  const { backend, github, print: log } = deps;
-  const urls = prsToCheck(tasks);
-  if (urls.length === 0) return 0;
-  let lookup: PrStateLookup;
-  try {
-    lookup = await github.prStates(urls);
-  } catch (error) {
-    if (!(error instanceof GitHubError)) throw error;
-    log(`WARN PR states not refreshed: ${error.message}`);
-    return 0;
-  }
-  for (const url of lookup.unreadable) log(`WARN no state for ${url}`);
-  let changed = 0;
-  for (const { task, prState } of planPrStates(tasks, lookup)) {
-    try {
-      await backend.setPrState(task.id, prState);
-    } catch (error) {
-      if (!(error instanceof BackendError && error.missingFeature === 'task.pr-state')) throw error;
-      log(`WARN PR states not written: ${error.message}`);
-      return changed;
-    }
-    log(`PRSTATE ${task.id} ${prState}`);
-    changed += 1;
-  }
-  return changed;
-}
-
 export interface IntakeDeps extends Context {
   github: GitHub;
   now: () => Date;
+  // Told when the PR states were looked up, so the dispatcher does not look them up again within its interval.
+  prRefresh?: PrRefreshState;
 }
 
 // The plan came from an earlier listing: a task that changed status since (a dispatcher claimed it, say) is left alone.
@@ -231,12 +192,19 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
   }
   log(`INTAKE prs=${prs.length} created=${created} requeued=${requeued} done=${done}`);
   // Last, so a GitHub problem here never holds back the review work above.
+  if (!deps.dryRun) deps.prRefresh?.markRefreshed(deps.now());
   const prStates = await refreshPrStates(deps, tasks);
   if (prStates > 0) log(`PRSTATES changed=${prStates}`);
 }
 
 export async function intakeMain({ dryRun }: { dryRun: boolean }): Promise<void> {
   await skipTickWhileServerOlder(() =>
-    runIntake({ ...buildContext(dryRun), print, github: createGitHub(), now: () => new Date() }),
+    runIntake({
+      ...buildContext(dryRun),
+      print,
+      github: createGitHub(),
+      now: () => new Date(),
+      prRefresh: createPrRefreshState(prRefreshFile(getPaths().stateDir)),
+    }),
   );
 }

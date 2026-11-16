@@ -1,5 +1,14 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -235,7 +244,14 @@ export function whichOnPath(program: string, path: string | undefined = process.
     .split(':')
     .filter((dir) => dir !== '')
     .map((dir) => join(dir, program))
-    .find((candidate) => existsSync(candidate));
+    .find((candidate) => {
+      try {
+        accessSync(candidate, constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    });
 }
 
 export function realSetupDeps(
