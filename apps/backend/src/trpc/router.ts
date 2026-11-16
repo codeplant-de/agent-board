@@ -143,29 +143,25 @@ const tasksRouter = router({
 
   /**
    * A sealed prompt with its sealed title; it runs in the default directory of whichever machine takes it, or, with `place`,
-   * only on that machine and in that sealed directory (a polish task runs where its Backlog task would). `id` is the task's,
-   * or the schedule's when `when` repeats (its occurrences get ids of the server's): the fields are sealed against it.
+   * only on that machine and in that sealed directory (a polish task runs where its Backlog task would; a repeating task's
+   * occurrences all do). `id` is the task's, or the schedule's when `when` repeats (its occurrences get ids of the server's):
+   * the fields are sealed against it.
    */
   create: procedure
     .input(
-      z
-        .object({
-          id,
-          title: sealed('title', 'title'),
-          input: sealed('input', 'input'),
-          priority: priority.default('normal'),
-          /** The Claude model of its runs; absent is claude's default. */
-          model: model.optional(),
-          /** The task this one follows from, which must be on the board. */
-          parentId: id.optional(),
-          when: z.union([repeat, z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
-          /** The machine and the sealed directory the task runs in; a schedule made here has none. */
-          place: z.object({ machine: machineName, workdir: sealed('workdir', 'directory') }).optional(),
-        })
-        .refine((input) => input.place === undefined || typeof input.when !== 'object' || 'at' in input.when, {
-          message: 'A repeating task made in the browser has no directory.',
-          path: ['place'],
-        }),
+      z.object({
+        id,
+        title: sealed('title', 'title'),
+        input: sealed('input', 'input'),
+        priority: priority.default('normal'),
+        /** The Claude model of its runs; absent is claude's default. */
+        model: model.optional(),
+        /** The task this one follows from, which must be on the board. */
+        parentId: id.optional(),
+        when: z.union([repeat, z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
+        /** The machine and the sealed directory the task runs in, or its schedule's occurrences (sealed for the schedule). */
+        place: z.object({ machine: machineName, workdir: sealed('workdir', 'directory') }).optional(),
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const { title, when, place } = input;
@@ -176,6 +172,7 @@ const tasksRouter = router({
           input: input.input,
           priority: input.priority,
           ...(input.model === undefined ? {} : { model: input.model }),
+          ...(place === undefined ? {} : { machine: place.machine, workdir: place.workdir }),
           ...('every' in when ? { everyMs: when.every } : { cron: when.cron, timezone: when.timezone }),
           ...(when.at ? { startAt: when.at } : {}),
           ...(when.times ? { times: when.times } : {}),

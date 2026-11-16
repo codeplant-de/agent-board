@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BoardTask } from '../lib/trpc';
 import { TaskPage } from './TaskPage';
 
-const shown = vi.hoisted(() => ({ task: undefined as unknown }));
+const shown = vi.hoisted(() => ({ task: undefined as unknown, machines: [] as unknown[] }));
 
 vi.mock('../lib/trpc', () => ({
   POLL_MS: 60_000,
@@ -20,6 +20,9 @@ vi.mock('../lib/trpc', () => ({
         }),
       },
       setPriority: { mutationOptions: () => ({ mutationFn: async () => null }) },
+    },
+    machines: {
+      list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => shown.machines }) },
     },
   }),
 }));
@@ -82,6 +85,7 @@ function renderPage(overrides: Partial<BoardTask>) {
 describe('TaskPage pull request link', () => {
   beforeEach(() => {
     shown.task = undefined;
+    shown.machines = [];
   });
 
   it('links the PR the agent reported', async () => {
@@ -120,5 +124,21 @@ describe('TaskPage pull request link', () => {
   it('shows a closed PR as closed', async () => {
     renderPage({ pr: 'https://github.com/acme/app/pull/2', prState: 'closed' });
     expect(await screen.findByLabelText('PR closed')).toBeInTheDocument();
+  });
+});
+
+describe('TaskPage directory', () => {
+  beforeEach(() => {
+    shown.machines = [{ name: 'laptop', shown: 'laptop', dirs: ['/work/app'] }];
+  });
+
+  it('marks a directory that its machine does not list', async () => {
+    renderPage({ machine: 'laptop', workdir: '/work/other' });
+    expect(await screen.findByText(/laptop:\/work\/other · not listed on laptop/)).toBeInTheDocument();
+  });
+
+  it('says nothing about a directory below a listed one', async () => {
+    renderPage({ machine: 'laptop', workdir: '/work/app/.claude/worktrees/x' });
+    expect(await screen.findByText('laptop:/work/app/.claude/worktrees/x')).toBeInTheDocument();
   });
 });

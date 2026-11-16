@@ -45,9 +45,17 @@ describe('polishTask', () => {
     const sealed = await sealNewTask(keys, { input: 'q', place: { machine: 'deskwork', workdir: '/home/me/code' } });
     expect(sealed.place?.machine).toBe('deskwork');
     expect(await open(keys, 'workdir', `task:${sealed.id}`, sealed.place?.workdir ?? '')).toBe('/home/me/code');
-    await expect(
-      sealNewTask(keys, { input: 'q', when: { every: 60_000 }, place: { machine: 'deskwork', workdir: '/x' } }),
-    ).rejects.toThrow(InputError);
+  });
+
+  it('seals the directory of a repeating task for its schedule, which the occurrences copy', async () => {
+    const sealed = await sealNewTask(keys, {
+      input: 'q',
+      when: { every: 60_000 },
+      place: { machine: 'deskwork', workdir: '/home/me/code' },
+    });
+    expect(sealed.place?.machine).toBe('deskwork');
+    expect(await open(keys, 'workdir', `schedule:${sealed.id}`, sealed.place?.workdir ?? '')).toBe('/home/me/code');
+    await expect(open(keys, 'workdir', `task:${sealed.id}`, sealed.place?.workdir ?? '')).rejects.toThrow();
   });
 });
 

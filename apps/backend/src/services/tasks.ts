@@ -573,7 +573,7 @@ export async function markDone(db: DbOrTx, taskId: string, by: string): Promise<
   });
 }
 
-/** Start over: a new session on whichever machine claims it first. */
+/** Start over: a new session in the directory the task was created with (the machine's default one when it had none). */
 export async function rerunFresh(db: DbOrTx, taskId: string, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
@@ -584,7 +584,7 @@ export async function rerunFresh(db: DbOrTx, taskId: string, by: string): Promis
       place: 'bottom',
       by: 'user',
       // A fresh run is not a resume after a wait, even when it comes out of Waiting.
-      set: { next: 'fresh', sessionId: null, workdir: null, closed: false, closedAt: null, wokenAt: null },
+      set: { next: 'fresh', sessionId: null, workdir: task.homeWorkdir, closed: false, closedAt: null, wokenAt: null },
     });
   });
 }
