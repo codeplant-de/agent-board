@@ -636,3 +636,117 @@ test('a board server without PR states is told once and intake still finishes', 
   });
   assert.equal(logs.filter((line) => line.startsWith('WARN PR states not written')).length, 1);
 });
+
+const AGENT_CONFIG = {
+  ...CONFIG,
+  intake: {
+    prompt: CONFIG.intake.prompt,
+    priority: CONFIG.intake.priority,
+    agent: 'reviewer',
+    allowedTools: [],
+    disallowedTools: [],
+    env: [],
+    mcpServers: [],
+  },
+  agents: {
+    reviewer: { description: 'd', tools: ['Read'], allowedTools: [], disallowedTools: [], env: [], mcpServers: [] },
+  },
+};
+
+function runWith(backend: ReturnType<typeof fakeBackend>, config: typeof CONFIG, prs: LivePr[]) {
+  const logs: string[] = [];
+  const done = runIntake({
+    backend,
+    config,
+    dryRun: false,
+    print: (line: string) => logs.push(line),
+    github: { ...NO_PR_STATES, listReviewRequested: async () => ({ prs, unreadable: [] }) },
+    now: () => NOW,
+  });
+  return { logs, done };
+}
+
+test('with intake.agent, a new task is created with the agent', async () => {
+  const backend = fakeBackend([]);
+  const drafts: (string | undefined)[] = [];
+  const addTask = backend.addTask.bind(backend);
+  backend.addTask = async (draft) => (drafts.push(draft.agent), addTask(draft));
+  const { logs, done } = runWith(backend, AGENT_CONFIG, [pr(1)]);
+  await done;
+  assert.deepEqual(drafts, ['reviewer']);
+  assert.ok(logs.includes('CREATED #1'));
+});
+
+test('without intake.agent, a new task is created without an agent', async () => {
+  const backend = fakeBackend([]);
+  const drafts: (string | undefined)[] = [];
+  const addTask = backend.addTask.bind(backend);
+  backend.addTask = async (draft) => (drafts.push(draft.agent), addTask(draft));
+  await runWith(backend, CONFIG, [pr(1)]).done;
+  assert.deepEqual(drafts, [undefined]);
+});
+
+test('a requeue keeps the agent of the task', async () => {
+  const queued = { ...taskFor(1, 'needs-me'), agent: 'reviewer' };
+  const backend = fakeBackend([queued]);
+  await runWith(backend, AGENT_CONFIG, [pr(1)]).done;
+  assert.deepEqual(
+    backend.writes.map((w) => w.split(':')[0]),
+    ['status c1 -> todo', 'input c1', 'next c1', 'note c1 (system)'],
+  );
+  assert.deepEqual((backend.tasks[0] as { seal?: unknown }).seal, {
+    createdBy: 'intake',
+    scheduleId: null,
+    agent: 'reviewer',
+  });
+});
+
+test('with intake.agent, a task without an agent is not queued again', async () => {
+  const backend = fakeBackend([taskFor(1, 'needs-me')]);
+  const { logs, done } = runWith(backend, AGENT_CONFIG, [pr(1)]);
+  await done;
+  assert.deepEqual(backend.writes, []);
+  assert.ok(logs.includes('SKIP #1 its task has no agent, so this machine would not run it'));
+});
+
+test('a legacy intake queues a task without an agent again', async () => {
+  const backend = fakeBackend([taskFor(1, 'needs-me')]);
+  await runWith(backend, CONFIG, [pr(1)]).done;
+  assert.ok(backend.writes.includes('status c1 -> todo'));
+});
+
+test('a server without task.agent gets no task from an intake with an agent, and the tick goes on', async () => {
+  const backend = fakeBackend([]);
+  const refusal = Object.assign(new BackendError('the board server does not support running a task as an agent yet'), {
+    missingFeature: 'task.agent' as const,
+  });
+  backend.addTask = async () => {
+    throw refusal;
+  };
+  const { logs, done } = runWith(backend, AGENT_CONFIG, [pr(1), pr(2)]);
+  await done;
+  assert.deepEqual(backend.writes, []);
+  assert.equal(logs.filter((line) => line.startsWith('SKIP #') && line.includes('no task created')).length, 2);
+  assert.ok(logs.includes('INTAKE prs=2 created=0 requeued=0 done=0'));
+});
+
+test('an intake agent this machine does not define stops the run before any listing or write', async () => {
+  const backend = fakeBackend([]);
+  let listed = false;
+  await assert.rejects(
+    runIntake({
+      backend,
+      config: { ...AGENT_CONFIG, agents: {} },
+      dryRun: false,
+      print: () => undefined,
+      github: {
+        ...NO_PR_STATES,
+        listReviewRequested: async () => ((listed = true), { prs: [pr(1)], unreadable: [] }),
+      },
+      now: () => NOW,
+    }),
+    /intake creates no tasks: intake.agent names "reviewer"/,
+  );
+  assert.equal(listed, false);
+  assert.deepEqual(backend.writes, []);
+});

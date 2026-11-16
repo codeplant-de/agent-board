@@ -676,3 +676,39 @@ test("an agent's plugin placeholder that does not resolve is a warning: unreadab
     [],
   );
 });
+
+const intakeResults = async (config: unknown) =>
+  (
+    await runChecks(
+      machine({
+        ...GOOD,
+        [`${CONFIG_DIR}/config.json`]: { text: JSON.stringify({ machine: 'box', ...(config as object) }) },
+      }),
+    )
+  ).filter((result) => result.name === 'intake agent' || (result.name === 'config.json' && result.level === 'fail'));
+
+test('doctor says intake runs as its agent, and fails when the agent is not defined', async () => {
+  const good = await intakeResults({ agents: { reviewer: agent() }, intake: { agent: 'reviewer' } });
+  assert.deepEqual(
+    good.map((r) => [r.name, r.level, r.message]),
+    [['intake agent', 'ok', 'tasks run as reviewer']],
+  );
+  const missing = await intakeResults({ intake: { agent: 'reviewer' } });
+  assert.equal(missing[0]?.level, 'fail');
+  assert.match(missing[0]?.message ?? '', /does not define.*intake creates no tasks/);
+});
+
+test('doctor warns that intake lists are deprecated, and not about an intake without lists', async () => {
+  const legacy = await intakeResults({ intake: { allowedTools: ['Read'] } });
+  assert.equal(legacy[0]?.level, 'warn');
+  assert.equal(legacy[0]?.hint, 'move them into agents.<name> and set intake.agent');
+  assert.deepEqual(await intakeResults({ intake: {} }), []);
+});
+
+test('doctor fails a config with both intake.agent and the lists', async () => {
+  const both = await intakeResults({ agents: { reviewer: agent() }, intake: { agent: 'reviewer', env: ['X'] } });
+  assert.ok(
+    both.some((r) => r.level === 'fail' && r.message.includes('both agent')),
+    JSON.stringify(both),
+  );
+});

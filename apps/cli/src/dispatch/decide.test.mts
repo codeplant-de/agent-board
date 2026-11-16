@@ -167,3 +167,15 @@ test('decideWake: a timer wakes at its end; a check runs when due, wakes on time
   assert.equal(decideWake({ ...base, task: { wakeAt: at(29), waitCheck: true }, check }).kind, 'timeout');
   assert.equal(decideWake({ ...base, task: { wakeAt: at(50), waitCheck: true }, check: undefined }).kind, 'wake');
 });
+
+test('a machine whose intake runs as an agent does not serve an intake task without one', () => {
+  const agent = { description: 'd', tools: ['Read'], allowedTools: [], disallowedTools: [], env: [], mcpServers: [] };
+  const config = { intakeEnabled: true, intake: { agent: 'reviewer' }, agents: { reviewer: agent }, agentErrors: {} };
+  const old = task({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
+  assert.equal(
+    notServableHere(old, 'here', CONFIG.repos, config),
+    'intake here runs as an agent, and this task has none',
+  );
+  assert.equal(notServableHere({ ...old, agent: 'reviewer' }, 'here', CONFIG.repos, config), undefined);
+  assert.equal(notServableHere(old, 'here', CONFIG.repos, { ...config, intake: {} }), undefined);
+});

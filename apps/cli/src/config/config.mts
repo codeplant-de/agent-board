@@ -27,6 +27,8 @@ export interface IntakeConfig {
   // The task's prompt; {url} is the PR's URL.
   prompt: string;
   priority: Priority;
+  // The agent (a key of `agents`) intake's tasks run as. Without it the tasks run under the lists below, which are deprecated.
+  agent?: string;
   allowedTools: string[];
   disallowedTools: string[];
   // Variables the worker copies from the checkout's .claude/settings.json and settings.local.json into the run:
@@ -292,14 +294,35 @@ function parseIntake(raw: unknown): IntakeConfig {
     throw new ConfigError('config: intake.prompt must be a prompt with {url} in it');
   const priority = obj['priority'] ?? DEFAULT_PRIORITY;
   if (!isPriority(priority)) throw new ConfigError(`config: intake.priority must be one of ${PRIORITIES.join(', ')}`);
-  return {
-    prompt,
-    priority,
+  const agent = obj['agent'];
+  if (agent !== undefined && (typeof agent !== 'string' || !isAgentName(agent)))
+    throw new ConfigError(`config: intake.agent must be an agent name of ${AGENT_NAME_RULE}`);
+  const lists = {
     allowedTools: stringList(obj, 'allowedTools', 'intake.'),
     disallowedTools: stringList(obj, 'disallowedTools', 'intake.'),
     env: envNames(obj, 'intake.'),
     mcpServers: stringList(obj, 'mcpServers', 'intake.'),
   };
+  if (agent !== undefined && hasIntakeLists(lists))
+    throw new ConfigError(
+      'config: intake sets both agent and the deprecated allowedTools, disallowedTools, env or mcpServers; keep the agent and move the lists into agents.<name>',
+    );
+  return { prompt, priority, ...(agent === undefined ? {} : { agent }), ...lists };
+}
+
+/** Whether intake still has the deprecated lists of its own. */
+export function hasIntakeLists(intake: Omit<IntakeConfig, 'prompt' | 'priority' | 'agent'>): boolean {
+  return [intake.allowedTools, intake.disallowedTools, intake.env, intake.mcpServers].some((list) => list.length > 0);
+}
+
+/** Why intake's agent cannot run its tasks on this machine, or undefined when none is set or it is usable. */
+export function intakeAgentProblem(config: Pick<Config, 'intake' | 'agents' | 'agentErrors'>): string | undefined {
+  const { agent } = config.intake;
+  if (agent === undefined || Object.hasOwn(config.agents, agent)) return undefined;
+  const unreadable = Object.hasOwn(config.agentErrors, agent) ? config.agentErrors[agent] : undefined;
+  return unreadable === undefined
+    ? `intake.agent names "${agent}", which agents in config.json does not define`
+    : `intake.agent names "${agent}", which cannot be used (${unreadable})`;
 }
 
 // The keys of one `agents` entry. Unlike the rest of config.json an unknown one is an error: a misspelt deny list would
@@ -448,7 +471,7 @@ const TOP_KEYS = [
   'dirs',
 ] as const;
 const LANE_KEYS = ['skills', 'slots', 'cwd'] as const;
-const INTAKE_KEYS = ['prompt', 'priority', 'allowedTools', 'disallowedTools', 'env', 'mcpServers'] as const;
+const INTAKE_KEYS = ['prompt', 'priority', 'agent', 'allowedTools', 'disallowedTools', 'env', 'mcpServers'] as const;
 
 function editDistance(a: string, b: string): number {
   let previous = Array.from({ length: b.length + 1 }, (_, index) => index);

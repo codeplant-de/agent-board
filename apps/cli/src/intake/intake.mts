@@ -10,6 +10,7 @@ import { buildContext, print, skipTickWhileServerOlder } from '../cli.mts';
 import type { Context } from '../cli.mts';
 import type { Backend, PrState, Task, TaskPatch } from '@agent-board/shared';
 import { parsePrUrl, prUrlIn, statePrOf } from '@agent-board/shared';
+import { intakeAgentProblem } from '../config/config.mts';
 import { BackendError, isVocabularyRefusal } from '../backend/backend.mts';
 import { updateCliHint } from '../backend/contract-check.mts';
 import { createGitHub, GitHubError } from './github.mts';
@@ -132,6 +133,8 @@ async function updateIfUnchanged(
 
 export async function runIntake(deps: IntakeDeps): Promise<void> {
   const { backend, config, print: log } = deps;
+  const agentProblem = intakeAgentProblem(config);
+  if (agentProblem !== undefined) throw new Error(`intake creates no tasks: ${agentProblem}`);
   // A failed listing throws before any write: it must not read as an empty queue.
   const { prs, unreadable } = await deps.github.listReviewRequested(Object.keys(config.repos));
   for (const url of unreadable) log(`WARN skipped ${url}`);
@@ -175,13 +178,20 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
           priority: config.intake.priority,
           dedupeKey: pr.url,
           createdBy: 'intake',
+          ...(config.intake.agent === undefined ? {} : { agent: config.intake.agent }),
         })
         .catch((error: unknown) => {
+          // Without the feature the task would run under no agent: it is not created at all.
+          if (error instanceof BackendError && error.missingFeature === 'task.agent') {
+            return error;
+          }
           // The board's task for this PR uses a value this CLI does not know, so list-tasks hid it and add-task dedupes to it.
           if (isVocabularyRefusal(error)) return undefined;
           throw error;
         });
-      if (result === undefined) {
+      if (result instanceof BackendError) {
+        log(`SKIP #${pr.number} no task created: ${result.message}`);
+      } else if (result === undefined) {
         log(`SKIP #${pr.number} its task on the board uses a value this CLI does not know; ${updateCliHint()}`);
       } else if (result.created) {
         log(`CREATED #${pr.number}`);
@@ -192,6 +202,11 @@ export async function runIntake(deps: IntakeDeps): Promise<void> {
     } else {
       // One atomic update: a head changed without the move would leave the task in Needs me for good.
       // A new head is a new review: a fresh session, not a resume of the last one.
+      if (config.intake.agent !== undefined && action.task.agent == null) {
+        // An agent cannot be added to an existing task, and this machine would not run it without one.
+        log(`SKIP #${pr.number} its task has no agent, so this machine would not run it`);
+        continue;
+      }
       const prompt = config.intake.prompt.replaceAll('{url}', pr.url);
       if (
         !(await updateIfUnchanged(

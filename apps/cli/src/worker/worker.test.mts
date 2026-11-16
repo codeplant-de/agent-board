@@ -183,6 +183,18 @@ test('a worker refuses an intake task on a machine without an intake block', asy
   assert.ok(calls.some((c) => c.startsWith('append w1:')));
 });
 
+test('a worker refuses an intake task without an agent when intake here runs as an agent', async () => {
+  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
+  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, agent: 'reviewer' }, agents: { reviewer: REVIEWER } };
+  Object.assign(backend.tasks[0]!, {
+    createdBy: 'intake',
+    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
+  });
+  await runWorker(deps, 'w1');
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('runs as an agent')));
+  assert.ok(calls.some((c) => c.startsWith('append w1:')));
+});
+
 test('a missing working directory is named in the error', async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
   deps.dirExists = () => false;
