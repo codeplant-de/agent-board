@@ -12,10 +12,10 @@ import type { UpdateState } from '../src/update-state.mts';
 import { parseWorkerUnits, SystemError } from '../src/system.mts';
 import type { System } from '../src/system.mts';
 import { START_MARKER } from '../src/decide.mts';
-import { CONFIG, DATA_KEY, fakeBackend, fakeRunFiles, fakeWaitStore, task } from './helpers.mts';
+import { CONFIG, DATA_KEY, fakeBackend, fakeRunFiles, fakeTaskFiles, fakeWaitStore, task } from './helpers.mts';
 import type { CheckResult, WaitCheck } from '../src/waits.mts';
 import { TASK_FILES_KEEP_MS } from '../src/dispatch.mts';
-import type { TaskFile, TaskFileStore } from '../src/task-files.mts';
+import type { TaskFile } from '../src/task-files.mts';
 import type { FakeBackend } from './helpers.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
@@ -95,15 +95,7 @@ function setup(
       return 'updated';
     },
   };
-  const taskFileList = [...initialFiles];
-  const taskFiles: TaskFileStore & { files: TaskFile[] } = {
-    files: taskFileList,
-    list: () => [...taskFileList],
-    remove: ({ kind, taskId }) => {
-      const at = taskFileList.findIndex((file) => file.kind === kind && file.taskId === taskId);
-      if (at >= 0) taskFileList.splice(at, 1);
-    },
-  };
+  const taskFiles = fakeTaskFiles(initialFiles);
   const deps: DispatchDeps = {
     backend,
     config: { ...CONFIG, autoUpdate: updating.autoUpdate ?? 'incompatible' },
