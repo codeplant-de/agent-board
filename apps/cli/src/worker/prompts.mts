@@ -146,3 +146,8 @@ export function boardRules(task: Task): string {
       : []),
   ].join('\n');
 }
+
+/** Told to a resumed session whose directory is gone, ahead of the reply: it has to get back to its worktree itself. */
+export function goneDirNotice(gone: string, checkout: string): string {
+  return `The directory this session last worked in, ${gone}, no longer exists on this machine (it was deleted, for example when its worktree was cleaned up). This run continues the same session in ${checkout}, the git checkout that held it. Anything in ${gone} that was not committed and pushed is lost. Before you change any files, get back to where you were working: if it was a git worktree, recreate it on its branch the way this repository creates worktrees (see its CLAUDE.md) and move into it, then check that the branch still has your last commits (locally or on the remote), and say in your next board comment which commit you continue from. If the branch is gone as well, say so with \`board comment\` and ask the user how to go on instead of working in this checkout.`;
+}

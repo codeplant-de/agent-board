@@ -1,4 +1,5 @@
 import { realpathSync, statSync } from 'node:fs';
+import { dirname, parse } from 'node:path';
 import { isSafeWorkdir } from '@agent-board/shared';
 import type { Backend, MachineDir } from '@agent-board/shared';
 import type { Config, DirEntry } from './config.mts';
@@ -52,6 +53,18 @@ export function isDirectory(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The nearest parent of `path` with a `.git` in it (a directory in a main checkout, a file in a linked worktree), never
+ * the filesystem root: the checkout that held a worktree folder below it.
+ */
+export function checkoutAbove(path: string, hasGit: (dir: string) => boolean): string | undefined {
+  const { root } = parse(path);
+  for (let dir = dirname(path); dir !== root && dir !== dirname(dir); dir = dirname(dir)) {
+    if (hasGit(`${dir}/.git`)) return dir;
+  }
+  return undefined;
 }
 
 /** What `syncDirs` did: sent the list, found the board's copy current, found the server unable to hold one, or had no list. */

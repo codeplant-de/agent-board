@@ -8,6 +8,7 @@
  * agent's liveness on to the board.
  */
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { BackendError, isVocabularyRefusal } from '../backend/backend.mts';
 import { updateCliHint, verifyContract } from '../backend/contract-check.mts';
@@ -28,9 +29,9 @@ import {
   supervise,
 } from './plan.mts';
 import type { Invocation } from './plan.mts';
-import { inboxMessageText, pauseMessageText } from './prompts.mts';
+import { goneDirNotice, inboxMessageText, pauseMessageText } from './prompts.mts';
 import { getPaths } from '../config/config.mts';
-import { isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
+import { checkoutAbove, isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import { selfCommand } from '../self/self.mts';
 import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
 import { createRunFiles } from './runtime.mts';
@@ -67,6 +68,8 @@ export interface WorkerDeps extends Context {
   // Root of a plugin such as "pr-review@ccc"; throws with the reason when it cannot be resolved.
   pluginPath: (key: string) => string;
   dirExists: (path: string) => boolean;
+  // Whether anything is at the path, a file included: a linked worktree's `.git` is a file.
+  pathExists: (path: string) => boolean;
   // The real path of an existing path; undefined when it is not there. Decides whether a directory is in the dirs list.
   realpath: (path: string) => string | undefined;
   // The `env` blocks of a checkout's .claude/settings*.json.
@@ -160,12 +163,34 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       plan.invocation.args.push('--mcp-config', JSON.stringify(servers.config));
   }
   if (!deps.dirExists(plan.invocation.cwd)) {
-    const own = task.workdir === plan.invocation.cwd;
-    return fail(
-      own
-        ? `This task's directory is gone: ${plan.invocation.cwd}. Recreate it to run there, or use Re-run fresh to start over${task.createdBy === 'intake' ? '' : ' in the directory it was created with, or the default one when it had none'}.`
-        : `The working directory does not exist: ${plan.invocation.cwd}`,
-    );
+    const gone = plan.invocation.cwd;
+    if (task.workdir !== gone) return fail(`The working directory does not exist: ${gone}`);
+    const fresh = `use Re-run fresh to start over${task.createdBy === 'intake' ? '' : ' in the directory it was created with, or the default one when it had none'}`;
+    // A resume keeps its session in another checkout; a fresh run has nothing worth saving, and intake never moves.
+    const recovers = run.kind === 'resume' && task.createdBy !== 'intake';
+    if (!recovers) return fail(`This task's directory is gone: ${gone}. Recreate it to run there, or ${fresh}.`);
+    const fallback = checkoutAbove(gone, deps.pathExists);
+    if (fallback === undefined || !deps.dirExists(fallback))
+      return fail(
+        `This task's directory is gone: ${plainLine(gone)}, and no git checkout above it exists on this machine to continue the session in. Recreate the directory to resume there, or ${fresh}.`,
+      );
+    if (!isAllowedDir(config.dirs, fallback, deps.realpath))
+      return fail(
+        `This task's directory is gone: ${plainLine(gone)}, and ${plainLine(fallback)}, the checkout that held it, is not a listed directory on ${config.machine}. Run "board dirs add" in it on ${config.machine} to continue the session there, recreate the directory to resume there, or ${fresh}.`,
+      );
+    const [oldDir, newDir] = [plainLine(gone), plainLine(fallback)];
+    plan.invocation.cwd = fallback;
+    plan.invocation.prompt = `${goneDirNotice(oldDir, newDir)}\n\n${plan.invocation.prompt}`;
+    deps.appendLog(taskId, `directory ${oldDir} is gone; continuing the session in ${newDir}`);
+    await backend
+      .addNote(
+        task.id,
+        `This task's directory is gone: ${oldDir}. Its session continues in ${newDir}, the git checkout that held it; the agent was told to recreate its worktree there. Changes in ${oldDir} that were not committed and pushed are lost.`,
+        { author: 'system' },
+      )
+      .catch((error: unknown) => {
+        deps.appendLog(taskId, `could not add the note: ${errorText(error)}`);
+      });
   }
   if (!isAllowedDir(config.dirs, plan.invocation.cwd, deps.realpath))
     return fail(
@@ -470,6 +495,7 @@ export async function workerMain(taskId: string): Promise<void> {
     appendLog,
     pluginPath: resolvePluginPath,
     dirExists: isDirectory,
+    pathExists: existsSync,
     realpath: tryRealpath,
     settingsEnv: readSettingsEnv,
     mcpServers: readMcpServers,
