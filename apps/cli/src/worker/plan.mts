@@ -112,14 +112,18 @@ export function planRun(task: Task, notes: Note[], options: RunPlanOptions): Run
 /**
  * The run this worker started is no longer the task's to report on: the task was closed (archived, parked by hand: nobody
  * is waiting), or it was taken back and run again, so the `running` it shows is another run's. A task that left Running
- * is still this run's: the board drops `runStartedAt` with the move, so only a running task's start tells runs apart.
+ * is still this run's: the board drops `run` and `runStartedAt` with the move, so only a running task's run id (or, from a
+ * board without `task.run`, its start) tells runs apart.
  */
 export function isRunOver(
-  started: Pick<Task, 'runStartedAt'>,
-  after: Pick<Task, 'closed' | 'status' | 'runStartedAt'>,
+  started: Pick<Task, 'runStartedAt' | 'run'>,
+  after: Pick<Task, 'closed' | 'status' | 'runStartedAt' | 'run'>,
 ): boolean {
   if (after.closed) return true;
-  return after.status === 'running' && after.runStartedAt?.getTime() !== started.runStartedAt?.getTime();
+  if (after.status !== 'running') return false;
+  // The run id when the board has one (`task.run`); its start otherwise.
+  if (started.run !== undefined) return after.run !== started.run;
+  return after.runStartedAt?.getTime() !== started.runStartedAt?.getTime();
 }
 
 export type Outcome =

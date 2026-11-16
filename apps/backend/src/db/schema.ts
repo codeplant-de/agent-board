@@ -135,6 +135,8 @@ export const tasks = pgTable(
     lastActiveAt: timestamp('last_active_at', { withTimezone: true }),
     /** When the current run was claimed; null unless running. */
     runStartedAt: timestamp('run_started_at', { withTimezone: true }),
+    /** The current run's id, new with every claim; null unless running. A call that names a run is refused for another one. */
+    runId: text('run_id'),
     /** When a worker gave up the task's slot; kept through the claim until the run's first update or its end. */
     pausedAt: timestamp('paused_at', { withTimezone: true }),
     /** Todo only: no worker claims the task before this time. Cleared when the task leaves Todo. */

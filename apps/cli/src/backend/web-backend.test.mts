@@ -10,6 +10,7 @@ import {
   MIN_SERVER,
   serializeSchedule,
   serializeTask,
+  SERVER_FEATURES,
 } from '@agent-board/shared';
 import { BackendError, dryRunBackend } from './backend.mts';
 import { createWebBackend } from './web-backend.mts';
@@ -623,4 +624,69 @@ test('a dry run prints the directory list it would send and sends nothing', asyn
   await dry.setDirs('here', [{ path: '/a' }, { path: '/b' }]);
   assert.deepEqual(lines, ['DRY set-dirs 2 directories']);
   assert.deepEqual(seen, []);
+});
+
+test('a run names itself in the calls for its own task that the server checks against the run, when the server can', async () => {
+  const RUN = 'r'.repeat(22);
+  const make = (features: string[]) => {
+    const seen: Seen[] = [];
+    const fetcher: Fetch = async (url, init) => {
+      const command = url.slice(`${config.url}/api/machine/`.length);
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      seen.push({ command, body, headers: new Headers(init.headers) });
+      const result =
+        command === 'version'
+          ? { ...VERSION_ANSWER, features }
+          : command === 'fail'
+            ? { applied: true, task: await taskJson('abc') }
+            : command === 'run-inbox'
+              ? { stop: false, messages: [] }
+              : ['heartbeat', 'ask', 'ack-messages', 'add-note'].includes(command)
+                ? null
+                : await taskJson('abc');
+      return new Response(JSON.stringify({ result }), { status: 200 });
+    };
+    const backend = createWebBackend({
+      loadConfig: () => config,
+      fetch: fetcher,
+      run: () => ({ task: 'abc', run: RUN }),
+    });
+    return { seen, backend };
+  };
+  const exercise = async (backend: ReturnType<typeof createWebBackend>, id: string) => {
+    await backend.updateTask(id, { status: 'done' });
+    await backend.ask(id, { body: 'abe1.body', questions: 'abe1.questions' });
+    await backend.heartbeat(id, { lane: 'l', borrowed: false });
+    await backend.pause(id, noteInput);
+    await backend.fail(id, noteInput);
+    await backend.wait(id, { ...noteInput, wakeAt: new Date(Date.now() + 60_000), check: false });
+    await backend.runInbox(id);
+    await backend.ackMessages(id, { ids: [] });
+    await backend.stopped(id, noteInput);
+    await backend.addNote(id, noteInput);
+    await backend.getTask(id);
+  };
+  const fenced = ['update-task', 'ask', 'heartbeat', 'pause', 'fail', 'wait', 'run-inbox', 'ack-messages', 'stopped'];
+
+  const current = make([...SERVER_FEATURES]);
+  await exercise(current.backend, 'abc');
+  const calls = current.seen.filter((request) => request.command !== 'version');
+  assert.deepEqual(
+    calls.filter((request) => request.body['run'] === RUN).map((request) => request.command),
+    fenced,
+  );
+  assert.deepEqual(
+    calls.filter((request) => !('run' in request.body)).map((request) => request.command),
+    ['add-note', 'get-task'],
+  );
+
+  // Another task is not the run's: nothing names the run.
+  current.seen.length = 0;
+  await exercise(current.backend, 'other');
+  assert.ok(current.seen.every((request) => !('run' in request.body)));
+
+  // A server without `task.run` gets the calls as before.
+  const older = make(SERVER_FEATURES.filter((feature) => feature !== 'task.run'));
+  await exercise(older.backend, 'abc');
+  assert.ok(older.seen.every((request) => !('run' in request.body)));
 });

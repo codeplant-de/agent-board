@@ -818,35 +818,47 @@ test('a note carries pending and deliveredAt when the server has them, and the p
   assert.deepEqual(parseWireNote(serializeWireNote(delivered)), delivered);
 });
 
+// A running task as a server without `run-inbox` or `task.run` sends it.
+const RUNNING_WIRE = {
+  id: 't1',
+  title: SEALED_TEXT,
+  input: SEALED_TEXT,
+  status: 'running',
+  priority: 'normal',
+  closed: false,
+  machine: 'laptop',
+  sessionId: null,
+  workdir: null,
+  next: 'fresh',
+  head: null,
+  openQuestion: false,
+  createdBy: 'user',
+  lane: null,
+  borrowed: false,
+  lastActiveAt: null,
+  runStartedAt: null,
+  paused: false,
+  notBefore: null,
+  scheduleId: null,
+  wakeAt: null,
+  waitCheck: false,
+  woken: false,
+};
+
 test('a task shows stopRequested only when the server sends it', () => {
-  const wire = {
-    id: 't1',
-    title: SEALED_TEXT,
-    input: SEALED_TEXT,
-    status: 'running',
-    priority: 'normal',
-    closed: false,
-    machine: 'laptop',
-    sessionId: null,
-    workdir: null,
-    next: 'fresh',
-    head: null,
-    openQuestion: false,
-    createdBy: 'user',
-    lane: null,
-    borrowed: false,
-    lastActiveAt: null,
-    runStartedAt: null,
-    paused: false,
-    notBefore: null,
-    scheduleId: null,
-    wakeAt: null,
-    waitCheck: false,
-    woken: false,
-  };
+  const wire = RUNNING_WIRE;
   assert.equal('stopRequested' in parseWireTask(wire), false);
   assert.equal(parseWireTask({ ...wire, stopRequested: true }).stopRequested, true);
   assert.throws(() => parseWireTask({ ...wire, stopRequested: 1 }), ContractError);
+});
+
+test('a task names its run only while the server sends a well-formed run id', () => {
+  const wire = RUNNING_WIRE;
+  assert.equal('run' in parseWireTask(wire), false);
+  assert.equal('run' in parseWireTask({ ...wire, run: null }), false);
+  assert.equal(parseWireTask({ ...wire, run: 'Ab-_'.repeat(6) }).run, 'Ab-_'.repeat(6));
+  for (const run of ['short', 'has space in it 1234', '$(rm -rf /)aaaaaaaaaa', 7])
+    assert.throws(() => parseWireTask({ ...wire, run }), ContractError, String(run));
 });
 
 test('the run inbox answer and the acknowledgement are checked', () => {

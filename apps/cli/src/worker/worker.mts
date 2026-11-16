@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { BackendError, isVocabularyRefusal } from '../backend/backend.mts';
 import { updateCliHint, verifyContract } from '../backend/contract-check.mts';
 import { loadWebConfig } from '../backend/web-config.mts';
+import type { RunScope } from '../backend/web-backend.mts';
 import { watchBoardChanges } from './changes.mts';
 import { buildContext, print, UsageError } from '../cli.mts';
 import type { Context } from '../cli.mts';
@@ -91,12 +92,15 @@ export interface WorkerDeps extends Context {
   watchEveryMs: number;
   // Keeps the machine awake while the run goes (macOS); returns the function that ends it. Best effort.
   keepAwake?: () => () => void;
+  // Makes the backend's calls for the task name this run, so the board refuses them once a later run holds the task.
+  bindRun?: (scope: RunScope) => void;
 }
 
 export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void> {
   const { backend, config } = deps;
   deps.resetLog(taskId);
   const task = await backend.getTask(taskId);
+  if (task.run !== undefined) deps.bindRun?.({ task: task.id, run: task.run });
 
   const report = async (text: string): Promise<void> => {
     await backend.fail(task.id, text);
@@ -220,8 +224,10 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   // Print mode kills background work 10 minutes after the last turn; 0 waits for it, and the heartbeat and stop handling still bound the run.
   // AGENT_BOARD_START_DIR: whose settings the run loaded; a check of `board wait` gets their `env` too.
   // AGENT_BOARD_RESTRICTED: set by this machine for an agent's run, so that `board wait --check` refuses in it.
+  // AGENT_BOARD_RUN: the board's id of this run; the agent's `board` sends it with its calls for the task.
   const fixedEnv = {
     AGENT_BOARD_TASK: taskId,
+    ...(task.run === undefined ? {} : { AGENT_BOARD_RUN: task.run }),
     ...(agent.kind === 'found' ? { AGENT_BOARD_RESTRICTED: '1' } : {}),
     AGENT_BOARD_START_DIR: plan.invocation.cwd,
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
@@ -523,7 +529,8 @@ export function hookCommand(runDir: string, id: string): string {
 
 export async function workerMain(taskId: string): Promise<void> {
   requireTaskId(taskId, UsageError);
-  const context = buildContext(false);
+  let run: RunScope | undefined;
+  const context = buildContext(false, { run: () => run });
   print(`worker ${taskId} log=${logPath(taskId)}`);
   const deps: WorkerDeps = {
     ...context,
@@ -570,6 +577,9 @@ export async function workerMain(taskId: string): Promise<void> {
     },
     watchEveryMs: 15_000,
     ...(process.platform === 'darwin' ? { keepAwake: () => keepAwake() } : {}),
+    bindRun: (scope) => {
+      run = scope;
+    },
   };
   try {
     await runWorker(deps, taskId);

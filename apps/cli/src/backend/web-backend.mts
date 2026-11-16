@@ -36,6 +36,14 @@ export interface WebBackendOptions {
   warn?: (line: string) => void;
   // Told what the board answered to the version check, once per process.
   onServer?: (identity: ServerIdentity) => void;
+  // The run this process acts for, if any: a worker once it has read its task, an agent from its environment. Asked per call.
+  run?: () => RunScope | undefined;
+}
+
+// A run of a task: the calls for `task` that only its run makes carry `run`, so the server refuses them once a later run holds the task.
+export interface RunScope {
+  task: string;
+  run: string;
 }
 
 // The board over HTTP with sealed values, and the keys of the board it is connected to.
@@ -62,6 +70,19 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   stopped: 'run-inbox',
   'set-dirs': 'machine.dirs',
 };
+
+// The commands a run makes for its own task that the server checks against the task's current run (`task.run`).
+const RUN_COMMANDS: ReadonlySet<string> = new Set([
+  'update-task',
+  'ask',
+  'heartbeat',
+  'pause',
+  'fail',
+  'wait',
+  'run-inbox',
+  'ack-messages',
+  'stopped',
+]);
 
 export function createWebBackend(options: WebBackendOptions): WebBackend {
   // Loads the config, checks the API range and the data key once, before the first real call.
@@ -102,14 +123,26 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     if (draft.agent !== undefined) requireFeature((await connect()).features, 'task.agent');
   };
 
-  async function call<T>(command: string, request: MachineRequest, parse: (value: unknown) => T): Promise<T> {
-    const result = await callServer(
-      (await connectFor(command)).config,
+  // A call of the run for its own task names the run, when the server can check it.
+  const scoped = (command: string, connection: Connection, request: MachineRequest): MachineRequest => {
+    const scope = options.run?.();
+    if (scope === undefined || request.id !== scope.task || !RUN_COMMANDS.has(command)) return request;
+    return connection.features.has('task.run') ? { ...request, run: scope.run } : request;
+  };
+
+  const post = async (command: string, request: MachineRequest): Promise<unknown> => {
+    const connection = await connectFor(command);
+    return callServer(
+      connection.config,
       command,
-      request,
+      scoped(command, connection, request),
       options.fetch,
       options.timeoutMs,
     );
+  };
+
+  async function call<T>(command: string, request: MachineRequest, parse: (value: unknown) => T): Promise<T> {
+    const result = await post(command, request);
     try {
       return parse(result);
     } catch (error) {
@@ -118,7 +151,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
   }
 
   const send = async (command: string, request: MachineRequest): Promise<void> => {
-    await callServer((await connectFor(command)).config, command, request, options.fetch, options.timeoutMs);
+    await post(command, request);
   };
 
   const listOptions: ListOptions = options.onSkip === undefined ? {} : { onSkip: options.onSkip };

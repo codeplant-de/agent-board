@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { API_VERSION } from '@agent-board/shared';
 import { BackendError } from '../backend/backend.mts';
 import { UsageError } from '../cli.mts';
-import type { LinkingContext } from '../cli.mts';
+import type { ContextOptions, LinkingContext } from '../cli.mts';
 import { runBoard } from './program.mts';
 import type { ProgramOptions } from './program-shared.mts';
 import { CONFIG, fakeBackend, fakeWaitStore, linkTo, task } from '../__tests__/helpers/fakes.mts';
@@ -632,4 +632,35 @@ test('move --expect is refused inside a board run', async () => {
     /not available inside a board run/,
   );
   assert.deepEqual(backend.writes, []);
+});
+
+test('inside a board run the context names the run from the environment, when both ids are well formed', async () => {
+  const RUN = 'r'.repeat(22);
+  const runs: unknown[] = [];
+  const { backend, go } = setup();
+  const context = (dryRun: boolean, options: ContextOptions): LinkingContext => {
+    runs.push(options.run?.());
+    return { config: CONFIG, backend, dryRun, taskLink: linkTo, print: () => undefined };
+  };
+  await go(['move', ID, 'needs-me'], { env: { AGENT_BOARD_TASK: ID, AGENT_BOARD_RUN: RUN }, context });
+  await go(['move', ID, 'needs-me'], { env: { AGENT_BOARD_TASK: ID }, context });
+  await go(['move', ID, 'needs-me'], { env: { AGENT_BOARD_TASK: ID, AGENT_BOARD_RUN: 'not a run' }, context });
+  await go(['move', ID, 'needs-me'], { env: {}, context });
+  assert.deepEqual(runs, [{ task: ID, run: RUN }, undefined, undefined, undefined]);
+});
+
+test('a move the board refuses for the run is a usage error that tells the agent to end its turn', async () => {
+  const { backend, go } = setup();
+  backend.updateTask = async () => {
+    throw new BackendError('update-task: the task is needs-me, no longer running in this run', 409, true);
+  };
+  await assert.rejects(
+    go(['move', ID, 'done'], { env: { AGENT_BOARD_TASK: ID } }),
+    (error: Error) =>
+      error instanceof UsageError &&
+      error.message.startsWith(
+        `${ID} was not moved: update-task: the task is needs-me, no longer running in this run.`,
+      ) &&
+      error.message.includes('do not move it again, end your turn'),
+  );
 });

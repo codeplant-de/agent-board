@@ -16,6 +16,7 @@ import {
   type WireTaskPatch,
   type WireWait,
 } from '@agent-board/shared';
+import { randomBytes } from 'node:crypto';
 import { and, asc, desc, eq, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
 import { notes, tasks, type NoteRow, type TaskRow } from '../db/schema';
@@ -51,6 +52,7 @@ export function toTask(row: TaskRow): WireTask {
     borrowed: row.status === 'running' && row.borrowed,
     lastActiveAt: row.status === 'running' ? row.lastActiveAt : null,
     runStartedAt: row.status === 'running' ? row.runStartedAt : null,
+    ...(row.status === 'running' && row.runId !== null ? { run: row.runId } : {}),
     paused: row.pausedAt !== null,
     notBefore: row.notBefore,
     scheduleId: row.scheduleId,
@@ -218,11 +220,15 @@ async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promis
   }
   if (to === 'running' && task.status !== 'running') {
     values.runStartedAt = now;
+    values.runId = randomBytes(16).toString('base64url');
     values.lastActiveAt = now;
     values.lane = null;
     values.borrowed = false;
   }
-  if (to !== 'running') values.runStartedAt = null;
+  if (to !== 'running') {
+    values.runStartedAt = null;
+    values.runId = null;
+  }
   if (to !== 'todo') values.notBefore = null;
   if (to !== 'running') {
     values.stopRequestedAt = null;
@@ -277,12 +283,19 @@ async function handBackPendingMessages(
   };
 }
 
-/** A status or priority change puts the task at the bottom of its new place. */
-export async function updateTask(db: DbOrTx, id: string, patch: WireTaskPatch): Promise<TaskRow> {
+/**
+ * A status or priority change puts the task at the bottom of its new place. With `run` the call comes from that run of the
+ * task: it may not touch a later run, and it may change the status only while the run still holds the task.
+ */
+export async function updateTask(db: DbOrTx, id: string, patch: WireTaskPatch, run?: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const current = await lockTask(tx, id);
     if (patch.expect !== undefined && patch.expect !== current.status)
       throw new AppError('CONFLICT', `the task is ${current.status}, not ${patch.expect}`);
+    if (run !== undefined) {
+      const refused = notInRun(current, run, { moves: patch.status !== undefined });
+      if (refused) throw new AppError('CONFLICT', refused);
+    }
     const set: TaskValues = {};
     if (patch.input !== undefined) set.input = patch.input;
     if (patch.sessionId !== undefined) set.sessionId = patch.sessionId;
@@ -401,12 +414,13 @@ export async function ask(
   taskId: string,
   asked: { body: string; questions: string },
   by: string,
+  run?: string,
 ): Promise<NoteRow> {
   return db.transaction(async (tx) => {
     const current = await lockTask(tx, taskId);
     // Answering a question starts the task as the user, so a proposal cannot ask one.
     if (current.proposed) throw new AppError('FORBIDDEN', 'An agent proposed this task; only you start it.');
-    const refused = notHeldBy(current, by, 'running');
+    const refused = notHeldBy(current, by, 'running', { run });
     if (refused) throw new AppError('CONFLICT', refused);
     const note = await addNote(tx, taskId, {
       author: 'agent',
@@ -792,13 +806,26 @@ export async function setNotBefore(db: DbOrTx, taskId: string, notBefore: Date |
 
 /**
  * The agent of a running task made a tool call. A task that stopped running in between, or that runs on another machine
- * now (taken back and claimed again), is left alone.
+ * now (taken back and claimed again), or in another run than `run`, is left alone.
  */
-export async function heartbeat(db: DbOrTx, taskId: string, beat: Heartbeat, machine: string): Promise<void> {
+export async function heartbeat(
+  db: DbOrTx,
+  taskId: string,
+  beat: Heartbeat,
+  machine: string,
+  run?: string,
+): Promise<void> {
   const updated = await db
     .update(tasks)
     .set({ lane: beat.lane, borrowed: beat.borrowed, lastActiveAt: new Date() })
-    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running'), eq(tasks.machine, machine)))
+    .where(
+      and(
+        eq(tasks.id, taskId),
+        eq(tasks.status, 'running'),
+        eq(tasks.machine, machine),
+        run === undefined ? undefined : eq(tasks.runId, run),
+      ),
+    )
     .returning({ id: tasks.id });
   // A beat for a run that ended or moved is ignored; only an unknown task is an error.
   if (updated.length === 0) await getTask(db, taskId);
@@ -806,18 +833,31 @@ export async function heartbeat(db: DbOrTx, taskId: string, beat: Heartbeat, mac
 
 /**
  * Why `machine` may not report for the task's run or wait, or undefined when it may: the task is not `status` (or is closed,
- * where that counts), or another machine holds it. A worker whose run was taken back and claimed elsewhere must not touch
- * the new run; it gets the answer it would get had the task left `status`.
+ * where that counts), another machine holds it, or, with `run`, another run does. A worker or agent whose run was taken
+ * back and claimed again, here or elsewhere, must not touch the new run; it gets the answer it would get had the task left
+ * `status`.
  */
 function notHeldBy(
   task: TaskRow,
   machine: string,
   status: 'running' | 'waiting',
-  { closedCounts = true }: { closedCounts?: boolean } = {},
+  { closedCounts = true, run }: { closedCounts?: boolean; run?: string | undefined } = {},
 ): string | undefined {
   if (task.status !== status) return `the task is ${task.status}, not ${status}`;
   if (closedCounts && task.closed) return `the task is closed, not ${status}`;
   if (task.machine !== machine) return `the task is ${status} on ${task.machine ?? 'no machine'}, not on ${machine}`;
+  if (run !== undefined && task.runId !== run) return `the task is ${status} in a later run, not in this one`;
+  return undefined;
+}
+
+/**
+ * Why `run` may not change the task, or undefined when it may. A task that left Running is still the run's to finish its
+ * bookkeeping on (the directory it ended in), but not one that runs again in a later run. A status change (`moves`) needs
+ * the run to hold the task: an agent left over from an earlier run must not move the task under the user or a later run.
+ */
+function notInRun(task: TaskRow, run: string, { moves }: { moves: boolean }): string | undefined {
+  if (task.status === 'running' && task.runId !== run) return 'the task is running in a later run, not in this one';
+  if (moves && task.status !== 'running') return `the task is ${task.status}, no longer running in this run`;
   return undefined;
 }
 
@@ -839,10 +879,16 @@ export async function setPrState(db: DbOrTx, taskId: string, prState: PrState): 
  * A worker gave up the task's slot for its own lane's work. Back to Todo, ahead of new work (resumes come first),
  * and resumed in its session on the same machine.
  */
-export async function pause(db: DbOrTx, taskId: string, note: WireNoteInput, by: string): Promise<TaskRow> {
+export async function pause(
+  db: DbOrTx,
+  taskId: string,
+  note: WireNoteInput,
+  by: string,
+  run?: string,
+): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    const refused = notHeldBy(task, by, 'running', { closedCounts: false });
+    const refused = notHeldBy(task, by, 'running', { closedCounts: false, run });
     if (refused) throw new AppError('CONFLICT', refused);
     await clientEvent(tx, taskId, note, by);
     return transition(tx, task, {
@@ -863,11 +909,11 @@ export async function wait(
   taskId: string,
   request: WireWait,
   by: string,
-  now: Date = new Date(),
+  { run, now = new Date() }: { run?: string | undefined; now?: Date } = {},
 ): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    const refused = notHeldBy(task, by, 'running');
+    const refused = notHeldBy(task, by, 'running', { run });
     if (refused) throw new AppError('CONFLICT', refused);
     const ahead = request.wakeAt.getTime() - now.getTime();
     if (ahead <= 0) throw new AppError('BAD_REQUEST', 'the end of the wait must lie in the future');
@@ -919,10 +965,11 @@ export async function failTask(
   taskId: string,
   note: WireNoteInput,
   by: string,
+  run?: string,
 ): Promise<{ applied: boolean; row: TaskRow }> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    if (notHeldBy(task, by, 'running')) return { applied: false, row: task };
+    if (notHeldBy(task, by, 'running', { run })) return { applied: false, row: task };
     await clientEvent(tx, taskId, note, by);
     return { applied: true, row: await transition(tx, task, { to: 'needs-me', by: 'worker' }) };
   });
@@ -947,11 +994,16 @@ export async function takeBack(db: DbOrTx, taskId: string, by: string, now: Date
   });
 }
 
-/** A running task's worker is `machine`; no other machine reads or acknowledges for it. */
-function requireRunOf(task: TaskRow, machine: string): void {
+/**
+ * A running task's worker is `machine` (and, when named, its run is `run`); no other machine or run reads or acknowledges
+ * for it. An earlier run on the same machine gets the answer it would get had the task left Running.
+ */
+function requireRunOf(task: TaskRow, machine: string, run: string | undefined): void {
   if (task.status !== 'running') throw new AppError('CONFLICT', `the task is ${task.status}, not running`);
   if (task.machine !== machine)
     throw new AppError('FORBIDDEN', `the task runs on ${task.machine ?? 'no machine'}, not on ${machine}`);
+  if (run !== undefined && task.runId !== run)
+    throw new AppError('CONFLICT', 'the task is running in a later run, not in this one');
 }
 
 /** What the user sent to the running task: whether to stop, and the messages not yet handed to the agent, oldest first. */
@@ -959,11 +1011,12 @@ export async function runInbox(
   db: DbOrTx,
   taskId: string,
   machine: string,
+  run?: string,
 ): Promise<{ stop: boolean; stopMessage?: string; messages: NoteRow[] }> {
   // Under the task's lock, so a Stop & send is never seen half written; reading it also marks the run as one that hands messages over.
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    requireRunOf(task, machine);
+    requireRunOf(task, machine, run);
     if (!task.inboxRead) await tx.update(tasks).set({ inboxRead: true }).where(eq(tasks.id, taskId));
     const messages = await tx
       .select()
@@ -984,10 +1037,11 @@ export async function ackMessages(
   taskId: string,
   ack: { ids: string[]; stop: boolean },
   machine: string,
+  run?: string,
 ): Promise<void> {
   await db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    requireRunOf(task, machine);
+    requireRunOf(task, machine, run);
     if (ack.ids.length > 0)
       await tx
         .update(notes)
@@ -1002,10 +1056,16 @@ export async function ackMessages(
  * The worker ended the run on the user's request: while the task still runs, the note goes into its thread and the task
  * waits in Needs me, or, with messages that were never handed over, resumes with them.
  */
-export async function stopped(db: DbOrTx, taskId: string, note: WireNoteInput, by: string): Promise<TaskRow> {
+export async function stopped(
+  db: DbOrTx,
+  taskId: string,
+  note: WireNoteInput,
+  by: string,
+  run?: string,
+): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    requireRunOf(task, by);
+    requireRunOf(task, by, run);
     await clientEvent(tx, taskId, note, by);
     return transition(tx, task, { to: 'needs-me', by: 'worker', userStop: true });
   });

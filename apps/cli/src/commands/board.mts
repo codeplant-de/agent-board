@@ -402,6 +402,11 @@ export async function move(
   } catch (error) {
     if (options.expect !== undefined && error instanceof BackendError && error.status === 409)
       throw new MoveRefused(`${id} is not in ${options.expect} any more; nothing was moved`);
+    // Only a run's own task is checked against its run: this run was taken back or has ended, and moving again cannot help.
+    if (error instanceof BackendError && error.fromApi && error.status === 409)
+      throw new UsageError(
+        `${id} was not moved: ${error.message}. From inside a run the board moves the run's task only while that run holds it. If you are that run, it was taken back or has ended: do not move it again, end your turn.`,
+      );
     if (error instanceof BackendError && error.status === 403)
       throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Backlog.`);
     throw error;
