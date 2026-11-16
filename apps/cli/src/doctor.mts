@@ -6,7 +6,7 @@ import { ConfigError, isSafeMode, parseConfig } from './config.mts';
 import type { Config } from './config.mts';
 import { plainLine } from './terminal.mts';
 import { API_VERSION, decodeDataKey, SERVER_FEATURE_LABELS, SERVER_FEATURES } from '@agent-board/shared';
-import { coveringDir, routedDirs, UNCOVERED_HINT } from './dirs.mts';
+import { isAllowedDir, routedDirs, UNCOVERED_HINT } from './dirs.mts';
 import { parseEnv } from './env-file.mts';
 import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
 
@@ -329,7 +329,7 @@ const checkConfig: Check = ({ configDir, readText }) => {
   }
 };
 
-// The list of directories workers may run in. Nothing enforces it yet, so every problem is a warning.
+// The list of directories workers may run in. Tasks routed to a directory outside it stop in Needs me, so that is a failure.
 const checkDirs: Check = (deps) => {
   const text = deps.readText(join(deps.configDir, 'config.json'));
   let config: Config;
@@ -353,11 +353,11 @@ const checkDirs: Check = (deps) => {
       );
   for (const { label, path } of routedDirs(config)) {
     const real = deps.realpath(path) ?? path;
-    if (coveringDir(dirs, real) === undefined)
+    if (!isAllowedDir(dirs, path, (file) => deps.realpath(file) ?? file))
       results.push(
         problem(
           'dirs',
-          'warn',
+          'fail',
           `${label} ${plainLine(path)} is in no listed directory: ${UNCOVERED_HINT}`,
           `"board dirs add ${shellQuote(real)}", or "board dirs add --from-config"`,
         ),

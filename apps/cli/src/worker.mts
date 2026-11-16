@@ -33,6 +33,7 @@ import {
   unreadableForRun,
 } from './decide.mts';
 import { getPaths } from './config.mts';
+import { isAllowedDir, tryRealpath } from './dirs.mts';
 import { selfCommand } from './self.mts';
 import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
 import type { Invocation, Supervision } from './decide.mts';
@@ -42,6 +43,7 @@ import { createSessionStore } from './sessions.mts';
 import type { SessionStore } from './sessions.mts';
 import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from './logs.mts';
 import { resolvePluginPath } from './plugins.mts';
+import { plainLine } from './terminal.mts';
 import { fence } from './text.mts';
 import { createTranscriptUploader } from './transcript-upload.mts';
 
@@ -102,6 +104,8 @@ export interface WorkerDeps extends Context {
   // Root of a plugin such as "pr-review@ccc"; throws with the reason when it cannot be resolved.
   pluginPath: (key: string) => string;
   dirExists: (path: string) => boolean;
+  // The real path of an existing path; undefined when it is not there. Decides whether a directory is in the dirs list.
+  realpath: (path: string) => string | undefined;
   // The `env` blocks of a checkout's .claude/settings*.json.
   settingsEnv: (dir: string) => Record<string, string>;
   // The named servers of a checkout's .mcp.json.
@@ -198,6 +202,10 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
         : `The working directory does not exist: ${plan.invocation.cwd}`,
     );
   }
+  if (!isAllowedDir(config.dirs, plan.invocation.cwd, deps.realpath))
+    return fail(
+      `${plainLine(plan.invocation.cwd)} is not a listed directory on ${config.machine}: workers here run only in listed directories. Run "board dirs add" in it on ${config.machine}${fromIntake ? ' (an intake review runs in the checkout named in repos)' : ''}, then use Re-run fresh or Send & continue.`,
+    );
   deps.appendLog(taskId, `working directory ${plan.invocation.cwd}`);
   // Bound to the task from now on: it runs here unless the agent moves on (into a worktree, say).
   if (task.workdir !== plan.invocation.cwd)
@@ -430,8 +438,23 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     if (isRunOver(task, after)) return;
     // The session's directory as it stopped: a later resume must start in the same place, worktree included.
     if (endedIn !== undefined && endedIn !== plan.invocation.cwd) {
-      await backend.updateTask(task.id, { workdir: endedIn, seal: sealing });
-      deps.appendLog(taskId, `the session ended in ${endedIn}`);
+      if (isAllowedDir(config.dirs, endedIn, deps.realpath)) {
+        await backend.updateTask(task.id, { workdir: endedIn, seal: sealing });
+        deps.appendLog(taskId, `the session ended in ${endedIn}`);
+      } else {
+        // Stored, it would strand the task: the next start would refuse its own directory.
+        const shown = plainLine(endedIn);
+        deps.appendLog(taskId, `the session ended in ${shown}, not a listed directory; the workdir stays`);
+        await backend
+          .addNote(
+            task.id,
+            `The agent ended in ${shown}, which is not a listed directory on ${config.machine}. The next resume starts in ${plainLine(plan.invocation.cwd)}.`,
+            { author: 'system' },
+          )
+          .catch((error: unknown) => {
+            deps.appendLog(taskId, `could not add the note: ${error instanceof Error ? error.message : String(error)}`);
+          });
+      }
     }
     const outcome = decideOutcome({
       exitCode: result.exitCode,
@@ -638,6 +661,7 @@ export async function workerMain(taskId: string): Promise<void> {
     appendLog,
     pluginPath: resolvePluginPath,
     dirExists: (path) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true,
+    realpath: tryRealpath,
     settingsEnv: readSettingsEnv,
     mcpServers: readMcpServers,
     home: homedir(),

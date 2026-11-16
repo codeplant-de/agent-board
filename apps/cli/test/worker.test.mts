@@ -36,6 +36,7 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
     appendLog: (shortLink, text) => void calls.push(`append ${shortLink}: ${text}`),
     pluginPath: () => '/plugins/pr-review',
     dirExists: () => true,
+    realpath: (path) => path,
     settingsEnv: () => ({}),
     mcpServers: () => ({ config: { mcpServers: {} }, missing: [] }),
     home: '/h',
@@ -1305,4 +1306,174 @@ test('the resume prompt of a run leaves out what the agent was handed while it r
   await runWorker(deps, 'w1');
   assert.match(prompt, /said after the stop/);
   assert.doesNotMatch(prompt, /handed over mid-run/);
+});
+
+// Enforcement: config.json has a `dirs` list.
+const withDirs = (deps: WorkerDeps, ...dirs: string[]): void => {
+  deps.config = { ...CONFIG, dirs: dirs.map((path) => ({ path })) };
+};
+
+test('a run in a listed directory, or below one, starts as before', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  withDirs(deps, '/tmp');
+  deps.run = async () => {
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  backend.tasks[0]!.workdir = '/tmp/sub';
+  await runWorker(deps, 'w1');
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail ')));
+});
+
+test('a task in a directory outside the list is refused with the reason, and the agent never starts', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  withDirs(deps, '/srv/app');
+  let started = false;
+  deps.run = async () => {
+    started = true;
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.equal(started, false);
+  assert.ok(
+    backend.writes.some(
+      (w) =>
+        w.startsWith('fail w1:') &&
+        w.includes('/tmp is not a listed directory on here') &&
+        w.includes('board dirs add') &&
+        w.includes('Re-run fresh'),
+    ),
+  );
+  assert.ok(!backend.writes.some((w) => w.startsWith('workdir ')));
+});
+
+test('an empty list refuses every start; no list at all changes nothing', async () => {
+  const empty = setup({ exitCode: 0, signal: null });
+  withDirs(empty.deps);
+  await runWorker(empty.deps, 'w1');
+  assert.ok(empty.backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('not a listed directory')));
+
+  const none = setup({ exitCode: 0, signal: null });
+  await runWorker(none.deps, 'w1');
+  assert.ok(!none.backend.writes.some((w) => w.includes('not a listed directory')));
+});
+
+test('a missing directory keeps its own message even when it is not listed either', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  withDirs(deps, '/srv/app');
+  deps.dirExists = () => false;
+  await runWorker(deps, 'w1');
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('directory is gone')));
+  assert.ok(!backend.writes.some((w) => w.includes('not a listed directory')));
+});
+
+test('a symlink inside a listed directory that points outside is refused, and a listed link is followed', async () => {
+  const links: Record<string, string> = { '/srv/app/out': '/etc', '/home/me/alias': '/srv/app' };
+  const realpath = (path: string): string => links[path] ?? path;
+  const outside = setup({ exitCode: 0, signal: null });
+  withDirs(outside.deps, '/srv/app');
+  outside.deps.realpath = realpath;
+  outside.backend.tasks[0]!.workdir = '/srv/app/out';
+  await runWorker(outside.deps, 'w1');
+  assert.ok(outside.backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('not a listed directory')));
+
+  const listed = setup({ exitCode: 0, signal: null });
+  withDirs(listed.deps, '/home/me/alias');
+  listed.deps.realpath = realpath;
+  listed.backend.tasks[0]!.workdir = '/srv/app';
+  await runWorker(listed.deps, 'w1');
+  assert.ok(!listed.backend.writes.some((w) => w.includes('not a listed directory')));
+});
+
+test('a form task routed to the default directory is refused when that is not listed', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  withDirs(deps, '/srv/app');
+  Object.assign(backend.tasks[0]!, { machine: null, workdir: null });
+  await runWorker(deps, 'w1');
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('/home/me is not a listed directory')));
+});
+
+test('a resume in a workdir that left the list is refused, not started', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  withDirs(deps, '/srv/app');
+  Object.assign(backend.tasks[0]!, {
+    next: 'resume',
+    sessionId: SESSION,
+    workdir: '/repo/.claude/worktrees/feat-x',
+  });
+  deps.sessions.record('w1', SESSION);
+  backend.notes.set('w1', [
+    note('asked', new Date('2026-11-13T10:00:00Z')),
+    note('go on', new Date('2026-11-13T10:05:00Z'), { author: 'user' }),
+  ]);
+  let started = false;
+  deps.run = async () => {
+    started = true;
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.equal(started, false);
+  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('feat-x is not a listed directory')));
+});
+
+test('an intake review whose checkout is not listed is refused, and the message names the repos checkout', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  withDirs(deps, '/srv/app');
+  deps.config = { ...deps.config, repos: { 'cosuno/cosuno': '/srv/cosuno' } };
+  Object.assign(backend.tasks[0]!, {
+    createdBy: 'intake',
+    machine: null,
+    workdir: null,
+    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
+  });
+  await runWorker(deps, 'w1');
+  assert.ok(
+    backend.writes.some(
+      (w) => w.startsWith('fail w1:') && w.includes('/srv/cosuno is not a listed directory') && w.includes('repos'),
+    ),
+  );
+});
+
+test('a run that ends outside the list keeps its directory and leaves a system note', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  withDirs(deps, '/tmp');
+  deps.run = async () => {
+    deps.files.writeCwd('w1', '/var/elsewhere');
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.ok(!backend.writes.some((w) => w.startsWith('workdir ')));
+  const noted = backend.writes.find((w) => w.startsWith('note w1 (system):'));
+  assert.ok(noted?.includes('/var/elsewhere') && noted.includes('not a listed directory') && noted.includes('/tmp'));
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail ')));
+});
+
+test('a note that cannot be added does not lose the run, and an end inside the list is stored', async () => {
+  const failing = setup({ exitCode: 0, signal: null });
+  withDirs(failing.deps, '/tmp');
+  failing.deps.run = async () => {
+    failing.deps.files.writeCwd('w1', '/var/elsewhere');
+    failing.backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  failing.backend.addNote = async () => {
+    throw new Error('board down');
+  };
+  await runWorker(failing.deps, 'w1');
+  assert.ok(failing.calls.some((c) => c.includes('could not add the note: board down')));
+  assert.ok(!failing.backend.writes.some((w) => w.startsWith('fail ')));
+
+  const inside = setup({ exitCode: 0, signal: null });
+  withDirs(inside.deps, '/tmp');
+  inside.deps.run = async () => {
+    inside.deps.files.writeCwd('w1', '/tmp/.claude/worktrees/feat-x');
+    inside.backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(inside.deps, 'w1');
+  assert.deepEqual(
+    inside.backend.writes.filter((w) => w.startsWith('workdir w1')),
+    ['workdir w1: /tmp/.claude/worktrees/feat-x'],
+  );
 });

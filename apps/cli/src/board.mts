@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process';
-import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
 import { createInterface } from 'node:readline/promises';
 import { ReportedFailure, UsageError } from './cli.mts';
 import type { Context, LinkingContext } from './cli.mts';
 import { BackendError } from './backend.mts';
+import type { Config } from './config.mts';
+import { isAllowedDir, tryRealpath } from './dirs.mts';
 import {
   ContractError,
   formatAnswers,
@@ -300,9 +302,28 @@ export function parseAddFlags(flags: AddFlags): {
   return { title, file, parent, priority };
 }
 
+/**
+ * The directory a proposal is sealed with. With a `dirs` list, an agent that moved on from where its run started (a
+ * worktree outside every listed directory, /tmp) proposes in the directory the run started in, if that is allowed.
+ */
+export function proposalDir(config: Config, { cwd, startDir }: { cwd: string; startDir?: string }): string {
+  if (isAllowedDir(config.dirs, cwd)) return cwd;
+  const start = startDir !== undefined && isSafeWorkdir(startDir) ? tryRealpath(startDir) : undefined;
+  if (start !== undefined && isAllowedDir(config.dirs, start)) return start;
+  throw new UsageError(
+    `${plainLine(cwd)} is not a listed directory on ${config.machine}, and neither is the directory this run started in: a proposal needs one. Run "board dirs add" in the directory the task belongs in, or run board add from a listed directory.`,
+  );
+}
+
 // The board puts a proposal in Backlog itself, so no status is sent.
-export async function add(context: LinkingContext, flags: AddFlags): Promise<Task> {
+export async function add(
+  context: LinkingContext,
+  flags: AddFlags,
+  // `cwd`: the real path of the working directory; `startDir`: AGENT_BOARD_START_DIR, where the run started.
+  where: { cwd: string; startDir?: string },
+): Promise<Task> {
   const { title, file, parent, priority } = parseAddFlags(flags);
+  const workdir = proposalDir(context.config, where);
   // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
   // proposing agent works, on this machine.
   const draft = {
@@ -310,7 +331,7 @@ export async function add(context: LinkingContext, flags: AddFlags): Promise<Tas
     input: readNoteFile(file),
     createdBy: 'agent' as const,
     machine: context.config.machine,
-    workdir: realpathSync(process.cwd()),
+    workdir,
     ...(parent ? { parentId: parent } : {}),
     ...(priority ? { priority } : {}),
   };
@@ -553,13 +574,18 @@ export async function scheduleCommand(
   context: LinkingContext,
   flags: ScheduleFlags,
   words: string[],
+  cwd: string,
 ): Promise<Scheduled | undefined> {
   const args = parseScheduleArgs(flags, words);
+  if (!isAllowedDir(context.config.dirs, cwd))
+    throw new UsageError(
+      `${plainLine(cwd)} is not a listed directory on ${context.config.machine}, so a task scheduled here would stop in Needs me. Run "board dirs add" here first, or schedule from a listed directory.`,
+    );
   return schedule(
     {
       backend: context.backend,
       machine: context.config.machine,
-      workdir: realpathSync(process.cwd()),
+      workdir: cwd,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       print: context.print,
       confirm: (line) => confirm(context, line),

@@ -514,10 +514,12 @@ Examples:
 Usage: board dirs [options] [list | add [path] | rm [path]]
 
 Manage the `dirs` list of this machine's config.json: the directories workers
-may run in. Without arguments (or with `list`), print the entries, marking one
-whose directory is gone as missing. `add [path]` lists the real path of a
-directory (default: the current one); `rm [path]` unlists one. A path is
-relative to the current directory.
+may run in. Without a `dirs` key nothing is limited; once the key exists, even
+as `{}`, workers run only in a listed directory or one below it. Without
+arguments (or with `list`), print the entries, marking one whose directory is
+gone as missing. `add [path]` lists the real path of a directory (default: the
+current one); `rm [path]` unlists one. A path is relative to the current
+directory.
 
 `add` refuses `/` and a path that is not a directory, warns about the home
 directory (it allows everything below it), and notes when a parent is already
@@ -527,10 +529,12 @@ those a listed directory covers and never listing `/` or the home directory.
 
 `rm` asks the board for open tasks and schedules of this machine that run in the
 directory and in no other listed one, and refuses while there are any, and when
-the board cannot be reached; --force removes it anyway and needs no board.
-Enforcement of the list is planned and not active in this build: today the list
-changes no run. `add` and `rm` rewrite the `dirs` key of config.json and nothing
-else, and are not available inside a board run.
+the board cannot be reached; --force removes it anyway and needs no board. The
+list is enforced as soon as it exists, even empty: a worker refuses to start a
+task outside it, a run that ends outside it keeps the directory it started in,
+and `board schedule` and `board add` refuse (`board add` falls back to the
+directory the run started in) outside it. `add` and `rm` rewrite the `dirs` key
+of config.json and nothing else, and are not available inside a board run.
 
 Arguments:
   action         list, add or rm, and a path
