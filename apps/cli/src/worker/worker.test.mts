@@ -15,6 +15,7 @@ import {
   fakeBackend,
   fakeRunFiles,
   fakeSessions,
+  fakeWorktreeLocks,
   KEYS,
   note,
   OTHER_SESSION,
@@ -57,6 +58,7 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
     home: '/h',
     newSessionId: () => SESSION,
     sessions: fakeSessions(),
+    worktreeLocks: fakeWorktreeLocks(),
     files: fakeRunFiles(),
     hookCommand: (dir, id) => `hook ${dir} ${id}`,
     now: () => new Date(),
@@ -431,6 +433,37 @@ test('a run that reported keeps the worktree it ended in, though the board dropp
     );
     assert.ok(!backend.writes.some((w) => w.startsWith('fail ')), status);
   }
+});
+
+test('the task holds a lock on its workdir: the one it starts in, then the worktree it ended in', async () => {
+  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
+  const locks = fakeWorktreeLocks({ w1: ['/tmp/.claude/worktrees/old'] });
+  deps.worktreeLocks = locks;
+  deps.run = async () => {
+    assert.deepEqual(locks.held.get('w1'), ['/tmp'], 'the old worktree is let go before the run');
+    // The hook locked a worktree the agent passed through.
+    locks.hold('w1', '/tmp/.claude/worktrees/passing');
+    deps.files.writeCwd('w1', '/tmp/.claude/worktrees/feat-x');
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.deepEqual(locks.held.get('w1'), ['/tmp/.claude/worktrees/feat-x']);
+  assert.ok(calls.includes('append w1: unlocked the worktree /tmp/.claude/worktrees/old'), calls.join('\n'));
+  assert.ok(calls.includes('append w1: locked the worktree /tmp/.claude/worktrees/feat-x for this task'));
+});
+
+test('a worktree the session ended in that is not a listed directory gets no lock', async () => {
+  const { deps } = setup({ exitCode: 0, signal: null });
+  const locks = fakeWorktreeLocks();
+  deps.worktreeLocks = locks;
+  deps.config = { ...deps.config, dirs: [{ path: '/tmp' }] };
+  deps.run = async () => {
+    deps.files.writeCwd('w1', '/var/elsewhere');
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.deepEqual(locks.held.get('w1'), ['/tmp']);
 });
 
 test("a resume starts in the task's directory, and a missing one fails without starting", async () => {

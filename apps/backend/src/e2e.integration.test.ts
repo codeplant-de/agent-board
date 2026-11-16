@@ -20,6 +20,7 @@ import {
   fakeRunFiles,
   fakeSessions,
   fakeTaskFiles,
+  fakeWorktreeLocks,
   fakeWaitStore,
 } from '../../cli/src/__tests__/helpers/fakes.mts';
 import { createKeySetup, exportDataKey } from '../../frontend/src/crypto/keySlots';
@@ -312,6 +313,7 @@ describe('an agent’s proposal', () => {
     logTail: () => '',
     waits: fakeWaitStore(),
     taskFiles: fakeTaskFiles(),
+    worktreeLocks: fakeWorktreeLocks(),
     runCheck: async () => ({ exitCode: 1, timedOut: false, output: '' }),
     update: NO_UPDATES,
   });
@@ -336,6 +338,7 @@ describe('an agent’s proposal', () => {
     home: '/h',
     newSessionId: () => SESSION,
     sessions: fakeSessions(),
+    worktreeLocks: fakeWorktreeLocks(),
     files: fakeRunFiles(),
     hookCommand: () => 'hook',
     now: () => new Date(),
@@ -449,6 +452,7 @@ describe('a wait', () => {
       logTail: () => '',
       waits,
       taskFiles: fakeTaskFiles(),
+      worktreeLocks: fakeWorktreeLocks(),
       update: NO_UPDATES,
       runCheck: async (check) => {
         checks.push(check.command);
@@ -479,6 +483,7 @@ describe('a wait', () => {
       home: '/h',
       newSessionId: () => SESSION,
       sessions,
+      worktreeLocks: fakeWorktreeLocks(),
       files: fakeRunFiles(),
       hookCommand: () => 'hook',
       now: () => new Date(),
