@@ -80,11 +80,13 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
     if (!req.username) return reply.status(403).send({ error: 'not allowed on this board' });
   });
 
-  // tRPC's adapter also takes multipart and urlencoded bodies, which a plain HTML form on a sibling subdomain can send
-  // with the user's session cookie: SameSite does not stop a same-site request. Only the JSON the board's own client sends
-  // gets through; a cross-origin JSON POST needs a CORS preflight, which this server never grants.
+  // tRPC's Fastify adapter takes multipart bodies, which a plain HTML form on a sibling subdomain can send with the user's
+  // session cookie: SameSite does not stop a same-site request. Only the JSON the board's own client sends gets through;
+  // a cross-origin JSON POST needs a CORS preflight, which this server never grants. The check goes by the matched route,
+  // not the raw URL: Fastify routes on the decoded path, so `/%74rpc/...` reaches tRPC too.
   app.addHook('onRequest', async (req, reply) => {
-    if (!req.url.startsWith('/trpc') || SAFE_METHODS.has(req.method)) return;
+    const route = req.routeOptions.url ?? '';
+    if (!(route === '/trpc' || route.startsWith('/trpc/')) || SAFE_METHODS.has(req.method)) return;
     const mediaType = (req.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase();
     if (mediaType !== 'application/json')
       return reply.status(415).send({ error: 'the board takes application/json only' });
