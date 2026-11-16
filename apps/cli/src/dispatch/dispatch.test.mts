@@ -577,6 +577,104 @@ test('checks wait for the next tick when the tick has too little time left for t
   assert.ok(logs.some((line) => line.startsWith('DEFER-CHECKS 1')));
 });
 
+test('the next due time is the first delayed Todo task this machine could serve', async () => {
+  const later = task({ id: 'w1', input: '/selftest go', notBefore: at(10 * MIN) });
+  const sooner = task({ id: 'w2', input: '/selftest go', notBefore: at(3 * MIN) });
+  const elsewhere = task({ id: 'w3', input: '/selftest go', machine: 'there', workdir: '/x', notBefore: at(MIN) });
+  const proposal = task({ id: 'w4', input: 'x', createdBy: 'agent', notBefore: at(MIN) });
+  const { deps, files, logs } = setup([later, sooner, elsewhere, proposal]);
+  await runDispatch(deps);
+  assert.equal(files.next?.getTime(), at(3 * MIN).getTime());
+  assert.ok(logs.includes(`TICK started=0 general=0/2 next=${at(3 * MIN).toISOString()}`), logs.join('\n'));
+});
+
+test('the next due time counts the end of a wait here, not one on another machine', async () => {
+  const { deps, files } = setup([
+    waitingTask('w1', { wakeAt: at(10 * MIN) }),
+    waitingTask('w2', { wakeAt: at(MIN), machine: 'other' }),
+  ]);
+  await runDispatch(deps);
+  assert.equal(files.next?.getTime(), at(10 * MIN).getTime());
+});
+
+test('a check that failed is due again --every after it ran', async () => {
+  const { deps, files } = setup(
+    [waitingTask('w1', { wakeAt: at(60 * MIN), waitCheck: true })],
+    [],
+    {},
+    { checks: { w1: check({ everyMs: 5 * MIN }) } },
+  );
+  await runDispatch(deps);
+  assert.equal(files.next?.getTime(), at(5 * MIN).getTime());
+});
+
+test('a check not due yet counts from its last attempt; one that passed counts no more', async () => {
+  const waiting = setup(
+    [waitingTask('w1', { wakeAt: at(60 * MIN), waitCheck: true })],
+    [],
+    {},
+    { checks: { w1: check({ lastCheckAt: at(-MIN) }) } },
+  );
+  await runDispatch(waiting.deps);
+  assert.equal(waiting.files.next?.getTime(), at(MIN).getTime());
+
+  const passed = setup(
+    [waitingTask('w1', { wakeAt: at(60 * MIN), waitCheck: true })],
+    [],
+    {},
+    { checks: { w1: check() }, checkResult: () => ({ exitCode: 0, timedOut: false, output: '' }) },
+  );
+  await runDispatch(passed.deps);
+  assert.equal(passed.files.next, undefined);
+});
+
+test('a borrowed run counts the moment it may be paused, while its lane has own work waiting', async () => {
+  const borrowed = task({ id: 'b1', status: 'running', input: '/selftest go', machine: 'here' });
+  const { deps, files } = setup([borrowed, impl('i1')], ['agent-board-b1']);
+  deps.config = { ...LANED, lanes: [{ name: 'implement', skills: ['implement'], slots: 1 }] };
+  files.runs.set('b1', { lane: 'implement', borrowed: true, startedAt: at(-2 * MIN) });
+  files.alive.set('b1', NOW);
+  await runDispatch(deps);
+  assert.equal(files.pauses.size, 0);
+  assert.equal(files.next?.getTime(), at(3 * MIN).getTime());
+});
+
+test('a borrowed run paused in this tick, or one whose lane has nothing waiting, counts nothing', async () => {
+  const borrowed = task({ id: 'b1', status: 'running', input: '/selftest go', machine: 'here' });
+  const young = task({ id: 'b2', status: 'running', input: '/selftest go', machine: 'here' });
+  const { deps, files } = setup([borrowed, young, impl('i1')], ['agent-board-b1', 'agent-board-b2']);
+  deps.config = { ...LANED, lanes: [{ name: 'implement', skills: ['implement'], slots: 2 }] };
+  files.runs.set('b1', { lane: 'implement', borrowed: true, startedAt: at(-6 * MIN) });
+  files.runs.set('b2', { lane: 'implement', borrowed: true, startedAt: at(-MIN) });
+  files.alive.set('b1', NOW);
+  files.alive.set('b2', NOW);
+  await runDispatch(deps);
+  assert.ok(files.pauses.has('b1'));
+  assert.equal(files.next, undefined, 'the lane has a pause pending');
+
+  const idle = setup([borrowed], ['agent-board-b1']);
+  idle.deps.config = deps.config;
+  idle.files.runs.set('b1', { lane: 'implement', borrowed: true, startedAt: at(-MIN) });
+  idle.files.alive.set('b1', NOW);
+  await runDispatch(idle.deps);
+  assert.equal(idle.files.next, undefined);
+});
+
+test('a tick that fails leaves no next due time behind, and a dry run writes none', async () => {
+  const failing = setup([task({ id: 'w1', input: '/selftest go', notBefore: at(MIN) })]);
+  failing.files.next = at(-MIN);
+  failing.backend.listTasks = async () => {
+    throw new Error('backend list-tasks failed');
+  };
+  await assert.rejects(runDispatch(failing.deps), /list-tasks failed/);
+  assert.equal(failing.files.next, undefined);
+
+  const dry = setup([task({ id: 'w1', input: '/selftest go', notBefore: at(MIN) })]);
+  dry.deps.dryRun = true;
+  await runDispatch(dry.deps);
+  assert.equal(dry.files.next, undefined);
+});
+
 test('a check wait whose check is gone wakes at once', async () => {
   const { deps, backend } = setup([waitingTask('w1', { wakeAt: at(60 * MIN), waitCheck: true })]);
   await runDispatch(deps);

@@ -119,6 +119,31 @@ export function planPauses(input: {
   return pauses;
 }
 
+/**
+ * When planPauses will next find a borrowed run to pause: the first moment a borrowed run reaches `pauseAfterMinutes` in a lane
+ * that is full, has its own work waiting and no pause pending. Undefined when no lane will.
+ */
+export function nextPauseAt(input: {
+  lanes: Lane[];
+  running: LaneRun[];
+  waitingOwn: Map<string, number>;
+  now: Date;
+  pauseAfterMinutes: number;
+}): Date | undefined {
+  let next: number | undefined;
+  for (const lane of input.lanes) {
+    const inLane = input.running.filter((run) => run.lane === lane.name);
+    if (inLane.length < lane.slots || (input.waitingOwn.get(lane.name) ?? 0) === 0) continue;
+    if (inLane.some((run) => run.pauseRequested)) continue;
+    for (const run of inLane) {
+      if (!run.borrowed || run.startedAt === undefined) continue;
+      const at = run.startedAt.getTime() + input.pauseAfterMinutes * 60_000;
+      if (at > input.now.getTime() && (next === undefined || at < next)) next = at;
+    }
+  }
+  return next === undefined ? undefined : new Date(next);
+}
+
 // A task with its own directory runs only on the machine it was scheduled on (intake's tasks have none of their own).
 export function pinnedMachine(task: Task): string | undefined {
   if (task.next === 'resume' && task.sessionId !== null && task.machine !== null) return task.machine;

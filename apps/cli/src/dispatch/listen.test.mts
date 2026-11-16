@@ -42,7 +42,8 @@ class FakeClock implements Timers {
 
 const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
-function ticker(codes: number[] = []) {
+// `due.at` stands for the run directory's next due time, which a tick writes.
+function ticker(codes: number[] = [], due: { at?: number } = {}) {
   const clock = new FakeClock();
   const log: string[] = [];
   const started: number[] = [];
@@ -52,13 +53,16 @@ function ticker(codes: number[] = []) {
     log: (line) => log.push(line),
     debounceMs: 1000,
     retryMs: 5000,
+    nextDue: () => due.at,
+    dueFloorMs: 5000,
+    dueMaxMs: 60 * 60_000,
     run: () =>
       new Promise<number>((resolve) => {
         started.push(clock.now());
         release.push(() => resolve(codes.shift() ?? 0));
       }),
   });
-  return { clock, log, started, release, t };
+  return { clock, log, started, release, t, due };
 }
 
 test('a burst of events gives one tick, a second after the last', async () => {
@@ -115,6 +119,9 @@ test('a tick that cannot start is logged and the next event still ticks', async 
     log: (line) => log.push(line),
     debounceMs: 1000,
     retryMs: 5000,
+    nextDue: () => undefined,
+    dueFloorMs: 5000,
+    dueMaxMs: 60 * 60_000,
     run: () => {
       calls += 1;
       return calls === 1 ? Promise.reject(new Error('spawn flock ENOENT')) : Promise.resolve(0);
@@ -126,6 +133,101 @@ test('a tick that cannot start is logged and the next event still ticks', async 
   await clock.advance(1000);
   assert.equal(calls, 2);
   assert.match(log[0] ?? '', /tick could not start: spawn flock ENOENT/);
+});
+
+test('after a tick, the next due time it wrote starts the next one', async () => {
+  const { clock, started, release, t } = ticker([], { at: 30_000 });
+  t.now();
+  await clock.advance(0);
+  release[0]?.();
+  await clock.advance(29_999);
+  assert.deepEqual(started, [0]);
+  await clock.advance(1);
+  assert.deepEqual(started, [0, 30_000]);
+});
+
+test('a due time a timer-unit tick moved later is read again when the timer fires, and armed for the new time', async () => {
+  const { clock, started, release, t, due } = ticker([], { at: 30_000 });
+  t.now();
+  await clock.advance(0);
+  release[0]?.();
+  await clock.advance(10_000);
+  due.at = 50_000;
+  await clock.advance(30_000);
+  assert.deepEqual(started, [0], 'not yet due');
+  await clock.advance(10_000);
+  assert.deepEqual(started, [0, 50_000]);
+});
+
+test('a due time gone when the timer fires ticks anyway: a timer-unit tick is rewriting it', async () => {
+  const { clock, started, release, t, due } = ticker([], { at: 30_000 });
+  t.now();
+  await clock.advance(0);
+  release[0]?.();
+  await clock.advance(1000);
+  delete due.at;
+  await clock.advance(29_000);
+  assert.deepEqual(started, [0, 30_000]);
+});
+
+test('a due time in the past waits the floor, tick after tick', async () => {
+  const { clock, started, release, t } = ticker([], { at: -1 });
+  t.now();
+  await clock.advance(0);
+  release[0]?.();
+  await clock.advance(5000);
+  release[1]?.();
+  await clock.advance(5000);
+  assert.deepEqual(started, [0, 5000, 10_000]);
+});
+
+test('every tick re-arms the due timer from what it wrote: an event tick that found nothing due cancels it', async () => {
+  const { clock, started, release, t, due } = ticker([], { at: 30_000 });
+  t.now();
+  await clock.advance(0);
+  release[0]?.();
+  await clock.advance(0);
+  t.soon();
+  await clock.advance(1000);
+  assert.deepEqual(started, [0, 1000]);
+  delete due.at;
+  release[1]?.();
+  await clock.advance(60_000);
+  assert.deepEqual(started, [0, 1000]);
+});
+
+test('a due time hours away is read again after an hour, and ticks when it comes', async () => {
+  const hour = 60 * 60_000;
+  const { clock, started, release, t } = ticker([], { at: 3 * hour });
+  t.now();
+  await clock.advance(0);
+  release[0]?.();
+  await clock.advance(3 * hour - 1);
+  assert.deepEqual(started, [0]);
+  await clock.advance(1);
+  assert.deepEqual(started, [0, 3 * hour]);
+});
+
+test('a tick the timer unit holds the lock for keeps no due timer; the retry arms it', async () => {
+  const { clock, started, release, t } = ticker([75, 0], { at: 3000 });
+  t.now();
+  await clock.advance(0);
+  release[0]?.();
+  await clock.advance(5000);
+  assert.deepEqual(started, [0, 5000], 'the retry, not the due timer at 3 s');
+  release[1]?.();
+  await clock.advance(5000);
+  assert.deepEqual(started, [0, 5000, 10_000], 'the floor after the retry');
+});
+
+test('stop cancels the due timer', async () => {
+  const { clock, started, release, t } = ticker([], { at: 30_000 });
+  t.now();
+  await clock.advance(0);
+  release[0]?.();
+  await t.stop();
+  await clock.advance(60_000);
+  assert.deepEqual(started, [0]);
 });
 
 test('the backoff doubles from a second to a minute and is cut by jitter', () => {
@@ -153,7 +255,7 @@ function openStream() {
 
 type Plan = ReturnType<typeof openStream> | Response | Error;
 
-function listener(plans: Plan[], verify?: () => Promise<{ url: string; token: string }>) {
+function listener(plans: Plan[], verify?: () => Promise<{ url: string; token: string }>, nextDue?: number) {
   const clock = new FakeClock();
   const log: string[] = [];
   const requests: { url: string; authorization: string | undefined; features: string | undefined }[] = [];
@@ -187,6 +289,7 @@ function listener(plans: Plan[], verify?: () => Promise<{ url: string; token: st
       ticks.push(clock.now());
       return 0;
     },
+    nextDue: () => (nextDue !== undefined && nextDue > clock.now() ? nextDue : undefined),
   });
   return { clock, log, requests, ticks, stop, done, verified: () => verified };
 }
@@ -217,6 +320,17 @@ test('a tasks event ticks a second later; a burst shares one tick', async () => 
   stream.push('event: tasks\ndata:\n\nevent: tasks\ndata:\n\n');
   await clock.advance(1000);
   assert.deepEqual(ticks, [0, 1400]);
+  stop.abort();
+  await done;
+});
+
+test('the listener ticks when the next due time comes, without an event', async () => {
+  const stream = openStream();
+  const { clock, ticks, stop, done } = listener([stream], undefined, 42_000);
+  await clock.advance(0);
+  stream.push(': ping\n\n');
+  await clock.advance(42_000);
+  assert.deepEqual(ticks, [0, 42_000]);
   stop.abort();
   await done;
 });
@@ -464,6 +578,7 @@ test('SIGTERM waits for the running tick before the listener exits', async () =>
       new Promise<number>((resolve) => {
         finish = () => resolve(0);
       }),
+    nextDue: () => undefined,
   });
   let exited = false;
   void done.then(() => {

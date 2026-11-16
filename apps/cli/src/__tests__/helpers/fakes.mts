@@ -397,6 +397,7 @@ export interface FakeRunFiles extends RunFiles {
   agents: Map<string, string>;
   groups: Map<string, number>;
   dispatchTick: Date | undefined;
+  next: Date | undefined;
 }
 
 // RunFiles in memory.
@@ -410,6 +411,7 @@ export function fakeRunFiles(now: () => Date = () => new Date()): FakeRunFiles {
     agents: new Map(),
     groups: new Map(),
     dispatchTick: undefined,
+    next: undefined,
     writeRun: (id, record) => void files.runs.set(id, record),
     readRun: (id) => files.runs.get(id),
     lastActive: (id) => files.alive.get(id),
@@ -422,6 +424,8 @@ export function fakeRunFiles(now: () => Date = () => new Date()): FakeRunFiles {
     processGroup: (id) => files.groups.get(id),
     lastDispatchTick: () => files.dispatchTick,
     markDispatchTick: (at) => void (files.dispatchTick = at),
+    nextDue: () => files.next,
+    writeNextDue: (at) => void (files.next = at),
     requestPause: (id) => void files.pauses.set(id, now()),
     pauseRequestedAt: (id) => files.pauses.get(id),
     clear(id) {
