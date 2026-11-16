@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -87,6 +88,19 @@ test('a secret file is refused unless owner-only', () => {
   chmodSync(file, 0o600);
   assert.equal(readSecretFile(file, 'secret file'), 'x\n');
   assert.throws(() => readSecretFile(join(dir, 'missing'), 'secret file'), /secret file missing/);
+});
+
+test('a pipe is read whatever its mode: macOS shows 440 for the pipe behind /dev/stdin, and only a regular file is checked', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-board-'));
+  const fifo = join(dir, 'pipe');
+  try {
+    execFileSync('mkfifo', ['-m', '0666', fifo]);
+    const writer = spawn('sh', ['-c', `echo piped > '${fifo}'`], { stdio: 'ignore' });
+    assert.equal(readSecretFile(fifo, 'secret file'), 'piped\n');
+    writer.kill();
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });
 
 test('old keys of earlier versions are ignored', () => {

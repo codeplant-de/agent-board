@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   chmodSync,
@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { compareVersions, isRecord } from '@agent-board/shared';
 import { LISTEN_SERVICE } from '../setup/setup.mts';
+import { agentLabel, agentTarget, isAgentLoaded } from '../setup/launchd.mts';
 import { SystemError } from '../setup/system.mts';
 import { errorText } from '../output/text.mts';
 
@@ -95,9 +96,40 @@ export function realGh(env: Record<string, string | undefined>, timeoutMs?: numb
     });
 }
 
+// macOS: `kickstart -k` restarts the listener agent, but only when launchd has it loaded: one that was never loaded (or that the
+// user switched off in Login Items) stays as it is.
+async function restartLaunchdListener(block: boolean, uid: number): Promise<string | undefined> {
+  if (!(await isAgentLoaded(uid, 'listen'))) return undefined;
+  const target = agentTarget(uid, 'listen');
+  const label = agentLabel('listen');
+  if (!block) {
+    const child = spawn('launchctl', ['kickstart', '-k', target], { stdio: 'ignore', detached: true });
+    child.once('error', () => undefined);
+    child.unref();
+    return `restarting ${label}, to run the new code`;
+  }
+  return new Promise((resolve) => {
+    execFile('launchctl', ['kickstart', '-k', target], (error, _stdout, stderr) => {
+      if (error === null) return resolve(`restarted ${label}, to run the new code`);
+      resolve(
+        `could not restart ${label} (${stderr.split('\n')[0] || error.message}); run "launchctl kickstart -k ${target}"`,
+      );
+    });
+  });
+}
+
 // `try-restart` leaves a listener that is not running alone, and a machine without systemd has none to restart.
 // `block: false` returns at once: the dispatcher runs inside the listener's unit, whose stop waits for that dispatcher.
-export function realListenerRestart({ block }: { block: boolean }): SelfUpdateDeps['restartListener'] {
+export function realListenerRestart({
+  block,
+  platform = process.platform,
+  uid = process.getuid?.() ?? 0,
+}: {
+  block: boolean;
+  platform?: string;
+  uid?: number;
+}): SelfUpdateDeps['restartListener'] {
+  if (platform === 'darwin') return () => restartLaunchdListener(block, uid);
   return () =>
     new Promise((resolve) => {
       const args = ['--user', ...(block ? [] : ['--no-block']), 'try-restart', LISTEN_SERVICE];

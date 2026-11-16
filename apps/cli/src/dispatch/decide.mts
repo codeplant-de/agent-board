@@ -18,6 +18,9 @@ export function decideStale(input: {
   lastActive: Date | undefined;
   now: Date;
   limits: RunLimits;
+  // The machine slept since the last tick: how long the agent was quiet says nothing until its worker has noticed the
+  // wake (it moves the agent's last sign of life forward on its next 15 s tick).
+  afterGap?: boolean;
 }): StaleDecision {
   if (!input.unitActive) return { stale: true, reason: 'The worker is no longer running.', stopUnit: false };
   if (input.startedAt === undefined) return { stale: false };
@@ -30,6 +33,7 @@ export function decideStale(input: {
       stopUnit: true,
     };
   }
+  if (input.afterGap) return { stale: false };
   const quiet = minutesSince(input.lastActive ?? input.startedAt);
   if (quiet > input.limits.inactivityMinutes + SWEEP_GRACE_MINUTES) {
     return { stale: true, reason: `The agent has made no tool call for ${Math.round(quiet)} minutes.`, stopUnit: true };

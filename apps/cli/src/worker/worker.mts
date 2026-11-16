@@ -1,6 +1,6 @@
 /**
  * One task: run `claude -p` for it, keep its log and transcript, and report failures on the task.
- * Started by the dispatcher as the transient unit agent-board-<id>. The agent's prompt and what comes after it travel on
+ * Started by the dispatcher as the transient unit agent-board-<id> (on macOS, as a detached process). The agent's prompt and what comes after it travel on
  * stdin as stream-json user messages, so the worker can talk to a running agent: it tells it that a pause was requested, and
  * hands it what the user sends from the board, checking the board's run inbox every 15 seconds and whenever the board's event
  * stream says tasks changed. While the run goes on it also checks: no tool call for inactivityMinutes, or a run longer than
@@ -36,6 +36,7 @@ import { plainLine } from '../output/terminal.mts';
 import { requireTaskId } from '../task-id.mts';
 import { errorText, fence, shellQuote } from '../output/text.mts';
 import { createTranscriptUploader } from './transcript-upload.mts';
+import { keepAwake } from './awake.mts';
 import { runProcess } from './process.mts';
 import type { RunChannel, RunResult, Watch } from './process.mts';
 
@@ -43,6 +44,8 @@ import type { RunChannel, RunResult, Watch } from './process.mts';
 const PAUSE_GRACE_MINUTES = 2;
 // The board's liveness is updated at most this often.
 const HEARTBEAT_EVERY_MS = 15_000;
+// A watch tick that finds this much more time gone than its 15 s interval ran while the machine slept (or the clock was set).
+const CLOCK_JUMP_MS = 60_000;
 
 export interface WorkerDeps extends Context {
   // `env` is added to the process's environment: the secrets of the invocation's masked variables.
@@ -82,6 +85,8 @@ export interface WorkerDeps extends Context {
   // The transcript backlog's byte budget; `createTranscriptUploader` has the default.
   maxPendingBytes?: number;
   watchEveryMs: number;
+  // Keeps the machine awake while the run goes (macOS); returns the function that ends it. Best effort.
+  keepAwake?: () => () => void;
 }
 
 export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void> {
@@ -363,14 +368,27 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       });
     return looking;
   };
+  let lastTickAt = deps.now().getTime();
   const watch: Watch = {
     everyMs: deps.watchEveryMs,
+    spawned: (pgid) => files.writeProcessGroup(taskId, pgid),
     start: (live) => {
       channel = live;
       // The board marks the run as one that reads its inbox, which is what keeps a late message from being lost.
       void startLooking();
     },
     tick: async () => {
+      // A sleep is not inactivity: after a jump the agent's last sign of life moves up to now, here and for the
+      // dispatcher's sweep, which reads the same file.
+      const tickAt = deps.now().getTime();
+      if (tickAt - lastTickAt > CLOCK_JUMP_MS) {
+        files.touchAlive(taskId, deps.now());
+        deps.appendLog(
+          taskId,
+          `the clock jumped ${Math.round((tickAt - lastTickAt) / 1000)} s (the machine slept?): the idle time starts over`,
+        );
+      }
+      lastTickAt = tickAt;
       void startBeat();
       void transcript.start();
       void startLooking();
@@ -397,16 +415,19 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   }
   let result: RunResult;
   const stopListening = deps.watchChanges?.(() => void startLooking());
+  const stopAwake = deps.keepAwake?.();
   try {
     if (plan.agents !== undefined) deps.files.writeAgents(taskId, plan.agents.content);
     void startBeat();
     result = await deps.run(plan.invocation, taskId, env, watch, onLine);
   } catch (error) {
+    stopAwake?.();
     stopListening?.();
     files.clear(taskId);
     if (run.kind === 'fresh') await backend.updateTask(task.id, { sessionId: null });
     return fail(errorText(error));
   }
+  stopAwake?.();
   stopListening?.();
   await transcript.flush();
   if (result.stopped) deps.appendLog(taskId, result.stopped.message);
@@ -535,6 +556,7 @@ export async function workerMain(taskId: string): Promise<void> {
       return () => stop.abort();
     },
     watchEveryMs: 15_000,
+    ...(process.platform === 'darwin' ? { keepAwake: () => keepAwake() } : {}),
   };
   try {
     await runWorker(deps, taskId);

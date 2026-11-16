@@ -6,7 +6,7 @@ import { verifyContract } from '../backend/contract-check.mts';
 import { completionModel, renderCompletion, SHELLS } from './completion.mts';
 import type { Shell } from './completion.mts';
 import { getPaths, loadConfig } from '../config/config.mts';
-import { formatResult, hasFailure, realDoctorDeps, runChecks } from '../setup/doctor.mts';
+import { formatResult, hasFailure, realDoctorDeps, realLaunchdDoctorDeps, runChecks } from '../setup/doctor.mts';
 import type { CheckResult, DoctorDeps } from '../setup/doctor.mts';
 import { clackPrompts, init } from '../setup/init.mts';
 import type { InitFlags } from '../setup/init.mts';
@@ -31,19 +31,32 @@ export function registerSetupCommands(shared: ProgramShared): void {
           resolve(error === null ? 0 : typeof error.code === 'number' ? error.code : 1),
         );
       }));
-  const setupDeps = (): SetupDeps => ({
-    ...realSetupDeps(env, out, loadConfig(getPaths(env).configFile, { optionalConfig: true }).intakeEnabled),
-    ...(options.which ? { which: options.which } : {}),
-    ...(options.platform ? { platform: options.platform } : {}),
-    ...(options.runSystem ? { run: options.runSystem } : {}),
-    unitEnabled: async (unit) => (await systemctlCode(['--user', 'is-enabled', unit])) === 0,
-  });
+  const setupDeps = (): SetupDeps => {
+    const real = realSetupDeps(env, out, loadConfig(getPaths(env).configFile, { optionalConfig: true }).intakeEnabled);
+    return {
+      ...real,
+      launchd: { ...real.launchd, ...(options.agentLoaded ? { loaded: options.agentLoaded } : {}) },
+      ...(options.which ? { which: options.which } : {}),
+      ...(options.platform ? { platform: options.platform } : {}),
+      ...(options.runSystem ? { run: options.runSystem } : {}),
+      unitEnabled: async (unit) => (await systemctlCode(['--user', 'is-enabled', unit])) === 0,
+    };
+  };
   const doctorDeps = (): DoctorDeps => {
     const { configDir } = getPaths(env);
     const systemctl = systemctlCode;
     const which = options.which ?? ((program: string) => whichOnPath(program, env['PATH']));
+    const launchd = realLaunchdDoctorDeps(env, env['HOME'] || homedir());
     return {
-      ...realDoctorDeps(configDir, unitDirectory(env), systemctl, which, homedir(), options.which),
+      ...realDoctorDeps(
+        configDir,
+        unitDirectory(env),
+        systemctl,
+        which,
+        homedir(),
+        options.agentLoaded ? { ...launchd, loaded: options.agentLoaded } : launchd,
+        options.which,
+      ),
       ...(options.platform ? { platform: options.platform } : {}),
       verifyServer: options.verifyServer ?? ((config) => verifyContract(config)),
     };
@@ -102,7 +115,7 @@ export function registerSetupCommands(shared: ProgramShared): void {
       const deps = doctorDeps();
       const results = await runChecks(deps);
       for (const result of results) out(formatResult(result));
-      if (deps.platform === 'linux') out('\nNext, on a worker machine: board setup');
+      if (deps.platform === 'linux' || deps.platform === 'darwin') out('\nNext, on a worker machine: board setup');
       if (hasFailure(results)) throw new ReportedFailure('a check failed');
     });
 
@@ -114,7 +127,7 @@ export function registerSetupCommands(shared: ProgramShared): void {
       .description(
         paragraphs(
           'Check this machine, read-only, one line per check: ✓ passes, ✗ fails (with a fix), ! is a warning. Exit 1 if any check fails; warnings alone exit 0. The token is never printed.',
-          'Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600 or 400, token, data key), the board (reachable, token accepted, API version range, and whether it has a data key and this machine holds the same one), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers and the listener. The worker checks only warn on a machine with no unit installed, and are left out on a system other than Linux, where no worker runs.',
+          'Checks: Node 24+ (checkout only), the config directory, web.json, env (mode 600 or 400, token, data key), the board (reachable, token accepted, API version range, and whether it has a data key and this machine holds the same one), config.json, and for a worker machine claude, gh, flock, systemd-run, systemctl and the installed units with their timers and the listener (on macOS: claude, gh, lockf, the launchd agents and whether launchd has loaded them, the run directory, and a warning for a checkout under ~/Documents, ~/Desktop, ~/Downloads or iCloud Drive, which macOS keeps background jobs out of). The worker checks only warn on a machine with no unit or agent installed, and are left out on a system other than Linux and macOS, where no worker runs.',
         ),
       )
       .addHelpText('after', examples('board doctor', 'board doctor --json')),
@@ -125,11 +138,14 @@ export function registerSetupCommands(shared: ProgramShared): void {
   program
     .command('setup')
     .helpGroup(SETUP)
-    .summary('install the dispatch timer (and intake, if configured) and the listener as systemd user units')
+    .summary(
+      'install the dispatch timer (and intake, if configured) and the listener: systemd user units, or launchd agents on macOS',
+    )
     .description(
       paragraphs(
-        'Install this machine as a worker: write the dispatch service and timer, the intake service and timer when config.json has an `intake` key, and the listener service into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies, run `systemctl --user daemon-reload` and print the line that enables them. The listener holds a stream to the board and starts a dispatch tick within a second of a change; the timers stay as the fallback. Run it again after moving the binary or the checkout, or upgrading Node. It needs Linux with systemd and flock.',
-        'The services run this CLI the way `board setup` was started: the binary, or the checkout with its Node. --print shows the units and changes nothing; --enable also enables and starts the timers and the listener. When an installed unit differs from what it writes, the differing lines are shown. It refuses unless --force when this checkout is not the one the installed ~/.local/bin/board runs from (a worktree, a scratch copy), or when a binary runs from the temp directory, so it cannot take over the live timers. Without an `intake` key it leaves installed intake units alone and does not enable them. Not available inside a board run.',
+        'Install this machine as a worker: write the dispatch service and timer, the intake service and timer when config.json has an `intake` key, and the listener service into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as copies, run `systemctl --user daemon-reload` and print the line that enables them. The listener holds a stream to the board and starts a dispatch tick within a second of a change; the timers stay as the fallback. Run it again after moving the binary or the checkout, or upgrading Node. It needs Linux with systemd and flock, or macOS.',
+        'On macOS it writes two launchd agents, de.codeplant.agent-board.dispatch (every 2 minutes) and de.codeplant.agent-board.listen, into ~/Library/LaunchAgents as copies, creates the log and run directories and loads the agents that are loaded already (all of them with --enable) with `launchctl bootout` and `launchctl bootstrap gui/<uid>`; without --enable it prints the bootstrap lines. The agents log to launchd.dispatch.log and launchd.listen.log in the log directory. Intake is not supported on macOS: no agent runs it, and setup says so when config.json has an `intake` key.',
+        'The services run this CLI the way `board setup` was started: the binary, or the checkout with its Node. --print shows the units (or agents) and changes nothing; --enable also enables and starts the timers and the listener (loads the agents). When an installed unit differs from what it writes, the differing lines are shown. It refuses unless --force when this checkout is not the one the installed ~/.local/bin/board runs from (a worktree, a scratch copy), or when a binary runs from the temp directory, so it cannot take over the live timers. Without an `intake` key it leaves installed intake units alone and does not enable them. Not available inside a board run.',
       ),
     )
     .option('--enable', 'also enable and start the timers and the listener')
@@ -150,7 +166,7 @@ export function registerSetupCommands(shared: ProgramShared): void {
     .summary('replace this binary with the newest release')
     .description(
       paragraphs(
-        'Download the newest cli-v* release of codeplant-de/agent-board with `gh`, check it against SHA256SUMS and replace this binary with it, then restart the listener if it runs (`systemctl --user try-restart`). Running workers keep the old file until they end. --check only reports whether a newer release exists.',
+        'Download the newest cli-v* release of codeplant-de/agent-board with `gh`, check it against SHA256SUMS and replace this binary with it, then restart the listener if it runs (`systemctl --user try-restart`, or `launchctl kickstart -k` on macOS when launchd has the agent loaded). Running workers keep the old file until they end. --check only reports whether a newer release exists.',
         'It needs `gh`, logged in. A checkout is updated with `git pull` and `pnpm install` instead, and says so. Not available inside a board run.',
       ),
     )
@@ -166,7 +182,9 @@ export function registerSetupCommands(shared: ProgramShared): void {
           platform: options.platform ?? process.platform,
           arch: process.arch,
           gh: options.gh ?? realGh(env),
-          restartListener: options.restartListener ?? realListenerRestart({ block: true }),
+          restartListener:
+            options.restartListener ??
+            realListenerRestart({ block: true, platform: options.platform ?? process.platform }),
           print: out,
         },
         flags,

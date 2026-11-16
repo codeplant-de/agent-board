@@ -794,7 +794,7 @@ test('createGitHub ends a gh call that outlasts timeoutMs, and waits for one wit
     );
     process.env['PATH'] = `${dir}:${before}`;
     const started = Date.now();
-    await assert.rejects(createGitHub({ timeoutMs: 100 }).listReviewRequested(['o/r']), GitHubError);
+    await assert.rejects(createGitHub(undefined, { timeoutMs: 100 }).listReviewRequested(['o/r']), GitHubError);
     assert.ok(Date.now() - started < 3000, 'the call was cut off');
   } finally {
     process.env['PATH'] = before;

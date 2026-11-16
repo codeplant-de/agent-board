@@ -402,6 +402,8 @@ export interface FakeRunFiles extends RunFiles {
   pauses: Map<string, Date>;
   cwds: Map<string, string>;
   agents: Map<string, string>;
+  groups: Map<string, number>;
+  dispatchTick: Date | undefined;
 }
 
 // RunFiles in memory.
@@ -413,6 +415,8 @@ export function fakeRunFiles(now: () => Date = () => new Date()): FakeRunFiles {
     pauses: new Map(),
     cwds: new Map(),
     agents: new Map(),
+    groups: new Map(),
+    dispatchTick: undefined,
     writeRun: (id, record) => void files.runs.set(id, record),
     readRun: (id) => files.runs.get(id),
     lastActive: (id) => files.alive.get(id),
@@ -421,6 +425,10 @@ export function fakeRunFiles(now: () => Date = () => new Date()): FakeRunFiles {
     lastCwd: (id) => files.cwds.get(id),
     agentsPath: (id) => `/run/test/agent-board/${id}.agents`,
     writeAgents: (id, content) => void files.agents.set(id, content),
+    writeProcessGroup: (id, pgid) => void files.groups.set(id, pgid),
+    processGroup: (id) => files.groups.get(id),
+    lastDispatchTick: () => files.dispatchTick,
+    markDispatchTick: (at) => void (files.dispatchTick = at),
     requestPause: (id) => void files.pauses.set(id, now()),
     pauseRequestedAt: (id) => files.pauses.get(id),
     clear(id) {
@@ -429,6 +437,7 @@ export function fakeRunFiles(now: () => Date = () => new Date()): FakeRunFiles {
       files.pauses.delete(id);
       files.cwds.delete(id);
       files.agents.delete(id);
+      files.groups.delete(id);
     },
   };
   return files;

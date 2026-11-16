@@ -3,7 +3,17 @@ import { promisify } from 'node:util';
 import { isRecord, parsePrUrl } from '@agent-board/shared';
 import type { PrState } from '@agent-board/shared';
 
-const run = promisify(execFile);
+// How the client runs `gh`: resolves with stdout, rejects like `execFile` does (the error carries `stdout` and `stderr`).
+export type RunCommand = (file: string, args: string[]) => Promise<{ stdout: string }>;
+
+const execFileAsync = promisify(execFile);
+const execRunner =
+  (timeoutMs: number | undefined): RunCommand =>
+  (file, args) =>
+    execFileAsync(file, args, {
+      maxBuffer: 32 * 1024 * 1024,
+      ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
+    });
 
 export interface LivePr {
   url: string;
@@ -152,15 +162,9 @@ export function parsePrStates(value: unknown, urls: string[]): PrStateLookup {
   return lookup;
 }
 
-async function gh(
-  args: string[],
-  { keepAnswerOnError = false, timeoutMs }: { keepAnswerOnError?: boolean; timeoutMs?: number | undefined } = {},
-): Promise<unknown> {
+async function gh(run: RunCommand, args: string[], { keepAnswerOnError = false } = {}): Promise<unknown> {
   try {
-    const { stdout } = await run('gh', args, {
-      maxBuffer: 32 * 1024 * 1024,
-      ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
-    });
+    const { stdout } = await run('gh', args);
     return JSON.parse(stdout);
   } catch (error) {
     // gh exits non-zero when the answer carries errors, such as a repository that is gone, and prints it all the same.
@@ -180,8 +184,9 @@ async function gh(
 }
 
 // One search for all repositories. A failed search throws: the caller must not take a partial listing for the whole queue.
-// `timeoutMs` ends a `gh` call that takes longer, which then fails like any other.
-export function createGitHub({ timeoutMs }: { timeoutMs?: number } = {}): GitHub {
+// `timeoutMs` ends a `gh` call that takes longer (with the default runner), which then fails like any other.
+export function createGitHub(run?: RunCommand, { timeoutMs }: { timeoutMs?: number } = {}): GitHub {
+  const exec = run ?? execRunner(timeoutMs);
   return {
     async listReviewRequested(repos) {
       if (repos.length === 0) return { prs: [], unreadable: [] };
@@ -191,18 +196,15 @@ export function createGitHub({ timeoutMs }: { timeoutMs?: number } = {}): GitHub
       let after: string | undefined;
       for (let page = 0; page < MAX_PAGES; page++) {
         const found = parseSearchPage(
-          await gh(
-            [
-              'api',
-              'graphql',
-              '-f',
-              `query=${SEARCH}`,
-              '-f',
-              `q=${query}`,
-              ...(after === undefined ? [] : ['-f', `after=${after}`]),
-            ],
-            { timeoutMs },
-          ),
+          await gh(exec, [
+            'api',
+            'graphql',
+            '-f',
+            `query=${SEARCH}`,
+            '-f',
+            `q=${query}`,
+            ...(after === undefined ? [] : ['-f', `after=${after}`]),
+          ]),
         );
         prs.push(...found.prs);
         unreadable.push(...found.unreadable);
@@ -222,6 +224,7 @@ export function createGitHub({ timeoutMs }: { timeoutMs?: number } = {}): GitHub
         try {
           const found = parsePrStates(
             await gh(
+              exec,
               [
                 'api',
                 'graphql',
@@ -232,7 +235,7 @@ export function createGitHub({ timeoutMs }: { timeoutMs?: number } = {}): GitHub
                   `${name}=${value}`,
                 ]),
               ],
-              { keepAnswerOnError: true, timeoutMs },
+              { keepAnswerOnError: true },
             ),
             chunk,
           );

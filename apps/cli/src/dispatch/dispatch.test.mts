@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
-import { runDispatch } from './dispatch.mts';
+import { limitTick, runDispatch } from './dispatch.mts';
 import type { DispatchDeps } from './dispatch.mts';
 import { BackendError } from '../backend/backend.mts';
 import type { Fetch } from '../backend/backend.mts';
@@ -389,6 +389,55 @@ test('a running task whose agent went quiet is stopped and reported by the sweep
   await runDispatch(deps);
   assert.deepEqual(stopped, ['agent-board-q']);
   assert.ok(backend.writes.some((w) => w.includes('no tool call for 25 minutes')));
+});
+
+test('after a gap between ticks (a sleep) a quiet run is left alone, and the tick is marked', async () => {
+  const quiet = task({ id: 'q', status: 'running', input: '/selftest go', machine: 'here' });
+  const { deps, files, stopped, backend, logs } = setup([quiet], ['agent-board-q'], {
+    'agent-board-q': new Date(NOW.getTime() - 5 * 60 * 60_000),
+  });
+  files.alive.set('q', new Date(NOW.getTime() - 3 * 60 * 60_000));
+  files.dispatchTick = new Date(NOW.getTime() - 3 * 60 * 60_000);
+  await runDispatch(deps);
+  assert.deepEqual(stopped, []);
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail q:')));
+  assert.ok(logs.some((line) => line.startsWith('NOTE no tick for 180 minutes')));
+  assert.equal(files.dispatchTick?.getTime(), NOW.getTime());
+  // The next tick has no gap, and a run that is still quiet is swept.
+  await runDispatch(deps);
+  assert.deepEqual(stopped, ['agent-board-q']);
+});
+
+test('the first tick, or one two minutes after the last, sweeps a quiet run as always', async () => {
+  for (const last of [undefined, new Date(NOW.getTime() - 2 * 60_000)]) {
+    const quiet = task({ id: 'q', status: 'running', input: '/selftest go', machine: 'here' });
+    const { deps, files, stopped } = setup([quiet], ['agent-board-q'], {
+      'agent-board-q': new Date(NOW.getTime() - 5 * 60 * 60_000),
+    });
+    files.alive.set('q', new Date(NOW.getTime() - 3 * 60 * 60_000));
+    files.dispatchTick = last;
+    await runDispatch(deps);
+    assert.deepEqual(stopped, ['agent-board-q']);
+  }
+});
+
+test('a dry run does not mark the tick', async () => {
+  const { deps, files } = setup([]);
+  deps.dryRun = true;
+  await runDispatch(deps);
+  assert.equal(files.dispatchTick, undefined);
+});
+
+test('the in-process time limit calls its handler once the limit is up, and not when cancelled', async () => {
+  let fired = 0;
+  const cancel = limitTick(20, () => void (fired += 1));
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(fired, 1);
+  const cancelled = limitTick(20, () => void (fired += 1));
+  cancelled();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(fired, 1);
+  cancel();
 });
 
 test('a todo task whose last worker is still stopping is not started again', async () => {

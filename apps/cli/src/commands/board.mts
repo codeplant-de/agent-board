@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
 import { createInterface } from 'node:readline/promises';
 import { ReportedFailure, UsageError } from '../cli.mts';
@@ -42,14 +42,13 @@ const NOTE_FILE_DIR = '/tmp/';
 const NOTE_FILE_MAX_BYTES = 1024 * 1024;
 
 // Long notes come from a file, so a run's allow list can keep every command simple (no heredoc, no pipe). The agent
-// can write /tmp, so the file is opened without following a link and its real location is checked on the open
-// descriptor: a link to a secret is refused.
+// can write /tmp, so the file is opened without following a link and checked: it must be inside /tmp, a regular file of at
+// most 1 MiB, and have no other hard link (on macOS /tmp is on the volume of the home directory, so a hard link to a secret
+// is possible there). A link to a secret is refused.
+// Where the open descriptor really points is read from /proc on Linux, which no racing process can fool. Other systems have
+// no such view: there the real path is checked against the real /tmp (/private/tmp on macOS) and the descriptor must be the
+// file at that path (same device and inode). That is best effort against a process that swaps the path while this runs.
 export function readNoteFile(path: string, platform: string = process.platform): string {
-  // The check below reads /proc/self/fd; no other system has a way to see where an open descriptor really points.
-  if (platform !== 'linux')
-    throw new UsageError(
-      `reading a file needs Linux: on ${platform} "board ask" and "board add" are not available, and "board comment" takes its text as arguments, or - to read it from stdin`,
-    );
   let fd: number;
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -57,11 +56,28 @@ export function readNoteFile(path: string, platform: string = process.platform):
     throw new UsageError(`cannot read the note file ${path}`);
   }
   try {
-    if (!readlinkSync(`/proc/self/fd/${fd}`).startsWith(NOTE_FILE_DIR))
-      throw new UsageError(`the note file must be inside ${NOTE_FILE_DIR}`);
+    if (platform === 'linux') {
+      if (!readlinkSync(`/proc/self/fd/${fd}`).startsWith(NOTE_FILE_DIR))
+        throw new UsageError(`the note file must be inside ${NOTE_FILE_DIR}`);
+    } else {
+      let real: string;
+      let tmp: string;
+      try {
+        real = realpathSync(path);
+        tmp = `${realpathSync(NOTE_FILE_DIR)}/`;
+      } catch {
+        throw new UsageError(`cannot read the note file ${path}`);
+      }
+      if (!real.startsWith(tmp)) throw new UsageError(`the note file must be inside ${NOTE_FILE_DIR}`);
+      const opened = fstatSync(fd, { bigint: true });
+      const named = statSync(real, { bigint: true });
+      if (opened.dev !== named.dev || opened.ino !== named.ino)
+        throw new UsageError(`the note file must be inside ${NOTE_FILE_DIR}`);
+    }
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > NOTE_FILE_MAX_BYTES)
       throw new UsageError('the note file must be a regular file of at most 1 MiB');
+    if (stat.nlink !== 1) throw new UsageError('the note file must not be a hard link to another file');
     return readFileSync(fd, 'utf8').trim();
   } finally {
     closeSync(fd);
