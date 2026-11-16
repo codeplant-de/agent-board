@@ -1,48 +1,43 @@
 import { sql } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { randomBytes } from 'node:crypto';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { testDatabaseUrl } from '../test/global-setup';
-import { migrationsBefore, removeFolder } from '../test/scratch';
+import {
+  migrationsBefore,
+  removeFolder,
+  SCRATCH_MIGRATION_TIMEOUT,
+  SCRATCH_TEARDOWN_TIMEOUT,
+  scratchDatabases,
+} from '../test/scratch';
 import { createDb, runMigrations, type Db } from './client';
 
-// Named after the test database and unique per run, so two suites at once never drop each other's scratch database.
-const SCRATCH = `${new URL(testDatabaseUrl()).pathname.slice(1).replace(/[^A-Za-z0-9_]/g, '_')}_migration_${randomBytes(4).toString('hex')}`;
+// Each test gets a new database: dropping one is slow under load (see SCRATCH_TEARDOWN_TIMEOUT), so all go at the end.
+const scratch = scratchDatabases('migration');
+let scratchUrl: string;
 
-const scratchUrl = (): string => {
-  const url = new URL(testDatabaseUrl());
-  url.pathname = `/${SCRATCH}`;
-  return url.toString();
-};
-
-/** The pool of a scratch database that the test later drops by force: a connection it kills is no failure. */
+/** The pool of the current test's scratch database that the test later drops: a connection it kills is no failure. */
 function scratchDb(options: { backfillOwner?: string } = {}): ReturnType<typeof createDb> {
-  return createDb(scratchUrl(), { ...options, onError: () => undefined });
+  return createDb(scratchUrl, { ...options, onError: () => undefined });
 }
 
 // These tests are about the migrations up to 0013, with plain text in the rows; the sealed-content constraints of a later release would refuse it.
 let currentFolder: string | undefined;
-afterAll(() => {
+afterAll(async () => {
   if (currentFolder !== undefined) removeFolder(currentFolder);
-});
+  await scratch.dropAll();
+}, SCRATCH_TEARDOWN_TIMEOUT);
 
 const migrateToCurrent = async (db: Db): Promise<void> => {
   currentFolder ??= migrationsBefore('_sealed_content_constraints');
   await migrate(db, { migrationsFolder: currentFolder });
 };
 
-describe('the tenancy migration on a database that already has rows', () => {
-  const admin = createDb(testDatabaseUrl());
-  // Not `with (force)`: every pool on the scratch database is closed by now, and Postgres waits for a session that is
-  // still on its way out. Forcing would kill that session, and its last message surfaces as an unhandled error.
-  const dropScratch = () => admin.db.execute(sql.raw(`drop database if exists ${SCRATCH}`));
+describe('the tenancy migration on a database that already has rows', { timeout: SCRATCH_MIGRATION_TIMEOUT }, () => {
   let old: ReturnType<typeof createDb>;
   let folder: string;
 
   beforeEach(async () => {
     if (old) await old.pool.end();
-    await dropScratch();
-    await admin.db.execute(sql.raw(`create database ${SCRATCH}`));
+    scratchUrl = await scratch.create();
     folder ??= migrationsBefore('_tenancy');
     old = scratchDb();
     await migrate(old.db, { migrationsFolder: folder });
@@ -55,12 +50,10 @@ describe('the tenancy migration on a database that already has rows', () => {
     await old.db.execute(
       sql`insert into transcript_event (run_id, seq, at, kind, data) values ('r1', 0, now(), 'text', '{}')`,
     );
-  });
+  }, SCRATCH_MIGRATION_TIMEOUT);
 
   afterAll(async () => {
     await old.pool.end();
-    await dropScratch();
-    await admin.pool.end();
     removeFolder(folder);
   });
 
@@ -94,94 +87,94 @@ describe('the tenancy migration on a database that already has rows', () => {
   });
 });
 
-describe('the encrypted content migration on a database that already has rows', () => {
-  const admin = createDb(testDatabaseUrl());
-  let old: ReturnType<typeof createDb>;
-  let folder: string;
-  const questions = [
-    { header: 'Scope', question: 'Q?', multiSelect: false, options: [{ label: 'A', description: '' }] },
-  ];
+describe(
+  'the encrypted content migration on a database that already has rows',
+  { timeout: SCRATCH_MIGRATION_TIMEOUT },
+  () => {
+    let old: ReturnType<typeof createDb>;
+    let folder: string;
+    const questions = [
+      { header: 'Scope', question: 'Q?', multiSelect: false, options: [{ label: 'A', description: '' }] },
+    ];
 
-  beforeEach(async () => {
-    if (old) await old.pool.end();
-    await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH}`));
-    await admin.db.execute(sql.raw(`create database ${SCRATCH}`));
-    folder ??= migrationsBefore('_encrypted_content');
-    old = scratchDb();
-    await migrate(old.db, { migrationsFolder: folder });
-    await old.db.execute(sql`insert into app_user (username) values ('alice')`);
-    await old.db.execute(
-      sql`insert into task (owner, id, title, input, position, labels) values ('alice', 't1', 'old', 'x', 0, '{review-pr}')`,
-    );
-    await old.db.execute(sql`
+    beforeEach(async () => {
+      if (old) await old.pool.end();
+      scratchUrl = await scratch.create();
+      folder ??= migrationsBefore('_encrypted_content');
+      old = scratchDb();
+      await migrate(old.db, { migrationsFolder: folder });
+      await old.db.execute(sql`insert into app_user (username) values ('alice')`);
+      await old.db.execute(
+        sql`insert into task (owner, id, title, input, position, labels) values ('alice', 't1', 'old', 'x', 0, '{review-pr}')`,
+      );
+      await old.db.execute(sql`
       insert into note (owner, id, task_id, author, kind, body, questions, answers)
       values ('alice', 'n1', 't1', 'agent', 'question', '', ${JSON.stringify(questions)}::jsonb, null),
              ('alice', 'n2', 't1', 'user', 'answer', 'thanks', null, '[{"selected":["A"],"other":"é"}]'::jsonb),
              ('alice', 'n3', 't1', 'system', 'event', 'Marked done.', null, null)`);
-    await old.db.execute(
-      sql`insert into transcript_run (owner, id, task_id, machine, started_at, last_event_at) values ('alice', 'r1', 't1', 'laptop', now(), now())`,
-    );
-    await old.db.execute(
-      sql`insert into transcript_event (owner, run_id, seq, at, kind, data) values ('alice', 'r1', 0, now(), 'text', ${JSON.stringify({ kind: 'text', text: 'hi "there"' })}::jsonb)`,
-    );
-  });
+      await old.db.execute(
+        sql`insert into transcript_run (owner, id, task_id, machine, started_at, last_event_at) values ('alice', 'r1', 't1', 'laptop', now(), now())`,
+      );
+      await old.db.execute(
+        sql`insert into transcript_event (owner, run_id, seq, at, kind, data) values ('alice', 'r1', 0, now(), 'text', ${JSON.stringify({ kind: 'text', text: 'hi "there"' })}::jsonb)`,
+      );
+    }, SCRATCH_MIGRATION_TIMEOUT);
 
-  afterAll(async () => {
-    await old.pool.end();
-    await admin.db.execute(sql.raw(`drop database if exists ${SCRATCH}`));
-    await admin.pool.end();
-    removeFolder(folder);
-  });
+    afterAll(async () => {
+      await old.pool.end();
+      removeFolder(folder);
+    });
 
-  const columnType = async (table: string, column: string) =>
-    (
-      await old.db.execute<{ data_type: string }>(
-        sql`select data_type from information_schema.columns where table_name = ${table} and column_name = ${column}`,
-      )
-    ).rows[0]?.data_type;
+    const columnType = async (table: string, column: string) =>
+      (
+        await old.db.execute<{ data_type: string }>(
+          sql`select data_type from information_schema.columns where table_name = ${table} and column_name = ${column}`,
+        )
+      ).rows[0]?.data_type;
 
-  it('keeps questions, answers and event data as their JSON text, adds the preview and drops the labels', async () => {
-    expect(await columnType('note', 'questions')).toBe('jsonb');
-    await migrateToCurrent(old.db);
-    for (const [table, column] of [
-      ['note', 'questions'],
-      ['note', 'answers'],
-      ['transcript_event', 'data'],
-      ['note', 'preview'],
-    ] as const)
-      expect(await columnType(table, column), `${table}.${column}`).toBe('text');
-    expect(await columnType('task', 'labels')).toBeUndefined();
+    it('keeps questions, answers and event data as their JSON text, adds the preview and drops the labels', async () => {
+      expect(await columnType('note', 'questions')).toBe('jsonb');
+      await migrateToCurrent(old.db);
+      for (const [table, column] of [
+        ['note', 'questions'],
+        ['note', 'answers'],
+        ['transcript_event', 'data'],
+        ['note', 'preview'],
+      ] as const)
+        expect(await columnType(table, column), `${table}.${column}`).toBe('text');
+      expect(await columnType('task', 'labels')).toBeUndefined();
 
-    const { rows } = await old.db.execute<{
-      id: string;
-      questions: string | null;
-      answers: string | null;
-      preview: string | null;
-    }>(sql`select id, questions, answers, preview from note order by id`);
-    expect(
-      rows.map((r) => [
-        r.id,
-        r.questions === null ? null : JSON.parse(r.questions),
-        r.answers === null ? null : JSON.parse(r.answers),
-        r.preview,
-      ]),
-    ).toEqual([
-      ['n1', questions, null, null],
-      ['n2', null, [{ selected: ['A'], other: 'é' }], null],
-      ['n3', null, null, null],
-    ]);
-    const event = await old.db.execute<{ data: string }>(sql`select data from transcript_event`);
-    expect(JSON.parse(event.rows[0]!.data)).toEqual({ kind: 'text', text: 'hi "there"' });
-    const task = await old.db.execute<{ title: string; input: string }>(sql`select title, input from task`);
-    expect(task.rows).toEqual([{ title: 'old', input: 'x' }]);
-  });
+      const { rows } = await old.db.execute<{
+        id: string;
+        questions: string | null;
+        answers: string | null;
+        preview: string | null;
+      }>(sql`select id, questions, answers, preview from note order by id`);
+      expect(
+        rows.map((r) => [
+          r.id,
+          r.questions === null ? null : JSON.parse(r.questions),
+          r.answers === null ? null : JSON.parse(r.answers),
+          r.preview,
+        ]),
+      ).toEqual([
+        ['n1', questions, null, null],
+        ['n2', null, [{ selected: ['A'], other: 'é' }], null],
+        ['n3', null, null, null],
+      ]);
+      const event = await old.db.execute<{ data: string }>(sql`select data from transcript_event`);
+      expect(JSON.parse(event.rows[0]!.data)).toEqual({ kind: 'text', text: 'hi "there"' });
+      const task = await old.db.execute<{ title: string; input: string }>(sql`select title, input from task`);
+      expect(task.rows).toEqual([{ title: 'old', input: 'x' }]);
+    });
 
-  it('accepts the author "server" afterwards', async () => {
-    await migrateToCurrent(old.db);
-    await old.db.execute(
-      sql`insert into note (owner, id, task_id, author, kind, body) values ('alice', 'n4', 't1', 'server', 'event', 'Marked done.')`,
-    );
-    const { rows } = await old.db.execute<{ author: string }>(sql`select author from note where id = 'n4'`);
-    expect(rows).toEqual([{ author: 'server' }]);
-  });
-});
+    it('accepts the author "server" afterwards', async () => {
+      await migrateToCurrent(old.db);
+      await old.db.execute(
+        sql`insert into note (owner, id, task_id, author, kind, body) values ('alice', 'n4', 't1', 'server', 'event', 'Marked done.')`,
+      );
+      const { rows } = await old.db.execute<{ author: string }>(sql`select author from note where id = 'n4'`);
+      expect(rows).toEqual([{ author: 'server' }]);
+    });
+  },
+);

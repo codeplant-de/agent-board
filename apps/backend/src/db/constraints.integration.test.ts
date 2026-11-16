@@ -1,8 +1,14 @@
 import { sql } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { asOwner, useTestDb } from '../test/helpers';
-import { migrationsBefore, removeFolder, scratchDatabase } from '../test/scratch';
+import {
+  migrationsBefore,
+  removeFolder,
+  SCRATCH_MIGRATION_TIMEOUT,
+  SCRATCH_TEARDOWN_TIMEOUT,
+  scratchDatabases,
+} from '../test/scratch';
 import { createDb, runMigrations, type Tx } from './client';
 import { SEALED_COLUMNS } from './sealedColumns';
 
@@ -25,30 +31,26 @@ async function refusedBy(attempt: () => Promise<unknown>): Promise<string | unde
   return undefined;
 }
 
-describe('the sealed-content constraints (migration 0014)', () => {
-  const scratch = scratchDatabase('constraints');
+describe('the sealed-content constraints (migration 0014)', { timeout: SCRATCH_MIGRATION_TIMEOUT }, () => {
+  const scratch = scratchDatabases('constraints');
   const folders: string[] = [];
   const pools: ReturnType<typeof createDb>[] = [];
 
-  const open = (): ReturnType<typeof createDb> => {
-    const connection = createDb(scratch.adminUrl);
+  /** A connection to a new, empty database. */
+  const open = async (): Promise<ReturnType<typeof createDb>> => {
+    const connection = createDb(await scratch.create());
     pools.push(connection);
     return connection;
   };
 
-  beforeEach(async () => {
-    await Promise.all(pools.splice(0).map(({ pool }) => pool.end()));
-    await scratch.recreate();
-  });
-
   afterAll(async () => {
     await Promise.all(pools.splice(0).map(({ pool }) => pool.end()));
-    await scratch.drop();
+    await scratch.dropAll();
     folders.forEach(removeFolder);
-  });
+  }, SCRATCH_TEARDOWN_TIMEOUT);
 
   it('passes on an empty database, with every constraint validated', async () => {
-    const { db } = open();
+    const { db } = await open();
     await runMigrations(db);
     const { rows } = await db.execute<{ conname: string; convalidated: boolean }>(
       sql`select conname, convalidated from pg_constraint where conname in (${constraintNames})`,
@@ -60,7 +62,7 @@ describe('the sealed-content constraints (migration 0014)', () => {
   it('stops while plain text remains, names the script and the columns, and changes nothing', async () => {
     const before = migrationsBefore('_sealed_content_constraints');
     folders.push(before);
-    const { db } = open();
+    const { db } = await open();
     await migrate(db, { migrationsFolder: before });
     await db.execute(sql`insert into app_user (username) values ('alice')`);
     await db.execute(
