@@ -136,7 +136,7 @@ Break one of these only with a decision recorded here.
 | Schema, RLS scope, migrations            | `apps/backend/src/db/`, `apps/backend/drizzle/`                  |
 | Change events                            | `apps/backend/src/services/changes.ts` (in-process, one replica) |
 | Dispatch decisions                       | `apps/cli/src/decide.mts`, `dispatch.mts`                        |
-| Running Claude, transcripts              | `apps/cli/src/worker.mts`                                        |
+| Running Claude, transcripts              | `apps/cli/src/worker.mts`, `transcript-upload.mts`               |
 | Hook                                     | `apps/cli/src/hook.mts`                                          |
 | Intake                                   | `apps/cli/src/intake.mts`, `github.mts`                          |
 | Slack app, Slack intake API              | `apps/slack/src/`, `apps/backend/src/intake-api.ts`              |
