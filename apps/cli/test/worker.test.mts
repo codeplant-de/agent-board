@@ -651,6 +651,15 @@ test('a task whose prompt cannot be decrypted is reported, never run', async () 
   assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('input could not be decrypted')));
 });
 
+test('a run that fails before it starts clears the run files the dispatcher wrote', async () => {
+  const { deps, backend } = setup({ exitCode: 0, signal: null });
+  Object.assign(backend.tasks[0]!, { input: '', unreadable: ['input'] });
+  const cleared: string[] = [];
+  deps.files = { ...deps.files, clear: (id) => void cleared.push(id) };
+  await runWorker(deps, 'w1');
+  assert.deepEqual(cleared, ['w1']);
+});
+
 test('a task whose directory cannot be decrypted is not run in the default directory', async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
   Object.assign(backend.tasks[0]!, { workdir: null, unreadable: ['workdir'] });

@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { isRecord, isSafeTaskId, isSafeWorkdir } from '@agent-board/shared';
 import { getPaths } from './config.mts';
 import { readSettingsEnv } from './settings-env.mts';
+import { errorText } from './text.mts';
 
 export interface WaitCheck {
   // A shell command (bash -c); exit 0 means the wait is over.
@@ -125,7 +126,7 @@ export function runCheck(check: WaitCheck, home: string = homedir()): Promise<Ch
         detached: true,
       });
     } catch (error) {
-      resolve({ exitCode: null, timedOut: false, output: error instanceof Error ? error.message : String(error) });
+      resolve({ exitCode: null, timedOut: false, output: errorText(error) });
       return;
     }
     const timer = setTimeout(() => {

@@ -49,7 +49,7 @@ import type {
 import { ConfigError } from './config.mts';
 import { loadEnvFile } from './env-file.mts';
 import { isCompiledBinary } from './self.mts';
-import { oneLine } from './text.mts';
+import { errorText, oneLine } from './text.mts';
 import { cliVersion } from './version.mts';
 
 const REQUEST_TIMEOUT_MS = 45_000;
@@ -197,6 +197,7 @@ export async function callServer(
   timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<unknown> {
   let response: Response;
+  let text: string;
   try {
     response = await fetcher(`${config.url}/api/machine/${command}`, {
       method: 'POST',
@@ -205,10 +206,11 @@ export async function callServer(
       signal: AbortSignal.timeout(timeoutMs),
       redirect: 'error',
     });
+    // Inside the try: a connection that drops or times out while the body is read is unreachable too.
+    text = await response.text();
   } catch (error) {
-    throw new BackendError(`cannot reach ${config.url}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new BackendError(`cannot reach ${config.url}: ${errorText(error)}`);
   }
-  const text = await response.text();
   let payload: unknown;
   try {
     payload = JSON.parse(text);

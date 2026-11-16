@@ -1,6 +1,7 @@
 // The dispatcher updates this CLI by itself, when the config allows it (`autoUpdate`).
 import { compareVersions } from '@agent-board/shared';
 import type { UpdateState } from './update-state.mts';
+import { errorText } from './text.mts';
 
 // After a failed update (no gh, not logged in, a download cut off) the dispatcher does not try again for this long.
 export const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
@@ -63,7 +64,7 @@ export async function tryUpdate(run: UpdateRun, why: string): Promise<UpdateOutc
     state.clearDeferral();
     return 'updated';
   } catch (error) {
-    log(`UPDATE-FAILED ${error instanceof Error ? error.message : String(error)}; not trying again for 1 h`);
+    log(`UPDATE-FAILED ${errorText(error)}; not trying again for 1 h`);
     return 'failed';
   }
 }

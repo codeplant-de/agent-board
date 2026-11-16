@@ -6,6 +6,7 @@
 import { MAX_BATCH_EVENTS } from '@agent-board/shared';
 import type { TranscriptEvent } from '@agent-board/shared';
 import { isPermanentRefusal } from './decide.mts';
+import { errorText } from './text.mts';
 
 // Events waiting for the board past this many, or past this many bytes of JSON, lose their oldest tool outputs first and then their
 // oldest events, with a note in the transcript: the board is down, the run goes on.
@@ -160,7 +161,7 @@ export function createTranscriptUploader(options: TranscriptUploaderOptions): Tr
       await post(events);
       return [];
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
+      const reason = errorText(error);
       if (!isPermanentRefusal(error)) {
         log(`transcript upload failed: ${reason}`);
         return events;
@@ -204,7 +205,7 @@ export function createTranscriptUploader(options: TranscriptUploaderOptions): Tr
   const start = (): Promise<void> => {
     uploading ??= upload()
       .catch((error: unknown) => {
-        log(`transcript upload failed: ${error instanceof Error ? error.message : String(error)}`);
+        log(`transcript upload failed: ${errorText(error)}`);
       })
       .finally(() => {
         uploading = undefined;
