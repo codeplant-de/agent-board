@@ -1,7 +1,6 @@
 import { Button, Group, Modal, PasswordInput, Stack, Text } from '@mantine/core';
 import { useState, type ReactNode } from 'react';
-import { errorMessage } from '../lib/trpc';
-import { KeyError } from './kdf';
+import { useSubmit } from './useSubmit';
 
 interface Props {
   title: string;
@@ -15,19 +14,7 @@ interface Props {
 /** Asks for the passphrase again: the browser keeps no raw key, so what needs one must open it from the passphrase. */
 export function PassphraseModal({ title, description, confirmLabel, onClose, onSubmit }: Props) {
   const [passphrase, setPassphrase] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const submit = async () => {
-    if (passphrase === '' || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await onSubmit(passphrase);
-    } catch (err) {
-      setError(err instanceof KeyError ? err.message : errorMessage(err));
-      setBusy(false);
-    }
-  };
+  const { busy, error, submit } = useSubmit(() => onSubmit(passphrase), passphrase !== '');
   return (
     <Modal opened onClose={onClose} title={title}>
       <form

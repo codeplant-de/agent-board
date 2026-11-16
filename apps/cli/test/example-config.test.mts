@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { isRecord } from '@agent-board/shared';
 import { buildInvocation, expandRule } from '../src/decide.mts';
-import { parseConfig } from '../src/config.mts';
+import { configWarnings, parseConfig } from '../src/config.mts';
 import { task } from './helpers.mts';
 
 const FRESH = { kind: 'fresh', sessionId: '11111111-1111-4111-8111-111111111111' } as const;
@@ -33,6 +33,10 @@ test('the reviews example has an intake block', () => {
 
 test('the example has no backend entry: the CLI talks to the board directly', () => {
   assert.ok(!(isRecord(raw) && 'backend' in raw));
+});
+
+test('the example uses only keys the CLI reads', () => {
+  assert.deepEqual(configWarnings(raw), []);
 });
 
 test('no shipped rule starts with a wildcard before a path', () => {
