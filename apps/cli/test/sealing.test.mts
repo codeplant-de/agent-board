@@ -28,8 +28,8 @@ import type {
   WireTask,
   WireTaskDraft,
 } from '@agent-board/shared';
-import { BackendError } from '../src/backend.mts';
-import { sealingBackend } from '../src/sealing.mts';
+import { BackendError } from '../src/backend/backend.mts';
+import { sealingBackend } from '../src/backend/sealing.mts';
 import { KEYS, schedule, task, wireSchedule, wireTask } from './helpers.mts';
 
 // Plain texts that must never reach the board server.

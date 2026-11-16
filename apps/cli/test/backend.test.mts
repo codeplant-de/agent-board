@@ -19,9 +19,9 @@ import {
   dryRunBackend,
   parseWebConfig,
   verifyContract,
-} from '../src/backend.mts';
-import type { Fetch } from '../src/backend.mts';
-import { createSealedBackend } from '../src/sealing.mts';
+} from '../src/backend/backend.mts';
+import type { Fetch } from '../src/backend/backend.mts';
+import { createSealedBackend } from '../src/backend/sealing.mts';
 import { DATA_KEY, KEYS, OWNER, SERVER_API, VERSION_ANSWER, wireSchedule, wireTask } from './helpers.mts';
 
 const config = { url: 'https://board.example', token: 'TOKEN-123', dataKey: DATA_KEY };

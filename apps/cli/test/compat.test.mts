@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BackendError } from '../src/backend.mts';
+import { BackendError } from '../src/backend/backend.mts';
 import { skipTickWhileServerOlder, warnSkippedOnce } from '../src/cli.mts';
-import { runIntake } from '../src/intake.mts';
+import { runIntake } from '../src/intake/intake.mts';
 import { CONFIG, fakeBackend } from './helpers.mts';
 
 const serverOlder = (): BackendError =>

@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { encodeDataKey } from '@agent-board/shared';
 import { DATA_KEY, KEYS, OWNER, SERVER_API, SERVER_HAS } from './helpers.mts';
-import { BackendError } from '../src/backend.mts';
-import { formatResult, hasFailure, runChecks } from '../src/doctor.mts';
-import type { CheckResult, DoctorDeps } from '../src/doctor.mts';
-import { renderUnits } from '../src/setup.mts';
+import { BackendError } from '../src/backend/backend.mts';
+import { formatResult, hasFailure, runChecks } from '../src/setup/doctor.mts';
+import type { CheckResult, DoctorDeps } from '../src/setup/doctor.mts';
+import { renderUnits } from '../src/setup/setup.mts';
 
 const CONFIG_DIR = '/home/me/.config/agent-board';
 const UNIT_DIR = '/home/me/.config/systemd/user';

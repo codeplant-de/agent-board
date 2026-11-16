@@ -11,7 +11,7 @@ import {
   loadConfigWarnings,
   parseConfig,
   readSecretFile,
-} from '../src/config.mts';
+} from '../src/config/config.mts';
 
 const valid = {
   repos: { 'cosuno/cosuno': '~/x' },

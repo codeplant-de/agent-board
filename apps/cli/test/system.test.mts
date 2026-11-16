@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createSystem, parseUnitState, parseUnixTimestamp, parseWorkerUnits, SystemError } from '../src/system.mts';
+import {
+  createSystem,
+  parseUnitState,
+  parseUnixTimestamp,
+  parseWorkerUnits,
+  SystemError,
+} from '../src/setup/system.mts';
 
 test('only known unit states answer; anything else throws', () => {
   for (const state of ['active\n', 'activating', 'deactivating']) assert.equal(parseUnitState(state), true);

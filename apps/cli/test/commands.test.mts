@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { API_VERSION } from '@agent-board/shared';
-import { BackendError } from '../src/backend.mts';
+import { BackendError } from '../src/backend/backend.mts';
 import { UsageError } from '../src/cli.mts';
 import type { LinkingContext } from '../src/cli.mts';
-import { runBoard } from '../src/commands.mts';
-import type { ProgramOptions } from '../src/commands.mts';
+import { runBoard } from '../src/commands/program.mts';
+import type { ProgramOptions } from '../src/commands/program.mts';
 import { CONFIG, fakeBackend, fakeWaitStore, linkTo, task } from './helpers.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
@@ -270,8 +270,8 @@ test('help for an unknown command and a bare --dry-run are plain', async () => {
 // The invocations agents use today: the run rules and the hook's messages in the source, and the selftest skills.
 function boardCommands(): string[] {
   const sources = [
-    readFileSync(new URL('../src/decide.mts', import.meta.url), 'utf8'),
-    readFileSync(new URL('../src/hook.mts', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/dispatch/decide.mts', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/worker/hook.mts', import.meta.url), 'utf8'),
     ...readdirSync(new URL('./skills/', import.meta.url)).map((name) =>
       readFileSync(new URL(`./skills/${name}/SKILL.md`, import.meta.url), 'utf8'),
     ),

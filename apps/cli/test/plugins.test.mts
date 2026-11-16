@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseInstallPath, PluginError, resolvePluginRoot } from '../src/plugins.mts';
-import type { PluginFiles } from '../src/plugins.mts';
+import { parseInstallPath, PluginError, resolvePluginRoot } from '../src/worker/plugins.mts';
+import type { PluginFiles } from '../src/worker/plugins.mts';
 
 const file = {
   version: 2,

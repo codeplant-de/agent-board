@@ -16,9 +16,9 @@ import { test } from 'node:test';
 import { encodeDataKey } from '@agent-board/shared';
 import { DATA_KEY, KEYS, OWNER, SERVER_API, SERVER_HAS } from './helpers.mts';
 import { UsageError } from '../src/cli.mts';
-import { runBoard } from '../src/commands.mts';
-import { init, machineProblem, tokenProblem, urlProblem } from '../src/init.mts';
-import type { InitDeps, Prompts } from '../src/init.mts';
+import { runBoard } from '../src/commands/program.mts';
+import { init, machineProblem, tokenProblem, urlProblem } from '../src/setup/init.mts';
+import type { InitDeps, Prompts } from '../src/setup/init.mts';
 
 const TOKEN = 'abm_secretsecretsecret';
 const KEY_TEXT = encodeDataKey(DATA_KEY);

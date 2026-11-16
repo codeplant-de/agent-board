@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { EXEC_PATH, isCompiledBinary, selfCommand } from '../src/self.mts';
-import { createSystem } from '../src/system.mts';
-import { hookCommand } from '../src/worker.mts';
+import { EXEC_PATH, isCompiledBinary, selfCommand } from '../src/self/self.mts';
+import { createSystem } from '../src/setup/system.mts';
+import { hookCommand } from '../src/worker/worker.mts';
 
 test('the command that starts a worker ends in main.mts internal worker <id>', async () => {
   const printed: string[] = [];

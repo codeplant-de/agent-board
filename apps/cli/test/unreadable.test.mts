@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { UNREADABLE_TITLE } from '@agent-board/shared';
 import type { LinkingContext } from '../src/cli.mts';
-import { runBoard } from '../src/commands.mts';
-import { resolveTaskId } from '../src/ids.mts';
+import { runBoard } from '../src/commands/program.mts';
+import { resolveTaskId } from '../src/commands/ids.mts';
 import { CONFIG, fakeBackend, linkTo, note, schedule, task } from './helpers.mts';
 
 const SEALED_ELSEWHERE = task({

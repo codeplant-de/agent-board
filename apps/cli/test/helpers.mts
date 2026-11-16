@@ -1,9 +1,9 @@
-import type { Config } from '../src/config.mts';
-import type { RunFiles, RunRecord } from '../src/runtime.mts';
-import type { SessionStore } from '../src/sessions.mts';
-import type { TaskFile, TaskFileStore } from '../src/task-files.mts';
-import type { WaitCheck, WaitStore } from '../src/waits.mts';
-import { BackendError } from '../src/backend.mts';
+import type { Config } from '../src/config/config.mts';
+import type { RunFiles, RunRecord } from '../src/worker/runtime.mts';
+import type { SessionStore } from '../src/worker/sessions.mts';
+import type { TaskFile, TaskFileStore } from '../src/dispatch/task-files.mts';
+import type { WaitCheck, WaitStore } from '../src/dispatch/waits.mts';
+import { BackendError } from '../src/backend/backend.mts';
 import {
   API_VERSION,
   LEGACY_CONTRACT,

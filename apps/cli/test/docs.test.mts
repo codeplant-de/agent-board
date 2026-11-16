@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { COMMANDS_END, COMMANDS_START, renderCommandsDoc, withCommandsDoc } from '../src/docs.mts';
+import { COMMANDS_END, COMMANDS_START, renderCommandsDoc, withCommandsDoc } from '../src/commands/docs.mts';
 
 const cliDoc = readFileSync(new URL('../../../docs/cli.md', import.meta.url), 'utf8');
 

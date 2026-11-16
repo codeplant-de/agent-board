@@ -15,13 +15,13 @@ import {
   renderThread,
   schedules,
   polish,
-} from '../src/board.mts';
-import { BackendError } from '../src/backend.mts';
+} from '../src/commands/board.mts';
+import { BackendError } from '../src/backend/backend.mts';
 import { parseWireTask } from '@agent-board/shared';
 import type { LinkingContext } from '../src/cli.mts';
-import { taskLink } from '../src/links.mts';
+import { taskLink } from '../src/output/links.mts';
 import { CONFIG, fakeBackend, note, schedule, task } from './helpers.mts';
-import { runBoard } from '../src/commands.mts';
+import { runBoard } from '../src/commands/program.mts';
 import { UsageError } from '../src/cli.mts';
 
 const linkTo = (id: string): string => taskLink('https://board.test', id);

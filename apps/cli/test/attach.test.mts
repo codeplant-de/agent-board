@@ -6,9 +6,9 @@ import { test } from 'node:test';
 import type { Task } from '@agent-board/shared';
 import { ReportedFailure, UsageError } from '../src/cli.mts';
 import type { LinkingContext } from '../src/cli.mts';
-import { renderThread } from '../src/board.mts';
-import type { Spawner } from '../src/board.mts';
-import { runBoard } from '../src/commands.mts';
+import { renderThread } from '../src/commands/board.mts';
+import type { Spawner } from '../src/commands/board.mts';
+import { runBoard } from '../src/commands/program.mts';
 import { CONFIG, fakeBackend, linkTo, SESSION, task } from './helpers.mts';
 
 const ID = 'Zt0Test1';

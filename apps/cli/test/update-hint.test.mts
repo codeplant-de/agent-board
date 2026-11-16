@@ -3,12 +3,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { runBoard } from '../src/commands.mts';
-import type { ProgramOptions } from '../src/commands.mts';
+import { runBoard } from '../src/commands/program.mts';
+import type { ProgramOptions } from '../src/commands/program.mts';
 import type { LinkingContext } from '../src/cli.mts';
-import { HINT_EVERY_MS, updateHint } from '../src/update-hint.mts';
-import { createUpdateState } from '../src/update-state.mts';
-import type { UpdateState } from '../src/update-state.mts';
+import { HINT_EVERY_MS, updateHint } from '../src/self/update-hint.mts';
+import { createUpdateState } from '../src/self/update-state.mts';
+import type { UpdateState } from '../src/self/update-state.mts';
 import { CONFIG, fakeBackend, linkTo, task } from './helpers.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');

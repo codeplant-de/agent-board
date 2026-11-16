@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createSessionStore } from '../src/sessions.mts';
+import { createSessionStore } from '../src/worker/sessions.mts';
 import { OTHER_SESSION, SESSION } from './helpers.mts';
 
 function withDir(run: (dir: string) => void): void {

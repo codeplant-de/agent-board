@@ -8,8 +8,8 @@ import {
   parseDuplicateAnswer,
   parseScheduleArgs as toScheduleArgs,
   schedule,
-} from '../src/schedule.mts';
-import type { Duplicate, ScheduleArgs, ScheduleDeps, ScheduleFlags } from '../src/schedule.mts';
+} from '../src/commands/schedule.mts';
+import type { Duplicate, ScheduleArgs, ScheduleDeps, ScheduleFlags } from '../src/commands/schedule.mts';
 import { fakeBackend, task } from './helpers.mts';
 
 // The command line as `board schedule` reads it: commander splits flags from the prompt, then the flags are checked.

@@ -6,10 +6,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { SHELLS, renderCompletion, completionModel } from '../src/completion.mts';
-import type { Shell } from '../src/completion.mts';
+import { SHELLS, renderCompletion, completionModel } from '../src/commands/completion.mts';
+import type { Shell } from '../src/commands/completion.mts';
 import type { LinkingContext } from '../src/cli.mts';
-import { buildProgram, runBoard } from '../src/commands.mts';
+import { buildProgram, runBoard } from '../src/commands/program.mts';
 import { CONFIG, fakeBackend, linkTo, schedule, task } from './helpers.mts';
 
 const model = completionModel(buildProgram({ env: {} }));

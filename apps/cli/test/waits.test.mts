@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createWaitStore, runCheck } from '../src/waits.mts';
+import { createWaitStore, runCheck } from '../src/dispatch/waits.mts';
 
 test('the wait store keeps a check per task, private to the user, and drops what it cannot read', () => {
   const dir = mkdtempSync('/tmp/board-waits-test-');

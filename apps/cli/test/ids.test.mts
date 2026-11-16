@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { UsageError } from '../src/cli.mts';
-import { resolveScheduleId, resolveTaskId } from '../src/ids.mts';
+import { resolveScheduleId, resolveTaskId } from '../src/commands/ids.mts';
 import { fakeBackend, schedule, task } from './helpers.mts';
 
 function setup() {

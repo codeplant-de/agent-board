@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { isRecord } from '@agent-board/shared';
-import { buildInvocation, expandRule } from '../src/decide.mts';
-import { configWarnings, parseConfig } from '../src/config.mts';
+import { buildInvocation, expandRule } from '../src/dispatch/decide.mts';
+import { configWarnings, parseConfig } from '../src/config/config.mts';
 import { task } from './helpers.mts';
 
 const FRESH = { kind: 'fresh', sessionId: '11111111-1111-4111-8111-111111111111' } as const;

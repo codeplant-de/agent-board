@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { LinkingContext } from '../src/cli.mts';
-import { runBoard } from '../src/commands.mts';
-import { renderThread } from '../src/board.mts';
-import { resolveTaskId } from '../src/ids.mts';
-import { plainLine, plainText } from '../src/terminal.mts';
+import { runBoard } from '../src/commands/program.mts';
+import { renderThread } from '../src/commands/board.mts';
+import { resolveTaskId } from '../src/commands/ids.mts';
+import { plainLine, plainText } from '../src/output/terminal.mts';
 import { CONFIG, fakeBackend, linkTo, note, schedule, task } from './helpers.mts';
 
 // The reviewer's example: a title that clears the line and writes a row of its own.

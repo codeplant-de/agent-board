@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { pickEnv, readMcpServers, readSettingsEnv } from '../src/settings-env.mts';
+import { pickEnv, readMcpServers, readSettingsEnv } from '../src/worker/settings-env.mts';
 
 test('settings.local.json wins over settings.json; a missing or broken file is skipped', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agent-board-settings-'));

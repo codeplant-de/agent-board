@@ -11,10 +11,10 @@ import {
 } from '@agent-board/shared';
 import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { renderThread } from '../../cli/src/board.mts';
-import { runDispatch, type DispatchDeps } from '../../cli/src/dispatch.mts';
-import { createSealedBackend } from '../../cli/src/sealing.mts';
-import { runWorker, type WorkerDeps } from '../../cli/src/worker.mts';
+import { renderThread } from '../../cli/src/commands/board.mts';
+import { runDispatch, type DispatchDeps } from '../../cli/src/dispatch/dispatch.mts';
+import { createSealedBackend } from '../../cli/src/backend/sealing.mts';
+import { runWorker, type WorkerDeps } from '../../cli/src/worker/worker.mts';
 import { CONFIG, fakeRunFiles, fakeSessions, fakeTaskFiles, fakeWaitStore } from '../../cli/test/helpers.mts';
 import { createKeySetup, exportDataKey } from '../../frontend/src/crypto/keySlots';
 import { inspectStoredKeys } from '../../frontend/src/crypto/keyStore';

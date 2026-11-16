@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { API_VERSION, CLIENT_FEATURES_HEADER, MIN_SERVER } from '@agent-board/shared';
-import { requireFeature, verifyContract } from '../src/backend.mts';
-import type { Fetch } from '../src/backend.mts';
+import { requireFeature, verifyContract } from '../src/backend/backend.mts';
+import type { Fetch } from '../src/backend/backend.mts';
 import {
   backoffMs,
   createSseParser,
@@ -10,8 +10,8 @@ import {
   LISTENER_OPTIONS,
   runListener,
   tickCommand,
-} from '../src/listen.mts';
-import type { SseEvent, Timers } from '../src/listen.mts';
+} from '../src/dispatch/listen.mts';
+import type { SseEvent, Timers } from '../src/dispatch/listen.mts';
 
 // A clock that only moves when the test says so.
 class FakeClock implements Timers {

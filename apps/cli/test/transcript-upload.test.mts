@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MAX_BATCH_EVENTS } from '@agent-board/shared';
 import type { TranscriptEvent } from '@agent-board/shared';
-import { BackendError } from '../src/backend.mts';
-import { boundBacklog, createTranscriptUploader, splitBatches } from '../src/transcript-upload.mts';
-import type { TranscriptUploaderOptions } from '../src/transcript-upload.mts';
+import { BackendError } from '../src/backend/backend.mts';
+import { boundBacklog, createTranscriptUploader, splitBatches } from '../src/worker/transcript-upload.mts';
+import type { TranscriptUploaderOptions } from '../src/worker/transcript-upload.mts';
 
 const event = (seq: number): TranscriptEvent => ({
   kind: 'text',

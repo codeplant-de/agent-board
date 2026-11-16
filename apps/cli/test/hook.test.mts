@@ -3,8 +3,8 @@ import { mkdtempSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { askedDecision, askedQuestions } from '../src/hook.mts';
-import { createRunFiles } from '../src/runtime.mts';
+import { askedDecision, askedQuestions } from '../src/worker/hook.mts';
+import { createRunFiles } from '../src/worker/runtime.mts';
 
 const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } });
 

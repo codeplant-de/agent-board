@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MAX_BATCH_EVENTS } from '@agent-board/shared';
 import type { Note, Task } from '@agent-board/shared';
-import { BackendError } from '../src/backend.mts';
-import { START_MARKER } from '../src/decide.mts';
-import type { Invocation, Supervision } from '../src/decide.mts';
-import { runWorker } from '../src/worker.mts';
-import type { RunChannel, RunResult, Watch, WorkerDeps } from '../src/worker.mts';
+import { BackendError } from '../src/backend/backend.mts';
+import { START_MARKER } from '../src/dispatch/decide.mts';
+import type { Invocation, Supervision } from '../src/dispatch/decide.mts';
+import { runWorker } from '../src/worker/worker.mts';
+import type { RunChannel, RunResult, Watch, WorkerDeps } from '../src/worker/worker.mts';
 import { CONFIG, fakeBackend, fakeRunFiles, fakeSessions, note, OTHER_SESSION, SESSION, task } from './helpers.mts';
 
 function setup(result: RunResult | Error, moveDuringRun = false) {

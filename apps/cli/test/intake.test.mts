@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BackendError } from '../src/backend.mts';
+import { BackendError } from '../src/backend/backend.mts';
 import {
   GitHubError,
   parsePrStates,
@@ -8,11 +8,11 @@ import {
   prStatesQuery,
   prStatesVariables,
   searchQuery,
-} from '../src/github.mts';
+} from '../src/intake/github.mts';
 import { STATUSES } from '@agent-board/shared';
 import type { PrState, Status } from '@agent-board/shared';
-import type { LivePr } from '../src/github.mts';
-import { planIntake, planPrStates, prsToCheck, runIntake } from '../src/intake.mts';
+import type { LivePr } from '../src/intake/github.mts';
+import { planIntake, planPrStates, prsToCheck, runIntake } from '../src/intake/intake.mts';
 import { CONFIG, fakeBackend, NO_PR_STATES, task } from './helpers.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');

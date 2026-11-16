@@ -22,11 +22,11 @@ import {
   realListenerRestart,
   sweepStaleUpdateDirs,
   selfUpdate,
-} from '../src/self-update.mts';
-import type { SelfUpdateDeps } from '../src/self-update.mts';
+} from '../src/self/self-update.mts';
+import type { SelfUpdateDeps } from '../src/self/self-update.mts';
 import { fakeGh, sha256 } from './helpers-gh.mts';
 import type { FakeRelease } from './helpers-gh.mts';
-import { runBoard } from '../src/commands.mts';
+import { runBoard } from '../src/commands/program.mts';
 
 const ASSET = 'board-linux-x64';
 

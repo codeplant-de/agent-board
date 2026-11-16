@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { runBoard } from '../src/commands.mts';
+import { runBoard } from '../src/commands/program.mts';
 import {
   parseExecStart,
   quoteExecArg,
@@ -23,8 +23,8 @@ import {
   treeProblem,
   enableCommand,
   UNIT_PATH,
-} from '../src/setup.mts';
-import type { SetupDeps } from '../src/setup.mts';
+} from '../src/setup/setup.mts';
+import type { SetupDeps } from '../src/setup/setup.mts';
 
 const command = (name: string): string[] => [
   '/opt/node/bin/node',

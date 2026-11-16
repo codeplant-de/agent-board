@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createTaskFileStore } from '../src/task-files.mts';
+import { createTaskFileStore } from '../src/dispatch/task-files.mts';
 
 test('the task file store lists the logs and session records of tasks, and removes one at a time', () => {
   const dir = mkdtempSync('/tmp/board-task-files-test-');

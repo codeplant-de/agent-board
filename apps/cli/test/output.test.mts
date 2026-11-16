@@ -3,13 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import tty from 'node:tty';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { formatTasks } from '../src/board.mts';
+import { formatTasks } from '../src/commands/board.mts';
 import { UsageError } from '../src/cli.mts';
 import type { LinkingContext } from '../src/cli.mts';
-import { runBoard } from '../src/commands.mts';
-import type { ProgramOptions } from '../src/commands.mts';
-import { haikuDuplicateCheck } from '../src/schedule.mts';
-import { createStyle, wantsColor } from '../src/style.mts';
+import { runBoard } from '../src/commands/program.mts';
+import type { ProgramOptions } from '../src/commands/program.mts';
+import { haikuDuplicateCheck } from '../src/commands/schedule.mts';
+import { createStyle, wantsColor } from '../src/output/style.mts';
 import { CONFIG, fakeBackend, linkTo, note, schedule, task } from './helpers.mts';
 
 const ID = 'Zt0Test1';

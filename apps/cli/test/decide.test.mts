@@ -23,10 +23,10 @@ import {
   START_MARKER,
   decideWake,
   WAKE_MARKER,
-} from '../src/decide.mts';
-import type { LaneRun } from '../src/decide.mts';
-import { BackendError } from '../src/backend.mts';
-import { tail } from '../src/text.mts';
+} from '../src/dispatch/decide.mts';
+import type { LaneRun } from '../src/dispatch/decide.mts';
+import { BackendError } from '../src/backend/backend.mts';
+import { tail } from '../src/output/text.mts';
 import { CONFIG, note as makeNote, OTHER_SESSION, SESSION, task } from './helpers.mts';
 
 // What a worker knows of this machine's sessions: by default, every session it is asked for is its own.

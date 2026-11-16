@@ -15,13 +15,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
-import { BackendError } from '../src/backend.mts';
+import { BackendError } from '../src/backend/backend.mts';
 import { UsageError } from '../src/cli.mts';
 import type { LinkingContext } from '../src/cli.mts';
-import { runBoard } from '../src/commands.mts';
-import type { ProgramOptions } from '../src/commands.mts';
-import { ConfigError } from '../src/config.mts';
-import { changeDirs, coveringDir, isAllowedDir } from '../src/dirs.mts';
+import { runBoard } from '../src/commands/program.mts';
+import type { ProgramOptions } from '../src/commands/program.mts';
+import { ConfigError } from '../src/config/config.mts';
+import { changeDirs, coveringDir, isAllowedDir } from '../src/commands/dirs.mts';
 import { CONFIG, fakeBackend, linkTo, schedule, task } from './helpers.mts';
 
 const dir = (path: string) => ({ path });

@@ -3,9 +3,9 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { logPath } from '../src/logs.mts';
-import { runProcess } from '../src/worker.mts';
-import type { RunChannel, Watch } from '../src/worker.mts';
+import { logPath } from '../src/worker/logs.mts';
+import { runProcess } from '../src/worker/worker.mts';
+import type { RunChannel, Watch } from '../src/worker/worker.mts';
 
 // A killed process nobody has reaped yet (a zombie, as when the container's init reaps late) still answers kill(pid, 0).
 function isGone(pid: number): boolean {
