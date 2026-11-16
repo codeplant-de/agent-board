@@ -4,10 +4,13 @@
 //   <task>.pause  present while the dispatcher asks the run to give up its slot
 //   <task>.cwd    the agent's working directory at its last tool call (it may have entered a worktree)
 //   <task>.agents the definition of the agent the run is, for `claude --agents` (mode 0600)
-// They live in $XDG_RUNTIME_DIR, private to the user, apart from any checkout.
+//   <task>.pgid   the process group of the claude process (written by the worker), which a stop signals as well as the worker's
+// They live in $XDG_RUNTIME_DIR, private to the user, apart from any checkout; without one, in <state dir>/run on macOS.
+// On macOS the process supervisor (setup/process-system.mts) also keeps <task>.pid here.
 import { mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isRecord, isSafeWorkdir } from '@agent-board/shared';
+import { getPaths } from '../config/config.mts';
 
 export interface RunRecord {
   lane: string;
@@ -27,6 +30,12 @@ export interface RunFiles {
   // Where the agent definition of the task's run is written.
   agentsPath(taskId: string): string;
   writeAgents(taskId: string, content: string): void;
+  // The process group claude runs in; undefined before it started or when the file holds anything else.
+  writeProcessGroup(taskId: string, pgid: number): void;
+  processGroup(taskId: string): number | undefined;
+  // The dispatcher's own marker, not a task's: when its last tick started.
+  lastDispatchTick(): Date | undefined;
+  markDispatchTick(at: Date): void;
   requestPause(taskId: string): void;
   // When the pause was asked for; undefined when it was not.
   pauseRequestedAt(taskId: string): Date | undefined;
@@ -34,10 +43,24 @@ export interface RunFiles {
   clear(taskId: string): void;
 }
 
-export function runDir(env: NodeJS.ProcessEnv = process.env): string {
+// macOS has no runtime directory, so without XDG_RUNTIME_DIR the run files go under the state directory (created with
+// mode 700, see ensureRunDir). Nothing clears it at reboot: a stale .pid fails its identity check, a stale .run is cleared at the next start.
+export function runDir(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {
   if (env['AGENT_BOARD_RUN_DIR']) return env['AGENT_BOARD_RUN_DIR'];
-  const base = env['XDG_RUNTIME_DIR'] ?? `/run/user/${process.getuid?.() ?? 0}`;
-  return join(base, 'agent-board');
+  if (env['XDG_RUNTIME_DIR']) return join(env['XDG_RUNTIME_DIR'], 'agent-board');
+  if (platform === 'darwin') return join(getPaths(env).stateDir, 'run');
+  return join(`/run/user/${process.getuid?.() ?? 0}`, 'agent-board');
+}
+
+// The directory of a dispatch tick's lock. On Linux it is the runtime directory itself, where the timer's unit keeps the
+// same file (%t); on macOS it is the run directory, which no other user can write (the shared /tmp must not hold a lock).
+export function lockDir(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {
+  if (platform === 'darwin') return runDir(env, platform);
+  return env['XDG_RUNTIME_DIR'] || '/tmp';
+}
+
+export function ensureRunDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
 function mtime(path: string): Date | undefined {
@@ -45,11 +68,9 @@ function mtime(path: string): Date | undefined {
 }
 
 export function createRunFiles(dir: string = runDir()): RunFiles {
-  const path = (taskId: string, kind: 'run' | 'alive' | 'pause' | 'cwd' | 'agents'): string =>
+  const path = (taskId: string, kind: 'run' | 'alive' | 'pause' | 'cwd' | 'agents' | 'pgid'): string =>
     join(dir, `${taskId}.${kind}`);
-  const ensureDir = (): void => {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-  };
+  const ensureDir = (): void => ensureRunDir(dir);
   return {
     dir,
     writeRun(taskId, record) {
@@ -101,13 +122,32 @@ export function createRunFiles(dir: string = runDir()): RunFiles {
       ensureDir();
       writeFileSync(path(taskId, 'agents'), content, { mode: 0o600 });
     },
+    writeProcessGroup(taskId, pgid) {
+      ensureDir();
+      writeFileSync(path(taskId, 'pgid'), String(pgid), { mode: 0o600 });
+    },
+    processGroup(taskId) {
+      try {
+        const pgid = Number(readFileSync(path(taskId, 'pgid'), 'utf8').trim());
+        return Number.isInteger(pgid) && pgid > 1 ? pgid : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    lastDispatchTick: () => mtime(join(dir, 'dispatch.tick')),
+    markDispatchTick(at) {
+      ensureDir();
+      const file = join(dir, 'dispatch.tick');
+      writeFileSync(file, '', { mode: 0o600 });
+      utimesSync(file, at, at);
+    },
     requestPause(taskId) {
       ensureDir();
       writeFileSync(path(taskId, 'pause'), '', { mode: 0o600, flag: 'wx' });
     },
     pauseRequestedAt: (taskId) => mtime(path(taskId, 'pause')),
     clear(taskId) {
-      for (const kind of ['run', 'alive', 'pause', 'cwd', 'agents'] as const)
+      for (const kind of ['run', 'alive', 'pause', 'cwd', 'agents', 'pgid'] as const)
         rmSync(path(taskId, kind), { force: true });
     },
   };

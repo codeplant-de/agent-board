@@ -1,6 +1,6 @@
 // Builds the binary for this host and runs it the way a worker machine would: outside the checkout, with no node on PATH,
 // a temporary home and config dir, and a local fake of the machine API. These are the paths where Bun and Node could differ.
-// Usage: node scripts/binary-smoke.mts   (needs bun on PATH)
+// Usage: node scripts/binary-smoke.mts   (needs bun on PATH; BOARD_BINARY=<file> tests a binary that is built already)
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import {
@@ -42,20 +42,30 @@ import { DATA_KEY, ENV_FILE, KEYS, OWNER, wireTask } from '../src/__tests__/help
 const cliDir = fileURLToPath(new URL('..', import.meta.url));
 const version = (JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')) as { version: string }).version;
 const target = `${process.platform}-${process.arch}`;
+const onLinux = process.platform === 'linux';
+const onMac = process.platform === 'darwin';
 
 if (!['linux-x64', 'linux-arm64', 'darwin-arm64'].includes(target)) throw new Error(`no binary is built for ${target}`);
 const dist = mkdtempSync(join(tmpdir(), 'board-binary-dist-'));
-execFileSync('sh', [join(cliDir, 'build.sh'), target], {
-  cwd: cliDir,
-  env: { ...process.env, DIST_DIR: dist },
-  stdio: ['ignore', 'ignore', 'inherit'],
-});
+// BOARD_BINARY names a binary that is already built (the release workflow runs the very file it publishes).
+const prebuilt = process.env['BOARD_BINARY'];
+if (prebuilt === undefined)
+  execFileSync('sh', [join(cliDir, 'build.sh'), target], {
+    cwd: cliDir,
+    env: { ...process.env, DIST_DIR: dist },
+    stdio: ['ignore', 'ignore', 'inherit'],
+  });
 
 const root = mkdtempSync(join(tmpdir(), 'board-binary-smoke-'));
 const outside = mkdtempSync('/var/tmp/board-binary-smoke-');
 const binary = join(root, 'board');
-copyFileSync(join(dist, `board-${target}`), binary);
+copyFileSync(prebuilt ?? join(dist, `board-${target}`), binary);
 chmodSync(binary, 0o755);
+
+// How a dry-run tick says it would start the worker: a transient unit on Linux, a detached process on macOS.
+const workerStart = onMac
+  ? new RegExp(`DRY spawn detached ${binary} internal worker Ab3dEf9x`)
+  : new RegExp(`DRY systemd-run .* -- ${binary} internal worker Ab3dEf9x`);
 
 const toolBin = join(root, 'bin');
 mkdirSync(toolBin);
@@ -331,9 +341,18 @@ await check('a server that answers with a redirect fails the call', async () => 
     mode = 'normal';
   }
 });
-await check('setup --print points ExecStart at this binary', async () => {
+await check('setup --print points the units (launch agents on macOS) at this binary', async () => {
   const result = await board(['setup', '--print'], empty);
   assert.equal(result.code, 0, result.stderr);
+  if (onMac) {
+    assert.match(result.stdout, /<string>\/usr\/bin\/lockf<\/string>/);
+    assert.ok(
+      result.stdout.includes(
+        `<string>${binary}</string>\n\t\t<string>internal</string>\n\t\t<string>dispatch</string>`,
+      ),
+    );
+    return;
+  }
   assert.match(
     result.stdout,
     new RegExp(`ExecStart=\\S*flock -n -E 75 %t/agent-board-dispatch.lock ${binary} internal dispatch\\n`),
@@ -364,7 +383,15 @@ await check('a machine without a data key in env is refused, saying where to get
     /the credentials file needs AGENT_BOARD_DATA_KEY \(copy it from the board's Settings page, then run "board init"\)/,
   );
 });
+await check('internal intake is refused on macOS', async () => {
+  if (!onMac) return;
+  const result = await board(['internal', 'intake'], config({ config: true, repos: true }));
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /intake is not supported on macOS/);
+});
 await check('the binary computes the same blind index for a dedupe key as node does', async () => {
+  // Intake is Linux only.
+  if (!onLinux) return;
   // Both machines must create a PR's task once: the key is a keyed hash that Bun and Node have to agree on.
   requests.length = 0;
   const result = await board(['internal', 'intake'], config({ config: true, repos: true }));
@@ -516,7 +543,10 @@ await check('setup writes the binary that runs, not whatever ~/.local/bin/board 
   symlinkSync(other, join(installDir, 'board'));
   const result = await board(['setup', '--print'], empty, { BOARD_INSTALL_DIR: installDir });
   assert.equal(result.code, 0, result.stderr);
-  assert.ok(result.stdout.includes(` ${binary} internal dispatch\n`), result.stdout);
+  assert.ok(
+    result.stdout.includes(onMac ? `<string>${binary}</string>` : ` ${binary} internal dispatch\n`),
+    result.stdout,
+  );
   assert.ok(!result.stdout.includes(other), 'the units must not run another binary');
 });
 await check('setup refuses a binary in the temp directory without --force', async () => {
@@ -525,10 +555,17 @@ await check('setup refuses a binary in the temp directory without --force', asyn
   assert.match(refused.stderr, /in the temp directory/);
   const forced = await board(['setup', '--force'], empty);
   assert.equal(forced.code, 0, forced.stderr);
-  assert.match(
-    readFileSync(join(root, 'xdg', 'systemd', 'user', 'agent-board-dispatch.service'), 'utf8'),
-    new RegExp(`${binary} internal dispatch`),
-  );
+  if (onMac)
+    assert.ok(
+      readFileSync(join(root, 'Library', 'LaunchAgents', 'de.codeplant.agent-board.dispatch.plist'), 'utf8').includes(
+        `<string>${binary}</string>`,
+      ),
+    );
+  else
+    assert.match(
+      readFileSync(join(root, 'xdg', 'systemd', 'user', 'agent-board-dispatch.service'), 'utf8'),
+      new RegExp(`${binary} internal dispatch`),
+    );
 });
 await check('a closed pipe keeps the exit code: doctor | head is 1, help | head is 0, nothing on stderr', async () => {
   const through = (args: string): Promise<string> =>
@@ -592,7 +629,7 @@ await check('a tick that waits while the binary is replaced still plans a worker
     const result = await running;
     assert.equal(result.code, 0, result.stderr);
     assert.ok(!result.stdout.includes('(deleted)'), result.stdout);
-    assert.match(result.stdout, new RegExp(`-- ${binary} internal worker Ab3dEf9x`));
+    assert.match(result.stdout, workerStart);
   } finally {
     listDelayMs = 0;
   }
@@ -667,7 +704,7 @@ await check('internal dispatch --dry-run plans a start with this binary and star
   assert.equal(result.code, 0, result.stderr);
   console.log(result.stdout.trimEnd().replace(/^/gm, '       | '));
   assert.match(result.stdout, /DRY claim-task Ab3dEf9x --machine smoke/);
-  assert.match(result.stdout, new RegExp(`DRY systemd-run .* -- ${binary} internal worker Ab3dEf9x`));
+  assert.match(result.stdout, workerStart);
   assert.match(result.stdout, /STARTED Ab3dEf9x/);
   assert.ok(!existsSync(systemdRuns), 'systemd-run was called');
   assert.ok(

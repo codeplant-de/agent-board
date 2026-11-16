@@ -4,6 +4,7 @@
  * data; a tick reads the board as it always does.
  */
 import { spawn } from 'node:child_process';
+import { constants as osConstants } from 'node:os';
 import { ConfigError, getPaths } from '../config/config.mts';
 import { BackendError, machineHeaders, requireFeature } from '../backend/backend.mts';
 import type { Fetch } from '../backend/backend.mts';
@@ -15,6 +16,8 @@ import type { SseEvent } from '../backend/sse.mts';
 import { print } from '../cli.mts';
 import { selfCommand } from '../self/self.mts';
 import { errorText } from '../output/text.mts';
+import { signalGroup } from '../worker/process.mts';
+import { lockDir } from '../worker/runtime.mts';
 
 export interface Timers {
   now: () => number;
@@ -32,7 +35,7 @@ export const realTimers: Timers = {
 
 // Exit code of `flock -E 75`: the timer's tick holds the lock.
 const LOCKED = 75;
-// What `timeout` answers when it stopped the tick, with TERM and, after the grace period, with KILL.
+// What `timeout` answered when it stopped a command, and what runLimited answers in its place: TERM, and after the grace period KILL.
 const TIMED_OUT = 124;
 const KILLED = 137;
 // The dispatch unit's TimeoutStartSec is 110 s: a tick that hangs must not hold the lock for the timer's ticks either.
@@ -204,7 +207,7 @@ function sleep(ms: number, timers: Timers, signal: AbortSignal): Promise<void> {
   return within(new Promise<never>(() => undefined), ms, timers, signal, 'sleep').catch(() => undefined);
 }
 
-// Runs until `signal` aborts (exit code 0) or the board no longer serves this CLI (1: systemd restarts it, on new code after an update).
+// Runs until `signal` aborts (exit code 0) or the board no longer serves this CLI (1: systemd or launchd restarts it, on new code after an update).
 export async function runListener(deps: ListenerDeps): Promise<number> {
   const { timers, log, signal } = deps;
   const options = { ...LISTENER_OPTIONS, ...deps.options };
@@ -291,30 +294,62 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
   return 0;
 }
 
-// One dispatch tick as the timer's unit runs it, under the same lock and with a time limit; a separate process, so the dispatch code is the code on disk.
-export function tickCommand(env: Record<string, string | undefined>, dispatch: string[]): string[] {
-  const lock = `${env['XDG_RUNTIME_DIR'] || '/tmp'}/agent-board-dispatch.lock`;
-  return [
-    'timeout',
-    '-k',
-    String(TICK_GRACE_S),
-    String(TICK_LIMIT_S),
-    'flock',
-    '-n',
-    '-E',
-    String(LOCKED),
-    lock,
-    ...dispatch,
-  ];
+// One dispatch tick as the timer's unit runs it, under the same lock; a separate process, so the dispatch code is the code on disk.
+// The lock program: flock on Linux, lockf (which ships with macOS) there. Both exit 75 when the lock is held.
+export function tickCommand(
+  env: Record<string, string | undefined>,
+  dispatch: string[],
+  platform: string = process.platform,
+): string[] {
+  const lock = `${lockDir(env, platform)}/agent-board-dispatch.lock`;
+  if (platform === 'darwin') return ['/usr/bin/lockf', '-s', '-t', '0', lock, ...dispatch];
+  return ['flock', '-n', '-E', String(LOCKED), lock, ...dispatch];
+}
+
+export interface TickLimits {
+  limitMs: number;
+  graceMs: number;
+}
+
+export const TICK_LIMITS: TickLimits = { limitMs: TICK_LIMIT_S * 1000, graceMs: TICK_GRACE_S * 1000 };
+
+// Runs `argv` as the leader of its own process group with the tick's time limit, which is the listener's to enforce (launchd has none, and no
+// `timeout` is needed): SIGTERM to the group after `limitMs`, SIGKILL after `graceMs` more. The exit code is what `timeout -k` gave:
+// 124 for a command that was stopped, 137 for one that had to be killed, otherwise the command's own.
+export function runLimited(argv: string[], { limitMs, graceMs }: TickLimits): Promise<number> {
+  const [program = '', ...args] = argv;
+  return new Promise((resolve, reject) => {
+    const child = spawn(program, args, { stdio: 'inherit', detached: true });
+    let stopped = false;
+    let killed = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    const limitTimer = setTimeout(() => {
+      stopped = true;
+      signalGroup(child.pid, 'SIGTERM');
+      killTimer = setTimeout(() => {
+        killed = true;
+        signalGroup(child.pid, 'SIGKILL');
+      }, graceMs);
+    }, limitMs);
+    child.once('error', (error) => {
+      clearTimeout(limitTimer);
+      clearTimeout(killTimer);
+      reject(error);
+    });
+    child.once('close', (code, signal) => {
+      clearTimeout(limitTimer);
+      clearTimeout(killTimer);
+      // What a stopped tick left in its group goes with it.
+      if (stopped) signalGroup(child.pid, 'SIGKILL');
+      if (killed) return resolve(KILLED);
+      if (stopped) return resolve(TIMED_OUT);
+      resolve(code ?? (signal === null ? -1 : 128 + (osConstants.signals[signal] ?? 0)));
+    });
+  });
 }
 
 function spawnTick(env: Record<string, string | undefined>): Promise<number> {
-  const [program = 'timeout', ...args] = tickCommand(env, selfCommand('internal', 'dispatch'));
-  return new Promise((resolve, reject) => {
-    const child = spawn(program, args, { stdio: 'inherit' });
-    child.once('error', reject);
-    child.once('close', (code) => resolve(code ?? -1));
-  });
+  return runLimited(tickCommand(env, selfCommand('internal', 'dispatch')), TICK_LIMITS);
 }
 
 export async function listenMain(): Promise<void> {

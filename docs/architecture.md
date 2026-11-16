@@ -18,24 +18,24 @@ PR review was the first use. A task is any prompt you would type into Claude Cod
  Slack ◀──Socket Mode──▶ slack app ──POST /api/intake/*, in-cluster only──▶ backend
                     ▲ machine API (POST, sealed)        │ SSE "tasks changed"
                     │                                   ▼
- worker machine:  board internal listen ──▶ dispatch tick ──▶ systemd-run ──▶ worker ──▶ claude -p
-                  timers: dispatch (2 min), intake (10 min)        agent ──▶ board comment / ask / wait
+ worker machine:  board internal listen ──▶ dispatch tick ──▶ systemd-run (macOS: detached process) ──▶ worker ──▶ claude -p
+                  timers: dispatch (2 min), intake (10 min; Linux only)        agent ──▶ board comment / ask / wait
 ```
 
-| Component | Code                     | Role                                                                                                                                                                                                                                                                              |
-| --------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Backend   | `apps/backend`           | Fastify 5, tRPC 11 for the UI, `POST /api/machine/<command>` for workers, `GET /api/machine/events` (SSE). Drizzle on Postgres; migrations run on start. Holds no key.                                                                                                            |
-| Frontend  | `apps/frontend`          | React 19, Mantine, TanStack Query over tRPC. Derives the keys from the passphrase (Argon2id), seals and opens every content field. Polls every 5 s. Served by Caddy, which also proxies the backend and strips every response header the backend sets.                            |
-| CLI       | `apps/cli`               | One program for people, agents and the worker machine. Runs from source on Node 24 or as a Bun-compiled binary. Its `internal` subcommands `dispatch`, `intake`, `listen` and `worker` run from systemd user units; `hook` is the PreToolUse hook Claude Code calls during a run. |
-| Slack app | `apps/slack`             | Optional companion container. Holds the Slack app and bot tokens and the Socket Mode connection, answers `/board` and the Send to board shortcut, and reaches the backend only through the intake API. No state, no ingress, no database access.                                  |
-| Shared    | `packages/shared`        | No dependencies, consumed as source. The contract (`contract.mts`), the sealing rules (`sealing.mts`), crypto, key slots, the fixed server event texts, question and transcript shapes.                                                                                           |
-| Infra     | `infra/`, `*/Dockerfile` | Postgres init for compose and the Slack app manifest. The cluster lives in the private `codeplant-de/cloud-infra` repo.                                                                                                                                                           |
+| Component | Code                     | Role                                                                                                                                                                                                                                                                                                          |
+| --------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Backend   | `apps/backend`           | Fastify 5, tRPC 11 for the UI, `POST /api/machine/<command>` for workers, `GET /api/machine/events` (SSE). Drizzle on Postgres; migrations run on start. Holds no key.                                                                                                                                        |
+| Frontend  | `apps/frontend`          | React 19, Mantine, TanStack Query over tRPC. Derives the keys from the passphrase (Argon2id), seals and opens every content field. Polls every 5 s. Served by Caddy, which also proxies the backend and strips every response header the backend sets.                                                        |
+| CLI       | `apps/cli`               | One program for people, agents and the worker machine. Runs from source on Node 24 or as a Bun-compiled binary. Its `internal` subcommands `dispatch`, `intake`, `listen` and `worker` run from systemd user units, or launchd agents on macOS; `hook` is the PreToolUse hook Claude Code calls during a run. |
+| Slack app | `apps/slack`             | Optional companion container. Holds the Slack app and bot tokens and the Socket Mode connection, answers `/board` and the Send to board shortcut, and reaches the backend only through the intake API. No state, no ingress, no database access.                                                              |
+| Shared    | `packages/shared`        | No dependencies, consumed as source. The contract (`contract.mts`), the sealing rules (`sealing.mts`), crypto, key slots, the fixed server event texts, question and transcript shapes.                                                                                                                       |
+| Infra     | `infra/`, `*/Dockerfile` | Postgres init for compose and the Slack app manifest. The cluster lives in the private `codeplant-de/cloud-infra` repo.                                                                                                                                                                                       |
 
 ## A task's life
 
 1. **Created.** `board schedule` (bound to this machine and directory), the New task form, intake (a review request on GitHub), a schedule's next occurrence, or an agent's `board add` proposal. A client that creates a task picks its 12-character id and seals title, prompt and directory against it. The server creates a schedule's occurrence itself, with a copy of the schedule's ciphertext bound to `schedule:<id>`.
 2. **Todo.** The server emits a `tasks` event on the SSE stream of every machine of that owner. Each machine's listener runs a dispatch tick; the 2-minute timer is the fallback.
-3. **Claimed.** The dispatch tick plans free lane slots, calls `claim-task` (atomic, one machine wins) and starts the worker as a transient systemd unit `agent-board-<id>`.
+3. **Claimed.** The dispatch tick plans free lane slots, calls `claim-task` (atomic, one machine wins) and starts the worker as a transient systemd unit `agent-board-<id>` (on macOS, as a detached process tracked by a pid file in the run directory; `setup/process-system.mts` is the second implementation of `System`).
 4. **Running.** The worker opens the sealed prompt and starts `claude -p` with the board's rules (`--append-system-prompt`) and a PreToolUse hook (`--settings`). The prompt goes in on stdin as a stream-json user message, and stdin stays open: the worker later writes your messages, a pause request and interrupts to it. The hook keeps a heartbeat and records the working directory. The worker streams condensed, sealed transcript events to the board every 15 s.
 5. **Reporting.** The agent uses `board comment`, `board ask`, `board wait`, `board pr` and `board add`. These are the same CLI, authenticated by the machine's token, which reaches every task of the owner. `AGENT_BOARD_TASK` marks the process as a run, so `board schedule` refuses and `board polish` posts on the run's own task.
 6. **Needs me.** The run ends. You answer, reply, re-run or mark it done in the browser. A reply puts the task back in Todo with `next: resume`, and the machine that holds the Claude session resumes it, in the directory the agent last worked in.
@@ -128,29 +128,30 @@ Break one of these only with a decision recorded here.
 
 ## Where to find things
 
-| Concern                                  | Code                                                                     |
-| ---------------------------------------- | ------------------------------------------------------------------------ |
-| Wire types, statuses, `API_VERSION` etc. | `packages/shared/src/contract.mts`                                       |
-| Sealing bindings, crypto                 | `packages/shared/src/sealing.mts`, `crypto.mts`, `keys.mts`              |
-| Machine API                              | `apps/backend/src/machine-api.ts`                                        |
-| UI API                                   | `apps/backend/src/trpc/router.ts`                                        |
-| Task logic, schedules, retention         | `apps/backend/src/services/`                                             |
-| Schema, RLS scope, migrations            | `apps/backend/src/db/`, `apps/backend/drizzle/`                          |
-| Change events                            | `apps/backend/src/services/changes.ts` (in-process, one replica)         |
-| Dispatch decisions                       | `apps/cli/src/dispatch/decide.mts`, `dispatch.mts`                       |
-| Run plan, prompts, limits                | `apps/cli/src/worker/plan.mts`, `prompts.mts`                            |
-| Running Claude, transcripts              | `apps/cli/src/worker/worker.mts`, `process.mts`, `transcript-upload.mts` |
-| Hook                                     | `apps/cli/src/worker/hook.mts`                                           |
-| Intake                                   | `apps/cli/src/intake/intake.mts`, `github.mts`                           |
-| Slack app, Slack intake API              | `apps/slack/src/`, `apps/backend/src/intake-api.ts`                      |
-| Slack inbox and links                    | `apps/backend/src/services/slack.ts`                                     |
-| systemd units                            | `apps/cli/src/setup/setup.mts`, `system.mts`                             |
-| The `board` commands                     | `apps/cli/src/commands/`                                                 |
-| Browser keys                             | `apps/frontend/src/crypto/`                                              |
+| Concern                                           | Code                                                                              |
+| ------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Wire types, statuses, `API_VERSION` etc.          | `packages/shared/src/contract.mts`                                                |
+| Sealing bindings, crypto                          | `packages/shared/src/sealing.mts`, `crypto.mts`, `keys.mts`                       |
+| Machine API                                       | `apps/backend/src/machine-api.ts`                                                 |
+| UI API                                            | `apps/backend/src/trpc/router.ts`                                                 |
+| Task logic, schedules, retention                  | `apps/backend/src/services/`                                                      |
+| Schema, RLS scope, migrations                     | `apps/backend/src/db/`, `apps/backend/drizzle/`                                   |
+| Change events                                     | `apps/backend/src/services/changes.ts` (in-process, one replica)                  |
+| Dispatch decisions                                | `apps/cli/src/dispatch/decide.mts`, `dispatch.mts`                                |
+| Run plan, prompts, limits                         | `apps/cli/src/worker/plan.mts`, `prompts.mts`                                     |
+| Running Claude, transcripts                       | `apps/cli/src/worker/worker.mts`, `process.mts`, `transcript-upload.mts`          |
+| Hook                                              | `apps/cli/src/worker/hook.mts`                                                    |
+| Intake                                            | `apps/cli/src/intake/intake.mts`, `github.mts`                                    |
+| Slack app, Slack intake API                       | `apps/slack/src/`, `apps/backend/src/intake-api.ts`                               |
+| Slack inbox and links                             | `apps/backend/src/services/slack.ts`                                              |
+| systemd units, launchd agents, worker supervision | `apps/cli/src/setup/setup.mts`, `launchd.mts`, `system.mts`, `process-system.mts` |
+| The `board` commands                              | `apps/cli/src/commands/`                                                          |
+| Browser keys                                      | `apps/frontend/src/crypto/`                                                       |
 
 ## Known limits
 
 - Change events live in the backend process, so the server runs one replica. Postgres `LISTEN/NOTIFY` would lift that.
 - Workers have no OS-level isolation.
+- On macOS a run is not a cgroup: when it ends, what stayed in the agent's process group is killed, but a process that started its own session (a daemon, `setsid`) survives it, and a stop from the dispatcher's sweep has the same gap. A Mac worker runs only while its user is logged in and awake (the worker holds `caffeinate -i` during a run), and does not support intake.
 - A raised `MIN_CLIENT` is a coordinated rollout.
 - Intake is built in and GitHub-specific. Turning intakes into small scripts is planned.

@@ -419,17 +419,25 @@ test('ask and add keep their flag shapes', async () => {
   }
 });
 
-test('internal dispatch, intake and worker say they need Linux elsewhere', async () => {
+test('internal dispatch, intake, listen and worker say they need Linux or macOS elsewhere', async () => {
   for (const argv of [
     ['internal', 'dispatch'],
     ['internal', 'intake'],
+    ['internal', 'listen'],
     ['internal', 'worker', ID],
   ])
     await assert.rejects(
-      runBoard(argv, { env: {}, platform: 'darwin' }),
-      /needs Linux with systemd; this is darwin/,
+      runBoard(argv, { env: {}, platform: 'win32' }),
+      /needs Linux with systemd or macOS; this is win32/,
       argv.join(' '),
     );
+});
+
+test('internal intake is not supported on macOS', async () => {
+  await assert.rejects(
+    runBoard(['internal', 'intake'], { env: {}, platform: 'darwin' }),
+    /intake is not supported on macOS/,
+  );
 });
 
 test('internal intake refuses with a usage error when config.json has no intake key', async () => {

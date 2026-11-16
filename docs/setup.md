@@ -4,7 +4,7 @@ Installing the `board` CLI, its configuration, and upgrading.
 
 ## Install
 
-The `board` command and the worker (`dispatch`, `intake`, `worker`) are one program. A released build is a single binary per platform (Linux x64 and arm64, macOS arm64) and needs no Node; a worker machine needs Linux with systemd, `flock`, `systemd-run`, `gh` (logged in) and `claude` (logged in). On macOS only the `board` commands run, not the worker, and `board ask`, `board add` and `board polish` are not available (they read their file through `/proc`); `board comment` takes its text as arguments or `-` for stdin.
+The `board` command and the worker (`dispatch`, `intake`, `worker`) are one program. A released build is a single binary per platform (Linux x64 and arm64, macOS arm64) and needs no Node; a worker machine needs `gh` (logged in) and `claude` (logged in), and on Linux systemd, `flock` and `systemd-run`, on macOS `lockf` (part of macOS). [macOS](#macos) has its own section.
 
 ### From a release
 
@@ -30,6 +30,36 @@ Needs Node 24+, pnpm, and for a worker the tools above. `pnpm install` in the re
 `apps/cli/build.sh` compiles the binaries (needs Bun, pinned in `mise.toml`) into `apps/cli/dist` with a `SHA256SUMS`; `pnpm --filter @agent-board/cli test:binary` builds one for this host and runs it the way a worker machine would. A release is a GitHub release `cli-v<version>` of the version in `apps/cli/package.json`; after a merge to `main` that has no release for that version, `.github/workflows/release-cli.yml` builds, tests and publishes it (see [Releasing the CLI](development.md#releasing-the-cli)).
 
 User timers and the listener only run while you are logged in. For runs after logout: `loginctl enable-linger $USER`. `board completion bash|zsh|fish` prints a shell completion script, see [Commands](cli.md).
+
+### macOS
+
+A Mac runs the worker the same way a Linux machine does, with launchd in place of systemd and detached processes in place of transient units. The install is the same (`install.sh`, `board init`, then `board setup --enable`, then `board doctor`). Requirements: `claude` and `gh`, logged in, and `lockf`, which ships with macOS. The released binary is built for Apple silicon (arm64); an Intel Mac runs the CLI from a checkout.
+
+`board setup` writes two launch agents into `~/Library/LaunchAgents` as copies (mode 644) and, with `--enable`, loads them with `launchctl bootout` and `launchctl bootstrap gui/<uid>`:
+
+| Agent                               | What it does                                                                                                                                                                         |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `de.codeplant.agent-board.dispatch` | A dispatch tick every 120 s and at load, run as `lockf -s -t 0 <run dir>/agent-board-dispatch.lock <board> internal dispatch` (exit 75: another tick holds the lock, not a failure). |
+| `de.codeplant.agent-board.listen`   | The listener, kept alive (`KeepAlive`, restarted every 10 s at the soonest). `ExitTimeOut` 120 s lets a stop wait for a running tick.                                                |
+
+Both set `AbandonProcessGroup`, so launchd never kills a worker the job started, and a `PATH` of `~/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` written out (a plist expands nothing; launchd's own default has only `/usr/bin:/bin:/usr/sbin:/sbin`), so `claude`, `gh` and `node` are found where Homebrew and the installer put them. `AGENT_BOARD_CONFIG_DIR`, `AGENT_BOARD_STATE_DIR`, `AGENT_BOARD_RUN_DIR`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` are passed on when the shell that ran `board setup` sets them. Run `board setup` again after moving the binary.
+
+```
+board setup --print                                              # show the agents, change nothing
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/de.codeplant.agent-board.listen.plist     # enable (setup --enable does both)
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/de.codeplant.agent-board.dispatch.plist
+launchctl bootout gui/$(id -u)/de.codeplant.agent-board.listen   # disable (dispatch the same way)
+launchctl kickstart -k gui/$(id -u)/de.codeplant.agent-board.listen   # restart the listener (board self-update does it for you)
+launchctl print gui/$(id -u)/de.codeplant.agent-board.listen     # state, last exit code, the program it runs
+```
+
+- **Logs.** launchd writes each agent's output to `~/.local/state/agent-board/logs/launchd.dispatch.log` and `launchd.listen.log` (`AGENT_BOARD_STATE_DIR` or `XDG_STATE_HOME` moves them), next to the task logs; the dot in the name keeps them apart from `<task>.log`. They are not rotated.
+- **Runs.** A run is a detached `board internal worker <task>` process (its own session), not a transient unit. Its `<task>.pid` and the agent's process group (`<task>.agent`) are kept in the run directory, `~/.local/state/agent-board/run` (mode 700; `XDG_RUNTIME_DIR` or `AGENT_BOARD_RUN_DIR` override it), which nothing clears at reboot: a stale `.pid` fails the dispatcher's identity check (the pid is alive and its command line ends in `internal worker <task>`) and is removed. A stop signals the worker's process group and the agent's, SIGTERM and then SIGKILL after 10 s; the worker also ends the agent's group when the run ends. A process a run started in a session of its own (a daemon, `setsid`) is not reached: macOS has no cgroup to clean up after a run as Linux does.
+- **Where checkouts can be.** A background job may not read `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive (`~/Library/Mobile Documents`) without the user's consent, and no one is there to give it (macOS's TCC). Keep checkouts, `dirs`, `defaultCwd` and lane `cwd`s elsewhere, such as `~/code`. `board doctor` warns about a path under them. Full Disk Access (System Settings, Privacy & Security) is an unverified way out: macOS may attribute a background job's access to a binary other than `board` (the dispatch agent's program is `/usr/bin/lockf`, which then starts `board`), so granting it to `board` alone may not cover runs the timer starts, and the listener's and the timer's ticks may need different grants. Do not rely on it.
+- **Sleep.** A sleeping Mac runs nothing. While a run goes the worker holds `caffeinate -i` (idle sleep off; closing the lid, or a low battery, still sleeps). After a sleep the worker's 15-second check sees the jump of the clock and starts the idle time over, so a night's sleep is not read as hours without a tool call, and the next dispatch tick, which sees a gap of more than 10 minutes since the last one, does not count quiet time against the runs either. The 6-hour limit counts wall-clock time, sleep included.
+- **Login.** The agents are in your `gui` domain, so they run only while you are logged in (a locked screen is fine). `claude` and `gh` keep their credentials in the login keychain, which is only open in that session anyway. On macOS 13 and later, System Settings, General, Login Items lets you switch background items off, which unloads the agents; `board doctor` reports an agent launchd has not loaded.
+- **No intake.** Intake is not supported on macOS: setup installs no intake agent, prints a note when `config.json` has an `intake` key, and `board internal intake` refuses. Run intake on a Linux machine.
+- **Self-update.** `board self-update` replaces the binary by a rename (a write in place would invalidate the code signature of a running file) and restarts the listener with `launchctl kickstart -k` when launchd has it loaded.
 
 ## Upgrading
 

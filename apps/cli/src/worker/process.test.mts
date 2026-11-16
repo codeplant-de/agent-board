@@ -247,3 +247,21 @@ test('stdout goes line by line through onLine into the log; stderr goes straight
   assert.match(log, /\[last\]/);
   assert.match(log, /oops/);
 });
+
+test('the agent group is handed out at the start, and what the agent left in it is ended when the agent exits', async () => {
+  const pidFile = join(mkdtempSync(join(tmpdir(), 'agent-board-pid-')), 'leftover.pid');
+  let group: number | undefined;
+  const started = Date.now();
+  // The agent exits at once; its background process stays in the group and holds the log open.
+  const result = await runProcess(
+    { command: 'sh', args: ['-c', `sleep 30 & echo $! > ${pidFile}`], prompt: '', cwd: tmpdir() },
+    'proc-leftover',
+    {},
+    { ...QUIET, spawned: (pgid) => void (group = pgid) },
+  );
+  assert.equal(result.exitCode, 0);
+  assert.ok(group !== undefined && group > 1);
+  assert.ok(Date.now() - started < 5_000);
+  const leftover = Number(readFileSync(pidFile, 'utf8').trim());
+  assert.ok(await waitUntilGone(leftover, 3_000), 'the leftover must be dead');
+});

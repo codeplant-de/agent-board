@@ -36,11 +36,38 @@ export interface Watch {
   killGraceMs?: number;
   // Called once the process runs, with the channel to it.
   start?: (channel: RunChannel) => void;
+  // Called when the process has started, with its process group (it leads one).
+  spawned?: (pgid: number) => void;
   tick: () => Promise<Supervision>;
 }
 
 // How long a stopped process has to exit on its own before it is killed.
 const KILL_GRACE_MS = 30_000;
+// How long what a finished run left in its process group has to end after SIGTERM before it is killed.
+const GROUP_GRACE_MS = 10_000;
+const GROUP_POLL_MS = 100;
+
+// EPERM: the process exists but is not ours to signal.
+function existsAfterKill(target: number): boolean {
+  try {
+    process.kill(target, 0);
+    return true;
+  } catch (error) {
+    return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EPERM';
+  }
+}
+
+export const isProcessAlive = (pid: number): boolean => existsAfterKill(pid);
+export const groupExists = (pgid: number): boolean => existsAfterKill(-pgid);
+
+// Signals a whole process group; one that is gone is no error.
+export function signalGroup(pgid: number | undefined, signal: NodeJS.Signals): void {
+  try {
+    if (pgid !== undefined) process.kill(-pgid, signal);
+  } catch {
+    // already gone
+  }
+}
 
 // A user message as `claude --input-format stream-json` reads it.
 const userMessageLine = (text: string): string =>
@@ -80,7 +107,6 @@ export function runProcess(
     // A process that exits without reading its stdin must not take the worker down.
     child.stdin?.on('error', () => undefined);
     let ended = false;
-    let stopping = false;
     let killTimer: NodeJS.Timeout | undefined;
     // An interrupt is out and its turn has not ended yet; `carryOn`: a message was sent after it, so the run goes on.
     let interruptOut = false;
@@ -109,7 +135,6 @@ export function runProcess(
         // The agent is asked to stop first, so that its session ends cleanly and stays resumable.
         channel.interrupt();
         channel.end();
-        stopping = true;
         killTimer ??= setTimeout(terminate, watch.killGraceMs ?? KILL_GRACE_MS);
         killTimer.unref();
       },
@@ -141,16 +166,20 @@ export function runProcess(
       }
     });
     let stopped: RunResult['stopped'];
-    const killGroup = (signal: NodeJS.Signals): void => {
-      try {
-        if (child.pid) process.kill(-child.pid, signal);
-      } catch {
-        // already gone
-      }
-    };
+    const killGroup = (signal: NodeJS.Signals): void => signalGroup(child.pid, signal);
     const terminate = (): void => {
       killGroup('SIGTERM');
       setTimeout(() => killGroup('SIGKILL'), 10_000).unref();
+    };
+    // The agent is gone, and what it started in its group (a dev server, a watcher) goes with it: SIGTERM, then SIGKILL
+    // once the grace is up. A process that started its own session is out of reach.
+    const endGroup = async (): Promise<void> => {
+      const { pid } = child;
+      if (!pid || !groupExists(pid)) return;
+      killGroup('SIGTERM');
+      for (let waited = 0; waited < GROUP_GRACE_MS && groupExists(pid); waited += GROUP_POLL_MS)
+        await new Promise((resolveWait) => setTimeout(resolveWait, GROUP_POLL_MS));
+      killGroup('SIGKILL');
     };
     let checking = false;
     const timer = setInterval(() => {
@@ -184,12 +213,16 @@ export function runProcess(
       if (!finish()) return;
       reject(new Error(`could not start ${invocation.command}: ${error.message}`));
     });
+    // As soon as the agent has exited, not when its output closes: what it left may hold the pipe open.
+    let ending: Promise<void> | undefined;
+    child.on('exit', () => {
+      ending ??= endGroup();
+    });
     child.on('close', (exitCode, signal) => {
       if (!finish()) return;
-      // What a stopped agent left running goes with it.
-      if (stopping) terminate();
-      resolve(stopped ? { exitCode, signal, stopped } : { exitCode, signal });
+      void (ending ?? endGroup()).then(() => resolve(stopped ? { exitCode, signal, stopped } : { exitCode, signal }));
     });
+    if (child.pid) watch.spawned?.(child.pid);
     watch.start?.(channel);
   });
 }
