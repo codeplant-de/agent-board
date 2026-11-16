@@ -8,7 +8,6 @@ import { API_VERSION, MIN_SERVER } from '@agent-board/shared';
 import { RETRY_AFTER_FAILURE_MS, RETRY_AFTER_UNPUBLISHED_MS } from '../self/auto-update.mts';
 import type { UpdateDeps } from '../self/auto-update.mts';
 import type { AutoUpdate } from '../config/config.mts';
-import type { UpdateState } from '../self/update-state.mts';
 import { parseWorkerUnits, SystemError } from '../setup/system.mts';
 import type { System } from '../setup/system.mts';
 import { START_MARKER } from './decide.mts';
@@ -18,6 +17,7 @@ import {
   fakeBackend,
   fakeRunFiles,
   fakeTaskFiles,
+  fakeUpdateState,
   fakeWaitStore,
   task,
 } from '../__tests__/helpers/fakes.mts';
@@ -27,22 +27,6 @@ import type { TaskFile } from './task-files.mts';
 import type { FakeBackend } from '../__tests__/helpers/fakes.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
-
-function memoryState(retryAfter?: Date): UpdateState & { deferred: Date | undefined } {
-  const state = {
-    deferred: retryAfter,
-    hintShownAt: () => undefined,
-    markHintShown: () => undefined,
-    retryAfter: () => state.deferred,
-    deferUpdateUntil: (at: Date) => {
-      state.deferred = at;
-    },
-    clearDeferral: () => {
-      state.deferred = undefined;
-    },
-  };
-  return state;
-}
 
 function setup(
   tasks: ReturnType<typeof task>[],
@@ -91,7 +75,7 @@ function setup(
     },
   };
   const updates: string[] = [];
-  const state = memoryState(updating.retryAfter);
+  const state = fakeUpdateState({ deferred: updating.retryAfter });
   const update: UpdateDeps = {
     compiled: updating.compiled ?? true,
     version: '0.5.0',

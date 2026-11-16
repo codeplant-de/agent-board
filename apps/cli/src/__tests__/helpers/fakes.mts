@@ -2,6 +2,7 @@ import type { Config } from '../../config/config.mts';
 import type { RunFiles, RunRecord } from '../../worker/runtime.mts';
 import type { SessionStore } from '../../worker/sessions.mts';
 import type { TaskFile, TaskFileStore } from '../../dispatch/task-files.mts';
+import type { UpdateState } from '../../self/update-state.mts';
 import type { WaitCheck, WaitStore } from '../../dispatch/waits.mts';
 import { BackendError } from '../../backend/backend.mts';
 import {
@@ -504,3 +505,25 @@ export function fakeWaitStore(initial: Record<string, WaitCheck> = {}): WaitStor
 
 // The GitHub half that looks up PR states, for a test that is about something else: it knows no PR.
 export const NO_PR_STATES = { prStates: async () => ({ states: new Map(), unreadable: [] }) };
+
+// What the CLI remembers about updates, in memory: when the hint was last shown and until when no self-update is tried.
+export function fakeUpdateState(
+  initial: { shown?: Date; deferred?: Date } = {},
+): UpdateState & { shown: Date | undefined; deferred: Date | undefined } {
+  const state = {
+    shown: initial.shown,
+    deferred: initial.deferred,
+    hintShownAt: () => state.shown,
+    markHintShown: (at: Date) => {
+      state.shown = at;
+    },
+    retryAfter: () => state.deferred,
+    deferUpdateUntil: (at: Date) => {
+      state.deferred = at;
+    },
+    clearDeferral: () => {
+      state.deferred = undefined;
+    },
+  };
+  return state;
+}

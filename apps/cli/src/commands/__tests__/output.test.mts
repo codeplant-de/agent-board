@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import tty from 'node:tty';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { formatTasks } from '../board.mts';
@@ -9,7 +8,7 @@ import type { LinkingContext } from '../../cli.mts';
 import { runBoard } from '../program.mts';
 import type { ProgramOptions } from '../program.mts';
 import { haikuDuplicateCheck } from '../schedule.mts';
-import { createStyle, wantsColor } from '../../output/style.mts';
+import { createStyle } from '../../output/style.mts';
 import { CONFIG, fakeBackend, linkTo, note, schedule, task } from '../../__tests__/helpers/fakes.mts';
 
 const ID = 'Zt0Test1';
@@ -77,22 +76,13 @@ test('tasks hides closed tasks without --all and takes --status in any spelling'
   await assert.rejects(go(['tasks', '--status', 'someday']), UsageError);
 });
 
-test('colour is bold headers and dim hints, and only when asked for', () => {
+test('board tasks colours bold headers and dim hints, and only when asked for', () => {
   const found = [task({ id: 'a1b2c3d4', closed: true })];
   const plain = formatTasks(found, {}, createStyle(false)).join('\n');
   assert.ok(!plain.includes('\x1b'));
   const coloured = formatTasks(found, {}, createStyle(true)).join('\n');
   assert.ok(coloured.includes('\x1b[1mtodo (1)\x1b[22m'));
   assert.ok(coloured.includes('\x1b[2m  (closed)\x1b[22m'));
-  // A terminal stream as node builds it: its own colour detection reads the environment.
-  const terminal = {
-    hasColors: tty.WriteStream.prototype.hasColors,
-    getColorDepth: tty.WriteStream.prototype.getColorDepth,
-  };
-  assert.equal(wantsColor(terminal, { TERM: 'xterm-256color' }), true);
-  for (const env of [{ NO_COLOR: '1' }, { TERM: 'dumb' }, { FORCE_COLOR: '0' }, { NODE_DISABLE_COLORS: '1' }])
-    assert.equal(wantsColor(terminal, { TERM: 'xterm-256color', ...env }), false, JSON.stringify(env));
-  assert.equal(wantsColor({}, { FORCE_COLOR: '1' }), false, 'a pipe has no colour method');
 });
 
 test('board tasks in a context without colour prints no escape codes', async () => {

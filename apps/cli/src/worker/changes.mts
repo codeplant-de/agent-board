@@ -4,7 +4,7 @@
  */
 import { machineHeaders } from '../backend/backend.mts';
 import type { Fetch, WebConfig } from '../backend/backend.mts';
-import { createSseParser } from '../dispatch/listen.mts';
+import { createSseParser } from '../backend/sse.mts';
 import { errorText } from '../output/text.mts';
 
 export interface ChangeWatchOptions {

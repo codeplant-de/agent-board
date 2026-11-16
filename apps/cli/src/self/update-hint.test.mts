@@ -1,36 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { test } from 'node:test';
 import { runBoard } from '../commands/program.mts';
 import type { ProgramOptions } from '../commands/program.mts';
 import type { LinkingContext } from '../cli.mts';
 import { HINT_EVERY_MS, updateHint } from './update-hint.mts';
-import { createUpdateState } from './update-state.mts';
-import type { UpdateState } from './update-state.mts';
-import { CONFIG, fakeBackend, linkTo, task } from '../__tests__/helpers/fakes.mts';
+import { CONFIG, fakeBackend, fakeUpdateState, linkTo, task } from '../__tests__/helpers/fakes.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
-
-function memoryState(shownAt?: Date): UpdateState & { shown: Date | undefined } {
-  const state = {
-    shown: shownAt,
-    hintShownAt: () => state.shown,
-    markHintShown: (at: Date) => {
-      state.shown = at;
-    },
-    retryAfter: () => undefined,
-    deferUpdateUntil: () => undefined,
-    clearDeferral: () => undefined,
-  };
-  return state;
-}
 
 const base = { advertised: '0.7.0', version: '0.6.0', now: NOW, interactive: true };
 
 test('a newer advertised release gets one line, once per 24 hours', () => {
-  const state = memoryState();
+  const state = fakeUpdateState();
   const line = updateHint({ ...base, state });
   assert.match(line ?? '', /^board 0\.7\.0 is available \(this is 0\.6\.0\); run /);
   assert.equal(state.shown, undefined, 'only the caller that printed it marks it shown');
@@ -42,43 +23,21 @@ test('a newer advertised release gets one line, once per 24 hours', () => {
 
 test('nothing for an equal, older or unknown release, a checkout of the same base, or a non-interactive caller', () => {
   for (const advertised of ['0.6.0', '0.5.9', undefined])
-    assert.equal(updateHint({ ...base, advertised, state: memoryState() }), undefined, String(advertised));
-  assert.equal(updateHint({ ...base, version: '0.7.0-dev', state: memoryState() }), undefined);
-  const state = memoryState();
+    assert.equal(updateHint({ ...base, advertised, state: fakeUpdateState() }), undefined, String(advertised));
+  assert.equal(updateHint({ ...base, version: '0.7.0-dev', state: fakeUpdateState() }), undefined);
+  const state = fakeUpdateState();
   assert.equal(updateHint({ ...base, interactive: false, state }), undefined);
   assert.equal(state.shown, undefined);
 });
 
 test('a checkout is told to pull, and compares as its base version', () => {
-  const line = updateHint({ ...base, version: '0.6.0-dev', state: memoryState() });
+  const line = updateHint({ ...base, version: '0.6.0-dev', state: fakeUpdateState() });
   assert.match(line ?? '', /\(this is 0\.6\.0-dev\); run "git pull"/);
-});
-
-test('the state file survives a missing, broken or unwritable place', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'board-state-test-'));
-  try {
-    const path = join(dir, 'nested', 'update.json');
-    const state = createUpdateState(path);
-    assert.equal(state.hintShownAt(), undefined);
-    state.markHintShown(NOW);
-    state.deferUpdateUntil(NOW);
-    assert.deepEqual(createUpdateState(path).hintShownAt(), NOW);
-    state.clearDeferral();
-    assert.equal(createUpdateState(path).retryAfter(), undefined);
-    assert.deepEqual(createUpdateState(path).hintShownAt(), NOW);
-    writeFileSync(path, 'not json');
-    assert.equal(createUpdateState(path).hintShownAt(), undefined);
-    writeFileSync(join(dir, 'file'), '');
-    assert.doesNotThrow(() => createUpdateState(join(dir, 'file', 'update.json')).markHintShown(NOW));
-    assert.equal(readFileSync(join(dir, 'file'), 'utf8'), '');
-  } finally {
-    rmSync(dir, { recursive: true });
-  }
 });
 
 function run(overrides: ProgramOptions, advertised: string | null = '0.9.0') {
   const err: string[] = [];
-  const state = memoryState();
+  const state = fakeUpdateState();
   const context = (dryRun: boolean): LinkingContext => ({
     config: CONFIG,
     backend: fakeBackend([task({ id: 'abc' })]),
