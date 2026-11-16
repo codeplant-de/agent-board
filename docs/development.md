@@ -35,6 +35,7 @@ pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 - **The command reference** in [cli.md](cli.md) is generated from the commander program. A test fails when it is stale; regenerate it with `pnpm --filter @agent-board/cli run docs`.
 - **The example files** in `apps/cli/examples` are embedded in the CLI for `board example` through `examples/examples.json`. A test fails when it differs from the files; regenerate it with `pnpm --filter @agent-board/cli run examples`.
 - **The binary**: `pnpm --filter @agent-board/cli test:binary` builds one for this host and runs it the way a worker machine would. CI does the same in its `binary` job.
+- **The images**: a pull request builds the three Dockerfiles in CI's `images` job without pushing them, so a Dockerfile that misses a new file or a Vite-only break fails before the merge. Locally: `docker build -f apps/<app>/Dockerfile .` from the repository root.
 - **macOS**: the process supervisor, the portable `readNoteFile` and the launchd agents are tested on Linux too (real detached processes, injected `launchctl`). The `cli-macos` job of CI runs the whole CLI suite on a Mac, builds `board-darwin-arm64`, runs `test:binary` and `apps/cli/scripts/macos-smoke.sh`, which lints the agents `board setup` writes with `plutil` and has launchd load a throwaway agent when the runner has a `gui` domain.
 
 ## CLI layout
