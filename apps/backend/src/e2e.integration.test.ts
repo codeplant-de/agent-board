@@ -15,7 +15,7 @@ import { renderThread } from '../../cli/src/board.mts';
 import { runDispatch, type DispatchDeps } from '../../cli/src/dispatch.mts';
 import { createSealedBackend } from '../../cli/src/sealing.mts';
 import { runWorker, type WorkerDeps } from '../../cli/src/worker.mts';
-import { CONFIG, fakeRunFiles, fakeSessions, fakeWaitStore } from '../../cli/test/helpers.mts';
+import { CONFIG, fakeRunFiles, fakeSessions, fakeTaskFiles, fakeWaitStore } from '../../cli/test/helpers.mts';
 import { createKeySetup, exportDataKey } from '../../frontend/src/crypto/keySlots';
 import { inspectStoredKeys } from '../../frontend/src/crypto/keyStore';
 import { createBrowserHarness } from '../../frontend/src/test/browserHarness';
@@ -305,6 +305,7 @@ describe('an agent’s proposal', () => {
     now: () => new Date(),
     logTail: () => '',
     waits: fakeWaitStore(),
+    taskFiles: fakeTaskFiles(),
     runCheck: async () => ({ exitCode: 1, timedOut: false, output: '' }),
     update: NO_UPDATES,
   });
@@ -439,6 +440,7 @@ describe('a wait', () => {
       now: () => new Date(),
       logTail: () => '',
       waits,
+      taskFiles: fakeTaskFiles(),
       update: NO_UPDATES,
       runCheck: async (check) => {
         checks.push(check.command);

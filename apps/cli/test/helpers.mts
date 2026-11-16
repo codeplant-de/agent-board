@@ -1,6 +1,7 @@
 import type { Config } from '../src/config.mts';
 import type { RunFiles, RunRecord } from '../src/runtime.mts';
 import type { SessionStore } from '../src/sessions.mts';
+import type { TaskFile, TaskFileStore } from '../src/task-files.mts';
 import type { WaitCheck, WaitStore } from '../src/waits.mts';
 import { BackendError } from '../src/backend.mts';
 import {
@@ -431,6 +432,19 @@ export async function wireSchedule(overrides: Partial<Schedule> & { id: string }
     { title, input, workdir: workdir ?? undefined },
   );
   return { ...rest, ...sealed, workdir: sealed.workdir ?? null };
+}
+
+// The logs and session records of tasks on this machine, in memory.
+export function fakeTaskFiles(initial: TaskFile[] = []): TaskFileStore & { files: TaskFile[] } {
+  const files = [...initial];
+  return {
+    files,
+    list: () => [...files],
+    remove: ({ kind, taskId }) => {
+      const at = files.findIndex((file) => file.kind === kind && file.taskId === taskId);
+      if (at >= 0) files.splice(at, 1);
+    },
+  };
 }
 
 // The sessions a worker has started, in memory.

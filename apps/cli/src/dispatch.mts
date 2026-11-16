@@ -1,6 +1,6 @@
 /**
  * One dispatcher tick: sweep stale Running tasks, wake waiting tasks whose time is up, fill free slots from the top of Todo,
- * then run the checks of waiting tasks that are due.
+ * then drop the logs and session records of finished tasks and run the checks of waiting tasks that are due.
  * No LLM calls. Add --dry-run to read everything and print every write and process start instead.
  */
 import { isBehind, tryUpdate } from './auto-update.mts';
@@ -32,6 +32,8 @@ import { realGh, realListenerRestart, selfUpdate } from './self-update.mts';
 import { createSystem } from './system.mts';
 import type { System } from './system.mts';
 import { readLogTail } from './logs.mts';
+import { createTaskFileStore } from './task-files.mts';
+import type { TaskFileStore } from './task-files.mts';
 import { errorText, fence } from './text.mts';
 import type { CheckResult, WaitCheck, WaitStore } from './waits.mts';
 import { CHECK_TIME_LIMIT_MS, createWaitStore, runCheck } from './waits.mts';
@@ -45,6 +47,7 @@ export interface DispatchDeps extends Context {
   now: () => Date;
   logTail: (taskId: string) => string;
   waits: WaitStore;
+  taskFiles: TaskFileStore;
   runCheck: (check: WaitCheck) => Promise<CheckResult>;
   update: UpdateDeps;
   // Keys of config.json the CLI ignores (see configWarnings), logged at the start of every tick.
@@ -111,6 +114,46 @@ async function wakeDue(deps: DispatchDeps, tasks: Task[]): Promise<{ tasks: Task
     }
   }
   return { tasks: tasks.map((task) => replaced.get(task.id) ?? task), checks };
+}
+
+// A finished task's log and session record are kept this long after they last changed: the log for the user to read, the
+// record so a task moved back from Done can still be resumed.
+export const TASK_FILES_KEEP_MS = 14 * 24 * 60 * 60 * 1000;
+// Tasks the list does not show are looked up one by one; a machine with a long history clears them over a few ticks.
+const TASK_FILE_LOOKUPS_PER_TICK = 20;
+
+// Whether a task the list does not show is finished: closed, done, or gone from the board. A task the board hides from this
+// CLI, or one that cannot be read now, is not.
+async function isFinished(deps: DispatchDeps, id: string): Promise<boolean> {
+  try {
+    const task = await deps.backend.getTask(id);
+    return task.closed || task.status === 'done';
+  } catch (error) {
+    return error instanceof BackendError && error.fromApi && error.status === 404;
+  }
+}
+
+/**
+ * Drops the logs and session records of tasks that are done, closed or gone, once the files are older than TASK_FILES_KEEP_MS.
+ * Every other task keeps its files: one in Running, Waiting or Todo may resume its session, and one in Needs me or Backlog may
+ * be sent back to Todo. The files of a task whose worker still runs here are kept whatever the board says.
+ */
+async function pruneTaskFiles(deps: DispatchDeps, listed: Task[], activeWorkers: string[]): Promise<void> {
+  const cutoff = deps.now().getTime() - TASK_FILES_KEEP_MS;
+  const old = deps.taskFiles.list().filter((file) => file.modifiedAt.getTime() < cutoff);
+  const shown = new Map(listed.map((task) => [task.id, task]));
+  let lookups = 0;
+  for (const id of new Set(old.map((file) => file.taskId))) {
+    if (activeWorkers.includes(id)) continue;
+    const task = shown.get(id);
+    if (task === undefined && lookups >= TASK_FILE_LOOKUPS_PER_TICK) continue;
+    if (task === undefined) lookups += 1;
+    if (!(task === undefined ? await isFinished(deps, id) : task.status === 'done')) continue;
+    for (const file of old.filter((candidate) => candidate.taskId === id)) {
+      deps.print(`DROP-${file.kind.toUpperCase()} ${id} its task is finished`);
+      if (!deps.dryRun) deps.taskFiles.remove(file);
+    }
+  }
 }
 
 // The tick is stopped after 110 s, and the check processes would outlive it: they run in their own process group.
@@ -323,6 +366,11 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   const summary = config.lanes
     .map((lane) => `${lane.name}=${runs.filter((run) => run.lane === lane.name).length}/${lane.slots}`)
     .join(' ');
+  try {
+    await pruneTaskFiles(deps, listed, activeWorkers);
+  } catch (error) {
+    log(`WARN dropping old task files failed: ${errorText(error)}`);
+  }
   await runChecks(deps, checks, tickStart);
   log(`TICK started=${started.size} ${summary}${checks.length > 0 ? ` checks=${checks.length}` : ''}`);
 }
@@ -361,6 +409,7 @@ export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<voi
       now: () => new Date(),
       logTail: readLogTail,
       waits: createWaitStore(),
+      taskFiles: createTaskFileStore(),
       runCheck: (check) => runCheck(check),
       configWarnings: () => loadConfigWarnings(getPaths().configFile),
     }),
