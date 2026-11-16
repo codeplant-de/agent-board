@@ -9,7 +9,7 @@ import { isRecord, isSafeTaskId, isSafeWorkdir, parseQuestions, QuestionError } 
 import type { Question } from '@agent-board/shared';
 import { buildContext, readStdin } from './cli.mts';
 import { createRunFiles } from './runtime.mts';
-import { oneLine } from './text.mts';
+import { errorText, oneLine } from './text.mts';
 
 function deny(reason: string): string {
   return JSON.stringify({
@@ -72,7 +72,7 @@ export async function runHook(args: string[]): Promise<void> {
     try {
       questions = askedQuestions(input);
     } catch (error) {
-      failure = error instanceof Error ? error.message : String(error);
+      failure = errorText(error);
     }
     if (questions === undefined && failure === undefined) return;
     if (questions !== undefined) {
@@ -80,12 +80,12 @@ export async function runHook(args: string[]): Promise<void> {
         const context = buildContext(false);
         await context.backend.ask(taskId, questions);
       } catch (error) {
-        failure = error instanceof Error ? error.message : String(error);
+        failure = errorText(error);
       }
     }
     process.stdout.write(askedDecision(taskId, failure));
   } catch (error) {
     // stderr of a hook that exits 0 only shows in verbose mode; the call goes ahead.
-    console.error(`agent-hook: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`board internal hook: ${errorText(error)}`);
   }
 }

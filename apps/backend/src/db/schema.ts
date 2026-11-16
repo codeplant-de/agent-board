@@ -88,6 +88,15 @@ const isEnvelope = (column: AnyPgColumn) => sql`${column} ~ ${sql.raw(`'${ENVELO
 const isBlindIndex = (column: AnyPgColumn) => sql`${column} ~ ${sql.raw(`'${BLIND_INDEX_PATTERN}'`)}`;
 
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
+/**
+ * `now()` is the start of the transaction, so the notes one request writes (a move and its priority change, the hourly
+ * cleanup of a board) would share a timestamp and fall back to the random id for their order. The wall clock keeps
+ * them in write order.
+ */
+const writtenAt = () =>
+  timestamp('created_at', { withTimezone: true })
+    .notNull()
+    .default(sql`clock_timestamp()`);
 
 export const tasks = pgTable(
   'task',
@@ -236,7 +245,7 @@ export const notes = pgTable(
     queued: boolean('queued').notNull().default(false),
     /** When a worker handed the message to the running agent. The resume prompt does not repeat it. */
     deliveredAt: timestamp('delivered_at', { withTimezone: true }),
-    createdAt: createdAt(),
+    createdAt: writtenAt(),
   },
   (t) => [
     check('note_body_sealed', sql`(${t.author}::text = 'server' and ${t.kind} = 'event') or ${isEnvelope(t.body)}`),

@@ -202,6 +202,19 @@ test('server errors carry the status and reason, never the token', async () => {
       /cannot reach https:\/\/board.example: ECONNREFUSED/.test(error.message) &&
       !error.message.includes('TOKEN'),
   );
+  const cutOff: Fetch = async () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(new Error('terminated'));
+        },
+      }),
+    );
+  await assert.rejects(
+    callServer(config, 'get-task', {}, cutOff),
+    (error: unknown) =>
+      error instanceof BackendError && /cannot reach https:\/\/board.example: terminated/.test(error.message),
+  );
 });
 
 test('an answer that is not JSON, or not a task, is a one-line failure', async () => {

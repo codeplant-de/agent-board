@@ -9,6 +9,7 @@ import { BackendError, loadWebConfig, machineHeaders, requireFeature, verifyCont
 import type { Fetch, WebConfig } from './backend.mts';
 import { print } from './cli.mts';
 import { selfCommand } from './self.mts';
+import { errorText } from './text.mts';
 
 export interface Timers {
   now: () => number;
@@ -120,7 +121,7 @@ export function createTicker({ run, timers, log, debounceMs, retryMs }: TickerOp
     try {
       code = await run();
     } catch (error) {
-      log(`tick could not start: ${error instanceof Error ? error.message : String(error)}`);
+      log(`tick could not start: ${errorText(error)}`);
     }
     running = false;
     if (code === LOCKED) {
@@ -186,8 +187,6 @@ export interface ListenerDeps {
   runTick: () => Promise<number>;
   options?: Partial<ListenerOptions>;
 }
-
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 // Rejects when `promise` takes longer than `ms`, or when `signal` aborts.
 function within<T>(promise: Promise<T>, ms: number, timers: Timers, signal: AbortSignal, what: string): Promise<T> {
@@ -302,7 +301,7 @@ export async function runListener(deps: ListenerDeps): Promise<number> {
           log(
             error instanceof BackendError && error.status === 401
               ? 'the board refused the token (401): it was revoked or replaced; run "board init" with a new one'
-              : `disconnected: ${describe(error)}`,
+              : `disconnected: ${errorText(error)}`,
           );
         }
       } finally {

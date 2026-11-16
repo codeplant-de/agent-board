@@ -5,6 +5,7 @@
 import { machineHeaders } from './backend.mts';
 import type { Fetch, WebConfig } from './backend.mts';
 import { createSseParser } from './listen.mts';
+import { errorText } from './text.mts';
 
 export interface ChangeWatchOptions {
   config: Pick<WebConfig, 'url' | 'token'>;
@@ -16,8 +17,6 @@ export interface ChangeWatchOptions {
   // No bytes for this long (the server pings every 25 s) is a dead connection.
   idleMs: number;
 }
-
-const describe = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 // Reads the stream until it ends or `signal` aborts; throws when it goes quiet for `idleMs`.
 async function readStream(body: ReadableStream<Uint8Array>, options: ChangeWatchOptions, signal: AbortSignal) {
@@ -62,7 +61,7 @@ export async function watchBoardChanges(options: ChangeWatchOptions, signal: Abo
     } catch (error) {
       if (signal.aborted) return;
       if (!lost)
-        options.log(`the board's event stream is lost (${describe(error)}); the run inbox is checked on the timer`);
+        options.log(`the board's event stream is lost (${errorText(error)}); the run inbox is checked on the timer`);
       lost = true;
     }
     await new Promise<void>((resolve) => {
