@@ -89,6 +89,18 @@ function parsed<T>(parse: () => T): T {
 
 type MachineIdentity = NonNullable<Awaited<ReturnType<typeof machineForToken>>>;
 
+declare module 'fastify' {
+  interface FastifyRequest {
+    /** The machine behind the bearer token of a /api/machine/* request, set before the body is read. */
+    machineAuth: { identity: MachineIdentity; token: string } | null;
+  }
+}
+
+/** Plenty for every command but `transcript`: the largest sealed fields (a task's input, a note's body) are about 1 MiB as envelopes. */
+const MACHINE_BODY_LIMIT = 2 * 1024 * 1024;
+/** A transcript batch can carry a few large tool results. */
+const TRANSCRIPT_BODY_LIMIT = 16 * 1024 * 1024;
+
 /** What a client that sent these features can be shown: an item with an enum value it has no feature for is left out. */
 function knownTo(clientFeatures: ReadonlySet<string>, vocabulary: VocabularyFeatures | undefined) {
   const unknownTo = (item: VocabularyItem) => findUnknownVocabulary(item, clientFeatures, vocabulary);
@@ -316,6 +328,12 @@ async function authenticate(db: Db, req: FastifyRequest): Promise<{ identity: Ma
   return { identity, token };
 }
 
+/** The identity `authenticate` put on the request; a route outside the authenticated scope has none, which is a bug. */
+function authOf(req: FastifyRequest): { identity: MachineIdentity; token: string } {
+  if (!req.machineAuth) throw new AppError('UNAUTHORIZED', 'unknown or revoked machine token');
+  return req.machineAuth;
+}
+
 export function registerMachineApi(
   app: FastifyInstance,
   db: Db,
@@ -328,59 +346,77 @@ export function registerMachineApi(
   app.addHook('preClose', async () => {
     streams.forEach((end) => end());
   });
+  app.decorateRequest('machineAuth', null);
 
-  /** Server-sent events: a bare `tasks` event means "look at the board again"; it carries no data. */
-  app.get('/api/machine/events', async (req, reply) => {
-    const { identity, token } = await authenticate(db, req);
-    reply.hijack();
-    // The client may have left while the token was being looked up; its `close` event is gone by now.
-    if (req.raw.destroyed) return;
-    const res = reply.raw;
-    res.writeHead(200, {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache',
-      'x-accel-buffering': 'no',
+  // Its own scope, so the token check runs in onRequest: before Fastify reads and parses the body, which an
+  // unauthenticated caller must not be able to make it buffer.
+  void app.register(async (machineApp) => {
+    machineApp.addHook('onRequest', async (req) => {
+      req.machineAuth = await authenticate(db, req);
     });
-    res.write(': connected\n\n');
-
-    const stop = changes.subscribe(identity.owner, () => res.write('event: tasks\ndata:\n\n'));
-    const ping = setInterval(() => {
-      res.write(': ping\n\n');
-      // A revoked token must not keep a stream.
-      machineForToken(db, token).then(
-        (current) => {
-          if (!current) end();
-        },
-        (err: unknown) => app.log.error({ err }, 'machine stream token check failed'),
-      );
-    }, pingMs);
-    function end(): void {
-      clearInterval(ping);
-      stop();
-      streams.delete(end);
-      res.end();
-    }
-    streams.add(end);
-    req.raw.on('close', end);
+    registerRoutes(machineApp);
   });
 
-  app.post<{ Params: { command: string } }>('/api/machine/:command', async (req) => {
-    const { identity: machine } = await authenticate(db, req);
-    const body = isRecord(req.body) ? req.body : {};
-    const result = await withOwner(db, machine.owner, async (tx) => {
-      // Only `version`, which every CLI process sends first: a worker that started before an update keeps sending
-      // heartbeats from the old binary, and those must not make the machine look outdated again.
-      if (req.params.command === 'version')
-        await recordClient(tx, machine.name, {
-          version: parseClientVersion(headerValue(req, CLIENT_VERSION_HEADER)),
-          api: parseClientApi(headerValue(req, CLIENT_API_HEADER)),
-        });
-      return handleMachineCall(tx, config, machine, req.params.command, body, {
-        features: parseClientFeatures(req.headers[CLIENT_FEATURES_HEADER]),
-        ...(vocabulary === undefined ? {} : { vocabulary }),
+  function registerRoutes(app: FastifyInstance): void {
+    /** Server-sent events: a bare `tasks` event means "look at the board again"; it carries no data. */
+    app.get('/api/machine/events', async (req, reply) => {
+      const { identity, token } = authOf(req);
+      reply.hijack();
+      // The client may have left while the token was being looked up; its `close` event is gone by now.
+      if (req.raw.destroyed) return;
+      const res = reply.raw;
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+        'x-accel-buffering': 'no',
       });
+      res.write(': connected\n\n');
+
+      const stop = changes.subscribe(identity.owner, () => res.write('event: tasks\ndata:\n\n'));
+      const ping = setInterval(() => {
+        res.write(': ping\n\n');
+        // A revoked token must not keep a stream.
+        machineForToken(db, token).then(
+          (current) => {
+            if (!current) end();
+          },
+          (err: unknown) => app.log.error({ err }, 'machine stream token check failed'),
+        );
+      }, pingMs);
+      function end(): void {
+        clearInterval(ping);
+        stop();
+        streams.delete(end);
+        res.end();
+      }
+      streams.add(end);
+      req.raw.on('close', end);
     });
-    if (DISPATCH_WRITES.has(req.params.command)) changes.notify(machine.owner);
-    return { result };
-  });
+
+    async function serve(req: FastifyRequest, command: string): Promise<{ result: unknown }> {
+      const { identity: machine } = authOf(req);
+      const body = isRecord(req.body) ? req.body : {};
+      const result = await withOwner(db, machine.owner, async (tx) => {
+        // Only `version`, which every CLI process sends first: a worker that started before an update keeps sending
+        // heartbeats from the old binary, and those must not make the machine look outdated again.
+        if (command === 'version')
+          await recordClient(tx, machine.name, {
+            version: parseClientVersion(headerValue(req, CLIENT_VERSION_HEADER)),
+            api: parseClientApi(headerValue(req, CLIENT_API_HEADER)),
+          });
+        return handleMachineCall(tx, config, machine, command, body, {
+          features: parseClientFeatures(req.headers[CLIENT_FEATURES_HEADER]),
+          ...(vocabulary === undefined ? {} : { vocabulary }),
+        });
+      });
+      if (DISPATCH_WRITES.has(command)) changes.notify(machine.owner);
+      return { result };
+    }
+
+    // `transcript` is its own route so that it alone takes a large body; the others share one route and a small limit.
+    app.post('/api/machine/transcript', { bodyLimit: TRANSCRIPT_BODY_LIMIT }, (req) => serve(req, 'transcript'));
+    app.post<{ Params: { command: string } }>('/api/machine/:command', { bodyLimit: MACHINE_BODY_LIMIT }, (req) =>
+      serve(req, req.params.command),
+    );
+  }
 }

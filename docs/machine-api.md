@@ -2,7 +2,7 @@
 
 The spec between the CLI and the board, API version 9. The CLI calls the board's machine API from its own process (`apps/cli/src/backend.mts` over HTTP, `apps/cli/src/sealing.mts` for the encryption); `apps/backend/src/machine-api.ts` serves it. Nothing else implements it. Everything below describes the wire, where sealed fields hold envelopes; the CLI's own `Backend` interface (`packages/shared/src/contract.mts`) is the plaintext view of it.
 
-`POST <url>/api/machine/<command>` with `Authorization: Bearer <machine token>`, an optional `X-Board-Features` header (see [Features](#features)) and a JSON body `{"id"?, "all"?, "machine"?, "author"?, "body"?}`: `id` is the task, `body` is the command's payload (JSON, with the sealed values). The answer is `{"result": ...}` with status 200, or `{"error": "one line"}` with a non-200 status. The token names the machine; it never appears in an error message. A call times out after 45 seconds.
+`POST <url>/api/machine/<command>` with `Authorization: Bearer <machine token>`, an optional `X-Board-Features` header (see [Features](#features)) and a JSON body `{"id"?, "all"?, "machine"?, "author"?, "body"?}`: `id` is the task, `body` is the command's payload (JSON, with the sealed values). The answer is `{"result": ...}` with status 200, or `{"error": "one line"}` with a non-200 status. The token names the machine; it never appears in an error message. The server checks the token before it reads the body, so a bad or missing token is a 401 whatever the body is. A body over 2 MiB is a 413, except for `transcript`, which takes up to 16 MiB (the largest sealed field of any other command, a task's input, is about 1 MiB as an envelope). A call times out after 45 seconds.
 
 ### Version handshake
 

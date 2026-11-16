@@ -52,7 +52,7 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
   const changes = options.changes ?? new Changes(options.debounceMs ?? CHANGES_DEBOUNCE_MS);
   const app = Fastify({
     logger: config.nodeEnv === 'test' ? false : { level: 'info' },
-    // A transcript batch can carry a few large tool results.
+    // The machine API sets its own limits per route; this is the UI's.
     bodyLimit: 16 * 1024 * 1024,
     // Behind the auth proxy: makes req.ip, which the request log writes as remoteAddress, the client's address, not the proxy's.
     trustProxy: true,
