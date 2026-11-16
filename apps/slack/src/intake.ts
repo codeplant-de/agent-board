@@ -16,6 +16,8 @@ export class IntakeError extends Error {}
 export interface IntakeClient {
   /** Puts `text` in the inbox of the board user `who` is linked to; throws NotLinkedError without a link. */
   addToInbox(who: SlackIdentity, text: string): Promise<{ boardUrl: string }>;
+  /** Whether `who` has a board account linked. */
+  isLinked(who: SlackIdentity): Promise<boolean>;
   startLink(who: SlackIdentity, displayName: string | null): Promise<{ url: string; minutes: number }>;
   /** False when there was no link to remove. */
   unlink(who: SlackIdentity): Promise<boolean>;
@@ -70,6 +72,12 @@ export function createIntakeClient({
     async addToInbox(who, text) {
       const result = await call('inbox-add', { ...who, text });
       return { boardUrl: stringField(result, 'url') };
+    },
+    async isLinked(who) {
+      const result = await call('link-status', { ...who });
+      const linked = isRecord(result) ? result['linked'] : undefined;
+      if (typeof linked !== 'boolean') throw new IntakeError("the board's answer has no linked");
+      return linked;
     },
     async startLink(who, displayName) {
       const result = await call('link', { ...who, displayName });

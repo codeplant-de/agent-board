@@ -26,6 +26,7 @@ function fakeSocket(starts: (attempt: number) => Promise<unknown> = async () => 
 
 const intake: IntakeClient = {
   addToInbox: async () => ({ boardUrl: 'https://board' }),
+  isLinked: async () => true,
   startLink: async () => ({ url: 'https://board/slack/link?code=c', minutes: 15 }),
   unlink: async () => true,
 };

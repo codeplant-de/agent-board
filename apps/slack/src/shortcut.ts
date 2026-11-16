@@ -21,6 +21,8 @@ const NOTE_MAX = 3000;
 const THREAD_MESSAGES_MAX = 500;
 const USERS_MAX = 50;
 const TS_PATTERN = /^\d{1,12}\.\d{1,9}$/;
+/** The link check has to leave time for views.open: Slack's trigger_id expires three seconds after the click. */
+const LINK_CHECK_MS = 1_500;
 
 /** An interactive payload as it arrives over the socket; its fields are checked before use. */
 export interface InteractiveEvent {
@@ -126,6 +128,14 @@ function buildModal(context: Context): object {
   };
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 /** The handler of interactive payloads: the "Send to board" message shortcut and its modal. */
 export function createShortcutHandler({
   api,
@@ -147,6 +157,21 @@ export function createShortcutHandler({
       onError('shortcut payload is incomplete', null);
       return;
     }
+    const userId = slackId(field(body['user'], 'id'));
+    if (!userId) {
+      onError('shortcut payload is incomplete', null);
+      return;
+    }
+    // Someone without a link gets no form, and no thread is read for them. A check that fails or is slow lets the form
+    // open: the submission is refused for a missing link anyway.
+    const linked = await withTimeout(
+      intake.isLinked({ teamId: shortcut.context.teamId, slackUserId: userId }),
+      LINK_CHECK_MS,
+    ).catch((error: unknown) => {
+      onError('link check failed', error);
+      return null;
+    });
+    if (linked === false) return say(shortcut.context.responseUrl, NOT_LINKED_TEXT);
     try {
       await api.openView(shortcut.triggerId, buildModal(shortcut.context));
     } catch (error) {

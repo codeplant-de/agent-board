@@ -57,7 +57,7 @@ describe('the intake API', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it('knows three commands and nothing that touches a task', async () => {
+  it('knows four commands and nothing that touches a task', async () => {
     const { call } = await serve();
     for (const command of ['list-tasks', 'get-task', 'add-task', 'claim-task'])
       expect((await call(command, who)).statusCode).toBe(404);
@@ -95,6 +95,15 @@ describe('the intake API', () => {
     expect(await admin.select({ id: tasks.id, status: tasks.status }).from(tasks)).toEqual([
       { id: 'abc', status: 'todo' },
     ]);
+  });
+
+  it('says whether a Slack user is linked, and nothing more', async () => {
+    const { call } = await serve();
+    expect((await call('link-status', who)).json()).toEqual({ result: { linked: false } });
+    await asOwner(db, 'alice', (tx) => tx.insert(slackLinks).values(who));
+    expect((await call('link-status', who)).json()).toEqual({ result: { linked: true } });
+    expect((await call('link-status', { ...who, slackUserId: 'U2' })).json()).toEqual({ result: { linked: false } });
+    expect((await call('link-status', { teamId: 'T1' })).statusCode).toBe(400);
   });
 
   it('unlinks the Slack user, once', async () => {

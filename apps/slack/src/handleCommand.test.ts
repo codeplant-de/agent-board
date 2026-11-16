@@ -11,6 +11,7 @@ function fakeIntake(overrides: Partial<IntakeClient> = {}) {
       calls.push(['startLink', ...args]),
       { url: 'https://board/slack/link?code=c', minutes: 15 }
     ),
+    isLinked: async (...args) => (calls.push(['isLinked', ...args]), true),
     unlink: async (...args) => (calls.push(['unlink', ...args]), true),
     ...overrides,
   };

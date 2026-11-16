@@ -38,17 +38,21 @@ describe('the intake client', () => {
             ? { url: 'https://board/slack/link?code=c', minutes: 15 }
             : command === 'unlink'
               ? { unlinked: true }
-              : { url: 'https://board' },
+              : command === 'link-status'
+                ? { linked: false }
+                : { url: 'https://board' },
       },
     }));
     const intake = createIntakeClient({ apiUrl: board.apiUrl, token: 'tok' });
     expect(await intake.addToInbox(who, 'hi')).toEqual({ boardUrl: 'https://board' });
     expect(await intake.startLink(who, 'ada')).toEqual({ url: 'https://board/slack/link?code=c', minutes: 15 });
     expect(await intake.unlink(who)).toBe(true);
+    expect(await intake.isLinked(who)).toBe(false);
     expect(board.seen).toEqual([
       { url: '/api/intake/inbox-add', authorization: 'Bearer tok', body: { ...who, text: 'hi' } },
       { url: '/api/intake/link', authorization: 'Bearer tok', body: { ...who, displayName: 'ada' } },
       { url: '/api/intake/unlink', authorization: 'Bearer tok', body: who },
+      { url: '/api/intake/link-status', authorization: 'Bearer tok', body: who },
     ]);
   });
 

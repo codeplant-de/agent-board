@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { IntakeError, NotLinkedError, type IntakeClient } from './intake';
 import { NO_BOT_TOKEN_TEXT, NOT_LINKED_TEXT } from './messages';
 import { createShortcutHandler, MODAL_CALLBACK_ID, SHORTCUT_CALLBACK_ID, type InteractiveEvent } from './shortcut';
@@ -32,6 +32,10 @@ function setup({
     addToInbox: async (who, text) => {
       added.push({ who, text });
       return { boardUrl: 'https://board' };
+    },
+    isLinked: async () => {
+      order.push('isLinked');
+      return true;
     },
     startLink: async () => ({ url: '', minutes: 1 }),
     unlink: async () => true,
@@ -82,7 +86,7 @@ const submissionBody = (over: { metadata?: unknown; note?: string | null; user?:
 });
 
 describe('the Send to board shortcut', () => {
-  it('acks, then opens the modal before any other call, with no message text in the metadata', async () => {
+  it('acks, checks the link, then opens the modal before any Slack call, with no message text in the metadata', async () => {
     let view: { private_metadata: string; callback_id: string } | undefined;
     let trigger = '';
     const app = setup({
@@ -95,7 +99,7 @@ describe('the Send to board shortcut', () => {
       },
     });
     await app.handle(app.event(shortcutBody()));
-    expect(app.order).toEqual(['ack', 'openView']);
+    expect(app.order).toEqual(['ack', 'isLinked', 'openView']);
     expect(trigger).toBe('trig1');
     expect(view?.callback_id).toBe(MODAL_CALLBACK_ID);
     expect(JSON.parse(view!.private_metadata)).toEqual({
@@ -123,6 +127,45 @@ describe('the Send to board shortcut', () => {
     await app.handle(app.event(shortcutBody()));
     expect(app.order).toEqual(['ack']);
     expect(app.replies).toEqual([{ url: RESPONSE_URL, text: NO_BOT_TOKEN_TEXT }]);
+  });
+
+  it('opens no form and reads nothing for someone without a link', async () => {
+    let asked: object | undefined;
+    const app = setup({
+      intake: {
+        isLinked: async (who) => {
+          asked = who;
+          return false;
+        },
+      },
+    });
+    await app.handle(app.event(shortcutBody()));
+    expect(asked).toEqual({ teamId: 'T1', slackUserId: 'U1' });
+    expect(app.order).toEqual(['ack']);
+    expect(app.replies).toEqual([{ url: RESPONSE_URL, text: NOT_LINKED_TEXT }]);
+  });
+
+  it('opens the form when the link check fails, since the submission checks the link again', async () => {
+    const app = setup({
+      intake: { isLinked: async () => Promise.reject(new IntakeError('the board is unreachable')) },
+    });
+    await app.handle(app.event(shortcutBody()));
+    expect(app.order).toEqual(['ack', 'openView']);
+    expect(app.errors).toEqual(['link check failed']);
+  });
+
+  it('opens the form when the link check is too slow', async () => {
+    vi.useFakeTimers();
+    try {
+      const app = setup({ intake: { isLinked: () => new Promise<boolean>(() => {}) } });
+      const done = app.handle(app.event(shortcutBody()));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await done;
+      expect(app.order).toEqual(['ack', 'openView']);
+      expect(app.errors).toEqual(['link check failed']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('tells the user when the form does not open', async () => {
