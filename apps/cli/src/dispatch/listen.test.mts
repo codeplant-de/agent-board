@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { API_VERSION, CLIENT_FEATURES_HEADER, MIN_SERVER } from '@agent-board/shared';
 import { requireFeature } from '../backend/backend.mts';
 import type { Fetch } from '../backend/backend.mts';
 import { verifyContract } from '../backend/contract-check.mts';
-import { backoffMs, createTicker, LISTENER_OPTIONS, runListener, tickCommand } from './listen.mts';
+import { backoffMs, createTicker, LISTENER_OPTIONS, runLimited, runListener, tickCommand } from './listen.mts';
 import type { Timers } from './listen.mts';
 
 // A clock that only moves when the test says so.
@@ -372,13 +375,9 @@ test('SIGTERM stops the reconnecting and the pending tick, and exits 0', async (
   assert.deepEqual(ticks, [0], 'the debounced tick never ran');
 });
 
-test("a tick runs the dispatch command under the unit's lock and its time limit", () => {
+test("a tick runs the dispatch command under the unit's lock, with no timeout binary", () => {
   const dispatch = ['/opt/node/bin/node', '/opt/board/main.mts', 'internal', 'dispatch'];
-  assert.deepEqual(tickCommand({ XDG_RUNTIME_DIR: '/run/user/1000' }, dispatch), [
-    'timeout',
-    '-k',
-    '10',
-    '110',
+  assert.deepEqual(tickCommand({ XDG_RUNTIME_DIR: '/run/user/1000' }, dispatch, 'linux'), [
     'flock',
     '-n',
     '-E',
@@ -386,7 +385,57 @@ test("a tick runs the dispatch command under the unit's lock and its time limit"
     '/run/user/1000/agent-board-dispatch.lock',
     ...dispatch,
   ]);
-  assert.equal(tickCommand({}, dispatch)[8], '/tmp/agent-board-dispatch.lock');
+  assert.equal(tickCommand({}, dispatch, 'linux')[4], '/tmp/agent-board-dispatch.lock');
+});
+
+test('on macOS a tick takes its lock with lockf, in the run directory rather than /tmp', () => {
+  const dispatch = ['/usr/local/bin/board', 'internal', 'dispatch'];
+  assert.deepEqual(tickCommand({ AGENT_BOARD_STATE_DIR: '/home/me/state' }, dispatch, 'darwin'), [
+    '/usr/bin/lockf',
+    '-s',
+    '-t',
+    '0',
+    '/home/me/state/run/agent-board-dispatch.lock',
+    ...dispatch,
+  ]);
+  assert.equal(
+    tickCommand({ AGENT_BOARD_RUN_DIR: '/x/run' }, dispatch, 'darwin')[4],
+    '/x/run/agent-board-dispatch.lock',
+  );
+});
+
+const node = (code: string): string[] => [process.execPath, '-e', code];
+
+test("the listener's own time limit: a tick is left alone while it runs, and its exit code passes through", async () => {
+  assert.equal(await runLimited(node('process.exit(0)'), { limitMs: 5000, graceMs: 1000 }), 0);
+  assert.equal(await runLimited(node('process.exit(75)'), { limitMs: 5000, graceMs: 1000 }), 75);
+  assert.equal(await runLimited(node('process.kill(process.pid, "SIGTERM")'), { limitMs: 5000, graceMs: 1000 }), 143);
+});
+
+test('a tick over its limit is terminated with its group and reported as 124', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-tick-test-'));
+  const marker = join(dir, 'child.pid');
+  try {
+    // A child in the tick's own group, which must not outlive it.
+    const code = `const {spawn}=require("node:child_process");const c=spawn(process.execPath,["-e","setInterval(()=>{},1e3)"],{stdio:"ignore"});require("node:fs").writeFileSync(${JSON.stringify(marker)},String(c.pid));setInterval(()=>{},1e3)`;
+    const started = Date.now();
+    assert.equal(await runLimited(node(code), { limitMs: 500, graceMs: 2000 }), 124);
+    assert.ok(Date.now() - started < 2000, 'SIGTERM ended it, no need for the kill');
+    const child = Number(readFileSync(marker, 'utf8'));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.throws(() => process.kill(child, 0), "the tick's child is gone");
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a tick that ignores SIGTERM is killed after the grace period and reported as 137', async () => {
+  const code = 'process.on("SIGTERM",()=>{});setInterval(()=>{},1e3)';
+  assert.equal(await runLimited(node(code), { limitMs: 300, graceMs: 300 }), 137);
+});
+
+test('a tick that cannot be started rejects', async () => {
+  await assert.rejects(runLimited(['/nonexistent/program'], { limitMs: 1000, graceMs: 1000 }), /ENOENT/);
 });
 
 test('a tick that timeout stopped is logged as a failure and not retried like a held lock', async () => {

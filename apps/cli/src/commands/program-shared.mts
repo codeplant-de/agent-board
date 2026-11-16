@@ -30,6 +30,8 @@ export interface ProgramOptions {
   // The exit code of a read-only systemctl call.
   systemctlCode?: DoctorDeps['systemctl'];
   verifyServer?: DoctorDeps['verifyServer'];
+  // Whether launchd has loaded an agent (macOS).
+  agentLoaded?: DoctorDeps['launchd']['loaded'];
   // Runs `gh` for self-update.
   gh?: (args: string[]) => Promise<string>;
   // Restarts the listener after self-update replaced the binary.

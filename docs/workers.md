@@ -44,7 +44,7 @@ The worker passes the heartbeat on to the board every 15 seconds while the agent
 
 Every stop is an interrupt first: the worker sends `claude` an interrupt on stdin, which ends what the agent is doing at once and keeps the session resumable, then closes stdin so the process exits. Only a process that is still there 30 seconds after the interrupt is killed (SIGTERM, then SIGKILL).
 
-The heartbeat, pause flag, lane, working directory and, for an agent's run, the agent's definition (`<task>.agents`) of a run live in `$XDG_RUNTIME_DIR/agent-board/` (`AGENT_BOARD_RUN_DIR` overrides it), private to your user.
+The heartbeat, pause flag, lane, working directory and, for an agent's run, the agent's definition (`<task>.agents`) of a run live in `$XDG_RUNTIME_DIR/agent-board/` (`AGENT_BOARD_RUN_DIR` overrides it), private to your user; on macOS, without an `XDG_RUNTIME_DIR`, in `~/.local/state/agent-board/run` (mode 700), where the process supervisor keeps its pid files too. If the clock jumps (the machine slept), the worker moves the heartbeat up to the wake instead of counting the sleep as time without a tool call, and the dispatcher's sweep does not count quiet time on a tick that follows a gap of more than 10 minutes.
 
 ## Talking to a running agent
 
@@ -156,9 +156,9 @@ A missing allowed tool in an intake review shows up as a failed run: the log say
 
 Dispatcher, per tick:
 
-1. For each task in `running` claimed by this machine, ask `systemctl --user is-active agent-board-<task>`. A task whose unit is gone moves to `needs-me` with the log tail, timed from the unit's own start (else the task's `runStartedAt`). So does one whose worker failed to enforce the [limits](#liveness-and-limits) for five minutes past them; its unit is stopped. If `systemctl` gives no known state, or the backend fails, the tick stops before starting anything and exits non-zero.
+1. For each task in `running` claimed by this machine, ask whether its worker is running: `systemctl --user is-active agent-board-<task>` on Linux; on macOS whether the pid in the run directory's `<task>.pid` is alive and its command line ends in `internal worker <task>`. A task whose unit is gone moves to `needs-me` with the log tail, timed from the unit's own start (else the task's `runStartedAt`). So does one whose worker failed to enforce the [limits](#liveness-and-limits) for five minutes past them; its unit is stopped. If `systemctl` gives no known state, or the backend fails, the tick stops before starting anything and exits non-zero.
 2. For each task in `waiting` that this machine ran: a wait whose `wakeAt` has passed (a timer, or a check past its timeout) or whose check is not stored here is woken with the reason (`wake`), so it can start in this tick. A check whose task is neither waiting nor running here any more is deleted.
-3. A task this machine cannot serve is skipped (see [Two machines](#two-machines)). The rest are planned into [lanes](#lanes): own work first, then borrowing. Each start is claimed, its lane written to the run directory, then `systemd-run --user --collect --unit agent-board-<task>` starts the worker and a start note names the machine, lane and PID. A lost claim hands its slot to the next task; the first failed start ends the tick's starting.
+3. A task this machine cannot serve is skipped (see [Two machines](#two-machines)). The rest are planned into [lanes](#lanes): own work first, then borrowing. Each start is claimed, its lane written to the run directory, then the worker starts (`systemd-run --user --collect --unit agent-board-<task>` on Linux, a detached `board internal worker <task>` process with its output in the task log on macOS) and a start note names the machine, lane and PID. A lost claim hands its slot to the next task; the first failed start ends the tick's starting.
 4. Lanes whose own work still waits ask one borrowed run each to pause.
 5. The checks that are due run side by side (45 s each at most). One that exits 0 wakes its task with the end of its output; for any other the result is kept with the check for the timeout message.
 

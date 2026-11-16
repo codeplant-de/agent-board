@@ -16,7 +16,7 @@ All content is end-to-end encrypted. The server never sees a prompt, a note or a
 | --- | --- |
 | `apps/backend` | Fastify server with tRPC for the browser and a token-authenticated machine API for workers. Postgres is the only state. |
 | `apps/frontend` | React, Mantine and TanStack Query. Encrypts and decrypts in the browser. |
-| `apps/cli` | The `board` command. Agents use it to report, and on a worker machine it runs the systemd units that claim and run tasks. |
+| `apps/cli` | The `board` command. Agents use it to report, and on a worker machine it runs the systemd units (launchd agents on macOS) that claim and run tasks. |
 | `apps/slack` | Optional Slack app in its own container: `/board <text>` puts a task idea in your board's inbox. It reaches the backend only through a narrow, token-gated intake API. |
 | `packages/shared` | The contract between all three: wire types, the sealing rules, crypto. |
 
@@ -24,7 +24,7 @@ A task moves through `backlog → todo → running → needs-me → done`, with 
 
 ## Install a worker machine
 
-You need Linux with systemd and `claude`, logged in, plus `gh`, both logged in. On macOS the `board` commands work except `ask`, `add`, `polish` and `setup`; the worker needs Linux.
+You need Linux with systemd, or macOS, and `claude`, logged in, plus `gh`, both logged in. On macOS the worker runs as launchd agents while you are logged in (see [Setting up a machine](docs/setup.md#macos)).
 
 1. Open the board in the browser and set up encryption (passphrase and recovery key). On **Settings**, create a token for this machine and copy the data key.
 2. Install the CLI from the newest release:
@@ -37,7 +37,7 @@ You need Linux with systemd and `claude`, logged in, plus `gh`, both logged in. 
 
    ```sh
    board init            # board URL, machine token, data key, machine name
-   board setup --enable  # systemd user units: dispatch, listener (and intake, if config.json has an intake block)
+   board setup --enable  # systemd user units (launchd agents on macOS): dispatch, listener (and intake on Linux, if config.json has an intake block)
    board doctor          # checks config, token, key, server version and units
    ```
 

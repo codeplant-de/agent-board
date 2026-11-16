@@ -496,7 +496,10 @@ test('board add outside the list proposes in the directory the run started in, o
   const fx = fixture(context);
   const listed = fx.make('listed');
   const other = fx.make('other');
-  const file = join(fx.root, 'p.md');
+  // A note file must be in /tmp itself, which the temp directory is not on macOS.
+  const noteDir = mkdtempSync('/tmp/board-dirs-note-');
+  context.after(() => rmSync(noteDir, { recursive: true, force: true }));
+  const file = join(noteDir, 'p.md');
   writeFileSync(file, 'follow up');
   const argv = ['add', '--title', 'Fix', '--file', file];
 

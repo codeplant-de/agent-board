@@ -101,6 +101,82 @@ jobs:
       - name: Binary smoke test
         run: pnpm --filter @agent-board/cli test:binary
 
+  # Whether a change reaches what runs on a worker's Mac. No third-party action: the paths are compared with git.
+  macos-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      cli: ${{ steps.paths.outputs.cli }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Did the CLI, the shared package or a workflow change
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Only a pull request is compared; a push to main or a manual run always runs the macOS job.
+          if [ "$EVENT" != pull_request ]; then
+            echo "cli=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$BASE_SHA...$HEAD_SHA" | grep -Eq '^(apps/cli/|packages/shared/|\.github/workflows/|pnpm-lock\.yaml$|package\.json$|pnpm-workspace\.yaml$|\.nvmrc$|mise\.toml$)'; then
+            echo "cli=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cli=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The worker runs on macOS too (launchd agents, detached worker processes), so the CLI is tested and its binary built and
+  # run there. The runners are free for a public repository. The backend tests need Postgres and stay on Linux.
+  cli-macos:
+    needs: macos-changes
+    if: needs.macos-changes.outputs.cli == 'true'
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.28.9
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      # The completion tests parse the zsh and fish scripts with the real shells; zsh ships with macOS.
+      - name: Install fish
+        run: brew install fish
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: CLI tests
+        run: pnpm --filter "@agent-board/cli..." test
+
+      - name: Build the CLI binary
+        run: pnpm --filter @agent-board/cli build darwin-arm64
+
+      - name: Binary smoke test
+        run: pnpm --filter @agent-board/cli test:binary
+
+      - name: macOS smoke test
+        run: apps/cli/scripts/macos-smoke.sh apps/cli/dist/board-darwin-arm64
+
   # A change that raises MIN_CLIENT above the newest release makes that CLI fail against the server, so it must come
   # with a higher CLI version. The rollout order is the "Upgrading" list in docs/setup.md. A required check; the gate of
   # cli-release-plan on main stops a break that lands anyway.
@@ -154,8 +230,10 @@ jobs:
 
   # A CLI version without a published release is released here, from the commit under test.
   cli-release:
-    needs: [test, cli-release-plan]
-    if: needs.cli-release-plan.outputs.release == 'true'
+    needs: [test, cli-release-plan, cli-macos]
+    if: >-
+      !cancelled() && needs.cli-release-plan.outputs.release == 'true' && needs.test.result == 'success'
+      && needs.cli-release-plan.result == 'success' && needs.cli-macos.result == 'success'
     permissions:
       contents: write
     uses: ./.github/workflows/release-cli.yml
@@ -244,7 +322,7 @@ jobs:
       !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
       && needs.test.result == 'success' && needs.previous-cli.result == 'success'
       && needs.cli-release-plan.result == 'success'
-      && contains(fromJSON('["success","skipped"]'), needs.cli-release.result)
+      && (needs.cli-release-plan.outputs.release != 'true' || needs.cli-release.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: read

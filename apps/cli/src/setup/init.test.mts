@@ -260,6 +260,7 @@ test('board init runs the doctor checks after writing, and is refused inside a r
           return { owner: OWNER, keyId: KEYS.keyId, api: SERVER_API, features: SERVER_HAS };
         },
         systemctlCode: async () => 1,
+        platform: 'linux',
       },
     );
     assert.deepEqual(verified, ['https://board.example.com']);
@@ -278,6 +279,34 @@ test('board init runs the doctor checks after writing, and is refused inside a r
   }
 });
 
+test('board init points to board setup on Linux and macOS, and not on another system', async () => {
+  for (const [platform, hint] of [
+    ['linux', true],
+    ['darwin', true],
+    ['freebsd', false],
+  ] as const) {
+    const dir = tempDir();
+    const out: string[] = [];
+    try {
+      await runBoard(
+        ['init', '--url', 'https://board.example.com', '--token-file', tokenFile(dir), '--data-key-file', keyFile(dir)],
+        {
+          env: { AGENT_BOARD_CONFIG_DIR: join(dir, 'cfg'), XDG_CONFIG_HOME: join(dir, 'xdg'), HOME: dir, PATH: '' },
+          writeOut: (text) => out.push(text),
+          interactive: false,
+          platform,
+          verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId, api: SERVER_API, features: SERVER_HAS }),
+          systemctlCode: async () => 1,
+          agentLoaded: async () => false,
+        },
+      ).catch(() => undefined);
+      assert.equal(out.join('').includes('Next, on a worker machine: board setup'), hint, platform);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  }
+});
+
 test('a failing check after init fails the command', async () => {
   const dir = tempDir();
   try {
@@ -292,6 +321,7 @@ test('a failing check after init fails the command', async () => {
             throw new Error('cannot reach https://board.example.com');
           },
           systemctlCode: async () => 1,
+          platform: 'linux',
         },
       ),
       /a check failed/,

@@ -131,9 +131,9 @@ function bash(model: CompletionModel): string {
       const lines = command.positionals.map((kind, index) => {
         const guard =
           kind === 'schedule'
-            ? ' && [[ "$first" == @(pause|resume|rm) ]]'
+            ? ' && [[ " pause resume rm " == *" $first "* ]]'
             : kind === 'dirs-key'
-              ? ' && [[ "$first" == @(set|unset) ]]'
+              ? ' && [[ " set unset " == *" $first "* ]]'
               : '';
         const candidates =
           kind === 'task'

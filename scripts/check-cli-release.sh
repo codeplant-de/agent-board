@@ -29,7 +29,7 @@ if [ -z "$newest" ]; then
   exit 0
 fi
 
-released_api=$(git show "cli-v$newest:$contract" 2>/dev/null | sed -n 's/^export const \(API_VERSION\|CONTRACT_VERSION\) = \([0-9][0-9]*\);.*/\2/p' | head -n 1)
+released_api=$(git show "cli-v$newest:$contract" 2>/dev/null | sed -nE 's/^export const (API_VERSION|CONTRACT_VERSION) = ([0-9]+);.*/\2/p' | head -n 1)
 if [ -z "$released_api" ]; then
   echo "check-cli-release: no API_VERSION or CONTRACT_VERSION in $contract at cli-v$newest" >&2
   exit 2

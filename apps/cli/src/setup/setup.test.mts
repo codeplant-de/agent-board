@@ -122,6 +122,15 @@ function fixture(overrides: Partial<SetupDeps> = {}) {
   const calls: string[] = [];
   const deps: SetupDeps = {
     unitDir,
+    launchd: {
+      home: '/Users/me',
+      agentsDir: join(dir, 'LaunchAgents'),
+      logDir: join(dir, 'logs'),
+      runDir: join(dir, 'run'),
+      uid: 501,
+      env: {},
+      loaded: async () => false,
+    },
     intake: true,
     platform: 'linux',
     which: (program) => `/usr/bin/${program}`,
@@ -226,15 +235,16 @@ test('an installed unit that differs is replaced by a copy, and the difference i
   }
 });
 
-test('setup needs Linux and flock, and says so', async () => {
-  const mac = fixture({ platform: 'darwin' });
+test('setup needs Linux or macOS, and flock or lockf, and says so', async () => {
+  const other = fixture({ platform: 'freebsd' });
   const noFlock = fixture({ which: () => undefined });
+  const noLockf = fixture({ platform: 'darwin', which: () => undefined });
   try {
-    await assert.rejects(setup(mac.deps, {}), /needs Linux; this is darwin/);
+    await assert.rejects(setup(other.deps, {}), /needs Linux with systemd or macOS; this is freebsd/);
     await assert.rejects(setup(noFlock.deps, {}), /flock is not on PATH/);
+    await assert.rejects(setup(noLockf.deps, {}), /lockf is not on PATH/);
   } finally {
-    rmSync(mac.dir, { recursive: true });
-    rmSync(noFlock.dir, { recursive: true });
+    for (const f of [other, noFlock, noLockf]) rmSync(f.dir, { recursive: true });
   }
 });
 
@@ -405,6 +415,132 @@ test('without an intake key, installed intake units are left alone and not enabl
         ),
       ),
     );
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+function macFixture(overrides: Partial<SetupDeps> = {}, loaded: (name: string) => boolean = () => false) {
+  const base = fixture({ platform: 'darwin', intake: false, ...overrides });
+  const calls = base.calls;
+  const deps: SetupDeps = { ...base.deps, launchd: { ...base.deps.launchd, loaded: async (name) => loaded(name) } };
+  return { ...base, deps, calls, agentsDir: deps.launchd.agentsDir };
+}
+
+test('on macOS setup writes the two agents and the directories, and prints the bootstrap lines instead of loading', async () => {
+  const { dir, printed, calls, deps, agentsDir } = macFixture();
+  try {
+    await setup(deps, {});
+    assert.deepEqual(readdirSync(agentsDir).sort(), [
+      'de.codeplant.agent-board.dispatch.plist',
+      'de.codeplant.agent-board.listen.plist',
+    ]);
+    for (const file of readdirSync(agentsDir)) {
+      assert.equal(lstatSync(join(agentsDir, file)).isSymbolicLink(), false);
+      assert.equal(lstatSync(join(agentsDir, file)).mode & 0o777, 0o644);
+    }
+    assert.equal(lstatSync(deps.launchd.runDir).mode & 0o777, 0o700);
+    assert.equal(lstatSync(deps.launchd.logDir).mode & 0o777, 0o700);
+    assert.deepEqual(calls, [], 'nothing is loaded without --enable');
+    assert.ok(printed.some((line) => line.startsWith('Load the agents when you are ready:')));
+    assert.ok(
+      printed.some((line) =>
+        line.includes(`launchctl bootstrap gui/501 '${join(agentsDir, 'de.codeplant.agent-board.listen.plist')}'`),
+      ),
+    );
+    assert.match(
+      readFileSync(join(agentsDir, 'de.codeplant.agent-board.dispatch.plist'), 'utf8'),
+      /<string>\/usr\/bin\/lockf<\/string>/,
+    );
+    printed.length = 0;
+    await setup(deps, {});
+    assert.equal(printed.filter((line) => line.startsWith('unchanged ')).length, 2);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('on macOS --enable boots each agent out (a failure is fine) and in again', async () => {
+  const { dir, calls, deps, agentsDir } = macFixture({
+    run: async (program, args) => {
+      calls.push([program, ...args].join(' '));
+      if (args[0] === 'bootout') throw new Error('not loaded');
+    },
+  });
+  try {
+    await setup(deps, { enable: true });
+    assert.deepEqual(calls, [
+      'launchctl bootout gui/501/de.codeplant.agent-board.dispatch',
+      `launchctl bootstrap gui/501 ${join(agentsDir, 'de.codeplant.agent-board.dispatch.plist')}`,
+      'launchctl bootout gui/501/de.codeplant.agent-board.listen',
+      `launchctl bootstrap gui/501 ${join(agentsDir, 'de.codeplant.agent-board.listen.plist')}`,
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('on macOS an agent that is loaded is loaded again only when its file changed', async () => {
+  const { dir, printed, calls, deps } = macFixture({}, () => true);
+  try {
+    await setup(deps, {});
+    assert.equal(calls.filter((call) => call.includes('bootstrap')).length, 2, 'new files: both reloaded');
+    assert.ok(printed.some((line) => line.includes('loaded already')));
+    calls.length = 0;
+    await setup(deps, {});
+    assert.deepEqual(calls, [], 'nothing changed, nothing restarts');
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('on macOS an intake key gets a note and no agent; --print and a foreign tree behave as on Linux', async () => {
+  const { dir, printed, calls, deps, agentsDir } = macFixture({ intake: true });
+  const foreign = macFixture({ treeProblem: () => 'this checkout is not the installed one' });
+  try {
+    await setup(deps, {});
+    assert.ok(printed.some((line) => line.includes('intake is not supported on macOS')));
+    assert.equal(readdirSync(agentsDir).length, 2);
+    printed.length = 0;
+    await setup(deps, { print: true });
+    assert.ok(printed.every((line) => !line.startsWith('wrote ')));
+    assert.ok(printed[0]?.startsWith(`# ${agentsDir}/`));
+    assert.deepEqual(calls, []);
+    await assert.rejects(setup(foreign.deps, {}), /add --force to install these agents anyway/);
+    assert.throws(() => readdirSync(foreign.agentsDir), 'nothing was written');
+  } finally {
+    rmSync(dir, { recursive: true });
+    rmSync(foreign.dir, { recursive: true });
+  }
+});
+
+test('board setup on macOS goes through the command line into a temp home', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-setup-mac-test-'));
+  const calls: string[] = [];
+  const options = {
+    env: {
+      HOME: join(dir, 'home'),
+      AGENT_BOARD_CONFIG_DIR: join(dir, 'cfg'),
+      AGENT_BOARD_STATE_DIR: join(dir, 'state'),
+      BOARD_INSTALL_DIR: join(dir, 'bin'),
+    },
+    writeOut: () => undefined,
+    platform: 'darwin',
+    which: (program: string) => `/usr/bin/${program}`,
+    runSystem: async (program: string, args: string[]) => void calls.push([program, ...args].join(' ')),
+    agentLoaded: async () => false,
+  };
+  try {
+    await runBoard(['setup', '--enable'], options);
+    assert.deepEqual(readdirSync(join(dir, 'home', 'Library', 'LaunchAgents')).length, 2);
+    assert.equal(calls.length, 4);
+    const plist = readFileSync(
+      join(dir, 'home', 'Library', 'LaunchAgents', 'de.codeplant.agent-board.dispatch.plist'),
+      'utf8',
+    );
+    assert.ok(plist.includes(`${join(dir, 'state', 'run')}/agent-board-dispatch.lock`));
+    assert.ok(plist.includes(`<key>AGENT_BOARD_STATE_DIR</key>`), 'the state directory the shell chose is passed on');
+    assert.ok(plist.includes(`${join(dir, 'state', 'logs')}/launchd.dispatch.log`));
   } finally {
     rmSync(dir, { recursive: true });
   }

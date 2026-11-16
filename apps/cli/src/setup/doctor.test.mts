@@ -5,10 +5,12 @@ import { DATA_KEY, KEYS, OWNER, SERVER_API, SERVER_HAS } from '../__tests__/help
 import { BackendError } from '../backend/backend.mts';
 import { formatResult, hasFailure, runChecks } from './doctor.mts';
 import type { CheckResult, DoctorDeps } from './doctor.mts';
+import { renderAgents } from './launchd.mts';
 import { renderUnits } from './setup.mts';
 
 const CONFIG_DIR = '/home/me/.config/agent-board';
 const UNIT_DIR = '/home/me/.config/systemd/user';
+const AGENTS_DIR = '/Users/me/Library/LaunchAgents';
 const TOKEN = 'abm_secretsecretsecret';
 const KEY_TEXT = encodeDataKey(DATA_KEY);
 
@@ -31,6 +33,13 @@ function machine(
     whichInUnits: (program) => `/usr/bin/${program}`,
     home: '/home/me',
     platform: 'linux',
+    launchd: {
+      agentsDir: AGENTS_DIR,
+      uid: 501,
+      runDir: '/home/me/.local/state/agent-board/run',
+      loaded: async () => true,
+      writable: () => true,
+    },
     systemctl: async () => 0,
     verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId, api: SERVER_API, features: SERVER_HAS }),
     ...overrides,
@@ -190,16 +199,16 @@ test('a dirs setting over a different old path is a warning that says the settin
   assert.match(warned[0]?.hint ?? '', /the directory setting is the one that counts/);
 });
 
-test('on macOS the worker checks are left out and one line says a worker needs Linux', async () => {
+test('on a system that is neither Linux nor macOS the worker checks are left out and one line says so', async () => {
   const results = await runChecks(
-    machine(GOOD, { platform: 'darwin', whichInUnits: () => undefined, exists: (path) => path in GOOD }),
+    machine(GOOD, { platform: 'freebsd', whichInUnits: () => undefined, exists: (path) => path in GOOD }),
   );
-  const worker = results.filter((result) => /^(tool|unit|worker)/.test(result.name));
+  const worker = results.filter((result) => /^(tool|unit|agent|worker)/.test(result.name));
   assert.deepEqual(
     worker.map((result) => [result.name, result.level]),
     [['worker', 'ok']],
   );
-  assert.match(worker[0]?.message ?? '', /needs Linux with systemd, and this is macOS/);
+  assert.match(worker[0]?.message ?? '', /needs Linux with systemd or macOS, and this is freebsd/);
   assert.equal(hasFailure(results), false);
 });
 
@@ -710,5 +719,139 @@ test('doctor fails a config with both intake.agent and the lists', async () => {
   assert.ok(
     both.some((r) => r.level === 'fail' && r.message.includes('both agent')),
     JSON.stringify(both),
+  );
+});
+
+const MAC_HOME = '/Users/me';
+const MAC_CONFIG = `${MAC_HOME}/.config/agent-board`;
+const RUN_DIR = `${MAC_HOME}/.local/state/agent-board/run`;
+const DISPATCH_PLIST = 'de.codeplant.agent-board.dispatch.plist';
+const LISTEN_PLIST = 'de.codeplant.agent-board.listen.plist';
+
+function agentFiles(): Record<string, { text: string }> {
+  return Object.fromEntries(
+    renderAgents({
+      home: MAC_HOME,
+      lockf: '/usr/bin/lockf',
+      lockDir: RUN_DIR,
+      logDir: `${MAC_HOME}/.local/state/agent-board/logs`,
+      command: (name) => ['/usr/local/bin/board', 'internal', name],
+    }).map((agent) => [`${AGENTS_DIR}/${agent.file}`, { text: agent.text }]),
+  );
+}
+
+const macLaunchd = (overrides: Partial<DoctorDeps['launchd']> = {}): DoctorDeps['launchd'] => ({
+  agentsDir: AGENTS_DIR,
+  uid: 501,
+  runDir: RUN_DIR,
+  loaded: async () => true,
+  writable: () => true,
+  ...overrides,
+});
+
+// A macOS machine with web.json, env and a config.json (without an intake key) in its home, and the programs of the agents.
+function mac(
+  agents: Record<string, { text: string }>,
+  config: object = { machine: 'mac' },
+  overrides: Partial<DoctorDeps> = {},
+): DoctorDeps {
+  const files: Record<string, { text: string; mode?: number }> = {
+    [`${MAC_CONFIG}/web.json`]: GOOD[`${CONFIG_DIR}/web.json`],
+    [`${MAC_CONFIG}/env`]: GOOD[`${CONFIG_DIR}/env`],
+    [`${MAC_CONFIG}/config.json`]: { text: JSON.stringify(config) },
+    ...agents,
+  };
+  const present = new Set([...Object.keys(files), MAC_CONFIG, '/usr/local/bin/board', '/usr/bin/lockf']);
+  return machine(files, {
+    platform: 'darwin',
+    home: MAC_HOME,
+    configDir: MAC_CONFIG,
+    launchd: macLaunchd(),
+    exists: (path) => present.has(path),
+    isDirectory: (path) => path === MAC_CONFIG,
+    ...overrides,
+  });
+}
+
+const macChecks = (results: CheckResult[]): CheckResult[] =>
+  results.filter((result) => /^(tool|launchd|de\.|run directory|folders)|plist/.test(result.name));
+
+test('a macOS worker machine in order passes every check', async () => {
+  const worker = macChecks(await runChecks(mac(agentFiles())));
+  assert.deepEqual(
+    worker.map((result) => result.name),
+    [
+      'tool claude',
+      'tool gh',
+      'tool lockf',
+      'run directory',
+      `launchd ${DISPATCH_PLIST}`,
+      `${DISPATCH_PLIST} command`,
+      'de.codeplant.agent-board.dispatch state',
+      `launchd ${LISTEN_PLIST}`,
+      `${LISTEN_PLIST} command`,
+      'de.codeplant.agent-board.listen state',
+    ],
+  );
+  assert.ok(
+    worker.every((result) => result.level === 'ok'),
+    worker.map(formatResult).join('\n'),
+  );
+});
+
+test('a macOS machine with no agent warns, and with one installed a missing tool or agent fails', async () => {
+  const none = levels(await runChecks(mac({}, undefined, { whichInUnits: () => undefined, which: () => undefined })));
+  assert.equal(none['tool lockf'], 'warn');
+  assert.equal(none['launchd agents'], 'warn');
+  const [dispatch] = Object.entries(agentFiles());
+  const listenerMissing = levels(
+    await runChecks(
+      mac(Object.fromEntries(dispatch ? [dispatch] : []), undefined, {
+        whichInUnits: (tool) => (tool === 'gh' ? undefined : `/usr/bin/${tool}`),
+      }),
+    ),
+  );
+  assert.equal(listenerMissing['tool gh'], 'fail');
+  assert.equal(listenerMissing[`launchd ${LISTEN_PLIST}`], 'warn', 'the listener only adds speed to the timer');
+});
+
+test('a macOS agent whose program is gone fails', async () => {
+  const base = mac(agentFiles());
+  const results = await runChecks({ ...base, exists: (path) => path !== '/usr/local/bin/board' && base.exists(path) });
+  assert.equal(levels(results)[`${DISPATCH_PLIST} command`], 'fail');
+  assert.equal(levels(results)[`${LISTEN_PLIST} command`], 'fail');
+});
+
+test('a macOS agent that launchd has not loaded warns with the bootstrap line; an unwritable run directory fails', async () => {
+  const results = await runChecks(
+    mac(agentFiles(), undefined, {
+      launchd: macLaunchd({ loaded: async (name) => name === 'listen', writable: () => false }),
+    }),
+  );
+  const state = results.find((result) => result.name === 'de.codeplant.agent-board.dispatch state');
+  assert.equal(state?.level, 'warn');
+  assert.equal(state?.hint, `launchctl bootstrap gui/501 '${AGENTS_DIR}/${DISPATCH_PLIST}'`);
+  assert.equal(levels(results)['de.codeplant.agent-board.listen state'], 'ok');
+  assert.equal(levels(results)['run directory'], 'fail');
+});
+
+test('on macOS an intake key and checkouts under the protected folders are warned about', async () => {
+  const config = {
+    machine: 'mac',
+    intake: {},
+    defaultCwd: `${MAC_HOME}/code`,
+    dirs: { [`${MAC_HOME}/Documents/work`]: {}, [`${MAC_HOME}/Library/Mobile Documents/x`]: {} },
+    repos: { 'acme/app': `${MAC_HOME}/Downloads/app` },
+    lanes: { desk: { skills: ['*'], slots: 1, cwd: `${MAC_HOME}/Desktop` } },
+  };
+  const results = await runChecks(mac(agentFiles(), config));
+  const folders = results.filter((result) => result.name === 'folders');
+  assert.equal(folders.length, 4, folders.map(formatResult).join('\n'));
+  assert.ok(folders.every((result) => result.level === 'warn'));
+  assert.equal(levels(results)['launchd intake'], 'warn');
+  const fine = await runChecks(mac(agentFiles()));
+  assert.equal(
+    fine.some((result) => result.name === 'folders' || result.name === 'launchd intake'),
+    false,
   );
 });
