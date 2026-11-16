@@ -31,6 +31,7 @@ import { modelLabel } from '../lib/model';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago, stamp } from '../lib/time';
 import { errorMessage, POLL_MS, useTRPC } from '../lib/trpc';
+import { unlistedMachine } from '../lib/workingDirectories';
 
 const UNREADABLE_LABEL = (field: UnreadableField): string =>
   field === 'input' ? 'prompt' : field === 'workdir' ? 'directory' : field;
@@ -46,6 +47,7 @@ function TaskView({ id }: { id: string }) {
   const trpc = useTRPC();
   const query = useQuery({ ...trpc.tasks.get.queryOptions({ id }), refetchInterval: POLL_MS });
   const setPriority = useMutation(trpc.tasks.setPriority.mutationOptions());
+  const machines = useQuery(trpc.machines.list.queryOptions());
   const bottom = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useSearchParams();
   const transcriptOpen = search.get('transcript') !== null;
@@ -74,6 +76,7 @@ function TaskView({ id }: { id: string }) {
 
   const { task, thread, followUps, parent } = query.data;
   // The prompt's PR first; the agent's reported one too when it is another PR. The state belongs to `statePrOf`.
+  const unlisted = unlistedMachine(task, machines.data ?? []);
   const prs = [...new Set([prOf(task), task.pr].filter((url): url is string => url != null))];
 
   return (
@@ -120,6 +123,7 @@ function TaskView({ id }: { id: string }) {
             >
               {task.machine ? `${task.machine}:` : ''}
               {task.workdir}
+              {unlisted !== undefined && ` · not listed on ${unlisted}`}
             </Text>
           )}
           <Group gap="xs">

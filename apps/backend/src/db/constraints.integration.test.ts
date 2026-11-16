@@ -96,14 +96,15 @@ describe('what the application role can store afterwards', () => {
       title?: string;
       input?: string;
       workdir?: string | null;
+      homeWorkdir?: string | null;
       pr?: string | null;
       dedupeKey?: string | null;
       head?: string | null;
     } = {},
   ) =>
     tx.execute(sql`
-      insert into task (id, title, input, workdir, pr, dedupe_key, head, position)
-      values ('t1', ${o.title ?? ENVELOPE}, ${o.input ?? ENVELOPE}, ${o.workdir ?? null}, ${o.pr ?? null}, ${o.dedupeKey ?? null}, ${o.head ?? null}, 0)`);
+      insert into task (id, title, input, workdir, home_workdir, pr, dedupe_key, head, position)
+      values ('t1', ${o.title ?? ENVELOPE}, ${o.input ?? ENVELOPE}, ${o.workdir ?? null}, ${o.homeWorkdir ?? null}, ${o.pr ?? null}, ${o.dedupeKey ?? null}, ${o.head ?? null}, 0)`);
   const schedule = (tx: Tx, o: { title?: string; input?: string; workdir?: string | null } = {}) =>
     tx.execute(sql`
       insert into schedule (id, title, input, workdir, every_ms, anchor_at)
@@ -145,6 +146,7 @@ describe('what the application role can store afterwards', () => {
     ['task_input_sealed', 'a plain prompt', (tx) => task(tx, { input: 'plain' })],
     ['task_input_sealed', 'an empty prompt', (tx) => task(tx, { input: '' })],
     ['task_workdir_sealed', 'a plain directory', (tx) => task(tx, { workdir: '/home/a' })],
+    ['task_home_workdir_sealed', 'a plain home directory', (tx) => task(tx, { homeWorkdir: '/home/a' })],
     ['task_pr_sealed', 'a plain PR URL', (tx) => task(tx, { pr: 'https://github.com/o/r/pull/1' })],
     ['task_dedupe_key_blind', 'a plain dedupe key', (tx) => task(tx, { dedupeKey: 'https://github.com/o/r/pull/1' })],
     ['task_head_blind', 'a plain head', (tx) => task(tx, { head: 'abcdef1' })],
@@ -200,7 +202,13 @@ describe('what the application role can store afterwards', () => {
 
   it('accepts sealed values, null where a column may be empty, and the server events in plain text', async () => {
     await as(async (tx) => {
-      await task(tx, { workdir: ENVELOPE, pr: ENVELOPE, dedupeKey: BLIND_INDEX, head: BLIND_INDEX });
+      await task(tx, {
+        workdir: ENVELOPE,
+        homeWorkdir: ENVELOPE,
+        pr: ENVELOPE,
+        dedupeKey: BLIND_INDEX,
+        head: BLIND_INDEX,
+      });
       await schedule(tx, { workdir: ENVELOPE });
       await machine(tx, { dirs: ENVELOPE, dirsIndex: BLIND_INDEX });
     });

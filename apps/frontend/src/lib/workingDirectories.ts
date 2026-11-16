@@ -44,3 +44,25 @@ export function directoryChoices(machines: readonly Machine[], now: number): Dir
     unreadable: machines.filter(({ dirsUnreadable }) => dirsUnreadable).map(({ shown }) => shown),
   };
 }
+
+const segments = (path: string): string[] => path.split('/').filter((segment) => segment !== '');
+
+const isWithin = (path: string, dir: string): boolean => {
+  const below = segments(path);
+  return segments(dir).every((segment, index) => below[index] === segment);
+};
+
+/**
+ * The machine a task's directory is not listed on: it has a readable directory list and `workdir` is neither a listed
+ * directory nor below one. Advice only: the browser cannot resolve symlinks, which the worker does before it checks.
+ */
+export function unlistedMachine(
+  task: { machine: string | null; workdir: string | null },
+  machines: readonly Machine[],
+): string | undefined {
+  if (task.machine === null || task.workdir === null) return undefined;
+  const { workdir } = task;
+  const found = machines.find(({ name }) => name === task.machine);
+  if (found?.dirs == null || found.dirs.length === 0) return undefined;
+  return found.dirs.some((dir) => isWithin(workdir, dir)) ? undefined : found.shown;
+}
