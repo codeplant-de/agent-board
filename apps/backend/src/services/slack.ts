@@ -1,3 +1,4 @@
+import { newTaskId } from '@agent-board/shared';
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Db, DbOrTx } from '../db/client';
@@ -5,7 +6,6 @@ import { withOwner } from '../db/scope';
 import { slackInbox, slackLinks } from '../db/schema';
 import { AppError } from './errors';
 import { daysBefore, INBOX_RETENTION_DAYS } from './retention';
-import { newId } from './taskRows';
 
 export const LINK_CODE_MINUTES = 15;
 
@@ -87,7 +87,7 @@ export async function ownerOf(db: Db, identity: SlackIdentity): Promise<string |
 }
 
 export async function addInboxItem(db: Db, owner: string, item: { text: string; slackUserId: string }): Promise<void> {
-  await withOwner(db, owner, (tx) => tx.insert(slackInbox).values({ id: newId(12), ...item }));
+  await withOwner(db, owner, (tx) => tx.insert(slackInbox).values({ id: newTaskId(), ...item }));
 }
 
 export async function listInbox(db: DbOrTx) {
