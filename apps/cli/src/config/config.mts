@@ -3,9 +3,11 @@ import { homedir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   DEFAULT_PRIORITY,
+  DIR_LABEL_RULE,
   isPriority,
   isModelName,
   isRecord,
+  isSafeDirLabel,
   isSafeMachineName,
   MACHINE_NAME_RULE,
   isSafeWorkdir,
@@ -67,10 +69,22 @@ export const AUTO_UPDATES = ['incompatible', 'always', 'never'] as const;
 export type AutoUpdate = (typeof AUTO_UPDATES)[number];
 const isAutoUpdate = (value: unknown): value is AutoUpdate => AUTO_UPDATES.some((mode) => mode === value);
 
-// A directory workers may run in, as listed in config.json under `dirs`. An object, so later per-directory settings fit.
+// A directory workers may run in, as listed in config.json under `dirs`, with its optional settings.
 export interface DirEntry {
   path: string;
+  // Shown with the path in the New task form; sent to the board.
+  label?: string;
+  // `owner/name`: the directory is the checkout of that repository, like a `repos` entry.
+  repo?: string;
+  // Tasks without a directory of their own run here, like `defaultCwd`.
+  default?: true;
+  // A lane of this config: its tasks without a directory run here, like the lane's `cwd`.
+  lane?: string;
 }
+
+// The settings of a `dirs` entry, in the order the CLI writes and lists them.
+export const DIR_SETTINGS = ['label', 'repo', 'default', 'lane'] as const;
+export type DirSetting = (typeof DIR_SETTINGS)[number];
 
 export const MAX_DIRS = 200;
 
@@ -138,27 +152,75 @@ export function dirKeyPath(key: string): string | undefined {
   return isSafeWorkdir(expanded) ? resolve(expanded) : undefined;
 }
 
-function parseDirs(raw: unknown): DirEntry[] | undefined {
+const REPO_PATTERN = /^[^/\s]+\/[^/\s]+$/;
+
+/** What is wrong with `value` as the setting `key` of a directory, or undefined when it is fine. `lanes` are the names the config has. */
+export function dirSettingProblem(key: DirSetting, value: unknown, lanes: readonly string[]): string | undefined {
+  switch (key) {
+    case 'label':
+      return typeof value === 'string' && isSafeDirLabel(value) ? undefined : `must be a label of ${DIR_LABEL_RULE}`;
+    case 'repo':
+      return typeof value === 'string' && REPO_PATTERN.test(value) ? undefined : 'must look like owner/name';
+    case 'default':
+      return value === true ? undefined : 'must be true (leave the key out for no default)';
+    case 'lane':
+      return typeof value === 'string' && lanes.includes(value)
+        ? undefined
+        : `must name a lane of this config (${lanes.join(', ')})`;
+  }
+}
+
+const isDirSetting = (key: string): key is DirSetting => DIR_SETTINGS.some((setting) => setting === key);
+
+function parseDirs(raw: unknown, lanes: readonly string[]): DirEntry[] | undefined {
   if (raw === undefined) return undefined;
   if (!isRecord(raw)) throw new ConfigError('config: dirs must be an object keyed by directory');
   if (Object.keys(raw).length > MAX_DIRS) throw new ConfigError(`config: dirs lists more than ${MAX_DIRS} directories`);
   const seen = new Map<string, string>();
-  return Object.entries(raw).map(([key, settings]): DirEntry => {
+  const entries = Object.entries(raw).map(([key, settings]): DirEntry => {
     const shown = JSON.stringify(key.slice(0, 100));
     const path = dirKeyPath(key);
     if (path === undefined) throw new ConfigError(`config: dirs key ${shown} must be an absolute path (or ~/...)`);
     if (!isRecord(settings)) throw new ConfigError(`config: dirs[${shown}] must be an object`);
-    const [unknown] = Object.keys(settings);
+    const unknown = Object.keys(settings).find((name) => !isDirSetting(name));
     if (unknown !== undefined)
-      throw new ConfigError(`config: dirs[${shown}] has no setting "${unknown.slice(0, 40)}" (it takes none yet)`);
+      throw new ConfigError(
+        `config: dirs[${shown}] has no setting "${unknown.slice(0, 40)}" (it takes ${DIR_SETTINGS.join(', ')})`,
+      );
     const other = seen.get(path);
     if (other !== undefined)
       throw new ConfigError(
         `config: dirs lists ${shown} and ${JSON.stringify(other.slice(0, 100))}, the same directory`,
       );
     seen.set(path, key);
-    return { path };
+    const entry: DirEntry = { path };
+    for (const setting of DIR_SETTINGS) {
+      const value = settings[setting];
+      if (value === undefined) continue;
+      const problem = dirSettingProblem(setting, typeof value === 'string' ? value.trim() : value, lanes);
+      if (problem !== undefined) throw new ConfigError(`config: dirs[${shown}].${setting} ${problem}`);
+      if (setting === 'default') entry.default = true;
+      else entry[setting] = String(value).trim();
+    }
+    return entry;
   });
+  for (const setting of ['repo', 'default', 'lane'] as const) {
+    const owners = new Map<string, DirEntry>();
+    for (const entry of entries) {
+      const value = entry[setting];
+      if (value === undefined) continue;
+      const name = String(value);
+      const first = owners.get(name);
+      if (first !== undefined)
+        throw new ConfigError(
+          setting === 'default'
+            ? `config: dirs[${JSON.stringify(first.path)}] and dirs[${JSON.stringify(entry.path)}] are both the default directory; one directory has it`
+            : `config: dirs[${JSON.stringify(first.path)}] and dirs[${JSON.stringify(entry.path)}] both set ${setting} "${name.slice(0, 80)}"; one directory has it`,
+        );
+      owners.set(name, entry);
+    }
+  }
+  return entries;
 }
 
 function positiveInt(obj: Record<string, unknown>, key: string, where: string, fallback: number): number {
@@ -330,8 +392,7 @@ export function parseConfig(raw: unknown): Config {
   if (!isRecord(rawRepos)) throw new ConfigError('config: repos must be an object');
   const repos: Record<string, string> = {};
   for (const [repo, dir] of Object.entries(rawRepos)) {
-    if (!/^[^/\s]+\/[^/\s]+$/.test(repo))
-      throw new ConfigError(`config: repos key "${repo}" must look like owner/name`);
+    if (!REPO_PATTERN.test(repo)) throw new ConfigError(`config: repos key "${repo}" must look like owner/name`);
     if (typeof dir !== 'string' || dir === '') throw new ConfigError(`config: repos.${repo} must be a directory`);
     repos[repo] = expandHome(dir);
   }
@@ -347,11 +408,21 @@ export function parseConfig(raw: unknown): Config {
   }
   const autoUpdate = 'autoUpdate' in raw ? raw['autoUpdate'] : 'incompatible';
   if (!isAutoUpdate(autoUpdate)) throw new ConfigError(`config: autoUpdate must be one of ${AUTO_UPDATES.join(', ')}`);
-  const dirs = parseDirs(raw['dirs']);
+  const lanes = parseLanes(raw['lanes']);
+  const dirs = parseDirs(
+    raw['dirs'],
+    lanes.map(({ name }) => name),
+  );
+  // A setting of a directory wins over the old key it stands for, which every other module goes on reading.
+  for (const { path, repo } of dirs ?? []) if (repo !== undefined) repos[repo] = path;
+  const defaultDir = dirs?.find((entry) => entry.default === true);
   return {
     machine,
-    lanes: parseLanes(raw['lanes']),
-    defaultCwd: expandHome(defaultCwd),
+    lanes: lanes.map((lane) => {
+      const dir = dirs?.find((entry) => entry.lane === lane.name);
+      return dir === undefined ? lane : { ...lane, cwd: dir.path };
+    }),
+    defaultCwd: defaultDir?.path ?? expandHome(defaultCwd),
     pauseAfterMinutes: positiveInt(raw, 'pauseAfterMinutes', '', 5),
     inactivityMinutes: positiveInt(raw, 'inactivityMinutes', '', 15),
     maxRunHours: positiveInt(raw, 'maxRunHours', '', 6),
@@ -416,8 +487,42 @@ function unknownKeys(obj: Record<string, unknown>, known: readonly string[], whe
     });
 }
 
+const OVERRIDDEN = ' is overridden by ';
+
+export const isOverrideWarning = (warning: string): boolean => warning.includes(OVERRIDDEN);
+
+// A setting of a `dirs` entry that replaces a different path under the old key it stands for: repos, defaultCwd, a lane's cwd.
+function overrideWarnings(raw: Record<string, unknown>): string[] {
+  const dirs = raw['dirs'];
+  if (!isRecord(dirs)) return [];
+  const repos = isRecord(raw['repos']) ? raw['repos'] : {};
+  const lanes = isRecord(raw['lanes']) ? raw['lanes'] : {};
+  return Object.entries(dirs).flatMap(([key, settings]) => {
+    const path = dirKeyPath(key);
+    if (path === undefined || !isRecord(settings)) return [];
+    const shown = JSON.stringify(key.slice(0, 80));
+    const elsewhere = (old: unknown): boolean =>
+      typeof old === 'string' && old !== '' && resolve(expandHome(old)) !== path;
+    const lane = settings['lane'];
+    const laneEntry = typeof lane === 'string' ? lanes[lane] : undefined;
+    const repo = settings['repo'];
+    return [
+      ...(typeof repo === 'string' && elsewhere(repos[repo])
+        ? [`repos.${repo.slice(0, 80)}${OVERRIDDEN}dirs[${shown}].repo`]
+        : []),
+      ...(settings['default'] === true && elsewhere(raw['defaultCwd'])
+        ? [`defaultCwd${OVERRIDDEN}dirs[${shown}].default`]
+        : []),
+      ...(typeof lane === 'string' && isRecord(laneEntry) && elsewhere(laneEntry['cwd'])
+        ? [`lanes.${lane.slice(0, 40)}.cwd${OVERRIDDEN}dirs[${shown}].lane`]
+        : []),
+    ];
+  });
+}
+
 // The keys of a config parseConfig ignores, one line each. Not an error: every machine reads this file, and a key a newer
-// or older CLI dropped must not stop its workers; doctor and dispatch print these instead.
+// or older CLI dropped must not stop its workers; doctor and dispatch print these instead. A `dirs` setting that overrides a
+// different path under an old key is listed too.
 export function configWarnings(raw: unknown): string[] {
   if (!isRecord(raw)) return [];
   const warnings = unknownKeys(raw, TOP_KEYS, '');
@@ -427,6 +532,7 @@ export function configWarnings(raw: unknown): string[] {
       if (isRecord(entry)) warnings.push(...unknownKeys(entry, LANE_KEYS, `lanes.${name.slice(0, 40)}.`));
   const intake = raw['intake'];
   if (isRecord(intake)) warnings.push(...unknownKeys(intake, INTAKE_KEYS, 'intake.'));
+  warnings.push(...overrideWarnings(raw));
   return warnings;
 }
 

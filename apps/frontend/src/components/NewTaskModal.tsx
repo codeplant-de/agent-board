@@ -38,13 +38,11 @@ interface Props {
   onCreated?: () => void;
 }
 
-function directoryDescription(repeating: boolean, noList: boolean, unreadable: string[]): ReactNode {
+function directoryDescription(noList: boolean, unreadable: string[]): ReactNode {
   const unreadableNote =
     unreadable.length === 0
       ? null
       : `The directory ${unreadable.length === 1 ? 'list' : 'lists'} of ${unreadable.join(', ')} could not be read.`;
-  if (repeating)
-    return 'A repeating schedule runs in the default directory of whichever machine takes it; it cannot be pinned here yet.';
   if (noList)
     return (
       <>
@@ -79,8 +77,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
     () => directoryChoices(machines.data ?? [], now),
     [machines.data, now],
   );
-  const repeating = when === 'repeat';
-  const place = repeating ? undefined : choices.find(({ value }) => value === directory);
+  const place = choices.find(({ value }) => value === directory);
   const startsLater = when === 'later' || when === 'repeat';
   const atError = startsLater && at !== '' && !(start.getTime() > now) ? 'Pick a time in the future' : undefined;
   const timesError =
@@ -149,11 +146,11 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           searchable
           clearable
           data={groups}
-          value={repeating ? null : directory}
+          value={directory}
           onChange={setDirectory}
-          disabled={repeating || machines.isPending || machines.isError || choices.length === 0}
+          disabled={machines.isPending || machines.isError || choices.length === 0}
           error={machines.isError ? errorMessage(machines.error) : undefined}
-          description={directoryDescription(repeating, choices.length === 0 && !machines.isPending, unreadable)}
+          description={directoryDescription(choices.length === 0 && !machines.isPending, unreadable)}
         />
         <TextInput
           label="Title"

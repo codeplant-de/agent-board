@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { MachineDir } from '@agent-board/shared';
 import type { Machine } from '../lib/opening';
 import { NewTaskModal } from './NewTaskModal';
 
@@ -144,11 +145,11 @@ describe('NewTaskModal model', () => {
 });
 
 const HOUR = 3_600_000;
-const machine = (name: string, dirs: string[] | null, extra: Partial<Machine> = {}): Machine =>
+const machine = (name: string, dirs: (string | MachineDir)[] | null, extra: Partial<Machine> = {}): Machine =>
   ({
     name,
     shown: name,
-    dirs,
+    dirs: dirs?.map((dir) => (typeof dir === 'string' ? { path: dir } : dir)) ?? null,
     dirsUnreadable: false,
     revokedAt: null,
     lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
@@ -194,6 +195,31 @@ describe('NewTaskModal working directory', () => {
     await userEvent.click(createButton());
     await waitFor(() => expect(create).toHaveBeenCalled());
     expect(sent()).toMatchObject({ place: { machine: 'laptop', workdir: '/work/b' } });
+  });
+
+  it('shows a label with its path, finds a directory by either, and still sends the path', async () => {
+    listed.machines = [machine('laptop', [{ path: '/work/a', label: 'Board' }, '/work/b'])];
+    await open();
+    await waitFor(() => expect(directory()).toBeEnabled());
+    await userEvent.click(directory());
+    expect(await screen.findByRole('option', { name: 'Board — /work/a', hidden: true })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '/work/b', hidden: true })).toBeInTheDocument();
+    await userEvent.type(directory(), 'boar');
+    await waitFor(() =>
+      expect(screen.queryByRole('option', { name: '/work/b', hidden: true })).not.toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getByRole('option', { name: 'Board — /work/a', hidden: true }));
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ place: { machine: 'laptop', workdir: '/work/a' } });
+  });
+
+  it('renders a label as plain text', async () => {
+    listed.machines = [machine('laptop', [{ path: '/work/a', label: '<b>bold</b>' }])];
+    await open();
+    await waitFor(() => expect(directory()).toBeEnabled());
+    await userEvent.click(directory());
+    expect(await screen.findByRole('option', { name: '<b>bold</b> — /work/a', hidden: true })).toBeInTheDocument();
   });
 
   it('sends no place when the field stays empty', async () => {
@@ -251,18 +277,17 @@ describe('NewTaskModal working directory', () => {
     expect(directory()).toBeEnabled();
   });
 
-  it('is disabled and sends no place for a repeating schedule', async () => {
+  it('stays enabled and sends the place for a repeating schedule', async () => {
     listed.machines = [machine('laptop', ['/work/a'])];
     await open();
     await waitFor(() => expect(directory()).toBeEnabled());
     await pick('/work/a');
     await userEvent.click(screen.getByRole('combobox', { name: 'When' }));
     await userEvent.click(await screen.findByRole('option', { name: 'Repeating', hidden: true }));
-    expect(directory()).toBeDisabled();
-    expect(screen.getByText(/cannot be pinned here yet/, { selector: 'p' })).toBeInTheDocument();
+    expect(directory()).toBeEnabled();
     await userEvent.type(screen.getByLabelText(/Repeat/), '2h');
     await userEvent.click(createButton());
     await waitFor(() => expect(create).toHaveBeenCalled());
-    expect(sent()).not.toHaveProperty('place');
+    expect(sent()).toMatchObject({ when: { every: 7_200_000 }, place: { machine: 'laptop', workdir: '/work/a' } });
   });
 });

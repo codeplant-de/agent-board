@@ -25,6 +25,7 @@ import { changeDirs, coveringDir, dirsToSend, isAllowedDir, isDirectory, syncDir
 import { CONFIG, fakeBackend, linkTo, schedule, task } from '../__tests__/helpers/fakes.mts';
 
 const dir = (path: string) => ({ path });
+const record = (key: string) => ({ key, settings: {} });
 
 test('coveringDir finds an equal entry, a parent, never a sibling that shares a prefix, and prefers the deepest', () => {
   const dirs = [dir('/a/b'), dir('/x'), dir('/a/b/c')];
@@ -129,7 +130,7 @@ test('the writer changes only the dirs key: other keys keep their values and ord
   });
   chmodSync(fx.configFile, 0o640);
   const before = fx.config();
-  changeDirs(fx.configFile, (keys) => [...keys.map(({ key }) => key), '/srv/one']);
+  changeDirs(fx.configFile, (keys) => [...keys, record('/srv/one')]);
   const after = fx.config();
   assert.deepEqual(Object.keys(after), [...Object.keys(before), 'dirs']);
   for (const [key, value] of Object.entries(before)) assert.deepEqual(after[key], value, key);
@@ -138,7 +139,7 @@ test('the writer changes only the dirs key: other keys keep their values and ord
   assert.ok(fx.text().endsWith('}\n') && fx.text().includes('\n  "machine": "here"'));
   assert.deepEqual(readdirSync(join(fx.root, 'config')), ['config.json']);
 
-  changeDirs(fx.configFile, (keys) => [...keys.map(({ key }) => key), '~/two']);
+  changeDirs(fx.configFile, (keys) => [...keys, record('~/two')]);
   assert.deepEqual(Object.keys(fx.config()), [...Object.keys(before), 'dirs'], 'a second change keeps dirs in place');
   assert.deepEqual(Object.keys(fx.config()['dirs'] as object), ['/srv/one', '~/two']);
 });
@@ -152,11 +153,11 @@ test('the writer refuses a missing file, a file that is not JSON and a config th
   assert.deepEqual(readdirSync(join(missing.root, 'config')), []);
 
   const broken = fixture(context, '{ "machine": ');
-  assert.throws(() => changeDirs(broken.configFile, () => ['/x']), /not valid JSON/);
+  assert.throws(() => changeDirs(broken.configFile, () => [record('/x')]), /not valid JSON/);
   assert.equal(broken.text(), '{ "machine": ');
 
   const invalid = fixture(context, JSON.stringify({ machine: 'here', lanes: {} }));
-  assert.throws(() => changeDirs(invalid.configFile, () => ['/x']), /lanes/);
+  assert.throws(() => changeDirs(invalid.configFile, () => [record('/x')]), /lanes/);
   assert.equal(invalid.text(), JSON.stringify({ machine: 'here', lanes: {} }));
   assert.deepEqual(readdirSync(join(invalid.root, 'config')), ['config.json']);
 });
@@ -167,7 +168,7 @@ test('the writer removes its temp file when the rename fails, and writes through
   writeFileSync(target, fx.text());
   rmSync(fx.configFile);
   symlinkSync(target, fx.configFile);
-  changeDirs(fx.configFile, () => ['/srv/x']);
+  changeDirs(fx.configFile, () => [record('/srv/x')]);
   assert.ok(statSync(fx.configFile).isFile());
   assert.equal(JSON.stringify(JSON.parse(readFileSync(target, 'utf8')).dirs), '{"/srv/x":{}}');
   assert.deepEqual(readdirSync(join(fx.root, 'config')), ['config.json']);
@@ -194,7 +195,7 @@ test('dirs lists the entries, marks a missing directory, and says how to start w
 
   const fx = fixture(context, { dirs: { [fixture(context, {}).root]: {} } });
   const gone = join(fx.root, 'gone');
-  changeDirs(fx.configFile, (keys) => [...keys.map(({ key }) => key), gone]);
+  changeDirs(fx.configFile, (keys) => [...keys, record(gone)]);
   const run = runner(fx);
   await run.go(['dirs', 'list']);
   const lines = run.printed;
@@ -356,11 +357,7 @@ test('add --from-config with nothing to add does not create the key', async (con
 function listDirs(fx: Fixture, run: Run, listed: string[]): void {
   writeFileSync(
     fx.configFile,
-    JSON.stringify({
-      machine: 'here',
-      defaultCwd: fx.home,
-      dirs: Object.fromEntries(listed.map((path) => [path, {}])),
-    }),
+    JSON.stringify({ ...fx.config(), dirs: Object.fromEntries(listed.map((path) => [path, {}])) }),
   );
   run.backend.tasks = [];
 }
@@ -690,4 +687,208 @@ test('board dirs list asks nothing of the board', async (context) => {
   run.backend.boardDirs.failure = new BackendError('the board must not be asked');
   await run.go(['dirs', 'list']);
   assert.match(said(run), /dirs \(1\), enforced/);
+});
+
+const settingsOf = (fx: Fixture): Record<string, unknown> => (fx.config()['dirs'] ?? {}) as Record<string, unknown>;
+
+test('add and rm keep the settings of the other entries, and their order', async (context) => {
+  const fx = fixture(context, {
+    lanes: { reviews: { skills: ['review-pr'], slots: 1 } },
+    dirs: {
+      '/srv/a': { repo: 'acme/a', label: 'A', default: true },
+      '/srv/b': { lane: 'reviews' },
+      '/srv/c': { label: 'C' },
+    },
+  });
+  const added = fx.make('added');
+  const run = runner(fx);
+  await run.go(['dirs', 'add', added]);
+  assert.deepEqual(settingsOf(fx), {
+    '/srv/a': { repo: 'acme/a', label: 'A', default: true },
+    '/srv/b': { lane: 'reviews' },
+    '/srv/c': { label: 'C' },
+    [added]: {},
+  });
+  assert.deepEqual(Object.keys(settingsOf(fx)['/srv/a'] as object), ['repo', 'label', 'default']);
+  await run.go(['dirs', 'rm', '--force', '/srv/b']);
+  assert.deepEqual(settingsOf(fx), {
+    '/srv/a': { repo: 'acme/a', label: 'A', default: true },
+    '/srv/c': { label: 'C' },
+    [added]: {},
+  });
+  const other = fx.make('other');
+  await run.go(['dirs', 'add', other, '--dry-run']);
+  assert.ok(!(other in settingsOf(fx)));
+});
+
+test('set writes one setting of one listed directory, and says so when it is there already', async (context) => {
+  const fx = fixture(context, {});
+  const a = fx.make('a');
+  const b = fx.make('b');
+  const run = runner(fx, a);
+  listDirs(fx, run, [a, b]);
+  await run.go(['dirs', 'set', 'label', '  Board  ']);
+  assert.deepEqual(settingsOf(fx), { [a]: { label: 'Board' }, [b]: {} });
+  assert.match(said(run), /set label of /);
+  await run.go(['dirs', 'set', 'repo', 'acme/board', b]);
+  await run.go(['dirs', 'set', 'label', 'Renamed']);
+  assert.deepEqual(settingsOf(fx), { [a]: { label: 'Renamed' }, [b]: { repo: 'acme/board' } });
+  const before = fx.text();
+  run.printed.length = 0;
+  await run.go(['dirs', 'set', 'label', 'Renamed']);
+  assert.equal(fx.text(), before);
+  assert.match(said(run), /already has label=Renamed/);
+  assert.deepEqual(written(run.backend), [`dirs here: ${a}=Board,${b}`, `dirs here: ${a}=Renamed,${b}`]);
+});
+
+test('set default and set lane are refused on a second directory, naming the first, and lane must exist', async (context) => {
+  const fx = fixture(context, {
+    lanes: { reviews: { skills: ['review-pr'], slots: 1 }, general: { skills: ['*'], slots: 1 } },
+  });
+  const a = fx.make('a');
+  const b = fx.make('b');
+  const run = runner(fx);
+  listDirs(fx, run, [a, b]);
+  await run.go(['dirs', 'set', 'default', 'true', a]);
+  await run.go(['dirs', 'set', 'lane', 'reviews', a]);
+  await run.go(['dirs', 'set', 'repo', 'o/n', a]);
+  await assert.rejects(
+    run.go(['dirs', 'set', 'default', 'true', b]),
+    (error) => error instanceof UsageError && error.message.includes(`${a} has default already`),
+  );
+  await assert.rejects(
+    run.go(['dirs', 'set', 'lane', 'reviews', b]),
+    /has lane reviews already; "board dirs unset lane/,
+  );
+  await assert.rejects(run.go(['dirs', 'set', 'repo', 'o/n', b]), /has repo o\/n already/);
+  await assert.rejects(
+    run.go(['dirs', 'set', 'lane', 'nope', b]),
+    /lane must name a lane of this config \(reviews, general\)/,
+  );
+  await run.go(['dirs', 'set', 'lane', 'general', b]);
+  assert.deepEqual(settingsOf(fx), { [a]: { default: true, lane: 'reviews', repo: 'o/n' }, [b]: { lane: 'general' } });
+});
+
+test('set refuses a bad key, value or path, and an unlisted directory or no list', async (context) => {
+  const fx = fixture(context, {});
+  const a = fx.make('a');
+  const run = runner(fx, a);
+  await assert.rejects(run.go(['dirs', 'set', 'label', 'x']), /no directories are listed/);
+  listDirs(fx, run, [a]);
+  const refused: [string[], RegExp][] = [
+    [['dirs', 'set', 'mode', 'rw'], /not a directory setting: label, repo, default, lane/],
+    [['dirs', 'set', 'label'], /takes a setting, its value/],
+    [['dirs', 'set', 'default', 'false'], /default takes true/],
+    [['dirs', 'set', 'default'], /takes a setting, its value/],
+    [['dirs', 'set', 'label', ''], /label must be a label of 1 to 64/],
+    [['dirs', 'set', 'label', 'x'.repeat(65)], /label must be a label/],
+    [['dirs', 'set', 'repo', 'nope'], /repo must look like owner\/name/],
+    [['dirs', 'set', 'label', 'x', fx.root], /is not listed; "board dirs add" lists a directory/],
+    [['dirs', 'set', 'label', 'x', a, a], /takes one path/],
+    [['dirs', 'unset'], /takes a setting/],
+    [['dirs', 'unset', 'label', a, a], /takes one path/],
+    [['dirs', 'unset', 'mode'], /not a directory setting/],
+  ];
+  for (const [argv, message] of refused) await assert.rejects(run.go(argv), message, argv.join(' '));
+  assert.deepEqual(settingsOf(fx), { [a]: {} });
+});
+
+test('unset removes one setting, says so when it is not set, and leaves the others', async (context) => {
+  const fx = fixture(context, {});
+  const a = fx.make('a');
+  const run = runner(fx, a);
+  listDirs(fx, run, [a]);
+  await run.go(['dirs', 'set', 'label', 'A']);
+  await run.go(['dirs', 'set', 'repo', 'o/n']);
+  await run.go(['dirs', 'unset', 'label']);
+  assert.deepEqual(settingsOf(fx), { [a]: { repo: 'o/n' } });
+  const before = fx.text();
+  run.printed.length = 0;
+  await run.go(['dirs', 'unset', 'label']);
+  assert.equal(fx.text(), before);
+  assert.match(said(run), /has no label/);
+  await run.go(['dirs', 'unset', 'repo', a]);
+  assert.deepEqual(settingsOf(fx), { [a]: {} });
+  assert.equal(written(run.backend).at(-1), `dirs here: ${a}`);
+  await assert.rejects(runner(fixture(context, {})).go(['dirs', 'unset', 'label']), /no directories are listed/);
+});
+
+test('set and unset refuse inside a board run, and a dry run writes and sends nothing', async (context) => {
+  const fx = fixture(context, {});
+  const a = fx.make('a');
+  const run = runner(fx, a);
+  listDirs(fx, run, [a]);
+  const inRun = { env: { AGENT_BOARD_TASK: 'Zt0Test1', AGENT_BOARD_CONFIG_DIR: join(fx.root, 'config') } };
+  await assert.rejects(run.go(['dirs', 'set', 'label', 'A'], inRun), /not available inside a board run/);
+  await assert.rejects(run.go(['dirs', 'unset', 'label'], inRun), /not available inside a board run/);
+  const before = fx.text();
+  await run.go(['dirs', 'set', 'label', 'A', '--dry-run']);
+  assert.match(said(run), /DRY set label of /);
+  await run.go(['dirs', 'set', 'label', 'A']);
+  const set = fx.text();
+  await run.go(['dirs', 'unset', 'label', '--dry-run']);
+  assert.match(said(run), /DRY unset label of /);
+  assert.notEqual(before, set);
+  assert.equal(fx.text(), set);
+  assert.deepEqual(written(run.backend), [`dirs here: ${a}=A`]);
+});
+
+test('list shows the settings of each entry on its line', async (context) => {
+  const fx = fixture(context, {
+    lanes: { reviews: { skills: ['review-pr'], slots: 1 } },
+    dirs: {
+      '/srv/a': { lane: 'reviews', default: true, repo: 'acme/a', label: 'Board' },
+      '/srv/b': {},
+    },
+  });
+  const run = runner(fx);
+  await run.go(['dirs']);
+  assert.deepEqual(run.printed.slice(1), [
+    '  /srv/a  missing  label=Board  repo=acme/a  default  lane=reviews',
+    '  /srv/b  missing',
+  ]);
+});
+
+test('rm says which of repo, default and lane go with the entry, and nothing for a label alone', async (context) => {
+  const fx = fixture(context, {
+    lanes: { reviews: { skills: ['review-pr'], slots: 1 } },
+    dirs: {
+      '/srv/a': { repo: 'acme/a', default: true, lane: 'reviews', label: 'A' },
+      '/srv/b': { label: 'B' },
+      '/srv/c': { repo: 'o/n' },
+    },
+  });
+  const run = runner(fx);
+  await run.go(['dirs', 'rm', '--force', '/srv/a']);
+  assert.match(
+    said(run),
+    /note: it no longer has its repo acme\/a, default directory role, lane reviews\nunlisted \/srv\/a/,
+  );
+  run.printed.length = 0;
+  await run.go(['dirs', 'rm', '--force', '/srv/b']);
+  assert.ok(!said(run).includes('note:'));
+  await run.go(['dirs', 'rm', '--force', '/srv/c', '--dry-run']);
+  assert.match(said(run), /DRY unlist \/srv\/c[^\n]*\nnote: it no longer has its repo o\/n/);
+});
+
+test('dirsToSend passes labels on and nothing else of the settings; a changed label is sent again', async () => {
+  const backend = fakeBackend([]);
+  const entry = { path: '/a', label: 'A', repo: 'o/n', default: true as const, lane: 'x' };
+  assert.deepEqual(
+    dirsToSend([entry, dir('/b')], () => true),
+    [{ path: '/a', label: 'A' }, dir('/b')],
+  );
+  const config = { ...CONFIG, dirs: [entry, dir('/b')] };
+  assert.deepEqual(await syncDirs({ backend, config }, () => true), { result: 'sent', count: 2 });
+  assert.deepEqual(await syncDirs({ backend, config }, () => true), { result: 'unchanged' });
+  const relabelled = { ...CONFIG, dirs: [{ ...entry, label: 'B' }, dir('/b')] };
+  assert.deepEqual(await syncDirs({ backend, config: relabelled }, () => true), { result: 'sent', count: 2 });
+  const same = { ...CONFIG, dirs: [{ ...entry, repo: 'p/q', lane: 'y' }, dir('/b')] };
+  assert.deepEqual(
+    await syncDirs({ backend, config: { ...same, dirs: [{ ...same.dirs[0]!, label: 'B' }, dir('/b')] } }, () => true),
+    {
+      result: 'unchanged',
+    },
+  );
+  assert.deepEqual(written(backend), ['dirs here: /a=A,/b', 'dirs here: /a=B,/b']);
 });

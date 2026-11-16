@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import {
   ConfigError,
   configWarnings,
+  isOverrideWarning,
   isSafeMode,
   loadConfig,
   loadConfigWarnings,
@@ -167,6 +168,107 @@ test('a bad dirs entry is refused with a pointed message', () => {
       (error) => error instanceof ConfigError && message.test(error.message),
       JSON.stringify(dirs).slice(0, 60),
     );
+});
+
+test('a dirs entry takes label, repo, default and lane, and keeps what it is given', () => {
+  const config = parseConfig({
+    ...valid,
+    lanes: { reviews: { skills: ['review-pr'], slots: 1 }, general: { skills: ['*'], slots: 1 } },
+    dirs: {
+      '/srv/a': { label: '  Board  ', repo: 'acme/board', default: true, lane: 'reviews' },
+      '/srv/b': { label: 'Other' },
+      '/srv/c': {},
+    },
+  });
+  assert.deepEqual(config.dirs, [
+    { path: '/srv/a', label: 'Board', repo: 'acme/board', default: true, lane: 'reviews' },
+    { path: '/srv/b', label: 'Other' },
+    { path: '/srv/c' },
+  ]);
+});
+
+test('a dirs setting is folded into repos, defaultCwd and the lane cwd, and wins over the old key', () => {
+  const lanes = {
+    reviews: { skills: ['review-pr'], slots: 1, cwd: '/old/reviews' },
+    general: { skills: ['*'], slots: 1 },
+  };
+  const config = parseConfig({
+    ...valid,
+    defaultCwd: '/old/default',
+    repos: { 'acme/board': '/old/board', 'acme/other': '/srv/other' },
+    lanes,
+    dirs: { '/srv/a': { repo: 'acme/board', default: true, lane: 'reviews' } },
+  });
+  assert.deepEqual(config.repos, { 'acme/board': '/srv/a', 'acme/other': '/srv/other' });
+  assert.equal(config.defaultCwd, '/srv/a');
+  assert.deepEqual(
+    config.lanes.map(({ name, cwd }) => [name, cwd]),
+    [
+      ['reviews', '/srv/a'],
+      ['general', undefined],
+    ],
+  );
+  const without = parseConfig({ ...valid, defaultCwd: '/old/default', lanes, dirs: { '/srv/a': { label: 'A' } } });
+  assert.equal(without.defaultCwd, '/old/default');
+  assert.equal(without.lanes[0]?.cwd, '/old/reviews');
+});
+
+test('a bad dirs setting is refused, pointing at the entry and the setting', () => {
+  const lanes = { reviews: { skills: ['review-pr'], slots: 1 }, other: { skills: ['*'], slots: 1 } };
+  const cases: [Record<string, unknown>, RegExp][] = [
+    [{ '/a': { label: '' } }, /dirs\["\/a"\]\.label must be a label of 1 to 64 characters/],
+    [{ '/a': { label: '   ' } }, /\.label must be a label/],
+    [{ '/a': { label: 'x'.repeat(65) } }, /\.label must be a label/],
+    [{ '/a': { label: 'a\nb' } }, /\.label must be a label/],
+    [{ '/a': { label: 1 } }, /\.label must be a label/],
+    [{ '/a': { repo: 'board' } }, /\.repo must look like owner\/name/],
+    [{ '/a': { repo: 'a/b/c' } }, /\.repo must look like owner\/name/],
+    [{ '/a': { repo: 3 } }, /\.repo must look like owner\/name/],
+    [{ '/a': { default: false } }, /\.default must be true \(leave the key out/],
+    [{ '/a': { default: 'true' } }, /\.default must be true/],
+    [{ '/a': { lane: 'nope' } }, /\.lane must name a lane of this config \(reviews, other\)/],
+    [{ '/a': { lane: 4 } }, /\.lane must name a lane/],
+    [{ '/a': { cwd: '/x' } }, /no setting "cwd" \(it takes label, repo, default, lane\)/],
+    [{ '/a': { repo: 'o/n' }, '/b': { repo: 'o/n' } }, /both set repo "o\/n"/],
+    [
+      { '/a': { default: true }, '/b': { default: true } },
+      /dirs\["\/a"\] and dirs\["\/b"\] are both the default directory/,
+    ],
+    [{ '/a': { lane: 'reviews' }, '/b': { lane: 'reviews' } }, /both set lane "reviews"/],
+  ];
+  for (const [dirs, message] of cases)
+    assert.throws(
+      () => parseConfig({ ...valid, lanes, dirs }),
+      (error) => error instanceof ConfigError && message.test(error.message),
+      JSON.stringify(dirs),
+    );
+  assert.doesNotThrow(() =>
+    parseConfig({ ...valid, lanes, dirs: { '/a': { lane: 'reviews' }, '/b': { lane: 'other' } } }),
+  );
+});
+
+test('a dirs setting over a different old path is a warning; the same path is none', () => {
+  const raw = {
+    repos: { 'acme/board': '/old/board', 'acme/same': '~/same' },
+    defaultCwd: '/old/default',
+    lanes: { reviews: { skills: ['review-pr'], cwd: '/old/reviews' }, deep: { skills: ['x'], cwd: '/srv/lane' } },
+    dirs: {
+      '/srv/a': { repo: 'acme/board', default: true, lane: 'reviews' },
+      [`${homedir()}/same`]: { repo: 'acme/same' },
+      '/srv/lane': { lane: 'deep' },
+    },
+  };
+  assert.deepEqual(configWarnings(raw), [
+    'repos.acme/board is overridden by dirs["/srv/a"].repo',
+    'defaultCwd is overridden by dirs["/srv/a"].default',
+    'lanes.reviews.cwd is overridden by dirs["/srv/a"].lane',
+  ]);
+  assert.deepEqual(
+    configWarnings({ ...raw, repos: {}, defaultCwd: undefined, lanes: { reviews: { skills: ['x'] } } }),
+    [],
+  );
+  assert.equal(isOverrideWarning('repos.a/b is overridden by dirs["/x"].repo'), true);
+  assert.equal(isOverrideWarning('unknown key "x", ignored'), false);
 });
 
 test('dirs holds at most 200 entries', () => {

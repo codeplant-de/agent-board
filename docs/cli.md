@@ -39,8 +39,8 @@ Scheduling:
   delay <task>              delay a task in Todo, or make it due at once
 
 Setup:
-  dirs [action...]          list, add or remove the directories workers may run
-                            in on this machine
+  dirs [action...]          list, add, remove or set up the directories workers
+                            may run in on this machine
   init                      write web.json, env and config.json for this machine
   doctor                    check this machine: config, token, server, worker
                             tools and units
@@ -511,15 +511,16 @@ Examples:
 ### board dirs
 
 ```
-Usage: board dirs [options] [list | add [path] | rm [path]]
+Usage: board dirs [options] [list | add [path] | rm [path] | set <key> <value> [path] | unset <key> [path]]
 
 Manage the `dirs` list of this machine's config.json: the directories workers
 may run in. Without a `dirs` key nothing is limited; once the key exists, even
 as `{}`, workers run only in a listed directory or one below it. Without
 arguments (or with `list`), print the entries, marking one whose directory is
 gone as missing. `add [path]` lists the real path of a directory (default: the
-current one); `rm [path]` unlists one. A path is relative to the current
-directory.
+current one); `rm [path]` unlists one. `set <key> <value> [path]` and `unset
+<key> [path]` change one setting of a listed directory (below). A path is
+relative to the current directory.
 
 `add` refuses `/` and a path that is not a directory, warns about the home
 directory (it allows everything below it), and notes when a parent is already
@@ -533,17 +534,31 @@ the board cannot be reached; --force removes it anyway and needs no board. The
 list is enforced as soon as it exists, even empty: a worker refuses to start a
 task outside it, a run that ends outside it keeps the directory it started in,
 and `board schedule` and `board add` refuse (`board add` falls back to the
-directory the run started in) outside it. `add` and `rm` rewrite the `dirs` key
-of config.json and nothing else, and are not available inside a board run.
+directory the run started in) outside it. `add`, `rm`, `set` and `unset` rewrite
+the `dirs` key of config.json and nothing else (the settings of the other
+entries stay as they are), and are not available inside a board run.
+
+A listed directory can carry four settings. `label` (1 to 64 characters) is a
+short name the New task form shows with the path, and the only setting the board
+is sent. `repo` (owner/name) makes the directory the checkout of that
+repository, like a `repos` entry. `default` (the value is `true`) makes it the
+directory of tasks that have none, like `defaultCwd`; one directory has it.
+`lane` (a lane of this config) makes it the directory of that lane's tasks
+without one, like the lane's `cwd`; one directory per lane. A setting wins over
+the old key it stands for (`repos`, `defaultCwd`, a lane `cwd`), and `set`
+refuses one that another directory has: `unset` it there first. `list` shows
+each entry's settings; `rm` says which of repo, default and lane go with the
+entry.
 
 The board gets a copy of the list, for the New task form to offer: the listed
-directories that exist, sent by `add` and `rm` and by every dispatch tick when
-it changed. The copy is advice; workers read only this machine's config.json. If
-the board cannot be reached, `add` and `rm` still succeed, warn, and leave it to
-the next dispatch tick.
+directories that exist, sent by `add`, `rm`, `set` and `unset` and by every
+dispatch tick when it changed, each with its label. The copy is advice; workers
+read only this machine's config.json. If the board cannot be reached, they still
+succeed, warn, and leave it to the next dispatch tick.
 
 Arguments:
-  action         list, add or rm, and a path
+  action         list, add, rm, set or unset, and a path, or a setting and its
+                 value
 
 Options:
   --from-config  add: list the directories the config already routes to
@@ -559,6 +574,11 @@ Examples:
   board dirs add --from-config
   board dirs rm ~/workspace/old
   board dirs rm --force ~/workspace/gone
+  board dirs set label Board
+  board dirs set repo acme/board ~/workspace/agent-board
+  board dirs set default true
+  board dirs set lane reviews ~/workspace/reviews
+  board dirs unset label
 ```
 
 ### board init

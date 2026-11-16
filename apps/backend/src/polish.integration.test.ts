@@ -85,11 +85,8 @@ describe('creating a task under a parent', () => {
     expect(row?.workdir).not.toContain('/home/me');
   });
 
-  it('refuses a directory for a repeating task and a machine name of the wrong shape', async () => {
+  it('refuses a machine name of the wrong shape', async () => {
     const workdir = '/home/me/code/thing';
-    await expect(
-      ctx.ui.tasks.create({ input: 'q', when: { every: 3_600_000 }, place: { machine: 'deskwork', workdir } }),
-    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     await expect(
       ctx.ui.tasks.create({ input: 'q', place: { machine: 'desk work;rm', workdir } }),
     ).rejects.toMatchObject({ code: 'BAD_REQUEST' });

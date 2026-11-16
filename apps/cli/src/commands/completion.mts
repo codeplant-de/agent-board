@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { MODEL_ALIASES, PRIORITIES, STATUSES } from '@agent-board/shared';
+import { DIR_SETTINGS } from '../config/config.mts';
 import { shellQuote } from '../output/text.mts';
 
 export const SHELLS = ['bash', 'zsh', 'fish'] as const;
@@ -10,7 +11,9 @@ interface CommandModel {
   summary: string;
   flags: string[];
   // What the positional words complete to, in order.
-  positionals: ('task' | 'status' | 'schedule-action' | 'schedule' | 'dirs-action' | 'command' | 'shell')[];
+  positionals: (
+    'task' | 'status' | 'schedule-action' | 'schedule' | 'dirs-action' | 'dirs-key' | 'command' | 'shell'
+  )[];
 }
 
 export interface CompletionModel {
@@ -36,7 +39,7 @@ function positionalsOf(command: Command): CommandModel['positionals'] {
   if (command.name() === 'help') return ['command'];
   if (command.name() === 'completion') return ['shell'];
   if (command.name() === 'schedules') return ['schedule-action', 'schedule'];
-  if (command.name() === 'dirs') return ['dirs-action'];
+  if (command.name() === 'dirs') return ['dirs-action', 'dirs-key'];
   if (command.name() === 'move') return ['task', 'status'];
   return command.registeredArguments[0]?.name() === 'task' ? ['task'] : [];
 }
@@ -96,7 +99,9 @@ function positionalWords(kind: Kind, model: CompletionModel): string | undefined
     case 'schedule-action':
       return 'pause resume rm';
     case 'dirs-action':
-      return 'list add rm';
+      return 'list add rm set unset';
+    case 'dirs-key':
+      return words(DIR_SETTINGS);
     case 'command':
       return words(model.commands.map((command) => command.name));
     case 'shell':
@@ -124,7 +129,12 @@ function bash(model: CompletionModel): string {
     .filter((command) => command.positionals.length > 0)
     .map((command) => {
       const lines = command.positionals.map((kind, index) => {
-        const guard = kind === 'schedule' ? ' && [[ "$first" == @(pause|resume|rm) ]]' : '';
+        const guard =
+          kind === 'schedule'
+            ? ' && [[ "$first" == @(pause|resume|rm) ]]'
+            : kind === 'dirs-key'
+              ? ' && [[ "$first" == @(set|unset) ]]'
+              : '';
         const candidates =
           kind === 'task'
             ? '$(__board_ids tasks)'
@@ -220,7 +230,12 @@ function zsh(model: CompletionModel): string {
     .filter((command) => command.positionals.length > 0)
     .map((command) => {
       const lines = command.positionals.map((kind, index) => {
-        const guard = kind === 'schedule' ? ' && [[ $first == (pause|resume|rm) ]]' : '';
+        const guard =
+          kind === 'schedule'
+            ? ' && [[ $first == (pause|resume|rm) ]]'
+            : kind === 'dirs-key'
+              ? ' && [[ $first == (set|unset) ]]'
+              : '';
         const offer =
           kind === 'task'
             ? '__board_ids tasks'
@@ -324,6 +339,11 @@ function fish(model: CompletionModel): string {
     '  set -l positionals (__board_positionals)',
     '  test (count $positionals) -eq $argv[1]; and contains -- "$positionals[1]" $argv[2..-1]',
     'end',
+    'function __board_dirs_key',
+    '  __board_value_pending; and return 1',
+    '  set -l positionals (__board_positionals)',
+    '  test (count $positionals) -eq 2; and test "$positionals[1]" = dirs; and contains -- "$positionals[2]" set unset',
+    'end',
     'function __board_schedule_id',
     '  __board_value_pending; and return 1',
     '  set -l positionals (__board_positionals)',
@@ -354,7 +374,8 @@ function fish(model: CompletionModel): string {
   lines.push(`complete -c board -n '__board_at 2 move' -a ${fishQuote(words(STATUSES))}`);
   lines.push(`complete -c board -n '__board_at 1 schedules' -a 'pause resume rm'`);
   lines.push(`complete -c board -n '__board_schedule_id' -a '(__board_ids schedules)'`);
-  lines.push(`complete -c board -n '__board_at 1 dirs' -a 'list add rm'`);
+  lines.push(`complete -c board -n '__board_at 1 dirs' -a 'list add rm set unset'`);
+  lines.push(`complete -c board -n '__board_dirs_key' -a ${fishQuote(words(DIR_SETTINGS))}`);
   lines.push(`complete -c board -n '__board_at 1 help' -a ${fishQuote(words(names))}`);
   lines.push(`complete -c board -n '__board_at 1 completion' -a ${fishQuote(words(SHELLS))}`);
   return `${lines.join('\n')}\n`;

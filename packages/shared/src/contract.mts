@@ -397,9 +397,10 @@ export interface Backend {
   setDirs(machine: string, dirs: readonly MachineDir[]): Promise<void>;
 }
 
-/** A directory the machine lists in its config. */
+/** A directory the machine lists in its config, with the label it gave it (`isSafeDirLabel`). */
 export interface MachineDir {
   path: string;
+  label?: string;
 }
 
 export type DirsOnBoard = 'unsupported' | 'current' | 'stale';
@@ -645,6 +646,14 @@ export function isSessionId(value: string): boolean {
 // A directory a task runs in: absolute, without control characters, of a length a path can have.
 export function isSafeWorkdir(path: string): boolean {
   return path.startsWith('/') && path.length <= 4096 && !hasControlCharacter(path);
+}
+
+export const DIR_LABEL_RULE = '1 to 64 characters, no control characters, no space around it';
+
+// The short name a machine gives a listed directory: shown beside its path, so one line of plain text.
+export function isSafeDirLabel(label: string): boolean {
+  const length = Array.from(label).length;
+  return length >= 1 && length <= 64 && label === label.trim() && !hasControlCharacter(label);
 }
 
 // The ids of notes and runs the server makes.

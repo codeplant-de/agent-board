@@ -120,6 +120,8 @@ export const tasks = pgTable(
     sessionId: text('session_id'),
     /** Where the session was when it last stopped, on `machine`. */
     workdir: text('workdir'),
+    /** The sealed `workdir` the task was created with, as the same envelope; nothing updates it, and Re-run fresh restores it into `workdir`. */
+    homeWorkdir: text('home_workdir'),
     /** The sealed URL of the pull request the task's agent opened for it (`board pr`). */
     pr: text('pr'),
     /** GitHub's state of that PR or of the one the prompt names, as a worker's intake last saw it. Clear on purpose: it says only that some PR of the task merged. */
@@ -169,6 +171,7 @@ export const tasks = pgTable(
     check('task_title_sealed', isEnvelope(t.title)),
     check('task_input_sealed', isEnvelope(t.input)),
     check('task_workdir_sealed', isEnvelope(t.workdir)),
+    check('task_home_workdir_sealed', isEnvelope(t.homeWorkdir)),
     check('task_pr_sealed', isEnvelope(t.pr)),
     check('task_dedupe_key_blind', isBlindIndex(t.dedupeKey)),
     check('task_head_blind', isBlindIndex(t.head)),

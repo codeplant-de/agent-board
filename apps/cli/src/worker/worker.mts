@@ -208,7 +208,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     const own = task.workdir === plan.invocation.cwd;
     return fail(
       own
-        ? `This task's directory is gone: ${plan.invocation.cwd}. Recreate it to run there, or use Re-run fresh to start over${task.createdBy === 'intake' ? '' : ' in the default directory'}.`
+        ? `This task's directory is gone: ${plan.invocation.cwd}. Recreate it to run there, or use Re-run fresh to start over${task.createdBy === 'intake' ? '' : ' in the directory it was created with, or the default one when it had none'}.`
         : `The working directory does not exist: ${plan.invocation.cwd}`,
     );
   }
