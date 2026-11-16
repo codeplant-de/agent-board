@@ -24,7 +24,7 @@ Boards are separated per user: every row belongs to the signed-in user (`Remote-
 
 Three ways in:
 
-- **The UI** (`/trpc`): Traefik runs Authelia's forward-auth and strips client-sent `Remote-*` headers before it; the backend takes the user from `Remote-User` and requires one of `ALLOWED_GROUPS` in `Remote-Groups`.
+- **The UI** (`/trpc`): Traefik runs Authelia's forward-auth and strips client-sent `Remote-*` headers before it; the backend takes the user from `Remote-User` and requires one of `ALLOWED_GROUPS` in `Remote-Groups`. The session cookie covers the whole parent domain, so another subdomain can send a plain HTML form with it; a write to `/trpc` whose `Content-Type` is not `application/json` (a form cannot send that) is a 415, before tRPC reads it.
 - **The machine API** (`POST /api/machine/<subcommand>`): its own Traefik route skips Authelia, matched only for that path with an `Authorization: Bearer` header. The backend looks the token up by its sha256 (tokens are shown once, on the Settings page) and refuses a revoked one. A token claims tasks only under its own machine name.
 - **The intake API** (`POST /api/intake/<command>`): for the Slack app only, with the shared `INTAKE_TOKEN`; see [architecture.md](architecture.md#the-slack-companion). Never add it to the proxy's login bypasses: the Slack app calls the backend directly inside the cluster.
 

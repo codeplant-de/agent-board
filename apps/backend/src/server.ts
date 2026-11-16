@@ -32,6 +32,8 @@ export function userFrom(req: FastifyRequest, config: Config): string | null {
   return groups.some((group) => config.allowedGroups.includes(group)) ? username.toLowerCase() : null;
 }
 
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 const STATUS: Record<AppErrorCode, number> = {
   BAD_REQUEST: 400,
   UNAUTHORIZED: 401,
@@ -52,7 +54,7 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
   const changes = options.changes ?? new Changes(options.debounceMs ?? CHANGES_DEBOUNCE_MS);
   const app = Fastify({
     logger: config.nodeEnv === 'test' ? false : { level: 'info' },
-    // A transcript batch can carry a few large tool results.
+    // The machine API sets its own limits per route; this is the UI's.
     bodyLimit: 16 * 1024 * 1024,
     // Behind the auth proxy: makes req.ip, which the request log writes as remoteAddress, the client's address, not the proxy's.
     trustProxy: true,
@@ -76,6 +78,18 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
     if (req.url === '/healthz' || req.url.startsWith('/api/machine/') || req.url.startsWith('/api/intake/')) return;
     req.username = userFrom(req, config);
     if (!req.username) return reply.status(403).send({ error: 'not allowed on this board' });
+  });
+
+  // tRPC's Fastify adapter takes multipart bodies, which a plain HTML form on a sibling subdomain can send with the user's
+  // session cookie: SameSite does not stop a same-site request. Only the JSON the board's own client sends gets through;
+  // a cross-origin JSON POST needs a CORS preflight, which this server never grants. The check goes by the matched route,
+  // not the raw URL: Fastify routes on the decoded path, so `/%74rpc/...` reaches tRPC too.
+  app.addHook('onRequest', async (req, reply) => {
+    const route = req.routeOptions.url ?? '';
+    if (!(route === '/trpc' || route.startsWith('/trpc/')) || SAFE_METHODS.has(req.method)) return;
+    const mediaType = (req.headers['content-type'] ?? '').split(';')[0]?.trim().toLowerCase();
+    if (mediaType !== 'application/json')
+      return reply.status(415).send({ error: 'the board takes application/json only' });
   });
 
   registerMachineApi(app, root, config, changes, {
