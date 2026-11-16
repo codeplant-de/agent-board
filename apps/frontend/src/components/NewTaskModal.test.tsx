@@ -109,6 +109,13 @@ describe('NewTaskModal When', () => {
     expect(sent()).toMatchObject({ input: '/sweep', when });
   });
 
+  it('starts the next task at Now again', async () => {
+    await open('Backlog');
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'When' })).toHaveValue('Now'));
+  });
+
   it('sends Later with the chosen start time', async () => {
     await open('Later');
     expect(createButton()).toBeDisabled();

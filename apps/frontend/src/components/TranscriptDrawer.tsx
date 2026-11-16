@@ -317,7 +317,7 @@ export function TranscriptDrawer({
         ) : (
           runs.data !== undefined && (
             <Text size="sm" c="dimmed">
-              No transcript yet. Runs started after this feature record one.
+              No transcript yet.
             </Text>
           )
         )}
