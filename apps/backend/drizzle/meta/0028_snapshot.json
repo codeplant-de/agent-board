@@ -1,5 +1,5 @@
 {
-  "id": "a03351a3-2c41-4bde-b601-c04487d37b7e",
+  "id": "40c096d8-151f-4ebf-8473-9407435b50b6",
   "prevId": "a610030f-fbaa-4aae-aabc-098cb4d974d5",
   "version": "7",
   "dialect": "postgresql",
@@ -234,8 +234,7 @@
           "name": "body",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": "''"
+          "notNull": true
         },
         "preview": {
           "name": "preview",
@@ -451,12 +450,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "agent": {
-          "name": "agent",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "every_ms": {
           "name": "every_ms",
           "type": "bigint",
@@ -591,10 +584,6 @@
         "schedule_workdir_sealed": {
           "name": "schedule_workdir_sealed",
           "value": "\"schedule\".\"workdir\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
-        },
-        "schedule_agent_sealed": {
-          "name": "schedule_agent_sealed",
-          "value": "\"schedule\".\"agent\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
         }
       },
       "isRLSEnabled": true
@@ -845,8 +834,7 @@
           "name": "input",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": "''"
+          "notNull": true
         },
         "status": {
           "name": "status",
@@ -909,12 +897,6 @@
         },
         "home_workdir": {
           "name": "home_workdir",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "agent": {
-          "name": "agent",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1187,10 +1169,6 @@
         "task_home_workdir_sealed": {
           "name": "task_home_workdir_sealed",
           "value": "\"task\".\"home_workdir\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
-        },
-        "task_agent_sealed": {
-          "name": "task_agent_sealed",
-          "value": "\"task\".\"agent\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
         },
         "task_pr_sealed": {
           "name": "task_pr_sealed",

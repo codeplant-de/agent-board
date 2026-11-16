@@ -122,17 +122,15 @@ const tasksRouter = router({
   list: procedure
     .input(z.object({ closed: z.boolean().default(false) }).default({ closed: false }))
     .query(async ({ ctx, input }) => {
-      const rows = await listTasksWithLastNote(ctx.db, { all: input.closed });
-      return rows
-        .filter(({ row }) => row.closed === input.closed)
-        .map(({ row, lastNote }) => ({ ...boardTask(row), lastNote }));
+      const rows = await listTasksWithLastNote(ctx.db, { closed: input.closed });
+      return rows.map(({ row, lastNote }) => ({ ...boardTask(row), lastNote }));
     }),
 
   get: procedure.input(z.object({ id })).query(async ({ ctx, input }) => {
     const row = await getTask(ctx.db, input.id);
     const thread = (await readNotes(ctx.db, input.id)).map(threadNote);
     const related = await ctx.db.select().from(tasks).where(eq(tasks.parentId, input.id)).orderBy(asc(tasks.createdAt));
-    const parent = row.parentId ? await getTask(ctx.db, row.parentId).catch(() => null) : null;
+    const parent = row.parentId ? await getTask(ctx.db, row.parentId) : null;
     return {
       task: boardTask(row),
       thread,

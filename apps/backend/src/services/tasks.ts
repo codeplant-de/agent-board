@@ -1,6 +1,7 @@
 import {
   formatServerEvent,
   MAX_WAIT_MS,
+  newTaskId,
   PRIORITIES,
   TAKE_BACK_AFTER_MS,
   type ServerEvent,
@@ -22,9 +23,9 @@ import { AppError } from './errors';
 import { requireSealed } from './sealed';
 import { DONE_ARCHIVE_DAYS, daysBefore } from './retention';
 import { completeOccurrence } from './schedules';
-import { edgePosition, getTask, insertTask, lockTask, newId } from './taskRows';
+import { edgePosition, getTask, insertTask, lockTask } from './taskRows';
 
-export { getTask, newId };
+export { getTask };
 
 export function toTask(row: TaskRow): WireTask {
   return {
@@ -115,10 +116,10 @@ export interface LastNote {
   createdAt: Date;
 }
 
-/** `listTasks` with each task's newest note, in one query. */
+/** The open or the closed tasks in column order, each with its newest note, in one query. */
 export async function listTasksWithLastNote(
   db: DbOrTx,
-  options: { all?: boolean } = {},
+  options: { closed: boolean },
 ): Promise<{ row: TaskRow; lastNote: LastNote | null }[]> {
   const latest = db
     .select({
@@ -141,7 +142,7 @@ export async function listTasksWithLastNote(
     })
     .from(tasks)
     .leftJoinLateral(latest, sql`true`)
-    .where(options.all ? undefined : eq(tasks.closed, false))
+    .where(eq(tasks.closed, options.closed))
     .orderBy(...taskOrder());
   return rows.map(({ row, lastNote }) => ({ row, lastNote: lastNote?.kind ? lastNote : null }));
 }
@@ -372,7 +373,7 @@ export async function addNote(
   const [row] = await db
     .insert(notes)
     .values({
-      id: newId(12),
+      id: newTaskId(),
       taskId,
       author: note.author,
       kind: note.kind ?? 'comment',
@@ -471,7 +472,7 @@ export async function reply(
       preview: input.message.preview ?? null,
       by: input.by,
     });
-    return input.resume ? continueTask(tx, task) : lockTask(tx, task.id);
+    return input.resume ? continueTask(tx, task) : getTask(tx, task.id);
   });
 }
 
@@ -780,11 +781,13 @@ export async function setNotBefore(db: DbOrTx, taskId: string, notBefore: Date |
  * now (taken back and claimed again), is left alone.
  */
 export async function heartbeat(db: DbOrTx, taskId: string, beat: Heartbeat, machine: string): Promise<void> {
-  await getTask(db, taskId);
-  await db
+  const updated = await db
     .update(tasks)
     .set({ lane: beat.lane, borrowed: beat.borrowed, lastActiveAt: new Date() })
-    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running'), eq(tasks.machine, machine)));
+    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running'), eq(tasks.machine, machine)))
+    .returning({ id: tasks.id });
+  // A beat for a run that ended or moved is ignored; only an unknown task is an error.
+  if (updated.length === 0) await getTask(db, taskId);
 }
 
 /**

@@ -246,7 +246,11 @@ async function lockWithOccurrence(
   const pending =
     unlocked.occurrenceTaskId === null
       ? undefined
-      : await lockTask(tx, unlocked.occurrenceTaskId).catch(() => undefined);
+      : // Deleted since the read above: the check below turns that into a conflict.
+        await lockTask(tx, unlocked.occurrenceTaskId).catch((error: unknown) => {
+          if (error instanceof AppError && error.code === 'NOT_FOUND') return undefined;
+          throw error;
+        });
   const schedule = await lockSchedule(tx, id);
   if (schedule.occurrenceTaskId !== unlocked.occurrenceTaskId)
     throw new AppError('CONFLICT', 'The schedule changed while it was being edited; try again.');

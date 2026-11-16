@@ -201,8 +201,15 @@
     {
       "idx": 28,
       "version": "7",
-      "when": 1794847031864,
-      "tag": "0028_task-agent",
+      "when": 1794845127743,
+      "tag": "0028_drop-sealed-defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1794847951322,
+      "tag": "0029_task-agent",
       "breakpoints": true
     }
   ]

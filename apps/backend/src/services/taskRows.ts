@@ -1,20 +1,8 @@
-import { DEFAULT_PRIORITY, isDraftStatus, isSafeTaskId, type Status, type WireTaskDraft } from '@agent-board/shared';
+import { DEFAULT_PRIORITY, isDraftStatus, newTaskId, type Status, type WireTaskDraft } from '@agent-board/shared';
 import { eq, max, min } from 'drizzle-orm';
-import { randomBytes } from 'node:crypto';
 import type { DbOrTx } from '../db/client';
 import { tasks, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
-
-const ID_ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-/** 8 characters, safe for a systemd unit name; never one of the CLI's own unit names. */
-export function newId(length = 8): string {
-  for (;;) {
-    const bytes = randomBytes(length);
-    const id = Array.from(bytes, (b) => ID_ALPHABET[b % ID_ALPHABET.length]).join('');
-    if (isSafeTaskId(id)) return id;
-  }
-}
 
 /** A position below every task of the status (`bottom`) or above all of them (`top`). */
 export async function edgePosition(db: DbOrTx, status: Status, edge: 'top' | 'bottom'): Promise<number> {
@@ -53,7 +41,7 @@ export async function insertTask(
   const [row] = await tx
     .insert(tasks)
     .values({
-      id: draft.id ?? newId(),
+      id: draft.id ?? newTaskId(),
       title: draft.title,
       input: draft.input,
       machine: draft.machine ?? null,

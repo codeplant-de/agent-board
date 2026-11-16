@@ -105,7 +105,7 @@ export const tasks = pgTable(
     owner: owner(),
     /** `title`, `input` and `workdir` hold sealed envelopes (abe1.…); the server never reads them. */
     title: text('title').notNull(),
-    input: text('input').notNull().default(''),
+    input: text('input').notNull(),
     status: taskStatus('status').notNull().default('todo'),
     priority: taskPriority('priority').notNull().default('normal'),
     /** The Claude model of its runs (a clear choice, not content); null is claude's default. */
@@ -237,7 +237,7 @@ export const notes = pgTable(
     author: noteAuthor('author').notNull(),
     kind: noteKind('kind').notNull(),
     /** Sealed, except on a note by author "server", whose body is plain text. */
-    body: text('body').notNull().default(''),
+    body: text('body').notNull(),
     /** A sealed start of the text, for the board cards; null for a note without text. */
     preview: text('preview'),
     /** A sealed reply the agent drafted for the user; only on a comment by the agent. */
