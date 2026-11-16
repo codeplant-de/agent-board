@@ -54,3 +54,45 @@ test('a check runs in its directory with the env of the Claude Code settings, an
     rmSync(dir, { recursive: true });
   }
 });
+
+test('a check whose command cannot be started reports no exit code and the reason', async () => {
+  const dir = mkdtempSync('/tmp/board-waits-test-');
+  try {
+    const check = { cwd: dir, everyMs: 60_000, createdAt: new Date() };
+    const nulByte = await runCheck({ ...check, command: 'echo \0' }, dir);
+    assert.equal(nulByte.exitCode, null);
+    assert.equal(nulByte.timedOut, false);
+    assert.match(nulByte.output, /NUL|null bytes|ERR_INVALID_ARG_VALUE/i);
+    const noDirectory = await runCheck({ ...check, cwd: join(dir, 'gone'), command: 'true' }, dir);
+    assert.equal(noDirectory.exitCode, null);
+    assert.equal(noDirectory.timedOut, false);
+    assert.match(noDirectory.output, /ENOENT/);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a check keeps the end of its output across stdout and stderr, and a short output whole', async () => {
+  const dir = mkdtempSync('/tmp/board-waits-test-');
+  try {
+    const check = { cwd: dir, everyMs: 60_000, createdAt: new Date() };
+    const mixed = await runCheck({ ...check, command: 'echo out; sleep 0.1; echo err >&2' }, dir);
+    assert.equal(mixed.output, 'out\nerr\n');
+    const long = await runCheck({ ...check, command: 'head -c 5000 /dev/zero | tr "\\0" a; printf END' }, dir);
+    assert.equal(long.output.length, 2000);
+    assert.ok(long.output.endsWith('aaaEND'));
+    assert.equal(long.exitCode, 0);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a check killed by a signal reports no exit code and no time out', async () => {
+  const dir = mkdtempSync('/tmp/board-waits-test-');
+  try {
+    const killed = await runCheck({ cwd: dir, everyMs: 60_000, createdAt: new Date(), command: 'kill -9 $$' }, dir);
+    assert.deepEqual(killed, { exitCode: null, timedOut: false, output: '' });
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
