@@ -42,7 +42,7 @@ import { createSessionStore } from './sessions.mts';
 import type { SessionStore } from './sessions.mts';
 import { appendLog, closeLog, logPath, openLog, readLogTail, resetLog } from './logs.mts';
 import { resolvePluginPath } from './plugins.mts';
-import { fence } from './text.mts';
+import { errorText, fence } from './text.mts';
 import { createTranscriptUploader } from './transcript-upload.mts';
 
 export interface RunResult {
@@ -132,8 +132,10 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   };
 
   // A failure before the process starts leaves the log empty, so it goes in the log too.
+  // It also ends the run, so the dispatcher's run files go.
   const fail = async (reason: string): Promise<void> => {
     deps.appendLog(taskId, reason);
+    deps.files.clear(taskId);
     await report(reason);
   };
 
@@ -161,7 +163,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     try {
       pluginRoots[name] = deps.pluginPath(`${name}@${PLUGIN_MARKETPLACE}`);
     } catch (error) {
-      return fail(`Cannot resolve the ${name} plugin: ${error instanceof Error ? error.message : String(error)}`);
+      return fail(`Cannot resolve the ${name} plugin: ${errorText(error)}`);
     }
   }
   const notes = await backend.readNotes(task.id);
@@ -236,7 +238,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     lastBeat = deps.now().getTime();
     lastSeen = seen;
     await backend.heartbeat(task.id, { lane: record.lane, borrowed: record.borrowed }).catch((error: unknown) => {
-      deps.appendLog(taskId, `heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
+      deps.appendLog(taskId, `heartbeat failed: ${errorText(error)}`);
     });
   };
   // The transcript: condensed stream-json events, sent in batches with each check and once more at the end.
@@ -283,7 +285,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   let endedByStop = false;
   let pauseTold = false;
   const logFailure = (what: string, error: unknown): void => {
-    deps.appendLog(taskId, `${what}: ${error instanceof Error ? error.message : String(error)}`);
+    deps.appendLog(taskId, `${what}: ${errorText(error)}`);
   };
   const handOver = async (live: RunChannel, inbox: RunInbox): Promise<string[]> => {
     const acknowledged: string[] = [];
@@ -402,7 +404,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     stopListening?.();
     files.clear(taskId);
     if (run.kind === 'fresh') await backend.updateTask(task.id, { sessionId: null });
-    return fail(error instanceof Error ? error.message : String(error));
+    return fail(errorText(error));
   }
   stopListening?.();
   await transcript.flush();
@@ -665,10 +667,7 @@ export async function workerMain(taskId: string): Promise<void> {
             stop.signal,
           );
         } catch (error) {
-          appendLog(
-            taskId,
-            `no event stream for the run inbox: ${error instanceof Error ? error.message : String(error)}`,
-          );
+          appendLog(taskId, `no event stream for the run inbox: ${errorText(error)}`);
         }
       })();
       return () => stop.abort();
@@ -678,7 +677,7 @@ export async function workerMain(taskId: string): Promise<void> {
   try {
     await runWorker(deps, taskId);
   } catch (error) {
-    appendLog(taskId, `worker failed: ${error instanceof Error ? error.message : String(error)}`);
+    appendLog(taskId, `worker failed: ${errorText(error)}`);
     throw error;
   }
 }

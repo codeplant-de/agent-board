@@ -100,7 +100,7 @@ test('an unknown command gets the nearest match', async () => {
 test('the other entry points keep the agent-board prefix', async () => {
   const dir = emptyConfigDir();
   try {
-    const worker = await run('worker', ['not/a/task'], dir);
+    const worker = await run('board', ['internal', 'worker', 'not/a/task'], dir);
     assert.equal(worker.code, 2);
     assert.match(worker.stderr, /^agent-board: "not\/a\/task" is not a task id\n/);
   } finally {
@@ -151,19 +151,19 @@ test('the hook of a run touches its own task only, and exits 0 on bad arguments'
     const inRun = { AGENT_BOARD_TASK: 'Zt0Test1', AGENT_BOARD_RUN_DIR: runDir };
     const elsewhere = mkdtempSync(join(tmpdir(), 'board-hook-test-'));
     try {
-      const wrongDir = await run('agent-hook', [elsewhere, 'Zt0Test1'], dir, inRun);
+      const wrongDir = await run('board', ['internal', 'hook', elsewhere, 'Zt0Test1'], dir, inRun);
       assert.equal(wrongDir.code, 0);
       assert.deepEqual(readdirSync(elsewhere), [], 'a run-dir argument other than the run own is ignored');
     } finally {
       rmSync(elsewhere, { recursive: true });
     }
-    const other = await run('agent-hook', [runDir, 'Other001'], dir, inRun);
+    const other = await run('board', ['internal', 'hook', runDir, 'Other001'], dir, inRun);
     assert.equal(other.code, 0);
     assert.deepEqual(readdirSync(runDir), []);
-    const own = await run('agent-hook', [runDir, 'Zt0Test1'], dir, inRun);
+    const own = await run('board', ['internal', 'hook', runDir, 'Zt0Test1'], dir, inRun);
     assert.equal(own.code, 0);
     assert.deepEqual(readdirSync(runDir), ['Zt0Test1.alive']);
-    const bad = await run('agent-hook', [], dir);
+    const bad = await run('board', ['internal', 'hook'], dir);
     assert.equal(bad.code, 0);
     assert.match(bad.stderr, /usage: board internal hook/);
   } finally {
