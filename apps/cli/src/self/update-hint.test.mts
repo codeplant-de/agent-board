@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runBoard } from '../commands/program.mts';
-import type { ProgramOptions } from '../commands/program.mts';
+import type { ProgramOptions } from '../commands/program-shared.mts';
 import type { LinkingContext } from '../cli.mts';
 import { HINT_EVERY_MS, updateHint } from './update-hint.mts';
 import { CONFIG, fakeBackend, fakeUpdateState, linkTo, task } from '../__tests__/helpers/fakes.mts';

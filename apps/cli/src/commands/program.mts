@@ -1,66 +1,20 @@
 import { Command, CommanderError } from 'commander';
 import { API_VERSION } from '@agent-board/shared';
 import { readNoteFile } from './board.mts';
-import type { Spawner } from './board.mts';
-import type { WaitStore } from '../dispatch/waits.mts';
 import { buildContext, readStdin, UsageError } from '../cli.mts';
-import type { Context, ContextOptions, LinkingContext } from '../cli.mts';
+import type { Context, LinkingContext } from '../cli.mts';
 import { getPaths } from '../config/config.mts';
-import type { DoctorDeps } from '../setup/doctor.mts';
-import type { Prompts } from '../setup/init.mts';
-import type { SelfUpdateDeps } from '../self/self-update.mts';
-import type { SetupDeps } from '../setup/setup.mts';
 import { resolveTaskId } from './ids.mts';
 import { cliVersion } from '../self/version.mts';
 import { updateHint } from '../self/update-hint.mts';
 import { createUpdateState, updateStateFile } from '../self/update-state.mts';
-import type { UpdateState } from '../self/update-state.mts';
 import { SETUP } from './help-text.mts';
-import type { ProgramShared } from './program-shared.mts';
+import type { ProgramOptions, ProgramShared } from './program-shared.mts';
 import { registerDirsCommand } from './register-dirs.mts';
 import { registerInternalCommands } from './register-internal.mts';
 import { registerDelayCommand, registerScheduleCommands } from './register-scheduling.mts';
 import { registerSetupCommands } from './register-setup.mts';
 import { registerTaskCommands } from './register-tasks.mts';
-
-export interface ProgramOptions {
-  env?: Record<string, string | undefined>;
-  // The context of a command; tests hand over a fake backend.
-  context?: (dryRun: boolean, options: ContextOptions) => LinkingContext;
-  readStdin?: () => Promise<string>;
-  // Starts claude for `attach`; tests must not launch the real one.
-  spawnClaude?: Spawner;
-  writeOut?: (text: string) => void;
-  writeErr?: (text: string) => void;
-  version?: string;
-  // The machine under the setup commands; tests replace what would touch it.
-  prompts?: Prompts;
-  interactive?: boolean;
-  hostName?: string;
-  now?: () => Date;
-  which?: SetupDeps['which'];
-  platform?: string;
-  // Runs a systemctl call that changes something (daemon-reload, enable).
-  runSystem?: SetupDeps['run'];
-  // The exit code of a read-only systemctl call.
-  systemctlCode?: DoctorDeps['systemctl'];
-  verifyServer?: DoctorDeps['verifyServer'];
-  // Runs `gh` for self-update.
-  gh?: (args: string[]) => Promise<string>;
-  // Restarts the listener after self-update replaced the binary.
-  restartListener?: SelfUpdateDeps['restartListener'];
-  // The command line being run, set by runBoard.
-  argv?: string[];
-  // Where `board wait --check` stores the check, and the directory it runs in.
-  waits?: WaitStore;
-  cwd?: string;
-  // The home directory, which `board dirs` warns about.
-  home?: string;
-  // Whether stderr is a terminal, the only place the update hint is shown.
-  stderrIsTty?: boolean;
-  // Where the update hint remembers when it was last shown.
-  updateState?: UpdateState;
-}
 
 // `comment <task> [text...]` in the overview, without commander's `[options]` and without the long usage of `comment`.
 function overviewTerm(command: Command): string {

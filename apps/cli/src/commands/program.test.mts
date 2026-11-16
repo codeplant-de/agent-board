@@ -8,7 +8,7 @@ import { BackendError } from '../backend/backend.mts';
 import { UsageError } from '../cli.mts';
 import type { LinkingContext } from '../cli.mts';
 import { runBoard } from './program.mts';
-import type { ProgramOptions } from './program.mts';
+import type { ProgramOptions } from './program-shared.mts';
 import { CONFIG, fakeBackend, fakeWaitStore, linkTo, task } from '../__tests__/helpers/fakes.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');

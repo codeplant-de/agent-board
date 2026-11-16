@@ -19,7 +19,7 @@ import { BackendError } from '../backend/backend.mts';
 import { UsageError } from '../cli.mts';
 import type { LinkingContext } from '../cli.mts';
 import { runBoard } from './program.mts';
-import type { ProgramOptions } from './program.mts';
+import type { ProgramOptions } from './program-shared.mts';
 import { ConfigError } from '../config/config.mts';
 import { changeDirs } from './dirs.mts';
 import { CONFIG, fakeBackend, linkTo, schedule, task } from '../__tests__/helpers/fakes.mts';
