@@ -30,6 +30,7 @@ function machine(
     which: (program) => `/usr/bin/${program}`,
     whichInUnits: (program) => `/usr/bin/${program}`,
     home: '/home/me',
+    platform: 'linux',
     systemctl: async () => 0,
     verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId, api: SERVER_API, features: SERVER_HAS }),
     ...overrides,
@@ -187,6 +188,19 @@ test('a dirs setting over a different old path is a warning that says the settin
     ['defaultCwd is overridden by dirs["/srv/a"].default'],
   );
   assert.match(warned[0]?.hint ?? '', /the directory setting is the one that counts/);
+});
+
+test('on macOS the worker checks are left out and one line says a worker needs Linux', async () => {
+  const results = await runChecks(
+    machine(GOOD, { platform: 'darwin', whichInUnits: () => undefined, exists: (path) => path in GOOD }),
+  );
+  const worker = results.filter((result) => /^(tool|unit|worker)/.test(result.name));
+  assert.deepEqual(
+    worker.map((result) => [result.name, result.level]),
+    [['worker', 'ok']],
+  );
+  assert.match(worker[0]?.message ?? '', /needs Linux with systemd, and this is macOS/);
+  assert.equal(hasFailure(results), false);
 });
 
 test('with units installed a missing tool or a vanished program fails; a disabled timer only warns', async () => {
