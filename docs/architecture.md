@@ -136,13 +136,14 @@ Break one of these only with a decision recorded here.
 | Task logic, schedules, retention         | `apps/backend/src/services/`                                     |
 | Schema, RLS scope, migrations            | `apps/backend/src/db/`, `apps/backend/drizzle/`                  |
 | Change events                            | `apps/backend/src/services/changes.ts` (in-process, one replica) |
-| Dispatch decisions                       | `apps/cli/src/decide.mts`, `dispatch.mts`                        |
-| Running Claude, transcripts              | `apps/cli/src/worker.mts`, `transcript-upload.mts`               |
-| Hook                                     | `apps/cli/src/hook.mts`                                          |
-| Intake                                   | `apps/cli/src/intake.mts`, `github.mts`                          |
+| Dispatch decisions                       | `apps/cli/src/dispatch/decide.mts`, `dispatch.mts`               |
+| Running Claude, transcripts              | `apps/cli/src/worker/worker.mts`, `transcript-upload.mts`        |
+| Hook                                     | `apps/cli/src/worker/hook.mts`                                   |
+| Intake                                   | `apps/cli/src/intake/intake.mts`, `github.mts`                   |
 | Slack app, Slack intake API              | `apps/slack/src/`, `apps/backend/src/intake-api.ts`              |
 | Slack inbox and links                    | `apps/backend/src/services/slack.ts`                             |
-| systemd units                            | `apps/cli/src/setup.mts`, `system.mts`                           |
+| systemd units                            | `apps/cli/src/setup/setup.mts`, `system.mts`                     |
+| The `board` commands                     | `apps/cli/src/commands/`                                         |
 | Browser keys                             | `apps/frontend/src/crypto/`                                      |
 
 ## Known limits
