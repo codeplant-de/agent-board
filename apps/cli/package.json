@@ -8,7 +8,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test test/*.test.mts",
+    "test": "node --test \"src/**/*.test.mts\"",
     "typecheck": "tsc --noEmit",
     "build": "./build.sh",
     "test:binary": "node scripts/binary-smoke.mts",

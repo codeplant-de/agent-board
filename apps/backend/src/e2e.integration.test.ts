@@ -15,7 +15,13 @@ import { renderThread } from '../../cli/src/commands/board.mts';
 import { runDispatch, type DispatchDeps } from '../../cli/src/dispatch/dispatch.mts';
 import { createSealedBackend } from '../../cli/src/backend/sealing.mts';
 import { runWorker, type WorkerDeps } from '../../cli/src/worker/worker.mts';
-import { CONFIG, fakeRunFiles, fakeSessions, fakeTaskFiles, fakeWaitStore } from '../../cli/test/helpers.mts';
+import {
+  CONFIG,
+  fakeRunFiles,
+  fakeSessions,
+  fakeTaskFiles,
+  fakeWaitStore,
+} from '../../cli/src/__tests__/helpers/fakes.mts';
 import { createKeySetup, exportDataKey } from '../../frontend/src/crypto/keySlots';
 import { inspectStoredKeys } from '../../frontend/src/crypto/keyStore';
 import { createBrowserHarness } from '../../frontend/src/test/browserHarness';
