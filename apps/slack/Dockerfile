@@ -6,7 +6,7 @@
 ########################################
 # Builder: full install, bundle with esbuild (inlines @agent-board/shared)
 ########################################
-FROM node:24-bookworm-slim AS builder
+FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS builder
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable && corepack prepare pnpm@11.28.9 --activate
@@ -25,7 +25,7 @@ RUN pnpm --filter @agent-board/slack build
 ########################################
 # Production dependencies only (@slack/socket-mode)
 ########################################
-FROM node:24-bookworm-slim AS deps
+FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS deps
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable && corepack prepare pnpm@11.28.9 --activate
@@ -38,7 +38,7 @@ RUN pnpm install --frozen-lockfile --prod --filter @agent-board/slack...
 ########################################
 # Runtime
 ########################################
-FROM node:24-bookworm-slim AS runtime
+FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS runtime
 ENV NODE_ENV=production
 
 # Non-root. It holds no state and listens on no port: it connects out to Slack and to the backend.
