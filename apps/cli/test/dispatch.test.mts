@@ -12,8 +12,10 @@ import type { UpdateState } from '../src/update-state.mts';
 import { parseWorkerUnits, SystemError } from '../src/system.mts';
 import type { System } from '../src/system.mts';
 import { START_MARKER } from '../src/decide.mts';
-import { CONFIG, DATA_KEY, fakeBackend, fakeRunFiles, fakeWaitStore, task } from './helpers.mts';
+import { CONFIG, DATA_KEY, fakeBackend, fakeRunFiles, fakeTaskFiles, fakeWaitStore, task } from './helpers.mts';
 import type { CheckResult, WaitCheck } from '../src/waits.mts';
+import { TASK_FILES_KEEP_MS } from '../src/dispatch.mts';
+import type { TaskFile } from '../src/task-files.mts';
 import type { FakeBackend } from './helpers.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
@@ -41,9 +43,11 @@ function setup(
   {
     checks = {},
     checkResult,
+    taskFiles: initialFiles = [],
     ...updating
   }: {
     checks?: Record<string, WaitCheck>;
+    taskFiles?: TaskFile[];
     checkResult?: (check: WaitCheck) => CheckResult;
     autoUpdate?: AutoUpdate;
     advertised?: string;
@@ -91,6 +95,7 @@ function setup(
       return 'updated';
     },
   };
+  const taskFiles = fakeTaskFiles(initialFiles);
   const deps: DispatchDeps = {
     backend,
     config: { ...CONFIG, autoUpdate: updating.autoUpdate ?? 'incompatible' },
@@ -101,6 +106,7 @@ function setup(
     now: () => NOW,
     logTail: () => 'last log line',
     waits,
+    taskFiles,
     runCheck: async (check) => {
       ranChecks.push(check.command);
       return checkResult?.(check) ?? { exitCode: 1, timedOut: false, output: 'pending' };
@@ -108,7 +114,7 @@ function setup(
     update,
     configWarnings: () => updating.warnings ?? [],
   };
-  return { backend, deps, started, stopped, logs, files, waits, ranChecks, updates, state };
+  return { backend, deps, started, stopped, logs, files, waits, taskFiles, ranChecks, updates, state };
 }
 
 const running = (id: string) => task({ id, status: 'running', input: '/selftest go' });
@@ -544,6 +550,71 @@ test('a check whose task left Waiting is dropped; one whose task still runs is k
   );
   await runDispatch(deps);
   assert.deepEqual(waits.list(), ['r1']);
+});
+
+const OLD = new Date(NOW.getTime() - TASK_FILES_KEEP_MS - 60_000);
+const RECENT = new Date(NOW.getTime() - TASK_FILES_KEEP_MS + 60_000);
+const filesOf = (taskId: string, modifiedAt: Date = OLD): TaskFile[] => [
+  { kind: 'log', taskId, modifiedAt },
+  { kind: 'session', taskId, modifiedAt },
+];
+const remaining = (files: TaskFile[]): string[] => files.map((file) => `${file.kind} ${file.taskId}`).sort();
+
+test('old logs and session records of done, closed and deleted tasks are dropped; recent ones stay', async () => {
+  const { deps, taskFiles, logs } = setup(
+    [
+      task({ id: 'done', status: 'done' }),
+      task({ id: 'closed', status: 'needs-me', closed: true }),
+      task({ id: 'fresh', status: 'done' }),
+    ],
+    [],
+    {},
+    { taskFiles: [...filesOf('done'), ...filesOf('closed'), ...filesOf('deleted'), ...filesOf('fresh', RECENT)] },
+  );
+  await runDispatch(deps);
+  assert.deepEqual(remaining(taskFiles.files), ['log fresh', 'session fresh']);
+  assert.ok(logs.includes('DROP-LOG done its task is finished'));
+  assert.ok(logs.includes('DROP-SESSION closed its task is finished'));
+  assert.ok(logs.includes('DROP-SESSION deleted its task is finished'));
+});
+
+test('the files of a task that may still run, or whose worker still runs here, stay however old', async () => {
+  const { deps, taskFiles, logs } = setup(
+    [
+      task({ id: 'resume', status: 'todo', next: 'resume', sessionId: 's', machine: 'there' }),
+      task({ id: 'waiting', status: 'waiting', machine: 'here' }),
+      task({ id: 'running', status: 'running', machine: 'here' }),
+      task({ id: 'needs', status: 'needs-me' }),
+      task({ id: 'stopping', status: 'done' }),
+    ],
+    ['agent-board-running', 'agent-board-stopping'],
+    {},
+    {
+      taskFiles: ['resume', 'waiting', 'running', 'needs', 'stopping', 'hidden', 'down'].flatMap((id) => filesOf(id)),
+    },
+  );
+  const getTask = deps.backend.getTask.bind(deps.backend);
+  deps.backend.getTask = async (id) => {
+    if (id === 'hidden') throw vocabularyRefusal();
+    if (id === 'down') throw new BackendError('cannot reach the board');
+    return getTask(id);
+  };
+  await runDispatch(deps);
+  assert.equal(taskFiles.files.length, 14);
+  assert.ok(!logs.some((line) => line.startsWith('DROP-')));
+});
+
+test('a dry run prints the files it would drop and removes none', async () => {
+  const { deps, taskFiles, logs } = setup(
+    [task({ id: 'done', status: 'done' })],
+    [],
+    {},
+    { taskFiles: filesOf('done') },
+  );
+  await runDispatch({ ...deps, dryRun: true });
+  assert.equal(taskFiles.files.length, 2);
+  assert.ok(logs.includes('DROP-LOG done its task is finished'));
+  assert.ok(logs.includes('DROP-SESSION done its task is finished'));
 });
 
 const tooOld = (backend: FakeBackend): void => {
