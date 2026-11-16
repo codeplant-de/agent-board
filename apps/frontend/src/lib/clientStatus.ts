@@ -26,7 +26,7 @@ export const CLIENT_COLOR: Record<ClientStatus, string> = {
   unknown: 'dimmed',
 };
 
-const RECENT_MS = 24 * 60 * 60 * 1000;
+export const RECENT_MS = 24 * 60 * 60 * 1000;
 
 /** Machines whose CLI the board refuses and that were seen lately: a revoked token or a machine long gone is no news. */
 export function incompatibleMachines(machines: readonly Machine[], now: number = Date.now()): Machine[] {

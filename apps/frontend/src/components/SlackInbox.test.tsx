@@ -24,6 +24,7 @@ vi.mock('../lib/trpc', () => ({
       },
     },
     tasks: { create: { mutationOptions: () => ({ mutationFn: create }) } },
+    machines: { list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => [] }) } },
   }),
 }));
 
