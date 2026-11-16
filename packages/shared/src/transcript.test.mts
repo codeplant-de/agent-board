@@ -6,6 +6,7 @@ import {
   MAX_BATCH_EVENTS,
   MAX_OUTPUT_CHARS,
   MAX_TEXT_CHARS,
+  parseTranscriptEvent,
   parseWireTranscriptBatch,
   StreamCondenser,
   toolSummary,
@@ -230,4 +231,52 @@ test('text within the bound is kept as it is', () => {
     JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'x'.repeat(MAX_TEXT_CHARS) }] } }),
   );
   assert.ok(event?.kind === 'text' && event.text.length === MAX_TEXT_CHARS);
+});
+
+test('every event the condenser makes reads back as itself, through JSON like the board stores it', () => {
+  const condenser = new StreamCondenser(() => at);
+  const events = lines.flatMap((line) => condenser.line(line));
+  assert.ok(new Set(events.map((e) => e.kind)).size >= 5, 'the fixture covers most kinds');
+  for (const event of events) assert.deepEqual(parseTranscriptEvent(JSON.parse(JSON.stringify(event))), event);
+});
+
+test('an event read back fills what an older worker left out and refuses what does not fit its kind', () => {
+  const base = { seq: 4, at: at.toISOString(), parent: null };
+  assert.deepEqual(parseTranscriptEvent({ ...base, kind: 'result', text: 'done', isError: true }), {
+    ...base,
+    kind: 'result',
+    text: 'done',
+    isError: true,
+    turns: null,
+    durationMs: null,
+    costUsd: null,
+    denials: [],
+  });
+  assert.deepEqual(parseTranscriptEvent({ seq: 4, at: base.at, kind: 'thinking', text: '' }), {
+    ...base,
+    kind: 'thinking',
+    text: '',
+    tokens: null,
+  });
+  // The output of a tool result is sealed apart.
+  assert.deepEqual(parseTranscriptEvent({ ...base, kind: 'tool_result', toolUseId: 't', isError: false }), {
+    ...base,
+    kind: 'tool_result',
+    toolUseId: 't',
+    isError: false,
+    output: '',
+  });
+  for (const bad of [
+    null,
+    [],
+    { ...base, kind: 'text' },
+    { ...base, kind: 'later', text: 'x' },
+    { ...base, seq: -1, kind: 'note', text: 'x' },
+    { ...base, at: 5, kind: 'note', text: 'x' },
+    { ...base, parent: 7, kind: 'note', text: 'x' },
+    { ...base, kind: 'tool_use', toolUseId: 't' },
+    { ...base, kind: 'result', text: 'x', isError: false, denials: [1] },
+    { ...base, kind: 'result', text: 'x' },
+  ])
+    assert.equal(parseTranscriptEvent(bad), undefined, JSON.stringify(bad));
 });
