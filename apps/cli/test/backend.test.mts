@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   API_VERSION,
   BASELINE_SERVER_FEATURES,
+  blindIndex,
   CLIENT_FEATURES_HEADER,
   deriveKeys,
   encodeDataKey,
@@ -700,4 +701,46 @@ test('recording a PR state needs the task.pr-state feature and is refused withou
   const withIt = boardWith(['task.pr-state'], { 'set-pr-state': { body: { result: null } } });
   await withIt.backend.setPrState('abc', { prState: 'merged' });
   assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { prState: 'merged' } });
+});
+
+test('the directory list: the server must name machine.dirs, its index comes from the version answer, and a junk index is none', async () => {
+  const make = (features: string[], dirsIndex?: unknown) => {
+    const seen: string[] = [];
+    const fetcher: Fetch = async (url) => {
+      const command = url.slice(`${config.url}/api/machine/`.length);
+      seen.push(command);
+      const result = command === 'version' ? { ...VERSION_ANSWER, features, dirsIndex } : null;
+      return new Response(JSON.stringify({ result }));
+    };
+    return { seen, backend: createWebBackend({ loadConfig: () => config, fetch: fetcher }) };
+  };
+  const index = await blindIndex(KEYS, 'dirs:here:{}');
+  const having = make(['machine.dirs'], index);
+  assert.deepEqual(await having.backend.dirsState(), { supported: true, index });
+  await having.backend.setDirs({ dirs: 'abe1.x', index });
+  assert.deepEqual(having.seen, ['version', 'set-dirs']);
+  for (const junk of [undefined, null, 7, 'abh1.short', 'abe1.x']) {
+    assert.deepEqual(await make(['machine.dirs'], junk).backend.dirsState(), { supported: true, index: null });
+  }
+  const lacking = make(['events'], index);
+  assert.deepEqual(await lacking.backend.dirsState(), { supported: false, index });
+  await assert.rejects(
+    lacking.backend.setDirs({ dirs: 'abe1.x', index }),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'machine.dirs' &&
+      /does not support directory lists yet/.test(error.message),
+  );
+  assert.deepEqual(lacking.seen, ['version']);
+});
+
+test('a dry run prints the directory list it would send and sends nothing', async () => {
+  const { seen, fetcher } = board({});
+  const lines: string[] = [];
+  const dry = dryRunBackend(createSealedBackend({ loadConfig: () => config, fetch: fetcher }), (line) =>
+    lines.push(line),
+  );
+  await dry.setDirs('here', [{ path: '/a' }, { path: '/b' }]);
+  assert.deepEqual(lines, ['DRY set-dirs 2 directories']);
+  assert.deepEqual(seen, []);
 });

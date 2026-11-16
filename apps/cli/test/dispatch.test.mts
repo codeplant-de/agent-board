@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { runDispatch } from '../src/dispatch.mts';
 import type { DispatchDeps } from '../src/dispatch.mts';
@@ -783,4 +784,47 @@ test('the listener and foreign agent-board units are not workers: they neither w
   deps.system.activeWorkers = async () => parseWorkerUnits(listing);
   await runDispatch(deps);
   assert.deepEqual(updates, ['self-update']);
+});
+
+const listed = { ...CONFIG, dirs: [{ path: tmpdir() }, { path: '/does/not/exist/for/sure' }] };
+
+test('a tick sends the directory list when the board lacks it or has an older one, and logs it once', async () => {
+  const { deps, backend, logs } = setup([]);
+  deps.config = listed;
+  await runDispatch(deps);
+  assert.deepEqual(
+    backend.writes.filter((w) => w.startsWith('dirs ')),
+    [`dirs here: ${tmpdir()}`],
+  );
+  assert.ok(logs.includes('DIRS sent 1 directories to the board'));
+  await runDispatch(deps);
+  assert.equal(backend.writes.filter((w) => w.startsWith('dirs ')).length, 1);
+  assert.equal(logs.filter((line) => line.startsWith('DIRS')).length, 1, 'unchanged logs nothing');
+  deps.config = { ...CONFIG, dirs: [] };
+  await runDispatch(deps);
+  assert.ok(logs.includes('DIRS sent 0 directories to the board'));
+});
+
+test('a tick without a dirs key, or on a server without directory lists, sends and logs nothing about them', async () => {
+  const plain = setup([todo('t1')]);
+  await runDispatch(plain.deps);
+  assert.ok(!plain.backend.writes.some((w) => w.startsWith('dirs ')));
+  const old = setup([todo('t1')]);
+  old.deps.config = listed;
+  old.backend.boardDirs.supported = false;
+  await runDispatch(old.deps);
+  assert.ok(!old.backend.writes.some((w) => w.startsWith('dirs ')));
+  assert.ok(!old.logs.some((line) => /dirs|DIRS/i.test(line)));
+  assert.deepEqual(old.started, ['t1']);
+});
+
+test('a failure to send the directory list costs one WARN line, and the tick goes on', async () => {
+  const { deps, backend, logs, started } = setup([todo('t1')]);
+  deps.config = listed;
+  backend.boardDirs.failure = new BackendError('set-dirs: the server answered 502 without JSON', 502);
+  await runDispatch(deps);
+  assert.equal(logs.filter((line) => line.includes('directory list')).length, 1);
+  assert.ok(logs.includes('WARN sending the directory list failed: set-dirs: the server answered 502 without JSON'));
+  assert.deepEqual(started, ['t1']);
+  assert.ok(logs.some((line) => line.startsWith('TICK ')));
 });

@@ -135,6 +135,11 @@ describe('what the application role can store afterwards', () => {
       values ('r1', 0, now(), 'note', ${o.data ?? ENVELOPE}, ${o.output ?? null})`);
   };
 
+  const machine = (tx: Tx, o: { dirs?: string | null; dirsIndex?: string | null } = {}) =>
+    tx.execute(sql`
+      insert into machine (name, token_hash, dirs, dirs_index)
+      values ('laptop', 'hash', ${o.dirs ?? null}, ${o.dirsIndex ?? null})`);
+
   const plaintextCases: [string, string, (tx: Tx) => Promise<unknown>][] = [
     ['task_title_sealed', 'a plain task title', (tx) => task(tx, { title: 'plain' })],
     ['task_input_sealed', 'a plain prompt', (tx) => task(tx, { input: 'plain' })],
@@ -144,6 +149,9 @@ describe('what the application role can store afterwards', () => {
     ['task_dedupe_key_blind', 'a plain dedupe key', (tx) => task(tx, { dedupeKey: 'https://github.com/o/r/pull/1' })],
     ['task_head_blind', 'a plain head', (tx) => task(tx, { head: 'abcdef1' })],
     ['task_head_blind', 'an envelope as a head', (tx) => task(tx, { head: ENVELOPE })],
+    ['machine_dirs_sealed', 'a plain directory list', (tx) => machine(tx, { dirs: '{"dirs":[]}' })],
+    ['machine_dirs_index_blind', 'a plain directory list index', (tx) => machine(tx, { dirsIndex: 'abcdef' })],
+    ['machine_dirs_index_blind', 'an envelope as a list index', (tx) => machine(tx, { dirsIndex: ENVELOPE })],
     ['task_title_sealed', 'a too short envelope', (tx) => task(tx, { title: 'abe1.AAAA' })],
     ['task_title_sealed', 'an envelope with a line break', (tx) => task(tx, { title: `${ENVELOPE}\n` })],
     ['schedule_title_sealed', 'a plain schedule title', (tx) => schedule(tx, { title: 'plain' })],
@@ -194,6 +202,7 @@ describe('what the application role can store afterwards', () => {
     await as(async (tx) => {
       await task(tx, { workdir: ENVELOPE, pr: ENVELOPE, dedupeKey: BLIND_INDEX, head: BLIND_INDEX });
       await schedule(tx, { workdir: ENVELOPE });
+      await machine(tx, { dirs: ENVELOPE, dirsIndex: BLIND_INDEX });
     });
     await clear();
     await as(async (tx) =>

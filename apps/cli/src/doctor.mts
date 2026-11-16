@@ -5,8 +5,15 @@ import type { ServerIdentity, WebConfig } from './backend.mts';
 import { ConfigError, configWarnings, isSafeMode, parseConfig } from './config.mts';
 import type { Config } from './config.mts';
 import { plainLine } from './terminal.mts';
-import { API_VERSION, decodeDataKey, SERVER_FEATURE_LABELS, SERVER_FEATURES } from '@agent-board/shared';
-import { isAllowedDir, routedDirs, UNCOVERED_HINT } from './dirs.mts';
+import {
+  API_VERSION,
+  decodeDataKey,
+  machineDirsIndex,
+  SERVER_FEATURE_LABELS,
+  SERVER_FEATURES,
+} from '@agent-board/shared';
+import type { Keys } from '@agent-board/shared';
+import { dirsToSend, isAllowedDir, routedDirs, UNCOVERED_HINT } from './dirs.mts';
 import { parseEnv } from './env-file.mts';
 import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
 import { errorText } from './text.mts';
@@ -230,6 +237,30 @@ const missingFeatureChecks = (features: ReadonlySet<string>): CheckResult[] => {
       ];
 };
 
+// Whether the board holds the current directory list of this machine, for a machine with a `dirs` key and a server that can hold one.
+async function dirsOnBoardChecks(deps: DoctorDeps, identity: ServerIdentity, keys: Keys): Promise<CheckResult[]> {
+  if (!identity.features.has('machine.dirs')) return [];
+  const text = deps.readText(join(deps.configDir, 'config.json'));
+  let config: Config;
+  try {
+    config = parseConfig(text === undefined ? undefined : JSON.parse(text));
+  } catch {
+    return [];
+  }
+  if (config.dirs === undefined) return [];
+  const index = await machineDirsIndex(keys, config.machine, dirsToSend(config.dirs, deps.isDirectory));
+  return [
+    index === identity.dirsIndex
+      ? ok('dirs on board', 'the board has the current list')
+      : problem(
+          'dirs on board',
+          'warn',
+          'the board does not have the current list yet',
+          'the next dispatch tick sends it; "board dirs add" or "board dirs rm" send it at once',
+        ),
+  ];
+}
+
 const checkServer: Check = async (deps) => {
   const { url } = readWebUrl(deps);
   const { token, dataKey } = readCredentials(deps);
@@ -261,6 +292,7 @@ const checkServer: Check = async (deps) => {
       return [
         ...results,
         ok('board key', `the board's data key is id ${checked.keys.keyId}, and this machine holds it`),
+        ...(await dirsOnBoardChecks(deps, identity, checked.keys)),
       ];
     return [
       ...results,

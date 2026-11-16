@@ -183,6 +183,13 @@
       "when": 1794809800899,
       "tag": "0025_note-created-wall-clock",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1794817225233,
+      "tag": "0026_machine-dirs",
+      "breakpoints": true
     }
   ]
 }

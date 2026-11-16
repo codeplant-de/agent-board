@@ -536,6 +536,12 @@ and `board schedule` and `board add` refuse (`board add` falls back to the
 directory the run started in) outside it. `add` and `rm` rewrite the `dirs` key
 of config.json and nothing else, and are not available inside a board run.
 
+The board gets a copy of the list, for the New task form to offer: the listed
+directories that exist, sent by `add` and `rm` and by every dispatch tick when
+it changed. The copy is advice; workers read only this machine's config.json. If
+the board cannot be reached, `add` and `rm` still succeed, warn, and leave it to
+the next dispatch tick.
+
 Arguments:
   action         list, add or rm, and a path
 
