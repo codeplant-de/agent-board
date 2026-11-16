@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createGitHub, GitHubError } from './github.mts';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createGitHub, GitHubError, parsePrStates, prStatesQuery, prStatesVariables } from './github.mts';
 
 interface Call {
   file: string;
@@ -32,78 +35,6 @@ function field(args: string[], name: string): string | undefined {
 }
 
 const url = (n: number) => `https://github.com/acme/app/pull/${n}`;
-
-const node = (n: number) => ({
-  url: url(n),
-  title: `PR ${n}`,
-  number: n,
-  isDraft: false,
-  headRefOid: `sha${n}`,
-  author: { login: 'dev' },
-  commits: { nodes: [{ commit: { committedDate: '2026-11-01T10:00:00Z' } }] },
-});
-
-const page = (nodes: unknown[], endCursor?: string) => ({
-  data: { search: { pageInfo: { hasNextPage: endCursor !== undefined, endCursor: endCursor ?? null }, nodes } },
-});
-
-test('the review-request search follows the cursor from page to page', async () => {
-  const { calls, run } = recorder((_call, index) =>
-    index === 0 ? page([node(1), { url: url(2), title: 'no commit' }], 'c1') : page([node(3)]),
-  );
-  const found = await createGitHub(run).listReviewRequested(['acme/app', 'acme/lib']);
-  assert.deepEqual(
-    found.prs.map((pr) => pr.number),
-    [1, 3],
-  );
-  assert.deepEqual(found.unreadable, [url(2)]);
-  assert.equal(calls.length, 2);
-  for (const { file, args } of calls) {
-    assert.equal(file, 'gh');
-    assert.deepEqual(args.slice(0, 2), ['api', 'graphql']);
-    assert.equal(field(args, 'q'), 'is:pr is:open draft:false review-requested:@me repo:acme/app repo:acme/lib');
-    assert.match(field(args, 'query') ?? '', /search\(query: \$q, type: ISSUE, first: 100, after: \$after\)/);
-  }
-  assert.equal(field(calls[0]?.args ?? [], 'after'), undefined);
-  assert.equal(field(calls[1]?.args ?? [], 'after'), 'c1');
-});
-
-test('no repositories asks nothing; a bad repository name is refused before gh runs', async () => {
-  const { calls, run } = recorder(() => page([]));
-  assert.deepEqual(await createGitHub(run).listReviewRequested([]), { prs: [], unreadable: [] });
-  await assert.rejects(createGitHub(run).listReviewRequested(['acme/app repo:evil/x']), GitHubError);
-  assert.deepEqual(calls, []);
-});
-
-test('a listing longer than ten pages fails instead of coming back cut short', async () => {
-  const { calls, run } = recorder((_call, index) => page([node(index + 1)], `c${index + 1}`));
-  await assert.rejects(createGitHub(run).listReviewRequested(['acme/app']), {
-    name: 'Error',
-    message: 'gh api graphql: more than 1000 review requests',
-  });
-  assert.equal(calls.length, 10);
-});
-
-test('a failed or unreadable search page fails the listing, with the first line of what gh said', async () => {
-  const failing = recorder(() => ghFailed('HTTP 401: Bad credentials\n(more)'));
-  await assert.rejects(createGitHub(failing.run).listReviewRequested(['acme/app']), {
-    message: 'gh api graphql failed: HTTP 401: Bad credentials',
-  });
-  // The search does not keep an answer that came with a failure: a partial listing must not pass for the whole queue.
-  const partial = recorder(() => ghFailed('rate limited', JSON.stringify(page([node(1)]))));
-  await assert.rejects(
-    createGitHub(partial.run).listReviewRequested(['acme/app']),
-    /gh api graphql failed: rate limited/,
-  );
-  const noStderr = recorder(() => Object.assign(new Error('spawn gh ENOENT'), { stderr: '' }));
-  await assert.rejects(createGitHub(noStderr.run).listReviewRequested(['acme/app']), {
-    message: 'gh api graphql failed: spawn gh ENOENT',
-  });
-  const notJson = recorder(() => 'not json');
-  await assert.rejects(createGitHub(notJson.run).listReviewRequested(['acme/app']), GitHubError);
-  const odd = recorder((_call, index) => (index === 0 ? page([node(1)], 'c1') : { data: {} }));
-  await assert.rejects(createGitHub(odd.run).listReviewRequested(['acme/app']), /unreadable gh search output/);
-});
 
 // An answer to the PR state query for the URLs in a call: each alias gets the state `state` gives its PR number.
 function statesAnswer(args: string[], state: (number: number) => string | null) {
@@ -166,4 +97,71 @@ test('no queryable PR asks gh nothing', async () => {
     unreadable: ['https://example.com/x'],
   });
   assert.deepEqual(calls, []);
+});
+
+test('the PR states query has an alias and variables per PR, and no URL text in it', () => {
+  const urls = [url(1), 'https://github.com/o/r.x/pull/22'];
+  assert.equal(
+    prStatesQuery(2),
+    [
+      'query($o0: String!, $n0: String!, $k0: Int!, $o1: String!, $n1: String!, $k1: Int!) {',
+      '  p0: repository(owner: $o0, name: $n0) { pullRequest(number: $k0) { state } }',
+      '  p1: repository(owner: $o1, name: $n1) { pullRequest(number: $k1) { state } }',
+      '}',
+    ].join('\n'),
+  );
+  assert.deepEqual(prStatesVariables(urls), {
+    o0: 'acme',
+    n0: 'app',
+    k0: 1,
+    o1: 'o',
+    n1: 'r.x',
+    k1: 22,
+  });
+  assert.equal(prStatesVariables(['https://github.com/o"x/r/pull/1']), undefined);
+  assert.equal(prStatesVariables(['https://github.com/o/r/pull/2147483648']), undefined);
+  assert.ok(prStatesVariables(['https://github.com/o/r/pull/2147483647']));
+});
+
+test('the PR states answer maps GitHub’s states, and a PR it found nothing for is unreadable', () => {
+  const urls = [url(1), url(2), url(3), url(4)];
+  const answer = {
+    data: {
+      p0: { pullRequest: { state: 'MERGED' } },
+      p1: { pullRequest: { state: 'CLOSED' } },
+      p2: null,
+      p3: { pullRequest: { state: 'SOMETHING_NEW' } },
+    },
+    errors: [{ type: 'NOT_FOUND' }],
+  };
+  const found = parsePrStates(answer, urls);
+  assert.deepEqual(
+    [...found.states],
+    [
+      [url(1), 'merged'],
+      [url(2), 'closed'],
+    ],
+  );
+  assert.deepEqual(found.unreadable, [url(3), url(4)]);
+  assert.deepEqual(
+    [...parsePrStates({ data: { p0: { pullRequest: { state: 'OPEN' } } } }, [url(1)]).states],
+    [[url(1), 'open']],
+  );
+  assert.throws(() => parsePrStates({ errors: [] }, urls), GitHubError);
+  assert.throws(() => parsePrStates('nope', urls), GitHubError);
+});
+
+test('createGitHub ends a gh call that outlasts timeoutMs', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-slow-gh-'));
+  const before = process.env['PATH'];
+  try {
+    writeFileSync(join(dir, 'gh'), '#!/bin/sh\nsleep 5\necho \'{"data":{}}\'\n', { mode: 0o755 });
+    process.env['PATH'] = `${dir}:${before}`;
+    const started = Date.now();
+    await assert.rejects(createGitHub(undefined, { timeoutMs: 100 }).prStates([url(1)]), GitHubError);
+    assert.ok(Date.now() - started < 3000, 'the call was cut off');
+  } finally {
+    process.env['PATH'] = before;
+    rmSync(dir, { recursive: true });
+  }
 });

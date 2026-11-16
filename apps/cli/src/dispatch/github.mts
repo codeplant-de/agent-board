@@ -15,25 +15,7 @@ const execRunner =
       ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
     });
 
-export interface LivePr {
-  url: string;
-  title: string;
-  author: string;
-  number: number;
-  headSha: string;
-  headCommittedAt: Date;
-  isDraft: boolean;
-}
-
-export interface ReviewRequests {
-  prs: LivePr[];
-  // URLs of listed PRs whose data could not be read. Intake leaves their tasks alone.
-  unreadable: string[];
-}
-
 export interface GitHub {
-  // Open, non-draft PRs in the given repositories that request the user's review.
-  listReviewRequested(repos: string[]): Promise<ReviewRequests>;
   // The state of each PR by URL. Throws when a whole query fails.
   prStates(urls: string[]): Promise<PrStateLookup>;
 }
@@ -46,70 +28,9 @@ export interface PrStateLookup {
 
 export class GitHubError extends Error {}
 
-const PAGE_SIZE = 100;
 const PR_STATES_PER_QUERY = 50;
 // GraphQL's Int is 32-bit: a larger PR number would fail the whole query.
 const MAX_GRAPHQL_INT = 2 ** 31 - 1;
-// A listing cut short would read as "these PRs no longer ask for a review", so it fails instead.
-const MAX_PAGES = 10;
-
-const SEARCH = `query($q: String!, $after: String) {
-  search(query: $q, type: ISSUE, first: ${PAGE_SIZE}, after: $after) {
-    pageInfo { hasNextPage endCursor }
-    nodes {
-      ... on PullRequest {
-        url title number isDraft headRefOid
-        author { login }
-        commits(last: 1) { nodes { commit { committedDate } } }
-      }
-    }
-  }
-}`;
-
-export function searchQuery(repos: string[]): string {
-  for (const repo of repos)
-    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new GitHubError(`"${repo}" is not a GitHub repository (owner/name)`);
-  return ['is:pr', 'is:open', 'draft:false', 'review-requested:@me', ...repos.map((repo) => `repo:${repo}`)].join(' ');
-}
-
-// A node that is not a record, or has no URL, fails the run: nothing says which PR it was.
-function parseNode(node: unknown): LivePr | { unreadable: string } {
-  if (!isRecord(node) || typeof node['url'] !== 'string')
-    throw new GitHubError('unexpected gh output: a search result has no URL');
-  const { url, title, number, isDraft, headRefOid, author, commits } = node;
-  const lastCommit = isRecord(commits) && Array.isArray(commits['nodes']) ? commits['nodes'].at(-1) : undefined;
-  const commit = isRecord(lastCommit) ? lastCommit['commit'] : undefined;
-  const committedDate = isRecord(commit) ? commit['committedDate'] : undefined;
-  if (
-    typeof title !== 'string' ||
-    typeof number !== 'number' ||
-    typeof isDraft !== 'boolean' ||
-    typeof headRefOid !== 'string' ||
-    typeof committedDate !== 'string' ||
-    Number.isNaN(new Date(committedDate).getTime())
-  ) {
-    return { unreadable: url };
-  }
-  // A deleted account has no author.
-  const login = isRecord(author) && typeof author['login'] === 'string' ? author['login'] : 'ghost';
-  return { url, title, number, isDraft, author: login, headSha: headRefOid, headCommittedAt: new Date(committedDate) };
-}
-
-// One page of the search answer: its PRs, the URLs of those it could not read, and where the next page starts.
-export function parseSearchPage(value: unknown): ReviewRequests & { next: string | undefined } {
-  const search = isRecord(value) && isRecord(value['data']) ? value['data']['search'] : undefined;
-  if (!isRecord(search) || !Array.isArray(search['nodes']) || !isRecord(search['pageInfo']))
-    throw new GitHubError('unreadable gh search output');
-  const { hasNextPage, endCursor } = search['pageInfo'];
-  if (typeof hasNextPage !== 'boolean') throw new GitHubError('unreadable gh search output');
-  if (hasNextPage && typeof endCursor !== 'string') throw new GitHubError('unreadable gh search output');
-  const nodes = search['nodes'].map(parseNode);
-  return {
-    prs: nodes.filter((node): node is LivePr => 'title' in node),
-    unreadable: nodes.flatMap((node) => ('unreadable' in node ? [node.unreadable] : [])),
-    next: hasNextPage ? String(endCursor) : undefined,
-  };
-}
 
 const GRAPHQL_STATES: Record<string, PrState> = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' };
 
@@ -162,13 +83,13 @@ export function parsePrStates(value: unknown, urls: string[]): PrStateLookup {
   return lookup;
 }
 
-async function gh(run: RunCommand, args: string[], { keepAnswerOnError = false } = {}): Promise<unknown> {
+async function gh(run: RunCommand, args: string[]): Promise<unknown> {
   try {
     const { stdout } = await run('gh', args);
     return JSON.parse(stdout);
   } catch (error) {
     // gh exits non-zero when the answer carries errors, such as a repository that is gone, and prints it all the same.
-    const answer = keepAnswerOnError && isRecord(error) ? error['stdout'] : undefined;
+    const answer = isRecord(error) ? error['stdout'] : undefined;
     if (typeof answer === 'string') {
       try {
         const parsed: unknown = JSON.parse(answer);
@@ -183,36 +104,10 @@ async function gh(run: RunCommand, args: string[], { keepAnswerOnError = false }
   }
 }
 
-// One search for all repositories. A failed search throws: the caller must not take a partial listing for the whole queue.
 // `timeoutMs` ends a `gh` call that takes longer (with the default runner), which then fails like any other.
 export function createGitHub(run?: RunCommand, { timeoutMs }: { timeoutMs?: number } = {}): GitHub {
   const exec = run ?? execRunner(timeoutMs);
   return {
-    async listReviewRequested(repos) {
-      if (repos.length === 0) return { prs: [], unreadable: [] };
-      const query = searchQuery(repos);
-      const prs: LivePr[] = [];
-      const unreadable: string[] = [];
-      let after: string | undefined;
-      for (let page = 0; page < MAX_PAGES; page++) {
-        const found = parseSearchPage(
-          await gh(exec, [
-            'api',
-            'graphql',
-            '-f',
-            `query=${SEARCH}`,
-            '-f',
-            `q=${query}`,
-            ...(after === undefined ? [] : ['-f', `after=${after}`]),
-          ]),
-        );
-        prs.push(...found.prs);
-        unreadable.push(...found.unreadable);
-        if (found.next === undefined) return { prs, unreadable };
-        after = found.next;
-      }
-      throw new GitHubError(`gh api graphql: more than ${MAX_PAGES * PAGE_SIZE} review requests`);
-    },
     async prStates(urls) {
       const queryable = urls.filter((url) => prStatesVariables([url]) !== undefined);
       const lookup: PrStateLookup = { states: new Map(), unreadable: urls.filter((url) => !queryable.includes(url)) };
@@ -223,20 +118,16 @@ export function createGitHub(run?: RunCommand, { timeoutMs }: { timeoutMs?: numb
         const variables = prStatesVariables(chunk) ?? {};
         try {
           const found = parsePrStates(
-            await gh(
-              exec,
-              [
-                'api',
-                'graphql',
-                '-f',
-                `query=${prStatesQuery(chunk.length)}`,
-                ...Object.entries(variables).flatMap(([name, value]) => [
-                  typeof value === 'number' ? '-F' : '-f',
-                  `${name}=${value}`,
-                ]),
-              ],
-              { keepAnswerOnError: true },
-            ),
+            await gh(exec, [
+              'api',
+              'graphql',
+              '-f',
+              `query=${prStatesQuery(chunk.length)}`,
+              ...Object.entries(variables).flatMap(([name, value]) => [
+                typeof value === 'number' ? '-F' : '-f',
+                `${name}=${value}`,
+              ]),
+            ]),
             chunk,
           );
           for (const [url, state] of found.states) lookup.states.set(url, state);

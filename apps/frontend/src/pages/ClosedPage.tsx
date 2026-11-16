@@ -14,7 +14,7 @@ export function ClosedPage() {
     <Stack maw={900} mx="auto">
       <Title order={3}>Closed tasks</Title>
       <Text size="sm" c="dimmed">
-        Out of the workflow: workers ignore them and intake never makes a second task for the same PR.
+        Out of the workflow: workers ignore them, and a PR whose review task is closed never gets another one.
       </Text>
       <QueryStatus query={tasks} what="closed tasks" />
       <Paper withBorder>

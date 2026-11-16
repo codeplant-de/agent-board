@@ -1,5 +1,5 @@
 // The `env` blocks of a checkout's Claude Code settings: .claude/settings.json, then .claude/settings.local.json on
-// top. Intake runs load only the user's settings, so the worker copies the variables intake asks for from here.
+// top. An agent's run loads only the user's settings, so the worker copies the variables the agent asks for from here.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isRecord } from '@agent-board/shared';
@@ -35,8 +35,8 @@ export function pickEnv(
   return { env, missing };
 }
 
-// The named servers from the checkout's .mcp.json, as `--mcp-config` takes them, and the names it lacks. Intake does
-// not load the settings that switch a checkout's servers on, so the worker hands over the ones intake may use.
+// The named servers from the checkout's .mcp.json, as `--mcp-config` takes them, and the names it lacks. An agent's run
+// does not load the settings that switch a checkout's servers on, so the worker hands over the ones the agent may use.
 export function readMcpServers(
   dir: string,
   names: string[],

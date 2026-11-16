@@ -18,7 +18,7 @@ import { buildContext, print, UsageError } from '../cli.mts';
 import type { Context } from '../cli.mts';
 import { logLine, StreamCondenser } from '@agent-board/shared';
 import type { RunInbox, Task } from '@agent-board/shared';
-import { agentFor, neverRun, ownLane, unreadableForRun } from '../task-rules.mts';
+import { agentFor, neverRun, ownLane, removedIntakeProblem, unreadableForRun } from '../task-rules.mts';
 import { buildInvocation, decideOutcome, isRunOver, planRun, pluginPlaceholders, supervise } from './plan.mts';
 import type { Invocation } from './plan.mts';
 import { goneDirNotice, inboxMessageText, pauseMessageText } from './prompts.mts';
@@ -120,17 +120,14 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   const refused = neverRun(task);
   if (refused !== undefined) return fail(refused);
 
-  const fromIntake = task.createdBy === 'intake';
+  const removedIntake = removedIntakeProblem(task);
+  if (removedIntake !== undefined) return fail(removedIntake);
+
   // A task that names an agent runs as it or not at all, however it is started: a resume included.
   const agent = agentFor(task, config);
   if (agent.kind === 'missing')
     return fail(`The task runs as an agent that is not defined on this machine: ${agent.reason}, so it was not run.`);
-  if (fromIntake && agent.kind === 'none' && !config.intakeEnabled)
-    return fail(
-      'This task came from intake, and config.json on this machine has no intake block: its rules would be missing.',
-    );
-  // The lists a restricted run holds to: an agent's, else intake's; none for a run as the user.
-  const restricted = agent.kind === 'found' ? agent.agent : fromIntake ? config.intake : undefined;
+  const restricted = agent.kind === 'found' ? agent.agent : undefined;
   // What a new directory is sealed against: the task's own creator and schedule, as the board has them.
   const sealing = { createdBy: task.createdBy, scheduleId: task.scheduleId, agent: task.agent ?? null };
   const pluginRoots: Record<string, string> = {};
@@ -155,7 +152,6 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     task,
     repos: config.repos,
     defaultCwd: config.defaultCwd,
-    intake: config.intake,
     agents: config.agents,
     agentErrors: config.agentErrors,
     agentsPath: deps.files.agentsPath(taskId),
@@ -167,10 +163,11 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   if (!deps.dirExists(plan.invocation.cwd)) {
     const gone = plan.invocation.cwd;
     if (task.workdir !== gone) return fail(`The working directory does not exist: ${gone}`);
-    const fresh = `use Re-run fresh to start over${task.createdBy === 'intake' ? '' : ' in the directory it was created with, or the default one when it had none'}`;
-    // A resume keeps its session in another checkout; a fresh run has nothing worth saving, and intake never moves.
-    const recovers = run.kind === 'resume' && task.createdBy !== 'intake';
-    if (!recovers) return fail(`This task's directory is gone: ${gone}. Recreate it to run there, or ${fresh}.`);
+    const fresh =
+      'use Re-run fresh to start over in the directory it was created with, or the default one when it had none';
+    // A resume keeps its session in another checkout; a fresh run has nothing worth saving.
+    if (run.kind !== 'resume')
+      return fail(`This task's directory is gone: ${gone}. Recreate it to run there, or ${fresh}.`);
     const fallback = checkoutAbove(gone, deps.pathExists);
     if (fallback === undefined || !deps.dirExists(fallback))
       return fail(
@@ -196,7 +193,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   }
   if (!isAllowedDir(config.dirs, plan.invocation.cwd, deps.realpath))
     return fail(
-      `${plainLine(plan.invocation.cwd)} is not a listed directory on ${config.machine}: workers here run only in listed directories. Run "board dirs add" in it on ${config.machine}${fromIntake ? ' (an intake review runs in the checkout named in repos)' : ''}, then use Re-run fresh or Send & continue.`,
+      `${plainLine(plan.invocation.cwd)} is not a listed directory on ${config.machine}: workers here run only in listed directories. Run "board dirs add" in it on ${config.machine}, then use Re-run fresh or Send & continue.`,
     );
   deps.appendLog(taskId, `working directory ${plan.invocation.cwd}`);
   // A restricted run's MCP servers come from the working directory's .mcp.json: it does not load the settings that switch them on.

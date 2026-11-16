@@ -35,8 +35,8 @@ import { CHECK_TIME_LIMIT_MS, createWaitStore, runCheck } from './waits.mts';
 import { createUpdateState, updateStateFile } from '../self/update-state.mts';
 import { cliVersion, releaseVersion } from '../self/version.mts';
 import { getPaths, loadConfigWarnings } from '../config/config.mts';
-import { createGitHub } from '../intake/github.mts';
-import type { GitHub } from '../intake/github.mts';
+import { createGitHub } from './github.mts';
+import type { GitHub } from './github.mts';
 import { createPrRefreshState, prRefreshFile, refreshPrStatesIfDue } from './pr-states.mts';
 import type { PrRefreshState } from './pr-states.mts';
 
@@ -343,7 +343,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     // notServableHere so no other machine logs a SKIP line for every delayed card on every tick.
     if (task.notBefore !== null && task.notBefore > deps.now()) continue;
     // Another machine may have the checkout, the directory or the session.
-    const elsewhere = notServableHere(task, config.machine, config.repos, config);
+    const elsewhere = notServableHere(task, config.machine, config);
     if (elsewhere !== undefined) {
       log(`SKIP ${task.id} ${elsewhere}`);
       continue;

@@ -2,7 +2,6 @@
  * The launchd side of `board setup` on macOS: two user agents in ~/Library/LaunchAgents.
  *   de.codeplant.agent-board.dispatch  a dispatch tick every 2 minutes, under the same lock as the listener's ticks
  *   de.codeplant.agent-board.listen    the listener, kept alive
- * There is no intake agent: intake is not supported on macOS.
  */
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';

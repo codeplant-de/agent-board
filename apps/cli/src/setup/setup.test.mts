@@ -21,7 +21,7 @@ import {
   renderUnits,
   setup,
   treeProblem,
-  enableCommand,
+  ENABLE_COMMAND,
   UNIT_PATH,
   whichOnPath,
 } from './setup.mts';
@@ -34,15 +34,13 @@ const command = (name: string): string[] => [
   name,
 ];
 
-test('the rendered units are the ones the checkout shipped, with the lock path of bin/dispatch and bin/intake', () => {
+test('the rendered units are the ones the checkout shipped, with the lock path of bin/dispatch', () => {
   const units = Object.fromEntries(
-    renderUnits({ flock: '/usr/bin/flock', command, intake: true }).map((unit) => [unit.file, unit.text]),
+    renderUnits({ flock: '/usr/bin/flock', command }).map((unit) => [unit.file, unit.text]),
   );
   assert.deepEqual(Object.keys(units), [
     'agent-board-dispatch.service',
     'agent-board-dispatch.timer',
-    'agent-board-intake.service',
-    'agent-board-intake.timer',
     'agent-board-listen.service',
   ]);
   assert.equal(
@@ -74,12 +72,6 @@ AccuracySec=10s
 WantedBy=timers.target
 `,
   );
-  assert.match(units['agent-board-intake.service'] ?? '', /Description=agent-board intake: review requests to tasks\n/);
-  assert.match(
-    units['agent-board-intake.service'] ?? '',
-    /ExecStart=\/usr\/bin\/flock -n -E 75 %t\/agent-board-intake\.lock .* internal intake\nSuccessExitStatus=75\nTimeoutStartSec=300\n/,
-  );
-  assert.match(units['agent-board-intake.timer'] ?? '', /OnBootSec=5min\nOnUnitActiveSec=10min\nAccuracySec=30s\n/);
   assert.equal(
     units['agent-board-listen.service'],
     `[Unit]
@@ -111,7 +103,7 @@ test('arguments with spaces, quotes, % and $ are quoted the way systemd reads th
   assert.equal(quoteExecArg('/a$b'), '/a$$b');
   assert.throws(() => quoteExecArg('/a\nb'), /line break/);
   for (const path of ['/home/my user/x y/main.mts', '/odd/50%/x', '/a"b\\c', '/a$b']) {
-    const [unit] = renderUnits({ flock: '/usr/bin/flock', command: () => ['/n', path], intake: true });
+    const [unit] = renderUnits({ flock: '/usr/bin/flock', command: () => ['/n', path] });
     assert.deepEqual(parseExecStart(unit?.text ?? ''), [
       '/usr/bin/flock',
       '-n',
@@ -140,7 +132,6 @@ function fixture(overrides: Partial<SetupDeps> = {}) {
       env: {},
       loaded: async () => false,
     },
-    intake: true,
     platform: 'linux',
     which: (program) => `/usr/bin/${program}`,
     command: (name) => command(name),
@@ -151,30 +142,25 @@ function fixture(overrides: Partial<SetupDeps> = {}) {
   return { dir, unitDir, printed, calls, deps };
 }
 
-test('setup writes five unit copies, reloads systemd and prints the enable line', async () => {
+test('setup writes three unit copies, reloads systemd and prints the enable line', async () => {
   const { dir, unitDir, printed, calls, deps } = fixture();
   try {
     await setup(deps, {});
     assert.deepEqual(readdirSync(unitDir).sort(), [
       'agent-board-dispatch.service',
       'agent-board-dispatch.timer',
-      'agent-board-intake.service',
-      'agent-board-intake.timer',
       'agent-board-listen.service',
     ]);
     assert.deepEqual(calls, [
       'systemctl --user daemon-reload',
       'systemctl --user try-restart agent-board-listen.service',
     ]);
-    assert.ok(printed.some((line) => line.includes(enableCommand(true))));
-    assert.equal(
-      enableCommand(true),
-      'systemctl --user enable --now agent-board-dispatch.timer agent-board-intake.timer agent-board-listen.service',
-    );
+    assert.ok(printed.some((line) => line.includes(ENABLE_COMMAND)));
+    assert.equal(ENABLE_COMMAND, 'systemctl --user enable --now agent-board-dispatch.timer agent-board-listen.service');
     for (const file of readdirSync(unitDir)) assert.equal(lstatSync(join(unitDir, file)).isSymbolicLink(), false);
     printed.length = 0;
     await setup(deps, {});
-    assert.equal(printed.filter((line) => line.startsWith('unchanged ')).length, 5);
+    assert.equal(printed.filter((line) => line.startsWith('unchanged ')).length, 3);
   } finally {
     rmSync(dir, { recursive: true });
   }
@@ -204,7 +190,7 @@ test('setup --enable also enables and starts the timers and the listener', async
     assert.deepEqual(calls, [
       'systemctl --user daemon-reload',
       'systemctl --user try-restart agent-board-listen.service',
-      'systemctl --user enable --now agent-board-dispatch.timer agent-board-intake.timer agent-board-listen.service',
+      'systemctl --user enable --now agent-board-dispatch.timer agent-board-listen.service',
     ]);
   } finally {
     rmSync(dir, { recursive: true });
@@ -215,7 +201,7 @@ test('setup --print shows the units and changes nothing', async () => {
   const { dir, unitDir, printed, calls, deps } = fixture();
   try {
     await setup(deps, { print: true });
-    assert.equal(printed.length, 5);
+    assert.equal(printed.length, 3);
     assert.match(printed[0] ?? '', /^# .*agent-board-dispatch\.service\n\[Unit\]/);
     assert.deepEqual(calls, []);
     assert.throws(() => readdirSync(unitDir));
@@ -274,16 +260,20 @@ test('board setup goes through the command line into a temp unit dir and is refu
   };
   try {
     await runBoard(['setup'], options);
-    assert.deepEqual(readdirSync(join(dir, 'xdg', 'systemd', 'user')).length, 3, 'no config.json, no intake units');
+    assert.equal(readdirSync(join(dir, 'xdg', 'systemd', 'user')).length, 3);
     assert.deepEqual(calls, [
       'systemctl --user daemon-reload',
       'systemctl --user try-restart agent-board-listen.service',
     ]);
     mkdirSync(join(dir, 'cfg'));
-    writeFileSync(join(dir, 'cfg', 'config.json'), '{"intake": {}}');
+    writeFileSync(join(dir, 'cfg', 'config.json'), '{"intake": {}, "lanes": 3}');
     calls.length = 0;
     await runBoard(['setup'], options);
-    assert.deepEqual(readdirSync(join(dir, 'xdg', 'systemd', 'user')).length, 5);
+    assert.equal(
+      readdirSync(join(dir, 'xdg', 'systemd', 'user')).length,
+      3,
+      'a config the CLI cannot read does not stop setup',
+    );
     assert.deepEqual(calls, ['systemctl --user daemon-reload']);
     await assert.rejects(
       runBoard(['setup'], { ...options, env: { ...options.env, AGENT_BOARD_TASK: 'Zt0Test1' } }),
@@ -295,7 +285,7 @@ test('board setup goes through the command line into a temp unit dir and is refu
 });
 
 test('the units run with the PATH setup exports, and doctor looks tools up on it', () => {
-  const [service] = renderUnits({ flock: '/usr/bin/flock', command, intake: true });
+  const [service] = renderUnits({ flock: '/usr/bin/flock', command });
   assert.ok(service?.text.includes(`Environment=PATH=${UNIT_PATH}\n`));
   assert.equal(UNIT_PATH, '%h/.local/bin:/usr/local/bin:/usr/bin:/bin');
 });
@@ -306,12 +296,12 @@ test('with the timers and the listener enabled already, setup does not tell you 
   const noListener = fixture({ unitEnabled: async (unit) => unit.endsWith('.timer') });
   try {
     await setup(deps, {});
-    assert.ok(!printed.some((line) => line.includes('Enable the timers')));
+    assert.ok(!printed.some((line) => line.includes('Enable the timer')));
     assert.ok(printed.some((line) => line.includes('enabled already')));
     await setup(partly.deps, {});
-    assert.ok(partly.printed.some((line) => line.includes('Enable the timers')));
+    assert.ok(partly.printed.some((line) => line.includes('Enable the timer and the listener')));
     await setup(noListener.deps, {});
-    assert.ok(noListener.printed.some((line) => line.includes('Enable the timers and the listener')));
+    assert.ok(noListener.printed.some((line) => line.includes('Enable the timer and the listener')));
   } finally {
     rmSync(dir, { recursive: true });
     rmSync(partly.dir, { recursive: true });
@@ -330,7 +320,7 @@ test('setup from a tree that is not the installed one refuses without --force, a
     assert.equal(calls.length, 0, '--print changes nothing and needs no --force');
     await setup(deps, { force: true });
     assert.ok(printed.includes(`warning: ${problem}`));
-    assert.equal(readdirSync(unitDir).length, 5);
+    assert.equal(readdirSync(unitDir).length, 3);
   } finally {
     rmSync(dir, { recursive: true });
   }
@@ -365,12 +355,8 @@ test('a binary run from the temp directory is not installed without --force; one
   assert.equal(treeProblem({}, { compiled: true, execPath: '/home/me/.local/bin/board' }), undefined);
 });
 
-test('without an intake key, setup renders, writes and enables only dispatch and the listener', async () => {
-  assert.deepEqual(
-    renderUnits({ flock: '/usr/bin/flock', command, intake: false }).map((unit) => unit.file),
-    ['agent-board-dispatch.service', 'agent-board-dispatch.timer', 'agent-board-listen.service'],
-  );
-  const { dir, unitDir, printed, calls, deps } = fixture({ intake: false });
+test('setup renders, writes and enables only dispatch and the listener', async () => {
+  const { dir, unitDir, printed, calls, deps } = fixture();
   try {
     await setup(deps, { enable: true });
     assert.deepEqual(readdirSync(unitDir).sort(), [
@@ -384,48 +370,78 @@ test('without an intake key, setup renders, writes and enables only dispatch and
       'systemctl --user enable --now agent-board-dispatch.timer agent-board-listen.service',
     ]);
     assert.ok(printed.includes('enabled and started the dispatch timer and the listener'));
-    assert.equal(
-      enableCommand(false),
-      'systemctl --user enable --now agent-board-dispatch.timer agent-board-listen.service',
-    );
+    assert.ok(printed.every((line) => !line.includes('intake')));
   } finally {
     rmSync(dir, { recursive: true });
   }
 });
 
-test('without an intake key, setup prints only the dispatch and listener units and the matching enable line', async () => {
-  const printOnly = fixture({ intake: false });
-  const plain = fixture({ intake: false });
-  try {
-    await setup(printOnly.deps, { print: true });
-    assert.equal(printOnly.printed.length, 3);
-    assert.ok(printOnly.printed.every((text) => !text.includes('intake')));
-    await setup(plain.deps, {});
-    assert.ok(plain.printed.some((line) => line.includes(enableCommand(false))));
-    assert.ok(plain.printed.every((line) => !line.includes('intake')));
-  } finally {
-    rmSync(printOnly.dir, { recursive: true });
-    rmSync(plain.dir, { recursive: true });
-  }
-});
+const OLD_INTAKE_UNITS = ['agent-board-intake.service', 'agent-board-intake.timer'];
 
-test('without an intake key, installed intake units are left alone and not enabled, with a note', async () => {
-  const { dir, unitDir, printed, calls, deps } = fixture({ intake: false });
+test('setup disables and stops the timer of the removed intake, deletes its units, and says so', async () => {
+  const { dir, unitDir, printed, calls, deps } = fixture();
   try {
     mkdirSync(unitDir, { recursive: true });
-    for (const kind of ['service', 'timer']) writeFileSync(join(unitDir, `agent-board-intake.${kind}`), 'old\n');
-    await setup(deps, { enable: true });
-    assert.equal(readFileSync(join(unitDir, 'agent-board-intake.timer'), 'utf8'), 'old\n');
-    assert.ok(calls.every((call) => !call.includes('intake')));
+    for (const file of OLD_INTAKE_UNITS) writeFileSync(join(unitDir, file), 'old\n');
+    await setup(deps, {});
+    assert.deepEqual(readdirSync(unitDir).sort(), [
+      'agent-board-dispatch.service',
+      'agent-board-dispatch.timer',
+      'agent-board-listen.service',
+    ]);
+    assert.deepEqual(calls.slice(0, 2), [
+      'systemctl --user disable --now agent-board-intake.timer',
+      'systemctl --user stop agent-board-intake.service',
+    ]);
+    assert.ok(calls.indexOf('systemctl --user daemon-reload') > 1, 'the reload comes after the removal');
+    const note = printed.find((line) => line.startsWith('removed '));
+    assert.ok(note?.includes(join(unitDir, 'agent-board-intake.service')) && note.includes('github-reviews'));
+    printed.length = 0;
+    calls.length = 0;
+    await setup(deps, {});
     assert.ok(
-      printed.some((line) =>
-        line.startsWith(
-          'note: config.json has no intake key, so setup leaves agent-board-intake.service and agent-board-intake.timer alone',
-        ),
-      ),
+      printed.every((line) => !line.startsWith('removed ')),
+      'nothing is left to remove the second time',
     );
+    assert.ok(calls.every((call) => !call.includes('intake')));
   } finally {
     rmSync(dir, { recursive: true });
+  }
+});
+
+test('the units of the removed intake are deleted even when systemctl cannot disable or stop them', async () => {
+  const { dir, unitDir, deps } = fixture({
+    run: async (_program, args) => {
+      if (args.includes('disable') || args.includes('stop')) throw new Error('unit not loaded');
+    },
+  });
+  try {
+    mkdirSync(unitDir, { recursive: true });
+    writeFileSync(join(unitDir, 'agent-board-intake.timer'), 'old\n');
+    await setup(deps, {});
+    assert.ok(!readdirSync(unitDir).some((file) => file.includes('intake')));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('setup --print and a refused foreign tree leave the units of the removed intake alone', async () => {
+  const { dir, unitDir, calls, deps } = fixture();
+  const foreign = fixture({ treeProblem: () => 'this checkout is not the installed one' });
+  try {
+    for (const where of [unitDir, foreign.unitDir]) {
+      mkdirSync(where, { recursive: true });
+      writeFileSync(join(where, 'agent-board-intake.timer'), 'old\n');
+    }
+    await setup(deps, { print: true });
+    await assert.rejects(setup(foreign.deps, {}), /add --force/);
+    assert.ok(readdirSync(unitDir).includes('agent-board-intake.timer'));
+    assert.ok(readdirSync(foreign.unitDir).includes('agent-board-intake.timer'));
+    assert.deepEqual(calls, []);
+    assert.deepEqual(foreign.calls, []);
+  } finally {
+    rmSync(dir, { recursive: true });
+    rmSync(foreign.dir, { recursive: true });
   }
 });
 
@@ -443,7 +459,7 @@ test('whichOnPath finds only an executable file on the path', () => {
 });
 
 function macFixture(overrides: Partial<SetupDeps> = {}, loaded: (name: string) => boolean = () => false) {
-  const base = fixture({ platform: 'darwin', intake: false, ...overrides });
+  const base = fixture({ platform: 'darwin', ...overrides });
   const calls = base.calls;
   const deps: SetupDeps = { ...base.deps, launchd: { ...base.deps.launchd, loaded: async (name) => loaded(name) } };
   return { ...base, deps, calls, agentsDir: deps.launchd.agentsDir };
@@ -516,14 +532,10 @@ test('on macOS an agent that is loaded is loaded again only when its file change
   }
 });
 
-test('on macOS an intake key gets a note and no agent; --print and a foreign tree behave as on Linux', async () => {
-  const { dir, printed, calls, deps, agentsDir } = macFixture({ intake: true });
+test('on macOS --print and a foreign tree behave as on Linux', async () => {
+  const { dir, printed, calls, deps, agentsDir } = macFixture();
   const foreign = macFixture({ treeProblem: () => 'this checkout is not the installed one' });
   try {
-    await setup(deps, {});
-    assert.ok(printed.some((line) => line.includes('intake is not supported on macOS')));
-    assert.equal(readdirSync(agentsDir).length, 2);
-    printed.length = 0;
     await setup(deps, { print: true });
     assert.ok(printed.every((line) => !line.startsWith('wrote ')));
     assert.ok(printed[0]?.startsWith(`# ${agentsDir}/`));

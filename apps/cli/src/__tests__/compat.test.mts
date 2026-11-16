@@ -2,8 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { BackendError } from '../backend/backend.mts';
 import { skipTickWhileServerOlder, warnSkippedOnce } from '../cli.mts';
-import { runIntake } from '../intake/intake.mts';
-import { CONFIG, fakeBackend } from './helpers/fakes.mts';
 
 const serverOlder = (): BackendError =>
   Object.assign(new BackendError('the board server is older than this CLI: it speaks API 6'), {
@@ -19,28 +17,6 @@ test('a tick against an older server logs one line and ends without a failure', 
     (line) => lines.push(line),
   );
   assert.deepEqual(lines, ['skipped: the board server is older than this CLI: it speaks API 6']);
-});
-
-test('an intake tick against an older server is skipped as well', async () => {
-  const backend = fakeBackend([]);
-  backend.listTasks = async () => {
-    throw serverOlder();
-  };
-  const lines: string[] = [];
-  await skipTickWhileServerOlder(
-    () =>
-      runIntake({
-        backend,
-        config: CONFIG,
-        dryRun: false,
-        print: (line) => lines.push(line),
-        github: { listReviewRequested: async () => ({ prs: [], unreadable: [] }) } as never,
-        now: () => new Date(),
-      }),
-    (line) => lines.push(line),
-  );
-  assert.equal(lines.length, 1);
-  assert.match(lines[0] ?? '', /^skipped: the board server is older/);
 });
 
 test('every other failure of a tick still fails it', async () => {

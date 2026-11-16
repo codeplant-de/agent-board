@@ -1,7 +1,7 @@
 import { isModelName, isSafeWorkdir, isSessionId, parsePrUrl, prUrlIn } from '@agent-board/shared';
 import type { Note, Task } from '@agent-board/shared';
-import type { AgentConfig, IntakeConfig } from '../config/config.mts';
-import { agentFor, neverRun } from '../task-rules.mts';
+import type { AgentConfig } from '../config/config.mts';
+import { agentFor, neverRun, removedIntakeProblem } from '../task-rules.mts';
 import { boardRules, buildResumePrompt, freshThreadBlock, userReply, writtenSincePreviousRun } from './prompts.mts';
 
 // `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives the one installed `<plugin>@*`, such as
@@ -206,7 +206,6 @@ export function buildInvocation(input: {
   repos: Record<string, string>;
   // Where a task without a directory of its own runs.
   defaultCwd: string;
-  intake: IntakeConfig;
   // The agents this machine defines. A task that names one runs as it, under its lists, and a task that names an agent not
   // here is refused.
   agents: Record<string, AgentConfig>;
@@ -221,12 +220,13 @@ export function buildInvocation(input: {
   // The PreToolUse hook command (heartbeat, working directory, questions).
   hookCommand?: string;
 }): InvocationPlan {
-  const { task, intake } = input;
-  const fromIntake = task.createdBy === 'intake';
+  const { task } = input;
   const agent = agentFor(task, input);
   const prompt = task.input.trim();
   const refused = neverRun(task);
   if (refused !== undefined) return { ok: false, reason: refused };
+  const removedIntake = removedIntakeProblem(task);
+  if (removedIntake !== undefined) return { ok: false, reason: removedIntake };
   if (agent.kind === 'missing')
     return { ok: false, reason: `The task runs as an agent that is not defined on this machine: ${agent.reason}.` };
   if (input.run.kind === 'blocked') return { ok: false, reason: input.run.reason };
@@ -238,24 +238,10 @@ export function buildInvocation(input: {
     return { ok: false, reason: 'The task model is not a model name.' };
 
   // Where it runs: a resume where the session stopped; a scheduled task in its own directory; a task whose prompt
-  // names a PR in that repo's checkout (an intake review always); else its lane's directory, else the default one.
+  // names a PR in that repo's checkout; else its lane's directory, else the default one.
   const pr = parsePrUrl(prUrlIn(task.input) ?? '');
   const checkout = pr === undefined ? undefined : input.repos[pr.repo];
-  let cwd: string;
-  if (task.workdir !== null && (input.run.kind === 'resume' || !fromIntake)) {
-    cwd = task.workdir;
-  } else if (fromIntake) {
-    if (!pr)
-      return {
-        ok: false,
-        reason: `The intake task's prompt names no GitHub PR: ${prompt.split('\n')[0] || '(empty)'}`,
-      };
-    if (!checkout)
-      return { ok: false, reason: `No checkout is configured for ${pr.repo}. Add it to "repos" in config.json.` };
-    cwd = checkout;
-  } else {
-    cwd = checkout ?? input.laneCwd ?? input.defaultCwd;
-  }
+  const cwd = task.workdir ?? checkout ?? input.laneCwd ?? input.defaultCwd;
 
   const settings =
     input.hookCommand === undefined
@@ -314,18 +300,9 @@ export function buildInvocation(input: {
       agents: { path: input.agentsPath, content: agentsFileContent(agent.name, agent.agent) },
     };
   }
-  if (!fromIntake) {
-    // As if the user ran it: their settings (user, project, local) and auto mode, which lets safe actions through and
-    // refuses risky ones. Headless, a refusal cannot become a prompt; it shows in the log.
-    args.push('--permission-mode', 'auto');
-    return { ok: true, invocation: { command: 'claude', args, prompt: promptText, cwd } };
-  }
-  // Intake runs unattended on PR text nobody chose to read: only the user's own settings, and only what intake allows.
-  const rules = expandedRules(intake, { rules: "intake's rules", rule: 'An intake tool rule' }, input);
-  if (!rules.ok) return rules;
-  args.push('--permission-mode', 'dontAsk', '--setting-sources', 'user');
-  if (rules.allowed.length > 0) args.push('--allowedTools', ...rules.allowed);
-  if (rules.disallowed.length > 0) args.push('--disallowedTools', ...rules.disallowed);
+  // As if the user ran it: their settings (user, project, local) and auto mode, which lets safe actions through and
+  // refuses risky ones. Headless, a refusal cannot become a prompt; it shows in the log.
+  args.push('--permission-mode', 'auto');
   return { ok: true, invocation: { command: 'claude', args, prompt: promptText, cwd } };
 }
 

@@ -109,12 +109,12 @@ export interface Task {
   // The directory that session was in when it last stopped, on `machine`: a worktree it entered, say. A resume starts there.
   workdir: string | null;
   next: NextRun;
-  // The blind index (`abh1.…`) of the PR head sha the task was made for; intake's review tasks only. The board never holds
+  // The blind index (`abh1.…`) of the PR head sha the task was made for; set by a script that schedules with `--version` (and by the removed built-in intake). The board never holds
   // the sha itself; `Backend.indexHead` gives the value to compare it with.
   head: string | null;
   // The last question the agent asked has no answer yet.
   openQuestion: boolean;
-  // Who made it. Intake's tasks run with intake's narrow permissions; the others as the user. "agent" is a proposal the user has
+  // Who made it. "intake" is only on tasks of the removed built-in intake: with an agent they run as it, without one they never run. "agent" is a proposal the user has
   // not started: nothing runs it. Starting it makes it "user" (the client seals the prompt again for that creator).
   createdBy: TaskCreator;
   // While it runs: the lane of the machine that runs it, whether that lane borrowed it, and the agent's last tool call.
@@ -140,7 +140,7 @@ export interface Task {
   woken: boolean;
   // The PR the task's agent reported with `board pr`; null for none, or for one that is not a GitHub PR URL.
   pr: string | null;
-  // GitHub's state of the task's PR (`statePrOf`) as intake last saw it; null while unknown. Clear, not sealed: it tells the
+  // GitHub's state of the task's PR (`statePrOf`) as a worker's dispatcher last saw it; null while unknown. Clear, not sealed: it tells the
   // board only that some PR of the task merged, never which.
   prState: PrState | null;
   // While it runs: the user asked for the run to be interrupted and no worker has acted on it yet. Absent from a server
@@ -235,7 +235,7 @@ export interface TaskDraft {
 
 // What the writer of a patch knows about the task it seals for, which the contexts of the sealed fields depend on. Never sent.
 export interface PatchSealing {
-  // Who made the task. The writer of a new `input` states it itself (intake: "intake"), never taking it from the board.
+  // Who made the task. The writer of a new `input` states it itself, never taking it from the board.
   createdBy: TaskCreator;
   scheduleId: string | null;
   // The task's agent as the writer opened it (null for none): a new `input` is sealed under it too, so it must be stated.
@@ -398,7 +398,7 @@ export interface Backend {
   indexHead(sha: string): Promise<string>;
   // The agent of a task reports the PR it opened for it; the last one wins. `url` must be a GitHub PR URL.
   setPr(id: string, url: string): Promise<void>;
-  // Intake records GitHub's state of the task's PR (`statePrOf`).
+  // A worker's dispatcher records GitHub's state of the task's PR (`statePrOf`).
   setPrState(id: string, prState: PrState): Promise<void>;
   // Whether the board holds `dirs` as this machine's directory list, by comparing blind indexes; 'unsupported' for a server without the feature.
   checkDirs(machine: string, dirs: readonly MachineDir[]): Promise<DirsOnBoard>;
@@ -606,7 +606,8 @@ export const MAX_OUTPUT_SIZE = 256 * 1024 + 1024;
 export class ContractError extends Error {}
 
 // The CLI's own systemd units are agent-board-<name>, the same shape as a worker unit agent-board-<task id>,
-// so these names can never be task ids. Add a name here before the CLI installs a unit with it.
+// so these names can never be task ids. Add a name here before the CLI installs a unit with it; `intake` stays because machines
+// that have not run `board setup` since the built-in intake was removed still have that unit.
 export const TOOL_UNIT_NAMES = ['dispatch', 'intake', 'listen'] as const;
 const RESERVED_TASK_IDS: readonly string[] = TOOL_UNIT_NAMES;
 
@@ -1398,8 +1399,8 @@ export function notePreview(text: string): string | null {
 }
 
 /**
- * A task's labels, derived from its prompt and creator: the skill the prompt starts with, and "review" for an intake task
- * whose prompt names none. The board does not store labels.
+ * A task's labels, derived from its prompt and creator: the skill the prompt starts with, and "review" for a task of the removed
+ * built-in intake whose prompt names none (kept so that existing tasks keep their label). The board does not store labels.
  */
 export function taskLabels(task: Pick<Task, 'input' | 'createdBy'>): string[] {
   const skill = promptSkill(task.input);

@@ -8,11 +8,10 @@ import type { WebConfig } from '../backend/web-config.mts';
 import {
   ConfigError,
   configWarnings,
-  hasIntakeLists,
-  intakeAgentProblem,
   isOverrideWarning,
   isSafeMode,
   parseConfig,
+  REMOVED_INTAKE,
 } from '../config/config.mts';
 import type { Config } from '../config/config.mts';
 import { plainLine } from '../output/terminal.mts';
@@ -28,7 +27,7 @@ import { pluginPlaceholders } from '../worker/plan.mts';
 import { dirsToSend, isAllowedDir, isDirectory, routedDirs, UNCOVERED_HINT } from '../config/dirs.mts';
 import { parseEnv } from '../config/env-file.mts';
 import { runDir } from '../worker/runtime.mts';
-import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
+import { LISTEN_SERVICE, parseExecStart, REMOVED_UNIT_FILES, UNIT_NAMES, UNIT_PATH, whichOnPath } from './setup.mts';
 import {
   AGENT_NAMES,
   agentFile,
@@ -450,33 +449,8 @@ function checkPlugins(
   });
 }
 
-// Intake's tasks run as its agent; the lists of its own are deprecated.
-function checkIntakeAgent(config: Config): CheckResult[] {
-  const reason = intakeAgentProblem(config);
-  if (reason !== undefined)
-    return [
-      problem(
-        'intake agent',
-        'fail',
-        `${reason}, so intake creates no tasks`,
-        'define it in agents or fix intake.agent',
-      ),
-    ];
-  if (config.intake.agent !== undefined) return [ok('intake agent', `tasks run as ${config.intake.agent}`)];
-  if (hasIntakeLists(config.intake))
-    return [
-      problem(
-        'intake agent',
-        'warn',
-        'intake still has its own allowedTools, disallowedTools, env or mcpServers; they are deprecated and a later release drops them',
-        'move them into agents.<name> and set intake.agent',
-      ),
-    ];
-  return [];
-}
-
 // What would make an agent's run fail or its rules dead letters: an agent that cannot be read, a plugin it names that does not
-// resolve, an allow rule for a tool its `tools` leave out. Intake's rules name plugins too.
+// resolve, an allow rule for a tool its `tools` leave out.
 function checkAgents(config: Config, deps: DoctorDeps): CheckResult[] {
   const entries = Object.entries(config.agents);
   const results = [
@@ -491,12 +465,6 @@ function checkAgents(config: Config, deps: DoctorDeps): CheckResult[] {
     ...(entries.length === 0 ? [] : [ok('agents', entries.map(([name]) => name).join(', '))]),
   ];
   const pluginFiles = readPluginFiles(deps);
-  if (config.intakeEnabled) {
-    results.push(
-      ...checkIntakeAgent(config),
-      ...checkPlugins('config.json intake', 'intake', config.intake, pluginFiles),
-    );
-  }
   for (const [name, agent] of entries) {
     results.push(...checkPlugins(`agent ${name}`, name, agent, pluginFiles));
     const dead = [
@@ -537,14 +505,16 @@ const checkConfig: Check = (deps) => {
       ok('config.json', `machine ${config.machine}`),
       ...checkAgents(config, deps),
       ...configWarnings(raw).map((warning) =>
-        problem(
-          'config.json',
-          'warn',
-          warning,
-          isOverrideWarning(warning)
-            ? 'the directory setting is the one that counts: remove the old key, or make both name the same directory'
-            : 'fix or remove the key: the CLI does not read it, so its setting keeps the default',
-        ),
+        warning === REMOVED_INTAKE
+          ? problem('config.json', 'fail', warning, 'delete the intake key from config.json')
+          : problem(
+              'config.json',
+              'warn',
+              warning,
+              isOverrideWarning(warning)
+                ? 'the directory setting is the one that counts: remove the old key, or make both name the same directory'
+                : 'fix or remove the key: the CLI does not read it, so its setting keeps the default',
+            ),
       ),
     ];
   } catch (error) {
@@ -622,21 +592,9 @@ function checkCommand(deps: DoctorDeps, service: string): CheckResult[] {
 const TOOLS = ['claude', 'gh', 'flock', 'systemd-run', 'systemctl'];
 const MAC_TOOLS = ['claude', 'gh', 'lockf'];
 
-// An intake machine is one whose config.json has an `intake` key; any other config problem is checkConfig's to report.
-function hasIntake({ configDir, readText }: DoctorDeps): boolean {
-  const text = readText(join(configDir, 'config.json'));
-  if (text === undefined) return false;
-  try {
-    const raw: unknown = JSON.parse(text);
-    return typeof raw === 'object' && raw !== null && 'intake' in raw;
-  } catch {
-    return false;
-  }
-}
-
-function installedUnits(deps: DoctorDeps, intake: boolean): string[] {
+function installedUnits(deps: DoctorDeps): string[] {
   return [
-    ...activeUnitNames(intake).flatMap((name) => [`agent-board-${name}.service`, `agent-board-${name}.timer`]),
+    ...UNIT_NAMES.flatMap((name) => [`agent-board-${name}.service`, `agent-board-${name}.timer`]),
     LISTEN_SERVICE,
   ].filter((file) => deps.exists(join(deps.unitDir, file)));
 }
@@ -731,15 +689,6 @@ async function checkMacWorker(deps: DoctorDeps): Promise<CheckResult[]> {
             ),
       );
   }
-  if (hasIntake(deps))
-    results.push(
-      problem(
-        'launchd intake',
-        'warn',
-        'config.json has an intake key, but intake is not supported on macOS and no agent runs it',
-        'run intake on a Linux machine',
-      ),
-    );
   results.push(
     launchd.writable(launchd.runDir)
       ? ok('run directory', launchd.runDir)
@@ -790,8 +739,7 @@ async function checkMacWorker(deps: DoctorDeps): Promise<CheckResult[]> {
 const checkWorker: Check = async (deps) => {
   if (deps.platform === 'darwin') return checkMacWorker(deps);
   if (deps.platform !== 'linux') return [notAWorker(deps.platform)];
-  const intake = hasIntake(deps);
-  const installed = installedUnits(deps, intake);
+  const installed = installedUnits(deps);
   const level = installed.length > 0 ? 'fail' : 'warn';
   const results: CheckResult[] = [];
   for (const tool of TOOLS) {
@@ -818,21 +766,21 @@ const checkWorker: Check = async (deps) => {
             ),
       );
   }
-  const timer = 'agent-board-intake.timer';
-  if (!intake && deps.exists(join(deps.unitDir, timer)))
+  const leftover = REMOVED_UNIT_FILES.filter((file) => deps.exists(join(deps.unitDir, file)));
+  if (leftover.length > 0)
     results.push(
       problem(
-        `unit ${timer}`,
+        'unit agent-board-intake',
         'warn',
-        'installed, but config.json has no intake key, so `board internal intake` refuses',
-        `systemctl --user disable --now ${timer}`,
+        `${leftover.join(' and ')} ${leftover.length === 1 ? 'is' : 'are'} installed, but the built-in intake was removed and nothing runs it`,
+        'run "board setup": it disables the timer and deletes the files',
       ),
     );
   if (installed.length === 0) {
     results.push(problem('units', 'warn', 'no agent-board unit is installed', 'run "board setup" on a worker machine'));
     return results;
   }
-  for (const name of activeUnitNames(intake)) {
+  for (const name of UNIT_NAMES) {
     const service = `agent-board-${name}.service`;
     const timer = `agent-board-${name}.timer`;
     for (const file of [service, timer]) {

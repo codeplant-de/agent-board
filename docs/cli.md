@@ -1,6 +1,6 @@
 # `board` command reference
 
-`<task>` is a task id; outside a run it can also be a link to the task on the board or the start of an id (3 to 7 or 9 to 11 characters, unique; an id is 12 characters, or 8 for older tasks, and those lengths are whole ids). A link counts only when it is `<web.json url>/t/<id>`, the form the CLI prints. `--json` prints tasks, threads and schedules as JSON for scripts. `--dry-run` reads everything and prints every write as `DRY ...` instead of doing it. A usage error exits 2, any other failure 1. `dispatch` and `intake` are `board internal dispatch|intake`, started by the timers; the wrappers `apps/cli/bin/dispatch` and `apps/cli/bin/intake` of a checkout take their own lock (`$XDG_RUNTIME_DIR/agent-board-{dispatch,intake}.lock`, the one the units use), so a run by hand cannot overlap a timer run. When the lock is held they exit 75 without output.
+`<task>` is a task id; outside a run it can also be a link to the task on the board or the start of an id (3 to 7 or 9 to 11 characters, unique; an id is 12 characters, or 8 for older tasks, and those lengths are whole ids). A link counts only when it is `<web.json url>/t/<id>`, the form the CLI prints. `--json` prints tasks, threads and schedules as JSON for scripts. `--dry-run` reads everything and prints every write as `DRY ...` instead of doing it. A usage error exits 2, any other failure 1. `dispatch` is `board internal dispatch`, started by the timer; a checkout's wrapper `apps/cli/bin/dispatch` takes its own lock (`$XDG_RUNTIME_DIR/agent-board-dispatch.lock`, the one the unit uses), so a run by hand cannot overlap a timer run. When the lock is held they exit 75 without output.
 
 A file given with `--file` (`comment`, `ask`, `add`) is read only from a regular file in `/tmp` (`/private/tmp` on macOS) with no other hard link, without following a link.
 
@@ -44,9 +44,8 @@ Setup:
   init                      write web.json, env and config.json for this machine
   doctor                    check this machine: config, token, server, worker
                             tools and units
-  setup                     install the dispatch timer (and intake, if
-                            configured) and the listener: systemd user units, or
-                            launchd agents on macOS
+  setup                     install the dispatch timer and the listener: systemd
+                            user units, or launchd agents on macOS
   self-update               replace this binary with the newest release
   completion <shell>        print a shell completion script
   example [name]            list or print the example files that ship with the
@@ -700,10 +699,9 @@ Examples:
 ```
 Usage: board setup [options]
 
-Install this machine as a worker: write the dispatch service and timer, the
-intake service and timer when config.json has an `intake` key, and the listener
-service into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user) as
-copies, run `systemctl --user daemon-reload` and print the line that enables
+Install this machine as a worker: write the dispatch service and timer and the
+listener service into ~/.config/systemd/user (or $XDG_CONFIG_HOME/systemd/user)
+as copies, run `systemctl --user daemon-reload` and print the line that enables
 them. The listener holds a stream to the board and starts a dispatch tick within
 a second of a change; the timers stay as the fallback. Run it again after moving
 the binary or the checkout, or upgrading Node. It needs Linux with systemd and
@@ -714,22 +712,20 @@ On macOS it writes two launchd agents, de.codeplant.agent-board.dispatch (every
 copies, creates the log and run directories and loads the agents that are loaded
 already (all of them with --enable) with `launchctl bootout` and `launchctl
 bootstrap gui/<uid>`; without --enable it prints the bootstrap lines. The agents
-log to launchd.dispatch.log and launchd.listen.log in the log directory. Intake
-is not supported on macOS: no agent runs it, and setup says so when config.json
-has an `intake` key.
+log to launchd.dispatch.log and launchd.listen.log in the log directory.
 
 The services run this CLI the way `board setup` was started: the binary, or the
 checkout with its Node. --print shows the units (or agents) and changes nothing;
---enable also enables and starts the timers and the listener (loads the agents).
+--enable also enables and starts the timer and the listener (loads the agents).
 When an installed unit differs from what it writes, the differing lines are
 shown. It refuses unless --force when this checkout is not the one the installed
 ~/.local/bin/board runs from (a worktree, a scratch copy), or when a binary runs
-from the temp directory, so it cannot take over the live timers. Without an
-`intake` key it leaves installed intake units alone and does not enable them.
-Not available inside a board run.
+from the temp directory, so it cannot take over the live timers. Setup also
+stops and deletes the timer, service or launchd agent of the removed built-in
+intake when it finds one (not with --print). Not available inside a board run.
 
 Options:
-  --enable    also enable and start the timers and the listener
+  --enable    also enable and start the timer and the listener
   --force     install although this checkout is not the installed one, or the
               binary runs from the temp directory
   --print     print the units and change nothing

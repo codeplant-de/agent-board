@@ -19,21 +19,18 @@ test("the board's rules tell the agent to attach the user's likely next reply to
   );
 });
 
-test("the board's rules tell the agent to report the PR it opens, except in an intake run", () => {
+test("the board's rules tell the agent to report the PR it opens, except in an agent's run", () => {
   assert.match(boardRules(task({ id: 'abc' })), /open a pull request.*board pr abc <url>/s);
-  assert.doesNotMatch(boardRules(task({ id: 'abc', createdBy: 'intake' })), /board pr/);
+  assert.doesNotMatch(boardRules(task({ id: 'abc' }), { asAgent: true }), /board pr/);
 });
 
-test("the board's rules tell the agent to ask through the board, and an intake run to keep its commands simple", () => {
+test("the board's rules tell the agent to ask through the board, and an agent's run to keep its commands simple", () => {
   assert.match(
     boardRules(task({ id: 'abc' })),
     /AskUserQuestion is not available.*board ask abc --file \/tmp\/pr-abc-questions\.json/s,
   );
   assert.doesNotMatch(boardRules(task({ id: 'abc' })), /stands alone/);
-  assert.match(
-    boardRules(task({ id: 'abc', createdBy: 'intake' })),
-    /run every Bash command on its own, without pipes/,
-  );
+  assert.match(boardRules(task({ id: 'abc' }), { asAgent: true }), /run every Bash command on its own, without pipes/);
 });
 
 test("the board's rules let the agent act alone on local, reversible steps and ask before visible or lasting ones", () => {
@@ -43,7 +40,7 @@ test("the board's rules let the agent act alone on local, reversible steps and a
     rules,
     /Use `board ask` only before a step that is hard to undo or that other people see.*force-pushing.*merging/s,
   );
-  assert.doesNotMatch(boardRules(task({ id: 'abc', createdBy: 'intake' })), /Work on your own/);
+  assert.doesNotMatch(boardRules(task({ id: 'abc' }), { asAgent: true }), /Work on your own/);
 });
 
 test("the board's rules make an implementation task end in a pushed branch, a PR and CI", () => {
@@ -54,7 +51,7 @@ test("the board's rules make an implementation task end in a pushed branch, a PR
     /never the default branch.*git push -u origin HEAD.*gh pr create.*started or approved by hand.*Wait for CI.*PR link in your final `board comment`/s,
   );
   assert.match(rules, /only for a plan, an investigation or a review opens no PR/);
-  assert.doesNotMatch(boardRules(task({ id: 'abc', createdBy: 'intake' })), /gh pr create/);
+  assert.doesNotMatch(boardRules(task({ id: 'abc' }), { asAgent: true }), /gh pr create/);
 });
 
 test("the board's rules tell the agent not to end its turn while background work runs", () => {

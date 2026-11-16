@@ -28,8 +28,8 @@ import type { CheckResult, WaitCheck } from './waits.mts';
 import { TASK_FILES_KEEP_MS } from './dispatch.mts';
 import type { TaskFile } from './task-files.mts';
 import type { FakeBackend } from '../__tests__/helpers/fakes.mts';
-import { GitHubError } from '../intake/github.mts';
-import type { GitHub } from '../intake/github.mts';
+import { GitHubError } from './github.mts';
+import type { GitHub } from './github.mts';
 import { createPrRefreshState, PR_REFRESH_INTERVAL_MS, prRefreshFile } from './pr-states.mts';
 import type { PrRefreshState } from './pr-states.mts';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -161,14 +161,12 @@ test('with all slots taken nothing starts', async () => {
 });
 
 test('a task this machine cannot serve is left in Todo for another machine', async () => {
-  const odd = task({ id: 'odd', input: '/review-pr https://github.com/other/repo/pull/2 --auto', createdBy: 'intake' });
   const pinned = task({ id: 'pinned', input: '/selftest go', next: 'resume', sessionId: 's', machine: 'there' });
   const elsewhere = task({ id: 'elsewhere', input: 'Find out X', machine: 'there', workdir: '/x' });
-  const { deps, started, backend, logs } = setup([odd, pinned, elsewhere, todo('t1')]);
+  const { deps, started, backend, logs } = setup([pinned, elsewhere, todo('t1')]);
   await runDispatch(deps);
   assert.deepEqual(started, ['t1']);
-  assert.ok(!backend.writes.some((w) => w.includes('odd') || w.includes('pinned') || w.includes('elsewhere')));
-  assert.ok(logs.some((line) => line.startsWith('SKIP odd no checkout of other/repo')));
+  assert.ok(!backend.writes.some((w) => w.includes('pinned') || w.includes('elsewhere')));
   assert.ok(logs.some((line) => line.startsWith('SKIP pinned pinned to there')));
   assert.ok(logs.some((line) => line.startsWith('SKIP elsewhere pinned to there')));
 });
@@ -206,17 +204,16 @@ test('an agent that cannot be read is logged as a warning every tick, and the re
   assert.ok(logs.some((line) => line.startsWith('SKIP bad agents.broken in config.json here cannot be used')));
 });
 
-test('a machine without an intake block skips intake tasks', async () => {
+test('a task of the removed intake without an agent is claimed and started, so that its worker fails it', async () => {
   const review = task({
     id: 'rev',
     input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
     createdBy: 'intake',
   });
-  const { deps, started, logs } = setup([review, todo('t1')]);
-  deps.config = { ...CONFIG, intakeEnabled: false };
+  const { deps, started, logs } = setup([review]);
   await runDispatch(deps);
-  assert.deepEqual(started, ['t1']);
-  assert.ok(logs.some((line) => line.startsWith('SKIP rev no intake block in config.json here')));
+  assert.deepEqual(started, ['rev']);
+  assert.ok(!logs.some((line) => line.startsWith('SKIP rev')));
 });
 
 test('a claim lost to another machine starts nothing and the next task gets the slot', async () => {
@@ -979,7 +976,6 @@ function withGitHub(tasks: ReturnType<typeof task>[], github: Partial<GitHub> | 
       github === undefined
         ? undefined
         : {
-            listReviewRequested: async () => ({ prs: [], unreadable: [] }),
             prStates: async (urls) => {
               asked.push(urls);
               return { states: new Map([[PR, 'merged' as const]]), unreadable: [] };

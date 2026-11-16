@@ -1,22 +1,21 @@
 import { Command } from 'commander';
+import { REMOVED_INTAKE } from '../config/config.mts';
 import { UsageError } from '../cli.mts';
-import { getPaths, loadConfig } from '../config/config.mts';
 import { runDir } from '../worker/runtime.mts';
 import { dispatchMain } from '../dispatch/dispatch.mts';
 import { SystemError } from '../setup/system.mts';
 import { runHook } from '../worker/hook.mts';
-import { intakeMain } from '../intake/intake.mts';
 import { listenMain } from '../dispatch/listen.mts';
 import { workerMain } from '../worker/worker.mts';
 import type { ProgramShared } from './program-shared.mts';
 
 export function registerInternalCommands(shared: ProgramShared): void {
-  const { program, options, env, contextOf, dryRunOption, notInRun } = shared;
+  const { program, options, env, out, contextOf, dryRunOption, notInRun } = shared;
   const internal = program
     .command('internal', { hidden: true })
     .description('What the dispatcher, the timers and a run call; not for typing')
     .action(() => {
-      throw new UsageError('internal needs dispatch, intake, listen, worker or hook');
+      throw new UsageError('internal needs dispatch, listen, worker or hook');
     });
   const refuseInternalInRun = (): void => {
     notInRun('board internal is not available inside a board run');
@@ -30,18 +29,13 @@ export function registerInternalCommands(shared: ProgramShared): void {
     refuseInternalInRun();
     return dispatchMain({ dryRun: contextOf(command).dryRun });
   });
-  dryRunOption(internal.command('intake').description('Review requests to tasks')).action(
-    (_options, command: Command) => {
-      refuseInternalInRun();
-      if ((options.platform ?? process.platform) === 'darwin')
-        throw new SystemError('intake is not supported on macOS; run it on a Linux machine');
-      if (!loadConfig(getPaths(env).configFile, { optionalConfig: true }).intakeEnabled)
-        throw new UsageError(
-          'intake is not enabled: config.json has no intake key (see apps/cli/examples/config.reviews.json)',
-        );
-      return intakeMain({ dryRun: contextOf(command).dryRun });
-    },
-  );
+  // The timer of the removed intake that `board setup` has not deleted yet still runs this: a quiet success, not a failing unit.
+  internal
+    .command('intake', { hidden: true })
+    .description('Removed')
+    .action(() => {
+      out(`${REMOVED_INTAKE}; run "board setup" to delete this timer`);
+    });
   internal
     .command('listen')
     .description('Run a dispatch tick when the board says tasks changed')

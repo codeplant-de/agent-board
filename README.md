@@ -8,7 +8,7 @@ All content is end-to-end encrypted. The server never sees a prompt, a note or a
 
 ```
  browser ──tRPC──▶ backend (Fastify, Postgres) ◀──machine API + SSE── board CLI on each worker machine
-                   board.codeplant.de, behind a login proxy             dispatch · intake · listen · worker
+                   board.codeplant.de, behind a login proxy             dispatch · listen · worker
                                                                           └─ starts `claude -p` per task
 ```
 
@@ -37,11 +37,11 @@ You need Linux with systemd, or macOS, and `claude`, logged in, plus `gh`, both 
 
    ```sh
    board init            # board URL, machine token, data key, machine name
-   board setup --enable  # systemd user units (launchd agents on macOS): dispatch, listener (and intake on Linux, if config.json has an intake block)
+   board setup --enable  # systemd user units (launchd agents on macOS): dispatch and the listener
    board doctor          # checks config, token, key, server version and units
    ```
 
-4. Edit `~/.config/agent-board/config.json`: map `repos` to your local checkouts, adjust `lanes` if you want parallel runs split by skill. To turn PR review requests into tasks, add an `intake` block (see `apps/cli/examples/config.reviews.json`) and run `board setup --enable` again.
+4. Edit `~/.config/agent-board/config.json`: map `repos` to your local checkouts, adjust `lanes` if you want parallel runs split by skill. To turn PR review requests into tasks, define an agent (see `apps/cli/examples/config.reviews.json`) and run the `github-reviews` script on a timer (`board example github-reviews.sh`; see [docs/usage.md](docs/usage.md#review-requests-from-github)).
 
 For runs after you log out, enable lingering with `loginctl enable-linger $USER`. Update later with `board self-update`.
 
@@ -72,7 +72,7 @@ Agents report with `board comment`, ask with `board ask`, park on CI with `board
 
 With the optional Slack app, `/board <text>` in Slack puts an idea in a **From Slack** box on the board; you turn it into a task in the browser (see [docs/usage.md](docs/usage.md#slack)).
 
-Intake runs on a timer and turns GitHub review requests into review tasks. These run with a narrow allow-list, because their input is PR text nobody chose to read.
+A script such as `github-reviews` can turn GitHub review requests into review tasks on a timer. They run as an agent with a narrow allow-list, because their input is PR text nobody chose to read.
 
 Further reading:
 

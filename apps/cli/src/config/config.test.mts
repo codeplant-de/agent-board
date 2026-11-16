@@ -8,12 +8,12 @@ import {
   ConfigError,
   configWarnings,
   isOverrideWarning,
-  intakeAgentProblem,
   isSafeMode,
   loadConfig,
   loadConfigWarnings,
   parseConfig,
   readSecretFile,
+  REMOVED_INTAKE,
 } from './config.mts';
 
 const valid = {
@@ -23,14 +23,6 @@ const valid = {
 test('a valid config gets defaults', () => {
   const config = parseConfig(valid);
   assert.deepEqual(config.lanes, [{ name: 'general', skills: ['*'], slots: 3 }]);
-  assert.deepEqual(config.intake, {
-    prompt: '/review-pr {url} --auto',
-    priority: 'normal',
-    allowedTools: [],
-    disallowedTools: [],
-    env: [],
-    mcpServers: [],
-  });
   assert.ok(config.defaultCwd.startsWith('/') && !config.defaultCwd.includes('~'));
   assert.deepEqual([config.pauseAfterMinutes, config.inactivityMinutes, config.maxRunHours], [5, 15, 6]);
   assert.ok(!config.repos['cosuno/cosuno']?.startsWith('~'));
@@ -48,8 +40,6 @@ test('invalid configs are refused with a pointed message', () => {
     [{ ...valid, lanes: { a: { skills: ['*'] }, b: { skills: ['*'] } } }, /"\*" is in lanes a and b/],
     [{ ...valid, lanes: { 'a b': { skills: ['x'] } } }, /lane name/],
     [{ ...valid, lanes: { a: { skills: ['x'], slots: 0 } } }, /lanes.a.slots/],
-    [{ ...valid, intake: { prompt: '/review-pr --auto' } }, /intake.prompt must be a prompt with \{url\}/],
-    [{ ...valid, intake: { priority: 'asap' } }, /intake.priority must be one of/],
     [{ ...valid, defaultCwd: 'relative' }, /defaultCwd/],
     [{ ...valid, repos: { bad: '/x' } }, /owner\/name/],
   ];
@@ -299,27 +289,25 @@ test('a misspelt key at any level is a warning naming the nearest known key, not
     inactivityMinuts: 60,
     lane: { reviews: { skills: ['review-pr'] } },
     lanes: { reviews: { skills: ['review-pr'], slot: 2 } },
-    intake: { allowedTool: ['Read'] },
   };
   assert.doesNotThrow(() => parseConfig(raw));
   assert.deepEqual(configWarnings(raw), [
     'unknown key "inactivityMinuts", ignored; did you mean "inactivityMinutes"?',
     'unknown key "lane", ignored; did you mean "lanes"?',
     'unknown key "lanes.reviews.slot", ignored; did you mean "lanes.reviews.slots"?',
-    'unknown key "intake.allowedTool", ignored; did you mean "intake.allowedTools"?',
   ]);
 });
 
 test('an unknown key close to no known one lists the keys of its level', () => {
   assert.deepEqual(configWarnings({ backend: { command: ['/x'] } }), [
-    'unknown key "backend", ignored; known here: machine, lanes, defaultCwd, pauseAfterMinutes, inactivityMinutes, maxRunHours, autoUpdate, intake, agents, repos, dirs',
+    'unknown key "backend", ignored; known here: machine, lanes, defaultCwd, pauseAfterMinutes, inactivityMinutes, maxRunHours, autoUpdate, agents, repos, dirs',
   ]);
 });
 
 test('a config with only known keys, or no object at all, has no warnings', () => {
   assert.deepEqual(configWarnings(valid), []);
   assert.deepEqual(configWarnings({ dirs: { '/srv/a': {} } }), []);
-  assert.deepEqual(configWarnings({ lanes: { a: { skills: ['*'], slots: 2, cwd: '~' } }, intake: { env: ['X'] } }), []);
+  assert.deepEqual(configWarnings({ lanes: { a: { skills: ['*'], slots: 2, cwd: '~' } } }), []);
   for (const raw of [undefined, null, [], 'x']) assert.deepEqual(configWarnings(raw), []);
 });
 
@@ -439,35 +427,12 @@ test('agents is a known top-level key, so it draws no warning', () => {
   assert.deepEqual(configWarnings({ agents: {} }), []);
 });
 
-test('intake.agent names an agent and is kept', () => {
-  const config = parseConfig({ agents: { reviewer: REVIEWER }, intake: { agent: 'reviewer' } });
-  assert.equal(config.intake.agent, 'reviewer');
-  assert.equal(intakeAgentProblem(config), undefined);
-  assert.equal(parseConfig({ intake: {} }).intake.agent, undefined);
-});
-
-test('intake.agent that names no usable agent is not a config error, and intake reports it', () => {
-  const unknown = parseConfig({ intake: { agent: 'reviewer' } });
-  assert.match(intakeAgentProblem(unknown) ?? '', /names "reviewer", which agents in config.json does not define/);
-  const broken = parseConfig({
-    agents: { reviewer: { ...REVIEWER, disallowedTool: [] } },
-    intake: { agent: 'reviewer' },
-  });
-  assert.match(intakeAgentProblem(broken) ?? '', /which cannot be used \(config: agents.reviewer has no key/);
-  assert.equal(intakeAgentProblem(parseConfig({ intake: {} })), undefined);
-});
-
-test('intake.agent must be an agent name, and cannot come with the deprecated lists', () => {
-  for (const bad of ['Bad Name', 3, ''])
-    assert.throws(() => parseConfig({ intake: { agent: bad } }), /intake.agent must be an agent name/);
-  for (const lists of [
-    { allowedTools: ['Read'] },
-    { disallowedTools: ['Bash'] },
-    { env: ['X'] },
-    { mcpServers: ['s'] },
-  ])
-    assert.throws(
-      () => parseConfig({ agents: { reviewer: REVIEWER }, intake: { agent: 'reviewer', ...lists } }),
-      /intake sets both agent and the deprecated/,
-    );
+test('an intake key is ignored with a warning that names the replacement, whatever it holds', () => {
+  for (const intake of [{}, { agent: 'reviewer', prompt: 'no url' }, { priority: 'asap' }, 'nope']) {
+    const raw = { ...valid, intake };
+    assert.doesNotThrow(() => parseConfig(raw), 'a config error would stop dispatch on a machine that has the old key');
+    assert.deepEqual(configWarnings(raw), [REMOVED_INTAKE]);
+  }
+  assert.match(REMOVED_INTAKE, /board example github-reviews.*agents\.<name>/);
+  assert.equal('intake' in parseConfig({ ...valid, intake: {} }), false);
 });

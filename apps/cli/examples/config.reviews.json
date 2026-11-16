@@ -19,11 +19,6 @@
   "repos": {
     "cosuno/cosuno": "~/workspace/cosuno/cosuno"
   },
-  "intake": {
-    "prompt": "/review-pr {url} --auto",
-    "priority": "normal",
-    "agent": "reviewer"
-  },
   "agents": {
     "reviewer": {
       "description": "Reviews a GitHub pull request and stages the findings as a draft review for the user to submit. Read-only on the repository.",

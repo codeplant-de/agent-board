@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { API_VERSION } from '@agent-board/shared';
@@ -145,7 +144,17 @@ test('schedule: a prompt after -- may start with dashes, and everything after th
 test('schedule --agent: the agent must be defined in this machine’s config.json, so a typo fails before anything is written', async () => {
   const backend = fakeBackend([]);
   const configs = {
-    agents: { reviewer: { ...CONFIG.intake, description: 'Reviews.', prompt: 'You review.', tools: ['Read'] } },
+    agents: {
+      reviewer: {
+        allowedTools: [],
+        disallowedTools: [],
+        env: [],
+        mcpServers: [],
+        description: 'Reviews.',
+        prompt: 'You review.',
+        tools: ['Read'],
+      },
+    },
     agentErrors: { broken: 'tools must be a list' },
   };
   const go = (argv: string[]) =>
@@ -419,10 +428,9 @@ test('ask and add keep their flag shapes', async () => {
   }
 });
 
-test('internal dispatch, intake, listen and worker say they need Linux or macOS elsewhere', async () => {
+test('internal dispatch, listen and worker say they need Linux or macOS elsewhere', async () => {
   for (const argv of [
     ['internal', 'dispatch'],
-    ['internal', 'intake'],
     ['internal', 'listen'],
     ['internal', 'worker', ID],
   ])
@@ -431,31 +439,6 @@ test('internal dispatch, intake, listen and worker say they need Linux or macOS 
       /needs Linux with systemd or macOS; this is win32/,
       argv.join(' '),
     );
-});
-
-test('internal intake is not supported on macOS', async () => {
-  await assert.rejects(
-    runBoard(['internal', 'intake'], { env: {}, platform: 'darwin' }),
-    /intake is not supported on macOS/,
-  );
-});
-
-test('internal intake refuses with a usage error when config.json has no intake key', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'board-intake-off-'));
-  try {
-    writeFileSync(join(dir, 'config.json'), '{"machine": "box"}');
-    await assert.rejects(
-      runBoard(['internal', 'intake'], { env: { AGENT_BOARD_CONFIG_DIR: dir }, platform: 'linux' }),
-      (error) =>
-        error instanceof UsageError && /intake is not enabled: config\.json has no intake key/.test(error.message),
-    );
-    await assert.rejects(
-      runBoard(['internal', 'intake'], { env: { AGENT_BOARD_CONFIG_DIR: join(dir, 'none') }, platform: 'linux' }),
-      UsageError,
-    );
-  } finally {
-    rmSync(dir, { recursive: true });
-  }
 });
 
 test('wait --in parks a running task until then, and stores no check', async () => {
@@ -565,7 +548,17 @@ function keyedRun() {
       context: (dryRun) => ({
         config: {
           ...CONFIG,
-          agents: { reviewer: { ...CONFIG.intake, description: 'Reviews.', prompt: 'You review.', tools: ['Read'] } },
+          agents: {
+            reviewer: {
+              allowedTools: [],
+              disallowedTools: [],
+              env: [],
+              mcpServers: [],
+              description: 'Reviews.',
+              prompt: 'You review.',
+              tools: ['Read'],
+            },
+          },
         },
         backend,
         dryRun,

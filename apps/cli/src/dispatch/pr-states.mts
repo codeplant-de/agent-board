@@ -5,8 +5,8 @@ import { dirname, join } from 'node:path';
 import { isRecord, statePrOf } from '@agent-board/shared';
 import type { Backend, PrState, Task } from '@agent-board/shared';
 import { BackendError } from '../backend/backend.mts';
-import { GitHubError } from '../intake/github.mts';
-import type { GitHub, PrStateLookup } from '../intake/github.mts';
+import { GitHubError } from './github.mts';
+import type { GitHub, PrStateLookup } from './github.mts';
 import { errorText } from '../output/text.mts';
 
 export const PR_REFRESH_INTERVAL_MS = 10 * 60_000;
@@ -57,7 +57,7 @@ export async function refreshPrStates(
 }
 
 export interface PrRefreshState {
-  // When the states were last looked up, by the dispatcher or by the built-in intake.
+  // When the states were last looked up.
   refreshedAt(): Date | undefined;
   markRefreshed(at: Date): void;
 }

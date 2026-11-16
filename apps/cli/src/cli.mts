@@ -1,4 +1,4 @@
-import { GitHubError } from './intake/github.mts';
+import { GitHubError } from './dispatch/github.mts';
 import { SystemError } from './setup/system.mts';
 import { BackendError, dryRunBackend } from './backend/backend.mts';
 import { updateCliHint } from './backend/contract-check.mts';
@@ -32,7 +32,7 @@ export function print(line: string): void {
 }
 
 export interface ContextOptions {
-  // A missing config.json means the defaults: for the commands that never bind work to this machine's name (not schedule, add, dispatch, intake, worker).
+  // A missing config.json means the defaults: for the commands that never bind work to this machine's name (not schedule, add, dispatch, worker).
   optionalConfig?: boolean;
   // Where human lines go, including the DRY lines of a dry run; stderr while stdout carries a JSON document.
   print?: (line: string) => void;
