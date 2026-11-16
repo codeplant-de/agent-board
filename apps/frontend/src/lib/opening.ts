@@ -10,6 +10,7 @@ import {
   openNote,
   openPr,
   openPreview,
+  parseTranscriptEvent,
   taskLabels,
   transcriptBinding,
   UNREADABLE_TEXT,
@@ -20,6 +21,7 @@ import {
   type NoteKind,
   type Opener,
   type Question,
+  type TranscriptEvent,
   type TranscriptEventView,
   type UnreadableField,
 } from '@agent-board/shared';
@@ -302,14 +304,18 @@ export async function openEvent(
   wire: WireEvent,
 ): Promise<TranscriptEventView> {
   const text = await tryOpen(keys, transcriptBinding('tr.data', run.taskId, run.runId, wire.seq), wire.data);
+  let event: TranscriptEvent | undefined;
   try {
-    const data: unknown = text === undefined ? undefined : JSON.parse(text);
-    if (typeof data === 'object' && data !== null && 'kind' in data && 'seq' in data)
-      if (data.kind === wire.kind && data.seq === wire.seq)
-        // The shape within the sealed JSON is the worker's; only the kind and position are checked against the listing.
-        return { ...data, outputSize: isCount(wire.outputSize) ? wire.outputSize : null } as TranscriptEventView;
+    // The sealed JSON is written by whichever worker version ran; one that does not fit this version's shape is unreadable.
+    event = text === undefined ? undefined : parseTranscriptEvent(JSON.parse(text));
   } catch {
     // Falls through to the placeholder.
+  }
+  if (event !== undefined && event.kind === wire.kind && event.seq === wire.seq) {
+    const outputSize = isCount(wire.outputSize) ? wire.outputSize : null;
+    if (event.kind !== 'tool_result') return { ...event, outputSize };
+    const { output: _output, ...rest } = event;
+    return { ...rest, outputSize };
   }
   const parent = wire.parent !== null && isSafeNoteId(wire.parent) ? wire.parent : null;
   return { seq: wire.seq, at: wire.at, parent, kind: 'note', text: UNREADABLE_TEXT, outputSize: null };

@@ -28,6 +28,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ago, stamp } from '../lib/time';
 import { loadEventsAfter } from '../lib/transcript';
 import { useTRPC } from '../lib/trpc';
+import { ErrorBoundary } from './ErrorBoundary';
 import { Markdown } from './Markdown';
 import { QueryStatus } from './QueryStatus';
 
@@ -331,20 +332,23 @@ export function TranscriptDrawer({
           }}
         >
           <Stack gap={6} pb="md">
-            {rows.map((event) => (
-              <Box
-                key={event.seq}
-                pl={event.parent ? 'md' : 0}
-                style={event.parent ? { borderLeft: '2px solid var(--mantine-color-grape-4)' } : undefined}
-              >
-                {event.parent && event.kind !== 'note' && (
-                  <Text size="10px" c="grape" fw={600} mb={2}>
-                    subagent
-                  </Text>
-                )}
-                <EventRow taskId={taskId} runId={selected ?? ''} event={event} results={results} />
-              </Box>
-            ))}
+            {/* An event this version cannot show stays in the drawer instead of taking the task page with it. */}
+            <ErrorBoundary what="this run" resetKey={selected ?? ''}>
+              {rows.map((event) => (
+                <Box
+                  key={event.seq}
+                  pl={event.parent ? 'md' : 0}
+                  style={event.parent ? { borderLeft: '2px solid var(--mantine-color-grape-4)' } : undefined}
+                >
+                  {event.parent && event.kind !== 'note' && (
+                    <Text size="10px" c="grape" fw={600} mb={2}>
+                      subagent
+                    </Text>
+                  )}
+                  <EventRow taskId={taskId} runId={selected ?? ''} event={event} results={results} />
+                </Box>
+              ))}
+            </ErrorBoundary>
             {live && newest && (
               <Group gap={6}>
                 <Loader size={12} />

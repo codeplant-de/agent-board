@@ -1,6 +1,6 @@
 /**
  * One dispatcher tick: sweep stale Running tasks, wake waiting tasks whose time is up, fill free slots from the top of Todo,
- * then drop the logs and session records of finished tasks and run the checks of waiting tasks that are due.
+ * then drop the logs and session records of finished tasks, unlock their worktrees, and run the checks of waiting tasks that are due.
  * Last, at most every 10 minutes and only where `gh` is installed, it refreshes the PR state of the open tasks.
  * No LLM calls. Add --dry-run to read everything and print every write and process start instead.
  */
@@ -26,6 +26,8 @@ import { createWorkerSystem } from '../setup/worker-system.mts';
 import type { System } from '../setup/system.mts';
 import { readLogTail } from '../worker/logs.mts';
 import { createTaskFileStore } from './task-files.mts';
+import { createWorktreeLocks } from '../worker/worktree-lock.mts';
+import type { WorktreeLocks } from '../worker/worktree-lock.mts';
 import type { TaskFileStore } from './task-files.mts';
 import { errorText, fence } from '../output/text.mts';
 import type { CheckResult, WaitCheck, WaitStore } from './waits.mts';
@@ -49,6 +51,7 @@ export interface DispatchDeps extends Context {
   logTail: (taskId: string) => string;
   waits: WaitStore;
   taskFiles: TaskFileStore;
+  worktreeLocks: WorktreeLocks;
   runCheck: (check: WaitCheck) => Promise<CheckResult>;
   update: UpdateDeps;
   // Keys of config.json the CLI ignores (see configWarnings), logged at the start of every tick.
@@ -159,8 +162,30 @@ async function pruneTaskFiles(deps: DispatchDeps, listed: Task[], activeWorkers:
   }
 }
 
+/**
+ * Unlocks the worktrees that tasks locked here (see worktree-lock.mts) once the task is done, closed or gone from the board. A
+ * task in any other column may still be resumed in its worktree, and one whose worker runs here keeps its locks whatever the
+ * board says.
+ */
+async function releaseWorktrees(deps: DispatchDeps, listed: Task[], activeWorkers: string[]): Promise<void> {
+  const shown = new Map(listed.map((task) => [task.id, task]));
+  let lookups = 0;
+  for (const id of deps.worktreeLocks.tasks()) {
+    if (activeWorkers.includes(id)) continue;
+    const task = shown.get(id);
+    if (task === undefined && lookups >= TASK_FILE_LOOKUPS_PER_TICK) continue;
+    if (task === undefined) lookups += 1;
+    if (!(task === undefined ? await isFinished(deps, id) : task.closed || task.status === 'done')) continue;
+    if (deps.dryRun) {
+      deps.print(`DRY unlock the worktrees of ${id}: its task is finished`);
+      continue;
+    }
+    for (const line of deps.worktreeLocks.release(id)) deps.print(`UNLOCK ${id} ${line}`);
+  }
+}
+
 // The tick is stopped after its limit, and the check processes would outlive it: they run in their own process group.
-const TICK_LIMIT_MS = TICK_LIMIT_S * 1000;
+export const TICK_LIMIT_MS = TICK_LIMIT_S * 1000;
 const TICK_MARGIN_MS = 10_000;
 // What `timeout` exits with when it stopped a command.
 const TICK_TIMED_OUT = 124;
@@ -408,6 +433,11 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   } catch (error) {
     log(`WARN dropping old task files failed: ${errorText(error)}`);
   }
+  try {
+    await releaseWorktrees(deps, listed, activeWorkers);
+  } catch (error) {
+    log(`WARN unlocking the worktrees of finished tasks failed: ${errorText(error)}`);
+  }
   await runChecks(deps, checks, tickStart);
   log(`TICK started=${started.size} ${summary}${checks.length > 0 ? ` checks=${checks.length}` : ''}`);
   // Last, so a slow or failing GitHub never holds back a start.
@@ -454,6 +484,7 @@ export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<voi
         logTail: readLogTail,
         waits: createWaitStore(),
         taskFiles: createTaskFileStore(),
+        worktreeLocks: createWorktreeLocks(),
         runCheck: (check) => runCheck(check),
         configWarnings: () => loadConfigWarnings(getPaths().configFile),
         prRefresh: {

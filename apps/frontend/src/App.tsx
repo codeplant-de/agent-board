@@ -2,6 +2,7 @@ import { Badge, Center, Loader, Text } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './AppLayout';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { KeyGate } from './crypto/KeyGate';
 import { errorMessage, POLL_MS, useTRPC } from './lib/trpc';
 import { BoardPage } from './pages/BoardPage';
@@ -49,17 +50,20 @@ export function App() {
         </Badge>
       )}
       <KeyGate me={me.data}>
-        <Routes>
-          <Route element={<AppLayout />}>
-            <Route index element={<BoardPage />} />
-            <Route path="t/:id" element={<TaskPage />} />
-            <Route path="schedules" element={<SchedulesPage />} />
-            <Route path="closed" element={<ClosedPage />} />
-            <Route path="settings" element={<SettingsPage />} />
-            <Route path="slack/link" element={<SlackLinkPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
+        {/* Inside the gate, so that a crash anywhere in the app still offers Lock. */}
+        <ErrorBoundary what="the board">
+          <Routes>
+            <Route element={<AppLayout />}>
+              <Route index element={<BoardPage />} />
+              <Route path="t/:id" element={<TaskPage />} />
+              <Route path="schedules" element={<SchedulesPage />} />
+              <Route path="closed" element={<ClosedPage />} />
+              <Route path="settings" element={<SettingsPage />} />
+              <Route path="slack/link" element={<SlackLinkPage />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Route>
+          </Routes>
+        </ErrorBoundary>
       </KeyGate>
     </>
   );

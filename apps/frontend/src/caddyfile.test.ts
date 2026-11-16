@@ -22,7 +22,8 @@ function blockAt(source: string, opener: string): string {
 }
 
 const snippet = blockAt(code, '(data_only) {');
-const handles = [...code.matchAll(/^\thandle[^\n{]*\{/gm)].map((match) => blockAt(code, match[0]));
+const dataHeaders = blockAt(code, '(data_headers) {');
+const handles = [...code.matchAll(/^\thandle [^\n{]*\{/gm)].map((match) => blockAt(code, match[0]));
 
 describe('the web container’s Caddyfile', () => {
   it('proxies to the backend only inside the data_only snippet, and every handle that proxies imports it', () => {
@@ -43,12 +44,19 @@ describe('the web container’s Caddyfile', () => {
   });
 
   it('fixes the content type and the CSP of every proxied answer at the last moment, over the backend’s', () => {
-    expect(snippet).toContain('>Content-Type "application/json; charset=utf-8"');
-    expect(snippet).toContain(`>Content-Security-Policy "sandbox; default-src 'none'"`);
-    expect(snippet).toContain('>X-Content-Type-Options "nosniff"');
-    expect(snippet).toContain('>Content-Disposition "attachment"');
-    expect(snippet).toContain('>Cross-Origin-Resource-Policy "same-origin"');
-    expect(snippet).toContain('>Cache-Control "no-store"');
+    expect(snippet).toMatch(/^\timport data_headers$/m);
+    expect(dataHeaders).toContain('>Content-Type "application/json; charset=utf-8"');
+    expect(dataHeaders).toContain(`>Content-Security-Policy "sandbox; default-src 'none'"`);
+    expect(dataHeaders).toContain('>X-Content-Type-Options "nosniff"');
+    expect(dataHeaders).toContain('>Content-Disposition "attachment"');
+    expect(dataHeaders).toContain('>Cross-Origin-Resource-Policy "same-origin"');
+    expect(dataHeaders).toContain('>Cache-Control "no-store"');
+  });
+
+  it('gives an error Caddy makes on a backend path the same headers', () => {
+    const errors = blockAt(code, 'handle_errors {');
+    expect(errors).toContain('@data path /trpc* /api/* /healthz');
+    expect(blockAt(errors, 'handle @data {')).toMatch(/^\t\t\timport data_headers$/m);
   });
 
   it('drops every header the backend sends, so Clear-Site-Data, Set-Cookie, Refresh, Link, Location and the like never arrive', () => {

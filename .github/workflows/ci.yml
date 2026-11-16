@@ -64,6 +64,10 @@ jobs:
       - name: Format
         run: pnpm format:check
 
+      # caddyfile.docker.test.ts runs the Caddyfile in the Caddy image the web container ships, and fails on CI without it.
+      - name: Pull the Caddy image
+        run: docker pull "$(sed -n 's/^ARG CADDY_IMAGE=//p' apps/frontend/Dockerfile)"
+
       - name: Tests
         run: pnpm test
 
@@ -311,6 +315,39 @@ jobs:
         env:
           DATABASE_URL: postgresql://board:board@localhost:5432/board_prevcli
         run: scripts/run-previous-cli-smoke.sh "$RUNNER_TEMP/previous-cli/board-linux-x64"
+
+  # A pull request builds every image without pushing it, so a break only the image build sees (a file a Dockerfile must
+  # COPY, a lockfile the filtered install rejects, an import Vite cannot resolve but tsc accepts) fails here, not after the
+  # merge, where build-and-push would fail quietly and Flux would keep the old image. It reads the cache build-and-push
+  # writes on main and writes none: a pull request's cache entries are visible only to that pull request and would push
+  # main's out of the repository's cache quota.
+  images:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: agent-board-backend
+            dockerfile: apps/backend/Dockerfile
+          - image: agent-board-web
+            dockerfile: apps/frontend/Dockerfile
+          - image: agent-board-slack
+            dockerfile: apps/slack/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build ${{ matrix.image }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.image }}
 
   # Images are built only after the tests and the previous-CLI smoke test pass, so Flux never rolls out a commit that failed
   # them. A declared break skips previous-cli's steps and the job still succeeds, so only a red run blocks. A failed release

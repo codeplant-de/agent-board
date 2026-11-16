@@ -30,6 +30,8 @@ import { createRunFiles } from './runtime.mts';
 import type { RunFiles } from './runtime.mts';
 import { createSessionStore } from './sessions.mts';
 import type { SessionStore } from './sessions.mts';
+import { createWorktreeLocks } from './worktree-lock.mts';
+import type { WorktreeLocks } from './worktree-lock.mts';
 import { appendLog, logPath, readLogTail, resetLog } from './logs.mts';
 import { resolvePluginPath } from './plugins.mts';
 import { plainLine } from '../output/terminal.mts';
@@ -75,6 +77,8 @@ export interface WorkerDeps extends Context {
   newSessionId: () => string;
   // The sessions this machine started, per task: only those are ever resumed.
   sessions: SessionStore;
+  // The locks that keep a cleanup from deleting the linked worktree a task works in.
+  worktreeLocks: WorktreeLocks;
   files: RunFiles;
   // The hook command line for a task, given the run directory.
   hookCommand: (runDir: string, taskId: string) => string;
@@ -207,6 +211,13 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   // Bound to the task from now on: it runs here unless the agent moves on (into a worktree, say).
   if (task.workdir !== plan.invocation.cwd)
     await backend.updateTask(task.id, { workdir: plan.invocation.cwd, seal: sealing });
+  // A linked worktree the task is bound to is locked for it; the ones it held before (Re-run fresh, a gone directory) are not.
+  const holdWorkdir = (dir: string): void => {
+    const line = deps.worktreeLocks.hold(taskId, dir);
+    if (line !== undefined) deps.appendLog(taskId, line);
+    for (const released of deps.worktreeLocks.release(taskId, dir)) deps.appendLog(taskId, released);
+  };
+  holdWorkdir(plan.invocation.cwd);
 
   // A restricted run loads only the user's settings; the tokens and endpoints it is allowed come from the working directory's.
   // Print mode kills background work 10 minutes after the last turn; 0 waits for it, and the heartbeat and stop handling still bound the run.
@@ -453,9 +464,11 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     // The core never writes to a task that left the workflow or runs again elsewhere, whatever this run's outcome.
     if (isRunOver(task, after)) return;
     // The session's directory as it stopped: a later resume must start in the same place, worktree included.
+    let workdir = plan.invocation.cwd;
     if (endedIn !== undefined && endedIn !== plan.invocation.cwd) {
       if (isAllowedDir(config.dirs, endedIn, deps.realpath)) {
         await backend.updateTask(task.id, { workdir: endedIn, seal: sealing });
+        workdir = endedIn;
         deps.appendLog(taskId, `the session ended in ${endedIn}`);
       } else {
         // Stored, it would strand the task: the next start would refuse its own directory.
@@ -472,6 +485,8 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
           });
       }
     }
+    // The workdir keeps its lock; worktrees the agent only passed through during the run lose theirs.
+    holdWorkdir(workdir);
     const outcome = decideOutcome({
       exitCode: result.exitCode,
       signal: result.signal,
@@ -528,6 +543,7 @@ export async function workerMain(taskId: string): Promise<void> {
     home: homedir(),
     newSessionId: randomUUID,
     sessions: createSessionStore(),
+    worktreeLocks: createWorktreeLocks(),
     files: createRunFiles(),
     hookCommand,
     now: () => new Date(),

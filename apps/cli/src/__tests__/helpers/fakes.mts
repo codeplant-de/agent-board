@@ -1,5 +1,6 @@
 import type { Config } from '../../config/config.mts';
 import type { RunFiles, RunRecord } from '../../worker/runtime.mts';
+import type { WorktreeLocks } from '../../worker/worktree-lock.mts';
 import type { SessionStore } from '../../worker/sessions.mts';
 import type { TaskFile, TaskFileStore } from '../../dispatch/task-files.mts';
 import type { UpdateState } from '../../self/update-state.mts';
@@ -487,6 +488,34 @@ export function fakeTaskFiles(initial: TaskFile[] = []): TaskFileStore & { files
       const at = files.findIndex((file) => file.kind === kind && file.taskId === taskId);
       if (at >= 0) files.splice(at, 1);
     },
+  };
+}
+
+// Worktree locks in memory: every directory counts as a linked worktree of its own. `held` maps a task to its directories.
+export function fakeWorktreeLocks(
+  initial: Record<string, string[]> = {},
+): WorktreeLocks & { held: Map<string, string[]>; calls: string[] } {
+  const held = new Map(Object.entries(initial).map(([id, dirs]) => [id, [...dirs]]));
+  const calls: string[] = [];
+  return {
+    held,
+    calls,
+    hold(taskId, dir) {
+      calls.push(`hold ${taskId} ${dir}`);
+      const dirs = held.get(taskId) ?? [];
+      if (dirs.includes(dir)) return undefined;
+      held.set(taskId, [...dirs, dir]);
+      return `locked the worktree ${dir} for this task`;
+    },
+    release(taskId, keep) {
+      calls.push(`release ${taskId}${keep === undefined ? '' : ` ${keep}`}`);
+      const dirs = held.get(taskId) ?? [];
+      const left = dirs.filter((dir) => dir === keep);
+      if (left.length > 0) held.set(taskId, left);
+      else held.delete(taskId);
+      return dirs.filter((dir) => dir !== keep).map((dir) => `unlocked the worktree ${dir}`);
+    },
+    tasks: () => [...held.keys()],
   };
 }
 
