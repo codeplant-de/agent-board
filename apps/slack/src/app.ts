@@ -1,6 +1,8 @@
 import { describeError } from './errors';
 import { handleCommand, type SlashCommand } from './handleCommand';
 import type { IntakeClient } from './intake';
+import { createShortcutHandler, type InteractiveEvent } from './shortcut';
+import type { SlackApi } from './slackApi';
 
 export interface Log {
   info(message: string): void;
@@ -16,6 +18,7 @@ export interface SlashCommandEvent {
 /** The part of the Slack Socket Mode client this app uses; tests hand in their own. */
 export interface SocketLike {
   onCommand(listener: (event: SlashCommandEvent) => void): void;
+  onInteractive(listener: (event: InteractiveEvent) => void): void;
   onError(listener: (error: unknown) => void): void;
   start(): Promise<unknown>;
   disconnect(): Promise<unknown>;
@@ -24,6 +27,8 @@ export interface SocketLike {
 export interface SlackAppDeps {
   socket: SocketLike;
   intake: IntakeClient;
+  /** The Slack Web API with the bot token; null without one, which turns the shortcut off. */
+  slackApi?: SlackApi | null;
   /** Sends the answer to a command's `response_url`. */
   reply: (responseUrl: string, text: string) => Promise<void>;
   log: Log;
@@ -40,13 +45,14 @@ const RETRY_FIRST_MS = 2_000;
 const RETRY_MAX_MS = 60_000;
 
 /**
- * Answers `/board` and connects to Slack in the background. Slack or the board being down never stops it: a command that
+ * Answers `/board` and the Send to board shortcut, and connects to Slack in the background. Slack or the board being down never stops it: a command that
  * cannot be answered costs a log line, and the connection is retried until it holds. Nothing here logs a token or what a
  * user typed.
  */
 export function startSlackApp({
   socket,
   intake,
+  slackApi = null,
   reply,
   log,
   secrets = [],
@@ -69,6 +75,15 @@ export function startSlackApp({
 
   socket.onCommand((event) => {
     answer(event).catch((error: unknown) => log.error(`/board answer not sent: ${describe(error)}`));
+  });
+  const shortcut = createShortcutHandler({
+    api: slackApi,
+    intake,
+    reply,
+    onError: (message, error) => log.error(`shortcut: ${message}${error ? ` (${describe(error)})` : ''}`),
+  });
+  socket.onInteractive((event) => {
+    shortcut(event).catch((error: unknown) => log.error(`shortcut failed: ${describe(error)}`));
   });
   socket.onError((error) => log.error(`Slack socket: ${describe(error)}`));
 

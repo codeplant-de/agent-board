@@ -1,3 +1,4 @@
+import { INBOX_TEXT_MAX } from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
 import { handleCommand, type SlashCommand } from './handleCommand';
 import { IntakeError, NotLinkedError, type IntakeClient } from './intake';
@@ -10,6 +11,7 @@ function fakeIntake(overrides: Partial<IntakeClient> = {}) {
       calls.push(['startLink', ...args]),
       { url: 'https://board/slack/link?code=c', minutes: 15 }
     ),
+    isLinked: async (...args) => (calls.push(['isLinked', ...args]), true),
     unlink: async (...args) => (calls.push(['unlink', ...args]), true),
     ...overrides,
   };
@@ -43,7 +45,7 @@ describe('handleCommand', () => {
 
   it('refuses text over the limit before asking the board', async () => {
     const { intake, calls } = fakeIntake();
-    expect(await run(intake, 'a'.repeat(4001))).toContain('4001');
+    expect(await run(intake, 'a'.repeat(INBOX_TEXT_MAX + 1))).toContain(String(INBOX_TEXT_MAX + 1));
     expect(calls).toEqual([]);
   });
 

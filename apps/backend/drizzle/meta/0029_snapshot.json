@@ -1,5 +1,5 @@
 {
-  "id": "143651f0-9047-49ad-99b5-ea9a52818bff",
+  "id": "f16f390b-4207-47f6-957c-59a0dfc2d7aa",
   "prevId": "40c096d8-151f-4ebf-8473-9407435b50b6",
   "version": "7",
   "dialect": "postgresql",
@@ -450,12 +450,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "agent": {
-          "name": "agent",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "every_ms": {
           "name": "every_ms",
           "type": "bigint",
@@ -590,10 +584,6 @@
         "schedule_workdir_sealed": {
           "name": "schedule_workdir_sealed",
           "value": "\"schedule\".\"workdir\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
-        },
-        "schedule_agent_sealed": {
-          "name": "schedule_agent_sealed",
-          "value": "\"schedule\".\"agent\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
         }
       },
       "isRLSEnabled": true
@@ -690,7 +680,7 @@
       "checkConstraints": {
         "slack_inbox_text_length": {
           "name": "slack_inbox_text_length",
-          "value": "char_length(\"slack_inbox\".\"text\") between 1 and 4000"
+          "value": "char_length(\"slack_inbox\".\"text\") between 1 and 20000"
         }
       },
       "isRLSEnabled": true
@@ -907,12 +897,6 @@
         },
         "home_workdir": {
           "name": "home_workdir",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "agent": {
-          "name": "agent",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1185,10 +1169,6 @@
         "task_home_workdir_sealed": {
           "name": "task_home_workdir_sealed",
           "value": "\"task\".\"home_workdir\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
-        },
-        "task_agent_sealed": {
-          "name": "task_agent_sealed",
-          "value": "\"task\".\"agent\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
         },
         "task_pr_sealed": {
           "name": "task_pr_sealed",

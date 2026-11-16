@@ -1,3 +1,4 @@
+import { INBOX_TEXT_MAX } from '@agent-board/shared';
 import { eq, sql } from 'drizzle-orm';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -56,7 +57,7 @@ describe('the intake API', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it('knows three commands and nothing that touches a task', async () => {
+  it('knows four commands and nothing that touches a task', async () => {
     const { call } = await serve();
     for (const command of ['list-tasks', 'get-task', 'add-task', 'claim-task'])
       expect((await call(command, who)).statusCode).toBe(404);
@@ -96,6 +97,15 @@ describe('the intake API', () => {
     ]);
   });
 
+  it('says whether a Slack user is linked, and nothing more', async () => {
+    const { call } = await serve();
+    expect((await call('link-status', who)).json()).toEqual({ result: { linked: false } });
+    await asOwner(db, 'alice', (tx) => tx.insert(slackLinks).values(who));
+    expect((await call('link-status', who)).json()).toEqual({ result: { linked: true } });
+    expect((await call('link-status', { ...who, slackUserId: 'U2' })).json()).toEqual({ result: { linked: false } });
+    expect((await call('link-status', { teamId: 'T1' })).statusCode).toBe(400);
+  });
+
   it('unlinks the Slack user, once', async () => {
     const { call } = await serve();
     await asOwner(db, 'alice', (tx) => tx.insert(slackLinks).values(who));
@@ -116,7 +126,7 @@ describe('the intake API', () => {
     await asOwner(db, 'alice', (tx) => tx.insert(slackLinks).values(who));
     expect((await call('inbox-add', { ...who, text: '' })).statusCode).toBe(400);
     expect((await call('inbox-add', { ...who, text: '   ' })).statusCode).toBe(400);
-    expect((await call('inbox-add', { ...who, text: 'a'.repeat(4001) })).statusCode).toBe(400);
+    expect((await call('inbox-add', { ...who, text: 'a'.repeat(INBOX_TEXT_MAX + 1) })).statusCode).toBe(400);
     expect((await call('inbox-add', { ...who, text: 7 })).statusCode).toBe(400);
     expect((await call('inbox-add', { teamId: 'x y', slackUserId: 'U1', text: 'a' })).statusCode).toBe(400);
     expect((await call('link', { teamId: 'T1' })).statusCode).toBe(400);

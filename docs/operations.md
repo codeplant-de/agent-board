@@ -33,22 +33,23 @@ The cluster side (namespace, Postgres, Deployments (backend, web, Slack app), In
 
 ## The Slack app
 
-`apps/slack` is a small container (`agent-board-slack`, built next to the backend and web images and rolled out the same way) that answers `/board` in Slack: `/board link`, `/board unlink` and `/board <text>`, which lands in the board's **From Slack** box. It has no state, listens on no port and needs no ingress: it dials out to Slack (Socket Mode) and to the backend. See [usage.md](usage.md#slack) for what users do, and [architecture.md](architecture.md#the-slack-companion) for why it is separate and what its token can do.
+`apps/slack` is a small container (`agent-board-slack`, built next to the backend and web images and rolled out the same way) that answers `/board` in Slack: `/board link`, `/board unlink` and `/board <text>`, which lands in the board's **From Slack** box. It also answers the message shortcut **Send to board**, which puts a whole thread there. It has no state, listens on no port and needs no ingress: it dials out to Slack (Socket Mode) and to the backend. See [usage.md](usage.md#slack) for what users do, and [architecture.md](architecture.md#the-slack-companion) for why it is separate and what its token can do.
 
-| Variable          | Meaning                                                                                                                  |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `SLACK_APP_TOKEN` | The app-level token (`xapp-…`, scope `connections:write`) of the Slack app. The only Slack secret; no bot token is read. |
-| `BOARD_API_URL`   | The backend as the container reaches it, inside the cluster: `http://backend:4000` in the `agent-board` namespace.       |
-| `INTAKE_TOKEN`    | The same value as on the backend.                                                                                        |
+| Variable          | Meaning                                                                                                                                                                                       |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SLACK_APP_TOKEN` | The app-level token (`xapp-…`, scope `connections:write`) of the Slack app.                                                                                                                   |
+| `SLACK_BOT_TOKEN` | Optional. The Bot User OAuth Token (`xoxb-…`) the shortcut uses to open its form and read the thread. Unset, `/board` works as before and the shortcut answers that the app has no bot token. |
+| `BOARD_API_URL`   | The backend as the container reaches it, inside the cluster: `http://backend:4000` in the `agent-board` namespace.                                                                            |
+| `INTAKE_TOKEN`    | The same value as on the backend.                                                                                                                                                             |
 
 The backend holds no Slack token. Slack outages and backend outages do not stop the app: it retries the connection with growing delays, and a command it cannot answer gets an ephemeral "the board did not answer". Logs name the reason, never a token or what someone typed.
 
 Setting it up:
 
-1. In the Cosuno workspace, create an app from `infra/slack-app-manifest.yaml` (api.slack.com/apps, "Create New App", "From a manifest"). The manifest asks for the `commands` scope and Socket Mode, nothing else. It also declares a bot user, because Slack refuses slash commands without one ("Slash Commands requires bot_user"); the app never reads the bot token that installing shows. A workspace admin may have to approve it.
-2. Under Basic Information, "App-Level Tokens", generate a token with the scope `connections:write`. That is `SLACK_APP_TOKEN`. Install the app to the workspace.
-3. Generate an `INTAKE_TOKEN` and put it in the backend's env secret together with `BOARD_URL`, and `SLACK_APP_TOKEN`, `BOARD_API_URL` and `INTAKE_TOKEN` in the Slack app's secret (`agent-board-slack-env` in cloud-infra). Restart the backend, then the app.
-4. In Slack, send `/board link` and open the link.
+1. In the Cosuno workspace, create an app from `infra/slack-app-manifest.yaml` (api.slack.com/apps, "Create New App", "From a manifest"). The manifest asks for the `commands` scope, the history scopes (`channels:history`, `groups:history`, `im:history`, `mpim:history`, to read a thread) and `users:read` (to show names instead of ids), and turns on Socket Mode and interactivity (the shortcut's clicks and form arrive over the same socket, with no request URL). It declares a bot user, because Slack refuses slash commands without one ("Slash Commands requires bot_user"). After the manifest changes, update the app from the file and reinstall it, or the new scopes are not granted. A workspace admin may have to approve it.
+2. Under Basic Information, "App-Level Tokens", generate a token with the scope `connections:write`. That is `SLACK_APP_TOKEN`. Install the app to the workspace, then copy the Bot User OAuth Token from "OAuth & Permissions": that is `SLACK_BOT_TOKEN`.
+3. Generate an `INTAKE_TOKEN` and put it in the backend's env secret together with `BOARD_URL`, and `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `BOARD_API_URL` and `INTAKE_TOKEN` in the Slack app's secret (`agent-board-slack-env` in cloud-infra). Restart the backend, then the app.
+4. In Slack, send `/board link` and open the link. To use the shortcut in a channel, invite @Agent Board there: Slack lets the app read a thread only in conversations it is a member of.
 
 Without `INTAKE_TOKEN` on the backend the board runs as before and shows no Slack settings. The compose file does not start the app; locally, run `pnpm --filter @agent-board/slack dev` with `apps/slack/.env` (see `.env.example`) against `pnpm dev:backend` with `INTAKE_TOKEN` and `BOARD_URL=http://localhost:5173` set.
 

@@ -6,6 +6,7 @@ export const HELP_TEXT = [
   '`/board link`: link this Slack account to your board account',
   '`/board unlink`: remove the link',
   '`/board help`: this text',
+  'In a thread, where Slack refuses slash commands: open the message\'s "..." menu, pick *Send to board* and add a note. The whole thread goes to your inbox.',
 ].join('\n');
 
 export const NOT_LINKED_TEXT =
@@ -24,3 +25,16 @@ export const addedText = (boardUrl: string): string =>
 
 export const UNLINKED_TEXT = 'Your Slack account is no longer linked.';
 export const NOTHING_TO_UNLINK_TEXT = 'Your Slack account was not linked.';
+
+export const NO_BOT_TOKEN_TEXT =
+  "The board's Slack app has no bot token configured, so the Send to board shortcut is off. Use `/board <text>`.";
+
+export const FORM_FAILED_TEXT = 'The Send to board form did not open. Try the shortcut again.';
+
+export const NOTHING_TO_SEND_TEXT =
+  'Nothing was sent: the message could not be read and you wrote no note. Invite @Agent Board to the channel, or write a note.';
+
+export const threadAddedText = (boardUrl: string, readThread: boolean): string =>
+  readThread
+    ? addedText(boardUrl)
+    : `${addedText(boardUrl)} Only your note and the link went in: the thread could not be read. Invite @Agent Board to the channel to include it.`;

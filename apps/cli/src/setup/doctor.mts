@@ -50,6 +50,8 @@ export interface DoctorDeps {
   which: (program: string) => string | undefined;
   whichInUnits: (program: string) => string | undefined;
   home: string;
+  // process.platform: only a Linux machine can be a worker.
+  platform: string;
   // A read-only systemctl call: its exit code.
   systemctl: (args: string[]) => Promise<number>;
   verifyServer: (config: Pick<WebConfig, 'url' | 'token'>) => Promise<ServerIdentity>;
@@ -75,6 +77,7 @@ export function realDoctorDeps(
 ): DoctorDeps {
   return {
     home,
+    platform: process.platform,
     whichInUnits,
     configDir,
     unitDir,
@@ -547,8 +550,16 @@ function installedUnits(deps: DoctorDeps, intake: boolean): string[] {
   ].filter((file) => deps.exists(join(deps.unitDir, file)));
 }
 
+// The worker's tools and units exist only on Linux, so on another system their checks would only send the user after programs it does not have.
+const notAWorker = (platform: string): CheckResult =>
+  ok(
+    'worker',
+    `not checked: a worker needs Linux with systemd, and this is ${platform === 'darwin' ? 'macOS' : platform}. The board commands work here, except ask, add, polish and setup`,
+  );
+
 // A worker machine's tools and units: a warning on a machine that has installed no unit, a failure on one that has.
 const checkWorker: Check = async (deps) => {
+  if (deps.platform !== 'linux') return [notAWorker(deps.platform)];
   const intake = hasIntake(deps);
   const installed = installedUnits(deps, intake);
   const level = installed.length > 0 ? 'fail' : 'warn';
