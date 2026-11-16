@@ -44,7 +44,7 @@ The backend holds no Slack token. Slack outages and backend outages do not stop 
 
 Setting it up:
 
-1. In the Cosuno workspace, create an app from `infra/slack-app-manifest.yaml` (api.slack.com/apps, "Create New App", "From a manifest"). The manifest asks for the `commands` scope and Socket Mode, nothing else. A workspace admin may have to approve it.
+1. In the Cosuno workspace, create an app from `infra/slack-app-manifest.yaml` (api.slack.com/apps, "Create New App", "From a manifest"). The manifest asks for the `commands` scope and Socket Mode, nothing else. It also declares a bot user, because Slack refuses slash commands without one ("Slash Commands requires bot_user"); the app never reads the bot token that installing shows. A workspace admin may have to approve it.
 2. Under Basic Information, "App-Level Tokens", generate a token with the scope `connections:write`. That is `SLACK_APP_TOKEN`. Install the app to the workspace.
 3. Generate an `INTAKE_TOKEN` and put it in the backend's env secret together with `BOARD_URL`, and `SLACK_APP_TOKEN`, `BOARD_API_URL` and `INTAKE_TOKEN` in the Slack app's secret (`agent-board-slack-env`, see the patch). Restart the backend, then the app.
 4. In Slack, send `/board link` and open the link.
