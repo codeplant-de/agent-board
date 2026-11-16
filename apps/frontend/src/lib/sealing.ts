@@ -34,7 +34,7 @@ export interface NewTask {
   model?: string;
   when?: CreateInput['when'];
   parentId?: string;
-  /** The machine and directory it runs in, instead of the default directory of whichever machine takes it. */
+  /** The machine and directory it runs in (every occurrence of a repeat), instead of the default directory of whichever machine takes it. */
   place?: { machine: string; workdir: string };
 }
 
@@ -60,8 +60,6 @@ export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInpu
   const row: RowRef = isRepeat(task.when)
     ? { kind: 'schedule', id }
     : { kind: 'task', id, createdBy: 'user', scheduleId: null };
-  if (task.place !== undefined && isRepeat(task.when))
-    throw new InputError('A repeating task cannot have a directory.');
   const workdir = task.place?.workdir;
   const sealed = await checked(() => sealFields(sealerFor(keys), row, { title, input, workdir }));
   return {

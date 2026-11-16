@@ -277,18 +277,17 @@ describe('NewTaskModal working directory', () => {
     expect(directory()).toBeEnabled();
   });
 
-  it('is disabled and sends no place for a repeating schedule', async () => {
+  it('stays enabled and sends the place for a repeating schedule', async () => {
     listed.machines = [machine('laptop', ['/work/a'])];
     await open();
     await waitFor(() => expect(directory()).toBeEnabled());
     await pick('/work/a');
     await userEvent.click(screen.getByRole('combobox', { name: 'When' }));
     await userEvent.click(await screen.findByRole('option', { name: 'Repeating', hidden: true }));
-    expect(directory()).toBeDisabled();
-    expect(screen.getByText(/cannot be pinned here yet/, { selector: 'p' })).toBeInTheDocument();
+    expect(directory()).toBeEnabled();
     await userEvent.type(screen.getByLabelText(/Repeat/), '2h');
     await userEvent.click(createButton());
     await waitFor(() => expect(create).toHaveBeenCalled());
-    expect(sent()).not.toHaveProperty('place');
+    expect(sent()).toMatchObject({ when: { every: 7_200_000 }, place: { machine: 'laptop', workdir: '/work/a' } });
   });
 });
