@@ -45,6 +45,8 @@ import { verifyContract } from './backend.mts';
 import { completionModel, renderCompletion, SHELLS } from './completion.mts';
 import type { Shell } from './completion.mts';
 import { getPaths, loadConfig } from './config.mts';
+import { dirsAdd, dirsList, dirsRemove, reportDirsSync } from './dirs.mts';
+import type { DirsDeps } from './dirs.mts';
 import { runDir } from './runtime.mts';
 import { dispatchMain } from './dispatch.mts';
 import { formatResult, hasFailure, realDoctorDeps, runChecks } from './doctor.mts';
@@ -60,6 +62,7 @@ import { realSetupDeps, setup, unitDirectory, whichOnPath } from './setup.mts';
 import type { SetupDeps, SetupFlags } from './setup.mts';
 import { runHook } from './hook.mts';
 import { resolveScheduleId, resolveTaskId } from './ids.mts';
+import { createStyle } from './style.mts';
 import { plainLine } from './terminal.mts';
 import { intakeMain } from './intake.mts';
 import { listenMain } from './listen.mts';
@@ -102,11 +105,16 @@ export interface ProgramOptions {
   // Where `board wait --check` stores the check, and the directory it runs in.
   waits?: WaitStore;
   cwd?: string;
+  // The home directory, which `board dirs` warns about.
+  home?: string;
   // Whether stderr is a terminal, the only place the update hint is shown.
   stderrIsTty?: boolean;
   // Where the update hint remembers when it was last shown.
   updateState?: UpdateState;
 }
+
+// How long `board dirs add` and `rm` wait for the board: the local change is made already, so a dead network must not hold them.
+const DIRS_BOARD_TIMEOUT_MS = 15_000;
 
 const TASKS = 'Tasks:';
 const SCHEDULING = 'Scheduling:';
@@ -162,11 +170,19 @@ export function buildProgram(options: ProgramOptions = {}): Command {
 
   // `strictConfig`: the command binds work to this machine's name, which needs a config.json to mean anything.
   // `json`: stdout holds the JSON document alone, so every other line goes to stderr.
-  const contextOf = (command: Command, { strictConfig = false, json = false } = {}): LinkingContext => {
+  const contextOf = (
+    command: Command,
+    {
+      strictConfig = false,
+      json = false,
+      timeoutMs,
+    }: { strictConfig?: boolean; json?: boolean; timeoutMs?: number } = {},
+  ): LinkingContext => {
     const dryRun =
       program.opts<{ dryRun?: boolean }>().dryRun === true || command.opts<{ dryRun?: boolean }>().dryRun === true;
     return makeContext(dryRun, {
       optionalConfig: !strictConfig,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
       ...(json ? { print: (line: string) => writeErr(`${line}\n`) } : {}),
     });
   };
@@ -423,7 +439,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         .summary('propose a follow-up task')
         .description(
           paragraphs(
-            'Propose a follow-up task; the file is its prompt. It waits in needs-me until the user starts it, and runs in this directory on this machine. With --json, print {"id", "url"} on stdout.',
+            'Propose a follow-up task; the file is its prompt. It waits in backlog until the user starts it, and runs in this directory on this machine. With --json, print {"id", "url"} on stdout.',
             ID_NOTE,
           ),
         )
@@ -439,7 +455,12 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   ).action(async (flags: AddFlags & { json?: boolean }, command: Command) => {
     const context = contextOf(command, { strictConfig: true, json: flags.json === true });
     const parent = flags.parent === undefined ? undefined : await taskIdOf(context, flags.parent);
-    const task = await add(context, { ...flags, ...(parent === undefined ? {} : { parent }) });
+    const startDir = env['AGENT_BOARD_START_DIR'];
+    const task = await add(
+      context,
+      { ...flags, ...(parent === undefined ? {} : { parent }) },
+      { cwd: options.cwd ?? realpathSync(process.cwd()), ...(startDir ? { startDir } : {}) },
+    );
     if (flags.json) writeJson({ id: task.id, url: context.taskLink(task.id) });
   });
 
@@ -474,7 +495,8 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         'Make a task of the prompt, written as you would type it into Claude Code, bound to this machine and this directory. Prints its URL. A quick Haiku call first checks whether an open task already covers it; --new skips that.',
         'The flags come first; everything from the first other word on is the prompt, flags included (`--auto` below goes to the skill). To start the prompt with dashes, put -- before it.',
         '--in or --at keeps the task in Todo until then. --every or --cron makes a repeating schedule instead, starting at --in/--at (default now), for --times runs or until --until, else forever.',
-        'With --json, print {"id", "url"} of the task on stdout; everything else goes to stderr. Not available inside a board run: there, propose follow-up work with `board add`.',
+        '--polish parks the task in Backlog and queues a second task, "Polish prompt: <title>", that asks an agent to turn the prompt into a complete plan, as the Polish prompt button on the board does. Apply the result from that task\'s page. It cannot be combined with --hold, --in, --at or a repeat.',
+        'With --json, print {"id", "url"} of the task on stdout (and "polishId", "polishUrl" with --polish); everything else goes to stderr. Not available inside a board run: there, propose follow-up work with `board add`.',
       ),
     )
     .usage('[options] <prompt...>')
@@ -492,6 +514,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
         'board schedule --at 09:00 /grill the plan in docs/x.md',
         'board schedule --every 2h --times 5 /sweep the stale branches',
         'board schedule --cron "0 9 * * 1-5" /review-pr --auto',
+        'board schedule --polish "bidder export should include postal codes"',
         'board schedule --hold -- --weird prompt',
         'board schedule --json /review-pr 17741',
       ),
@@ -505,17 +528,17 @@ export function buildProgram(options: ProgramOptions = {}): Command {
           'the prompt ends in --dry-run: put --dry-run before the prompt (board schedule --dry-run <prompt...>), or put -- before a prompt that really ends in it',
         );
       const context = contextOf(command, { strictConfig: true, json: flags.json === true });
-      const task = await scheduleCommand(context, flags, words);
-      if (flags.json)
-        writeJson(
-          task
-            ? {
-                id: task.id,
-                url: context.taskLink(task.id),
-                ...(task.scheduleId ? { scheduleId: task.scheduleId } : {}),
-              }
-            : null,
-        );
+      const scheduled = await scheduleCommand(context, flags, words, options.cwd ?? realpathSync(process.cwd()));
+      if (flags.json) {
+        if (scheduled === undefined) return writeJson(null);
+        const { task, polish } = scheduled;
+        writeJson({
+          id: task.id,
+          url: context.taskLink(task.id),
+          ...(task.scheduleId ? { scheduleId: task.scheduleId } : {}),
+          ...(polish ? { polishId: polish.id, polishUrl: context.taskLink(polish.id) } : {}),
+        });
+      }
     });
 
   dryRunOption(
@@ -553,6 +576,62 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     const changes = action === 'pause' || action === 'resume' || action === 'rm';
     const id = arg === undefined || !changes ? undefined : await resolveScheduleId(context.backend, arg, { inRun });
     return schedules(context, id === undefined ? words : [action ?? '', id, ...rest]);
+  });
+
+  dryRunOption(
+    program
+      .command('dirs')
+      .helpGroup(SETUP)
+      .summary('list, add or remove the directories workers may run in on this machine')
+      .description(
+        paragraphs(
+          "Manage the `dirs` list of this machine's config.json: the directories workers may run in. Without a `dirs` key nothing is limited; once the key exists, even as `{}`, workers run only in a listed directory or one below it. Without arguments (or with `list`), print the entries, marking one whose directory is gone as missing. `add [path]` lists the real path of a directory (default: the current one); `rm [path]` unlists one. A path is relative to the current directory.",
+          '`add` refuses `/` and a path that is not a directory, warns about the home directory (it allows everything below it), and notes when a parent is already listed. `add --from-config` lists the directories the config already routes to: `defaultCwd`, every lane `cwd` and every `repos` checkout that exists, skipping those a listed directory covers and never listing `/` or the home directory.',
+          '`rm` asks the board for open tasks and schedules of this machine that run in the directory and in no other listed one, and refuses while there are any, and when the board cannot be reached; --force removes it anyway and needs no board. The list is enforced as soon as it exists, even empty: a worker refuses to start a task outside it, a run that ends outside it keeps the directory it started in, and `board schedule` and `board add` refuse (`board add` falls back to the directory the run started in) outside it. `add` and `rm` rewrite the `dirs` key of config.json and nothing else, and are not available inside a board run.',
+          "The board gets a copy of the list, for the New task form to offer: the listed directories that exist, sent by `add` and `rm` and by every dispatch tick when it changed. The copy is advice; workers read only this machine's config.json. If the board cannot be reached, `add` and `rm` still succeed, warn, and leave it to the next dispatch tick.",
+        ),
+      )
+      .usage('[options] [list | add [path] | rm [path]]')
+      .argument('[action...]', 'list, add or rm, and a path')
+      .option('--from-config', 'add: list the directories the config already routes to')
+      .option('--force', 'rm: remove although work of this machine still runs there, or the board cannot be checked')
+      .addHelpText(
+        'after',
+        examples(
+          'board dirs',
+          'board dirs add',
+          'board dirs add ~/workspace/agent-board',
+          'board dirs add --from-config',
+          'board dirs rm ~/workspace/old',
+          'board dirs rm --force ~/workspace/gone',
+        ),
+      ),
+  ).action(async (words: string[], flags: { fromConfig?: boolean; force?: boolean }, command: Command) => {
+    const [action = 'list', ...rest] = words;
+    if (action !== 'list' && action !== 'add' && action !== 'rm')
+      throw new UsageError(`dirs takes nothing, or list, add or rm: not "${plainLine(action).slice(0, 40)}"`);
+    if (action === 'list' && rest.length > 0) throw new UsageError('board dirs list takes no path');
+    if (rest.length > 1) throw new UsageError(`board dirs ${action} takes one path`);
+    if (flags.fromConfig && action !== 'add') throw new UsageError('--from-config belongs to add');
+    if (flags.force && action !== 'rm') throw new UsageError('--force belongs to rm');
+    if (action !== 'list') notInRun(`board dirs ${action} is not available inside a board run`);
+    const context = contextOf(command, { strictConfig: true, timeoutMs: DIRS_BOARD_TIMEOUT_MS });
+    const deps: DirsDeps = {
+      configFile: getPaths(env).configFile,
+      cwd: options.cwd ?? realpathSync(process.cwd()),
+      home: options.home ?? homedir(),
+      dryRun: context.dryRun,
+      print: context.print,
+      backend: context.backend,
+      bold: createStyle(context.color === true).bold,
+    };
+    const [path] = rest;
+    if (action === 'list') dirsList(deps);
+    else {
+      if (action === 'add') dirsAdd(deps, path, flags);
+      else await dirsRemove(deps, path, flags);
+      await reportDirsSync(deps);
+    }
   });
 
   dryRunOption(

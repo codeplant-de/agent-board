@@ -21,6 +21,7 @@ import {
   parseHeartbeat,
   parseSchedulePatch,
   parseWireAsk,
+  parseWireDirs,
   parseWireNoteInput,
   parseWirePr,
   parseWirePrState,
@@ -42,7 +43,7 @@ import { withOwner } from './db/scope';
 import type { Changes } from './services/changes';
 import { AppError } from './services/errors';
 import { getKeys } from './services/keys';
-import { machineForToken, recordClient } from './services/machines';
+import { machineDirsIndex, machineForToken, recordClient, setMachineDirs } from './services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
 import { appendTranscript } from './services/transcripts';
 import {
@@ -128,6 +129,7 @@ async function handleMachineCall(
         keyId: (await getKeys(db))?.keyId ?? null,
         api: { version: API_VERSION, minClient: MIN_CLIENT },
         features: SERVER_FEATURES,
+        dirsIndex: await machineDirsIndex(db, machine),
         ...(config.cliVersion === null ? {} : { cli: config.cliVersion }),
       };
     case 'list-tasks':
@@ -187,6 +189,13 @@ async function handleMachineCall(
       await setPrState(db, idOf(body, 'task'), prState);
       return null;
     }
+    case 'set-dirs':
+      await setMachineDirs(
+        db,
+        machine,
+        parsed(() => parseWireDirs(body['body'])),
+      );
+      return null;
     case 'ask': {
       const asked = parsed(() => parseWireAsk(body['body']));
       await ask(db, idOf(body, 'task'), asked, machine);
@@ -197,6 +206,7 @@ async function handleMachineCall(
         db,
         idOf(body, 'task'),
         parsed(() => parseHeartbeat(body['body'])),
+        machine,
       );
       return null;
     case 'pause': {

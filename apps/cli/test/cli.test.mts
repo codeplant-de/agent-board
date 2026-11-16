@@ -110,7 +110,7 @@ test('board schedule refuses inside a board run', async () => {
   await assert.rejects(runBoard(['schedule', '--hold', 'x'], { env }), UsageError);
 });
 
-test('board add sends no status: the board puts a proposal in Needs me itself', async () => {
+test('board add sends no status: the board puts a proposal in Backlog itself', async () => {
   const backend = fakeBackend([]);
   const drafts: unknown[] = [];
   backend.addTask = async (draft) => {
@@ -128,7 +128,7 @@ test('board add sends no status: the board puts a proposal in Needs me itself', 
   const dir = mkdtempSync('/tmp/pr-add-test-');
   try {
     writeFileSync(join(dir, 'p.md'), 'do the thing');
-    await add(context, { title: 'Do it', file: join(dir, 'p.md'), parent: 'abc' });
+    await add(context, { title: 'Do it', file: join(dir, 'p.md'), parent: 'abc' }, { cwd: dir });
   } finally {
     rmSync(dir, { recursive: true });
   }
@@ -247,7 +247,7 @@ test('board move on a proposal says so in one plain line', async () => {
     move(context, 'p1', 'todo'),
     (error: Error) =>
       error instanceof UsageError &&
-      error.message === 'p1 is a proposal: only the user can start it. Leave it in Needs me.',
+      error.message === 'p1 is a proposal: only the user can start it. Leave it in Backlog.',
   );
   backend.updateTask = async () => {
     throw new BackendError('update-task: no task x', 404);

@@ -18,6 +18,7 @@ import {
   MIN_SERVER,
   parseVersion,
   parseVersionCli,
+  parseVersionDirsIndex,
   parseVersionFeatures,
   parseVersionIdentity,
   parseWireAddScheduleResult,
@@ -49,7 +50,7 @@ import type {
 import { ConfigError } from './config.mts';
 import { loadEnvFile } from './env-file.mts';
 import { isCompiledBinary } from './self.mts';
-import { oneLine } from './text.mts';
+import { errorText, oneLine } from './text.mts';
 import { cliVersion } from './version.mts';
 
 const REQUEST_TIMEOUT_MS = 45_000;
@@ -197,6 +198,7 @@ export async function callServer(
   timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<unknown> {
   let response: Response;
+  let text: string;
   try {
     response = await fetcher(`${config.url}/api/machine/${command}`, {
       method: 'POST',
@@ -205,10 +207,11 @@ export async function callServer(
       signal: AbortSignal.timeout(timeoutMs),
       redirect: 'error',
     });
+    // Inside the try: a connection that drops or times out while the body is read is unreachable too.
+    text = await response.text();
   } catch (error) {
-    throw new BackendError(`cannot reach ${config.url}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new BackendError(`cannot reach ${config.url}: ${errorText(error)}`);
   }
-  const text = await response.text();
   let payload: unknown;
   try {
     payload = JSON.parse(text);
@@ -256,6 +259,8 @@ export interface ServerIdentity {
   features: ReadonlySet<string>;
   // The newest CLI release the board knows of; absent from a server that does not say.
   cli?: string;
+  // The blind index of the directory list this machine last sent; absent when the board holds none or does not say.
+  dirsIndex?: string;
 }
 
 // Asks the server for its API range and refuses a CLI the server no longer serves and a server older than the CLI
@@ -294,11 +299,13 @@ export async function verifyContract(
   try {
     const identity = parseVersionIdentity(version);
     const cli = parseVersionCli(version);
+    const dirsIndex = parseVersionDirsIndex(version);
     return {
       ...identity,
       api: served,
       features: parseVersionFeatures(version),
       ...(cli === null ? {} : { cli }),
+      ...(dirsIndex === null ? {} : { dirsIndex }),
     };
   } catch (error) {
     throw asBackendError('version', error);
@@ -331,6 +338,7 @@ interface Connection {
   config: WebConfig;
   keys: Keys;
   features: ReadonlySet<string>;
+  dirsIndex: string | null;
 }
 
 // The server feature each command needs; a command not listed works on every server this CLI accepts.
@@ -343,6 +351,7 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   'run-inbox': 'run-inbox',
   'ack-messages': 'run-inbox',
   stopped: 'run-inbox',
+  'set-dirs': 'machine.dirs',
 };
 
 export function createWebBackend(options: WebBackendOptions): WebBackend {
@@ -355,7 +364,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       options.onServer?.(identity);
       const checked = await checkDataKey(config.dataKey, identity);
       if ('problem' in checked) throw new BackendError(keyProblemMessage(checked));
-      return { config, keys: checked.keys, features: identity.features };
+      return { config, keys: checked.keys, features: identity.features, dirsIndex: identity.dirsIndex ?? null };
     })();
     return ready;
   };
@@ -462,6 +471,11 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     heartbeat: async (id, beat) => send('heartbeat', { id: taskId(id), body: beat }),
     setPr: async (id, body) => send('set-pr', { id: taskId(id), body }),
     setPrState: async (id, body) => send('set-pr-state', { id: taskId(id), body }),
+    setDirs: async (body) => send('set-dirs', { body }),
+    dirsState: async () => {
+      const { features, dirsIndex } = await connect();
+      return { supported: features.has('machine.dirs'), index: dirsIndex };
+    },
     pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
     fail: async (id, note) => call('fail', { id: taskId(id), body: note }, parseWireFailResult),
     wait: async (id, wait) => call('wait', { id: taskId(id), body: wait }, parseWireTask),
@@ -602,6 +616,9 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     },
     async setPrState(id, prState) {
       print(`DRY set-pr-state ${id} ${prState}`);
+    },
+    async setDirs(_machine, dirs) {
+      print(`DRY set-dirs ${dirs.length} directories`);
     },
     async heartbeat(id, beat) {
       print(`DRY heartbeat ${id} ${JSON.stringify(beat)}`);

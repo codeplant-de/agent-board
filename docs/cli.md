@@ -39,6 +39,8 @@ Scheduling:
   delay <task>              delay a task in Todo, or make it due at once
 
 Setup:
+  dirs [action...]          list, add or remove the directories workers may run
+                            in on this machine
   init                      write web.json, env and config.json for this machine
   doctor                    check this machine: config, token, server, worker
                             tools and units
@@ -322,7 +324,7 @@ Examples:
 ```
 Usage: board add [options]
 
-Propose a follow-up task; the file is its prompt. It waits in needs-me until the
+Propose a follow-up task; the file is its prompt. It waits in backlog until the
 user starts it, and runs in this directory on this machine. With --json, print
 {"id", "url"} on stdout.
 
@@ -394,9 +396,14 @@ dashes, put -- before it.
 repeating schedule instead, starting at --in/--at (default now), for --times
 runs or until --until, else forever.
 
-With --json, print {"id", "url"} of the task on stdout; everything else goes to
-stderr. Not available inside a board run: there, propose follow-up work with
-`board add`.
+--polish parks the task in Backlog and queues a second task, "Polish prompt:
+<title>", that asks an agent to turn the prompt into a complete plan, as the
+Polish prompt button on the board does. Apply the result from that task's page.
+It cannot be combined with --hold, --in, --at or a repeat.
+
+With --json, print {"id", "url"} of the task on stdout (and "polishId",
+"polishUrl" with --polish); everything else goes to stderr. Not available inside
+a board run: there, propose follow-up work with `board add`.
 
 Arguments:
   prompt                 what the task should do
@@ -417,6 +424,8 @@ Options:
                          time zone ("0 9 * * 1-5")
   --times <n>            end a repeat after this many runs, the first included
   --until <time>         end a repeat after this time
+  --polish               park it in backlog and queue a task that polishes its
+                         prompt, as "Polish prompt" on the board
   --new                  skip the duplicate check
   --dry-run              read everything, print every write instead of doing it
   --json                 print JSON on stdout instead of text
@@ -431,6 +440,7 @@ Examples:
   board schedule --at 09:00 /grill the plan in docs/x.md
   board schedule --every 2h --times 5 /sweep the stale branches
   board schedule --cron "0 9 * * 1-5" /review-pr --auto
+  board schedule --polish "bidder export should include postal codes"
   board schedule --hold -- --weird prompt
   board schedule --json /review-pr 17741
 ```
@@ -497,6 +507,59 @@ Examples:
 ```
 
 ## Setup
+
+### board dirs
+
+```
+Usage: board dirs [options] [list | add [path] | rm [path]]
+
+Manage the `dirs` list of this machine's config.json: the directories workers
+may run in. Without a `dirs` key nothing is limited; once the key exists, even
+as `{}`, workers run only in a listed directory or one below it. Without
+arguments (or with `list`), print the entries, marking one whose directory is
+gone as missing. `add [path]` lists the real path of a directory (default: the
+current one); `rm [path]` unlists one. A path is relative to the current
+directory.
+
+`add` refuses `/` and a path that is not a directory, warns about the home
+directory (it allows everything below it), and notes when a parent is already
+listed. `add --from-config` lists the directories the config already routes to:
+`defaultCwd`, every lane `cwd` and every `repos` checkout that exists, skipping
+those a listed directory covers and never listing `/` or the home directory.
+
+`rm` asks the board for open tasks and schedules of this machine that run in the
+directory and in no other listed one, and refuses while there are any, and when
+the board cannot be reached; --force removes it anyway and needs no board. The
+list is enforced as soon as it exists, even empty: a worker refuses to start a
+task outside it, a run that ends outside it keeps the directory it started in,
+and `board schedule` and `board add` refuse (`board add` falls back to the
+directory the run started in) outside it. `add` and `rm` rewrite the `dirs` key
+of config.json and nothing else, and are not available inside a board run.
+
+The board gets a copy of the list, for the New task form to offer: the listed
+directories that exist, sent by `add` and `rm` and by every dispatch tick when
+it changed. The copy is advice; workers read only this machine's config.json. If
+the board cannot be reached, `add` and `rm` still succeed, warn, and leave it to
+the next dispatch tick.
+
+Arguments:
+  action         list, add or rm, and a path
+
+Options:
+  --from-config  add: list the directories the config already routes to
+  --force        rm: remove although work of this machine still runs there, or
+                 the board cannot be checked
+  --dry-run      read everything, print every write instead of doing it
+  -h, --help     display help for command
+
+Examples:
+  board dirs
+  board dirs add
+  board dirs add ~/workspace/agent-board
+  board dirs add --from-config
+  board dirs rm ~/workspace/old
+  board dirs rm --force ~/workspace/gone
+```
 
 ### board init
 

@@ -1,9 +1,17 @@
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { ConfigError, isSafeMode, loadConfig, parseConfig, readSecretFile } from '../src/config.mts';
+import {
+  ConfigError,
+  configWarnings,
+  isSafeMode,
+  loadConfig,
+  loadConfigWarnings,
+  parseConfig,
+  readSecretFile,
+} from '../src/config.mts';
 
 const valid = {
   repos: { 'cosuno/cosuno': '~/x' },
@@ -224,4 +232,88 @@ test('intake lists under a prompt without a skill are refused instead of dropped
     (error) => error instanceof ConfigError && /intake.prompt must start with a \/skill/.test(error.message),
   );
   assert.doesNotThrow(() => parseConfig({ ...valid, intake: { prompt: 'review {url}' } }));
+});
+
+test('dirs is undefined without the key, and an empty object is a list that allows nothing', () => {
+  assert.equal(parseConfig(valid).dirs, undefined);
+  assert.equal('dirs' in parseConfig(valid), false);
+  assert.deepEqual(parseConfig({ ...valid, dirs: {} }).dirs, []);
+});
+
+test('dirs keys are expanded and normalised, in config order', () => {
+  const config = parseConfig({ ...valid, dirs: { '~/work': {}, '/srv/a/': {}, '/srv/b/../c': {} } });
+  assert.deepEqual(config.dirs, [{ path: `${homedir()}/work` }, { path: '/srv/a' }, { path: '/srv/c' }]);
+});
+
+test('a bad dirs entry is refused with a pointed message', () => {
+  const cases: [unknown, RegExp][] = [
+    [[], /dirs must be an object/],
+    ['/srv', /dirs must be an object/],
+    [{ '/srv': true }, /dirs\["\/srv"\] must be an object/],
+    [{ '/srv': [] }, /must be an object/],
+    [{ '/srv': null }, /must be an object/],
+    [{ relative: {} }, /absolute path/],
+    [{ '/a\nb': {} }, /absolute path/],
+    [{ ['/' + 'x'.repeat(4100)]: {} }, /absolute path/],
+    [{ '/srv': { mode: 'rw' } }, /no setting "mode"/],
+    [{ '/srv': {}, '/srv/': {} }, /the same directory/],
+    [{ [`${homedir()}/w`]: {}, '~/w': {} }, /the same directory/],
+  ];
+  for (const [dirs, message] of cases)
+    assert.throws(
+      () => parseConfig({ ...valid, dirs }),
+      (error) => error instanceof ConfigError && message.test(error.message),
+      JSON.stringify(dirs).slice(0, 60),
+    );
+});
+
+test('dirs holds at most 200 entries', () => {
+  const dirs = (count: number): Record<string, object> =>
+    Object.fromEntries(Array.from({ length: count }, (_, index) => [`/srv/d${index}`, {}]));
+  assert.equal(parseConfig({ ...valid, dirs: dirs(200) }).dirs?.length, 200);
+  assert.throws(() => parseConfig({ ...valid, dirs: dirs(201) }), /more than 200/);
+});
+
+test('a misspelt key at any level is a warning naming the nearest known key, not an error', () => {
+  const raw = {
+    ...valid,
+    inactivityMinuts: 60,
+    lane: { reviews: { skills: ['review-pr'] } },
+    lanes: { reviews: { skills: ['review-pr'], slot: 2 } },
+    intake: { allowedTool: ['Read'] },
+  };
+  assert.doesNotThrow(() => parseConfig(raw));
+  assert.deepEqual(configWarnings(raw), [
+    'unknown key "inactivityMinuts", ignored; did you mean "inactivityMinutes"?',
+    'unknown key "lane", ignored; did you mean "lanes"?',
+    'unknown key "lanes.reviews.slot", ignored; did you mean "lanes.reviews.slots"?',
+    'unknown key "intake.allowedTool", ignored; did you mean "intake.allowedTools"?',
+  ]);
+});
+
+test('an unknown key close to no known one lists the keys of its level', () => {
+  assert.deepEqual(configWarnings({ backend: { command: ['/x'] } }), [
+    'unknown key "backend", ignored; known here: machine, lanes, defaultCwd, pauseAfterMinutes, inactivityMinutes, maxRunHours, autoUpdate, intake, skills, repos, dirs',
+  ]);
+});
+
+test('a config with only known keys, or no object at all, has no warnings', () => {
+  assert.deepEqual(configWarnings(valid), []);
+  assert.deepEqual(configWarnings({ dirs: { '/srv/a': {} } }), []);
+  assert.deepEqual(configWarnings({ lanes: { a: { skills: ['*'], slots: 2, cwd: '~' } }, intake: { env: ['X'] } }), []);
+  for (const raw of [undefined, null, [], 'x']) assert.deepEqual(configWarnings(raw), []);
+});
+
+test('loadConfigWarnings reads the file and is quiet when it is missing or broken', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cfg-warn-'));
+  try {
+    const path = join(dir, 'config.json');
+    assert.deepEqual(loadConfigWarnings(path), []);
+    writeFileSync(path, '{ nope');
+    assert.deepEqual(loadConfigWarnings(path), []);
+    writeFileSync(path, '{"maxRunHour": 2}');
+    assert.deepEqual(loadConfigWarnings(path), ['unknown key "maxRunHour", ignored; did you mean "maxRunHours"?']);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });

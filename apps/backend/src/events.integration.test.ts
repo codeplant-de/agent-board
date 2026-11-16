@@ -107,7 +107,17 @@ describe('GET /api/machine/events', () => {
     const stream = await openStream(token);
     await stream.waitFor(() => stream.text().includes(': connected'));
     const calls = machineCalls(token);
+    // Concurrent requests can finish further apart than the window on a slow runner, which is two bursts. Hold the
+    // notifications until every write has answered and send them at once, so this is one burst however slow the
+    // requests are. How the window merges calls spread over time is in services/changes.test.ts.
+    const held: string[] = [];
+    const notify = vi.spyOn(changes, 'notify').mockImplementation((owner) => {
+      held.push(owner);
+    });
     await Promise.all([1, 2, 3].map((n) => calls('add-task', { body: { title: `t${n}` } })));
+    notify.mockRestore();
+    expect(held).toEqual(['jascha', 'jascha', 'jascha']);
+    held.forEach((owner) => changes.notify(owner));
     await stream.waitFor(() => stream.events() >= 1);
     await sleep(QUIET_MS);
     expect(stream.events()).toBe(1);

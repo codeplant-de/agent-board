@@ -18,6 +18,7 @@ export type Field =
   | 'input'
   | 'workdir'
   | 'pr'
+  | 'machine.dirs'
   | 'note.body'
   | 'note.preview'
   | 'note.suggestion'

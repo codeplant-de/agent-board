@@ -49,8 +49,8 @@ mise exec -- node apps/cli/src/main.mts <command>  # the CLI from source
 
 ## Working conventions
 
-- Commits and tags are SSH-signed with a hardware key. Never bypass signing (`--no-gpg-sign`, `-c commit.gpgsign=false`). If signing fails, stop and ask the user to run `ssh-add-signing`. In a headless board run, stage the change and leave the exact `git commit -F <file>` command in your report.
+- Commits and tags are SSH-signed with a hardware key. Never bypass signing (`--no-gpg-sign`, `-c commit.gpgsign=false`). If signing fails, the key has dropped out of the agent: ask the user to run `ssh-add-signing` (in a headless board run with `board ask`), then commit and push yourself once they answer. Don't hand the commit to the user.
 - Keep commits scoped to the task. Don't sweep unrelated working-tree changes into them.
-- PRs merge with merge commits. Describe what changed, the rollout or upgrade steps, how it was tested, and what was not verified (say so when nothing was checked in a real browser).
+- PRs are squash-merged (the repository allows nothing else); the squash subject is the PR title with its number. Describe what changed, the rollout or upgrade steps, how it was tested, and what was not verified (say so when nothing was checked in a real browser).
 - Document behaviour where users and agents will look: user-facing behaviour in `docs/usage.md` or `docs/workers.md`, protocol in `docs/machine-api.md`, design reasons in `docs/architecture.md`. Keep `README.md` short: it is the entry point, not the reference.
 - Only describe what is on `main` as shipped. Work on unmerged branches is "planned".

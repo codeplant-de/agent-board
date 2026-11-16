@@ -5,6 +5,7 @@ import {
   ContractError,
   dedupeKeyIndex,
   isSafeWorkdir,
+  machineDirsIndex,
   newTaskId,
   open,
   openFields,
@@ -17,6 +18,7 @@ import {
   sealChecked,
   sealFields,
   sealInput,
+  sealMachineDirs,
   sealNote,
   sealPr,
   sealQuestions,
@@ -255,6 +257,15 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       await inner.setPr(id, { pr: await checked('set-pr', () => sealPr(sealer, id, url)) });
     },
     setPrState: (id, prState) => inner.setPrState(id, { prState }),
+    async checkDirs(machine, dirs) {
+      const { supported, index } = await inner.dirsState();
+      if (!supported) return 'unsupported';
+      return index === (await machineDirsIndex(await getKeys(), machine, dirs)) ? 'current' : 'stale';
+    },
+    async setDirs(machine, dirs) {
+      const sealed = await checked('set-dirs', () => sealMachineDirs(sealer, machine, dirs));
+      await inner.setDirs({ dirs: sealed, index: await machineDirsIndex(await getKeys(), machine, dirs) });
+    },
     async pause(id, note) {
       return opened(await inner.pause(id, await noteInput('pause', id, 'system', note.trim())), openTask);
     },

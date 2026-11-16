@@ -320,16 +320,20 @@ describe('ActionPanel of a proposal', () => {
     expect(move.mock.calls[0]?.[0]).toEqual({ id: 'abc12345', status: 'todo', task: proposal });
   });
 
-  it('asks the same of Move to Todo from Backlog, and of nothing else that moves a task of the user', async () => {
+  it('starts a proposal from Backlog with Start, after showing its prompt', async () => {
     move.mockClear();
-    const proposal = running({ status: 'backlog', createdBy: 'agent', input: 'do Y', sessionId: null });
+    const proposal = running({ status: 'backlog', proposed: true, createdBy: 'agent', input: 'do Y', sessionId: null });
     renderPanel(proposal, []);
-    await userEvent.click(screen.getByRole('button', { name: 'Move to Todo' }));
+    expect(screen.getByText('Proposed by an agent')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Move to Todo' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Start' }));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByTestId('proposal-prompt').textContent).toBe('do Y');
     expect(move).not.toHaveBeenCalled();
     await userEvent.click(within(dialog).getByRole('button', { name: 'Start as mine' }));
     await waitFor(() => expect(move).toHaveBeenCalledTimes(1));
+    expect(move.mock.calls[0]?.[0]).toEqual({ id: 'abc12345', status: 'todo', task: proposal });
   });
 
   it('moves a task of the user to Todo without a question', async () => {

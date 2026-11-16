@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { encodeDataKey } from '@agent-board/shared';
+import { encodeDataKey, machineDirsIndex } from '@agent-board/shared';
 import { DATA_KEY, KEYS, OWNER, SERVER_API, SERVER_HAS } from './helpers.mts';
 import { BackendError } from '../src/backend.mts';
 import { formatResult, hasFailure, runChecks } from '../src/doctor.mts';
@@ -26,6 +26,7 @@ function machine(
     mode: (path) => (path in files ? (files[path]?.mode ?? 0o644) : undefined),
     exists: (path) => present.has(path),
     isDirectory: (path) => dirs.has(path),
+    realpath: (path) => (dirs.has(path) ? path : undefined),
     which: (program) => `/usr/bin/${program}`,
     whichInUnits: (program) => `/usr/bin/${program}`,
     home: '/home/me',
@@ -160,6 +161,21 @@ test('a config.json that does not parse is a failure, a missing Node 24 too', as
   assert.equal(levels(old)['node'], 'fail');
   const bun = await runChecks(machine(GOOD, { nodeVersion: undefined }));
   assert.equal('node' in levels(bun), false);
+});
+
+test('an unknown key in config.json is a warning with the nearest known key; the machine line stays', async () => {
+  const results = await runChecks(
+    machine({ ...GOOD, [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box", "inactivityMinuts": 60}' } }),
+  );
+  const config = results.filter((result) => result.name === 'config.json');
+  assert.deepEqual(
+    config.map((result) => [result.level, result.message]),
+    [
+      ['ok', 'machine box'],
+      ['warn', 'unknown key "inactivityMinuts", ignored; did you mean "inactivityMinutes"?'],
+    ],
+  );
+  assert.equal(hasFailure(results), false);
 });
 
 test('with units installed a missing tool or a vanished program fails; a disabled timer only warns', async () => {
@@ -454,11 +470,136 @@ test('tool lists under the intake key are deprecated: a warning naming the skill
 test('unknown keys under intake warn, and intake without a profile for its skill warns', async () => {
   const text = '{"machine": "box", "intake": {"disallowedTool": ["x"]}}';
   const results = await runChecks(machine({ ...GOOD, [`${CONFIG_DIR}/config.json`]: { text } }));
-  const keys = results.find((result) => result.name === 'config.json intake keys');
+  const keys = results.find((result) => result.name === 'config.json' && /disallowedTool/.test(result.message));
   assert.equal(keys?.level, 'warn');
-  assert.match(keys?.message ?? '', /disallowedTool/);
   const profile = results.find((result) => result.name === 'config.json intake profile');
   assert.equal(profile?.level, 'warn');
   assert.match(profile?.message ?? '', /skills\.review-pr/);
   assert.equal(hasFailure(results), false);
+});
+
+const withConfig = (config: unknown): Record<string, { text: string; mode?: number }> => ({
+  ...GOOD,
+  [`${CONFIG_DIR}/config.json`]: { text: JSON.stringify(config) },
+});
+
+const dirsResults = (results: CheckResult[]): CheckResult[] => results.filter((result) => result.name === 'dirs');
+
+test('a config without a dirs key reports it as not set, and nothing warns', async () => {
+  const results = dirsResults(await runChecks(machine(GOOD)));
+  assert.deepEqual(
+    results.map((result) => [result.level, result.message]),
+    [['ok', 'not set: workers are not limited to directories']],
+  );
+});
+
+test('the dirs list is counted, and a listed directory that is gone or a route no entry covers fails', async () => {
+  const files = withConfig({
+    machine: 'box',
+    defaultCwd: '/work/app/sub',
+    lanes: { general: { skills: ['*'], cwd: '/work/lane' } },
+    repos: { 'a/b': '/work/repo', 'a/c': '/work/appx' },
+    dirs: { '/work/app': {}, '/work/gone': {} },
+  });
+  const present = new Set(['/work/app', '/work/app/sub', '/work/lane', '/work/repo', '/work/appx']);
+  const results = dirsResults(
+    await runChecks(
+      machine(files, {
+        isDirectory: (path) => present.has(path) || path === CONFIG_DIR || path === UNIT_DIR,
+        realpath: (path) => (path === '/work/repo' ? '/data/repo' : present.has(path) ? path : undefined),
+      }),
+    ),
+  );
+  assert.equal(results[0]?.message, '2 listed');
+  const problems = results.slice(1).map((result) => [result.level, result.message]);
+  assert.deepEqual(problems, [
+    ['warn', '/work/gone is listed but is not a directory'],
+    ['fail', 'lane general cwd /work/lane is in no listed directory: tasks routed there stop in Needs me'],
+    ['fail', 'repos a/b /work/repo is in no listed directory: tasks routed there stop in Needs me'],
+    ['fail', 'repos a/c /work/appx is in no listed directory: tasks routed there stop in Needs me'],
+  ]);
+  assert.match(results[2]?.hint ?? '', /board dirs add '\/work\/lane'/);
+  assert.match(results[3]?.hint ?? '', /board dirs add '\/data\/repo'/, 'the hint names the real path');
+});
+
+test('a skill profile cwd that no dirs entry covers fails, and one that is covered does not', async () => {
+  const files = withConfig({
+    machine: 'box',
+    defaultCwd: '/work/app',
+    skills: { 'review-pr': { cwd: '/srv/review' }, grill: { cwd: '/work/app/grill' } },
+    dirs: { '/work/app': {} },
+  });
+  const results = dirsResults(await runChecks(machine(files, { isDirectory: () => true, realpath: (path) => path })));
+  assert.deepEqual(
+    results.slice(1).map((result) => [result.level, result.message]),
+    [['fail', 'skills review-pr cwd /srv/review is in no listed directory: tasks routed there stop in Needs me']],
+  );
+});
+
+test('an empty dirs list is counted and fails for every route', async () => {
+  const results = dirsResults(await runChecks(machine(withConfig({ machine: 'box', dirs: {} }))));
+  assert.equal(results[0]?.message, '0 listed');
+  assert.equal(results[1]?.level, 'fail');
+  assert.match(results[1]?.message ?? '', /defaultCwd .* is in no listed directory/);
+});
+
+test('a listed symlink to a route covers it, and a route that is a symlink out of the list does not', async () => {
+  const files = withConfig({
+    machine: 'box',
+    defaultCwd: '/work/app',
+    repos: { 'a/b': '/work/app/link' },
+    dirs: { '/work/app': {} },
+  });
+  const results = dirsResults(
+    await runChecks(
+      machine(files, {
+        isDirectory: (path) => path.startsWith('/work') || path === CONFIG_DIR || path === UNIT_DIR,
+        realpath: (path) => (path === '/work/app/link' ? '/elsewhere' : path),
+      }),
+    ),
+  );
+  assert.deepEqual(
+    results.map((result) => result.level),
+    ['ok', 'fail'],
+  );
+  assert.match(results[1]?.message ?? '', /repos a\/b \/work\/app\/link is in no listed directory/);
+});
+
+test('a config that does not parse leaves the dirs section to the config.json check', async () => {
+  assert.deepEqual(dirsResults(await runChecks(machine(withConfig({ machine: 'box', dirs: 'x' })))), []);
+});
+
+const dirsOnBoard = (results: CheckResult[]): CheckResult[] =>
+  results.filter((result) => result.name === 'dirs on board');
+
+test('doctor says whether the board has the current directory list, comparing indexes and asking nothing more', async () => {
+  const files = withConfig({ machine: 'box', dirs: { '/home/me/.config/agent-board': {}, '/work/gone': {} } });
+  const index = await machineDirsIndex(KEYS, 'box', [{ path: '/home/me/.config/agent-board' }]);
+  const serving = (dirsIndex?: string): Partial<DoctorDeps> => ({
+    verifyServer: async () => ({
+      owner: OWNER,
+      keyId: KEYS.keyId,
+      api: SERVER_API,
+      features: SERVER_HAS,
+      ...(dirsIndex === undefined ? {} : { dirsIndex }),
+    }),
+  });
+  const current = dirsOnBoard(await runChecks(machine(files, serving(index))));
+  assert.deepEqual(
+    current.map(({ level, message }) => [level, message]),
+    [['ok', 'the board has the current list']],
+  );
+  const behind = dirsOnBoard(await runChecks(machine(files, serving())));
+  assert.deepEqual(
+    behind.map(({ level }) => level),
+    ['warn'],
+  );
+  assert.match(behind[0]?.hint ?? '', /next dispatch tick/);
+  assert.deepEqual(dirsOnBoard(await runChecks(machine(GOOD, serving()))), [], 'no dirs key, nothing to compare');
+  const lacking = machine(files, {
+    verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId, api: SERVER_API, features: new Set(['events']) }),
+  });
+  const results = await runChecks(lacking);
+  assert.deepEqual(dirsOnBoard(results), []);
+  assert.match(results.find(({ name }) => name === 'server features')?.message ?? '', /directory lists/);
 });

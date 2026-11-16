@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ContractError } from '../src/contract.mts';
+import {
+  checkSealedSize,
+  ContractError,
+  parseVersionDirsIndex,
+  parseWireDirs,
+  SEALED_LIMITS,
+} from '../src/contract.mts';
 import { blindIndex, deriveKeys, open, seal } from '../src/crypto.mts';
 import type { Keys } from '../src/crypto.mts';
 import {
   dedupeKeyIndex,
   headIndex,
   inputBinding,
+  machineDirsBinding,
+  machineDirsIndex,
+  machineDirsJson,
+  openMachineDirs,
+  sealMachineDirs,
   noteBinding,
   prBinding,
   openFields,
@@ -589,4 +600,115 @@ test('only a GitHub pull request URL is sealed as a PR, and within the limit', a
     await assert.rejects(sealPr(seals, TASK, bad), ContractError, bad);
   assert.match(await sealPr(seals, TASK, PR_URL), /^abe1\./);
   await assert.rejects(sealPr(seals, TASK, `https://github.com/o/${'r'.repeat(1100)}/pull/7`), /too long/);
+});
+
+const DIRS = [{ path: '/home/me/app' }, { path: '/srv/lib' }];
+
+test('a machine directory list is one JSON document, sealed under the machine and opened as the same list', async () => {
+  const wire = await sealMachineDirs(seals, 'laptop', DIRS);
+  assert.equal(
+    await open(keys, 'machine.dirs', 'machine:laptop', wire),
+    '{"dirs":[{"path":"/home/me/app"},{"path":"/srv/lib"}]}',
+  );
+  assert.deepEqual(machineDirsBinding('laptop'), { field: 'machine.dirs', context: 'machine:laptop' });
+  assert.deepEqual(await openMachineDirs(opens, 'laptop', wire), DIRS);
+  assert.deepEqual(await openMachineDirs(opens, 'laptop', await sealMachineDirs(seals, 'laptop', [])), []);
+});
+
+test('a list sealed for one machine does not open as another’s, and nothing else opens as a list', async () => {
+  const wire = await sealMachineDirs(seals, 'laptop', DIRS);
+  assert.equal(await openMachineDirs(opens, 'desktop', wire), undefined);
+  assert.equal(await openMachineDirs(opens, 'laptop', null), undefined);
+  assert.equal(await openMachineDirs(opens, 'laptop', undefined), undefined);
+  assert.equal(await openMachineDirs(opens, 'laptop', machineDirsJson(DIRS)), undefined);
+  const otherField = await seal(keys, 'workdir', 'machine:laptop', machineDirsJson(DIRS));
+  assert.equal(await openMachineDirs(opens, 'laptop', otherField), undefined);
+  const otherKey = await deriveKeys(
+    Uint8Array.from({ length: 32 }, (_, i) => 100 + i),
+    'alice',
+    { index: true },
+  );
+  assert.equal(
+    await openMachineDirs(opens, 'laptop', await sealMachineDirs(sealer(otherKey), 'laptop', DIRS)),
+    undefined,
+  );
+});
+
+test('a list that is not {"dirs":[{"path":…}]} of safe absolute paths, at most 200, is unreadable', async () => {
+  const sealed = (text: string) => seal(keys, 'machine.dirs', 'machine:laptop', text);
+  const unreadable = [
+    'not json',
+    '[]',
+    '{}',
+    '{"dirs":"/a"}',
+    '{"dirs":["/a"]}',
+    '{"dirs":[{}]}',
+    '{"dirs":[{"path":1}]}',
+    '{"dirs":[{"path":"relative"}]}',
+    '{"dirs":[{"path":"/a\nb"}]}',
+    '{"dirs":[{"path":"/a"},{"path":"~/b"}]}',
+    JSON.stringify({ dirs: Array.from({ length: 201 }, (_, i) => ({ path: `/d${i}` })) }),
+  ];
+  for (const text of unreadable)
+    assert.equal(await openMachineDirs(opens, 'laptop', await sealed(text)), undefined, text);
+  const atLimit = Array.from({ length: 200 }, (_, i) => ({ path: `/d${i}` }));
+  assert.equal((await openMachineDirs(opens, 'laptop', await sealed(JSON.stringify({ dirs: atLimit }))))?.length, 200);
+});
+
+test('unknown keys of a list and of an entry are ignored on open, so a later CLI can add some', async () => {
+  const wire = await seal(keys, 'machine.dirs', 'machine:laptop', '{"dirs":[{"path":"/a","label":"A"}],"updated":1}');
+  assert.deepEqual(await openMachineDirs(opens, 'laptop', wire), [{ path: '/a' }]);
+});
+
+test('sealing a list refuses too many directories, an unsafe path and more than the board takes', async () => {
+  const many = Array.from({ length: 201 }, (_, i) => ({ path: `/d${i}` }));
+  await assert.rejects(sealMachineDirs(seals, 'laptop', many), /more than 200 directories/);
+  await assert.rejects(sealMachineDirs(seals, 'laptop', [{ path: 'relative' }]), ContractError);
+  assert.equal(SEALED_LIMITS['machine.dirs'], 256 * 1024);
+  const long = Array.from({ length: 100 }, (_, i) => ({ path: `/${String(i).padEnd(3000, 'x')}` }));
+  await assert.rejects(sealMachineDirs(seals, 'laptop', long), /the directory list is too long/);
+  assert.throws(() => checkSealedSize('machine.dirs', 'x'.repeat(256 * 1024 + 1), 'it'), ContractError);
+});
+
+test('the blind index of a list is of the same document, bound to the machine, and changes with the list', async () => {
+  const index = await machineDirsIndex(keys, 'laptop', DIRS);
+  assert.equal(index, await blindIndex(keys, `dirs:laptop:${machineDirsJson(DIRS)}`));
+  assert.equal(
+    index,
+    await machineDirsIndex(
+      keys,
+      'laptop',
+      DIRS.map((dir) => ({ ...dir, extra: 1 })),
+    ),
+  );
+  assert.notEqual(index, await machineDirsIndex(keys, 'desktop', DIRS));
+  assert.notEqual(index, await machineDirsIndex(keys, 'laptop', [...DIRS].reverse()));
+  assert.notEqual(index, await machineDirsIndex(keys, 'laptop', DIRS.slice(1)));
+});
+
+test('set-dirs takes exactly a sealed list and a blind index; the version answer’s index is read leniently', async () => {
+  const dirs = await sealMachineDirs(seals, 'laptop', DIRS);
+  const index = await machineDirsIndex(keys, 'laptop', DIRS);
+  assert.deepEqual(parseWireDirs({ dirs, index }), { dirs, index });
+  for (const bad of [
+    null,
+    {},
+    { dirs },
+    { index },
+    { dirs: 'plain', index },
+    { dirs, index: dirs },
+    { dirs, index, x: 1 },
+  ])
+    assert.throws(() => parseWireDirs(bad), ContractError);
+  assert.equal(parseVersionDirsIndex({ dirsIndex: index }), index);
+  for (const odd of [
+    undefined,
+    null,
+    {},
+    { dirsIndex: null },
+    { dirsIndex: 7 },
+    { dirsIndex: 'abh1.short' },
+    { dirsIndex: dirs },
+  ])
+    assert.equal(parseVersionDirsIndex(odd), null);
 });

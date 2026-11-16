@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process';
-import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
 import { createInterface } from 'node:readline/promises';
 import { ReportedFailure, UsageError } from './cli.mts';
 import type { Context, LinkingContext } from './cli.mts';
 import { BackendError } from './backend.mts';
+import type { Config } from './config.mts';
+import { isAllowedDir, tryRealpath } from './dirs.mts';
 import {
   ContractError,
   formatAnswers,
@@ -32,7 +34,7 @@ import { SystemError } from './system.mts';
 import { plainLine, plainText } from './terminal.mts';
 import type { Style } from './style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
-import type { Choice, ScheduleFlags } from './schedule.mts';
+import type { Choice, Scheduled, ScheduleFlags } from './schedule.mts';
 import type { WaitStore } from './waits.mts';
 import { isPermanentRefusal } from './decide.mts';
 
@@ -300,9 +302,28 @@ export function parseAddFlags(flags: AddFlags): {
   return { title, file, parent, priority };
 }
 
-// The board puts a proposal in Needs me itself, so no status is sent.
-export async function add(context: LinkingContext, flags: AddFlags): Promise<Task> {
+/**
+ * The directory a proposal is sealed with. With a `dirs` list, an agent that moved on from where its run started (a
+ * worktree outside every listed directory, /tmp) proposes in the directory the run started in, if that is allowed.
+ */
+export function proposalDir(config: Config, { cwd, startDir }: { cwd: string; startDir?: string }): string {
+  if (isAllowedDir(config.dirs, cwd)) return cwd;
+  const start = startDir !== undefined && isSafeWorkdir(startDir) ? tryRealpath(startDir) : undefined;
+  if (start !== undefined && isAllowedDir(config.dirs, start)) return start;
+  throw new UsageError(
+    `${plainLine(cwd)} is not a listed directory on ${config.machine}, and neither is the directory this run started in: a proposal needs one. Run "board dirs add" in the directory the task belongs in, or run board add from a listed directory.`,
+  );
+}
+
+// The board puts a proposal in Backlog itself, so no status is sent.
+export async function add(
+  context: LinkingContext,
+  flags: AddFlags,
+  // `cwd`: the real path of the working directory; `startDir`: AGENT_BOARD_START_DIR, where the run started.
+  where: { cwd: string; startDir?: string },
+): Promise<Task> {
   const { title, file, parent, priority } = parseAddFlags(flags);
+  const workdir = proposalDir(context.config, where);
   // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
   // proposing agent works, on this machine.
   const draft = {
@@ -310,7 +331,7 @@ export async function add(context: LinkingContext, flags: AddFlags): Promise<Tas
     input: readNoteFile(file),
     createdBy: 'agent' as const,
     machine: context.config.machine,
-    workdir: realpathSync(process.cwd()),
+    workdir,
     ...(parent ? { parentId: parent } : {}),
     ...(priority ? { priority } : {}),
   };
@@ -351,7 +372,7 @@ export async function move(context: LinkingContext, id: string, status: Status):
     await context.backend.updateTask(id, { status });
   } catch (error) {
     if (error instanceof BackendError && error.status === 403)
-      throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Needs me.`);
+      throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Backlog.`);
     throw error;
   }
   confirm(context, `moved ${id} to ${status}  ${context.taskLink(id)}`);
@@ -554,13 +575,18 @@ export async function scheduleCommand(
   context: LinkingContext,
   flags: ScheduleFlags,
   words: string[],
-): Promise<Task | undefined> {
+  cwd: string,
+): Promise<Scheduled | undefined> {
   const args = parseScheduleArgs(flags, words);
+  if (!isAllowedDir(context.config.dirs, cwd))
+    throw new UsageError(
+      `${plainLine(cwd)} is not a listed directory on ${context.config.machine}, so a task scheduled here would stop in Needs me. Run "board dirs add" here first, or schedule from a listed directory.`,
+    );
   return schedule(
     {
       backend: context.backend,
       machine: context.config.machine,
-      workdir: realpathSync(process.cwd()),
+      workdir: cwd,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       print: context.print,
       confirm: (line) => confirm(context, line),

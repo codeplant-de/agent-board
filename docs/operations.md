@@ -28,7 +28,7 @@ Three ways in:
 - **The machine API** (`POST /api/machine/<subcommand>`): its own Traefik route skips Authelia, matched only for that path with an `Authorization: Bearer` header. The backend looks the token up by its sha256 (tokens are shown once, on the Settings page) and refuses a revoked one. A token claims tasks only under its own machine name.
 - **The intake API** (`POST /api/intake/<command>`): for the Slack app only, with the shared `INTAKE_TOKEN`; see [architecture.md](architecture.md#the-slack-companion). Never add it to the proxy's login bypasses: the Slack app calls the backend directly inside the cluster.
 
-The cluster side (namespace, Postgres, Deployments (backend, web, Slack app), IngressRoutes, Authelia rule, image policies, DNS, nightly `pg_dump` into the restic backup) is `infra/cloud-infra/add-agent-board.patch`, written against codeplant-de/cloud-infra: `git apply` it there, fill in and encrypt `cluster/apps/agent-board/env.sops.yaml` and the new `ghcr-pull` entry, and apply the DNS with tofu. The images come from `codeplant-de/agent-board` on GitHub (`ghcr.io/codeplant-de/agent-board-*`).
+The cluster side (namespace, Postgres, Deployments (backend, web, Slack app), IngressRoutes, Authelia rule, image policies, DNS, nightly `pg_dump` into the restic backup) lives in the separate, private codeplant-de/cloud-infra repository. The images come from `codeplant-de/agent-board` on GitHub (`ghcr.io/codeplant-de/agent-board-*`).
 
 ## The Slack app
 

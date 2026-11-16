@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { compareVersions, isRecord } from '@agent-board/shared';
 import { LISTEN_SERVICE } from './setup.mts';
 import { SystemError } from './system.mts';
+import { errorText } from './text.mts';
 
 export const RELEASE_REPO = 'codeplant-de/agent-board';
 const TAG_PREFIX = 'cli-v';
@@ -205,9 +206,7 @@ export async function selfUpdate(deps: SelfUpdateDeps, flags: SelfUpdateFlags): 
       renameSync(staged, deps.execPath);
     } catch (error) {
       rmSync(staged, { force: true });
-      throw new SystemError(
-        `cannot replace ${deps.execPath}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      throw new SystemError(`cannot replace ${deps.execPath}: ${errorText(error)}`);
     }
     deps.print(`updated board ${deps.version} -> ${newest.version}`);
     const restarted = await deps.restartListener();

@@ -15,7 +15,7 @@ import { renderThread } from '../../cli/src/board.mts';
 import { runDispatch, type DispatchDeps } from '../../cli/src/dispatch.mts';
 import { createSealedBackend } from '../../cli/src/sealing.mts';
 import { runWorker, type WorkerDeps } from '../../cli/src/worker.mts';
-import { CONFIG, fakeRunFiles, fakeSessions, fakeWaitStore } from '../../cli/test/helpers.mts';
+import { CONFIG, fakeRunFiles, fakeSessions, fakeTaskFiles, fakeWaitStore } from '../../cli/test/helpers.mts';
 import { createKeySetup, exportDataKey } from '../../frontend/src/crypto/keySlots';
 import { inspectStoredKeys } from '../../frontend/src/crypto/keyStore';
 import { createBrowserHarness } from '../../frontend/src/test/browserHarness';
@@ -289,6 +289,7 @@ describe('an agent’s proposal', () => {
     backend: ctx.cli,
     config: { ...CONFIG, machine: 'laptop' },
     dryRun: false,
+    configWarnings: () => [],
     print: (line) => logs.push(line),
     system: {
       isActive: async () => false,
@@ -304,6 +305,7 @@ describe('an agent’s proposal', () => {
     now: () => new Date(),
     logTail: () => '',
     waits: fakeWaitStore(),
+    taskFiles: fakeTaskFiles(),
     runCheck: async () => ({ exitCode: 1, timedOut: false, output: '' }),
     update: NO_UPDATES,
   });
@@ -321,6 +323,7 @@ describe('an agent’s proposal', () => {
     appendLog: () => undefined,
     pluginPath: () => '/p',
     dirExists: () => true,
+    realpath: (path) => path,
     settingsEnv: () => ({}),
     mcpServers: () => ({ config: { mcpServers: {} }, missing: [] }),
     home: '/h',
@@ -345,7 +348,7 @@ describe('an agent’s proposal', () => {
 
   it('is not run by dispatch or the worker when the server serves it as Todo, and runs as the user’s task once started in the browser', async () => {
     const proposal = await propose();
-    expect(proposal).toMatchObject({ createdBy: 'agent', status: 'needs-me', unreadable: [] });
+    expect(proposal).toMatchObject({ createdBy: 'agent', status: 'backlog', unreadable: [] });
     // The operator moves it to Todo and clears every flag it controls.
     await admin.update(tasks).set({ status: 'todo', proposed: false, position: 0 }).where(eq(tasks.id, proposal.id));
 
@@ -367,7 +370,7 @@ describe('an agent’s proposal', () => {
     // Put it back as an honest board has it, and start it the way the Start button does.
     await admin
       .update(tasks)
-      .set({ status: 'needs-me', proposed: true, machine: null })
+      .set({ status: 'backlog', proposed: true, machine: null })
       .where(eq(tasks.id, proposal.id));
     const shown = await ctx.fetchQuery<any>(ctx.trpc.tasks.get.queryOptions({ id: proposal.id }));
     expect(shown.task).toMatchObject({ createdBy: 'agent', input: 'delete everything under /tmp' });
@@ -422,6 +425,7 @@ describe('a wait', () => {
       backend: ctx.cli,
       config,
       dryRun: false,
+      configWarnings: () => [],
       print: (line) => logs.push(line),
       system: {
         isActive: async () => false,
@@ -437,6 +441,7 @@ describe('a wait', () => {
       now: () => new Date(),
       logTail: () => '',
       waits,
+      taskFiles: fakeTaskFiles(),
       update: NO_UPDATES,
       runCheck: async (check) => {
         checks.push(check.command);
@@ -460,6 +465,7 @@ describe('a wait', () => {
       appendLog: () => undefined,
       pluginPath: () => '/p',
       dirExists: () => true,
+      realpath: (path) => path,
       settingsEnv: () => ({}),
       mcpServers: () => ({ config: { mcpServers: {} }, missing: [] }),
       home: '/h',

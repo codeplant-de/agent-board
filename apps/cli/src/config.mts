@@ -1,12 +1,13 @@
 import { readFileSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   DEFAULT_PRIORITY,
   isPriority,
   isRecord,
   isSafeMachineName,
   MACHINE_NAME_RULE,
+  isSafeWorkdir,
   isStringList,
   PRIORITIES,
   promptSkill,
@@ -55,6 +56,13 @@ export const AUTO_UPDATES = ['incompatible', 'always', 'never'] as const;
 export type AutoUpdate = (typeof AUTO_UPDATES)[number];
 const isAutoUpdate = (value: unknown): value is AutoUpdate => AUTO_UPDATES.some((mode) => mode === value);
 
+// A directory workers may run in, as listed in config.json under `dirs`. An object, so later per-directory settings fit.
+export interface DirEntry {
+  path: string;
+}
+
+export const MAX_DIRS = 200;
+
 export interface Config {
   // This machine's name on the board: it claims tasks under it, and a resume runs only on the machine that ran the session.
   machine: string;
@@ -76,6 +84,9 @@ export interface Config {
   // Whether config.json has an `intake` key: the intake timer and `board internal intake` exist only then.
   intakeEnabled: boolean;
   repos: Record<string, string>;
+  // The directories workers may run in, in config order; undefined when config.json has no `dirs` key, which is not the
+  // same as an empty list: a list that is present will allow only what it names.
+  dirs?: DirEntry[];
 }
 
 export interface Paths {
@@ -106,6 +117,35 @@ export function getPaths(env: NodeJS.ProcessEnv = process.env): Paths {
 
 export function expandHome(path: string): string {
   return path === '~' || path.startsWith('~/') ? homedir() + path.slice(1) : path;
+}
+
+// The path a `dirs` key names: `~` expanded, `.` and `..` and a trailing slash resolved away.
+export function dirKeyPath(key: string): string | undefined {
+  const expanded = expandHome(key);
+  return isSafeWorkdir(expanded) ? resolve(expanded) : undefined;
+}
+
+function parseDirs(raw: unknown): DirEntry[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) throw new ConfigError('config: dirs must be an object keyed by directory');
+  if (Object.keys(raw).length > MAX_DIRS) throw new ConfigError(`config: dirs lists more than ${MAX_DIRS} directories`);
+  const seen = new Map<string, string>();
+  return Object.entries(raw).map(([key, settings]): DirEntry => {
+    const shown = JSON.stringify(key.slice(0, 100));
+    const path = dirKeyPath(key);
+    if (path === undefined) throw new ConfigError(`config: dirs key ${shown} must be an absolute path (or ~/...)`);
+    if (!isRecord(settings)) throw new ConfigError(`config: dirs[${shown}] must be an object`);
+    const [unknown] = Object.keys(settings);
+    if (unknown !== undefined)
+      throw new ConfigError(`config: dirs[${shown}] has no setting "${unknown.slice(0, 40)}" (it takes none yet)`);
+    const other = seen.get(path);
+    if (other !== undefined)
+      throw new ConfigError(
+        `config: dirs lists ${shown} and ${JSON.stringify(other.slice(0, 100))}, the same directory`,
+      );
+    seen.set(path, key);
+    return { path };
+  });
 }
 
 function positiveInt(obj: Record<string, unknown>, key: string, where: string, fallback: number): number {
@@ -261,6 +301,7 @@ export function parseConfig(raw: unknown): Config {
   const autoUpdate = 'autoUpdate' in raw ? raw['autoUpdate'] : 'incompatible';
   if (!isAutoUpdate(autoUpdate)) throw new ConfigError(`config: autoUpdate must be one of ${AUTO_UPDATES.join(', ')}`);
   const intake = parseIntake(raw['intake']);
+  const dirs = parseDirs(raw['dirs']);
   return {
     machine,
     lanes: parseLanes(raw['lanes']),
@@ -273,7 +314,76 @@ export function parseConfig(raw: unknown): Config {
     skills: parseSkills(raw['skills'], raw['intake'], intake),
     intakeEnabled: 'intake' in raw,
     repos,
+    ...(dirs === undefined ? {} : { dirs }),
   };
+}
+
+// The keys parseConfig reads at each level. Anything else is ignored, so a misspelt key would silently keep its default.
+const TOP_KEYS = [
+  'machine',
+  'lanes',
+  'defaultCwd',
+  'pauseAfterMinutes',
+  'inactivityMinutes',
+  'maxRunHours',
+  'autoUpdate',
+  'intake',
+  'skills',
+  'repos',
+  'dirs',
+] as const;
+const LANE_KEYS = ['skills', 'slots', 'cwd'] as const;
+const INTAKE_KEYS = ['prompt', 'priority', 'allowedTools', 'disallowedTools', 'env', 'mcpServers'] as const;
+
+function editDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min((previous[j] ?? 0) + 1, (current[j - 1] ?? 0) + 1, (previous[j - 1] ?? 0) + cost);
+    }
+    previous = current;
+  }
+  return previous[b.length] ?? 0;
+}
+
+function unknownKeys(obj: Record<string, unknown>, known: readonly string[], where: string): string[] {
+  return Object.keys(obj)
+    .filter((key) => !known.includes(key))
+    .map((key) => {
+      const [nearest] = known
+        .map((name) => ({ name, distance: editDistance(key.toLowerCase(), name.toLowerCase()) }))
+        .sort((a, b) => a.distance - b.distance);
+      const close = nearest !== undefined && nearest.distance <= Math.max(2, Math.floor(nearest.name.length / 3));
+      const shown = JSON.stringify(`${where}${key}`.slice(0, 80));
+      return close
+        ? `unknown key ${shown}, ignored; did you mean "${where}${nearest.name}"?`
+        : `unknown key ${shown}, ignored; known here: ${known.join(', ')}`;
+    });
+}
+
+// The keys of a config parseConfig ignores, one line each. Not an error: every machine reads this file, and a key a newer
+// or older CLI dropped must not stop its workers; doctor and dispatch print these instead.
+export function configWarnings(raw: unknown): string[] {
+  if (!isRecord(raw)) return [];
+  const warnings = unknownKeys(raw, TOP_KEYS, '');
+  const lanes = raw['lanes'];
+  if (isRecord(lanes))
+    for (const [name, entry] of Object.entries(lanes))
+      if (isRecord(entry)) warnings.push(...unknownKeys(entry, LANE_KEYS, `lanes.${name.slice(0, 40)}.`));
+  const intake = raw['intake'];
+  if (isRecord(intake)) warnings.push(...unknownKeys(intake, INTAKE_KEYS, 'intake.'));
+  return warnings;
+}
+
+// configWarnings for the file at path; nothing when it is missing or does not parse, which loadConfig reports.
+export function loadConfigWarnings(path: string): string[] {
+  try {
+    return configWarnings(JSON.parse(readFileSync(path, 'utf8')));
+  } catch {
+    return [];
+  }
 }
 
 export function loadConfig(path: string, options: { optionalConfig?: boolean } = {}): Config {

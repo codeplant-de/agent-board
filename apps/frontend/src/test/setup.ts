@@ -25,6 +25,8 @@ if (typeof window !== 'undefined') {
   };
   // Mantine's Select scrolls its active option into view.
   Element.prototype.scrollIntoView ??= () => {};
+  // The transcript drawer follows new events by scrolling its viewport.
+  Element.prototype.scrollTo ??= () => {};
   // Mantine's autosizing Textarea listens for web fonts loading.
   if (!('fonts' in document)) {
     Object.defineProperty(document, 'fonts', {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { runDispatch } from '../src/dispatch.mts';
 import type { DispatchDeps } from '../src/dispatch.mts';
@@ -12,8 +13,10 @@ import type { UpdateState } from '../src/update-state.mts';
 import { parseWorkerUnits, SystemError } from '../src/system.mts';
 import type { System } from '../src/system.mts';
 import { START_MARKER } from '../src/decide.mts';
-import { CONFIG, DATA_KEY, fakeBackend, fakeRunFiles, fakeWaitStore, task } from './helpers.mts';
+import { CONFIG, DATA_KEY, fakeBackend, fakeRunFiles, fakeTaskFiles, fakeWaitStore, task } from './helpers.mts';
 import type { CheckResult, WaitCheck } from '../src/waits.mts';
+import { TASK_FILES_KEEP_MS } from '../src/dispatch.mts';
+import type { TaskFile } from '../src/task-files.mts';
 import type { FakeBackend } from './helpers.mts';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
@@ -41,15 +44,18 @@ function setup(
   {
     checks = {},
     checkResult,
+    taskFiles: initialFiles = [],
     ...updating
   }: {
     checks?: Record<string, WaitCheck>;
+    taskFiles?: TaskFile[];
     checkResult?: (check: WaitCheck) => CheckResult;
     autoUpdate?: AutoUpdate;
     advertised?: string;
     compiled?: boolean;
     retryAfter?: Date;
     fails?: string;
+    warnings?: string[];
   } = {},
 ) {
   const backend: FakeBackend = fakeBackend(tasks);
@@ -90,6 +96,7 @@ function setup(
       return 'updated';
     },
   };
+  const taskFiles = fakeTaskFiles(initialFiles);
   const deps: DispatchDeps = {
     backend,
     config: { ...CONFIG, autoUpdate: updating.autoUpdate ?? 'incompatible' },
@@ -100,13 +107,15 @@ function setup(
     now: () => NOW,
     logTail: () => 'last log line',
     waits,
+    taskFiles,
     runCheck: async (check) => {
       ranChecks.push(check.command);
       return checkResult?.(check) ?? { exitCode: 1, timedOut: false, output: 'pending' };
     },
     update,
+    configWarnings: () => updating.warnings ?? [],
   };
-  return { backend, deps, started, stopped, logs, files, waits, ranChecks, updates, state };
+  return { backend, deps, started, stopped, logs, files, waits, taskFiles, ranChecks, updates, state };
 }
 
 const running = (id: string) => task({ id, status: 'running', input: '/selftest go' });
@@ -120,6 +129,13 @@ test('starts from the top of Todo up to the cap', async () => {
   assert.ok(
     backend.writes.some((w) => w.startsWith('note t1 (system)') && w.includes(START_MARKER) && w.includes('pid 42')),
   );
+});
+
+test('every tick starts with one WARN line per unknown config key', async () => {
+  const { deps, logs, started } = setup([todo('t1')], [], {}, { warnings: ['unknown key "lane", ignored'] });
+  await runDispatch(deps);
+  assert.equal(logs[0], 'WARN config.json: unknown key "lane", ignored');
+  assert.deepEqual(started, ['t1']);
 });
 
 test('with all slots taken nothing starts', async () => {
@@ -535,6 +551,71 @@ test('a check whose task left Waiting is dropped; one whose task still runs is k
   assert.deepEqual(waits.list(), ['r1']);
 });
 
+const OLD = new Date(NOW.getTime() - TASK_FILES_KEEP_MS - 60_000);
+const RECENT = new Date(NOW.getTime() - TASK_FILES_KEEP_MS + 60_000);
+const filesOf = (taskId: string, modifiedAt: Date = OLD): TaskFile[] => [
+  { kind: 'log', taskId, modifiedAt },
+  { kind: 'session', taskId, modifiedAt },
+];
+const remaining = (files: TaskFile[]): string[] => files.map((file) => `${file.kind} ${file.taskId}`).sort();
+
+test('old logs and session records of done, closed and deleted tasks are dropped; recent ones stay', async () => {
+  const { deps, taskFiles, logs } = setup(
+    [
+      task({ id: 'done', status: 'done' }),
+      task({ id: 'closed', status: 'needs-me', closed: true }),
+      task({ id: 'fresh', status: 'done' }),
+    ],
+    [],
+    {},
+    { taskFiles: [...filesOf('done'), ...filesOf('closed'), ...filesOf('deleted'), ...filesOf('fresh', RECENT)] },
+  );
+  await runDispatch(deps);
+  assert.deepEqual(remaining(taskFiles.files), ['log fresh', 'session fresh']);
+  assert.ok(logs.includes('DROP-LOG done its task is finished'));
+  assert.ok(logs.includes('DROP-SESSION closed its task is finished'));
+  assert.ok(logs.includes('DROP-SESSION deleted its task is finished'));
+});
+
+test('the files of a task that may still run, or whose worker still runs here, stay however old', async () => {
+  const { deps, taskFiles, logs } = setup(
+    [
+      task({ id: 'resume', status: 'todo', next: 'resume', sessionId: 's', machine: 'there' }),
+      task({ id: 'waiting', status: 'waiting', machine: 'here' }),
+      task({ id: 'running', status: 'running', machine: 'here' }),
+      task({ id: 'needs', status: 'needs-me' }),
+      task({ id: 'stopping', status: 'done' }),
+    ],
+    ['agent-board-running', 'agent-board-stopping'],
+    {},
+    {
+      taskFiles: ['resume', 'waiting', 'running', 'needs', 'stopping', 'hidden', 'down'].flatMap((id) => filesOf(id)),
+    },
+  );
+  const getTask = deps.backend.getTask.bind(deps.backend);
+  deps.backend.getTask = async (id) => {
+    if (id === 'hidden') throw vocabularyRefusal();
+    if (id === 'down') throw new BackendError('cannot reach the board');
+    return getTask(id);
+  };
+  await runDispatch(deps);
+  assert.equal(taskFiles.files.length, 14);
+  assert.ok(!logs.some((line) => line.startsWith('DROP-')));
+});
+
+test('a dry run prints the files it would drop and removes none', async () => {
+  const { deps, taskFiles, logs } = setup(
+    [task({ id: 'done', status: 'done' })],
+    [],
+    {},
+    { taskFiles: filesOf('done') },
+  );
+  await runDispatch({ ...deps, dryRun: true });
+  assert.equal(taskFiles.files.length, 2);
+  assert.ok(logs.includes('DROP-LOG done its task is finished'));
+  assert.ok(logs.includes('DROP-SESSION done its task is finished'));
+});
+
 const tooOld = (backend: FakeBackend): void => {
   backend.listTasks = async () => {
     const error = new BackendError('this CLI is older than the board server', undefined);
@@ -701,4 +782,47 @@ test('the listener and foreign agent-board units are not workers: they neither w
   deps.system.activeWorkers = async () => parseWorkerUnits(listing);
   await runDispatch(deps);
   assert.deepEqual(updates, ['self-update']);
+});
+
+const listed = { ...CONFIG, dirs: [{ path: tmpdir() }, { path: '/does/not/exist/for/sure' }] };
+
+test('a tick sends the directory list when the board lacks it or has an older one, and logs it once', async () => {
+  const { deps, backend, logs } = setup([]);
+  deps.config = listed;
+  await runDispatch(deps);
+  assert.deepEqual(
+    backend.writes.filter((w) => w.startsWith('dirs ')),
+    [`dirs here: ${tmpdir()}`],
+  );
+  assert.ok(logs.includes('DIRS sent 1 directories to the board'));
+  await runDispatch(deps);
+  assert.equal(backend.writes.filter((w) => w.startsWith('dirs ')).length, 1);
+  assert.equal(logs.filter((line) => line.startsWith('DIRS')).length, 1, 'unchanged logs nothing');
+  deps.config = { ...CONFIG, dirs: [] };
+  await runDispatch(deps);
+  assert.ok(logs.includes('DIRS sent 0 directories to the board'));
+});
+
+test('a tick without a dirs key, or on a server without directory lists, sends and logs nothing about them', async () => {
+  const plain = setup([todo('t1')]);
+  await runDispatch(plain.deps);
+  assert.ok(!plain.backend.writes.some((w) => w.startsWith('dirs ')));
+  const old = setup([todo('t1')]);
+  old.deps.config = listed;
+  old.backend.boardDirs.supported = false;
+  await runDispatch(old.deps);
+  assert.ok(!old.backend.writes.some((w) => w.startsWith('dirs ')));
+  assert.ok(!old.logs.some((line) => /dirs|DIRS/i.test(line)));
+  assert.deepEqual(old.started, ['t1']);
+});
+
+test('a failure to send the directory list costs one WARN line, and the tick goes on', async () => {
+  const { deps, backend, logs, started } = setup([todo('t1')]);
+  deps.config = listed;
+  backend.boardDirs.failure = new BackendError('set-dirs: the server answered 502 without JSON', 502);
+  await runDispatch(deps);
+  assert.equal(logs.filter((line) => line.includes('directory list')).length, 1);
+  assert.ok(logs.includes('WARN sending the directory list failed: set-dirs: the server answered 502 without JSON'));
+  assert.deepEqual(started, ['t1']);
+  assert.ok(logs.some((line) => line.startsWith('TICK ')));
 });

@@ -1,19 +1,25 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { BackendError, checkBoardUrl, checkDataKey, looksLikeMachineToken, verifyContract } from './backend.mts';
 import type { ServerIdentity, WebConfig } from './backend.mts';
-import { ConfigError, INTAKE_LIST_KEYS, isSafeMode, parseConfig } from './config.mts';
+import { ConfigError, configWarnings, INTAKE_LIST_KEYS, isSafeMode, parseConfig } from './config.mts';
+import type { Config } from './config.mts';
+import { plainLine } from './terminal.mts';
 import {
   API_VERSION,
   decodeDataKey,
   isRecord,
+  machineDirsIndex,
   promptSkill,
   SERVER_FEATURE_LABELS,
   SERVER_FEATURES,
   shortSkill,
 } from '@agent-board/shared';
+import type { Keys } from '@agent-board/shared';
+import { dirsToSend, isAllowedDir, routedDirs, UNCOVERED_HINT } from './dirs.mts';
 import { parseEnv } from './env-file.mts';
 import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
+import { errorText } from './text.mts';
 
 export type Level = 'ok' | 'fail' | 'warn';
 
@@ -35,6 +41,8 @@ export interface DoctorDeps {
   mode: (path: string) => number | undefined;
   exists: (path: string) => boolean;
   isDirectory: (path: string) => boolean;
+  // The real path of an existing path; undefined when it is not there.
+  realpath: (path: string) => string | undefined;
   // Where a program is on the shell's PATH, and where on the PATH the units run with.
   which: (program: string) => string | undefined;
   whichInUnits: (program: string) => string | undefined;
@@ -78,6 +86,13 @@ export function realDoctorDeps(
     mode: (file) => statSync(file, { throwIfNoEntry: false })?.mode,
     exists: (file) => existsSync(file),
     isDirectory: (file) => statSync(file, { throwIfNoEntry: false })?.isDirectory() === true,
+    realpath: (file) => {
+      try {
+        return realpathSync(file);
+      } catch {
+        return undefined;
+      }
+    },
     which,
     systemctl,
     verifyServer: (config) => verifyContract(config),
@@ -206,6 +221,8 @@ function readCredentials({ configDir, readText, mode }: DoctorDeps): {
 
 const checkEnv: Check = (deps) => readCredentials(deps).results;
 
+const shellQuote = (text: string): string => `'${plainLine(text).replaceAll("'", `'\\''`)}'`;
+
 const unitPath = (home: string): string => UNIT_PATH.replaceAll('%h', () => home);
 
 // A server that lacks a feature still works; only the commands that need it refuse.
@@ -222,6 +239,30 @@ const missingFeatureChecks = (features: ReadonlySet<string>): CheckResult[] => {
         ),
       ];
 };
+
+// Whether the board holds the current directory list of this machine, for a machine with a `dirs` key and a server that can hold one.
+async function dirsOnBoardChecks(deps: DoctorDeps, identity: ServerIdentity, keys: Keys): Promise<CheckResult[]> {
+  if (!identity.features.has('machine.dirs')) return [];
+  const text = deps.readText(join(deps.configDir, 'config.json'));
+  let config: Config;
+  try {
+    config = parseConfig(text === undefined ? undefined : JSON.parse(text));
+  } catch {
+    return [];
+  }
+  if (config.dirs === undefined) return [];
+  const index = await machineDirsIndex(keys, config.machine, dirsToSend(config.dirs, deps.isDirectory));
+  return [
+    index === identity.dirsIndex
+      ? ok('dirs on board', 'the board has the current list')
+      : problem(
+          'dirs on board',
+          'warn',
+          'the board does not have the current list yet',
+          'the next dispatch tick sends it; "board dirs add" or "board dirs rm" send it at once',
+        ),
+  ];
+}
 
 const checkServer: Check = async (deps) => {
   const { url } = readWebUrl(deps);
@@ -254,6 +295,7 @@ const checkServer: Check = async (deps) => {
       return [
         ...results,
         ok('board key', `the board's data key is id ${checked.keys.keyId}, and this machine holds it`),
+        ...(await dirsOnBoardChecks(deps, identity, checked.keys)),
       ];
     return [
       ...results,
@@ -267,7 +309,7 @@ const checkServer: Check = async (deps) => {
       ),
     ];
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorText(error);
     // Only the API's own answer says the token is refused; a login page or proxy with a 401 is something else.
     if (error instanceof BackendError && error.fromApi && (error.status === 401 || error.status === 403))
       return [
@@ -311,13 +353,18 @@ const checkConfig: Check = ({ configDir, readText }) => {
     const config = parseConfig(raw);
     const rawIntake = isRecord(raw) && isRecord(raw['intake']) ? raw['intake'] : undefined;
     const oldLists = INTAKE_LIST_KEYS.filter((key) => rawIntake !== undefined && key in rawIntake);
-    const unknownKeys = Object.keys(rawIntake ?? {}).filter(
-      (key) => key !== 'prompt' && key !== 'priority' && !oldLists.some((list) => list === key),
-    );
     const skill = promptSkill(config.intake.prompt);
     const target = skill === undefined ? undefined : shortSkill(skill);
     return [
       ok('config.json', `machine ${config.machine}`),
+      ...configWarnings(raw).map((warning) =>
+        problem(
+          'config.json',
+          'warn',
+          warning,
+          'fix or remove the key: the CLI does not read it, so its setting keeps the default',
+        ),
+      ),
       ...(oldLists.length === 0
         ? []
         : [
@@ -326,16 +373,6 @@ const checkConfig: Check = ({ configDir, readText }) => {
               'warn',
               `intake.${oldLists.join(', intake.')} ${oldLists.length === 1 ? 'is' : 'are'} deprecated and read for one more release only`,
               `move them into skills.${target ?? '<skill>'} (see apps/cli/examples/config.reviews.json)`,
-            ),
-          ]),
-      ...(unknownKeys.length === 0
-        ? []
-        : [
-            problem(
-              'config.json intake keys',
-              'warn',
-              `intake has unknown keys, which are ignored: ${unknownKeys.map((key) => key.slice(0, 40)).join(', ')}`,
-              'check them for typos: a mistyped rule list is not applied',
             ),
           ]),
       ...(!config.intakeEnabled || (target !== undefined && Object.hasOwn(config.skills, target))
@@ -350,8 +387,7 @@ const checkConfig: Check = ({ configDir, readText }) => {
           ]),
     ];
   } catch (error) {
-    const message =
-      error instanceof SyntaxError ? 'is not valid JSON' : error instanceof Error ? error.message : String(error);
+    const message = error instanceof SyntaxError ? 'is not valid JSON' : errorText(error);
     return [
       problem(
         'config.json',
@@ -361,6 +397,43 @@ const checkConfig: Check = ({ configDir, readText }) => {
       ),
     ];
   }
+};
+
+// The list of directories workers may run in. Tasks routed to a directory outside it stop in Needs me, so that is a failure.
+const checkDirs: Check = (deps) => {
+  const text = deps.readText(join(deps.configDir, 'config.json'));
+  let config: Config;
+  try {
+    config = parseConfig(text === undefined ? undefined : JSON.parse(text));
+  } catch {
+    return [];
+  }
+  const { dirs } = config;
+  if (dirs === undefined) return [ok('dirs', 'not set: workers are not limited to directories')];
+  const results = [ok('dirs', `${dirs.length} listed`)];
+  for (const { path } of dirs)
+    if (!deps.isDirectory(path))
+      results.push(
+        problem(
+          'dirs',
+          'warn',
+          `${plainLine(path)} is listed but is not a directory`,
+          `"board dirs rm ${shellQuote(path)}"`,
+        ),
+      );
+  for (const { label, path } of routedDirs(config)) {
+    const real = deps.realpath(path) ?? path;
+    if (!isAllowedDir(dirs, path, (file) => deps.realpath(file) ?? file))
+      results.push(
+        problem(
+          'dirs',
+          'fail',
+          `${label} ${plainLine(path)} is in no listed directory: ${UNCOVERED_HINT}`,
+          `"board dirs add ${shellQuote(real)}", or "board dirs add --from-config"`,
+        ),
+      );
+  }
+  return results;
 };
 
 // Absolute paths in a unit's ExecStart that are not systemd specifiers must still exist: a moved checkout or a removed Node breaks the unit quietly.
@@ -505,7 +578,16 @@ async function checkListener(deps: DoctorDeps, installed: string[]): Promise<Che
   ];
 }
 
-const CHECKS: Check[] = [checkNode, checkConfigDir, checkWeb, checkEnv, checkServer, checkConfig, checkWorker];
+const CHECKS: Check[] = [
+  checkNode,
+  checkConfigDir,
+  checkWeb,
+  checkEnv,
+  checkServer,
+  checkConfig,
+  checkDirs,
+  checkWorker,
+];
 
 export async function runChecks(deps: DoctorDeps): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
