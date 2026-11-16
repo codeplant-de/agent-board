@@ -178,6 +178,17 @@ test('an unknown key in config.json is a warning with the nearest known key; the
   assert.equal(hasFailure(results), false);
 });
 
+test('a dirs setting over a different old path is a warning that says the setting counts', async () => {
+  const text = '{"machine": "box", "defaultCwd": "/old", "dirs": {"/srv/a": {"default": true}}}';
+  const results = await runChecks(machine({ ...GOOD, [`${CONFIG_DIR}/config.json`]: { text } }));
+  const warned = results.filter((result) => result.name === 'config.json' && result.level === 'warn');
+  assert.deepEqual(
+    warned.map((result) => result.message),
+    ['defaultCwd is overridden by dirs["/srv/a"].default'],
+  );
+  assert.match(warned[0]?.hint ?? '', /the directory setting is the one that counts/);
+});
+
 test('with units installed a missing tool or a vanished program fails; a disabled timer only warns', async () => {
   const units = unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch']);
   const present = new Set([

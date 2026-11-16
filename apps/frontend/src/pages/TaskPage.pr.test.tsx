@@ -129,7 +129,7 @@ describe('TaskPage pull request link', () => {
 
 describe('TaskPage directory', () => {
   beforeEach(() => {
-    shown.machines = [{ name: 'laptop', shown: 'laptop', dirs: ['/work/app'] }];
+    shown.machines = [{ name: 'laptop', shown: 'laptop', dirs: [{ path: '/work/app' }] }];
   });
 
   it('marks a directory that its machine does not list', async () => {

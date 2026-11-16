@@ -16,6 +16,7 @@ import {
   type Answer,
   type Binding,
   type Keys,
+  type MachineDir,
   type NoteKind,
   type Opener,
   type Question,
@@ -111,9 +112,9 @@ export type TranscriptRun = Omit<RouterOutputs['transcript']['runs'][number], 'e
 // `shown` is what the page may print.
 export type Machine = Omit<RouterOutputs['machines']['list'][number], 'dirs'> & {
   shown: string;
-  // The directories the machine listed, as the user's own text; null when it has no list to offer: none sent, a revoked
-  // machine, or a name that does not pass the shape check.
-  dirs: string[] | null;
+  // The directories the machine listed, with the label it gave each, as the user's own text; null when it has no list to
+  // offer: none sent, a revoked machine, or a name that does not pass the shape check.
+  dirs: MachineDir[] | null;
   // The machine has a list that does not open under its name or is not of its shape, so it offers nothing.
   dirsUnreadable: boolean;
 };
@@ -287,7 +288,7 @@ export async function openMachines(keys: Keys, wire: RouterOutputs['machines']['
       return {
         ...machine,
         shown,
-        dirs: opened?.map(({ path }) => path) ?? null,
+        dirs: opened ?? null,
         dirsUnreadable: offers && opened === undefined,
       };
     }),

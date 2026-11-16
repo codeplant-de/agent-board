@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { Machine } from './opening';
 import { unlistedMachine } from './workingDirectories';
 
-const laptop = (dirs: string[] | null): Machine => ({ name: 'laptop', shown: 'Laptop', dirs }) as Machine;
+const laptop = (dirs: string[] | null): Machine =>
+  ({ name: 'laptop', shown: 'Laptop', dirs: dirs === null ? null : dirs.map((path) => ({ path })) }) as Machine;
 
 describe('unlistedMachine', () => {
   const task = (workdir: string | null, machine: string | null = 'laptop') => ({ machine, workdir });
