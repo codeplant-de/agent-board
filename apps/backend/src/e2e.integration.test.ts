@@ -289,6 +289,7 @@ describe('an agent’s proposal', () => {
     backend: ctx.cli,
     config: { ...CONFIG, machine: 'laptop' },
     dryRun: false,
+    configWarnings: () => [],
     print: (line) => logs.push(line),
     system: {
       isActive: async () => false,
@@ -422,6 +423,7 @@ describe('a wait', () => {
       backend: ctx.cli,
       config,
       dryRun: false,
+      configWarnings: () => [],
       print: (line) => logs.push(line),
       system: {
         isActive: async () => false,
