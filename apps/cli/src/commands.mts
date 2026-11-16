@@ -45,6 +45,8 @@ import { verifyContract } from './backend.mts';
 import { completionModel, renderCompletion, SHELLS } from './completion.mts';
 import type { Shell } from './completion.mts';
 import { getPaths, loadConfig } from './config.mts';
+import { dirsAdd, dirsList, dirsRemove } from './dirs.mts';
+import type { DirsDeps } from './dirs.mts';
 import { runDir } from './runtime.mts';
 import { dispatchMain } from './dispatch.mts';
 import { formatResult, hasFailure, realDoctorDeps, runChecks } from './doctor.mts';
@@ -60,6 +62,7 @@ import { realSetupDeps, setup, unitDirectory, whichOnPath } from './setup.mts';
 import type { SetupDeps, SetupFlags } from './setup.mts';
 import { runHook } from './hook.mts';
 import { resolveScheduleId, resolveTaskId } from './ids.mts';
+import { createStyle } from './style.mts';
 import { plainLine } from './terminal.mts';
 import { intakeMain } from './intake.mts';
 import { listenMain } from './listen.mts';
@@ -102,6 +105,8 @@ export interface ProgramOptions {
   // Where `board wait --check` stores the check, and the directory it runs in.
   waits?: WaitStore;
   cwd?: string;
+  // The home directory, which `board dirs` warns about.
+  home?: string;
   // Whether stderr is a terminal, the only place the update hint is shown.
   stderrIsTty?: boolean;
   // Where the update hint remembers when it was last shown.
@@ -554,6 +559,58 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     const changes = action === 'pause' || action === 'resume' || action === 'rm';
     const id = arg === undefined || !changes ? undefined : await resolveScheduleId(context.backend, arg, { inRun });
     return schedules(context, id === undefined ? words : [action ?? '', id, ...rest]);
+  });
+
+  dryRunOption(
+    program
+      .command('dirs')
+      .helpGroup(SETUP)
+      .summary('list, add or remove the directories workers may run in on this machine')
+      .description(
+        paragraphs(
+          "Manage the `dirs` list of this machine's config.json: the directories workers may run in. Without arguments (or with `list`), print the entries, marking one whose directory is gone as missing. `add [path]` lists the real path of a directory (default: the current one); `rm [path]` unlists one. A path is relative to the current directory.",
+          '`add` refuses `/` and a path that is not a directory, warns about the home directory (it allows everything below it), and notes when a parent is already listed. `add --from-config` lists the directories the config already routes to: `defaultCwd`, every lane `cwd` and every `repos` checkout that exists, skipping those a listed directory covers and never listing `/` or the home directory.',
+          '`rm` asks the board for open tasks and schedules of this machine that run in the directory and in no other listed one, and refuses while there are any, and when the board cannot be reached; --force removes it anyway and needs no board. Enforcement of the list is planned and not active in this build: today the list changes no run. `add` and `rm` rewrite the `dirs` key of config.json and nothing else, and are not available inside a board run.',
+        ),
+      )
+      .usage('[options] [list | add [path] | rm [path]]')
+      .argument('[action...]', 'list, add or rm, and a path')
+      .option('--from-config', 'add: list the directories the config already routes to')
+      .option('--force', 'rm: remove although work of this machine still runs there, or the board cannot be checked')
+      .addHelpText(
+        'after',
+        examples(
+          'board dirs',
+          'board dirs add',
+          'board dirs add ~/workspace/agent-board',
+          'board dirs add --from-config',
+          'board dirs rm ~/workspace/old',
+          'board dirs rm --force ~/workspace/gone',
+        ),
+      ),
+  ).action(async (words: string[], flags: { fromConfig?: boolean; force?: boolean }, command: Command) => {
+    const [action = 'list', ...rest] = words;
+    if (action !== 'list' && action !== 'add' && action !== 'rm')
+      throw new UsageError(`dirs takes nothing, or list, add or rm: not "${plainLine(action).slice(0, 40)}"`);
+    if (action === 'list' && rest.length > 0) throw new UsageError('board dirs list takes no path');
+    if (rest.length > 1) throw new UsageError(`board dirs ${action} takes one path`);
+    if (flags.fromConfig && action !== 'add') throw new UsageError('--from-config belongs to add');
+    if (flags.force && action !== 'rm') throw new UsageError('--force belongs to rm');
+    if (action !== 'list') notInRun(`board dirs ${action} is not available inside a board run`);
+    const context = contextOf(command, { strictConfig: true });
+    const deps: DirsDeps = {
+      configFile: getPaths(env).configFile,
+      cwd: options.cwd ?? realpathSync(process.cwd()),
+      home: options.home ?? homedir(),
+      dryRun: context.dryRun,
+      print: context.print,
+      backend: context.backend,
+      bold: createStyle(context.color === true).bold,
+    };
+    const [path] = rest;
+    if (action === 'list') dirsList(deps);
+    else if (action === 'add') dirsAdd(deps, path, flags);
+    else await dirsRemove(deps, path, flags);
   });
 
   dryRunOption(

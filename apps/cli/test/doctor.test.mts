@@ -26,6 +26,7 @@ function machine(
     mode: (path) => (path in files ? (files[path]?.mode ?? 0o644) : undefined),
     exists: (path) => present.has(path),
     isDirectory: (path) => dirs.has(path),
+    realpath: (path) => (dirs.has(path) ? path : undefined),
     which: (program) => `/usr/bin/${program}`,
     whichInUnits: (program) => `/usr/bin/${program}`,
     home: '/home/me',
@@ -428,4 +429,62 @@ test('without an intake key, doctor checks gh but no intake unit', async () => {
   assert.ok(results.every((result) => !result.name.includes('intake')));
   const withIntake = await runChecks(machine({ ...GOOD, ...unitFiles(worker) }, { exists: () => true }));
   assert.ok(Object.keys(levels(withIntake)).some((name) => name.includes('intake.timer')));
+});
+
+const withConfig = (config: unknown): Record<string, { text: string; mode?: number }> => ({
+  ...GOOD,
+  [`${CONFIG_DIR}/config.json`]: { text: JSON.stringify(config) },
+});
+
+const dirsResults = (results: CheckResult[]): CheckResult[] => results.filter((result) => result.name === 'dirs');
+
+test('a config without a dirs key reports it as not set, and nothing warns', async () => {
+  const results = dirsResults(await runChecks(machine(GOOD)));
+  assert.deepEqual(
+    results.map((result) => [result.level, result.message]),
+    [['ok', 'not set: workers are not limited to directories']],
+  );
+});
+
+test('the dirs list is counted, and a listed directory that is gone or a route no entry covers warns', async () => {
+  const files = withConfig({
+    machine: 'box',
+    defaultCwd: '/work/app/sub',
+    lanes: { general: { skills: ['*'], cwd: '/work/lane' } },
+    repos: { 'a/b': '/work/repo', 'a/c': '/work/appx' },
+    dirs: { '/work/app': {}, '/work/gone': {} },
+  });
+  const present = new Set(['/work/app', '/work/app/sub', '/work/lane', '/work/repo', '/work/appx']);
+  const results = dirsResults(
+    await runChecks(
+      machine(files, {
+        isDirectory: (path) => present.has(path) || path === CONFIG_DIR || path === UNIT_DIR,
+        realpath: (path) => (path === '/work/repo' ? '/data/repo' : present.has(path) ? path : undefined),
+      }),
+    ),
+  );
+  assert.equal(results[0]?.message, '2 listed');
+  const warnings = results.slice(1).map((result) => [result.level, result.message]);
+  assert.deepEqual(warnings, [
+    ['warn', '/work/gone is listed but is not a directory'],
+    [
+      'warn',
+      'lane general cwd /work/lane is in no listed directory: tasks routed there will stop once enforcement ships',
+    ],
+    ['warn', 'repos a/b /work/repo is in no listed directory: tasks routed there will stop once enforcement ships'],
+    ['warn', 'repos a/c /work/appx is in no listed directory: tasks routed there will stop once enforcement ships'],
+  ]);
+  assert.match(results[2]?.hint ?? '', /board dirs add '\/work\/lane'/);
+  assert.match(results[3]?.hint ?? '', /board dirs add '\/data\/repo'/, 'the hint names the real path');
+});
+
+test('an empty dirs list is counted and warns about every route', async () => {
+  const results = dirsResults(await runChecks(machine(withConfig({ machine: 'box', dirs: {} }))));
+  assert.equal(results[0]?.message, '0 listed');
+  assert.equal(results[1]?.level, 'warn');
+  assert.match(results[1]?.message ?? '', /defaultCwd .* is in no listed directory/);
+});
+
+test('a config that does not parse leaves the dirs section to the config.json check', async () => {
+  assert.deepEqual(dirsResults(await runChecks(machine(withConfig({ machine: 'box', dirs: 'x' })))), []);
 });

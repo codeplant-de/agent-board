@@ -1,9 +1,12 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { BackendError, checkBoardUrl, checkDataKey, looksLikeMachineToken, verifyContract } from './backend.mts';
 import type { ServerIdentity, WebConfig } from './backend.mts';
 import { ConfigError, isSafeMode, parseConfig } from './config.mts';
+import type { Config } from './config.mts';
+import { plainLine } from './terminal.mts';
 import { API_VERSION, decodeDataKey, SERVER_FEATURE_LABELS, SERVER_FEATURES } from '@agent-board/shared';
+import { coveringDir, routedDirs, UNCOVERED_HINT } from './dirs.mts';
 import { parseEnv } from './env-file.mts';
 import { activeUnitNames, LISTEN_SERVICE, parseExecStart, UNIT_PATH, whichOnPath } from './setup.mts';
 
@@ -27,6 +30,8 @@ export interface DoctorDeps {
   mode: (path: string) => number | undefined;
   exists: (path: string) => boolean;
   isDirectory: (path: string) => boolean;
+  // The real path of an existing path; undefined when it is not there.
+  realpath: (path: string) => string | undefined;
   // Where a program is on the shell's PATH, and where on the PATH the units run with.
   which: (program: string) => string | undefined;
   whichInUnits: (program: string) => string | undefined;
@@ -70,6 +75,13 @@ export function realDoctorDeps(
     mode: (file) => statSync(file, { throwIfNoEntry: false })?.mode,
     exists: (file) => existsSync(file),
     isDirectory: (file) => statSync(file, { throwIfNoEntry: false })?.isDirectory() === true,
+    realpath: (file) => {
+      try {
+        return realpathSync(file);
+      } catch {
+        return undefined;
+      }
+    },
     which,
     systemctl,
     verifyServer: (config) => verifyContract(config),
@@ -198,6 +210,8 @@ function readCredentials({ configDir, readText, mode }: DoctorDeps): {
 
 const checkEnv: Check = (deps) => readCredentials(deps).results;
 
+const shellQuote = (text: string): string => `'${plainLine(text).replaceAll("'", `'\\''`)}'`;
+
 const unitPath = (home: string): string => UNIT_PATH.replaceAll('%h', () => home);
 
 // A server that lacks a feature still works; only the commands that need it refuse.
@@ -313,6 +327,43 @@ const checkConfig: Check = ({ configDir, readText }) => {
       ),
     ];
   }
+};
+
+// The list of directories workers may run in. Nothing enforces it yet, so every problem is a warning.
+const checkDirs: Check = (deps) => {
+  const text = deps.readText(join(deps.configDir, 'config.json'));
+  let config: Config;
+  try {
+    config = parseConfig(text === undefined ? undefined : JSON.parse(text));
+  } catch {
+    return [];
+  }
+  const { dirs } = config;
+  if (dirs === undefined) return [ok('dirs', 'not set: workers are not limited to directories')];
+  const results = [ok('dirs', `${dirs.length} listed`)];
+  for (const { path } of dirs)
+    if (!deps.isDirectory(path))
+      results.push(
+        problem(
+          'dirs',
+          'warn',
+          `${plainLine(path)} is listed but is not a directory`,
+          `"board dirs rm ${shellQuote(path)}"`,
+        ),
+      );
+  for (const { label, path } of routedDirs(config)) {
+    const real = deps.realpath(path) ?? path;
+    if (coveringDir(dirs, real) === undefined)
+      results.push(
+        problem(
+          'dirs',
+          'warn',
+          `${label} ${plainLine(path)} is in no listed directory: ${UNCOVERED_HINT}`,
+          `"board dirs add ${shellQuote(real)}", or "board dirs add --from-config"`,
+        ),
+      );
+  }
+  return results;
 };
 
 // Absolute paths in a unit's ExecStart that are not systemd specifiers must still exist: a moved checkout or a removed Node breaks the unit quietly.
@@ -457,7 +508,16 @@ async function checkListener(deps: DoctorDeps, installed: string[]): Promise<Che
   ];
 }
 
-const CHECKS: Check[] = [checkNode, checkConfigDir, checkWeb, checkEnv, checkServer, checkConfig, checkWorker];
+const CHECKS: Check[] = [
+  checkNode,
+  checkConfigDir,
+  checkWeb,
+  checkEnv,
+  checkServer,
+  checkConfig,
+  checkDirs,
+  checkWorker,
+];
 
 export async function runChecks(deps: DoctorDeps): Promise<CheckResult[]> {
   const results: CheckResult[] = [];

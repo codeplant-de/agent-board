@@ -1,12 +1,13 @@
 import { readFileSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   DEFAULT_PRIORITY,
   isPriority,
   isRecord,
   isSafeMachineName,
   MACHINE_NAME_RULE,
+  isSafeWorkdir,
   isStringList,
   PRIORITIES,
   shortSkill,
@@ -47,6 +48,13 @@ export const AUTO_UPDATES = ['incompatible', 'always', 'never'] as const;
 export type AutoUpdate = (typeof AUTO_UPDATES)[number];
 const isAutoUpdate = (value: unknown): value is AutoUpdate => AUTO_UPDATES.some((mode) => mode === value);
 
+// A directory workers may run in, as listed in config.json under `dirs`. An object, so later per-directory settings fit.
+export interface DirEntry {
+  path: string;
+}
+
+export const MAX_DIRS = 200;
+
 export interface Config {
   // This machine's name on the board: it claims tasks under it, and a resume runs only on the machine that ran the session.
   machine: string;
@@ -65,6 +73,9 @@ export interface Config {
   // Whether config.json has an `intake` key: the intake timer and `board internal intake` exist only then.
   intakeEnabled: boolean;
   repos: Record<string, string>;
+  // The directories workers may run in, in config order; undefined when config.json has no `dirs` key, which is not the
+  // same as an empty list: a list that is present will allow only what it names.
+  dirs?: DirEntry[];
 }
 
 export interface Paths {
@@ -95,6 +106,35 @@ export function getPaths(env: NodeJS.ProcessEnv = process.env): Paths {
 
 export function expandHome(path: string): string {
   return path === '~' || path.startsWith('~/') ? homedir() + path.slice(1) : path;
+}
+
+// The path a `dirs` key names: `~` expanded, `.` and `..` and a trailing slash resolved away.
+export function dirKeyPath(key: string): string | undefined {
+  const expanded = expandHome(key);
+  return isSafeWorkdir(expanded) ? resolve(expanded) : undefined;
+}
+
+function parseDirs(raw: unknown): DirEntry[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) throw new ConfigError('config: dirs must be an object keyed by directory');
+  if (Object.keys(raw).length > MAX_DIRS) throw new ConfigError(`config: dirs lists more than ${MAX_DIRS} directories`);
+  const seen = new Map<string, string>();
+  return Object.entries(raw).map(([key, settings]): DirEntry => {
+    const shown = JSON.stringify(key.slice(0, 100));
+    const path = dirKeyPath(key);
+    if (path === undefined) throw new ConfigError(`config: dirs key ${shown} must be an absolute path (or ~/...)`);
+    if (!isRecord(settings)) throw new ConfigError(`config: dirs[${shown}] must be an object`);
+    const [unknown] = Object.keys(settings);
+    if (unknown !== undefined)
+      throw new ConfigError(`config: dirs[${shown}] has no setting "${unknown.slice(0, 40)}" (it takes none yet)`);
+    const other = seen.get(path);
+    if (other !== undefined)
+      throw new ConfigError(
+        `config: dirs lists ${shown} and ${JSON.stringify(other.slice(0, 100))}, the same directory`,
+      );
+    seen.set(path, key);
+    return { path };
+  });
 }
 
 function positiveInt(obj: Record<string, unknown>, key: string, where: string, fallback: number): number {
@@ -192,6 +232,7 @@ export function parseConfig(raw: unknown): Config {
   }
   const autoUpdate = 'autoUpdate' in raw ? raw['autoUpdate'] : 'incompatible';
   if (!isAutoUpdate(autoUpdate)) throw new ConfigError(`config: autoUpdate must be one of ${AUTO_UPDATES.join(', ')}`);
+  const dirs = parseDirs(raw['dirs']);
   return {
     machine,
     lanes: parseLanes(raw['lanes']),
@@ -203,6 +244,7 @@ export function parseConfig(raw: unknown): Config {
     intake: parseIntake(raw['intake']),
     intakeEnabled: 'intake' in raw,
     repos,
+    ...(dirs === undefined ? {} : { dirs }),
   };
 }
 

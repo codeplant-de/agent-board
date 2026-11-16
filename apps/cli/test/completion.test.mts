@@ -26,6 +26,7 @@ const VISIBLE = [
   'polish',
   'schedule',
   'schedules',
+  'dirs',
   'delay',
   'init',
   'doctor',
@@ -154,6 +155,7 @@ test('the bash script completes commands, task ids, statuses, priorities and sch
   assert.deepEqual(bashOffers(['schedule', '--model'], 'o'), ['opus']);
   assert.deepEqual(bashOffers(['add', '--parent'], 'Z'), ['Zk7mNp2q']);
   assert.deepEqual(bashOffers(['schedules'], 'p'), ['pause']);
+  assert.deepEqual(bashOffers(['dirs'], ''), ['list', 'add', 'rm']);
   assert.deepEqual(bashOffers(['schedules', 'rm'], ''), ['Sc1aBcDe']);
   assert.deepEqual(bashOffers(['schedules', '--dry-run', 'pause'], ''), ['Sc1aBcDe']);
   assert.deepEqual(bashOffers(['tasks'], '--st'), ['--status']);
@@ -281,6 +283,7 @@ test('the zsh script completes ids, statuses, schedule actions and files', (cont
   assert.deepEqual(zshOffers(['show', '']), ['describe ids', 'Ab3dEf9x:First: one', 'Zk7mNp2q:Second']);
   assert.deepEqual(zshOffers(['move', 'Ab3dEf9x', '']), ['backlog', 'todo', 'running', 'waiting', 'needs-me', 'done']);
   assert.deepEqual(zshOffers(['schedules', '']), ['pause', 'resume', 'rm']);
+  assert.deepEqual(zshOffers(['dirs', '']), ['list', 'add', 'rm']);
   assert.equal(zshOffers(['schedules', 'rm', ''])[0], 'describe ids');
   assert.deepEqual(zshOffers(['schedules', 'stop', '']), [], 'the id of an unknown action is not offered');
   assert.deepEqual(zshOffers(['tasks', '--status', '']), ['backlog', 'todo', 'running', 'waiting', 'needs-me', 'done']);
@@ -329,6 +332,7 @@ test('the fish script completes ids, statuses, schedule actions and files, and n
     'waiting',
   ]);
   assert.deepEqual(fishOffers('board schedules '), ['pause', 'resume', 'rm']);
+  assert.deepEqual(fishOffers('board dirs '), ['list', 'add', 'rm']);
   assert.deepEqual(fishOffers('board schedules rm '), ['Sc1aBcDe\tSweep']);
   assert.deepEqual(fishOffers('board delay Ab3dEf9x --at '), []);
   assert.deepEqual(fishOffers('board add --title '), []);
