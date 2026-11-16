@@ -1,5 +1,5 @@
 import { keepLoopbackOffProxy, runMain } from './cli.mts';
-import { runBoard } from './commands.mts';
+import { runBoard } from './commands/program.mts';
 
 keepLoopbackOffProxy(process.env);
 

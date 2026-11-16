@@ -1,6 +1,6 @@
 # Machine API
 
-The spec between the CLI and the board, API version 9. The CLI calls the board's machine API from its own process (`apps/cli/src/backend.mts` over HTTP, `apps/cli/src/sealing.mts` for the encryption); `apps/backend/src/machine-api.ts` serves it. Nothing else implements it. Everything below describes the wire, where sealed fields hold envelopes; the CLI's own `Backend` interface (`packages/shared/src/contract.mts`) is the plaintext view of it.
+The spec between the CLI and the board, API version 9. The CLI calls the board's machine API from its own process (`apps/cli/src/backend/backend.mts` over HTTP, `apps/cli/src/backend/sealing.mts` for the encryption); `apps/backend/src/machine-api.ts` serves it. Nothing else implements it. Everything below describes the wire, where sealed fields hold envelopes; the CLI's own `Backend` interface (`packages/shared/src/contract.mts`) is the plaintext view of it.
 
 `POST <url>/api/machine/<command>` with `Authorization: Bearer <machine token>`, an optional `X-Board-Features` header (see [Features](#features)) and a JSON body `{"id"?, "all"?, "machine"?, "author"?, "body"?}`: `id` is the task, `body` is the command's payload (JSON, with the sealed values). The answer is `{"result": ...}` with status 200, or `{"error": "one line"}` with a non-200 status. The token names the machine; it never appears in an error message. A call times out after 45 seconds.
 
