@@ -35,7 +35,7 @@
 	}
 }
 
-:80 {
+:8080 {
 	encode gzip zstd
 
 	# The app is a static SPA with no inline scripts. 'wasm-unsafe-eval' is for Argon2 (WebAssembly, compiled from bytes in

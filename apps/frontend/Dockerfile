@@ -37,4 +37,8 @@ RUN pnpm --filter @agent-board/frontend build
 FROM ${CADDY_IMAGE} AS runtime
 COPY --from=builder /app/apps/frontend/dist /srv
 COPY apps/frontend/Caddyfile /etc/caddy/Caddyfile
-EXPOSE 80
+# Caddy runs as an unprivileged user, so it listens on 8080 and owns the dirs it writes (XDG_DATA_HOME, XDG_CONFIG_HOME). The
+# UID is numeric, so the cluster's runAsNonRoot can check it. src/caddyfile.docker.test.ts runs Caddy as this user.
+RUN chown -R 65532:65532 /data /config
+USER 65532:65532
+EXPOSE 8080

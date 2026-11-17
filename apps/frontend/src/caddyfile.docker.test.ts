@@ -2,7 +2,8 @@
 // The real Caddyfile in the Caddy image the web container ships (ARG CADDY_IMAGE in ../Dockerfile), in front of a hostile
 // backend: what a browser receives for a 200, a redirect, an error, a 304 and an error Caddy makes itself when the backend
 // tries to wipe the stored keys, set a cookie, redirect, register a service worker or pass itself off as a page, and that
-// the event stream still passes chunk by chunk. Skipped where docker or the image is not there (`docker pull` the image);
+// the event stream still passes chunk by chunk. Caddy runs as the Dockerfile's USER with every capability dropped and
+// no-new-privileges, as in the cluster. Skipped where docker or the image is not there (`docker pull` the image);
 // on CI that is a failure, since the job pulls it.
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -15,7 +16,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 const docker = (...args: string[]): string =>
   execFileSync('docker', args, { encoding: 'utf8', timeout: 60_000 }).trim();
 
-const IMAGE = /^ARG CADDY_IMAGE=(\S+)$/m.exec(readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8'))?.[1];
+const DOCKERFILE = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8');
+const IMAGE = /^ARG CADDY_IMAGE=(\S+)$/m.exec(DOCKERFILE)?.[1];
+const USER = /^USER (\S+)$/m.exec(DOCKERFILE)?.[1];
 
 function hasImage(): boolean {
   if (IMAGE === undefined) return false;
@@ -31,6 +34,10 @@ const available = hasImage();
 
 it('pins the Caddy image by version and digest', () => {
   expect(IMAGE).toMatch(/^caddy:2\.\d+\.\d+@sha256:[0-9a-f]{64}$/);
+});
+
+it('runs Caddy as a numeric non-root user, which runAsNonRoot can check', () => {
+  expect(USER).toMatch(/^[1-9]\d*:[1-9]\d*$/);
 });
 
 // A skip on CI would pass without a trace, and this is the only test that runs the Caddyfile.
@@ -147,15 +154,21 @@ describe.skipIf(!available)(`the Caddyfile in front of a hostile backend (${IMAG
       '--name',
       name,
       '--add-host=host.docker.internal:host-gateway',
+      '--user',
+      USER ?? '',
+      '--cap-drop',
+      'ALL',
+      '--security-opt',
+      'no-new-privileges',
       '-p',
-      '127.0.0.1::80',
+      '127.0.0.1::8080',
       '-v',
       `${join(dir, 'Caddyfile')}:/etc/caddy/Caddyfile:ro`,
       '-v',
       `${join(dir, 'index.html')}:/srv/index.html:ro`,
       IMAGE ?? '',
     );
-    base = `http://127.0.0.1:${docker('port', name, '80/tcp').split(':').pop()}`;
+    base = `http://127.0.0.1:${docker('port', name, '8080/tcp').split(':').pop()}`;
     for (let attempt = 0; attempt < 50; attempt += 1) {
       try {
         await fetch(`${base}/trpc/ok`);
