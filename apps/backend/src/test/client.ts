@@ -363,6 +363,7 @@ export function plainUi(db: Db, owner = 'jascha') {
       takeBack: mutation(raw.tasks.takeBack),
       wakeNow: mutation(raw.tasks.wakeNow),
       setClosed: mutation(raw.tasks.setClosed),
+      removePr: mutation(raw.tasks.removePr),
       // As the browser does: an agent's proposal enters Todo with its prompt sealed again for the creator "user".
       move: async (input: Parameters<Raw['tasks']['move']>[0]) => {
         const { startInput: _given, ...rest } = input;

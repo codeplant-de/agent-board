@@ -294,6 +294,7 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     async addPr(id, url) {
       await inner.addPr(id, { pr: await checked('add-pr', () => sealPr(sealer, id, url)) });
     },
+    removePr: (id, prId) => inner.removePr(id, { pr: prId }),
     setPrStates: (id, states) => inner.setPrStates(id, states),
     async checkDirs(machine, dirs) {
       const { supported, index } = await inner.dirsState();

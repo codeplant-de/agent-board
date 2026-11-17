@@ -66,6 +66,7 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   'set-pr': 'task.pr',
   'set-pr-state': 'task.pr-state',
   'add-pr': 'task.prs',
+  'remove-pr': 'task.pr-remove',
   'set-pr-states': 'task.prs',
   'run-inbox': 'run-inbox',
   'ack-messages': 'run-inbox',
@@ -225,6 +226,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       const command = (await connect()).features.has('task.prs') ? 'add-pr' : 'set-pr';
       await send(command, { id: checkedId, body });
     },
+    removePr: async (id, body) => send('remove-pr', { id: taskId(id), body }),
     async setPrStates(id, body) {
       const checkedId = taskId(id);
       if ((await connect()).features.has('task.prs')) return send('set-pr-states', { id: checkedId, body });

@@ -34,6 +34,7 @@ import {
   moveTask,
   readNotes,
   rerunFresh,
+  removePr,
   reply,
   send,
   setClosed,
@@ -324,6 +325,12 @@ const tasksRouter = router({
   takeBack: procedure
     .input(z.object({ id }))
     .mutation(async ({ ctx, input }) => boardTask(ctx.db, await takeBack(ctx.db, input.id, ctx.username))),
+
+  /** Takes a reported PR off the task. It deletes a row and seals nothing, so the browser may do it. */
+  removePr: procedure.input(z.object({ id, prId: id })).mutation(async ({ ctx, input }) => {
+    await removePr(ctx.db, input.id, input.prId);
+    return boardTask(ctx.db, await getTask(ctx.db, input.id));
+  }),
 
   setClosed: procedure
     .input(z.object({ id, closed: z.boolean() }))

@@ -250,6 +250,9 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     async addPr(id, url) {
       print(`DRY add-pr ${id} ${url}`);
     },
+    async removePr(id, prId) {
+      print(`DRY remove-pr ${id} ${prId}`);
+    },
     async setPrStates(id, { prompt, prs = [] }) {
       const states = [
         ...(prompt === undefined ? [] : [`prompt=${prompt}`]),

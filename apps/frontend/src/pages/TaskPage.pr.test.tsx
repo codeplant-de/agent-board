@@ -1,12 +1,18 @@
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { ModalsProvider } from '@mantine/modals';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BoardTask } from '../lib/trpc';
 import { TaskPage } from './TaskPage';
 
-const shown = vi.hoisted(() => ({ task: undefined as unknown, machines: [] as unknown[] }));
+const shown = vi.hoisted(() => ({
+  task: undefined as unknown,
+  machines: [] as unknown[],
+  removed: [] as unknown[],
+}));
 
 vi.mock('../lib/trpc', () => ({
   POLL_MS: 60_000,
@@ -20,6 +26,14 @@ vi.mock('../lib/trpc', () => ({
         }),
       },
       setPriority: { mutationOptions: () => ({ mutationFn: async () => null }) },
+      removePr: {
+        mutationOptions: () => ({
+          mutationFn: async (input: unknown) => {
+            shown.removed.push(input);
+            return null;
+          },
+        }),
+      },
     },
     machines: {
       list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => shown.machines }) },
@@ -72,11 +86,13 @@ function renderPage(overrides: Partial<BoardTask>) {
   return render(
     <MemoryRouter initialEntries={['/t/t1']}>
       <MantineProvider>
-        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-          <Routes>
-            <Route path="/t/:id" element={<TaskPage />} />
-          </Routes>
-        </QueryClientProvider>
+        <ModalsProvider>
+          <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+            <Routes>
+              <Route path="/t/:id" element={<TaskPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </ModalsProvider>
       </MantineProvider>
     </MemoryRouter>,
   );
@@ -86,6 +102,7 @@ describe('TaskPage pull request link', () => {
   beforeEach(() => {
     shown.task = undefined;
     shown.machines = [];
+    shown.removed = [];
   });
 
   it('links the PR the agent reported', async () => {
@@ -139,6 +156,47 @@ describe('TaskPage pull request link', () => {
   it('shows a closed PR as closed', async () => {
     renderPage({ prs: [{ id: 'r1', url: 'https://github.com/acme/app/pull/2', state: 'closed' }] });
     expect(await screen.findByLabelText('PR closed')).toBeInTheDocument();
+  });
+});
+
+describe('TaskPage pull request removal', () => {
+  beforeEach(() => {
+    shown.task = undefined;
+    shown.removed = [];
+  });
+
+  it('offers to remove a reported PR, after a confirmation, with the id of its row', async () => {
+    renderPage({ prs: [{ id: 'r1', url: 'https://github.com/acme/app/pull/2', state: null }] });
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove acme/app/pull/2' }));
+    expect(shown.removed).toEqual([]);
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(shown.removed).toEqual([{ id: 't1', prId: 'r1' }]));
+  });
+
+  it('removes nothing when the confirmation is cancelled', async () => {
+    renderPage({ prs: [{ id: 'r1', url: 'https://github.com/acme/app/pull/2', state: null }] });
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove acme/app/pull/2' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    expect(shown.removed).toEqual([]);
+  });
+
+  it('offers nothing for the PR the prompt names, also when the agent reported it too', async () => {
+    renderPage({
+      input: '/review-pr https://github.com/acme/app/pull/1 --auto',
+      prs: [
+        { id: 'r1', url: 'https://github.com/acme/app/pull/1', state: null },
+        { id: 'r2', url: 'https://github.com/acme/app/pull/2', state: null },
+      ],
+    });
+    await screen.findByRole('link', { name: 'acme/app/pull/1' });
+    expect(screen.queryByRole('button', { name: 'Remove acme/app/pull/1' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove acme/app/pull/2' })).toBeInTheDocument();
+  });
+
+  it('offers nothing for a PR only the prompt names', async () => {
+    renderPage({ input: '/review-pr https://github.com/acme/app/pull/1 --auto' });
+    await screen.findByRole('link', { name: 'acme/app/pull/1' });
+    expect(screen.queryByRole('button', { name: /^Remove/ })).not.toBeInTheDocument();
   });
 });
 
