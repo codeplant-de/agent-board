@@ -19,10 +19,10 @@ export AGENT_BOARD_CONFIG_DIR="$work/config"
 export AGENT_BOARD_STATE_DIR="$work/state"
 mkdir -p "$HOME" "$AGENT_BOARD_CONFIG_DIR"
 
-# setup writes the two agents (no --enable: nothing is loaded), the log and run directories.
+# setup writes the three agents (no --enable: nothing is loaded), the log and run directories.
 "$binary" setup --force
 agents="$HOME/Library/LaunchAgents"
-[ "$(find "$agents" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 2 ] || { echo "expected two launch agents in $agents" >&2; ls "$agents" >&2; exit 1; }
+[ "$(find "$agents" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 3 ] || { echo "expected three launch agents in $agents" >&2; ls "$agents" >&2; exit 1; }
 for plist in "$agents"/*.plist; do
   plutil -lint "$plist"
 done
@@ -31,6 +31,8 @@ done
 # The agents run the binary under lockf, and plutil reads the program arguments back.
 [ "$(plutil -extract ProgramArguments.0 raw "$agents/de.codeplant.agent-board.dispatch.plist")" = /usr/bin/lockf ]
 [ "$(plutil -extract ProgramArguments.0 raw "$agents/de.codeplant.agent-board.listen.plist")" = "$binary" ]
+[ "$(plutil -extract ProgramArguments.0 raw "$agents/de.codeplant.agent-board.watch.plist")" = "$binary" ]
+[ "$(plutil -extract ProgramArguments.2 raw "$agents/de.codeplant.agent-board.watch.plist")" = watch ]
 
 # launchd takes an agent like these when this session has a gui domain; a runner without one is no failure of the CLI.
 plist="$work/$label.plist"

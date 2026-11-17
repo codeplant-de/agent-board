@@ -265,3 +265,70 @@ test('the agent group is handed out at the start, and what the agent left in it 
   const leftover = Number(readFileSync(pidFile, 'utf8').trim());
   assert.ok(await waitUntilGone(leftover, 3_000), 'the leftover must be dead');
 });
+
+// Answers the first prompt, ends a turn, and answers one more message if one comes.
+const TWO_TURNS = `read -r prompt; printf '%s\\n' '{"type":"result","subtype":"success"}'; if read -r second && echo "$second" | grep -q '"type":"user"'; then printf '%s\\n' '{"type":"result","subtype":"success"}'; echo got-second; fi; cat >/dev/null; echo stdin-closed`;
+
+test('a message from onTurnEnd continues the run with a second turn; undefined at the next turn end closes stdin', async () => {
+  const answers: (string | undefined)[] = ['more work', undefined];
+  const sent: string[] = [];
+  const result = await runProcess(
+    { command: 'sh', args: ['-c', TWO_TURNS], prompt: 'go', cwd: tmpdir() },
+    'proc-turn',
+    {},
+    { ...QUIET, onTurnEnd: async () => answers.shift(), turnMessageSent: () => void sent.push('sent') },
+  );
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(sent, ['sent']);
+  assert.deepEqual(answers, []);
+  assert.match(readFileSync(logPath('proc-turn'), 'utf8'), /got-second[\s\S]*stdin-closed/);
+});
+
+test('undefined from onTurnEnd closes stdin as without it, and a failing onTurnEnd does too', async () => {
+  for (const onTurnEnd of [
+    async () => undefined,
+    async (): Promise<string> => Promise.reject(new Error('board down')),
+  ]) {
+    const result = await runProcess(
+      { command: 'sh', args: ['-c', TWO_TURNS], prompt: 'go', cwd: tmpdir() },
+      'proc-turn-end',
+      {},
+      { ...QUIET, onTurnEnd },
+    );
+    assert.equal(result.exitCode, 0);
+    assert.doesNotMatch(readFileSync(logPath('proc-turn-end'), 'utf8'), /got-second/);
+  }
+});
+
+test('stdin stays open while onTurnEnd is pending, and a stop meanwhile wins over its message', async () => {
+  let release: (text: string) => void = () => undefined;
+  const pending = new Promise<string>((resolve) => {
+    release = resolve;
+  });
+  let channel: RunChannel | undefined;
+  let sent = false;
+  const result = await runProcess(
+    { command: 'sh', args: ['-c', TWO_TURNS], prompt: 'go', cwd: tmpdir() },
+    'proc-turn-stop',
+    {},
+    {
+      ...QUIET,
+      start: (live) => {
+        channel = live;
+      },
+      onTurnEnd: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.equal(channel?.open, true, 'stdin is open while pending');
+        channel?.stop();
+        release('too late');
+        return pending;
+      },
+      turnMessageSent: () => {
+        sent = true;
+      },
+    },
+  );
+  assert.equal(sent, false);
+  assert.doesNotMatch(readFileSync(logPath('proc-turn-stop'), 'utf8'), /got-second/);
+  assert.equal(result.exitCode, 0);
+});

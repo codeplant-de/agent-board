@@ -87,7 +87,14 @@ test('the identity of a worker is the end of its command line', () => {
 
 test('a unit name is the task id behind agent-board-, of the safe shape only', () => {
   assert.equal(taskIdOfUnit(unitName('Ab3dEf9x')), 'Ab3dEf9x');
-  for (const hostile of ['Ab3dEf9x', 'agent-board-', 'agent-board-../x', 'agent-board-dispatch', 'agent-board-listen'])
+  for (const hostile of [
+    'Ab3dEf9x',
+    'agent-board-',
+    'agent-board-../x',
+    'agent-board-dispatch',
+    'agent-board-listen',
+    'agent-board-watch',
+  ])
     assert.throws(() => taskIdOfUnit(hostile), SystemError, hostile);
 });
 
@@ -188,7 +195,7 @@ test('stale and unreadable pid files are not workers', async () => {
 
 test('only a task id of the safe shape starts a worker, and the worker gets the units environment and the task log', async () => {
   const { system: supervisor, lines } = system('shape');
-  for (const hostile of ['--help', '../x', 'a b', 'dispatch', 'listen', '', 'x'.repeat(65)])
+  for (const hostile of ['--help', '../x', 'a b', 'dispatch', 'listen', 'watch', '', 'x'.repeat(65)])
     await assert.rejects(supervisor.startWorker(hostile), SystemError, hostile);
   assert.deepEqual(lines, []);
 

@@ -5,7 +5,10 @@ import type { Note, Task, WireBackend } from '@agent-board/shared';
 import type { AgentConfig } from '../config/config.mts';
 import { BackendError } from '../backend/backend.mts';
 import { sealingBackend } from '../backend/sealing.mts';
-import { START_MARKER } from '../task-rules.mts';
+import { START_MARKER, WAKE_MARKER } from '../task-rules.mts';
+import { createWatchStore, newWatchId } from '../watch/store.mts';
+import type { WatchEvent } from '../watch/store.mts';
+import { commandDef, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
 import type { Invocation, Supervision } from './plan.mts';
 import { runWorker } from './worker.mts';
 import type { RunChannel, RunResult, Watch } from './process.mts';
@@ -63,6 +66,8 @@ function setup(result: RunResult | Error, moveDuringRun = false) {
     hookCommand: (dir, id) => `hook ${dir} ${id}`,
     now: () => new Date(),
     watchEveryMs: 10,
+    watches: createWatchStore(tempDir()),
+    spoolEveryMs: 5,
   };
   return { deps, backend, calls };
 }
@@ -1874,4 +1879,343 @@ test('an agent the board sealed for another task is unreadable, and the task is 
   await runWorker(deps, 'w1');
   assert.equal(seen.invocation, undefined);
   assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('agent could not be decrypted')));
+});
+
+const W1 = { task: 'w1' };
+const spoolEvent = (deps: WorkerDeps, name: string, at: string, text = `${name} is done`): string =>
+  deps.watches.writeEvent({ id: newWatchId(), task: 'w1', name, at, kind: 'event', text } satisfies WatchEvent);
+const sleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
+
+test('a run marks its task live while it works and clears the marker at its end', async () => {
+  const { deps } = setup({ exitCode: 0, signal: null }, true);
+  let during: number | undefined;
+  deps.run = async () => {
+    during = deps.watches.livePid('w1');
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.equal(during, process.pid);
+  assert.equal(deps.watches.livePid('w1'), undefined);
+});
+
+test('a fresh run drops the watches of its task, a resume keeps them', async () => {
+  const fresh = setup({ exitCode: 0, signal: null }, true);
+  fresh.deps.watches.write(watchDef({ ...W1 }));
+  spoolEvent(fresh.deps, 'ci', '2026-01-01T10:10:00.000Z');
+  await runWorker(fresh.deps, 'w1');
+  assert.deepEqual(fresh.deps.watches.list('w1').defs, []);
+  assert.deepEqual(fresh.deps.watches.events('w1'), []);
+
+  const resumed = setup({ exitCode: 0, signal: null }, true);
+  Object.assign(resumed.backend.tasks[0]!, { next: 'resume', sessionId: SESSION, woken: true });
+  resumed.deps.sessions.record('w1', SESSION);
+  resumed.deps.watches.write(timerDef({ ...W1 }));
+  await runWorker(resumed.deps, 'w1');
+  assert.equal(resumed.deps.watches.list('w1').defs.length, 1);
+});
+
+test('events that arrive while the agent works are sent over the channel, and exactly those files go', async () => {
+  const harness = setup({ exitCode: 0, signal: null }, true);
+  harness.deps.watches.write(timerDef({ ...W1 }));
+  const { channel } = await runWithDeps(harness, async ({ deps, channel: fake }) => {
+    const sentFile = spoolEvent(deps, 'ci', '2026-01-01T10:10:00.000Z', 'CI passed');
+    await sleep(60);
+    assert.equal(fake.sent.length, 1);
+    assert.match(fake.sent[0] ?? '', /Watch "ci" on board task w1 reported[\s\S]*CI passed[\s\S]*Still open: "timer"/);
+    assert.ok(!deps.watches.events('w1').some(({ file }) => file === sentFile));
+    // One that comes after the look stays until the next one.
+    fake.channel.end();
+    spoolEvent(deps, 'health', '2026-01-01T10:11:00.000Z');
+    await sleep(30);
+    assert.equal(deps.watches.events('w1').length, 1, 'nothing is deleted that was not sent');
+  });
+  assert.equal(channel.sent.length, 1);
+});
+
+// `runWith` for a prepared harness.
+async function runWithDeps(
+  harness: ReturnType<typeof setup>,
+  during: (input: { deps: WorkerDeps; channel: ReturnType<typeof fakeChannel>; watch: Watch }) => Promise<void>,
+) {
+  const channel = fakeChannel();
+  harness.deps.run = async (_invocation, _taskId, _env, watch) => {
+    watch.start?.(channel.channel);
+    await during({ deps: harness.deps, channel, watch });
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(harness.deps, 'w1');
+  return { ...harness, channel };
+}
+
+test('the log says what was handed to the agent', async () => {
+  const harness = setup({ exitCode: 0, signal: null }, true);
+  const { calls } = await runWithDeps(harness, async ({ deps, channel }) => {
+    spoolEvent(deps, 'ci', '2026-01-01T10:10:00.000Z');
+    spoolEvent(deps, 'health', '2026-01-01T10:11:00.000Z');
+    await sleep(60);
+    assert.equal(channel.sent.length, 1);
+  });
+  assert.ok(calls.some((line) => line.includes('handed the agent 2 watch event(s) (ci, health)')));
+});
+
+test('no events and no board call at the end of a turn: the run ends', async () => {
+  const harness = setup({ exitCode: 0, signal: null }, true);
+  let gets = 0;
+  const getTask = harness.backend.getTask.bind(harness.backend);
+  harness.backend.getTask = async (id) => ((gets += 1), getTask(id));
+  let answer: string | undefined = 'unset';
+  await runWithDeps(harness, async ({ watch }) => {
+    const before = gets;
+    answer = await watch.onTurnEnd?.();
+    assert.equal(gets, before);
+  });
+  assert.equal(answer, undefined);
+});
+
+test('events at the end of a turn continue the run while the task is running; the files go once the message is out', async () => {
+  const harness = setup({ exitCode: 0, signal: null });
+  let answer: string | undefined;
+  await runWithDeps(harness, async ({ deps, watch }) => {
+    Object.assign(harness.backend.tasks[0]!, { status: 'running' });
+    spoolEvent(deps, 'ci', '2026-01-01T10:10:00.000Z', 'CI failed');
+    answer = await watch.onTurnEnd?.();
+    assert.equal(deps.watches.events('w1').length, 1, 'still there until sent');
+    watch.turnMessageSent?.();
+    assert.deepEqual(deps.watches.events('w1'), []);
+  });
+  assert.match(answer ?? '', /CI failed/);
+});
+
+test('events at the end of a turn stay when the task asked, waits or moved on', async () => {
+  for (const status of ['needs-me', 'waiting', 'todo'] as const) {
+    const harness = setup({ exitCode: 0, signal: null }, true);
+    let answer: string | undefined = 'unset';
+    await runWithDeps(harness, async ({ deps, watch }) => {
+      harness.backend.tasks[0]!.status = status;
+      spoolEvent(deps, 'ci', '2026-01-01T10:10:00.000Z');
+      answer = await watch.onTurnEnd?.();
+      assert.equal(deps.watches.events('w1').length, 1, status);
+    });
+    assert.equal(answer, undefined, status);
+  }
+});
+
+test('a failing board at the end of a turn ends the run and keeps the events', async () => {
+  const harness = setup({ exitCode: 0, signal: null }, true);
+  let answer: string | undefined = 'unset';
+  await runWithDeps(harness, async ({ deps, watch }) => {
+    spoolEvent(deps, 'ci', '2026-01-01T10:10:00.000Z');
+    const getTask = harness.backend.getTask.bind(harness.backend);
+    harness.backend.getTask = async () => {
+      throw new Error('board down');
+    };
+    answer = await watch.onTurnEnd?.();
+    harness.backend.getTask = getTask;
+    assert.equal(deps.watches.events('w1').length, 1);
+  });
+  assert.equal(answer, undefined);
+});
+
+// A task that was woken and resumes its session: the watches it holds are kept.
+function setupResumed(result: RunResult, moveDuringRun = false) {
+  const harness = setup(result, moveDuringRun);
+  Object.assign(harness.backend.tasks[0]!, { next: 'resume', sessionId: SESSION, woken: true });
+  harness.deps.sessions.record('w1', SESSION);
+  return harness;
+}
+
+// A run that ended with the task still running and a watch open.
+async function endedWatching(overrides: { result?: RunResult; watches?: ReturnType<typeof watchDef>[] } = {}) {
+  const harness = setupResumed(overrides.result ?? { exitCode: 0, signal: null });
+  for (const def of overrides.watches ?? [watchDef({ ...W1, deadline: '2099-01-01T14:00:00.000Z' })])
+    harness.deps.watches.write(def);
+  await runWorker(harness.deps, 'w1');
+  return harness;
+}
+
+test('a run that ended its turn with watches open parks the task until the earliest deadline', async () => {
+  const { backend, calls } = await endedWatching({
+    watches: [
+      commandDef('true', { ...W1, deadline: '2099-01-01T15:00:00.000Z' }),
+      timerDef({ ...W1, deadline: '2099-01-01T14:00:00.000Z' }),
+    ],
+  });
+  const wait = backend.writes.find((line) => line.startsWith('wait w1'));
+  assert.match(
+    wait ?? '',
+    /^wait w1 until 2099-01-01T14:00:00.000Z check: Waiting for watches: "health" \(until .*\), "timer" \(until .*\)\.$/,
+  );
+  assert.ok(!backend.writes.some((line) => line.startsWith('fail ')));
+  assert.equal(backend.tasks[0]?.status, 'waiting');
+  assert.ok(calls.some((line) => line.includes('waits for its watches')));
+});
+
+test('a timer alone parks without the check flag', async () => {
+  const { backend } = await endedWatching({ watches: [timerDef({ ...W1, deadline: '2099-01-01T14:00:00.000Z' })] });
+  assert.ok(!backend.writes.find((line) => line.startsWith('wait w1'))?.includes(' check'));
+});
+
+test('a failed, paused or stopped run does not park, and neither does a task that changed', async () => {
+  const failed = await endedWatching({ result: { exitCode: 1, signal: null } });
+  assert.ok(failed.backend.writes.some((line) => line.startsWith('fail w1')));
+  assert.ok(!failed.backend.writes.some((line) => line.startsWith('wait ')));
+
+  const paused = setupResumed({ exitCode: 0, signal: null });
+  paused.deps.watches.write(watchDef({ ...W1 }));
+  paused.deps.files.requestPause('w1');
+  await runWorker(paused.deps, 'w1');
+  assert.ok(paused.backend.writes.some((line) => line.startsWith('pause w1')));
+  assert.ok(!paused.backend.writes.some((line) => line.startsWith('wait ')));
+
+  const stopped = setupResumed({ exitCode: 0, signal: null });
+  stopped.deps.watches.write(watchDef({ ...W1 }));
+  await runWithDeps(stopped, async ({ watch }) => {
+    stopped.backend.inboxes.set('w1', { messages: [], stop: true });
+    await watch.tick();
+    await settle();
+  });
+  assert.ok(!stopped.backend.writes.some((line) => line.startsWith('wait ')));
+
+  const asked = setupResumed({ exitCode: 0, signal: null }, true);
+  asked.deps.watches.write(watchDef({ ...W1 }));
+  await runWorker(asked.deps, 'w1');
+  assert.ok(!asked.backend.writes.some((line) => line.startsWith('wait ') || line.startsWith('fail ')));
+});
+
+test('a refused park is logged, not reported as a failure', async () => {
+  const harness = setupResumed({ exitCode: 0, signal: null });
+  harness.deps.watches.write(watchDef({ ...W1, deadline: '2099-01-01T14:00:00.000Z' }));
+  harness.backend.wait = async () => {
+    throw new BackendError('wait: the task is needs-me, not running', 409);
+  };
+  await runWorker(harness.deps, 'w1');
+  assert.ok(harness.calls.some((line) => line.includes('did not park the task')));
+  assert.ok(!harness.backend.writes.some((line) => line.startsWith('fail ')));
+});
+
+test('an event that arrives after the park decision stays in the spool, and the live marker is gone', async () => {
+  const harness = setupResumed({ exitCode: 0, signal: null });
+  harness.deps.watches.write(watchDef({ ...W1, deadline: '2099-01-01T14:00:00.000Z' }));
+  const wait = harness.backend.wait.bind(harness.backend);
+  harness.backend.wait = async (id, request) => {
+    spoolEvent(harness.deps, 'ci', '2026-01-01T10:10:00.000Z');
+    return wait(id, request);
+  };
+  await runWorker(harness.deps, 'w1');
+  assert.equal(harness.deps.watches.events('w1').length, 1);
+  assert.equal(harness.deps.watches.livePid('w1'), undefined);
+});
+
+test('a resume starts from the spool: the events are in the prompt, and go at the first output line', async () => {
+  const harness = setup({ exitCode: 0, signal: null }, true);
+  Object.assign(harness.backend.tasks[0]!, { next: 'resume', sessionId: SESSION, woken: true });
+  harness.deps.sessions.record('w1', SESSION);
+  harness.backend.notes.set('w1', [
+    note(`${WAKE_MARKER} watch "ci" reported.`, new Date('2026-01-01T10:12:00Z'), { author: 'system', kind: 'event' }),
+  ]);
+  harness.deps.watches.write(timerDef({ ...W1 }));
+  const kept = spoolEvent(harness.deps, 'ci', '2026-01-01T10:10:00.000Z', 'CI failed: unit');
+  const printed: string[] = [];
+  harness.deps.print = (line) => void printed.push(line);
+  let prompt = '';
+  let onLineSeen: ((line: string) => string | undefined) | undefined;
+  let before = 0;
+  let after = -1;
+  harness.deps.run = async (invocation, _taskId, _env, _watch, onLine) => {
+    prompt = invocation.prompt;
+    onLineSeen = onLine;
+    before = harness.deps.watches.events('w1').length;
+    onLine('{"type":"system"}');
+    after = harness.deps.watches.events('w1').length;
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(harness.deps, 'w1');
+  assert.ok(onLineSeen !== undefined);
+  assert.match(prompt, /<watch-event name="ci" at="2026-01-01T10:10:00.000Z">\nCI failed: unit\n<\/watch-event>/);
+  assert.match(prompt, /Still open: "timer"/);
+  assert.doesNotMatch(prompt, /Your wait on board task/);
+  assert.equal(before, 1, kept);
+  assert.equal(after, 0);
+  assert.ok(
+    printed.some((line) =>
+      /resume with watch events: oldest event 2026-01-01T10:10:00.000Z, wake 2026-01-01T10:12:00.000Z, worker start/.test(
+        line,
+      ),
+    ),
+  );
+  assert.ok(
+    printed.some((line) =>
+      /first agent output after \d+ ms from worker start, \d+ ms from the oldest event/.test(line),
+    ),
+  );
+  assert.ok(harness.calls.some((line) => line.includes('resume with watch events')));
+});
+
+test('the events of the prompt are not sent again by the spool look', async () => {
+  const harness = setup({ exitCode: 0, signal: null }, true);
+  Object.assign(harness.backend.tasks[0]!, { next: 'resume', sessionId: SESSION, woken: true });
+  harness.deps.sessions.record('w1', SESSION);
+  spoolEvent(harness.deps, 'ci', '2026-01-01T10:10:00.000Z');
+  const { channel } = await runWithDeps(harness, async () => {
+    await sleep(40);
+  });
+  assert.deepEqual(channel.sent, []);
+});
+
+test('an event left in the spool after the last watch was claimed still parks the task, not a failure', async () => {
+  const harness = setupResumed({ exitCode: 0, signal: null });
+  // The unit claimed the only watch and wrote its event while the run ended.
+  harness.deps.run = async () => {
+    spoolEvent(harness.deps, 'ci', '2026-01-01T10:10:00.000Z');
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(harness.deps, 'w1');
+  assert.ok(!harness.backend.writes.some((line) => line.startsWith('fail ')));
+  assert.match(
+    harness.backend.writes.find((line) => line.startsWith('wait w1')) ?? '',
+    /Waiting for watches: a watch event\./,
+  );
+  assert.equal(harness.deps.watches.events('w1').length, 1);
+});
+
+test('a deadline that has passed parks for at least a minute, and a 400 from the board is logged', async () => {
+  const { backend } = await endedWatching({ watches: [timerDef({ ...W1, deadline: '2000-01-01T14:00:00.000Z' })] });
+  const wait = backend.writes.find((line) => line.startsWith('wait w1')) ?? '';
+  const until = Date.parse(/until (\S+Z)/.exec(wait)?.[1] ?? '');
+  assert.ok(until - Date.now() > 50_000, wait);
+
+  const refused = setupResumed({ exitCode: 0, signal: null });
+  refused.deps.watches.write(watchDef({ ...W1 }));
+  refused.backend.wait = async () => {
+    throw new BackendError('wait: wakeAt must be in the future', 400);
+  };
+  await runWorker(refused.deps, 'w1');
+  assert.ok(refused.calls.some((line) => line.includes('did not park the task')));
+});
+
+test('events are not handed over once a pause was requested or the task left Running', async () => {
+  const paused = setupResumed({ exitCode: 0, signal: null }, true);
+  await runWithDeps(paused, async ({ deps, channel, watch }) => {
+    deps.files.requestPause('w1');
+    spoolEvent(deps, 'ci', '2026-01-01T10:10:00.000Z');
+    await sleep(40);
+    assert.deepEqual(channel.sent, []);
+    assert.equal(await watch.onTurnEnd?.(), undefined);
+    assert.equal(deps.watches.events('w1').length, 1);
+  });
+
+  const left = setupResumed({ exitCode: 0, signal: null }, true);
+  left.backend.runInbox = async () => {
+    throw new BackendError('run-inbox: the task is not running', 409);
+  };
+  await runWithDeps(left, async ({ deps, channel, watch }) => {
+    await watch.tick();
+    await settle();
+    spoolEvent(deps, 'ci', '2026-01-01T10:10:00.000Z');
+    await sleep(40);
+    assert.deepEqual(channel.sent, []);
+    left.backend.tasks[0]!.status = 'running';
+    assert.equal(await watch.onTurnEnd?.(), undefined);
+    assert.equal(deps.watches.events('w1').length, 1);
+  });
 });

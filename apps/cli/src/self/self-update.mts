@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { compareVersions, isRecord } from '@agent-board/shared';
-import { LISTEN_SERVICE } from '../setup/setup.mts';
+import { LONG_RUNNING_SERVICES } from '../setup/setup.mts';
 import { agentLabel, agentTarget, isAgentLoaded } from '../setup/launchd.mts';
 import { SystemError } from '../setup/system.mts';
 import { errorText } from '../output/text.mts';
@@ -33,7 +33,7 @@ export interface SelfUpdateDeps {
   arch: string;
   // Runs `gh` and returns its stdout.
   gh: (args: string[]) => Promise<string>;
-  // Restarts the listener, which keeps the old code until then; the line to print, if there is one.
+  // Restarts the listener and the watch unit, which keep the old code until then; the line to print, if there is one.
   restartListener: () => Promise<string | undefined>;
   print: (line: string) => void;
 }
@@ -96,12 +96,12 @@ export function realGh(env: Record<string, string | undefined>, timeoutMs?: numb
     });
 }
 
-// macOS: `kickstart -k` restarts the listener agent, but only when launchd has it loaded: one that was never loaded (or that the
+// macOS: `kickstart -k` restarts a long-running agent, but only when launchd has it loaded: one that was never loaded (or that the
 // user switched off in Login Items) stays as it is.
-async function restartLaunchdListener(block: boolean, uid: number): Promise<string | undefined> {
-  if (!(await isAgentLoaded(uid, 'listen'))) return undefined;
-  const target = agentTarget(uid, 'listen');
-  const label = agentLabel('listen');
+async function restartLaunchdAgent(name: 'listen' | 'watch', block: boolean, uid: number): Promise<string | undefined> {
+  if (!(await isAgentLoaded(uid, name))) return undefined;
+  const target = agentTarget(uid, name);
+  const label = agentLabel(name);
   if (!block) {
     const child = spawn('launchctl', ['kickstart', '-k', target], { stdio: 'ignore', detached: true });
     child.once('error', () => undefined);
@@ -118,7 +118,22 @@ async function restartLaunchdListener(block: boolean, uid: number): Promise<stri
   });
 }
 
-// `try-restart` leaves a listener that is not running alone, and a machine without systemd has none to restart.
+function restartSystemdService(service: string, block: boolean): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const args = ['--user', ...(block ? [] : ['--no-block']), 'try-restart', service];
+    execFile('systemctl', args, (error, _stdout, stderr) => {
+      if (error === null) return resolve(`restarted ${service} if it was running, to run the new code`);
+      // 5: the unit is not installed, which is a machine that never ran `board setup`.
+      if ('code' in error && (error.code === 'ENOENT' || error.code === 5)) return resolve(undefined);
+      resolve(
+        `could not restart ${service} (${stderr.split('\n')[0] || error.message}); run "systemctl --user restart ${service.replace(/\.service$/, '')}"`,
+      );
+    });
+  });
+}
+
+// Restarts the listener and the watch unit, which keep the old code until then, and returns their lines joined.
+// `try-restart` leaves a service that is not running alone, and a machine without systemd has none to restart.
 // `block: false` returns at once: the dispatcher runs inside the listener's unit, whose stop waits for that dispatcher.
 export function realListenerRestart({
   block,
@@ -129,19 +144,14 @@ export function realListenerRestart({
   platform?: string;
   uid?: number;
 }): SelfUpdateDeps['restartListener'] {
-  if (platform === 'darwin') return () => restartLaunchdListener(block, uid);
-  return () =>
-    new Promise((resolve) => {
-      const args = ['--user', ...(block ? [] : ['--no-block']), 'try-restart', LISTEN_SERVICE];
-      execFile('systemctl', args, (error, _stdout, stderr) => {
-        if (error === null) return resolve(`restarted ${LISTEN_SERVICE} if it was running, to run the new code`);
-        // 5: the unit is not installed, which is a machine that never ran `board setup`.
-        if ('code' in error && (error.code === 'ENOENT' || error.code === 5)) return resolve(undefined);
-        resolve(
-          `could not restart ${LISTEN_SERVICE} (${stderr.split('\n')[0] || error.message}); run "systemctl --user restart agent-board-listen"`,
-        );
-      });
-    });
+  return async () => {
+    const lines =
+      platform === 'darwin'
+        ? [await restartLaunchdAgent('watch', block, uid), await restartLaunchdAgent('listen', block, uid)]
+        : await Promise.all(LONG_RUNNING_SERVICES.map((service) => restartSystemdService(service, block)));
+    const printed = lines.filter((line) => line !== undefined);
+    return printed.length === 0 ? undefined : printed.join('\n');
+  };
 }
 
 const UPDATE_DIR_PREFIX = 'board-update-';

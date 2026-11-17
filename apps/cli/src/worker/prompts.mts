@@ -1,8 +1,14 @@
 import { formatAnswers } from '@agent-board/shared';
 import type { Note, Task } from '@agent-board/shared';
-import { START_MARKER, WAKE_MARKER } from '../task-rules.mts';
+import { START_MARKER, WAKE_MARKER, WATCH_MARKER } from '../task-rules.mts';
+import { eventsMessage, openWatchesLine } from '../watch/fence.mts';
+import type { OpenWatch } from '../watch/fence.mts';
+import type { WatchEvent } from '../watch/store.mts';
 
 const byTime = (notes: Note[]): Note[] => [...notes].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+// The agent's own notes. The unit's event notes are posted as the agent too, while the task waits, so they do not count.
+const isAgentSpeech = (note: Note): boolean => note.author === 'agent' && !note.text.startsWith(WATCH_MARKER);
 
 // What the user wrote: answers to the agent's questions and free comments.
 const userNotes = (notes: Note[]): Note[] =>
@@ -16,7 +22,7 @@ const userNotes = (notes: Note[]): Note[] =>
 export function userReply(notes: Note[], runStartedAt: Date | null = null): Note[] {
   const sorted = byTime(notes);
   const lastStart = previousRunStart(notes, runStartedAt);
-  const spoken = userNotes(sorted.slice(sorted.findLastIndex((note) => note.author === 'agent') + 1));
+  const spoken = userNotes(sorted.slice(sorted.findLastIndex(isAgentSpeech) + 1));
   const queued = userNotes(
     sorted.filter((note) => note.queued === true && (lastStart === undefined || note.createdAt > lastStart)),
   );
@@ -68,7 +74,10 @@ export function writtenSincePreviousRun(task: Task, notes: Note[]): Note[] {
  * written, and where to read the rest. Undefined when only the board wrote to the thread.
  */
 export function freshThreadBlock(task: Task, notes: Note[]): string | undefined {
-  if (!notes.some((note) => note.author !== 'system' && note.author !== 'server')) return undefined;
+  if (
+    !notes.some((note) => note.author !== 'system' && note.author !== 'server' && !note.text.startsWith(WATCH_MARKER))
+  )
+    return undefined;
   const written = writtenSincePreviousRun(task, notes);
   return [
     ...(written.length > 0
@@ -84,15 +93,17 @@ export function freshThreadBlock(task: Task, notes: Note[]): string | undefined 
 
 const CONTINUE_LINE = "The board's rules from the start of this session still hold.";
 
-// Why the wait ended, from the wake note a machine wrote after the agent last spoke; none means the user ended it. Only its first
-// paragraph: the rest is the end of the check's output, which can carry text the user did not write (a PR's job names), and the
-// prompt is the user's turn. It stays in the thread.
-function wokenLine(task: Task, notes: Note[]): string {
+// The wake note a machine wrote after the agent last spoke; none means the user ended the wait.
+export function lastWakeNote(notes: Note[]): Note | undefined {
   const sorted = byTime(notes);
-  const since = sorted.slice(sorted.findLastIndex((note) => note.author === 'agent') + 1);
-  const wake = since.findLast(
-    (note) => note.author === 'system' && !note.unreadable && note.text.startsWith(WAKE_MARKER),
-  );
+  const since = sorted.slice(sorted.findLastIndex(isAgentSpeech) + 1);
+  return since.findLast((note) => note.author === 'system' && !note.unreadable && note.text.startsWith(WAKE_MARKER));
+}
+
+// Why the wait ended, from the wake note. Only its first paragraph: the rest is the end of the check's output, which can carry
+// text the user did not write (a PR's job names), and the prompt is the user's turn. It stays in the thread.
+function wokenLine(task: Task, notes: Note[]): string {
+  const wake = lastWakeNote(notes);
   const why =
     wake === undefined
       ? 'the user ended it early.'
@@ -100,13 +111,33 @@ function wokenLine(task: Task, notes: Note[]): string {
   return `Your wait on board task ${task.id} is over: ${why}\n\nCheck the state of what you waited for, then go on with the task.`;
 }
 
-export function buildResumePrompt(task: Task, notes: Note[]): string | undefined {
+// What the watches of the task have to say to a resumed run: what reported since it last ran, and what is still open.
+export interface ResumeWatches {
+  events: Pick<WatchEvent, 'name' | 'at' | 'text'>[];
+  open: OpenWatch[];
+  now?: Date;
+}
+
+export function buildResumePrompt(
+  task: Task,
+  notes: Note[],
+  watches: ResumeWatches = { events: [], open: [] },
+): string | undefined {
   const reply = userReply(notes, task.runStartedAt);
   const paused = task.paused;
   const woken = task.woken;
-  if (reply.length === 0 && !paused && !woken) return undefined;
+  const { events, open } = watches;
+  if (reply.length === 0 && !paused && !woken && events.length === 0) return undefined;
   const pausedLine = `You were paused on board task ${task.id} to free the slot for other work. Continue where you left off; check the state of anything you were in the middle of before you go on.`;
-  const lead = [...(woken ? [wokenLine(task, notes), ''] : []), ...(paused ? [pausedLine, ''] : [])];
+  // The events say what ended the wait, and end with the open watches: nothing more is added for a wake by a watch.
+  const watching =
+    events.length > 0
+      ? [eventsMessage(task.id, events, open, watches.now), '']
+      : [
+          ...(woken ? [wokenLine(task, notes), ''] : []),
+          ...(open.length > 0 ? [openWatchesLine(open, watches.now), ''] : []),
+        ];
+  const lead = [...watching, ...(paused ? [pausedLine, ''] : [])];
   if (reply.length === 0) {
     return [...lead, CONTINUE_LINE].join('\n');
   }
@@ -138,10 +169,11 @@ export function boardRules(task: Task, options: { asAgent?: boolean } = {}): str
           `- Work on your own. Decide and act without asking on whatever is easy to undo and stays on this machine: reading, editing files, running tests and builds, local branches, worktrees and commits, scratch files in /tmp. Where the prompt leaves a gap, make a reasonable choice and name it in your report. Use \`board ask\` only before a step that is hard to undo or that other people see, unless the prompt asked for that step: force-pushing, deleting branches or data, merging, deploying, posting to Slack, Shortcut, email or someone else's PR or issue.`,
           `- A prompt that asks you to implement, fix or change code in a git repository is the user's request to commit, push and open a PR, and the result it expects is that PR. Work on a new branch, never the default branch; if the checkout holds changes that are not yours, work in a new git worktree. Commit, push with \`git push -u origin HEAD\`, and open the PR with \`gh pr create\`. If the repository's CI has to be started or approved by hand (its CLAUDE.md or skills say so and how), start it; otherwise CI runs on push. Wait for CI as the next rule says, and fix what fails. Put the PR link in your final \`board comment\`. A task that asks only for a plan, an investigation or a review opens no PR.`,
           `- Right after you open a pull request for this task, run \`board pr ${task.id} <url>\`: the board shows it on the task's card and page. Report every pull request you open or work on for this task, each with its own \`board pr ${task.id} <url>\` call.`,
-          `- When you have to wait for something outside that takes minutes or longer (CI, a deploy, a review), do not sleep or poll in this run: run \`board wait ${task.id} --check '<command>' --reason "<what you wait for>"\` with a command that exits 0 once the wait is over (\`--every <dur>\` how often it runs, default 2m; \`--timeout <dur>\` when to give up, default 2h), or \`board wait ${task.id} --in 30m --reason "<what you wait for>"\` for a plain timer, then end your turn. The task frees its slot, and you are resumed in this session when the check passes or the time is up.`,
+          `- When you have to wait for something outside that takes minutes or longer (CI, a deploy, a review), do not sleep or poll in this run. Start a watch: \`board watch ${task.id} --ci\` for the CI of the newest open PR you reported with \`board pr\` (\`--ci <url>\` for another), \`board watch ${task.id} --name <name> --every 1m -- '<command>'\` for a command that exits 0 once the wait is over, or \`board watch ${task.id} --in 30m\` for a timer. Keep working if there is other work; end your turn when there is none. The task then waits without holding a slot, and the event reaches you as a message, in this run or when you are resumed in this session. \`board watches ${task.id}\` lists them, \`board unwatch ${task.id} <name>\` stops one.`,
         ]),
     ...(restricted
       ? [
+          `- When you have to wait for CI or for a time, do not sleep or poll in this run. Start a watch: \`board watch ${task.id} --ci <pr-url>\` for the checks of a pull request, or \`board watch ${task.id} --in 30m\` for a timer. Keep working if there is other work; end your turn when there is none. The task then waits without holding a slot, and the event reaches you as a message, in this run or when you are resumed in this session.`,
           "- This run allows only a fixed list of commands, and each matches only when it stands alone: run every Bash command on its own, without pipes, `;`, `&&`, redirects or `cd`, by its full path, and filter output with the command's own options. A refused call is a result; report it instead of working around it, and go on with the other steps.",
         ]
       : []),
