@@ -313,6 +313,20 @@ test('a fork whose parent has no session, or is not on the board, is not run, an
   }
 });
 
+test('a fork is not run when the board answers for its parent with another task that has a recorded session', async () => {
+  const { deps, backend, runs } = forkSetup();
+  const other = task({ id: 'q1', status: 'needs-me', machine: 'here', workdir: '/tmp', sessionId: OTHER_SESSION });
+  deps.sessions.record('q1', OTHER_SESSION);
+  const getTask = backend.getTask.bind(backend);
+  backend.getTask = async (id) => (id === 'p1' ? other : getTask(id));
+  await runWorker(deps, 'w1');
+  assert.equal(runs.length, 0);
+  assert.ok(
+    backend.writes.some((w) => w.startsWith('fail w1:') && /another task/.test(w)),
+    backend.writes.join('\n'),
+  );
+});
+
 test('a fork that failed to look its parent up for another reason is not blamed on the parent', async () => {
   const { deps, backend, runs } = forkSetup();
   const getTask = backend.getTask.bind(backend);

@@ -217,6 +217,11 @@ export async function forkTask(db: DbOrTx, request: ForkRequest): Promise<TaskRo
     const parent = await getTask(tx, request.parentId);
     if (parent.proposed || parent.createdBy === 'agent')
       throw new AppError('FORBIDDEN', 'An agent proposed this task; start it first.');
+    if (parent.createdBy === 'intake' && parent.agent === null)
+      throw new AppError(
+        'FORBIDDEN',
+        'The built-in intake that made this task was removed, and the task names no agent, so a fork would have no rules to run under.',
+      );
     if (parent.closed) throw new AppError('CONFLICT', 'A closed task cannot be forked.');
     if (parent.sessionId === null || parent.machine === null)
       throw new AppError('CONFLICT', 'This task has no Claude session on a machine yet, so there is nothing to fork.');

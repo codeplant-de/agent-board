@@ -84,7 +84,7 @@ export type RowRef =
       createdBy: TaskCreator;
       scheduleId: string | null;
       agent?: string | null;
-      forkOf?: string | null;
+      forkOf: string | null;
     }
   | { kind: 'schedule'; id: string; agent?: string | null };
 
@@ -109,7 +109,7 @@ function agentOf(row: RowRef): string | null {
 
 /** The task a row was forked from, or null; an id that is not a task's cannot be sealed, and a schedule or an occurrence is never a fork. */
 function forkOf(row: RowRef): string | null {
-  const parent = row.kind === 'task' ? (row.forkOf ?? null) : null;
+  const parent = row.kind === 'task' ? row.forkOf : null;
   if (parent === null) return null;
   if (!isSafeTaskId(parent)) throw new ContractError('the task a fork was made from must be a task id');
   if (row.kind === 'task' && row.scheduleId !== null)

@@ -152,6 +152,28 @@ describe('forking a task from the UI', () => {
     await expect(fork(parentId)).rejects.toThrow(message);
   });
 
+  it('refuses a parent of the removed intake that names no agent, and forks one that names one', async () => {
+    const intake = async (agent?: string) => {
+      const { json } = await ctx.call('add-task', {
+        body: {
+          title: 'p',
+          input: 'x',
+          createdBy: 'intake',
+          machine: 'laptop',
+          workdir: DIR,
+          ...(agent ? { agent } : {}),
+        },
+      });
+      const id = json.result.task.id;
+      await ctx.call('claim-task', { id, machine: 'laptop' });
+      await ctx.call('update-task', { id, body: { sessionId: sessionNamed((sessions += 1)) } });
+      await ctx.call('update-task', { id, body: { status: 'needs-me' } });
+      return id as string;
+    };
+    await expect(fork(await intake())).rejects.toThrow(/intake/);
+    expect(await fork(await intake('reviewer'))).toMatchObject({ agent: 'reviewer' });
+  });
+
   it('refuses a parent of another user', async () => {
     const parentId = await started();
     await expect(plainUi(db, 'other').tasks.fork({ parentId, title: 't', input: 'x' })).rejects.toThrow();
@@ -189,6 +211,18 @@ describe('what a machine can do about forks', () => {
 });
 
 describe('the fork link in the sealing of the prompt', () => {
+  it('stays readable when the prompt of a fork is edited in Todo', async () => {
+    const forked = await fork(await started());
+    const edited = await ctx.ui.tasks.edit({
+      id: forked.id,
+      title: 'New title',
+      input: 'new instructions',
+      previous: 'old',
+    });
+    expect(edited).toMatchObject({ input: 'new instructions', forkOf: forked.forkOf });
+    expect((await ctx.ui.tasks.get({ id: forked.id })).task.input).toBe('new instructions');
+  });
+
   it('makes a fork unreadable when the server drops the link', async () => {
     const forked = await fork(await started());
     await admin.update(tasks).set({ forkOf: null }).where(eq(tasks.id, forked.id));

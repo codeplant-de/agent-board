@@ -431,7 +431,7 @@ describe('an agent’s proposal', () => {
     expect(invocations).toEqual([]);
     expect(
       await sealed.open(
-        inputBinding({ kind: 'task', id: proposal.id, createdBy: 'user', scheduleId: null }),
+        inputBinding({ kind: 'task', id: proposal.id, createdBy: 'user', scheduleId: null, forkOf: null }),
         stored!.input,
       ),
     ).toBeUndefined();

@@ -199,6 +199,7 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       createdBy: draft.createdBy ?? 'user',
       scheduleId: null,
       agent: agent ?? null,
+      forkOf: null,
     };
     const sealed = await checked('add-task', () => sealFields(sealer, row, { title, input: draft.input, workdir }));
     const keysNow = await getKeys();

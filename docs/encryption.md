@@ -167,7 +167,7 @@ What that stops:
 
 A fork keeps the restrictions of its parent. The browser seals the parent's agent name for the new task, and the context above carries it, so a fork never lifts an agent's tool lists. The board also refuses a fork that names an agent the parent lacks, or none where the parent has one.
 
-**What the worker still checks.** The link only says which task the user forked from. The session to copy is the parent's, as the board names it in the clear, and it is held to the rule of [Session ids from the server](#session-ids-from-the-server): the worker continues it only when this machine started it for that parent task. A fork whose parent is gone, has no session or ran elsewhere is blocked and goes to Needs me with the reason. The copy gets a new session id that the worker records for the fork, so the fork resumes its own session from then on.
+**What the worker still checks.** The link only says which task the user forked from. The session to copy is the parent's, as the board names it in the clear, and it is held to the rule of [Session ids from the server](#session-ids-from-the-server): the worker continues it only when this machine started it for that parent task. The worker also refuses a parent the board answers with that is not the task the link names. A fork whose parent is gone, has no session or ran elsewhere is blocked and goes to Needs me with the reason. The copy gets a new session id that the worker records for the fork, so the fork resumes its own session from then on.
 
 **What a writer must state.**
 

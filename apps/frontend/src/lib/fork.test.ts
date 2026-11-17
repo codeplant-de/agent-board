@@ -52,6 +52,7 @@ describe('sealFork', () => {
   it('refuses what cannot be forked', async () => {
     for (const bad of [
       { createdBy: 'agent' as const },
+      { createdBy: 'intake' as const, agent: null },
       { closed: true },
       { sessionId: null },
       { machine: null },
@@ -69,8 +70,15 @@ describe('canFork', () => {
   it('is a task with a session on a machine that is open and not an agent’s proposal', () => {
     expect(canFork(parent)).toBe(true);
     expect(forkProblem({ ...parent, workdir: null })).toMatch(/directory or agent/);
-    for (const bad of [{ sessionId: null }, { machine: null }, { closed: true }, { createdBy: 'agent' as const }])
+    for (const bad of [
+      { sessionId: null },
+      { machine: null },
+      { closed: true },
+      { createdBy: 'agent' as const },
+      { createdBy: 'intake' as const },
+    ])
       expect(canFork({ ...parent, ...bad })).toBe(false);
+    expect(canFork({ ...parent, createdBy: 'intake', agent: 'reviewer' })).toBe(true);
     expect(forkProblem(parent)).toBeUndefined();
   });
 });

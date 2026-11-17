@@ -529,7 +529,7 @@ When the task's directory was a worktree that has since been deleted, a resume c
 
 Side work often comes up while you work on one task, and it would profit from what that task's conversation knows. Doing it in the same task makes the thread hard to follow. **Fork** on a task page makes a new task that continues a copy of the task's Claude session, with your instructions as its first message.
 
-The button shows on a task that has a Claude session on a machine, is not closed and is not an agent's proposal. The dialog asks for the **Instructions** (required) and a **Title**, which starts as `Fork of <title>`. **Fork & start** creates the task in Todo, at the top of its priority, and opens it.
+The button shows on a task that has a Claude session on a machine, is not closed and is not an agent's proposal or a task of the removed intake that names no agent. The dialog asks for the **Instructions** (required) and a **Title**, which starts as `Fork of <title>`. **Fork & start** creates the task in Todo, at the top of its priority, and opens it.
 
 - **The parent stays as it was.** Its session, thread, status and directory are not touched. The task page of the fork says `Forked from <parent>` and the parent lists the fork under Follow-ups.
 - **It runs where the parent ran.** The fork is pinned to the parent's machine and starts in the parent's directory. The copy has a session of its own, so replies and answers resume it like any task.

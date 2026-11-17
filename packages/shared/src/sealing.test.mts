@@ -81,8 +81,8 @@ const opensUnrecorded = opens;
 const TASK = 'Ab3dEf9x';
 const SCHEDULE = 'Sc3dEf9x';
 const OCCURRENCE = 'Oc3dEf9x';
-const userTask: RowRef = { kind: 'task', id: TASK, createdBy: 'user', scheduleId: null };
-const occurrence: RowRef = { kind: 'task', id: OCCURRENCE, createdBy: 'user', scheduleId: SCHEDULE };
+const userTask: RowRef = { kind: 'task', id: TASK, createdBy: 'user', scheduleId: null, forkOf: null };
+const occurrence: RowRef = { kind: 'task', id: OCCURRENCE, createdBy: 'user', scheduleId: SCHEDULE, forkOf: null };
 const schedule: RowRef = { kind: 'schedule', id: SCHEDULE };
 
 const questions: Question[] = [
@@ -424,7 +424,7 @@ test('a fork link is written into the context of the input, before the agent; a 
     inputBinding({ ...userTask, forkOf: PARENT, agent: 'reviewer' }).context,
     'task:Ab3dEf9x:user:fork:Pa3dEf9x:agent:reviewer',
   );
-  for (const row of [{ ...userTask, forkOf: null }, { ...userTask, forkOf: undefined }, userTask])
+  for (const row of [{ ...userTask, forkOf: null }, userTask])
     assert.equal(inputBinding(row).context, 'task:Ab3dEf9x:user');
   // The title and the agent do not carry it.
   assert.equal(titleBinding({ ...userTask, forkOf: PARENT }).context, 'task:Ab3dEf9x');

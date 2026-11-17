@@ -154,14 +154,16 @@ export function planFork(
     reason: `This task was forked from task ${forkOf}, ${why}, so there is no session to continue and the run was not started. Close it, or fork the task you want to continue again.`,
   });
   if (parent === undefined) return blocked('which is not on the board any more');
+  // The sealed link names the parent; the board's answer for it is only believed when it is that task.
+  if (parent.id !== forkOf) return blocked('but the board answered with another task');
   if (parent.sessionId === null) return blocked('which has no Claude session now (it never ran, or was re-run fresh)');
-  if (!options.isOwnSession(parent.id, parent.sessionId))
+  if (!options.isOwnSession(forkOf, parent.sessionId))
     return blocked('whose session this machine did not start, and a fork runs on the machine of its parent');
   return {
     kind: 'fork',
     sessionId: fresh.sessionId,
     fromSessionId: parent.sessionId.toLowerCase(),
-    parent: { id: parent.id, title: parent.title },
+    parent: { id: forkOf, title: parent.title },
     ...(fresh.thread === undefined ? {} : { thread: fresh.thread }),
   };
 }

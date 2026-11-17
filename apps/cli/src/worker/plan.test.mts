@@ -533,6 +533,11 @@ test('a fork is blocked without a parent, without its session, and when this mac
   assert.match(reason(PARENT, false), /whose session this machine did not start/);
 });
 
+test('a fork is blocked when the board answers for its parent with another task, whatever that task’s session', () => {
+  const plan = planFork(FRESH_RUN, task({ id: 'f', forkOf: 'par' }), { ...PARENT, id: 'other' }, options());
+  assert.ok(plan.kind === 'blocked' && /answered with another task/.test(plan.reason));
+});
+
 test('the own-session check of a fork asks about the parent’s task and session', () => {
   const asked: [string, string][] = [];
   planFork(FRESH_RUN, task({ id: 'f', forkOf: 'par' }), PARENT, {
