@@ -1677,11 +1677,11 @@ test('a task naming an agent this machine lacks fails closed with the reason, an
     await runWorker(deps, 'w1');
     assert.equal(seen.invocation, undefined, 'nothing started');
     assert.ok(
-      backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('no agents.ghost in config.json here')),
+      backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('no agent ghost defined here')),
       backend.writes.join('\n'),
     );
     assert.ok(!backend.writes.some((w) => w.startsWith('next w1')), 'the resume is not used up');
-    assert.ok(calls.some((c) => c.startsWith('append w1:') && c.includes('no agents.ghost')));
+    assert.ok(calls.some((c) => c.startsWith('append w1:') && c.includes('no agent ghost defined here')));
   }
 });
 
