@@ -175,7 +175,7 @@ function noteChange(deps: ConfigDeps, before: Config | undefined, after: Config)
   if (after.dirs !== undefined && dropped.length > 0)
     warn(
       deps,
-      `dirs no longer lists ${dropped.map(({ path }) => shown(path)).join(', ')}: work still pinned to it will stop in Needs me ("board dirs rm" checks for that)`,
+      `dirs no longer lists ${dropped.map(({ path }) => plainLine(path)).join(', ')}: work still pinned to it will stop in Needs me ("board dirs rm" checks for that)`,
     );
 }
 
