@@ -159,3 +159,17 @@ test('decideWake: a timer wakes at its end; a check runs when due, wakes on time
   assert.equal(decideWake({ ...base, task: { wakeAt: at(29), waitCheck: true }, check }).kind, 'timeout');
   assert.equal(decideWake({ ...base, task: { wakeAt: at(50), waitCheck: true }, check: undefined }).kind, 'wake');
 });
+
+test('decideWake: watches stand in for a stored check, and an event nobody was handed wakes the task', () => {
+  const now = new Date('2026-01-01T12:00:00Z');
+  const at = (minutes: number) => new Date(now.getTime() + minutes * 60_000);
+  const base = { machine: 'm', now, check: undefined };
+  const waiting = { wakeAt: at(30), waitCheck: true };
+  assert.equal(decideWake({ ...base, task: waiting, watches: true }).kind, 'sleep');
+  assert.equal(decideWake({ ...base, task: { ...waiting, wakeAt: at(-1) }, watches: true }).kind, 'wake');
+  assert.equal(decideWake({ ...base, task: waiting }).kind, 'wake');
+  assert.deepEqual(decideWake({ ...base, task: waiting, watches: true, event: 'ci' }), {
+    kind: 'wake',
+    why: 'watch "ci" reported.',
+  });
+});

@@ -1,6 +1,5 @@
 import type { EventEmitter } from 'node:events';
 import type { Command } from 'commander';
-import type { WaitStore } from '../dispatch/waits.mts';
 import type { ContextOptions, LinkingContext } from '../cli.mts';
 import type { SelfUpdateDeps } from '../self/self-update.mts';
 import type { UpdateState } from '../self/update-state.mts';
@@ -9,6 +8,8 @@ import type { Prompts } from '../setup/init.mts';
 import type { SetupDeps } from '../setup/setup.mts';
 import type { EventsDeps } from '../events/run.mts';
 import type { Spawner } from './board.mts';
+import type { WatchRunner } from '../watch/attempt.mts';
+import type { WatchStore } from '../watch/store.mts';
 
 export interface ProgramOptions {
   env?: Record<string, string | undefined>;
@@ -40,8 +41,9 @@ export interface ProgramOptions {
   restartListener?: SelfUpdateDeps['restartListener'];
   // The command line being run, set by runBoard.
   argv?: string[];
-  // Where `board wait --check` stores the check, and the directory it runs in.
-  waits?: WaitStore;
+  // Where `board watch` and `board wait --check` store their watches, how they run a command, and the directory it runs in.
+  watches?: WatchStore;
+  watchRunner?: WatchRunner;
   cwd?: string;
   // The home directory, which `board dirs` warns about.
   home?: string;

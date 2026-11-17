@@ -39,6 +39,11 @@ export interface Watch {
   // Called when the process has started, with its process group (it leads one).
   spawned?: (pgid: number) => void;
   tick: () => Promise<Supervision>;
+  // Called when the agent's turn ends, with stdin still open: a string is sent as its next message and the run goes on;
+  // undefined (or a failure) closes stdin, and the agent exits. Not called after an interrupt that was carried on with a message.
+  onTurnEnd?: () => Promise<string | undefined>;
+  // Called once the message `onTurnEnd` returned was written to the agent. It is not when the run ended meanwhile.
+  turnMessageSent?: () => void;
 }
 
 // How long a stopped process has to exit on its own before it is killed.
@@ -142,6 +147,20 @@ export function runProcess(
     // The prompt goes in on stdin, never in argv, and stdin stays open for what follows.
     child.stdin?.write(userMessageLine(invocation.prompt));
     let buffered = '';
+    // `onTurnEnd` is out: a second result line (a user message got its own turn) leaves the answer to it.
+    let turnEnding = false;
+    const endTurn = async (): Promise<void> => {
+      let next: string | undefined;
+      try {
+        next = await watch.onTurnEnd?.();
+      } catch {
+        next = undefined;
+      }
+      // A stop or the end of the process closed the channel meanwhile.
+      if (ended) return;
+      if (next !== undefined && channel.send(next)) watch.turnMessageSent?.();
+      else channel.end();
+    };
     const emit = (line: string): void => {
       const text = onLine(line);
       if (text !== undefined) writeSync(fd, `${text}\n`);
@@ -154,7 +173,13 @@ export function runProcess(
           return;
         }
       }
-      channel.end();
+      if (watch.onTurnEnd === undefined) channel.end();
+      else if (!turnEnding) {
+        turnEnding = true;
+        void endTurn().finally(() => {
+          turnEnding = false;
+        });
+      }
     };
     child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
       buffered += chunk;

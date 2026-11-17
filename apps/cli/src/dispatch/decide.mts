@@ -3,6 +3,7 @@ import type { Task } from '@agent-board/shared';
 import { fence } from '../output/text.mts';
 import { agentFor } from '../task-rules.mts';
 import type { RunLimits } from '../worker/plan.mts';
+import { wakeReason } from '../watch/wake.mts';
 
 // The worker enforces the timeout itself; the sweep only catches a worker that cannot.
 const SWEEP_GRACE_MINUTES = 5;
@@ -185,7 +186,7 @@ export function checkOutputBlock(output: string | undefined): string {
 
 /**
  * What the dispatcher of the task's machine does with a waiting task: wake it when its time is up (a timer's end, a check's
- * timeout) or its check is missing, run its check when one is due, or leave it.
+ * timeout) or its check is missing, run its check when one is due, or leave it. A watch event nobody was handed wakes it too.
  */
 export function decideWake(input: {
   task: Pick<Task, 'wakeAt' | 'waitCheck'>;
@@ -193,10 +194,16 @@ export function decideWake(input: {
   check: { everyMs: number; lastCheckAt?: Date; lastExit?: number | null; lastOutput?: string } | undefined;
   machine: string;
   now: Date;
+  // This machine holds watches of the task. They stand in for a stored check: without one the task sleeps until `wakeAt`.
+  watches?: boolean;
+  // The name of the oldest watch event waiting for the task, when no worker runs for it.
+  event?: string;
 }): WakeDecision {
   const { task, check, now } = input;
+  if (input.event !== undefined) return { kind: 'wake', why: wakeReason(input.event) };
   const due = task.wakeAt === null || task.wakeAt.getTime() <= now.getTime();
-  if (!task.waitCheck) return due ? { kind: 'wake', why: 'its time ran out.' } : { kind: 'sleep' };
+  if (!task.waitCheck || (check === undefined && input.watches === true))
+    return due ? { kind: 'wake', why: 'its time ran out.' } : { kind: 'sleep' };
   if (check === undefined)
     return {
       kind: 'wake',

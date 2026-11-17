@@ -680,7 +680,7 @@ export class ContractError extends Error {}
 // The CLI's own systemd units are agent-board-<name>, the same shape as a worker unit agent-board-<task id>,
 // so these names can never be task ids. Add a name here before the CLI installs a unit with it; `intake` stays because machines
 // that have not run `board setup` since the built-in intake was removed still have that unit.
-export const TOOL_UNIT_NAMES = ['dispatch', 'intake', 'listen'] as const;
+export const TOOL_UNIT_NAMES = ['dispatch', 'intake', 'listen', 'watch'] as const;
 const RESERVED_TASK_IDS: readonly string[] = TOOL_UNIT_NAMES;
 
 // The id ends up in a systemd unit name, a log file name and argv, so the CLI checks every id it reads from the board or its arguments.

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { note as makeNote, SESSION, task } from '../__tests__/helpers/fakes.mts';
-import { START_MARKER } from '../task-rules.mts';
+import { START_MARKER, WAKE_MARKER, WATCH_MARKER } from '../task-rules.mts';
+import type { WatchDef } from '../watch/store.mts';
 import {
   boardRules,
   buildResumePrompt,
@@ -67,10 +68,20 @@ test('long text is tailed', () => {
   assert.equal(tail('abcdef', 4), '…def');
 });
 
-test('the run rules tell the agent to wait with board wait instead of polling', () => {
+test('the run rules tell the agent to start a watch instead of polling', () => {
   const rules = boardRules(task({ id: 'r' }));
-  assert.match(rules, /board wait r --check '<command>'/);
-  assert.match(rules, /board wait r --in 30m/);
+  assert.match(rules, /board watch r --ci/);
+  assert.match(rules, /board watch r --name <name> --every 1m -- '<command>'/);
+  assert.match(rules, /board watch r --in 30m/);
+  assert.match(rules, /board watches r.*board unwatch r <name>/);
+  assert.doesNotMatch(rules, /board wait/);
+});
+
+test("an agent's run is told the watches that it may start: CI and a timer", () => {
+  const rules = boardRules(task({ id: 'r' }), { asAgent: true });
+  assert.match(rules, /board watch r --ci <pr-url>/);
+  assert.match(rules, /board watch r --in 30m/);
+  assert.doesNotMatch(rules, /--every/);
 });
 
 const at = (minute: number): Date => new Date(Date.UTC(2026, 10, 13, 10, minute));
@@ -145,4 +156,51 @@ test('the messages an agent is sent say who wrote them, and an interruption says
     /interrupted you on board task abc to correct you:\n\nuse the other table/,
   );
   assert.match(pauseMessageText('abc'), /Pause requested.*`board comment abc "..."`.*end your turn/);
+});
+
+const EVENT = { name: 'ci', at: '2026-11-13T10:30:00.000Z', text: 'CI on https://github.com/acme/app/pull/7 passed.' };
+const OPEN: Pick<WatchDef, 'name' | 'source' | 'everyMs' | 'deadline'>[] = [
+  { name: 'health', source: { kind: 'timer' }, everyMs: 0, deadline: '2026-11-13T12:20:00.000Z' },
+];
+const resumable = (overrides: Partial<Parameters<typeof task>[0]> = {}) =>
+  task({ id: 'p', next: 'resume', sessionId: SESSION, ...overrides });
+
+test('a resume prompt carries the spooled events in place of the wake line, and events alone make one', () => {
+  const wake = makeNote(`${WAKE_MARKER} watch "ci" reported.`, at(5), { author: 'system', kind: 'event' });
+  const woken = buildResumePrompt(resumable({ woken: true }), [wake], { events: [EVENT], open: [] });
+  assert.match(woken ?? '', /Watch "ci" on board task p reported\./);
+  assert.match(woken ?? '', /<watch-event name="ci" at="2026-11-13T10:30:00.000Z">/);
+  assert.match(woken ?? '', /No watch is open any more\./);
+  assert.doesNotMatch(woken ?? '', /Your wait on board task p is over/);
+  assert.match(buildResumePrompt(resumable(), [], { events: [EVENT], open: [] }) ?? '', /<watch-event/);
+  assert.equal(buildResumePrompt(resumable(), [], { events: [], open: OPEN }), undefined);
+});
+
+test('events also go into a reply and a pause resume', () => {
+  const reply = makeNote('use the other branch', at(5), { author: 'user' });
+  const replied = buildResumePrompt(resumable(), [reply], { events: [EVENT], open: OPEN });
+  assert.match(replied ?? '', /<watch-event[\s\S]*Still open: "health" \(at/);
+  assert.match(replied ?? '', /The user replied on board task p:[\s\S]*use the other branch/);
+  assert.match(
+    buildResumePrompt(resumable({ paused: true }), [], { events: [EVENT], open: [] }) ?? '',
+    /<watch-event[\s\S]*You were paused/,
+  );
+});
+
+test('a wake without events says what is still open', () => {
+  const wake = makeNote(`${WAKE_MARKER} its time ran out.`, at(5), { author: 'system', kind: 'event' });
+  const prompt = buildResumePrompt(resumable({ woken: true }), [wake], { events: [], open: OPEN });
+  assert.match(prompt ?? '', /Your wait on board task p is over: its time ran out\.[\s\S]*Still open: "health"/);
+});
+
+test('an event note does not count as the agent having spoken', () => {
+  const watchNote = makeNote(`${WATCH_MARKER} "ci" reported.\n\n\`\`\`\nfailed\n\`\`\``, at(6));
+  const notes = [makeNote('Working on it', at(1)), makeNote('one more thing', at(4), { author: 'user' }), watchNote];
+  assert.deepEqual(
+    userReply(notes).map((reply) => reply.text),
+    ['one more thing'],
+  );
+  const wake = makeNote(`${WAKE_MARKER} 20 minutes passed.`, at(7), { author: 'system', kind: 'event' });
+  assert.match(buildResumePrompt(resumable({ woken: true }), [...notes, wake]) ?? '', /20 minutes passed/);
+  assert.equal(freshThreadBlock(task({ id: 'a' }), [watchNote]), undefined, 'only the unit has written to the thread');
 });

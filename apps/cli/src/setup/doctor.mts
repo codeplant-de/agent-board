@@ -32,7 +32,15 @@ import type { CatalogStore } from '../catalog/cache.mts';
 import { dirsToSend, isAllowedDir, isDirectory, routedDirs, UNCOVERED_HINT } from '../config/dirs.mts';
 import { parseEnv } from '../config/env-file.mts';
 import { runDir } from '../worker/runtime.mts';
-import { LISTEN_SERVICE, parseExecStart, REMOVED_UNIT_FILES, UNIT_NAMES, UNIT_PATH, whichOnPath } from './setup.mts';
+import {
+  LISTEN_SERVICE,
+  WATCH_SERVICE,
+  parseExecStart,
+  REMOVED_UNIT_FILES,
+  UNIT_NAMES,
+  UNIT_PATH,
+  whichOnPath,
+} from './setup.mts';
 import {
   AGENT_NAMES,
   agentFile,
@@ -638,6 +646,7 @@ function installedUnits(deps: DoctorDeps): string[] {
   return [
     ...UNIT_NAMES.flatMap((name) => [`agent-board-${name}.service`, `agent-board-${name}.timer`]),
     LISTEN_SERVICE,
+    WATCH_SERVICE,
   ].filter((file) => deps.exists(join(deps.unitDir, file)));
 }
 
@@ -700,7 +709,7 @@ function checkAgentCommand(deps: DoctorDeps, name: AgentName): CheckResult[] {
   ];
 }
 
-// A macOS worker machine: its tools, the two launch agents, the run directory and the folders it can read. Like Linux, a warning
+// A macOS worker machine: its tools, the launch agents, the run directory and the folders it can read. Like Linux, a warning
 // on a machine that installed no agent and a failure on one that did.
 async function checkMacWorker(deps: DoctorDeps): Promise<CheckResult[]> {
   const { launchd } = deps;
@@ -754,10 +763,10 @@ async function checkMacWorker(deps: DoctorDeps): Promise<CheckResult[]> {
     const file = agentFile(name);
     const path = join(launchd.agentsDir, file);
     if (!installed.includes(name)) {
-      // The listener only adds speed to the timer's ticks.
+      // The listener only adds speed to the timer's ticks, and the watch unit to the tick's own polling.
       if (installed.length > 0)
         results.push(
-          problem(`launchd ${file}`, name === 'listen' ? 'warn' : 'fail', `${path} is missing`, 'run "board setup"'),
+          problem(`launchd ${file}`, name === 'dispatch' ? 'fail' : 'warn', `${path} is missing`, 'run "board setup"'),
         );
       continue;
     }
@@ -846,33 +855,40 @@ const checkWorker: Check = async (deps) => {
       );
     }
   }
-  results.push(...(await checkListener(deps, installed)));
+  results.push(
+    ...(await checkService(deps, installed, LISTEN_SERVICE, 'new tasks wait for the next timer tick')),
+    ...(await checkService(
+      deps,
+      installed,
+      WATCH_SERVICE,
+      'the dispatch tick polls the watches, and their events reach a task only when it is woken',
+    )),
+  );
   return results;
 };
 
-// The listener is an addition to the timers, which do the same work every 2 minutes: a missing or stopped one only warns.
-async function checkListener(deps: DoctorDeps, installed: string[]): Promise<CheckResult[]> {
-  if (!installed.includes(LISTEN_SERVICE))
-    return [
-      problem(
-        `unit ${LISTEN_SERVICE}`,
-        'warn',
-        'not installed: new tasks wait for the next timer tick',
-        'run "board setup" to install it',
-      ),
-    ];
-  const enabled = (await deps.systemctl(['--user', 'is-enabled', LISTEN_SERVICE])) === 0;
-  const active = (await deps.systemctl(['--user', 'is-active', LISTEN_SERVICE])) === 0;
+// The listener and the watch unit are additions to the timers, which do the same work every 2 minutes: a missing or stopped one
+// only warns. `whenMissing` says what the machine does without it.
+async function checkService(
+  deps: DoctorDeps,
+  installed: string[],
+  service: string,
+  whenMissing: string,
+): Promise<CheckResult[]> {
+  if (!installed.includes(service))
+    return [problem(`unit ${service}`, 'warn', `not installed: ${whenMissing}`, 'run "board setup" to install it')];
+  const enabled = (await deps.systemctl(['--user', 'is-enabled', service])) === 0;
+  const active = (await deps.systemctl(['--user', 'is-active', service])) === 0;
   return [
-    ok(`unit ${LISTEN_SERVICE}`, 'installed'),
-    ...checkCommand(deps, LISTEN_SERVICE),
+    ok(`unit ${service}`, 'installed'),
+    ...checkCommand(deps, service),
     enabled && active
-      ? ok(`${LISTEN_SERVICE} state`, 'enabled and active')
+      ? ok(`${service} state`, 'enabled and active')
       : problem(
-          `${LISTEN_SERVICE} state`,
+          `${service} state`,
           'warn',
           `${enabled ? 'enabled' : 'not enabled'}, ${active ? 'active' : 'not active'}`,
-          `systemctl --user enable --now ${LISTEN_SERVICE}`,
+          `systemctl --user enable --now ${service}`,
         ),
   ];
 }

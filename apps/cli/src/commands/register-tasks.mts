@@ -23,11 +23,23 @@ import {
   DEFAULT_CHECK_TIMEOUT,
 } from './board.mts';
 import type { AddFlags, AttachFlags, CommentFlags, PolishFlags, TasksFlags, WaitFlags } from './board.mts';
+import { CHECK_TIME_LIMIT_MS, runCommand } from '../dispatch/waits.mts';
+import type { WatchStore } from '../watch/store.mts';
+import { createWatchStore } from '../watch/store.mts';
 import { collect, runEventsCommand } from './events.mts';
 import type { EventsFlags } from './events.mts';
 import { EVENT_TYPES } from '../events/diff.mts';
-import { CHECK_TIME_LIMIT_MS, createWaitStore } from '../dispatch/waits.mts';
 import { ReportedFailure, UsageError } from '../cli.mts';
+import {
+  DEFAULT_WATCH_EVERY,
+  DEFAULT_WATCH_TIMEOUT,
+  formatWatches,
+  readWatches,
+  unwatch,
+  watch,
+  watchesJson,
+} from './watch.mts';
+import type { WatchFlags } from './watch.mts';
 import { examples, ID_NOTE, paragraphs, STATUS_LIST, TASK_ARGUMENT, TASKS } from './help-text.mts';
 import type { ProgramShared } from './program-shared.mts';
 
@@ -48,6 +60,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
     notInRun,
     textOf,
   } = shared;
+  const watchStore = (): WatchStore => options.watches ?? createWatchStore();
   dryRunOption(
     jsonOptionReadable(
       program
@@ -214,7 +227,10 @@ export function registerTaskCommands(shared: ProgramShared): void {
     const expect = flags.expect === undefined ? undefined : parseStatus(flags.expect);
     const context = contextOf(command);
     try {
-      await move(context, await taskIdOf(context, arg), target, expect === undefined ? {} : { expect });
+      const id = await taskIdOf(context, arg);
+      await move(context, id, target, expect === undefined ? {} : { expect });
+      // The agent is done with its task: what it watched for no longer matters. A user's move leaves the watches.
+      if (target === 'needs-me' && env['AGENT_BOARD_TASK'] === id && !context.dryRun) watchStore().dropTask(id);
     } catch (error) {
       if (!(error instanceof MoveRefused)) throw error;
       writeErr(`board: ${error.message}\n`);
@@ -273,7 +289,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
   ).action(async (arg: string, flags: WaitFlags, command: Command) => {
     const context = contextOf(command, { strictConfig: flags.check !== undefined });
     await wait(context, await taskIdOf(context, arg), flags, {
-      waits: options.waits ?? createWaitStore(),
+      watches: watchStore(),
       cwd: options.cwd ?? realpathSync(process.cwd()),
       restricted: env['AGENT_BOARD_RESTRICTED'] === '1',
       ...(env['AGENT_BOARD_START_DIR'] ? { settingsDir: env['AGENT_BOARD_START_DIR'] } : {}),
@@ -281,6 +297,99 @@ export function registerTaskCommands(shared: ProgramShared): void {
     });
   });
 
+  const watchDeps = (): Parameters<typeof watch>[4] => ({
+    watches: watchStore(),
+    run: options.watchRunner ?? ((job) => runCommand(job)),
+    cwd: options.cwd ?? realpathSync(process.cwd()),
+    restricted: env['AGENT_BOARD_RESTRICTED'] === '1',
+    ...(env['AGENT_BOARD_TASK'] ? { ownTask: env['AGENT_BOARD_TASK'] } : {}),
+    ...(env['AGENT_BOARD_START_DIR'] ? { settingsDir: env['AGENT_BOARD_START_DIR'] } : {}),
+    ...(options.now ? { now: options.now() } : {}),
+  });
+
+  dryRunOption(
+    program
+      .command('watch')
+      .helpGroup(TASKS)
+      .summary('watch something for a task and get told when it happens')
+      .description(
+        paragraphs(
+          'Inside a run: start a watch instead of sleeping or polling. A watch belongs to the task, lives on its machine, and reports an event that reaches you as a message: in this run if it is still going, otherwise when the task resumes in its session. Keep working if there is work; end your turn when there is none, and the task waits without holding a slot. A task may have several watches.',
+          `Give exactly one source. --ci watches the checks of a pull request (the PR is the argument, or the newest open one you reported with "board pr"; --required looks at the required checks only; a new commit restarts it) and reports when they have passed, one failed, or the PR was merged or closed. A command after -- is run every --every (default ${DEFAULT_WATCH_EVERY}, at least 15s) in this directory, with the env of your Claude Code settings, and reports once it exits 0; it needs --name, and it is run once right away. --in or --at is a timer.`,
+          `--timeout (default ${DEFAULT_WATCH_TIMEOUT}, at most 7 days) is how long a ci or command watch looks before it reports that it timed out. The command stays on this machine. The same name again replaces the open watch. If the answer is there at once, it is printed and no watch is stored; a command that cannot run here is refused.`,
+          ID_NOTE,
+        ),
+      )
+      .argument('<task>', TASK_ARGUMENT)
+      .argument('[command...]', 'after --: the shell command that exits 0 once the wait is over')
+      .option(
+        '--ci [pr]',
+        'watch the checks of a PR (URL or number; default: the newest open PR reported for this task)',
+      )
+      .option('--required', 'with --ci: the required checks only')
+      .option('--name <name>', "the watch's name (default: ci, or timer); a command needs one")
+      .option('--every <duration>', `with a command: how often it runs (default ${DEFAULT_WATCH_EVERY}, at least 15s)`)
+      .option('--timeout <duration>', `report a timeout after this long (default ${DEFAULT_WATCH_TIMEOUT}, at most 7d)`)
+      .option('--in <duration>', 'a timer: report after this long (30m, 2h, 1d, 1h30m)')
+      .option('--at <time>', 'a timer: report then (2027-01-01T12:00, 2027-01-01, 09:30)')
+      .addHelpText(
+        'after',
+        examples(
+          'board watch Ab3dEf9x --ci',
+          'board watch Ab3dEf9x --ci 17741 --required --timeout 1h',
+          `board watch Ab3dEf9x --name health --every 1m -- 'curl -fsS https://staging.example.com/health'`,
+          'board watch Ab3dEf9x --in 30m --name deploy',
+        ),
+      ),
+  ).action(async (arg: string, words: string[], flags: WatchFlags, command: Command) => {
+    const context = contextOf(command, { strictConfig: true });
+    await watch(context, await taskIdOf(context, arg), flags, words, watchDeps());
+  });
+
+  dryRunOption(
+    jsonOption(
+      program
+        .command('watches')
+        .helpGroup(TASKS)
+        .summary('list the open watches of a task')
+        .description(
+          paragraphs(
+            "List the open watches of a task on this machine: each one's name and source, until when it looks, and what its last look said, and how many events the agent has not been handed yet. With --json, print the list on stdout.",
+            ID_NOTE,
+          ),
+        )
+        .argument('<task>', TASK_ARGUMENT)
+        .addHelpText('after', examples('board watches Ab3dEf9x', 'board watches Ab3dEf9x --json')),
+    ),
+  ).action(async (arg: string, flags: { json?: boolean }, command: Command) => {
+    const context = contextOf(command, { strictConfig: true, json: flags.json === true });
+    const id = await taskIdOf(context, arg);
+    const open = await readWatches(context, id, watchStore(), env['AGENT_BOARD_TASK']);
+    if (flags.json) writeJson(watchesJson(open));
+    else for (const line of formatWatches(id, open)) context.print(line);
+  });
+
+  dryRunOption(
+    program
+      .command('unwatch')
+      .helpGroup(TASKS)
+      .summary('stop a watch of a task')
+      .description(
+        paragraphs(
+          'Stop the open watch of that name on a task on this machine. It reports nothing. "board watches" lists the names.',
+          ID_NOTE,
+        ),
+      )
+      .argument('<task>', TASK_ARGUMENT)
+      .argument('<name>', 'the name of the watch')
+      .addHelpText('after', examples('board unwatch Ab3dEf9x ci')),
+  ).action(async (arg: string, name: string, _flags: unknown, command: Command) => {
+    const context = contextOf(command, { strictConfig: true });
+    await unwatch(context, await taskIdOf(context, arg), name, {
+      watches: watchStore(),
+      ...(env['AGENT_BOARD_TASK'] ? { ownTask: env['AGENT_BOARD_TASK'] } : {}),
+    });
+  });
   program
     .command('events')
     .helpGroup(TASKS)
