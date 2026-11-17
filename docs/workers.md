@@ -62,7 +62,7 @@ Every run records what it did. The worker starts `claude -p` with `--output-form
 
 On the board, **Transcript** on a task page (or the terminal icon on a card) opens the runs, newest first, live while one runs. Tool calls are one line each; a click shows the input and loads the output. A tool result over 256 KB is cut with a note; the full one stays in the session file on the machine. Claude Code passes thinking on without its text, so a thinking block shows as a marker with its token estimate.
 
-Transcripts can hold whatever the agent saw: file contents, `gh` output, now and then an environment value. The worker seals each event (and each tool output apart) before it sends it, so the server stores only ciphertext. They go 14 days after a task is closed, and 28 days after the last change of an open task in Done, which covers tasks with a key (a script's reviews) and those of the removed intake (the server checks hourly). A task of yours untouched in Done is closed after 14 days.
+Transcripts can hold whatever the agent saw: file contents, `gh` output, now and then an environment value. The worker seals each event (and each tool output apart) before it sends it, so the server stores only ciphertext. They go 14 days after a task is closed, and 28 days after the last change of an open task in Done, which covers tasks with a key (a script's reviews) and those of the removed intake (the server checks hourly). A task of yours untouched in Done is closed after 7 days.
 
 The board loads a run's events in pages of 2000 and afterwards only those after the last one it has, so long runs show in full and a live run costs one small request per poll.
 
