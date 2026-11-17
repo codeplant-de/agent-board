@@ -107,6 +107,10 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
         catalogIndex: identity.catalogIndex ?? null,
       };
     })();
+    // A failed first call (a server restarting) must not fail every later one of a long-running command.
+    ready.catch(() => {
+      ready = undefined;
+    });
     return ready;
   };
 

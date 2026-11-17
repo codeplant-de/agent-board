@@ -30,6 +30,7 @@ Tasks:
   ask <task>                ask the user 1-4 questions
   wait <task>               park a running task in Waiting until a time or a
                             check
+  events                    print the changes on the board as they happen
   add                       propose a follow-up task
   polish <task>             post a polished title and prompt for a task
 
@@ -335,6 +336,61 @@ Examples:
   board wait Ab3dEf9x --check 'gh pr checks 17741 --required' --reason "CI on #17741"
   board wait Ab3dEf9x --check 'curl -fsS https://staging.example.com/health' --every 5m --timeout 1h
   board wait Ab3dEf9x --in 20m --reason "the deploy settles"
+```
+
+### board events
+
+```
+Usage: board events [options]
+
+Print one line per change on your board, as it happens, until interrupted: a
+script can read them with `board events --json | while read -r line; do ...;
+done`. The first look at the board prints nothing; only what changes after it
+does.
+
+The types: created (a new task, or a closed one reopened; its earlier notes are
+not reported), moved (the status changed: from, to), changed (title, priority,
+model, agent, machine, openQuestion, notBefore, wakeAt, prs or promptPrState
+changed: fields), closed, removed (deleted), and note (a new note in a task's
+thread; its text is null in JSON when this machine cannot decrypt it). Changes
+between two looks at the board are joined: a task that went todo, running,
+needs-me meanwhile prints one move from todo to needs-me.
+
+--status keeps the events of tasks that are in one of the statuses after the
+change, so everything that enters Needs me is `--type moved --status needs-me`.
+--task, --status and --type can be given more than once. The filters only choose
+what is printed.
+
+With --json each line is one JSON object: {"type", "at", "task", "from"?, "to"?,
+"fields"?, "note"?}. `task` is the task as `board tasks --json` shows it, plus
+its "url"; `at` is when this CLI saw the change. Connection messages go to
+stderr. The command reads with this machine's token and data key, so titles and
+notes are plain text here and nowhere else. It ends on Ctrl-C (exit 0), when the
+pipe it writes to closes, and with 1 when the board refuses the token or the
+CLI. It is not available inside a board run.
+
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
+
+Options:
+  --task <task>      only this task; repeatable (the task: its id, a board task
+                     link or the start of its id)
+  --status <status>  only tasks in this status after the change; repeatable
+                     (backlog, todo, running, waiting, needs-me, done)
+  --type <type>      only this type of event; repeatable (created, moved,
+                     changed, closed, removed, note)
+  --machine <name>   only tasks of this machine
+  --json             print one JSON object per line on stdout instead of text
+  -h, --help         display help for command
+
+Examples:
+  board events
+  board events --type moved --status needs-me
+  board events --task Ab3 --type note
+  board events --json --machine laptop
 ```
 
 ### board add

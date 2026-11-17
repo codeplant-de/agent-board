@@ -1,3 +1,4 @@
+import type { EventEmitter } from 'node:events';
 import type { Command } from 'commander';
 import type { WaitStore } from '../dispatch/waits.mts';
 import type { ContextOptions, LinkingContext } from '../cli.mts';
@@ -6,6 +7,7 @@ import type { UpdateState } from '../self/update-state.mts';
 import type { DoctorDeps } from '../setup/doctor.mts';
 import type { Prompts } from '../setup/init.mts';
 import type { SetupDeps } from '../setup/setup.mts';
+import type { EventsDeps } from '../events/run.mts';
 import type { Spawner } from './board.mts';
 
 export interface ProgramOptions {
@@ -45,6 +47,10 @@ export interface ProgramOptions {
   home?: string;
   // Whether stderr is a terminal, the only place the update hint is shown.
   stderrIsTty?: boolean;
+  // What `board events` talks to; tests replace the version check, the clock and the signals.
+  // Where `board events` listens for write errors; tests hand over an emitter.
+  eventsStdout?: Pick<EventEmitter, 'on' | 'off'>;
+  eventsDeps?: Partial<Pick<EventsDeps, 'verify' | 'fetch' | 'timers' | 'random' | 'signal' | 'options'>>;
   // Where the update hint remembers when it was last shown.
   updateState?: UpdateState;
 }

@@ -162,6 +162,9 @@ export interface Task {
   // While it runs: the user asked for the run to be interrupted and no worker has acted on it yet. Absent from a server
   // without the `run-inbox` feature.
   stopRequested?: boolean;
+  // How many notes the task's thread holds; notes are never deleted, so it only grows. Absent from a server without the
+  // `task.note-count` feature.
+  noteCount?: number;
   unreadable: UnreadableField[];
 }
 
@@ -875,6 +878,12 @@ function positiveInt(obj: Record<string, unknown>, key: string, what: string, ma
   return value;
 }
 
+function count(obj: Record<string, unknown>, key: string, what: string): number {
+  const value = obj[key];
+  if (!isWholeNumber(value)) throw new ContractError(`${what}.${key} must be a non-negative integer`);
+  return value;
+}
+
 function nullablePositiveInt(obj: Record<string, unknown>, key: string, what: string): number | null {
   return obj[key] === null ? null : positiveInt(obj, key, what);
 }
@@ -1011,6 +1020,7 @@ export function parseWireTask(value: unknown): WireTask {
     waitCheck: boolean(obj, 'waitCheck', 'task'),
     woken: boolean(obj, 'woken', 'task'),
     ...(obj['stopRequested'] === undefined ? {} : { stopRequested: boolean(obj, 'stopRequested', 'task') }),
+    ...(obj['noteCount'] === undefined ? {} : { noteCount: count(obj, 'noteCount', 'task') }),
   };
 }
 

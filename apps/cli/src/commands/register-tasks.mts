@@ -23,6 +23,9 @@ import {
   DEFAULT_CHECK_TIMEOUT,
 } from './board.mts';
 import type { AddFlags, AttachFlags, CommentFlags, PolishFlags, TasksFlags, WaitFlags } from './board.mts';
+import { collect, runEventsCommand } from './events.mts';
+import type { EventsFlags } from './events.mts';
+import { EVENT_TYPES } from '../events/diff.mts';
 import { CHECK_TIME_LIMIT_MS, createWaitStore } from '../dispatch/waits.mts';
 import { ReportedFailure, UsageError } from '../cli.mts';
 import { examples, ID_NOTE, paragraphs, STATUS_LIST, TASK_ARGUMENT, TASKS } from './help-text.mts';
@@ -33,6 +36,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
     program,
     options,
     env,
+    writeOut,
     writeErr,
     contextOf,
     writeJson,
@@ -276,6 +280,49 @@ export function registerTaskCommands(shared: ProgramShared): void {
       ...(options.now ? { now: options.now() } : {}),
     });
   });
+
+  program
+    .command('events')
+    .helpGroup(TASKS)
+    .summary('print the changes on the board as they happen')
+    .description(
+      paragraphs(
+        'Print one line per change on your board, as it happens, until interrupted: a script can read them with `board events --json | while read -r line; do ...; done`. The first look at the board prints nothing; only what changes after it does.',
+        `The types: created (a new task, or a closed one reopened; its earlier notes are not reported), moved (the status changed: from, to), changed (title, priority, model, agent, machine, openQuestion, notBefore, wakeAt, prs or promptPrState changed: fields), closed, removed (deleted), and note (a new note in a task's thread; its text is null in JSON when this machine cannot decrypt it). Changes between two looks at the board are joined: a task that went todo, running, needs-me meanwhile prints one move from todo to needs-me.`,
+        '--status keeps the events of tasks that are in one of the statuses after the change, so everything that enters Needs me is `--type moved --status needs-me`. --task, --status and --type can be given more than once. The filters only choose what is printed.',
+        'With --json each line is one JSON object: {"type", "at", "task", "from"?, "to"?, "fields"?, "note"?}. `task` is the task as `board tasks --json` shows it, plus its "url"; `at` is when this CLI saw the change. Connection messages go to stderr. The command reads with this machine\'s token and data key, so titles and notes are plain text here and nowhere else. It ends on Ctrl-C (exit 0), when the pipe it writes to closes, and with 1 when the board refuses the token or the CLI. It is not available inside a board run.',
+        ID_NOTE,
+      ),
+    )
+    .option('--task <task>', `only this task; repeatable (${TASK_ARGUMENT})`, collect)
+    .option('--status <status>', `only tasks in this status after the change; repeatable (${STATUS_LIST})`, collect)
+    .option('--type <type>', `only this type of event; repeatable (${EVENT_TYPES.join(', ')})`, collect)
+    .option('--machine <name>', 'only tasks of this machine')
+    .option('--json', 'print one JSON object per line on stdout instead of text')
+    .addHelpText(
+      'after',
+      examples(
+        'board events',
+        'board events --type moved --status needs-me',
+        'board events --task Ab3 --type note',
+        'board events --json --machine laptop',
+      ),
+    )
+    .action(async (flags: EventsFlags, command: Command) => {
+      notInRun('board events is not available inside a board run: it never ends');
+      const context = contextOf(command);
+      await runEventsCommand({
+        flags,
+        context,
+        resolveTask: (arg) => taskIdOf(context, arg),
+        env,
+        writeOut,
+        writeErr,
+        overrides: options.eventsDeps ?? {},
+        now: options.now,
+        ...(options.eventsStdout === undefined ? {} : { stdout: options.eventsStdout }),
+      });
+    });
 
   dryRunOption(
     jsonOption(

@@ -282,6 +282,21 @@ test('the version is checked once per process, and the config is loaded only on 
   assert.deepEqual(commands, ['version', 'list-tasks', 'list-tasks']);
 });
 
+test('a failed first call does not fail every later one: the next call connects again', async () => {
+  let up = false;
+  const commands: string[] = [];
+  const fetcher: Fetch = async (url) => {
+    commands.push(url.slice(`${config.url}/api/machine/`.length));
+    if (!up) throw new Error('fetch failed');
+    return new Response(JSON.stringify({ result: url.endsWith('/version') ? VERSION_ANSWER : [] }));
+  };
+  const backend = createWebBackend({ loadConfig: () => config, fetch: fetcher });
+  await assert.rejects(backend.listTasks());
+  up = true;
+  assert.deepEqual(await backend.listTasks(), []);
+  assert.deepEqual(commands, ['version', 'version', 'list-tasks']);
+});
+
 test('a missing config fails the first call, not the construction', async () => {
   const backend = createWebBackend({
     loadConfig: () => {
