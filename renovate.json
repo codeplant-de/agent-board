@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
   "timezone": "Europe/Berlin",
   "schedule": ["before 6am on monday"],
   "minimumReleaseAge": "7 days",
@@ -10,7 +10,7 @@
       "description": "pnpm version passed to pnpm/action-setup in the workflows",
       "customType": "regex",
       "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
-      "matchStrings": ["uses: pnpm/action-setup@\\S+\\s+with:\\s+version: (?<currentValue>\\S+)"],
+      "matchStrings": ["uses: pnpm/action-setup@\\S+(?: # \\S+)?\\s+with:\\s+version: (?<currentValue>\\S+)"],
       "depNameTemplate": "pnpm",
       "datasourceTemplate": "npm"
     },

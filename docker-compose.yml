@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: board
       POSTGRES_DB: board_dev
     ports:
-      - '54331:5432'
+      - '127.0.0.1:54331:5432'
     volumes:
       - agent-board-pgdata:/var/lib/postgresql/data
       - ./infra/postgres-init:/docker-entrypoint-initdb.d:ro
