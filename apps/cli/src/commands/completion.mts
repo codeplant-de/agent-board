@@ -12,7 +12,15 @@ interface CommandModel {
   flags: string[];
   // What the positional words complete to, in order.
   positionals: (
-    'task' | 'status' | 'schedule-action' | 'schedule' | 'dirs-action' | 'dirs-key' | 'command' | 'shell'
+    | 'task'
+    | 'status'
+    | 'schedule-action'
+    | 'schedule'
+    | 'dirs-action'
+    | 'dirs-key'
+    | 'agents-action'
+    | 'command'
+    | 'shell'
   )[];
 }
 
@@ -40,6 +48,7 @@ function positionalsOf(command: Command): CommandModel['positionals'] {
   if (command.name() === 'completion') return ['shell'];
   if (command.name() === 'schedules') return ['schedule-action', 'schedule'];
   if (command.name() === 'dirs') return ['dirs-action', 'dirs-key'];
+  if (command.name() === 'agents') return ['agents-action'];
   if (command.name() === 'move') return ['task', 'status'];
   return command.registeredArguments[0]?.name() === 'task' ? ['task'] : [];
 }
@@ -102,6 +111,8 @@ function positionalWords(kind: Kind, model: CompletionModel): string | undefined
       return 'list add rm set unset';
     case 'dirs-key':
       return words(DIR_SETTINGS);
+    case 'agents-action':
+      return 'list show export add rm';
     case 'command':
       return words(model.commands.map((command) => command.name));
     case 'shell':

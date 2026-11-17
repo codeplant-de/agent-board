@@ -11,6 +11,7 @@ import {
   isOverrideWarning,
   isSafeMode,
   parseConfig,
+  withAgentsDir,
   REMOVED_INTAKE,
 } from '../config/config.mts';
 import type { Config } from '../config/config.mts';
@@ -459,7 +460,9 @@ function checkAgents(config: Config, deps: DoctorDeps): CheckResult[] {
         `agent ${plainLine(name.slice(0, 40))}`,
         'fail',
         `${reason}; tasks that name it are not run`,
-        'fix the agent in config.json',
+        Object.hasOwn(config.agentFiles ?? {}, name)
+          ? `fix the file, or remove it with "board agents rm ${plainLine(name.slice(0, 40))}"`
+          : 'fix the agent in config.json',
       ),
     ),
     ...(entries.length === 0 ? [] : [ok('agents', entries.map(([name]) => name).join(', '))]),
@@ -500,7 +503,7 @@ const checkConfig: Check = (deps) => {
     ];
   try {
     const raw: unknown = JSON.parse(text);
-    const config = parseConfig(raw);
+    const config = withAgentsDir(parseConfig(raw), join(configDir, 'agents'));
     return [
       ok('config.json', `machine ${config.machine}`),
       ...checkAgents(config, deps),

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { test } from 'node:test';
 import { exampleNames, exampleText } from './example.mts';
 import { runBoard } from './program.mts';
@@ -7,6 +7,11 @@ import { runBoard } from './program.mts';
 const dir = new URL('../../examples/', import.meta.url);
 const shipped = readdirSync(dir)
   .filter((name) => name !== 'examples.json')
+  .flatMap((name) =>
+    statSync(new URL(name, dir)).isDirectory()
+      ? readdirSync(new URL(`${name}/`, dir)).map((file) => `${name}/${file}`)
+      : [name],
+  )
   .sort();
 
 test('examples.json holds every file of examples/ as it is; run `pnpm --filter @agent-board/cli run examples` when this fails', () => {
@@ -25,7 +30,7 @@ test('board example lists the names, prints one file whole, and refuses an unkno
   assert.equal(out.join(''), readFileSync(new URL('github-reviews.sh', dir), 'utf8'));
   await assert.rejects(
     go(['example', 'nope']),
-    /no example "nope"; the examples are config\.reviews\.json, github-reviews\.sh/,
+    /no example "nope"; the examples are agents\/reviewer\.yaml, config\.reviews\.json, github-reviews\.sh/,
   );
   assert.equal(exampleText('constructor'), undefined);
   assert.equal(exampleText('__proto__'), undefined);

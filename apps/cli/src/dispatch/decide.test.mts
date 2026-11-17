@@ -12,7 +12,7 @@ test('a machine leaves a task to another when it names an agent this machine lac
   const agent = { description: 'd', tools: ['Read'], allowedTools: [], disallowedTools: [], env: [], mcpServers: [] };
   const named = task({ id: 'a', input: `/review-pr ${PR} --auto`, agent: 'reviewer', createdBy: 'intake' });
   assert.equal(notServableHere(named, 'here', { agents: { reviewer: agent }, agentErrors: {} }), undefined);
-  assert.equal(notServableHere(named, 'here', NO_AGENTS), 'no agents.reviewer in config.json here');
+  assert.equal(notServableHere(named, 'here', NO_AGENTS), 'no agent reviewer defined here');
 });
 
 test('an intake task without an agent is claimed by any machine, so that its worker fails it with the reason', () => {

@@ -184,7 +184,7 @@ test('a task that names an agent this machine does not define is skipped, and on
   await runDispatch(deps);
   assert.deepEqual(started, ['known']);
   assert.ok(!backend.writes.some((w) => w.includes('ghost')), 'left in Todo, not claimed or failed');
-  assert.ok(logs.includes('SKIP ghost no agents.ghost in config.json here'));
+  assert.ok(logs.includes('SKIP ghost no agent ghost defined here'));
 });
 
 test('a task pinned here that names a missing agent is claimed, so its worker can fail it', async () => {
@@ -201,7 +201,7 @@ test('an agent that cannot be read is logged as a warning every tick, and the re
   await runDispatch(deps);
   assert.deepEqual(started, ['t1']);
   assert.ok(logs.some((line) => line.startsWith('WARN config.json: config: agents.broken has no key "tool"')));
-  assert.ok(logs.some((line) => line.startsWith('SKIP bad agents.broken in config.json here cannot be used')));
+  assert.ok(logs.some((line) => line.startsWith('SKIP bad agent broken here cannot be used')));
 });
 
 test('a task of the removed intake without an agent is claimed and started, so that its worker fails it', async () => {

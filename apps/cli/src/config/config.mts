@@ -1,6 +1,6 @@
-import { readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import {
   AGENT_NAME_RULE,
   DIR_LABEL_RULE,
@@ -15,7 +15,10 @@ import {
   shortSkill,
 } from '@agent-board/shared';
 
-export class ConfigError extends Error {}
+import { ConfigError } from './config-error.mts';
+import { parseAgentDocument } from './agent-document.mts';
+
+export { ConfigError };
 
 // A task that runs as this agent (Claude Code's `--agents` and `--agent`), unattended: only its tools, and only what its
 // lists allow. Everything in it is checked when the config loads, since a typo in a deny list must not fail open.
@@ -33,6 +36,9 @@ export interface AgentConfig {
   // MCP servers of the working directory's .mcp.json the run gets (with `--mcp-config`).
   mcpServers: string[];
   model?: string;
+  // Metadata of a shared definition: its version, and where `board agents add` got it from. Neither changes a run.
+  version?: string;
+  source?: string;
 }
 
 // Slots of one kind of work on this machine. A lane runs its own skills first (a task's skill is the slash command its
@@ -90,6 +96,8 @@ export interface Config {
   // Why an `agents` entry could not be read, by name. One bad agent must not stop the machine's other work, so it is not a
   // config error; a task that names it fails closed, and doctor and dispatch report it.
   agentErrors: Record<string, string>;
+  // The agents that come from a file of the agents/ directory, by name: the file's path. The rest are from config.json.
+  agentFiles?: Record<string, string>;
   repos: Record<string, string>;
   // The directories workers may run in, in config order; undefined when config.json has no `dirs` key, which is not the
   // same as an empty list: a list that is present will allow only what it names.
@@ -248,23 +256,9 @@ function parseLanes(raw: unknown): Lane[] {
   });
 }
 
-function stringList(obj: Record<string, unknown>, key: string, where: string): string[] {
-  const value = obj[key] ?? [];
-  if (!isStringList(value)) throw new ConfigError(`config: ${where}${key} must be a list of strings`);
-  return value;
-}
-
-function envNames(obj: Record<string, unknown>, where: string): string[] {
-  const env = stringList(obj, 'env', where);
-  const badName = env.find((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
-  if (badName !== undefined)
-    throw new ConfigError(`config: ${where}env names "${badName}", which is not a variable name`);
-  return env;
-}
-
 // The keys of one `agents` entry. Unlike the rest of config.json an unknown one is an error: a misspelt deny list would
 // leave the agent with no deny list.
-const AGENT_KEYS = [
+export const AGENT_KEYS = [
   'description',
   'prompt',
   'tools',
@@ -273,56 +267,77 @@ const AGENT_KEYS = [
   'mcpServers',
   'env',
   'model',
+  'version',
+  'source',
 ] as const;
 
 // A tool name, not a rule: arguments (`Bash(git status)`) belong in allowedTools.
 const isToolName = (tool: string): boolean => /^[A-Za-z][A-Za-z0-9_:.*-]*$/.test(tool);
 
-function parseAgent(name: string, entry: unknown): AgentConfig {
-  const where = `agents.${name}.`;
-  if (!isRecord(entry)) throw new ConfigError(`config: agents.${name} must be an object`);
+/**
+ * One agent definition, checked strictly. `file` names the agents/ file it came from, for the messages; without it the
+ * definition is `agents.<name>` of config.json.
+ */
+export function parseAgent(name: string, entry: unknown, file?: string): AgentConfig {
+  const at = (key: string): string => (file === undefined ? `config: agents.${name}.${key}` : `${file}: ${key}`);
+  const whole = file ?? `config: agents.${name}`;
+  if (!isRecord(entry)) throw new ConfigError(`${whole} must be an object`);
   for (const key of Object.keys(entry)) {
     if (AGENT_KEYS.some((known) => known === key)) continue;
     const near = nearestKey(key, AGENT_KEYS);
     throw new ConfigError(
-      `config: agents.${name} has no key "${key.slice(0, 40)}"${near === undefined ? `; it takes ${AGENT_KEYS.join(', ')}` : `; did you mean "${near}"?`}`,
+      `${whole} has no key "${key.slice(0, 40)}"${near === undefined ? `; it takes ${AGENT_KEYS.join(', ')}` : `; did you mean "${near}"?`}`,
     );
   }
   const description = entry['description'];
   if (typeof description !== 'string' || description.trim() === '')
-    throw new ConfigError(`config: ${where}description must be a non-empty string`);
+    throw new ConfigError(`${at('description')} must be a non-empty string`);
   const prompt = entry['prompt'];
-  if (prompt !== undefined && typeof prompt !== 'string')
-    throw new ConfigError(`config: ${where}prompt must be a string`);
+  if (prompt !== undefined && typeof prompt !== 'string') throw new ConfigError(`${at('prompt')} must be a string`);
   const model = entry['model'];
   if (model !== undefined && (typeof model !== 'string' || !isModelName(model)))
-    throw new ConfigError(`config: ${where}model must be a model name`);
-  const tools = stringList(entry, 'tools', where);
-  if (tools.length === 0) throw new ConfigError(`config: ${where}tools must be a non-empty list of tool names`);
+    throw new ConfigError(`${at('model')} must be a model name`);
+  const metadata: Pick<AgentConfig, 'version' | 'source'> = {};
+  for (const key of ['version', 'source'] as const) {
+    const value = entry[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || value.length > 2000 || [...value].some((char) => char < ' ' || char === '\x7f'))
+      throw new ConfigError(`${at(key)} must be one line of text`);
+    metadata[key] = value;
+  }
+  const list = (key: string): string[] => {
+    const value = entry[key] ?? [];
+    if (!isStringList(value)) throw new ConfigError(`${at(key)} must be a list of strings`);
+    return value;
+  };
+  const tools = list('tools');
+  if (tools.length === 0) throw new ConfigError(`${at('tools')} must be a non-empty list of tool names`);
   const badTool = tools.find((tool) => !isToolName(tool));
   if (badTool !== undefined)
     throw new ConfigError(
-      `config: ${where}tools names "${badTool.slice(0, 40)}", which is not a tool name; rules with arguments belong in allowedTools`,
+      `${at('tools')} names "${badTool.slice(0, 40)}", which is not a tool name; rules with arguments belong in allowedTools`,
     );
-  const allowedTools = stringList(entry, 'allowedTools', where);
-  const disallowedTools = stringList(entry, 'disallowedTools', where);
+  const allowedTools = list('allowedTools');
+  const disallowedTools = list('disallowedTools');
   const badRule = [...allowedTools, ...disallowedTools].find((rule) => rule.trim() === '' || rule.startsWith('-'));
   if (badRule !== undefined)
-    throw new ConfigError(
-      `config: ${where}allowedTools and disallowedTools take tool rules, not "${badRule.slice(0, 40)}"`,
-    );
-  const mcpServers = stringList(entry, 'mcpServers', where);
-  if (mcpServers.some((server) => server.trim() === ''))
-    throw new ConfigError(`config: ${where}mcpServers must name servers`);
+    throw new ConfigError(`${at('allowedTools')} and disallowedTools take tool rules, not "${badRule.slice(0, 40)}"`);
+  const mcpServers = list('mcpServers');
+  if (mcpServers.some((server) => server.trim() === '')) throw new ConfigError(`${at('mcpServers')} must name servers`);
+  const env = list('env');
+  const badName = env.find((variable) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable));
+  if (badName !== undefined)
+    throw new ConfigError(`${at('env')} names "${badName.slice(0, 40)}", which is not a variable name`);
   return {
     description,
     ...(prompt === undefined ? {} : { prompt }),
     tools,
     allowedTools,
     disallowedTools,
-    env: envNames(entry, where),
+    env,
     mcpServers,
     ...(model === undefined ? {} : { model }),
+    ...metadata,
   };
 }
 
@@ -342,6 +357,98 @@ function parseAgents(raw: unknown): Pick<Config, 'agents' | 'agentErrors'> {
     }
   }
   return { agents, agentErrors };
+}
+
+// The directory beside config.json that holds one agent definition per file: `<name>.yaml`, `<name>.yml` or `<name>.json`.
+export const agentsDirOf = (configFile: string): string => join(dirname(configFile), 'agents');
+
+const AGENT_FILE = /^(.*)\.(ya?ml|json)$/;
+
+/** The name an agents/ file defines, or undefined for a file that is not a definition (a temp file, a README). */
+export function agentFileName(file: string): string | undefined {
+  if (file.startsWith('.')) return undefined;
+  return AGENT_FILE.exec(file)?.[1];
+}
+
+/** The agent of one agents/ file, checked like a config.json entry; its `name`, when it has one, must be the file's. */
+export function parseAgentFile(name: string, text: string, label: string): AgentConfig {
+  const document = parseAgentDocument(text, label);
+  if (!isRecord(document)) throw new ConfigError(`${label} must hold a mapping of the agent's keys`);
+  const { name: written, ...entry } = document;
+  if (written !== undefined && written !== name)
+    throw new ConfigError(
+      `${label} names the agent "${String(written).slice(0, 40)}", but the file is for "${name}"; rename one of them`,
+    );
+  return parseAgent(name, entry, label);
+}
+
+/**
+ * The agents of the agents/ directory: every definition in it, the reasons the rest cannot be used, and which file each
+ * came from. A missing directory has none. A file others may write to is refused: whoever can change it decides what an
+ * agent's run may do.
+ */
+export function readAgentsDir(dir: string): Required<Pick<Config, 'agents' | 'agentErrors' | 'agentFiles'>> {
+  const result = { agents: {}, agentErrors: {}, agentFiles: {} } as Required<
+    Pick<Config, 'agents' | 'agentErrors' | 'agentFiles'>
+  >;
+  let files: string[];
+  try {
+    files = readdirSync(dir).sort();
+  } catch {
+    return result;
+  }
+  for (const file of files) {
+    const name = agentFileName(file);
+    if (name === undefined) continue;
+    const path = join(dir, file);
+    const label = `agents/${file}`;
+    try {
+      if (!isAgentName(name)) throw new ConfigError(`${label}: the agent name must be ${AGENT_NAME_RULE}`);
+      const other = result.agentFiles[name];
+      if (other !== undefined)
+        throw new ConfigError(`agents/ has two files for ${name}: ${other.split('/').pop()} and ${file}; keep one`);
+      result.agentFiles[name] = path;
+      const stat = statSync(path);
+      if (!stat.isFile()) throw new ConfigError(`${label} is not a file`);
+      if ((stat.mode & 0o022) !== 0)
+        throw new ConfigError(
+          `${label} may be written by others (mode ${(stat.mode & 0o777).toString(8)}); chmod 600 it`,
+        );
+      result.agents[name] = parseAgentFile(name, readFileSync(path, 'utf8'), label);
+    } catch (error) {
+      if (!(error instanceof ConfigError)) {
+        const code = error instanceof Error && 'code' in error ? String(error.code) : 'unknown error';
+        result.agentErrors[name] = `cannot read ${label} (${code})`;
+      } else result.agentErrors[name] = error.message;
+      delete result.agents[name];
+    }
+  }
+  return result;
+}
+
+/**
+ * The config with the agents of the agents/ directory added. A name both define is unusable: which of two definitions a
+ * task runs under must not depend on load order.
+ */
+export function withAgentsDir(config: Config, dir: string): Config {
+  const found = readAgentsDir(dir);
+  const agents = { ...config.agents };
+  const agentErrors = { ...config.agentErrors };
+  for (const [name, path] of Object.entries(found.agentFiles)) {
+    if (Object.hasOwn(agents, name) || Object.hasOwn(config.agentErrors, name)) {
+      delete agents[name];
+      agentErrors[name] =
+        `${name} is defined both in config.json and in agents/${path.split('/').pop()}; remove one of them`;
+      continue;
+    }
+    const agent = found.agents[name];
+    if (agent !== undefined) agents[name] = agent;
+    const problem = found.agentErrors[name];
+    if (problem !== undefined) agentErrors[name] = problem;
+  }
+  for (const [name, problem] of Object.entries(found.agentErrors))
+    if (!Object.hasOwn(found.agentFiles, name)) agentErrors[name] = problem;
+  return { ...config, agents, agentErrors, agentFiles: found.agentFiles };
 }
 
 export function parseConfig(raw: unknown): Config {
@@ -516,11 +623,11 @@ export function loadConfig(path: string, options: { optionalConfig?: boolean } =
       const code = error instanceof Error && 'code' in error ? String(error.code) : 'unknown error';
       throw new ConfigError(`cannot read the config file ${path} (${code})`);
     }
-    if (options.optionalConfig) return parseConfig({});
+    if (options.optionalConfig) return withAgentsDir(parseConfig({}), agentsDirOf(path));
     throw new ConfigError(`config file missing: ${path} (run "board init")`);
   }
   try {
-    return parseConfig(JSON.parse(content));
+    return withAgentsDir(parseConfig(JSON.parse(content)), agentsDirOf(path));
   } catch (error) {
     if (error instanceof SyntaxError) throw new ConfigError(`config file is not valid JSON: ${path}`);
     throw error;

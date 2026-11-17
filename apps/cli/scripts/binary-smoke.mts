@@ -256,6 +256,18 @@ await check('completion bash', async () => {
   assert.equal(result.code, 0);
   assert.match(result.stdout, /^# bash completion for board/);
 });
+await check('agents add example:reviewer writes a YAML file the binary reads back', async () => {
+  const dir = config({ config: true });
+  const added = await board(['agents', 'add', 'example:reviewer', '--yes'], dir);
+  assert.equal(added.code, 0, added.stderr);
+  assert.match(added.stdout, /allowedTools \(\d+\):[\s\S]*disallowedTools/);
+  assert.equal(statSync(join(dir, 'agents', 'reviewer.yaml')).mode & 0o777, 0o600);
+  const shown = await board(['agents', 'show', 'reviewer', '--json'], dir);
+  assert.equal(shown.code, 0, shown.stderr);
+  assert.equal((JSON.parse(shown.stdout) as { source?: string }).source, 'example:reviewer');
+  const refused = await board(['agents', 'add', 'http://example.com/a.yaml', '--yes'], dir);
+  assert.match(refused.stderr, /only https/);
+});
 await check('tasks works with only web.json and env', async () => {
   const result = await board(['tasks'], config());
   assert.equal(result.code, 0, result.stderr);

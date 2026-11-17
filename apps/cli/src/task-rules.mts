@@ -68,8 +68,8 @@ export function agentFor(
       kind: 'missing',
       reason:
         unreadable === undefined
-          ? `no agents.${agentLabel(name)} in config.json here`
-          : `agents.${agentLabel(name)} in config.json here cannot be used (${unreadable})`,
+          ? `no agent ${agentLabel(name)} defined here`
+          : `agent ${agentLabel(name)} here cannot be used (${unreadable})`,
     };
   }
   return { kind: 'found', name, agent };
