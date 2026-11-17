@@ -120,7 +120,7 @@ export const tasks = pgTable(
     sessionId: text('session_id'),
     /** Where the session was when it last stopped, on `machine`. */
     workdir: text('workdir'),
-    /** The sealed `workdir` the task was created with, as the same envelope; nothing updates it, and Re-run fresh restores it into `workdir`. */
+    /** The sealed `workdir` the task was created with, as the same envelope; only the user's change of the task's directory (`configureTask`) updates it, and Re-run fresh restores it into `workdir`. */
     homeWorkdir: text('home_workdir'),
     /** The sealed name of the agent the task runs as; null runs as the user's config says. Written once, at creation. */
     agent: text('agent'),

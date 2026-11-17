@@ -383,8 +383,9 @@ export async function attachSession(db: DbOrTx, id: string, machine: string): Pr
 
 /**
  * Todo to running for `machine`; the lock lets two machines claim at once and only one win.
- * A resume is pinned to the machine that holds its session, a proposal (a task that still names an agent as its creator) is
- * not for a worker to start, and a delayed task is not due before its start time.
+ * A resume is pinned to the machine that holds its session, a task with its own directory to the machine it was placed on,
+ * a proposal (a task that still names an agent as its creator) is not for a worker to start, and a delayed task is not due
+ * before its start time.
  * Undefined when the claim is lost.
  */
 export async function claimTask(db: DbOrTx, id: string, machine: string): Promise<TaskRow | undefined> {
@@ -396,6 +397,7 @@ export async function claimTask(db: DbOrTx, id: string, machine: string): Promis
       !task.proposed &&
       task.createdBy !== 'agent' &&
       (task.notBefore === null || task.notBefore.getTime() <= Date.now()) &&
+      (task.workdir === null || task.machine === null || task.machine === machine) &&
       (task.next === 'fresh' || task.sessionId === null || task.machine === null || task.machine === machine);
     return free ? transition(tx, task, { to: 'running', by: 'worker', set: { machine } }) : undefined;
   });
@@ -839,6 +841,51 @@ export async function setPriority(db: DbOrTx, taskId: string, priority: Priority
     if (task.priority === priority) return task;
     await systemEvent(tx, taskId, { type: 'priority', from: task.priority, to: priority }, by);
     return transition(tx, task, { place: 'bottom', by: 'user', set: { priority } });
+  });
+}
+
+export interface TaskConfig {
+  priority?: Priority | undefined;
+  model?: string | null | undefined;
+  place?: { machine: string; workdir: string } | null | undefined;
+}
+
+/**
+ * The user's edit of a task's settings, in one step. A priority works as `setPriority`. A model applies from the next run. A
+ * new place (the machine and the sealed directory, or null for none) replaces the directory the task was created with and
+ * drops the session: Claude Code keeps a session under its working directory, so it cannot be resumed from another one, and
+ * the next run starts fresh there and reads the thread. A running or waiting task keeps its place, since a run holds it.
+ */
+export async function configureTask(db: DbOrTx, taskId: string, config: TaskConfig, by: string): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    const { priority, model, place } = config;
+    if (place !== undefined) {
+      if (task.status === 'running' || task.status === 'waiting')
+        throw new AppError('CONFLICT', `The task is ${task.status}. Stop it first, then move it.`);
+      if (place !== null) requireSealed(place.workdir, 'the directory');
+    }
+    const set: TaskValues = {};
+    if (model !== undefined) set.model = model;
+    if (place !== undefined) {
+      const workdir = place?.workdir ?? null;
+      // A pause or a wake belongs to the session that is gone.
+      Object.assign(set, {
+        machine: place?.machine ?? null,
+        workdir,
+        homeWorkdir: workdir,
+        sessionId: null,
+        next: 'fresh',
+        pausedAt: null,
+        wokenAt: null,
+      } satisfies TaskValues);
+    }
+    const priorityChanged = priority !== undefined && priority !== task.priority;
+    if (priorityChanged) {
+      await systemEvent(tx, taskId, { type: 'priority', from: task.priority, to: priority }, by);
+      set.priority = priority;
+    }
+    return transition(tx, task, { place: priorityChanged ? 'bottom' : undefined, by: 'user', set });
   });
 }
 

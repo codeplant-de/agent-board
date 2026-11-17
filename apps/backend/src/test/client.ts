@@ -135,6 +135,14 @@ async function sealRequest(command: string, request: Json, sealing: Sealing, raw
       if (typeof patch['head'] === 'string') patch['head'] = await sealing.headIndex(patch['head']);
       return { ...request, body: patch };
     }
+    case 'configure-task': {
+      // The directory in plaintext, sealed as the CLI does it: under the binding of the row it lands on.
+      if (typeof body?.place?.workdir !== 'string') return request;
+      const wire = (await raw('get-task', { id })).json.result;
+      if (wire === undefined) return request;
+      const workdir = await sealWorkdir(sealing.seal, taskRowOf(wire), body.place.workdir);
+      return { ...request, body: { ...body, place: { ...body.place, workdir } } };
+    }
     case 'add-note':
       return typeof body === 'string'
         ? {
@@ -213,6 +221,11 @@ type CreateInput = Omit<Parameters<Raw['tasks']['create']>[0], 'id' | 'title' | 
   input: string;
   /** The directory in plaintext; it is sealed like the browser seals it. */
   place?: { machine: string; workdir: string };
+};
+
+type ConfigureInput = Omit<Parameters<Raw['tasks']['configure']>[0], 'place'> & {
+  /** The directory in plaintext; it is sealed like the browser seals it. */
+  place?: { machine: string; workdir: string } | null;
 };
 
 /** Makes a client of a tRPC caller: plaintext in and out, with the sealing the browser does (the same shared rules). */
@@ -359,6 +372,23 @@ export function plainUi(db: Db, owner = 'jascha') {
       done: mutation(raw.tasks.done),
       rerun: mutation(raw.tasks.rerun),
       setPriority: mutation(raw.tasks.setPriority),
+      // As the browser does: a new directory sealed for the row it lands on.
+      configure: async ({ place, ...input }: ConfigureInput) => {
+        const { task } = await raw.tasks.get({ id: input.id });
+        const workdir =
+          place === undefined || place === null
+            ? undefined
+            : await sealWorkdir(sealing.seal, taskRowOf(task), place.workdir);
+        return openTask(
+          await raw.tasks.configure({
+            ...input,
+            ...(place === null ? { place } : {}),
+            ...(place === undefined || place === null || workdir === undefined
+              ? {}
+              : { place: { machine: place.machine, workdir } }),
+          }),
+        );
+      },
       setNotBefore: mutation(raw.tasks.setNotBefore),
       takeBack: mutation(raw.tasks.takeBack),
       wakeNow: mutation(raw.tasks.wakeNow),

@@ -25,10 +25,13 @@ import type { useRawTRPC } from './rawTrpc';
 import {
   sealAnswer,
   sealApply,
+  sealConfigure,
   sealNewTask,
   sealReply,
   sealStart,
   startsProposal,
+  type Configuration,
+  type ConfigureTarget,
   type NewTask,
   type PolishTarget,
   type Proposal,
@@ -81,6 +84,11 @@ export interface ApplyVariables {
   target: PolishTarget;
   rewrite: Pick<Polish, 'title' | 'prompt'>;
 }
+
+export type ConfigureVariables = Configuration & {
+  // The task as the page shows it: a new directory is sealed under its row.
+  task: ConfigureTarget;
+};
 
 export type { NewTask };
 
@@ -184,6 +192,14 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
             mutationKey: raw.tasks.create.mutationKey(),
             mutationFn: async (task: NewTask) =>
               openBoardTask(need(), await client.tasks.create.mutate(await sealNewTask(need(), task))),
+          }),
+      },
+      configure: {
+        mutationOptions: () =>
+          mutationOptions({
+            mutationKey: raw.tasks.configure.mutationKey(),
+            mutationFn: async (variables: ConfigureVariables) =>
+              openBoardTask(need(), await client.tasks.configure.mutate(await sealConfigure(need(), variables))),
           }),
       },
       applyPolish: {

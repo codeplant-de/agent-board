@@ -21,6 +21,7 @@ export const ADDED_SERVER_FEATURES = [
   'machine.usage',
   'task.agent',
   'task.run',
+  'task.configure',
   'task.watches',
   'task.note-count',
 ] as const;
@@ -45,6 +46,7 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'machine.usage': 'usage status of machines',
   'task.agent': 'running a task as an agent',
   'task.run': 'telling runs of a task apart',
+  'task.configure': 'changing a task’s settings',
   'task.watches': 'showing a task’s watches',
   'task.note-count': 'the number of notes of a task',
   wait: 'waiting',

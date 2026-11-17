@@ -286,6 +286,17 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     async updateTask(id, patch) {
       return opened(await inner.updateTask(id, await sealPatch(id, patch)), openTask);
     },
+    async configureTask(id, change) {
+      const { place, seal: writer, ...rest } = change;
+      if (place === undefined || place === null)
+        return opened(await inner.configureTask(id, place === null ? { ...rest, place } : rest), openTask);
+      requireAbsolute('configure-task', place.workdir);
+      if (writer === undefined)
+        throw invalid('configure-task', 'sealing a directory needs the task creator and schedule (change.seal)');
+      const row: RowRef = { kind: 'task', id, ...writer };
+      const workdir = await checked('configure-task', () => sealWorkdir(sealer, row, place.workdir));
+      return opened(await inner.configureTask(id, { ...rest, place: { workdir } }), openTask);
+    },
     async claimTask(id, machine) {
       const claimed = await inner.claimTask(id, machine);
       return claimed === undefined ? undefined : opened(claimed, openTask);

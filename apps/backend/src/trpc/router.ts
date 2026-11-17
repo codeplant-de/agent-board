@@ -27,6 +27,7 @@ import {
   addTask,
   answer,
   applyPolish,
+  configureTask,
   getTask,
   listTasksWithLastNote,
   type LastNote,
@@ -307,6 +308,31 @@ const tasksRouter = router({
     .input(z.object({ id, priority }))
     .mutation(async ({ ctx, input }) =>
       boardTask(ctx.db, await setPriority(ctx.db, input.id, input.priority, ctx.username)),
+    ),
+
+  /**
+   * Changes a task's settings after creation. A `place` pins it to the machine and the sealed directory (null: none) and drops
+   * its session, so the next run starts fresh there; a running or waiting task is refused with CONFLICT. A model applies from the next run on.
+   */
+  configure: procedure
+    .input(
+      z
+        .object({
+          id,
+          priority: priority.optional(),
+          model: model.nullable().optional(),
+          place: z
+            .object({ machine: machineName, workdir: sealed('workdir', 'directory') })
+            .nullable()
+            .optional(),
+        })
+        .refine(
+          ({ priority: p, model: m, place }) => p !== undefined || m !== undefined || place !== undefined,
+          'change at least one of priority, model and place',
+        ),
+    )
+    .mutation(async ({ ctx, input: { id: taskId, ...config } }) =>
+      boardTask(ctx.db, await configureTask(ctx.db, taskId, config, ctx.username)),
     ),
 
   /** Delays a Todo task until `notBefore`; null makes it claimable now. */

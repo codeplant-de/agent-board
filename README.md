@@ -44,7 +44,7 @@ You need Linux with systemd, or macOS, and `claude`, logged in, plus `gh`, both 
 
 For runs after you log out, enable lingering with `loginctl enable-linger $USER`. Update later with `board self-update`.
 
-[docs/setup.md](docs/setup.md) covers installing from a checkout, every config key, and upgrading across contract versions.
+[docs/setup.md](docs/setup.md) covers installing from a checkout, every config key, and upgrading across contract versions. Once the machine runs, [docs/first-steps.md](docs/first-steps.md) is a tour of what to try next and which settings are worth changing.
 
 ## Use it
 
@@ -67,12 +67,13 @@ Then work from the task page:
 - **Transcript** shows every tool call of every run, live while it runs.
 - `board attach <task>` opens the session in your terminal on the machine that ran it.
 
-Agents report with `board comment`, ask with `board ask`, park on CI with `board wait`, report the PRs they open with `board pr`, and propose follow-up work with `board add`. A proposal only runs after you press **Start**.
+Agents report with `board comment`, ask with `board ask`, wait for CI with `board watch`, report the PRs they open with `board pr`, and propose follow-up work with `board add`. A proposal only runs after you press **Start**.
 
 A script such as `github-reviews` can turn GitHub review requests into review tasks on a timer. They run as an agent with a narrow allow-list, because their input is PR text nobody chose to read.
 
 Further reading:
 
+- [docs/first-steps.md](docs/first-steps.md): a tour after installing, tasks that make themselves, useful settings.
 - [docs/usage.md](docs/usage.md): statuses, scheduling, questions, waiting, polishing prompts.
 - [docs/workers.md](docs/workers.md): lanes, liveness limits, where a task runs, what a worker may do.
 - [docs/cli.md](docs/cli.md): every `board` command, generated from `board help`.
@@ -103,6 +104,7 @@ pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 
 | Document | Contents |
 | --- | --- |
+| [first-steps.md](docs/first-steps.md) | What to try after installing, automatic task creation, useful settings. |
 | [architecture.md](docs/architecture.md) | Components, data flow, design decisions and the rules a change must keep. |
 | [usage.md](docs/usage.md) | Tasks, scheduling, questions and resume, waiting, proposals, polish. |
 | [workers.md](docs/workers.md) | Multiple machines, lanes, liveness, transcripts, permissions, how dispatch decides. |

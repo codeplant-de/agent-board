@@ -76,6 +76,7 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   'ack-messages': 'run-inbox',
   stopped: 'run-inbox',
   'set-dirs': 'machine.dirs',
+  'configure-task': 'task.configure',
   'set-catalog': 'machine.catalog',
   'set-usage': 'machine.usage',
 };
@@ -205,6 +206,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       await requireSendable(patch);
       return call('update-task', { id: checkedId, body: patch }, parseWireTask);
     },
+    configureTask: async (id, body) => call('configure-task', { id: taskId(id), body }, parseWireTask),
     async claimTask(id, machine) {
       if (!isSafeMachineName(machine))
         throw new BackendError(`"${machine.slice(0, 40)}" is not a valid machine name: use ${MACHINE_NAME_RULE}`);

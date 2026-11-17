@@ -75,3 +75,15 @@ export function unlistedMachine(
   if (found?.dirs == null || found.dirs.length === 0) return undefined;
   return found.dirs.some(({ path }) => isWithin(workdir, path)) ? undefined : found.shown;
 }
+
+/**
+ * Whether choosing `choice` (undefined: no directory) changes nothing for the task. Choosing none is a change while the task
+ * is still pinned to a machine, since it removes the pin.
+ */
+export function isCurrentPlace(
+  task: { machine: string | null; workdir: string | null },
+  choice: Pick<DirectoryChoice, 'machine' | 'path'> | undefined,
+): boolean {
+  if (choice === undefined) return task.workdir === null && task.machine === null;
+  return task.machine === choice.machine && task.workdir === choice.path;
+}
