@@ -40,6 +40,7 @@ board schedule --at 09:00 /grill the plan in docs/x.md
 board schedule --polish "CSV export should include postal codes"
 board delay Ab3dEf9x --in 1d
 board task Ab3dEf9x set dir ~/workspace/agent-board
+board task Ab3dEf9x set prompt Find out why the CSV export is slow
 board schedule --every 2h --times 5 /sweep the stale branches
 board schedule --cron "0 9 * * 1-5" /review-pr --auto
 board schedules
@@ -158,7 +159,22 @@ Until a worker claims a task, you can change its title and prompt on its page: *
 
 Once a worker claimed it, even if it went back to Todo, the prompt is in its thread. Reply to it instead. If a worker claims the task while the editor is open, the editor stays with your text and saving fails with "The task has started; its prompt is in its thread now. Reply to it instead." Copy your text out before you close it.
 
-A card of a repeating schedule has no **Edit prompt**: its prompt belongs to the schedule. Its page links to the Schedules page, where an edit reaches the card too while it has not started. There is no command for editing a prompt yet.
+A card of a repeating schedule has no **Edit prompt**: its prompt belongs to the schedule. Its page links to the Schedules page, where an edit reaches the card too while it has not started.
+
+The same edit is a command:
+
+| Command                                              | Effect                                                                                       |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `board task <task> set prompt <text...>`             | New prompt, the title stays. The text is every word after `prompt`.                          |
+| `board task <task> set prompt -`                     | Reads the prompt from stdin.                                                                 |
+| `board task <task> set prompt --file <path>`         | Reads it from a regular file in `/tmp`, for a long prompt.                                   |
+| `board task <task> set prompt --title <title> <...>` | Sets the title too. An empty `--title ""` makes the title from the first line of the prompt. |
+
+The CLI seals the new text as yours, as the browser does, and keeps the old title and prompt in a note on the task. It checks the rules above first and says which one stops it: a task of an agent, a card of a schedule (it points to `board schedules edit`), a task a worker started (it points to `board comment`), a closed task or one outside Todo and Backlog. The same title and prompt change nothing. The server checks the same rules again, so a task claimed in between is refused. `--dry-run` prints what would be sent.
+
+`set prompt` needs the server feature `prompt.edit`, and is refused inside a board run like the other `set` commands: an agent's rewrite of your prompt is a suggestion you apply yourself, never your own words.
+
+On a prompt that starts with dashes, put `--` before it.
 
 ### Repeating schedules
 
@@ -188,18 +204,21 @@ A repeat skips the duplicate check, since a recurring prompt resembles its own e
 
 **Managing schedules.**
 
-| Command                       | Effect                                                                          |
-| ----------------------------- | ------------------------------------------------------------------------------- |
-| `board schedules`             | Lists id, rule, next run, runs left including the pending one, state and title. |
-| `board schedules pause <id>`  | Takes the pending card off the board and stops the schedule.                    |
-| `board schedules resume <id>` | Makes the next card, at the first run on the rule from now.                     |
-| `board schedules rm <id>`     | Deletes the schedule and its pending card. Cards that already ran stay.         |
+| Command                               | Effect                                                                                                                  |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `board schedules`                     | Lists id, rule, next run, runs left including the pending one, state and title.                                         |
+| `board schedules pause <id>`          | Takes the pending card off the board and stops the schedule.                                                            |
+| `board schedules resume <id>`         | Makes the next card, at the first run on the rule from now.                                                             |
+| `board schedules rm <id>`             | Deletes the schedule and its pending card. Cards that already ran stay.                                                 |
+| `board schedules edit <id> <text...>` | Changes the prompt, see below. `-` reads stdin, `--file <path>` a file in `/tmp`, `--title <title>` sets the title too. |
 
-`pause`, `resume` and `rm` are refused inside a board run, like `board schedule`.
+`edit` keeps the current title without `--title`. Every later run takes the new text. The pending card takes it too while it waits in Todo and no worker has claimed it, and the command says which of three happened, in the web's words: "The pending card was updated too", "The pending card has already started; the change applies from the next run", or "The schedule has no pending card; its next run takes the change". An ended schedule is refused, and the old text is not kept. `edit` needs the server feature `prompt.edit`.
+
+`pause`, `resume`, `rm` and `edit` are refused inside a board run, like `board schedule`.
 
 ### The Schedules page
 
-The **Schedules** page of the web board lists each schedule with its title and prompt, rule, next run, runs left (`forever` without an end), machine and a link to the pending card. You can edit, pause, resume and delete from there. An ended schedule is dimmed and can only be deleted.
+The **Schedules** page of the web board lists each schedule with its title and prompt, rule, next run, runs left (`forever` without an end), machine and a link to the pending card. You can edit, pause, resume and delete from there, as `board schedules edit` does. An ended schedule is dimmed and can only be deleted.
 
 **Edit** changes the schedule's title and prompt. Every later run takes them. The pending card takes them too while it waits in Todo and no worker has claimed it, and the page says which of three happened: "The pending card was updated too", "The pending card has already started; the change applies from the next run", or "The schedule has no pending card; its next run takes the change" (a paused schedule has none). Cards that already ran or moved on keep what they had. The old text is not kept: a schedule has no thread.
 

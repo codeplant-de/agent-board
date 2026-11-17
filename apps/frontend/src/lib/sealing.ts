@@ -2,6 +2,7 @@ import {
   ContractError,
   defaultTitle,
   newTaskId,
+  previousText,
   QuestionError,
   sealAnswers,
   sealFields,
@@ -9,6 +10,7 @@ import {
   sealNote,
   sealTitle,
   sealWorkdir,
+  textBeforeEdit,
   type Answer,
   type Keys,
   type Priority,
@@ -162,27 +164,6 @@ export interface PolishTarget {
   /** The task it was forked from, if it is a fork: its prompt is sealed under the link too. */
   forkOf?: string;
   unreadable: UnreadableField[];
-}
-
-/** `text` in a code fence long enough that nothing inside it closes the fence. */
-function fenced(text: string): string {
-  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
-  const fence = '`'.repeat(Math.max(3, longest + 1));
-  return `${fence}\n${text}\n${fence}`;
-}
-
-function keptText(label: string, target: Pick<PolishTarget, 'title' | 'input'>): string {
-  return `${label}\n\nTitle: ${target.title}\n\n${fenced(target.input)}`;
-}
-
-/** The note that keeps what a polished prompt replaces, so applying it loses nothing. */
-export function previousText(target: Pick<PolishTarget, 'title' | 'input'>): string {
-  return keptText('Prompt before polishing', target);
-}
-
-/** The note that keeps what an edit of the prompt replaces. */
-export function textBeforeEdit(target: Pick<PolishTarget, 'title' | 'input'>): string {
-  return keptText('Prompt before editing', target);
 }
 
 /**

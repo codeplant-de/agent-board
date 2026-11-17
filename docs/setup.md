@@ -209,6 +209,14 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
+### Editing a prompt (CLI 0.27.0)
+
+A new server feature, `prompt.edit`. `board task <task> set prompt` and `board schedules edit` change the prompt of a task that has not started and of a schedule, as the task page and the Schedules page do (see [Editing the prompt](usage.md#editing-the-prompt)). Nothing changes in the database, and no version number is raised.
+
+Update the server first. A server without `prompt.edit` makes both commands refuse with "the board server does not support editing a prompt yet; update the board server", and nothing else changes. A machine on an older CLI has no such command and runs everything as before.
+
+- `board doctor` warns about a server without `prompt.edit`.
+
 ### Forking a task (CLI 0.25.0)
 
 A new server feature, `task.fork`. On the task page, **Fork** makes a new task that continues a copy of the task's Claude session (see [Forking a task](usage.md#forking-a-task)). A migration adds the column `fork_of` to `task`. Nothing changes for a task that is not a fork, and no version number is raised.

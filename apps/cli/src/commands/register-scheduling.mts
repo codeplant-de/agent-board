@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { Command } from 'commander';
-import { delay, scheduleCommand, schedules, scheduleJson } from './board.mts';
+import { delay, editSchedulePrompt, scheduleCommand, schedules, scheduleJson } from './board.mts';
 import type { DelayFlags } from './board.mts';
 import { UsageError } from '../cli.mts';
 import { resolveScheduleId } from './ids.mts';
@@ -21,6 +21,7 @@ export function registerScheduleCommands(shared: ProgramShared): void {
     jsonOptionReadable,
     dryRunOption,
     notInRun,
+    textOf,
   } = shared;
   const schedule = program
     .command('schedule')
@@ -88,15 +89,19 @@ export function registerScheduleCommands(shared: ProgramShared): void {
       program
         .command('schedules')
         .helpGroup(SCHEDULING)
-        .summary('list, pause, resume or delete repeating schedules')
+        .summary('list, edit, pause, resume or delete repeating schedules')
         .description(
           paragraphs(
             'Without arguments, list the repeating schedules: id, rule, next run, runs left, paused or ended, title; --json prints them as JSON.',
-            '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run. Changing a schedule is not available inside a board run. The id can be the start of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.',
+            '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run.',
+            "`edit <id> <text...>` changes the schedule's prompt: the text is every word after the id, `-` reads it from stdin and `--file <path>` from a regular file in /tmp, for long text. `--title <title>` sets the title too; without it the title stays. Every later run takes the new text. The waiting run takes it too while it is in Todo and no worker has claimed it, and the command says which of three happened. Runs that already started keep what they had, and the old text is not kept. An ended schedule is refused.",
+            'Changing a schedule is not available inside a board run. The id can be the start of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.',
           ),
         )
-        .usage('[options] [pause|resume|rm <id>]')
-        .argument('[action...]', 'pause, resume or rm, and the schedule id')
+        .usage('[options] [pause|resume|rm <id> | edit <id> <text...|-|--file <path>>]')
+        .argument('[action...]', 'pause, resume, rm or edit, and the schedule id')
+        .option('--title <title>', 'with edit: the new title (default: keep the current one)')
+        .option('--file <path>', 'with edit: the prompt from a regular file in /tmp')
         .addHelpText(
           'after',
           examples(
@@ -104,10 +109,12 @@ export function registerScheduleCommands(shared: ProgramShared): void {
             'board schedules --json',
             'board schedules pause s1b2c3d4',
             'board schedules rm s1b',
+            'board schedules edit s1b2c3d4 /sweep the stale branches and the stale worktrees',
+            'board schedules edit s1b --title "Nightly sweep" --file /tmp/prompt.md',
           ),
         ),
     ),
-  ).action(async (words: string[], flags: { json?: boolean }, command: Command) => {
+  ).action(async (words: string[], flags: { json?: boolean; title?: string; file?: string }, command: Command) => {
     if (words.length > 0) notInRun('board schedules changes are not available inside a board run');
     const context = contextOf(command, { json: flags.json === true });
     if (flags.json) {
@@ -115,8 +122,16 @@ export function registerScheduleCommands(shared: ProgramShared): void {
       return writeJson((await context.backend.listSchedules()).map(scheduleJson));
     }
     const [action, arg, ...rest] = words;
-    const changes = action === 'pause' || action === 'resume' || action === 'rm';
+    if ((flags.title !== undefined || flags.file !== undefined) && action !== 'edit')
+      throw new UsageError('--title and --file belong to board schedules edit');
+    const changes = action === 'pause' || action === 'resume' || action === 'rm' || action === 'edit';
     const id = arg === undefined || !changes ? undefined : await resolveScheduleId(context.backend, arg, { inRun });
+    if (action === 'edit' && id !== undefined) {
+      if (flags.file !== undefined && rest.length > 0)
+        throw new UsageError('give the prompt as words or with --file, not both');
+      const text = await textOf(flags.file === undefined ? rest : ['--file', flags.file]);
+      return editSchedulePrompt(context, id, { text, ...(flags.title === undefined ? {} : { title: flags.title }) });
+    }
     return schedules(context, id === undefined ? words : [action ?? '', id, ...rest]);
   });
 }

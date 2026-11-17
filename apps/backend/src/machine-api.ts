@@ -31,7 +31,9 @@ import {
   parseWirePrStates,
   parseWireWatches,
   parseWireWatchStopAck,
+  parseWirePromptEdit,
   parseWireScheduleDraft,
+  parseWireScheduleEdit,
   parseWireTaskConfig,
   parseWireTaskDraft,
   parseWireTaskPatch,
@@ -61,7 +63,7 @@ import {
   setMachineDirs,
   setMachineUsage,
 } from './services/machines';
-import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
+import { addSchedule, editSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
 import { appendTranscript } from './services/transcripts';
 import {
   ackMessages,
@@ -71,6 +73,7 @@ import {
   attachSession,
   claimTask,
   configureTask,
+  editPrompt,
   failTask,
   getTask,
   heartbeat,
@@ -218,6 +221,11 @@ async function handleMachineCall(
       // A machine pins a task to itself only: the token names the machine, never the body.
       const pinned = place === undefined ? {} : { place: place === null ? null : { machine, workdir: place.workdir } };
       return task(await configureTask(db, idOf(body, 'task'), { ...config, ...pinned }, machine));
+    }
+    // The one place a machine stores a note of the user's: the user's own CLI edits a prompt, and refuses to inside a run.
+    case 'edit-prompt': {
+      const edit = parsed(() => parseWirePromptEdit(body['body']));
+      return task(await editPrompt(db, { taskId: idOf(body, 'task'), ...edit, by: machine }));
     }
     case 'claim-task': {
       const id = idOf(body, 'task');
@@ -373,6 +381,11 @@ async function handleMachineCall(
       const { paused } = parsed(() => parseSchedulePatch(body['body']));
       return serializeSchedule(schedule(await setPaused(db, idOf(body, 'schedule'), paused)));
     }
+    case 'edit-schedule': {
+      const edit = parsed(() => parseWireScheduleEdit(body['body']));
+      const { schedule: edited, pending } = await editSchedule(db, { id: idOf(body, 'schedule'), ...edit });
+      return { schedule: serializeSchedule(schedule(edited)), pending };
+    }
     case 'remove-schedule':
       await removeSchedule(db, idOf(body, 'schedule'));
       return null;
@@ -386,6 +399,7 @@ const DISPATCH_WRITES = new Set([
   'add-task',
   'update-task',
   'configure-task',
+  'edit-prompt',
   'claim-task',
   'add-note',
   'set-pr',
@@ -399,6 +413,7 @@ const DISPATCH_WRITES = new Set([
   'wake',
   'add-schedule',
   'update-schedule',
+  'edit-schedule',
   'remove-schedule',
 ]);
 

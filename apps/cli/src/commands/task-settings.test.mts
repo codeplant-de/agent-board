@@ -378,7 +378,7 @@ test('a server without the feature makes the command refuse with the standard te
 test('unknown actions and keys are usage errors', async (context) => {
   const run = runner(context, [task({ id: 'abc12345' })]);
   await assert.rejects(run.go(['task', 'abc12345', 'frob']), /takes nothing, or set or unset/);
-  await assert.rejects(run.go(['task', 'abc12345', 'set', 'colour', 'red']), /takes priority, model or dir/);
+  await assert.rejects(run.go(['task', 'abc12345', 'set', 'colour', 'red']), /takes priority, model, dir or prompt/);
   await assert.rejects(run.go(['task', 'abc12345', 'set', 'dir', 'a', 'b']), /takes one path/);
   await assert.rejects(run.go(['task', 'abc12345', 'unset', 'model', 'x']), UsageError);
 });
