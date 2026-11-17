@@ -8,6 +8,7 @@ import {
   parseVersionDirsIndex,
   parseVersionFeatures,
   parseVersionIdentity,
+  parseVersionUsageIndex,
 } from '@agent-board/shared';
 import type { Keys } from '@agent-board/shared';
 import { isCompiledBinary } from '../self/self.mts';
@@ -39,6 +40,8 @@ export interface ServerIdentity {
   dirsIndex?: string;
   // The same for the catalogue of skills and models.
   catalogIndex?: string;
+  // The same for the usage status.
+  usageIndex?: string;
 }
 
 // Asks the server for its API range and refuses a CLI the server no longer serves and a server older than the CLI
@@ -79,6 +82,7 @@ export async function verifyContract(
     const cli = parseVersionCli(version);
     const dirsIndex = parseVersionDirsIndex(version);
     const catalogIndex = parseVersionCatalogIndex(version);
+    const usageIndex = parseVersionUsageIndex(version);
     return {
       ...identity,
       api: served,
@@ -86,6 +90,7 @@ export async function verifyContract(
       ...(cli === null ? {} : { cli }),
       ...(dirsIndex === null ? {} : { dirsIndex }),
       ...(catalogIndex === null ? {} : { catalogIndex }),
+      ...(usageIndex === null ? {} : { usageIndex }),
     };
   } catch (error) {
     throw asBackendError('version', error);

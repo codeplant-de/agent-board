@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
+  buildMachineUsage,
   createUsageStore,
   describeReached,
   earliestReset,
@@ -172,4 +173,62 @@ test('a priority is below the lowest one that may start when it ranks after it',
   assert.ok(isBelowPriority('low', 'normal'));
   assert.ok(!isBelowPriority('urgent', 'urgent'));
   assert.ok(!isBelowPriority('high', 'normal'));
+});
+
+test('the usage status carries the limits, the readings as whole percents, the reached windows and sorted task ids', () => {
+  const stored: StoredUsage = {
+    fiveHour: { utilization: 0.29, resetsAt: '2026-11-17T14:05:00.000Z', seenAt: '2026-11-17T12:00:00.000Z' },
+  };
+  const reached = [
+    { window: 'fiveHour' as const, percent: 29, threshold: 20, resetsAt: new Date('2026-11-17T14:05:00.000Z') },
+  ];
+  assert.deepEqual(
+    buildMachineUsage({
+      limits: { fiveHour: 20, priority: 'high' },
+      stored,
+      reached,
+      heldIds: ['taskB', 'taskA', 'taskB'],
+      openIds: ['taskC'],
+    }),
+    {
+      limits: { fiveHour: 20, priority: 'high' },
+      windows: { fiveHour: { percent: 29, resetsAt: '2026-11-17T14:05:00.000Z', seenAt: '2026-11-17T12:00:00.000Z' } },
+      reached: ['fiveHour'],
+      held: ['taskA', 'taskB'],
+      open: ['taskC'],
+    },
+  );
+});
+
+test('a machine without limits sends no limits key, and no reading is no window', () => {
+  assert.deepEqual(buildMachineUsage({ limits: undefined, stored: {}, reached: [], heldIds: [], openIds: ['t1'] }), {
+    windows: {},
+    reached: [],
+    held: [],
+    open: ['t1'],
+  });
+});
+
+test('the task lists are cut at the cap and an id that is no task id is left out', () => {
+  const ids = Array.from({ length: 600 }, (_, index) => `t${String(index).padStart(4, '0')}`);
+  const status = buildMachineUsage({
+    limits: undefined,
+    stored: {},
+    reached: [],
+    heldIds: [...ids, 'bad id'],
+    openIds: [],
+  });
+  assert.equal(status.held.length, 500);
+  assert.equal(status.held[0], 't0000');
+  assert.ok(!status.held.includes('bad id'));
+});
+
+test('a utilization beyond what the board takes is clamped', () => {
+  const stored: StoredUsage = {
+    sevenDay: { utilization: 50, resetsAt: '2026-11-17T14:05:00.000Z', seenAt: '2026-11-17T12:00:00.000Z' },
+  };
+  assert.equal(
+    buildMachineUsage({ limits: undefined, stored, reached: [], heldIds: [], openIds: [] }).windows.sevenDay?.percent,
+    1000,
+  );
 });

@@ -9,6 +9,7 @@ export * from './keys.mts';
 export * from './events.mts';
 export * from './sealing.mts';
 export * from './catalog.mts';
+export * from './machineUsage.mts';
 export * from './polish.mts';
 export * from './features.mts';
 export * from './slack.mts';

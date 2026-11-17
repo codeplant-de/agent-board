@@ -57,6 +57,7 @@ interface Connection {
   features: ReadonlySet<string>;
   dirsIndex: string | null;
   catalogIndex: string | null;
+  usageIndex: string | null;
 }
 
 // The server feature each command needs; a command not listed works on every server this CLI accepts.
@@ -74,6 +75,7 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   stopped: 'run-inbox',
   'set-dirs': 'machine.dirs',
   'set-catalog': 'machine.catalog',
+  'set-usage': 'machine.usage',
 };
 
 // The commands a run makes for its own task that the server checks against the task's current run (`task.run`).
@@ -105,6 +107,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
         features: identity.features,
         dirsIndex: identity.dirsIndex ?? null,
         catalogIndex: identity.catalogIndex ?? null,
+        usageIndex: identity.usageIndex ?? null,
       };
     })();
     return ready;
@@ -252,6 +255,11 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     catalogState: async () => {
       const { features, catalogIndex } = await connect();
       return { supported: features.has('machine.catalog'), index: catalogIndex };
+    },
+    setUsage: async (body) => send('set-usage', { body }),
+    usageState: async () => {
+      const { features, usageIndex } = await connect();
+      return { supported: features.has('machine.usage'), index: usageIndex };
     },
     pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
     fail: async (id, note) => call('fail', { id: taskId(id), body: note }, parseWireFailResult),

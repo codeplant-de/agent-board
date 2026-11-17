@@ -29,6 +29,9 @@ export async function issueToken(db: DbOrTx, name: string): Promise<string> {
         catalog: null,
         catalogIndex: null,
         catalogUpdatedAt: null,
+        usage: null,
+        usageIndex: null,
+        usageUpdatedAt: null,
       },
     });
   return token;
@@ -94,6 +97,8 @@ export async function listMachines(db: DbOrTx, advertisedCli: string | null) {
       clientApi: machines.clientApi,
       dirs: machines.dirs,
       dirsUpdatedAt: machines.dirsUpdatedAt,
+      usage: machines.usage,
+      usageUpdatedAt: machines.usageUpdatedAt,
     })
     .from(machines)
     .orderBy(asc(machines.name));
@@ -123,6 +128,9 @@ export async function revokeMachine(db: DbOrTx, name: string): Promise<void> {
       catalog: null,
       catalogIndex: null,
       catalogUpdatedAt: null,
+      usage: null,
+      usageIndex: null,
+      usageUpdatedAt: null,
     })
     .where(eq(machines.name, name));
 }
@@ -156,5 +164,19 @@ export async function setMachineCatalog(
 /** The blind index of the catalogue a machine last sent, or null when it sent none. */
 export async function machineCatalogIndex(db: DbOrTx, name: string): Promise<string | null> {
   const [row] = await db.select({ index: machines.catalogIndex }).from(machines).where(eq(machines.name, name));
+  return row?.index ?? null;
+}
+
+/** Stores the sealed usage status a machine sent, with the blind index of what it holds. */
+export async function setMachineUsage(db: DbOrTx, name: string, sent: { usage: string; index: string }): Promise<void> {
+  await db
+    .update(machines)
+    .set({ usage: sent.usage, usageIndex: sent.index, usageUpdatedAt: new Date() })
+    .where(eq(machines.name, name));
+}
+
+/** The blind index of the usage status a machine last sent, or null when it sent none. */
+export async function machineUsageIndex(db: DbOrTx, name: string): Promise<string | null> {
+  const [row] = await db.select({ index: machines.usageIndex }).from(machines).where(eq(machines.name, name));
   return row?.index ?? null;
 }

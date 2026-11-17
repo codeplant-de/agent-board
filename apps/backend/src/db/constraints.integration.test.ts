@@ -147,11 +147,18 @@ describe('what the application role can store afterwards', () => {
 
   const machine = (
     tx: Tx,
-    o: { dirs?: string | null; dirsIndex?: string | null; catalog?: string | null; catalogIndex?: string | null } = {},
+    o: {
+      dirs?: string | null;
+      dirsIndex?: string | null;
+      catalog?: string | null;
+      catalogIndex?: string | null;
+      usage?: string | null;
+      usageIndex?: string | null;
+    } = {},
   ) =>
     tx.execute(sql`
-      insert into machine (name, token_hash, dirs, dirs_index, catalog, catalog_index)
-      values ('laptop', 'hash', ${o.dirs ?? null}, ${o.dirsIndex ?? null}, ${o.catalog ?? null}, ${o.catalogIndex ?? null})`);
+      insert into machine (name, token_hash, dirs, dirs_index, catalog, catalog_index, usage, usage_index)
+      values ('laptop', 'hash', ${o.dirs ?? null}, ${o.dirsIndex ?? null}, ${o.catalog ?? null}, ${o.catalogIndex ?? null}, ${o.usage ?? null}, ${o.usageIndex ?? null})`);
 
   const plaintextCases: [string, string, (tx: Tx) => Promise<unknown>][] = [
     ['task_title_sealed', 'a plain task title', (tx) => task(tx, { title: 'plain' })],
@@ -175,6 +182,9 @@ describe('what the application role can store afterwards', () => {
       'an envelope as a catalogue index',
       (tx) => machine(tx, { catalogIndex: ENVELOPE }),
     ],
+    ['machine_usage_sealed', 'a plain usage status', (tx) => machine(tx, { usage: '{"windows":{}}' })],
+    ['machine_usage_index_blind', 'a plain usage index', (tx) => machine(tx, { usageIndex: 'abcdef' })],
+    ['machine_usage_index_blind', 'an envelope as a usage index', (tx) => machine(tx, { usageIndex: ENVELOPE })],
     ['task_title_sealed', 'a too short envelope', (tx) => task(tx, { title: 'abe1.AAAA' })],
     ['task_title_sealed', 'an envelope with a line break', (tx) => task(tx, { title: `${ENVELOPE}\n` })],
     ['schedule_title_sealed', 'a plain schedule title', (tx) => schedule(tx, { title: 'plain' })],
@@ -232,7 +242,14 @@ describe('what the application role can store afterwards', () => {
       });
       await schedule(tx, { workdir: ENVELOPE, agent: ENVELOPE });
       await tx.execute(sql`insert into task_pr (id, task_id, pr) values ('p1', 't1', ${ENVELOPE})`);
-      await machine(tx, { dirs: ENVELOPE, dirsIndex: BLIND_INDEX, catalog: ENVELOPE, catalogIndex: BLIND_INDEX });
+      await machine(tx, {
+        dirs: ENVELOPE,
+        dirsIndex: BLIND_INDEX,
+        catalog: ENVELOPE,
+        catalogIndex: BLIND_INDEX,
+        usage: ENVELOPE,
+        usageIndex: BLIND_INDEX,
+      });
     });
     await clear();
     await as(async (tx) =>

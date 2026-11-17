@@ -18,6 +18,7 @@ export const ADDED_SERVER_FEATURES = [
   'run-inbox',
   'machine.dirs',
   'machine.catalog',
+  'machine.usage',
   'task.agent',
   'task.run',
 ] as const;
@@ -39,6 +40,7 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'run-inbox': 'messages and stop requests for a running task',
   'machine.dirs': 'directory lists',
   'machine.catalog': 'machine catalogues',
+  'machine.usage': 'usage status of machines',
   'task.agent': 'running a task as an agent',
   'task.run': 'telling runs of a task apart',
   wait: 'waiting',

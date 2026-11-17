@@ -8,6 +8,7 @@ import {
   openFields,
   openMachineCatalog,
   openMachineDirs,
+  openMachineUsage,
   openNote,
   openPrs,
   openPreview,
@@ -20,6 +21,7 @@ import {
   type Keys,
   type MachineCatalog,
   type MachineDir,
+  type MachineUsage,
   type NoteKind,
   type Opener,
   type PrState,
@@ -117,13 +119,18 @@ export type TranscriptRun = Omit<RouterOutputs['transcript']['runs'][number], 'e
 };
 // `name` is what the board sent, kept to send back (a token with a name that does not pass the shape check can still be revoked);
 // `shown` is what the page may print.
-export type Machine = Omit<RouterOutputs['machines']['list'][number], 'dirs'> & {
+export type Machine = Omit<RouterOutputs['machines']['list'][number], 'dirs' | 'usage'> & {
   shown: string;
   // The directories the machine listed, with the label it gave each, as the user's own text; null when it has no list to
   // offer: none sent, a revoked machine, or a name that does not pass the shape check.
   dirs: MachineDir[] | null;
   // The machine has a list that does not open under its name or is not of its shape, so it offers nothing.
   dirsUnreadable: boolean;
+  // The usage status the machine sent, as display only; null when it sent none, is revoked or has a name that does not pass the
+  // shape check.
+  usage: MachineUsage | null;
+  // The machine has a status that does not open under its name or is not of its shape.
+  usageUnreadable: boolean;
 };
 // The skills and models a machine listed, as advice for what the forms offer; null when it has none to offer: one that does not
 // open under its name, is not of its shape, or belongs to a name that does not pass the shape check.
@@ -293,15 +300,20 @@ export function openRuns(wire: RouterOutputs['transcript']['runs']): TranscriptR
 
 export async function openMachines(keys: Keys, wire: RouterOutputs['machines']['list']): Promise<Machine[]> {
   return Promise.all(
-    wire.map(async ({ dirs: sealed, ...machine }) => {
+    wire.map(async ({ dirs: sealed, usage: sealedUsage, ...machine }) => {
       const shown = shownName(machine.name) ?? INVALID_VALUE;
       const offers = machine.revokedAt === null && shown !== INVALID_VALUE && sealed !== null && sealed !== undefined;
       const opened = offers ? await openMachineDirs(openerFor(keys), machine.name, sealed) : undefined;
+      const reports =
+        machine.revokedAt === null && shown !== INVALID_VALUE && sealedUsage !== null && sealedUsage !== undefined;
+      const usage = reports ? await openMachineUsage(openerFor(keys), machine.name, sealedUsage) : undefined;
       return {
         ...machine,
         shown,
         dirs: opened ?? null,
         dirsUnreadable: offers && opened === undefined,
+        usage: usage ?? null,
+        usageUnreadable: reports && usage === undefined,
       };
     }),
   );
