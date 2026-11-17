@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import {
   add,
+  ask,
   delay,
   tasks,
   move,
@@ -260,6 +261,56 @@ test('board move on a proposal says so in one plain line', async () => {
     throw new BackendError('update-task: no task x', 404);
   };
   await assert.rejects(move(context, 'p1', 'todo'), BackendError);
+});
+
+test('board ask refused because the run no longer holds the task tells the agent to stop asking', async () => {
+  const dir = mkdtempSync('/tmp/board-ask-test-');
+  try {
+    const file = join(dir, 'q.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        questions: [
+          {
+            header: 'Q',
+            question: 'Which?',
+            multiSelect: false,
+            options: [
+              { label: 'A', description: '' },
+              { label: 'B', description: '' },
+            ],
+          },
+        ],
+      }),
+    );
+    const backend = fakeBackend([task({ id: 't1' })]);
+    backend.ask = async () => {
+      throw new BackendError('ask: the task is running on workstation, not on laptop', 409, true);
+    };
+    const context: LinkingContext = {
+      config: CONFIG,
+      backend,
+      dryRun: false,
+      taskLink: linkTo,
+      print: () => undefined,
+    };
+    await assert.rejects(
+      ask(context, 't1', file),
+      (error: Error) =>
+        error instanceof UsageError &&
+        error.message.startsWith(
+          't1 cannot take a question: ask: the task is running on workstation, not on laptop.',
+        ) &&
+        error.message.includes('do not ask again, end your turn'),
+    );
+    // Anything else is the board's own failure, passed on as it is.
+    backend.ask = async () => {
+      throw new BackendError('ask: no task t1', 404, true);
+    };
+    await assert.rejects(ask(context, 't1', file), BackendError);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });
 
 test('board delay takes --in, --at or --now and nothing else', () => {

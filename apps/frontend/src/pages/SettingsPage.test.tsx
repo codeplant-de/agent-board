@@ -165,6 +165,13 @@ describe('machine enrolment', () => {
     expect(await openAs(machineKeys, TITLE, sealedByBrowser)).toBe('sealed in the browser');
   });
 
+  it('refuses a name that is not a machine name before asking for the passphrase', async () => {
+    renderPage();
+    await userEvent.type(await screen.findByLabelText('Add a machine'), 'my laptop');
+    expect(await screen.findByText(/^Use 1 to 64 characters/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create token' })).toBeDisabled();
+  });
+
   it('issues no token when the passphrase is wrong', async () => {
     renderPage();
     await userEvent.type(await screen.findByLabelText('Add a machine'), 'desktop');

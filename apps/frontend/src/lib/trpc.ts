@@ -36,9 +36,10 @@ export function createClients() {
     defaultOptions: {
       queries: { staleTime: 2_000, refetchOnWindowFocus: true, retry: 1 },
     },
-    // Every write may change the board, the task page and the cards' last note, so refetch what is on screen.
+    // Every write may change the board, the task page and the cards' last note, so refetch what is on screen. Not awaited:
+    // a returned promise holds every mutation's own onSuccess until all active queries have refetched.
     mutationCache: new MutationCache({
-      onSuccess: (): Promise<void> => queryClient.invalidateQueries(),
+      onSuccess: () => void queryClient.invalidateQueries(),
       onError: (err) => notifications.show({ color: 'red', title: 'Failed', message: errorMessage(err) }),
     }),
   });

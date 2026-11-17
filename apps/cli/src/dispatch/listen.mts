@@ -1,7 +1,8 @@
 /**
  * The listener: holds a stream to the board and runs a dispatch tick when it says tasks changed, so a new task starts
- * in about a second instead of at the next timer tick. The timer stays as the fallback. The stream carries no task
- * data; a tick reads the board as it always does.
+ * in about a second instead of at the next timer tick. After every tick it also arms a timer for the moment the tick said
+ * something here is next due (a delayed task, the end of a wait, a check), which no event announces. The timer unit stays
+ * as the fallback. The stream carries no task data; a tick reads the board as it always does.
  */
 import { spawn } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
@@ -17,7 +18,7 @@ import { print } from '../cli.mts';
 import { selfCommand } from '../self/self.mts';
 import { errorText } from '../output/text.mts';
 import { signalGroup } from '../worker/process.mts';
-import { lockDir } from '../worker/runtime.mts';
+import { createRunFiles, lockDir } from '../worker/runtime.mts';
 import { TICK_GRACE_S, TICK_LIMIT_S, lockFileName } from './tick.mts';
 
 export interface Timers {
@@ -47,6 +48,12 @@ export interface TickerOptions {
   log: (line: string) => void;
   debounceMs: number;
   retryMs: number;
+  // When the last tick said something is next due (ms, on the clock of `timers`); undefined when nothing is.
+  nextDue: () => number | undefined;
+  // The due timer waits at least this long, so a time that stays in the past cannot start tick after tick.
+  dueFloorMs: number;
+  // And at most this long: a time further off is read again then.
+  dueMaxMs: number;
 }
 
 export interface Ticker {
@@ -59,8 +66,18 @@ export interface Ticker {
 }
 
 // Ticks never overlap: what arrives during one is a single dirty flag, and one more tick follows.
-export function createTicker({ run, timers, log, debounceMs, retryMs }: TickerOptions): Ticker {
+export function createTicker({
+  run,
+  timers,
+  log,
+  debounceMs,
+  retryMs,
+  nextDue,
+  dueFloorMs,
+  dueMaxMs,
+}: TickerOptions): Ticker {
   let cancelPending: (() => void) | undefined;
+  let cancelDue: (() => void) | undefined;
   let running = false;
   let dirty = false;
   let stopped = false;
@@ -69,6 +86,30 @@ export function createTicker({ run, timers, log, debounceMs, retryMs }: TickerOp
   const clearPending = (): void => {
     cancelPending?.();
     cancelPending = undefined;
+  };
+  const clearDue = (): void => {
+    cancelDue?.();
+    cancelDue = undefined;
+  };
+  const tickNow = (): void => {
+    if (running) dirty = true;
+    else {
+      clearPending();
+      void start();
+    }
+  };
+  // A tick the timer unit started rewrites the time as well, so it is read again when the timer fires: a later one arms
+  // again, anything else (due, or gone with a tick under way) ticks.
+  const armDue = (): void => {
+    clearDue();
+    const at = stopped ? undefined : nextDue();
+    if (at === undefined) return;
+    cancelDue = timers.after(Math.min(dueMaxMs, Math.max(dueFloorMs, at - timers.now())), () => {
+      cancelDue = undefined;
+      const again = nextDue();
+      if (again !== undefined && again > timers.now()) armDue();
+      else tickNow();
+    });
   };
   const schedule = (ms: number): void => {
     clearPending();
@@ -85,6 +126,8 @@ export function createTicker({ run, timers, log, debounceMs, retryMs }: TickerOp
     if (stopped) return;
     running = true;
     dirty = false;
+    // The tick writes the next due time; it is armed again once the tick is over.
+    clearDue();
     const started = timers.now();
     let code: number | undefined;
     try {
@@ -102,15 +145,10 @@ export function createTicker({ run, timers, log, debounceMs, retryMs }: TickerOp
       log(`tick: stopped after ${TICK_LIMIT_S} s (exit ${code}), the dispatch hung; the next one starts clean`);
     else if (code !== undefined) log(`tick: exit ${code} after ${((timers.now() - started) / 1000).toFixed(1)} s`);
     if (dirty) void start();
+    else armDue();
   }
   return {
-    now() {
-      if (running) dirty = true;
-      else {
-        clearPending();
-        void start();
-      }
-    },
+    now: tickNow,
     soon() {
       if (running) dirty = true;
       else schedule(debounceMs);
@@ -118,6 +156,7 @@ export function createTicker({ run, timers, log, debounceMs, retryMs }: TickerOp
     stop() {
       stopped = true;
       clearPending();
+      clearDue();
       return current ?? Promise.resolve();
     },
   };
@@ -132,6 +171,8 @@ export interface ListenerOptions {
   healthyMs: number;
   debounceMs: number;
   retryMs: number;
+  dueFloorMs: number;
+  dueMaxMs: number;
 }
 
 export const LISTENER_OPTIONS: ListenerOptions = {
@@ -141,6 +182,9 @@ export const LISTENER_OPTIONS: ListenerOptions = {
   healthyMs: 30_000,
   debounceMs: 1000,
   retryMs: 5000,
+  dueFloorMs: 5000,
+  // Node's timers take at most about 24 days; a delayed task may wait months.
+  dueMaxMs: 60 * 60_000,
 };
 
 export interface ListenerDeps {
@@ -154,6 +198,8 @@ export interface ListenerDeps {
   verify: () => Promise<Pick<WebConfig, 'url' | 'token'>>;
   fetch: Fetch;
   runTick: () => Promise<number>;
+  // What the last tick wrote to the run directory as the next due time (ms).
+  nextDue: () => number | undefined;
   options?: Partial<ListenerOptions>;
 }
 
@@ -209,7 +255,7 @@ function sleep(ms: number, timers: Timers, signal: AbortSignal): Promise<void> {
 export async function runListener(deps: ListenerDeps): Promise<number> {
   const { timers, log, signal } = deps;
   const options = { ...LISTENER_OPTIONS, ...deps.options };
-  const ticker = createTicker({ run: deps.runTick, timers, log, ...options });
+  const ticker = createTicker({ run: deps.runTick, timers, log, nextDue: deps.nextDue, ...options });
   let attempt = 0;
   // A board server older than this CLI, or without the event stream, is a rollout in progress: the listener keeps trying, saying so once per state.
   let loggedOlder: string | undefined;
@@ -354,6 +400,7 @@ function spawnTick(env: Record<string, string | undefined>): Promise<number> {
 export async function listenMain(): Promise<void> {
   const { configDir } = getPaths();
   const stop = new AbortController();
+  const files = createRunFiles();
   for (const name of ['SIGTERM', 'SIGINT'] as const) process.once(name, () => stop.abort());
   process.exitCode = await runListener({
     timers: realTimers,
@@ -367,5 +414,6 @@ export async function listenMain(): Promise<void> {
     },
     fetch: (url, init) => fetch(url, init),
     runTick: () => spawnTick(process.env),
+    nextDue: () => files.nextDue()?.getTime(),
   });
 }
