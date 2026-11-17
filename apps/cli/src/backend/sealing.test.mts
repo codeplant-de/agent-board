@@ -5,10 +5,12 @@ import {
   deriveKeys,
   generateDataKey,
   machineCatalogJson,
+  machineUsageJson,
   open,
   parseWireAsk,
   parseWireCatalog,
   parseWireDirs,
+  parseWireUsage,
   parseWireNoteInput,
   parseWirePr,
   parseWireScheduleDraft,
@@ -27,6 +29,7 @@ import type {
   WireBackend,
   WireCatalog,
   WireDirs,
+  WireUsage,
   WireNote,
   WireNoteInput,
   WireSchedule,
@@ -68,6 +71,8 @@ interface FakeWire extends WireBackend {
   dirsSupported: boolean;
   catalog: WireCatalog | undefined;
   catalogSupported: boolean;
+  usage: WireUsage | undefined;
+  usageSupported: boolean;
 }
 
 let nextId = 0;
@@ -85,6 +90,8 @@ function fakeWire(): FakeWire {
     dirsSupported: true,
     catalog: undefined,
     catalogSupported: true,
+    usage: undefined,
+    usageSupported: true,
     async listTasks() {
       return state.tasks;
     },
@@ -159,6 +166,12 @@ function fakeWire(): FakeWire {
     },
     async catalogState() {
       return { supported: state.catalogSupported, index: state.catalog?.index ?? null };
+    },
+    async setUsage(body) {
+      state.usage = parseWireUsage(JSON.parse(record(state, body)));
+    },
+    async usageState() {
+      return { supported: state.usageSupported, index: state.usage?.index ?? null };
     },
     async pause(id, note) {
       push(state, id, parseWireNoteInput(JSON.parse(record(state, note)), 'note'), 'system', 'event');
@@ -1027,6 +1040,40 @@ test('a catalogue the board would refuse is refused before it is sent', async ()
   await assert.rejects(
     board.setCatalog('laptop', { models: [], skills: [{ name: 'has space' }], dirs: {} }),
     (error: unknown) => error instanceof BackendError && error.status === 400 && /set-catalog: /.test(error.message),
+  );
+  assert.equal(wire.requests.length, 0);
+});
+
+test('the usage status is sealed for this machine with an index of the same document, and the board tells whether it holds it', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  const usage = {
+    limits: { fiveHour: 80, priority: 'urgent' as const },
+    windows: { fiveHour: { percent: 85, resetsAt: '2026-11-17T14:05:00.000Z', seenAt: '2026-11-17T12:00:00.000Z' } },
+    reached: ['fiveHour' as const],
+    held: ['MARKERtask'],
+    open: [],
+  };
+  assert.equal(await board.checkUsage('laptop', usage), 'stale');
+  await board.setUsage('laptop', usage);
+  const sent = wire.usage!;
+  const json = machineUsageJson(usage);
+  assert.equal(await open(KEYS, 'machine.usage', 'machine:laptop', sent.usage), json);
+  assert.equal(sent.index, await blindIndex(KEYS, `usage:laptop:${json}`));
+  noMarkers(wire);
+  assert.equal(await board.checkUsage('laptop', usage), 'current');
+  assert.equal(await board.checkUsage('laptop', { ...usage, held: [] }), 'stale');
+  assert.equal(await board.checkUsage('desktop', usage), 'stale', 'the index is of the machine as well');
+  wire.usageSupported = false;
+  assert.equal(await board.checkUsage('laptop', usage), 'unsupported');
+});
+
+test('a usage status the board would refuse is refused before it is sent', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  await assert.rejects(
+    board.setUsage('laptop', { windows: {}, reached: [], held: ['has space'], open: [] }),
+    (error: unknown) => error instanceof BackendError && error.status === 400 && /set-usage: /.test(error.message),
   );
   assert.equal(wire.requests.length, 0);
 });

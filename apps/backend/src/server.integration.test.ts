@@ -207,6 +207,7 @@ describe('machine API', () => {
       features: [...SERVER_FEATURES],
       dirsIndex: null,
       catalogIndex: null,
+      usageIndex: null,
     });
     expect(LEGACY_CONTRACT).toBe(9);
   });

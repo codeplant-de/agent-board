@@ -268,6 +268,11 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         `DRY set-catalog ${catalog.skills.length} skills, ${Object.keys(catalog.dirs).length} directories with their own, ${catalog.models.length} models`,
       );
     },
+    async setUsage(_machine, usage) {
+      print(
+        `DRY set-usage ${usage.held.length} held and ${usage.open.length} open tasks, reached ${usage.reached.join(', ') || 'none'}`,
+      );
+    },
     async heartbeat(id, beat) {
       print(`DRY heartbeat ${id} ${JSON.stringify(beat)}`);
     },

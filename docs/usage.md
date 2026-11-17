@@ -265,3 +265,12 @@ Every watch also ends after `--timeout` (default 2h, 7 days at most) with an eve
 - Watches run on the machine that ran the task, since the session lives there: a watch on a machine that is off goes on when it comes back.
 
 `board wait` still works with its flags and meaning, for sessions that were given the older rule: `board wait <task> --in 20m` parks the task until then, and `board wait <task> --check '<command>' [--every 2m] [--timeout 2h]` starts a command watch named `wait` (every 1m at least) and parks the task at once; the agent ends its turn after it. A check that an older CLI stored in `<state dir>/waits/<task>.json` is still run by the dispatch tick until it is gone.
+
+## Usage limits
+
+A machine with `usageLimits` in its `config.json` leaves Todo tasks below a priority unclaimed while its Claude usage is at or over a threshold (see [Usage limits](workers.md#usage-limits)). The board shows it:
+
+- A held Todo card carries a yellow **Held until 14:05** badge (with the date when the reset is on another day). Hover it for the reason of each machine that holds the task: `laptop holds tasks below urgent: 5-hour usage 85% (limit 80%) until 14:05`. It shows only while a machine that sent its status in the last 10 minutes holds the task and no such machine could still run it: a task another machine can take is waiting, not held. A machine holds until the last reset among its windows over their threshold, since any one of them holds; with several holding machines the badge shows the earliest of their times, as the first to release it lets it start.
+- A machine's row in **Settings** shows the readings it last saw (`5-hour 85% · 7-day 40%`, with the reset times on hover), its limits, and, while it holds tasks, `Holding tasks below urgent until 14:05: 5-hour usage 85% (limit 80%)` with the number of held tasks. Readings of a window that has already reset are left out. For a machine that sent nothing for 10 minutes (switched off, or its dispatcher failing) the line says `as of` when it last sent it. A status the browser cannot read shows `usage status unreadable`.
+
+The machine sends this with every dispatch tick, so a badge can lag a change by a poll of the board (5 seconds) and a tick of the machine (up to 2 minutes).

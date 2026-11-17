@@ -326,6 +326,7 @@ describe('BoardPage banner for machines whose CLI the board refuses', () => {
     shown: name,
     revokedAt: null,
     lastSeenAt: hoursAgo(1),
+    usage: null,
     clientVersion: '0.4.0',
     clientStatus: 'incompatible',
     ...overrides,
@@ -355,6 +356,48 @@ describe('BoardPage banner for machines whose CLI the board refuses', () => {
     renderBoard();
     await screen.findByText('Backlog');
     expect(screen.queryByText(/A machine needs a CLI update/)).not.toBeInTheDocument();
+  });
+});
+
+describe('BoardPage cards held for usage', () => {
+  const minutes = (count: number) => new Date(Date.now() + count * 60_000).toISOString();
+  const usage = (held: string[], open: string[]) => ({
+    limits: { fiveHour: 80, priority: 'urgent' },
+    windows: { fiveHour: { percent: 85, resetsAt: minutes(125), seenAt: minutes(-2) } },
+    reached: ['fiveHour'],
+    held,
+    open,
+  });
+  const machine = (name: string, status: unknown) => ({
+    name,
+    shown: name,
+    revokedAt: null,
+    lastSeenAt: minutes(-1),
+    usageUpdatedAt: minutes(-1),
+    usage: status,
+    clientVersion: '0.7.0',
+    clientStatus: 'current',
+  });
+
+  it('puts a badge on the Todo task a machine holds back, and on no other', async () => {
+    listed.tasks = [
+      task({ id: 'h1', title: 'held work', status: 'todo', proposed: false, createdBy: 'user' }),
+      task({ id: 'o1', title: 'other work', status: 'todo', proposed: false, createdBy: 'user' }),
+    ];
+    listed.machines = [machine('laptop', usage(['h1'], ['o1']))];
+    renderBoard();
+    const card = (await screen.findByText('held work')).closest('a') as HTMLElement;
+    expect(await within(card).findByText(/^Held until /)).toBeInTheDocument();
+    const other = (await screen.findByText('other work')).closest('a') as HTMLElement;
+    expect(within(other).queryByText(/^Held until /)).not.toBeInTheDocument();
+  });
+
+  it('shows no badge when another machine could still run the task', async () => {
+    listed.tasks = [task({ id: 'h1', title: 'held work', status: 'todo', proposed: false, createdBy: 'user' })];
+    listed.machines = [machine('laptop', usage(['h1'], [])), machine('desktop', { ...usage([], ['h1']), reached: [] })];
+    renderBoard();
+    await screen.findByText('held work');
+    expect(screen.queryByText(/^Held until /)).not.toBeInTheDocument();
   });
 });
 

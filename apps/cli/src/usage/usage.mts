@@ -4,8 +4,8 @@
 // any other shape counts as no reading, never as an error.
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { isRecord, PRIORITIES } from '@agent-board/shared';
-import type { Priority } from '@agent-board/shared';
+import { isRecord, isSafeTaskId, MACHINE_USAGE_WINDOWS, MAX_USAGE_TASKS, PRIORITIES } from '@agent-board/shared';
+import type { MachineUsage, Priority } from '@agent-board/shared';
 import type { UsageLimits } from '../config/config.mts';
 
 export const USAGE_WINDOWS = ['fiveHour', 'sevenDay'] as const;
@@ -188,4 +188,50 @@ export function earliestReset(reached: ReachedWindow[]): Date | undefined {
     (first, { resetsAt }) => (first === undefined || resetsAt < first ? resetsAt : first),
     undefined,
   );
+}
+
+/** A whole percent for the board, rounded like `reachedWindows` does and kept within what the board takes. */
+function wholePercent(utilization: number): number {
+  return Math.min(1000, Math.round(Math.round(utilization * 100 * 1e6) / 1e6));
+}
+
+// Sorted, so the same tasks give the same document whatever order the board listed them in.
+function taskIds(ids: readonly string[]): string[] {
+  return [...new Set(ids)].filter(isSafeTaskId).sort().slice(0, MAX_USAGE_TASKS);
+}
+
+/** The usage status this machine tells the board: its limits and last readings, the windows at the threshold, and which tasks it holds or leaves open. */
+export function buildMachineUsage(input: {
+  limits: UsageLimits | undefined;
+  stored: StoredUsage;
+  reached: ReachedWindow[];
+  heldIds: readonly string[];
+  openIds: readonly string[];
+}): MachineUsage {
+  const { limits, stored, reached } = input;
+  const windows: MachineUsage['windows'] = {};
+  for (const name of MACHINE_USAGE_WINDOWS) {
+    const reading = stored[name];
+    if (reading !== undefined)
+      windows[name] = {
+        percent: wholePercent(reading.utilization),
+        resetsAt: reading.resetsAt,
+        seenAt: reading.seenAt,
+      };
+  }
+  return {
+    ...(limits === undefined
+      ? {}
+      : {
+          limits: {
+            ...(limits.fiveHour === undefined ? {} : { fiveHour: limits.fiveHour }),
+            ...(limits.sevenDay === undefined ? {} : { sevenDay: limits.sevenDay }),
+            priority: limits.priority,
+          },
+        }),
+    windows,
+    reached: reached.map(({ window }) => window),
+    held: taskIds(input.heldIds),
+    open: taskIds(input.openIds),
+  };
 }

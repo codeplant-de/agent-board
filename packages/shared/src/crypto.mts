@@ -21,6 +21,7 @@ export type Field =
   | 'pr'
   | 'machine.dirs'
   | 'machine.catalog'
+  | 'machine.usage'
   | 'note.body'
   | 'note.preview'
   | 'note.suggestion'
