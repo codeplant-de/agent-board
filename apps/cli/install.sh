@@ -7,9 +7,11 @@ mkdir -p "$HOME/.local/bin"
 ln -sfn "$root/bin/board" "$HOME/.local/bin/board"
 # Link a real Node 24+ binary for bin/_node: $NODE, else the node on PATH, else the newest mise install.
 node_bin=${NODE:-$(node -e 'console.log(process.execPath)' 2>/dev/null || true)}
-[ -n "$node_bin" ] || node_bin=$(ls -d "$HOME"/.local/share/mise/installs/node/*/bin/node 2>/dev/null | sort -V | tail -1)
-[ -n "$node_bin" ] && "$node_bin" --version | grep -q '^v2[4-9]\|^v[3-9]' \
-  || { echo "no Node 24+ found; run NODE=/path/to/node ./install.sh" >&2; exit 1; }
+[ -n "$node_bin" ] || node_bin=$(printf '%s\n' "$HOME"/.local/share/mise/installs/node/*/bin/node | sort -V | tail -1)
+if ! "$node_bin" --version 2>/dev/null | grep -q '^v2[4-9]\|^v[3-9]'; then
+  echo "no Node 24+ found; run NODE=/path/to/node ./install.sh" >&2
+  exit 1
+fi
 ln -sfn "$node_bin" "$root/bin/.node"
 "$root/bin/board" setup "$@"
 echo "installed. Next: board init (the board's URL, the machine token and the data key: set up encryption in the browser first, then copy the key from the Settings page), then board doctor."
