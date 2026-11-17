@@ -133,7 +133,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
         paragraphs(
           "Add a note to the task's thread. The text is every word after the task, quoted or not, and is never read as a flag.",
           '`-` reads the text from stdin; `--file <path>` right after the task reads it from a regular file in /tmp, for long text.',
-          '`--suggest <text>` (or `--suggest-file <path>`, a file in /tmp) attaches the reply you expect the user to send next, which the board offers as a one-click answer. Give it before the task, because everything after the task is the note.',
+          '`--suggest <text>` (or `--suggest-file <path>`, a file in /tmp) attaches the reply you expect the user to send next, which the board offers as a one-click answer. Give it before the task, because everything after the task is the note; a note that starts with --suggest or --suggest-file is refused.',
           ID_NOTE,
         ),
       )
@@ -156,6 +156,11 @@ export function registerTaskCommands(shared: ProgramShared): void {
       ),
   ).action(async (arg: string, words: string[], flags: CommentFlags, command: Command) => {
     refuseDryRunInText(words, 'board comment --dry-run <task> <text...>');
+    const misplaced = /^(--suggest(?:-file)?)(?:=|$)/.exec(words[0] ?? '')?.[1];
+    if (misplaced !== undefined)
+      throw new UsageError(
+        `${misplaced} goes before the task: board comment ${misplaced} "<${misplaced === '--suggest' ? 'reply' : 'path'}>" <task> <text...>`,
+      );
     if (flags.suggest !== undefined && flags.suggestFile !== undefined)
       throw new UsageError('give --suggest or --suggest-file, not both');
     const text = await textOf(words);

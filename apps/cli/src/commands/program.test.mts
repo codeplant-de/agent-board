@@ -70,6 +70,20 @@ test('a comment takes a suggested reply before the task, and never reads one out
   ]);
 });
 
+test('a comment whose text starts with --suggest or --suggest-file is refused before anything is written', async () => {
+  const { backend, go } = setup();
+  await assert.rejects(
+    go(['comment', ID, '--suggest', 'Merge #120.', '--file', '/tmp/pr.md']),
+    /--suggest goes before the task.*board comment --suggest "<reply>"/,
+  );
+  await assert.rejects(go(['comment', ID, '--suggest=x']), /--suggest goes before the task/);
+  await assert.rejects(
+    go(['comment', ID, '--suggest-file', '/tmp/a']),
+    /--suggest-file goes before the task.*board comment --suggest-file "<path>"/,
+  );
+  assert.deepEqual(backend.writes, []);
+});
+
 test('board pr reports the pull request of a task, and refuses anything but a GitHub pull request URL', async () => {
   const { backend, printed, go } = setup();
   const url = 'https://github.com/acme/app/pull/17741';
