@@ -19,7 +19,7 @@ import {
   type WireWait,
 } from '@agent-board/shared';
 import { randomBytes } from 'node:crypto';
-import { and, asc, desc, eq, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
 import { notes, taskPrs, tasks, type NoteRow, type TaskPrRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
@@ -43,8 +43,25 @@ export async function listTaskPrs(db: DbOrTx, taskIds: string[]): Promise<Map<st
   return byTask;
 }
 
-/** `prs` are the task's rows, oldest first. `pr` and `prState` are what a CLI without `task.prs` reads, see `WireTask`. */
-export function toTask(row: TaskRow, prs: readonly TaskPrRow[] = []): WireTask {
+/**
+ * How many notes each of the tasks holds, by task id; a task without notes has no entry. It must count what `read-notes` gives:
+ * a vocabulary row for a note author or kind has to leave the same notes out here (see `VOCABULARY_FEATURES`).
+ */
+export async function countTaskNotes(db: DbOrTx, taskIds: string[]): Promise<Map<string, number>> {
+  if (taskIds.length === 0) return new Map();
+  const rows = await db
+    .select({ taskId: notes.taskId, count: count() })
+    .from(notes)
+    .where(inArray(notes.taskId, taskIds))
+    .groupBy(notes.taskId);
+  return new Map(rows.map(({ taskId, count: total }) => [taskId, total]));
+}
+
+/**
+ * `prs` are the task's rows, oldest first. `pr` and `prState` are what a CLI without `task.prs` reads, see `WireTask`.
+ * `noteCount` is left out when the caller did not count the notes (the browser does not use it).
+ */
+export function toTask(row: TaskRow, prs: readonly TaskPrRow[] = [], noteCount?: number): WireTask {
   const newest = prs.at(-1);
   return {
     id: row.id,
@@ -79,6 +96,7 @@ export function toTask(row: TaskRow, prs: readonly TaskPrRow[] = []): WireTask {
     waitCheck: row.status === 'waiting' && row.waitCheck,
     woken: row.wokenAt !== null,
     stopRequested: row.status === 'running' && row.stopRequestedAt !== null,
+    ...(noteCount === undefined ? {} : { noteCount }),
   };
 }
 

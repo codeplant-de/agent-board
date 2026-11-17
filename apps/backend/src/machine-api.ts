@@ -73,6 +73,7 @@ import {
   runInbox,
   addPr,
   removePr,
+  countTaskNotes,
   listTaskPrs,
   setPr,
   setPrState,
@@ -154,7 +155,10 @@ async function handleMachineCall(
   const machine = identity.name;
   const visible = knownTo(client.features, client.vocabulary);
   const task = async (row: Parameters<typeof toTask>[0]) =>
-    visible.one(toTask(row, (await listTaskPrs(db, [row.id])).get(row.id)), 'task');
+    visible.one(
+      toTask(row, (await listTaskPrs(db, [row.id])).get(row.id), (await countTaskNotes(db, [row.id])).get(row.id) ?? 0),
+      'task',
+    );
   const schedule = (row: Parameters<typeof toSchedule>[0]) => visible.one(toSchedule(row), 'schedule');
   switch (command) {
     case 'version':
@@ -175,7 +179,11 @@ async function handleMachineCall(
         db,
         rows.map(({ id }) => id),
       );
-      return visible.only(rows.map((row) => toTask(row, prs.get(row.id))));
+      const noteCounts = await countTaskNotes(
+        db,
+        rows.map(({ id }) => id),
+      );
+      return visible.only(rows.map((row) => toTask(row, prs.get(row.id), noteCounts.get(row.id) ?? 0)));
     }
     case 'get-task':
       return task(await getTask(db, idOf(body, 'task')));
