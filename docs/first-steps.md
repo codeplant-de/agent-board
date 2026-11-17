@@ -28,14 +28,14 @@ board schedule "Read this repository and tell me in five lines what it does"
 | Agent      | A named, narrow set of tools on a machine. A task that names one runs with only those tools and never asks. Use it for unattended work on text you did not read, such as other people's PRs.                  | [Agents](workers.md#agents)                       |
 | Encryption | Prompts, notes and transcripts are sealed with a data key that exists only in your browser and on your machines. The server stores ciphertext.                                                                | [Encryption](encryption.md)                       |
 
-One thing to keep in mind from the start. There is no sandbox. A task you made runs Claude Code as you, in auto mode, with your SSH agent and your `gh` login. [What a worker may do](workers.md#what-a-worker-may-do) says how far that goes.
+There is no sandbox. A task you made runs Claude Code as you, in auto mode, with your SSH agent and your `gh` login. [What a worker may do](workers.md#what-a-worker-may-do) says how far that goes.
 
 ## Things to try
 
 - **Answer a question.** Schedule something that needs a decision, for example a `/grill` skill on a plan. The card gets a Question badge. Pick options with the number keys and press **Answer & continue**.
 - **Talk to a running agent.** On a running task, **Send** hands your message over at the agent's next tool call. **Stop & send** interrupts it first.
 - **Let it open a PR.** A prompt that asks for a code change ends in a PR. The agent works on a new branch, pushes, opens the PR, waits for CI with a watch and fixes what fails. The PR shows as an icon on the card, and **Move merged to Done** clears merged work from Needs me.
-- **Park an idea.** `board schedule --backlog "bidder export should include postal codes"` keeps a rough idea out of the workers' reach. **Polish prompt** on the card has an agent turn it into a complete prompt, which you apply or ignore. `--polish` does both in one call.
+- **Park an idea.** `board schedule --backlog "CSV export should include postal codes"` keeps a rough idea out of the workers' reach. **Polish prompt** on the card has an agent turn it into a complete prompt, which you apply or ignore. `--polish` does both in one call.
 - **Start later.** `board schedule --in 2h ...` or `--at 09:00 ...` holds a task in Todo until then.
 - **Pick a model or a priority.** `--model opus`, `--priority high`. Both are also fields of the New task form.
 - **Take over a session.** `board attach <task>` opens the task's Claude session in your terminal, in its directory. With `--fork` the board's session stays as it was.
@@ -45,7 +45,7 @@ Every command is in the [CLI reference](cli.md), and `board <command> --help` pr
 
 ## Tasks that make themselves
 
-Earlier versions had a built-in intake that turned GitHub review requests into tasks. It was removed. The same thing, and anything like it, is now a script or a rule you own, built from three parts.
+The board makes no tasks by itself. A task that should appear without you typing it comes from a rule or a script you own, built from three parts.
 
 **Repeating schedules.** `--every` or `--cron` makes a rule instead of one task:
 
@@ -59,7 +59,7 @@ A schedule keeps exactly one pending card in Todo. A machine that was off for a 
 
 **Scripts with a key.** A script that watches something outside the board calls `board schedule --key <key> --version <v> --json -- <prompt>`. The board keeps one task per key however often the script runs, and a new version sends a finished task back to Todo. The call needs no terminal and its output says what happened: `created`, `requeued` or `exists`. Run the script from a systemd timer or cron. See [Scripts](usage.md#scripts).
 
-The review intake is the shipped example of this:
+The shipped example turns GitHub review requests into review tasks:
 
 ```sh
 board agents add example:reviewer    # the narrow agent the reviews run as; shows what it grants before it writes
@@ -89,7 +89,10 @@ Machine settings are in `~/.config/agent-board/config.json`. [Config](setup.md#c
 | Desktop notifications | The switch on the board's **Settings** page                                                                                     | An OS notification when a task enters Needs me. [Desktop notifications](usage.md#desktop-notifications)                                               |
 | Shell completion      | `board completion bash`, `zsh` or `fish`                                                                                        | Completes commands and flags.                                                                                                                         |
 
-Two things about `dirs` that surprise people. The list is enforced as soon as it has one entry: from then on `board schedule` refuses in an unlisted directory, and a task that would start in one ends in Needs me with the path and the fix. And the default directory has to be listed too. A fresh config has `defaultCwd` set to `~`, so after the first `board dirs add`, `board doctor` fails until you run `board dirs set default true` in one checkout. `board dirs add --from-config` also clears it, but it lists your whole home directory.
+Two things about `dirs` surprise people:
+
+- **The list is enforced as soon as it has one entry.** From then on `board schedule` refuses in an unlisted directory, and a task that would start in one ends in Needs me with the path and the fix.
+- **The default directory has to be listed too.** A fresh config has `defaultCwd` set to `~`. After the first `board dirs add`, `board doctor` fails until you run `board dirs set default true` in one checkout. `board dirs add --from-config` also clears the failure, but it lists your whole home directory.
 
 A second machine needs its own token from **Settings** and the same data key. A task stays on the machine it was scheduled from, since its directory and session live there. See [Two machines](workers.md#two-machines).
 

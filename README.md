@@ -23,7 +23,7 @@ A task moves through `backlog → todo → running → needs-me → done`, with 
 
 ## Install a worker machine
 
-You need Linux with systemd, or macOS, and `claude`, logged in, plus `gh`, both logged in. On macOS the worker runs as launchd agents while you are logged in (see [Setting up a machine](docs/setup.md#macos)).
+You need Linux with systemd, or macOS. You also need `claude` and `gh`, both logged in. On macOS the worker runs as launchd agents while you are logged in (see [macOS](docs/setup.md#macos)).
 
 1. Open the board in the browser and set up encryption (passphrase and recovery key). On **Settings**, create a token for this machine and copy the data key.
 2. Install the CLI from the newest release:
@@ -36,15 +36,17 @@ You need Linux with systemd, or macOS, and `claude`, logged in, plus `gh`, both 
 
    ```sh
    board init            # board URL, machine token, data key, machine name
-   board setup --enable  # systemd user units (launchd agents on macOS): dispatch and the listener
+   board setup --enable  # systemd user units (launchd agents on macOS): dispatch, the listener and watches
    board doctor          # checks config, token, key, server version and units
    ```
 
-4. Edit `~/.config/agent-board/config.json`: map `repos` to your local checkouts, adjust `lanes` if you want parallel runs split by skill. To turn PR review requests into tasks, define an agent (see `apps/cli/examples/config.reviews.json`) and run the `github-reviews` script on a timer (`board example github-reviews.sh`; see [docs/usage.md](docs/usage.md#review-requests-from-github)).
+4. Optional: list your checkouts with `board dirs` and split parallel runs by skill with `lanes`. [Configuration worth knowing](docs/first-steps.md#configuration-worth-knowing) walks through both.
+
+To turn PR review requests into tasks, add the reviewer agent with `board agents add example:reviewer` and run the `github-reviews` script on a timer. [Review requests from GitHub](docs/usage.md#review-requests-from-github) has the script and the timer unit.
 
 For runs after you log out, enable lingering with `loginctl enable-linger $USER`. Update later with `board self-update`.
 
-[docs/setup.md](docs/setup.md) covers installing from a checkout, every config key, and upgrading across contract versions. Once the machine runs, [docs/first-steps.md](docs/first-steps.md) is a tour of what to try next and which settings are worth changing.
+[docs/setup.md](docs/setup.md) covers installing from a checkout, every config key, and upgrading. Once the machine runs, [docs/first-steps.md](docs/first-steps.md) is a tour of what to try next and which settings are worth changing.
 
 ## Use it
 
@@ -52,12 +54,12 @@ Make a task from the terminal. It runs on this machine, in this directory:
 
 ```sh
 board schedule /review-pr 17741
-board schedule --priority high "Find out why the bidder export is slow and propose a fix"
+board schedule --priority high "Find out why the CSV export is slow and propose a fix"
 board schedule --in 2h /review-pr 17741
 board schedule --cron "0 9 * * 1-5" /review-pr --auto
 ```
 
-Or use **New task** on the board. Whichever machine takes it picks the directory: the PR's checkout, the lane's `cwd` or `defaultCwd` (see [where a task runs](docs/workers.md#where-a-task-runs)).
+Or use **New task** on the board and pick a working directory there. Without one, the machine that takes the task picks the directory (see [Where a task runs](docs/workers.md#where-a-task-runs)).
 
 Then work from the task page:
 
@@ -69,14 +71,9 @@ Then work from the task page:
 
 Agents report with `board comment`, ask with `board ask`, wait for CI with `board watch`, report the PRs they open with `board pr`, and propose follow-up work with `board add`. A proposal only runs after you press **Start**.
 
-A script such as `github-reviews` can turn GitHub review requests into review tasks on a timer. They run as an agent with a narrow allow-list, because their input is PR text nobody chose to read.
+A script such as `github-reviews` can turn GitHub review requests into review tasks on a timer. Those tasks run as an agent with a narrow allow-list, because their input is PR text nobody chose to read.
 
-Further reading:
-
-- [docs/first-steps.md](docs/first-steps.md): a tour after installing, tasks that make themselves, useful settings.
-- [docs/usage.md](docs/usage.md): statuses, scheduling, questions, waiting, polishing prompts.
-- [docs/workers.md](docs/workers.md): lanes, liveness limits, where a task runs, what a worker may do.
-- [docs/cli.md](docs/cli.md): every `board` command, generated from `board help`.
+The [documentation](#documentation) table below lists where to read more.
 
 ## Security in short
 

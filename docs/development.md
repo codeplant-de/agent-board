@@ -4,13 +4,13 @@
 
 `mise.toml` pins Node 24, pnpm 11 and Bun. Bun is only needed to build the CLI binary.
 
-```
+```sh
 mise install
 pnpm install
-docker compose up -d postgres        local Postgres on :54331 (board_dev, board_test)
+docker compose up -d postgres        # local Postgres on :54331 (board_dev, board_test)
 cp apps/backend/.env.example apps/backend/.env
-pnpm dev:backend                     :4000, as DEV_AUTH_USER
-pnpm dev:frontend                    :5173, proxies /trpc and /api
+pnpm dev:backend                     # :4000, as DEV_AUTH_USER
+pnpm dev:frontend                    # :5173, proxies /trpc and /api
 ```
 
 Migrations run when the backend starts, so restart it after a schema change.
@@ -21,18 +21,18 @@ To point a worker at the local board, take a token and the data key from http://
 
 Run all four before a PR. CI runs the same in its `test` job:
 
-```
+```sh
 pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 ```
 
 `pnpm format` fixes formatting. Put a pure formatting change in its own commit, so the logic diff stays readable.
 
-- **Backend tests** are integration tests against `board_test`. They use `app.inject` for the machine API and tRPC callers for the UI. The global setup drops and recreates the schema on every run, so two worktrees testing at the same time need separate databases (`TEST_DATABASE_URL`). They still share the Postgres cluster. The role `board_app` is cluster-wide, so `ensureAppRole` retries when another suite alters it at the same moment. And `drop database` forces a checkpoint of the whole cluster, which takes seconds while other suites write. So the migration tests create a new scratch database per test and drop them all in one `afterAll` with a long timeout (`src/test/scratch.ts`). Follow that pattern rather than dropping in a `beforeEach`.
+- **Backend tests** are integration tests against `board_test`. They use `app.inject` for the machine API and tRPC callers for the UI. The global setup drops and recreates the schema on every run, so two worktrees testing at the same time need separate databases (`TEST_DATABASE_URL`). They still share the Postgres cluster. The role `board_app` is cluster-wide, so `ensureAppRole` retries when another suite alters it at the same moment. And `drop database` forces a checkpoint of the whole cluster, which takes seconds while other suites write. So the migration tests create a new scratch database per test and drop them all in one `afterAll` with a long timeout (`src/test/scratch.ts`). Follow that pattern, and do not drop a database in a `beforeEach`.
 - **CLI tests** use `node --test`. The decision logic (`apps/cli/src/dispatch/decide.mts`, `worker/plan.mts`, the `run*` functions) takes the backend, GitHub and the system as arguments, and tests pass fakes from `apps/cli/src/__tests__/helpers/fakes.mts`. Where a test goes is in [CLI layout](#cli-layout). A fake backend must behave like the real one. For example, the server clears `runStartedAt` when a task leaves Running.
 - **Shared package tests** (`packages/shared`) use `node --test` and follow the same layout as the CLI's: `src/<module>.test.mts` next to the module, fixtures in `src/__tests__/fixtures/`.
 - **Completion tests** need zsh and fish and skip without them, so CI may be their first real run.
-- **The command reference** in [cli.md](cli.md) is generated from the commander program. A test fails when it is stale; regenerate it with `pnpm --filter @agent-board/cli run docs`.
-- **The example files** in `apps/cli/examples` are embedded in the CLI for `board example` through `examples/examples.json`. A test fails when it differs from the files; regenerate it with `pnpm --filter @agent-board/cli run examples`.
+- **The command reference** in [cli.md](cli.md) is generated from the commander program. A test fails when it is stale. Regenerate it with `pnpm --filter @agent-board/cli run docs`.
+- **The example files** in `apps/cli/examples` are embedded in the CLI for `board example` through `examples/examples.json`. A test fails when it differs from the files. Regenerate it with `pnpm --filter @agent-board/cli run examples`.
 - **The binary**: `pnpm --filter @agent-board/cli test:binary` builds one for this host and runs it the way a worker machine would. CI does the same in its `binary` job.
 - **The images**: a pull request builds the two Dockerfiles in CI's `images` job without pushing them, so a Dockerfile that misses a new file or a Vite-only break fails before the merge. Locally: `docker build -f apps/<app>/Dockerfile .` from the repository root.
 - **macOS**: the process supervisor, the portable `readNoteFile` and the launchd agents are tested on Linux too (real detached processes, injected `launchctl`). The `cli-macos` job of CI runs the whole CLI suite on a Mac, builds `board-darwin-arm64`, runs `test:binary` and `apps/cli/scripts/macos-smoke.sh`, which lints the agents `board setup` writes with `plutil` and has launchd load a throwaway agent when the runner has a `gui` domain.
@@ -70,13 +70,13 @@ Three test skills in `apps/cli/src/__tests__/fixtures/skills` run real headless 
 
 ## Database migrations
 
-Edit `apps/backend/src/db/schema.ts`, then generate the migration with `pnpm db:generate --name <change>`. Some migrations carry hand-written SQL (grants, RLS policies, data moves) on top of the generated part; keep that in the same file.
+Edit `apps/backend/src/db/schema.ts`, then generate the migration with `pnpm db:generate --name <change>`. Some migrations carry hand-written SQL (grants, RLS policies, data moves) on top of the generated part. Keep that in the same file.
 
 Parallel branches collide on the migration number. When you rebase onto a `main` that gained a migration, take `main`'s `drizzle/meta` journal and snapshots, delete your migration, generate it again with the same `--name`, and copy any hand-written SQL over from the old file. Don't renumber files by hand.
 
 ## Contract and CLI versions
 
-`API_VERSION`, `MIN_CLIENT` and `MIN_SERVER` in `packages/shared/src/contract.mts` are a break level between the server and the CLIs (see [machine-api.md](machine-api.md#version-handshake)); they are not a count of changes. An addition old clients can ignore, such as a new command, an optional field or a new enum value with a vocabulary row, adds a feature name in `packages/shared/src/features.mts` and bumps nothing ([machine-api.md](machine-api.md#features)). Anything an old client would misread, including a new enum value without a vocabulary row, raises `API_VERSION`, then `MIN_CLIENT` to it, which breaks every older CLI until it is updated. [architecture.md](architecture.md#versioning) has the reasoning. `LEGACY_CONTRACT` stays 9 for the CLIs up to 0.7.0 and is never changed.
+`API_VERSION`, `MIN_CLIENT` and `MIN_SERVER` in `packages/shared/src/contract.mts` are a break level between the server and the CLIs (see [Version handshake](machine-api.md#version-handshake)). They are not a count of changes. An addition old clients can ignore, such as a new command, an optional field or a new enum value with a vocabulary row, adds a feature name in `packages/shared/src/features.mts` and bumps nothing ([machine-api.md](machine-api.md#features)). Anything an old client would misread, including a new enum value without a vocabulary row, raises `API_VERSION`, then `MIN_CLIENT` to it, which breaks every older CLI until it is updated. [architecture.md](architecture.md#versioning) has the reasoning. `LEGACY_CONTRACT` stays 9 for the CLIs up to 0.7.0 and is never changed.
 
 When you raise `MIN_CLIENT`:
 
@@ -92,9 +92,9 @@ A merge to `main` deploys the server: CI builds the images and Flux rolls them o
 
 The workflow refuses to run outside `main`. It checks that the version is `x.y.z` and above the newest `cli-v*` tag, runs the checks and the CLI tests, builds the binaries for Linux x64 and arm64, and smoke-tests a Linux x64 build (the Linux arm64 binary never runs in CI). The macOS arm64 binary is built by a `macos` job of the same workflow on `macos-latest`, which runs `test:binary` (with `BOARD_BINARY`, so on that very file) and `apps/cli/scripts/macos-smoke.sh` before handing the file to the release job, which adds it to the checksums. It then creates a draft release for the commit, uploads the binaries, `SHA256SUMS` and `install.sh`, and publishes it. GitHub creates the tag `cli-v<version>` when the draft is published, so a failed run leaves a draft and no tag, and the next run deletes the draft and starts over. Two runs never publish at once; the second finds the release published and does nothing.
 
-The tag is lightweight and unsigned. The tags `cli-v0.3.0` to `cli-v0.8.0` were signed by hand. The integrity of a release is meant to come from GitHub's immutable releases (to be enabled in the repository settings; not done yet): a published release can no longer change its assets or its tag. Check one with `gh release verify cli-v<version>`, and a downloaded file with `gh release verify-asset cli-v<version> <file>`.
+The tag is lightweight and unsigned. The tags `cli-v0.3.0` to `cli-v0.8.0` were signed by hand. The integrity of a release is meant to come from GitHub's immutable releases, under which a published release cannot change its assets or its tag. They are not enabled in the repository settings yet. Check one with `gh release verify cli-v<version>`, and a downloaded file with `gh release verify-asset cli-v<version> <file>`.
 
-If the release fails, the images are held. Use "Re-run failed jobs" on the CI run, or run the Release CLI workflow by hand (`workflow_dispatch`) from `main`; it releases the head of `main`. Once the release is published, re-run the failed `build-and-push` of the CI run if it was not started again. Machines then run `board self-update`, and the listener needs a restart (`board setup` does that when the unit changed).
+If the release fails, the images are held. Use "Re-run failed jobs" on the CI run, or run the Release CLI workflow by hand (`workflow_dispatch`) from `main`, which releases the head of `main`. Once the release is published, re-run the failed `build-and-push` of the CI run if it was not started again. Machines then run `board self-update`, and the listener needs a restart (`board setup` does that when the unit changed).
 
 ## Dependencies
 
@@ -111,6 +111,6 @@ CI runs on these PRs like on any other, and merging one deploys the server like 
 
 ## Git
 
-- Commits and tags are SSH-signed. Never bypass signing; if it fails, ask the user to run `ssh-add-signing`.
-- PRs are squash-merged; the repository allows no other merge method.
+- Commits and tags are SSH-signed. Never bypass signing. If it fails, ask the user to run `ssh-add-signing`.
+- PRs are squash-merged. The repository allows no other merge method.
 - `~/workspace/agent-board` is a live checkout: the installed timers may run from it. Do unfinished work in a worktree under `.claude/worktrees/`, made with `scripts/worktree.sh open <pr|branch>`.

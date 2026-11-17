@@ -1,85 +1,401 @@
 # Encryption
 
-Board content is end to end encrypted: the server stores and returns ciphertext it cannot read, and the clients (the CLI, the browser) seal what they send and open what they receive, with a data key of the user's own. The operator of the server and database can see ids, statuses, priorities, the model a task names, positions, machine and lane names, session ids, timestamps, schedule rules, usernames, the state of a task's pull request (open, merged or closed, without which PR it is), field lengths, activity timing and which sealed values are equal (blind indexes of the PR URL and of the PR head: the same PR or head gives the same value, but neither can be searched for), that a machine has sent a directory list, the size of its ciphertext, when it last changed and whether a new one differs from the old (a blind index), but not what a task, note or transcript says. The PR head sha is no longer stored: only a script that schedules with `--version` compares heads, so the board keeps `abh1.` plus an HMAC of it, and the sha cannot be used to find the PR.
+Board content is end-to-end encrypted. The server stores and returns ciphertext it cannot read. The clients (the CLI and the browser) seal what they send and open what they receive, with a data key that belongs to the user.
 
-The goal is stronger than secrecy: **a worker, and the browser, only acts on, or shows as trusted, text that the user's own clients sealed for exactly that purpose.** The operator can read, swap, replay and forge anything in the database and in API replies, but holds no key, so every sealed value is bound, through the additional data of its envelope (AES-256-GCM over the user, the field and a context), to the row and the role it was sealed for. One definition of the rules, `packages/shared/src/sealing.mts`, serves the CLI and the browser; its contexts are:
+## What the server sees
 
-| Field                        | Context                                                                          | Written by                                                                                                                                                                                                                              |
-| ---------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `title`                      | `<origin>`                                                                       | the client that makes the task or schedule                                                                                                                                                                                              |
-| `input`                      | `<origin>:<creator>`; with an agent `<origin>:<creator>:agent:<name>`            | the same client; `<creator>` is who made the task, which that client states itself; `<name>` is the task's agent, which the same client states                                                                                          |
-| `agent`                      | `<origin>`                                                                       | the client that makes the task or schedule (`board schedule --agent`, the New task form, the github-reviews script); the agent's name, one value                                                                                        |
-| `workdir`                    | `<origin>`; for an occurrence also `task:<id>:schedule:<scheduleId>`             | the same client; the worker for the occurrence's later rewrite                                                                                                                                                                          |
-| `workdir` (home)             | none of its own: the `workdir` envelope of the row's creation                    | the server copies it into `home_workdir` when the row is made, and again when the user changes the task's directory; no client seals it separately                                                                                      |
-| `pr`                         | `task:<id>:agent`                                                                | the agent's CLI (`board pr`), once for each PR; `<id>` is the task the agent runs                                                                                                                                                       |
-| `watches`                    | `task:<id>:agent`                                                                | the machine's CLI (`board watch`, the watch unit, dispatch); the watches it runs for the task, one JSON document, `{"watches":[{"id","name","kind","label","status","deadline","lastAttemptAt"?}],"pendingEvents"}`; `<id>` is the task |
-| `machine.dirs`               | `machine:<name>`                                                                 | the machine's CLI (`board dirs`, dispatch); the list is one JSON document, `{"dirs":[{"path":…,"label":…}]}`, with `label` only when the directory has one                                                                              |
-| `machine.catalog`            | `machine:<name>`                                                                 | the machine's CLI (dispatch); the skills and models it found by asking `claude`, one JSON document, `{"claude":…,"models":[…],"skills":[…],"dirs":{…}}`                                                                                 |
-| `machine.usage`              | `machine:<name>`                                                                 | the machine's CLI (dispatch); its usage limits, last readings and the ids of the Todo tasks it holds back or leaves open, one JSON document, `{"limits":…,"windows":{…},"reached":[…],"held":[…],"open":[…]}`                           |
-| `note.body`, `note.preview`  | `note:<taskId>:<author>:<kind>`                                                  | the client of that author                                                                                                                                                                                                               |
-| `note.suggestion`            | `note:<taskId>:agent:comment`                                                    | the agent's CLI                                                                                                                                                                                                                         |
-| `note.questions`             | `note:<taskId>:agent:question`                                                   | the agent's CLI                                                                                                                                                                                                                         |
-| `note.body` of a polish note | `note:<taskId>:agent:polish`; the sealed text is `{"target", "title", "prompt"}` | the agent's CLI (`board polish`); `<taskId>` is the task the agent runs, `target` the task it polishes                                                                                                                                  |
-| `note.answers`               | `note:<taskId>:user:answer`                                                      | the user's browser                                                                                                                                                                                                                      |
-| `tr.data`, `tr.output`       | `<taskId>:<runId>:<seq>`                                                         | the worker                                                                                                                                                                                                                              |
+The operator of the server and database sees:
 
-`<origin>` is `task:<id>` for a task, and `schedule:<id>` for a schedule and for a task that is an occurrence of one (the server copies the schedule's ciphertext into each occurrence, so the occurrence opens against its schedule's id). `<creator>` is `user`, `agent`, or `intake` (the tasks of the removed built-in intake); an occurrence's is `user`. Clients choose the ids of the tasks and schedules they make (12 random characters, a collision is a 409 whoever holds the id), because the fields are sealed against them. A value that does not open under exactly its binding is **unreadable**; nothing falls back to a looser reading.
+- ids, statuses, priorities and positions
+- the model a task names
+- machine and lane names, session ids and usernames
+- timestamps, activity timing and schedule rules
+- the state of each of a task's pull requests (open, merged or closed), without which PR it is
+- field lengths
+- for a task's watches: that its machine published a list, the size of its ciphertext, and which watch ids you asked to stop
+- which sealed values are equal, through blind indexes of a script's key (a PR URL, say) and of the PR head. The same key or head gives the same value, but neither can be searched for.
+- for each machine's directory list, catalogue and usage status: that the machine sent one, the size of its ciphertext, when it last changed, and whether a new one differs from the old (a blind index)
 
-What that stops:
+The operator does not see what a task, a note or a transcript says.
 
-- **Replay across rows.** A prompt, title or directory sealed for one task or schedule does not open on another, and a prompt of one row with the directory of another is unreadable. The server cannot run a replaced prompt, another task's prompt, or prompt A in directory B.
-- **Occurrences.** Naming a schedule on a task opens only what the user sealed for that schedule: its own prompt in its own directory (or the directory the worker later rewrote for that occurrence, sealed with the schedule's id too, so a task cannot lend its directory to a schedule's prompt). `task.schedule_id` is a plain reference, not a foreign key, and stays when the schedule is deleted, so old occurrences keep opening; a task that loses it, or gets another, is unreadable.
-- **Permission mode.** `createdBy` is clear and decides how a task without an agent runs: the user's in `--permission-mode auto`, and an agent's proposal or a task of the removed intake not at all. So the creator is part of the `input` context: a prompt sealed as intake's does not open on a task the server relabelled as the user's, which would otherwise run in `auto`, and the other way round. A writer states the creator itself (`patch.seal.createdBy` for a requeue), never taking it from the board. The creator `agent` is never run: starting an agent's proposal seals its prompt again as `user` (see [Ask and resume](usage.md#ask-and-resume)).
-- **Dropped or swapped agent.** A task that names an agent runs as it, under the agent's own lists, and a task without one runs under its creator's rules (the user's, in `auto`; a task of the removed intake without an agent never runs). The server could return `agent: null` and so lift the restrictions, or give the task the name of a more permissive agent. The name is therefore sealed twice: on its own as `agent`, bound to `<origin>`, and inside the context of `input` (`<origin>:<creator>:agent:<name>`). A client opens the agent first and then the prompt under that name, so a task whose agent the server dropped, nulled or swapped has a prompt that opens under no binding and is unreadable, and the worker never starts it. An agent that does not open, or whose name is not `^[a-z0-9][a-z0-9-]{0,31}$`, is unreadable too (`unreadable` names `agent`, and the prompt, which cannot be opened without it). For a task without an agent the context stays `<origin>:<creator>`, as it always was, so every existing task stays readable; the other way round, a server that adds an agent to a task made without one leaves its prompt unreadable as well. The `agent` envelope is bound to the origin and not to the creator because the creator is already in the context of the prompt; for a schedule it is bound to the schedule, which the server copies unchanged into each occurrence along with the prompt. Whoever seals a new prompt for a task with an agent (the browser's Polish prompt, a requeue by `board schedule --key`, `update-task` with `seal.agent`) states the agent it knows, or the new prompt does not open. An older CLI, which does not know the field, computes the context of the prompt without the name: the prompt is unreadable to it and its dispatcher and worker skip such a task (see [Agents on older CLIs](setup.md#upgrading)). Whoever seals a new prompt must state the agent (`patch.seal.agent` is required, `null` for none), so a prompt is never sealed for a task without one by omission. Nothing changes the agent of an existing task or schedule; the name is written once, when it is made. An agent proposal never carries one: the server refuses a draft with both `agent` and `createdBy: agent`, and the browser will not start a proposal that has one. Limits of the agent field: a proposal made from a restricted agent's run carries no agent, so once the user starts it it runs in `auto` like any task of the user's, which is the user's decision; `board attach` resumes an agent's task in an interactive session with the user's own settings; `board schedule` and the other commands refused inside a run rely on `AGENT_BOARD_TASK` being set, so what stops an agent from running `env -u AGENT_BOARD_TASK board schedule` is that agent's own tool lists; and the agent's name is the only link to its definition, which lives in each machine's `config.json`, so machines that should behave alike must define agents of the same name the same way.
-- **Relabelled notes.** A note is bound to its author and kind: an agent note (which can quote an untrusted PR or a log tail) cannot be served back as "the user replied", nor a system note as an agent's. Only the pairs a client writes exist (agent comment, question or polish note, system event, user comment, answer or event).
-- **Forged server events.** The server's own events are the only plain-text bodies, and a client accepts a plain body only when it is one of the fixed texts of `packages/shared/src/events.mts`: `Marked done.`, `Queued for a fresh run.`, `Closed.`, `Reopened.`, `Closed after <n> days in Done.`, `Moved from <status> to <status>.`, `Priority <priority> → <priority>.`, `Start time cleared.`, `Start time set to <ISO time>.`, `Wait ended by you.`, `Your message reached the agent after its run ended; resuming with it.`, `Taken back from <machine or "its worker">: no sign of life for 20 minutes.` The server writes them with the same module. They are shown as `server` events, never as `system` ones.
-- **Re-attached answers.** The browser seals the questions it showed together with the answers in one envelope (`{"questions": [...], "answers": [...]}`), checked against each other. What the agent is told comes from that envelope alone; `questionNoteId` is only the server's pairing for display, and the browser shows an answer with a question only when the questions inside it are the question's own. The questions in the envelope are the ones the panel froze when it mounted for that open question, passed from the panel into the answer: the browser does not fetch the thread again when you press the button, and the panel does not follow the polls. A question note is immutable, so when the board later serves other questions under the same note id, the panel does not swap them in: it replaces the form with a notice that the question changed, drops your picks, sends nothing, and shows the changed questions (with fresh picks) only when you ask for them. Notes of one id are one note: when a thread holds the same note id twice, every note with that id is shown as unreadable.
-- **Flags from the server.** A session id is a UUID or nothing, and the worker resumes only the session this machine started for the task's newest fresh run (the record is `<state dir>/sessions/<task>`, one id): any other id, the board's or an agent's, or one that Re-run fresh abandoned on this machine, blocks the run with a message pointing to Re-run fresh, because starting fresh would run a prompt again that may already have done its work. The record is per machine, so "a session a fresh run abandoned is never resumed" holds only on the machine that ran that fresh run: the board can still send an older session to another machine that recorded it (a resume is pinned to the machine in `machine`, which the board chooses), and that machine resumes it, with the reply it is handed. A narrowing that needs no trust in clear fields would be for a worker to drop its record when the sealed start notes the workers write (`agent-board: started <time> (<skill>, <machine>, …)`) show a newer run on another machine; it is not built, because the board can withhold or replay notes, so it would only help when the board cooperates. The id travels as `--resume=<uuid>`, one argument, and a task's model as `--model=<name>`, one argument held to `isModelName` (`^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$`, so it never starts with `-`). The prompt itself (a sealed prompt or a reply, which can start with `-` or even look like `--mcp-config=…`) reaches `claude` on stdin, never as an argument, so it cannot be read as an option. Every other clear value that reaches an argument, a path, a unit name, an environment variable or a shell is checked to a tight shape when it is parsed: ids, machine and lane names (at most 64 characters), a schedule's cron expression (five fields of digits, cron symbols and month and day abbreviations) and time zone (one the runtime knows), note ids, the key id (16 hex characters), the user name, and the sealed directory (absolute, no control characters). A task has no `url` on the wire: see the next point.
+The board does not store a PR's head sha. Only a script that schedules with `--version` compares heads, so the board keeps `abh1.` plus an HMAC of the sha, and the value cannot be used to find the PR.
 
-- **Links and other server text that reaches the agent.** The CLI builds every task link itself, from the `url` in its own `web.json` and the task id, and uses no link from the board: the board sends none. Every other clear string the board sends is one of the following, and nothing else in a run's text comes from it:
+## The goal
 
-  | Clear value                                                          | Where it reaches the agent                                         | What it is held to                                                                             |
-  | -------------------------------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-  | task and schedule ids, note and run ids                              | argv, unit names, `board tasks`, `board show` ids, the run's rules | `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (not `dispatch` or `intake`)                                |
-  | status, priority, `next`, creator, author, kind                      | `board tasks`, `board show` headers                                | members of a fixed list                                                                        |
-  | machine and lane names                                               | dispatch's log (`pinned to <name>`), `board tasks`                 | `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`                                                            |
-  | session id                                                           | `--resume=<id>`, the message of a blocked run                      | a UUID this machine recorded for the task                                                      |
-  | times (`notBefore`, `createdAt`, `nextRunAt`, ...)                   | `board tasks`, `board show`, `board schedules`                     | parsed to a date, printed by the CLI                                                           |
-  | a schedule's cron expression and time zone                           | `board schedules`, the confirmation of `board schedule`            | five fields from a fixed alphabet; a zone name the runtime knows                               |
-  | a task's or schedule's model                                         | `--model=<name>`, `board show`                                     | `^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$`                                                       |
-  | key id                                                               | the message when a machine holds another key                       | 16 lower-case hex characters                                                                   |
-  | a server event's text                                                | `board show`                                                       | one of the fixed texts, printed under `from the board server, not board content`               |
-  | the reason of a refusal, and what a parser quotes of a refused value | the error of a `board` command, the hook's answer to the agent     | JSON-quoted, one line, at most 200 (refusal) or 40 (parser) characters, marked as the server's |
+The goal is stronger than secrecy. **A worker, and the browser, only acts on, or shows as trusted, text that the user's own clients sealed for exactly that purpose.**
 
-  Titles, prompts, directories and notes are the user's own sealed text and are not in this list.
+The operator can read, swap, replay and forge anything in the database and in API replies, but holds no key. Every sealed value is an AES-256-GCM envelope whose additional data names the user, the field and a context. That binds the value to the row and the role it was sealed for.
 
-- **A task keeps the directory it was created with.** The server copies the `workdir` ciphertext a task row is created with (a machine's `add-task`, the browser's form, a schedule's occurrence) into a second column of the same row, `home_workdir`, under the same binding. Only the user's change of the task's directory (`board task set dir`, `tasks.configure`) replaces it, with the new directory sealed under the binding any new `workdir` of the row has; a worker's rewrite never does. Re-run fresh copies it back into `workdir`. This gives the server nothing new: it copies a ciphertext between two columns of one row without opening it, and it could already replay an older `workdir` of the same task (see "What the server can still do"). Tasks from before the column existed have a home only when the migration could tell the `workdir` was still the original (never claimed, no session); the others have none and behave as before.
-- **The state of a task's PR is clear on purpose.** The board server cannot ask GitHub, because it cannot read the URL, and the browser cannot either (no token, and a call from it would tell GitHub which PRs you track). So a worker's dispatcher looks the state up with `gh` and writes the state (`open`, `merged` or `closed`) of each PR as a plain column, so the board can show a merged PR on its card and offer to clear the Needs me column. What it reveals is that a PR of the task merged or closed, never which, and the operator could learn the same from GitHub's own merge activity only by already knowing the repository. A board that lies about it can show a wrong icon or offer **Move merged to Done** for a task whose PR is still open, which you can undo by dragging the card back; the value is shown only, and reaches no argument, path or agent text. A newly reported PR starts with no state.
-- **The directory list of a machine is advice and nothing else.** `board dirs` keeps the list that is enforced in the machine's own `config.json`; the CLI also seals a copy as `machine.dirs` for the New task form to offer (see [usage.md](usage.md#scheduling)), bound to `machine:<name>` so that a list sealed for one machine does not open as another's, and sends it with a blind index (`abh1.` of `dirs:<machine>:<document>`) that the board returns in `version`, which is how the CLI knows whether to send again. The document is opened only when it has that exact shape (at most 200 entries, each a safe absolute path with, optionally, a label of 1 to 64 characters without control characters or surrounding space; a label that fails that is dropped and the list still opens, other keys are ignored, so an older browser ignores labels), by the CLI and by the browser alike: the New task form offers a machine's directories only when its list opens under that machine's name and passes the shape check, so an unreadable list, a revoked machine, or a machine whose name fails the shape check offers nothing (the form says which machine's list it could not read). Picking a directory seals it as the user's own `workdir`, so what the form offered is never trusted beyond the choice the user made. A label is the user's own text and is shown only as plain text beside its path. Nothing else of a directory's settings (`repo`, `default`, `lane`) leaves the machine. The copy never reaches a path, argv or a decision on any machine, and no CLI reads a list back from the board: the worker enforces only its own file. A hostile board can withhold the copy or serve an older list of the same machine, which changes only which directories the form offers; the directory a task is sealed with is still checked against the machine's own list when it runs.
-- **The catalogue of a machine is advice and nothing else.** The CLI asks `claude` on the machine which skills and models it has (see [workers.md](workers.md#skills-and-models-on-the-board)) and seals the answer as `machine.catalog`, bound to `machine:<name>` like the directory list, so a catalogue sealed for one machine opens as no other's and as no directory list (the field differs, and so does the blind index: `abh1.` of `catalog:<machine>:<document>`, which the board returns in `version` as `catalogIndex`). The operator sees that a machine sent a catalogue, its size, when, and whether it changed (its index), and nothing of what is in it: not a skill name, a description, a model or a directory. Everything in it is text from a program's output on the user's machine, which can come from a plugin or a checkout the user does not control, so the CLI cleans it before sealing (one line, no control characters, cut to a length) and a reader shape-checks it again on opening (`parseMachineCatalog`: a skill name is letters, digits and `_ . : -`, a model name passes `isModelName`, a path is a safe absolute one; an entry that fails is dropped and the rest opens, a list over its cap makes the document unreadable). The browser shows it as plain text and uses it only to complete `/skill` and to offer models; picking one puts text in a field the user then reviews and seals as their own, so what the catalogue offered is never trusted beyond the choice the user made. The copy never reaches a path, argv or a decision on any machine, and no CLI reads it back. A hostile board can withhold it or serve an older one of the same machine, which changes only what the browser offers.
-- **The usage status of a machine is display only.** At the end of a dispatch tick the CLI seals its `usageLimits`, its last usage readings and the ids of the Todo tasks it held back or could serve (see [workers.md](workers.md#usage-limits)) as `machine.usage`, bound to `machine:<name>` like the other machine documents, so a status sealed for one machine opens as no other's and as no directory list or catalogue (the field differs, and so does the blind index: `abh1.` of `usage:<machine>:<document>`, which the board returns in `version` as `usageIndex`). The operator sees that a machine sent a status, its size, when, and whether it changed, and nothing of what is in it: not a task id, a percentage or a limit. A reader shape-checks it on opening (`parseMachineUsage`: a task id passes `isSafeTaskId`, numbers and times are in range, an entry that fails is dropped and the rest opens, a list over its cap makes the document unreadable). The browser shows it as plain text and uses it only for a badge on a task card and a line in Settings; it never reaches a path, argv or a decision on any machine, and no CLI reads it back. A hostile board can withhold it or serve an older one of the same machine, which changes only what the badge says.
-- **A key the board says is gone.** The browser keeps the keys it holds when the board reports no key, another key id or another user, and shows a blocking warning instead of the setup screen: a reset the user did not make looks the same, and would walk them into a second data key while the machines keep the first. The setup screen has no such protection when this browser holds no key at all (after Lock, in a private window, in a new browser) and the board reports none: it says that if the board was already in use, setting up again creates a new key that the worker machines do not hold and that cannot read anything stored under the old one, and it requires ticking a confirmation that this is a first-time setup. The way out of the warning is deliberate (typing a word); the Settings page shows and re-wraps a key only when it is the one the browser is using, whatever the board reports. A passphrase is trimmed and NFKC-normalised in one place before it is checked and hashed, so setup, unlock and change treat it alike. Everything the browser shows from the board in the clear (machine and lane names, who wrote a note, a run's machine, a schedule's rule, its run count and interval, a run's event count and a result's output size, which must be whole numbers; the name the board reports for you in the key warning, which is shown only when it looks like a login name) goes through the same shape checks as the CLI's wire parsers; a value that fails shows as a neutral placeholder, and the task page says so. The board's own events are shown as `Board`, apart from the `system` notes of your machines.
+`packages/shared/src/sealing.mts` is the one definition of these rules. The CLI and the browser both use it.
 
-The server refuses a sealed field that is not an envelope (400) or that is longer than its limit (`SEALED_LIMITS`), and checks nothing about what is inside. So all content validation (a non-empty title, an absolute `workdir`, the shape of questions and answers, whether an answer fits its question) happens in the client, before sealing and after opening; the clients refuse too long a value themselves, naming the limit (`board comment --file`, `board add --file` and `board polish --file` included). A task's `dedupeKey` is the blind index (`abh1.…`, an HMAC) of the PR URL and `head` the blind index of `head:<sha>`, so the server can keep the one unique per board and nothing else. Labels are not stored: `taskLabels` in `packages/shared` derives them from the opened prompt and the creator. Since migration 0014 the database refuses plain text in every sealed column. Rows from before encryption were sealed once by a re-encryption script, since removed (see [Cutover to encryption](operations.md#cutover-to-encryption)).
+## Sealing contexts
 
-**Previews.** A client that writes a note with text also sends `preview`: the first 300 characters of the text, sealed apart, for the board cards, which list every task's newest note without opening threads. A note without text (a question note, an answer without a message) has none. The board card shows a server event's own text when it is one of the fixed ones.
+| Field                        | Context                                                               | Written by                                                                                                                                      |
+| ---------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `title`                      | `<origin>`                                                            | the client that makes the task or schedule                                                                                                      |
+| `input`                      | `<origin>:<creator>`, with an agent `<origin>:<creator>:agent:<name>` | the same client, which states the creator and the agent itself                                                                                  |
+| `agent`                      | `<origin>`                                                            | the same client. The value is the agent's name.                                                                                                 |
+| `workdir`                    | `<origin>`, for an occurrence also `task:<id>:schedule:<scheduleId>`  | the same client, and the worker when it rewrites an occurrence's directory                                                                      |
+| `workdir` (home)             | none of its own                                                       | the server copies the `workdir` envelope, see [A task keeps the directory it was created with](#a-task-keeps-the-directory-it-was-created-with) |
+| `pr`                         | `task:<id>:agent`                                                     | the agent's CLI (`board pr`), once for each PR                                                                                                  |
+| `watches`                    | `task:<id>:agent`                                                     | the machine's CLI (`board watch`, the watch unit, dispatch), one document for all the task's watches                                            |
+| `machine.dirs`               | `machine:<name>`                                                      | the machine's CLI (`board dirs`, dispatch)                                                                                                      |
+| `machine.catalog`            | `machine:<name>`                                                      | the machine's CLI (dispatch)                                                                                                                    |
+| `machine.usage`              | `machine:<name>`                                                      | the machine's CLI (dispatch)                                                                                                                    |
+| `note.body`, `note.preview`  | `note:<taskId>:<author>:<kind>`                                       | the client of that author                                                                                                                       |
+| `note.suggestion`            | `note:<taskId>:agent:comment`                                         | the agent's CLI                                                                                                                                 |
+| `note.questions`             | `note:<taskId>:agent:question`                                        | the agent's CLI                                                                                                                                 |
+| `note.body` of a polish note | `note:<taskId>:agent:polish`                                          | the agent's CLI (`board polish`)                                                                                                                |
+| `note.answers`               | `note:<taskId>:user:answer`                                           | the user's browser                                                                                                                              |
+| `tr.data`, `tr.output`       | `<taskId>:<runId>:<seq>`                                              | the worker                                                                                                                                      |
 
-**Suggested replies.** A comment by the agent may carry `suggestion` (sealed `note.suggestion`, at most 2000 characters): the reply the agent expects the user to send next, which `board comment --suggest <text>` (or `--suggest-file <path>`) seals and the browser offers as ghost text and a one-click Send while no note of the user follows it. Only agent comments can carry one (the server and a database check refuse it on any other note, and a client opens it only there). The field is optional and additive, so the contract version did not change: older clients ignore it when they read a note, but an older server refuses it on `add-note` (400 `unknown key "suggestion"`), so the run rules tell the agent to post the comment without `--suggest` then.
+- `<origin>` is `task:<id>` for a task. It is `schedule:<id>` for a schedule and for a task that is an occurrence of one. The server copies the schedule's ciphertext into each occurrence, so the occurrence opens against its schedule's id.
+- `<creator>` is `user`, `agent` or `intake`. `intake` exists only on tasks of the removed built-in intake. An occurrence's creator is `user`.
+- In `pr`, `watches` and in a polish note, `<id>` and `<taskId>` are the task the agent runs. The sealed text of a polish note is `{"target", "title", "prompt"}`, where `target` is the task it polishes.
+- The three machine documents are one JSON document each:
+  - `machine.dirs` is `{"dirs":[{"path":…,"label":…}]}`, with `label` only when the directory has one.
+  - `machine.catalog` is `{"claude":…,"models":[…],"skills":[…],"dirs":{…}}`.
+  - `machine.usage` is `{"limits":…,"windows":{…},"reached":[…],"held":[…],"open":[…]}`.
 
-**The pull request of a task.** `board pr <task> <url>` seals the URL of the PR the agent opened as `pr`, bound to the task and to the agent, so no other field's ciphertext (a prompt, a note) and no other task's PR opens as this one, and the user's own text can never stand in for it. The CLI refuses anything but `https://github.com/<owner>/<repo>/pull/<number>` before sealing, and the browser and the CLI show a value only when it opens under that binding and passes the same check again: a server cannot make a card link anywhere but to a GitHub pull request, and what it can still do is drop, repeat or reorder the PRs of a task, or serve one sealed for the task again, but it cannot make one up. The prompt's own PR (a review task) comes first when both exist.
+Clients choose the ids of the tasks and schedules they make, because the fields are sealed against them. An id is 12 random characters, and a collision is a 409 whoever holds the id.
 
-**The watches of a task.** The CLI of the machine that runs a task's watches (`board watch`) seals what the board shows of them, one JSON document with at most 32 entries (`name`, `kind`, a `label` such as `CI #116`, a one-line `status`, the `deadline`, the last look), and once for the task `pendingEvents`, how many events wait for the agent, as `watches`, bound to the task and to the agent like a reported PR. A client shows an entry only when it has exactly that shape, drops one that does not, and takes a list that does not open or parse for unreadable (`watches` in `unreadable`, which never keeps a task from running). The command a watch runs and its output are never in it: they stay on the machine. The server can drop, repeat or serve stale watches, and can serve ones sealed for the same task again, but it cannot make one up. What the user asks to stop (`watchStops`) is a list of watch ids in clear: the server learns which of the task's watches the user stopped, not what they are, and the machine acts only on an id it has a watch for.
+A value that does not open under exactly its binding is **unreadable**. Nothing falls back to a looser reading.
 
-**Unreadable values.** The CLI never crashes a listing on a value it cannot open (legacy plain text, another key, another row, damage) and never treats one as a prompt. A task or schedule gets `unreadable`: the names of the fields that failed (`title`, `input`, `workdir`; a workdir that opens to a relative path counts). An unreadable title shows as a placeholder, an unreadable input is empty, an unreadable workdir is `null`. Dispatch skips a task whose input or workdir is unreadable and the worker refuses to run it, reporting why on the task; an unreadable title alone does not stop a run. A note that cannot be opened (or whose questions or answers do not parse) is `unreadable` with no text. A run is refused when it would hand the agent such a note of the user's: the reply a resume carries, or what a fresh run is told the user wrote since the previous run started. Older ones do not matter, so Re-run fresh (which starts after the refused attempt) does get past it. `board show` and `board tasks` print `(cannot decrypt …)` instead of text. The data key is read from `AGENT_BOARD_DATA_KEY` and is never printed or put into an error.
+## What the bindings stop
 
-**What the server can still do.** The server relays what the user does, and the user's actions are not signed. A server that is hostile (or a stolen database login) can therefore decide **when** a task starts, resumes, re-runs, is paused or closed, **on which of the user's machines** (any machine that holds a token; the server picks the machine a task runs on) and **in which lane**, change a task's priority or position, choose the model of any run (a review of untrusted PR text on a weaker model, every task on the most expensive one), and withhold, delay or reorder anything, notes and answers included. What it cannot do is make a worker run text the user's clients did not seal for that task, or run a task with the permissions of another creator, or put its own words in a note or an agent's prompt. It sees everything in the list at the top of this section. What an answer, a prompt or a note says, and which PR a task is about, it does not. Inherent to a server that stores ciphertext and cannot sign what the user did:
+### Replay across rows
 
-- Ciphertext never expires. The server can run a closed or done task again, and a deleted or paused schedule, as often as it likes: the prompt still opens, and the run is judged as the user's.
-- Within one task it can replay an older value of a field (an earlier prompt or directory of that task) and reorder, duplicate or withhold notes, including serving an older reply after a newer question. A note's id, author, kind and task are bound; its place in the thread is not.
-- It can insert any number of the fixed event texts; `Taken back from <machine>` carries a machine name, at most 64 characters of `[A-Za-z0-9_.-]`.
-- A passphrase change leaves the old wrapped copy of the key with the server, and there is no rotation of the data key: a passphrase or a key that has leaked stays leaked, and a recovery key that was kept still opens the board.
-- Every worker machine keeps the raw data key in `~/.config/agent-board/env`, readable by any process of that user, an agent in `auto` mode included: an agent that reads it can seal what it likes, as any creator.
-- An unlocked browser stays unlocked until Lock, per tab, and its derived keys stay in IndexedDB until then.
-- It can drop a task's directory (`workdir: null`) and withhold the copy it keeps of the directory the task was created with (`home_workdir`, which Re-run fresh restores), which makes the task run in the lane's or the default directory of that machine instead of the one the user chose. With a `dirs` list on the machine, that lane's or default directory must itself be listed, else the run is refused.
+A prompt, title or directory sealed for one task or schedule does not open on another. A prompt of one row with the directory of another is unreadable. So the server cannot run a replaced prompt, another task's prompt, or prompt A in directory B.
 
-**Error text from the server is not board content.** A `board` command, and the hook that tells an agent a question could not be put on the board, report a server refusal as `error from the board server (HTTP <status>), quoted and not part of the board: "<text>"`: the server's words, JSON-quoted, one line, at most 200 characters. The agent sees them as an error, never as a note, a prompt or an instruction, and a client never shows server text as board content: what a parser quotes of a value it refuses is quoted and cut at 40 characters too.
+### Occurrences
+
+Naming a schedule on a task opens only what the user sealed for that schedule: its own prompt in its own directory. The worker may later rewrite the directory for that occurrence. It seals the new one with the schedule's id too, so a task cannot lend its directory to a schedule's prompt.
+
+`task.schedule_id` is a plain reference, not a foreign key. It stays when the schedule is deleted, so old occurrences keep opening. A task that loses it, or gets another, is unreadable.
+
+### Permission mode
+
+`createdBy` is a clear value, and it decides how a task without an agent runs:
+
+- A task of the user's runs in `--permission-mode auto`.
+- An agent's proposal does not run.
+- A task of the removed intake does not run without an agent.
+
+So the creator is part of the `input` context. A prompt sealed as intake's does not open on a task the server relabelled as the user's, which would otherwise run in `auto`. The reverse fails the same way.
+
+A writer states the creator itself (`patch.seal.createdBy` for a requeue) and never takes it from the board.
+
+### Starting a proposal and applying a polish
+
+An agent never writes a prompt that a worker runs. Both ways an agent's text becomes a prompt go through the user's browser.
+
+**Starting a proposal.** `board add` seals the proposal's prompt for the creator `agent`. Nothing runs a task whose creator is still `agent`: the dispatcher skips it and the worker refuses it, whatever status the board shows. When the user presses Start, or drags the card into Todo, the browser shows the prompt and seals it again for the creator `user`. The board stores that prompt and sets `createdBy` to `user`.
+
+- The title and the directory stay as they were. Their bindings (`<origin>`) name no creator.
+- A proposal's parent is a link for the breadcrumb and the follow-up list. It is in no binding, and starting does not touch it. The board can attach a proposal to any parent without changing what runs.
+- A board that skips the re-seal gains nothing. It can serve a proposal as Todo, but the prompt opens only as an agent's. A prompt it relabels as the user's, with the sealed value it already holds, opens as nobody's.
+
+The server keeps the same order for an honest board:
+
+- Whatever status an agent names, its `add-task` lands in `backlog`.
+- The machine API cannot move a proposal. `claim-task` loses on one, and `ask` refuses one, because answering a question would start it.
+- A move into Todo without the prompt sealed again is a 400.
+- Send & continue, Re-run fresh and Reopen leave a proposal a proposal.
+- No CLI command starts a proposal. `board move <task> todo` is refused for it.
+
+**Applying a polish.** `board polish` posts a `polish` note on the agent's own task and changes no task. When the user presses Apply, the browser seals three values:
+
+- the new title, for `task:<id>`
+- the new prompt, for `task:<id>:user`
+- a `user` event note on the target task that holds the old title and prompt. It is an `event`, so the worker never hands it to a later run as something the user wrote.
+
+`tasks.applyPolish` stores all three in one transaction, and marks the polish task done unless its run still goes on. It refuses:
+
+- a task an agent created, or a proposal
+- an occurrence of a schedule, which takes its prompt from the schedule
+- a closed task, or one that is not in Backlog or Needs me
+- a polish task that is not the task's child
+
+### Dropped or swapped agent
+
+A task that names an agent runs as that agent, under the agent's own tool lists. A task without one runs under its creator's rules. A hostile server could return `agent: null` to lift the restrictions, or give the task the name of a more permissive agent.
+
+**The mechanism.** The name is sealed twice:
+
+- on its own as `agent`, bound to `<origin>`
+- inside the context of `input`: `<origin>:<creator>:agent:<name>`
+
+A client opens the agent first and then the prompt under that name. When the server dropped, nulled or swapped the agent, the prompt opens under no binding, the task is unreadable, and the worker never starts it. The same holds when:
+
+- the agent does not open, or its name does not match `^[a-z0-9][a-z0-9-]{0,31}$`. `unreadable` then names `agent` and the prompt.
+- the server adds an agent to a task made without one.
+
+For a task without an agent the context is `<origin>:<creator>`.
+
+The `agent` envelope is bound to the origin and not to the creator, because the creator is already in the prompt's context. For a schedule it is bound to the schedule, and the server copies it unchanged into each occurrence along with the prompt.
+
+A CLI that does not know the field computes the prompt's context without the name. It cannot open the prompt, and its dispatcher and worker skip the task (see [Upgrading](setup.md#upgrading)).
+
+**What a writer must state.**
+
+- Whoever seals a new prompt for a task must state the agent: `patch.seal.agent` is required, with `null` for none. This applies to the browser's Polish prompt, a requeue by `board schedule --key`, and `update-task` with `seal.agent`. A prompt is never sealed without an agent by omission, and a prompt sealed under the wrong name does not open.
+- Nothing changes the agent of an existing task or schedule. The name is written once, when the row is made.
+- An agent's proposal never carries an agent. The server refuses a draft with both `agent` and `createdBy: agent`, and the browser will not start a proposal that has one.
+
+**Limits of the agent field.**
+
+- A proposal made from a restricted agent's run carries no agent. Once the user starts it, it runs in `auto` like any task of the user's. That is the user's decision.
+- `board attach` resumes an agent's task in an interactive session with the user's own settings.
+- `board schedule` and the other commands refused inside a run rely on `AGENT_BOARD_TASK` being set. What stops an agent from running `env -u AGENT_BOARD_TASK board schedule` is that agent's own tool lists.
+- The name is the only link to the agent's definition, which lives on each machine. Machines that should behave alike must define agents of the same name the same way.
+
+### Relabelled notes
+
+A note is bound to its author and kind. An agent note, which can quote an untrusted PR or a log tail, cannot be served back as "the user replied". A system note cannot be served as an agent's.
+
+Only the pairs a client writes exist: an agent's comment, question or polish note, a system event, and a user's comment, answer or event.
+
+### Forged server events
+
+The server's own events are the only plain-text bodies. A client accepts a plain body only when it is one of the fixed texts of `packages/shared/src/events.mts`:
+
+- `Marked done.`
+- `Queued for a fresh run.`
+- `Closed.`
+- `Reopened.`
+- `Closed after <n> days in Done.`
+- `Moved from <status> to <status>.`
+- `Priority <priority> → <priority>.`
+- `Start time cleared.`
+- `Start time set to <ISO time>.`
+- `Wait ended by you.`
+- `Your message reached the agent after its run ended; resuming with it.`
+- `Taken back from <machine or "its worker">: no sign of life for 20 minutes.`
+
+The server writes them with the same module. Clients show them as `server` events, never as `system` ones.
+
+### Re-attached answers
+
+The browser seals the questions it showed together with the answers in one envelope, `{"questions": [...], "answers": [...]}`, and checks them against each other. What the agent is told comes from that envelope alone.
+
+- `questionNoteId` is only the server's pairing for display. The browser shows an answer with a question only when the questions inside the answer are the question's own.
+- The questions in the envelope are the ones the panel froze when it mounted for that open question. The browser does not fetch the thread again when you press the button, and the panel does not follow the polls.
+- A question note is immutable. When the board later serves other questions under the same note id, the panel does not swap them in. It replaces the form with a notice that the question changed, drops your picks and sends nothing. It shows the changed questions, with fresh picks, only when you ask for them.
+- Notes of one id are one note. When a thread holds the same note id twice, every note with that id shows as unreadable.
+
+### Session ids from the server
+
+A session id is a UUID or nothing. The worker resumes only the session this machine started for the task's newest fresh run. The record is `<state dir>/sessions/<task>` and holds one id.
+
+Any other id blocks the run with a message that points to Re-run fresh. That covers the board's id, an agent's, and one that Re-run fresh abandoned on this machine. The worker does not start fresh by itself, because that would run a prompt again that may already have done its work.
+
+The record is per machine. So "a session that a fresh run abandoned is never resumed" holds only on the machine that ran the fresh run. The board chooses the machine a resume is pinned to, so it can still send an older session to another machine that recorded it. That machine resumes it, with the reply it is handed.
+
+A worker could drop its record when the sealed start notes (`agent-board: started <time> (<skill>, <machine>, …)`) show a newer run on another machine. That is not built. The board can withhold or replay notes, so it would only help when the board cooperates.
+
+### Clear values that reach a command
+
+The prompt reaches `claude` on stdin, never as an argument. A sealed prompt or a reply can start with `-`, or look like `--mcp-config=…`, and still cannot be read as an option.
+
+Two clear values become arguments, one argument each:
+
+- the session id, as `--resume=<uuid>`
+- a task's model, as `--model=<name>`, held to `isModelName`, so it never starts with `-`
+
+Every other clear value that reaches an argument, a path, a unit name, an environment variable or a shell is checked to a tight shape when it is parsed. That covers ids, machine and lane names, a schedule's cron expression and time zone, note ids, the key id and the user name. The sealed directory is checked after opening: an absolute path without control characters.
+
+### Links and other server text that reaches the agent
+
+The CLI builds every task link itself, from the `url` in its own `web.json` and the task id. A task has no `url` on the wire, and the board sends no link.
+
+Every other clear string the board sends is one of the following. Nothing else in a run's text comes from the board.
+
+| Clear value                                                          | Where it reaches the agent                                         | What it is held to                                                                                 |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| task and schedule ids, note and run ids                              | argv, unit names, `board tasks`, `board show` ids, the run's rules | `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (not `dispatch` or `intake`)                                    |
+| status, priority, `next`, creator, author, kind                      | `board tasks`, `board show` headers                                | members of a fixed list                                                                            |
+| machine and lane names                                               | dispatch's log (`pinned to <name>`), `board tasks`                 | `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`                                                                |
+| session id                                                           | `--resume=<id>`, the message of a blocked run                      | a UUID this machine recorded for the task                                                          |
+| times (`notBefore`, `createdAt`, `nextRunAt`, ...)                   | `board tasks`, `board show`, `board schedules`                     | parsed to a date, printed by the CLI                                                               |
+| a schedule's cron expression and time zone                           | `board schedules`, the confirmation of `board schedule`            | five fields of digits, cron symbols and month and day abbreviations; a zone name the runtime knows |
+| a task's or schedule's model                                         | `--model=<name>`, `board show`                                     | `^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$`                                                           |
+| key id                                                               | the message when a machine holds another key                       | 16 lower-case hex characters                                                                       |
+| a server event's text                                                | `board show`                                                       | one of the fixed texts, printed under `from the board server, not board content`                   |
+| the reason of a refusal, and what a parser quotes of a refused value | the error of a `board` command, the hook's answer to the agent     | JSON-quoted, one line, at most 200 (refusal) or 40 (parser) characters, marked as the server's     |
+
+Titles, prompts, directories and notes are the user's own sealed text and are not in this list.
+
+## Advice-only copies
+
+Some values the server holds are copies or display data. None of them reaches a path, an argument or a decision on any machine.
+
+### A task keeps the directory it was created with
+
+The server copies the `workdir` ciphertext a task row is created with into a second column of the same row, `home_workdir`, under the same binding. The row can come from a machine's `add-task`, the browser's form or a schedule's occurrence. Re-run fresh copies it back into `workdir`.
+
+Only the user's change of the task's directory (`board task set dir`, `tasks.configure`) replaces it, with the new directory sealed under the row's `workdir` binding. A worker's rewrite never does.
+
+This gives the server nothing new. It copies a ciphertext between two columns of one row without opening it, and it could already replay an older `workdir` of the same task (see [What the server can still do](#what-the-server-can-still-do)).
+
+A task from before the column existed has a home only when the migration could tell that its `workdir` was still the original (never claimed, no session). The others have none.
+
+### The state of a task's PR is clear on purpose
+
+The board server cannot ask GitHub, because it cannot read the URL. The browser cannot either: it has no token, and a call from it would tell GitHub which PRs you track. So a worker's dispatcher looks the state up with `gh` and writes `open`, `merged` or `closed` for each PR as a plain column. The board can then show a merged PR on its card and offer to clear the Needs me column.
+
+- It reveals that a PR of the task merged or closed, never which. The operator could learn the same from GitHub's own merge activity only by already knowing the repository.
+- A board that lies about it can show a wrong icon, or offer **Move merged to Done** for a task whose PR is still open. You undo that by dragging the card back.
+- The value is shown only. It reaches no argument, path or agent text.
+- A newly reported PR starts with no state.
+
+### The machine documents
+
+Each machine sends the board three sealed documents: its directory list, its catalogue of skills and models, and its usage status. All three follow the same rules.
+
+- **Bound to the machine.** Each is sealed under its own field for `machine:<name>`. A document sealed for one machine does not open as another's, and one kind does not open as another kind.
+- **A blind index says whether it changed.** The CLI sends each document with `abh1.` of `<kind>:<machine>:<document>`. The board returns the index in `version`, which is how the CLI knows whether to send again.
+- **The operator sees only the envelope.** That a machine sent a document, its size, when, and whether it changed. Nothing of what is in it.
+- **Readers shape-check it on opening.** The CLI and the browser both do.
+- **Nothing reads it back into a decision.** The copy never reaches a path, argv or a decision on any machine, and no CLI reads one back from the board.
+- **A hostile board can withhold a document or serve an older one of the same machine.** That changes only what the browser offers or shows.
+
+| Document          | What it holds                                                                                       | Used for                                      | Blind index of                 | Index in `version` |
+| ----------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------ | ------------------ |
+| `machine.dirs`    | the listed directories that exist, each with its label                                              | the New task form's Working directory field   | `dirs:<machine>:<document>`    | `dirsIndex`        |
+| `machine.catalog` | the skills and models `claude` reports on the machine                                               | completing `/skill` and offering models       | `catalog:<machine>:<document>` | `catalogIndex`     |
+| `machine.usage`   | the usage limits, the last readings, and the ids of Todo tasks the machine held back or could serve | a badge on a task card and a line in Settings | `usage:<machine>:<document>`   | `usageIndex`       |
+
+**The directory list.** `board dirs` keeps the list that is enforced in the machine's own `config.json`. The copy is for the form to offer (see [Scheduling](usage.md#scheduling)).
+
+- The document opens only with the exact shape: at most 200 entries, each a safe absolute path with an optional label. A label is 1 to 64 characters without control characters or surrounding space. A label that fails is dropped and the list still opens. Other keys are ignored.
+- The form offers a machine's directories only when its list opens under that machine's name and passes the shape check. An unreadable list, a revoked machine, or a machine whose name fails the shape check offers nothing. The form says which machine's list it could not read.
+- Picking a directory seals it as the user's own `workdir`. What the form offered is never trusted beyond the choice the user made.
+- A label is the user's own text, shown only as plain text beside its path. No other setting of a directory (`repo`, `default`, `lane`) leaves the machine.
+- The worker enforces only its own file. The directory a task is sealed with is still checked against the machine's own list when it runs.
+
+**The catalogue.** The CLI asks `claude` on the machine which skills and models it has (see [Skills and models on the board](workers.md#skills-and-models-on-the-board)).
+
+- Everything in it is text from a program's output on the user's machine. It can come from a plugin or a checkout the user does not control. So the CLI cleans it before sealing: one line, no control characters, cut to a length.
+- A reader checks it again with `parseMachineCatalog`. A skill name is letters, digits and `_ . : -`. A model name passes `isModelName`. A path is a safe absolute one. An entry that fails is dropped and the rest opens. A list over its cap makes the document unreadable.
+- The browser shows it as plain text. Picking a skill or a model puts text in a field the user then reviews and seals as their own.
+
+**The usage status.** At the end of a dispatch tick the CLI seals its `usageLimits`, its last usage readings and the task ids (see [Usage limits](workers.md#usage-limits)).
+
+- The operator learns no task id, percentage or limit from it.
+- A reader checks it with `parseMachineUsage`. A task id passes `isSafeTaskId`, and numbers and times are in range. An entry that fails is dropped and the rest opens. A list over its cap makes the document unreadable.
+- The browser shows it as plain text, in the badge and the Settings line only.
+
+## Keys in the browser
+
+**A key the board says is gone.** The browser keeps the keys it holds when the board reports no key, another key id or another user. It shows a blocking warning instead of the setup screen. A reset the user did not make looks the same, and would walk them into a second data key while the machines keep the first. The way out of the warning is deliberate: typing a word.
+
+**Setup with no key in the browser.** The warning cannot protect a browser that holds no key at all (after Lock, in a private window, in a new browser) when the board reports none. The setup screen then says that if the board was already in use, setting up again creates a new key that the worker machines do not hold and that cannot read anything stored under the old one. It requires ticking a confirmation that this is a first-time setup.
+
+**Settings.** The Settings page shows and re-wraps a key only when it is the one the browser is using, whatever the board reports.
+
+**Passphrases.** A passphrase is trimmed and NFKC-normalised in one place before it is checked and hashed, so setup, unlock and change treat it alike.
+
+**Clear values on screen.** Everything the browser shows from the board in the clear goes through the same shape checks as the CLI's wire parsers:
+
+- machine and lane names, who wrote a note, a run's machine
+- a schedule's rule, its run count and interval
+- a run's event count and a result's output size, which must be whole numbers
+- the name the board reports for you in the key warning, shown only when it looks like a login name
+
+A value that fails shows as a neutral placeholder, and the task page says so. The board's own events show as `Board`, apart from the `system` notes of your machines.
+
+## What the server validates
+
+The server refuses a sealed field that is not an envelope (400) or that is longer than its limit (`SEALED_LIMITS`). It checks nothing about what is inside.
+
+So all content validation happens in the client, before sealing and after opening: a non-empty title, an absolute `workdir`, the shape of questions and answers, whether an answer fits its question. The clients also refuse a value that is too long themselves and name the limit. That includes `board comment --file`, `board add --file` and `board polish --file`.
+
+- A task's `dedupeKey` is the blind index (`abh1.…`, an HMAC) of the key a script gave, and `head` is the blind index of `head:<sha>`. The server can keep the key unique per board and nothing else.
+- Labels are not stored. `taskLabels` in `packages/shared` derives them from the opened prompt and the creator.
+- The database refuses plain text in every sealed column (migration 0014). `apps/backend/src/db/sealedColumns.ts` lists them.
+
+## Previews
+
+A client that writes a note with text also sends `preview`: the first 300 characters of the text, sealed apart. The board cards list every task's newest note without opening threads, and the preview is what they show.
+
+A note without text (a question note, an answer without a message) has none. The card shows a server event's own text when it is one of the fixed ones.
+
+## Suggested replies
+
+A comment by the agent may carry `suggestion` (sealed `note.suggestion`, at most 2000 characters). It is the reply the agent expects the user to send next. `board comment --suggest <text>` or `--suggest-file <path>` seals it. The browser offers it as ghost text and a one-click Send while no note of the user follows it.
+
+Only agent comments can carry one. The server and a database check refuse it on any other note, and a client opens it only there.
+
+A server without the `note.suggestion` feature refuses the key on `add-note`. The CLI then posts the comment without the suggestion and says so.
+
+## The pull request of a task
+
+`board pr <task> <url>` seals the URL of a PR the agent opened as `pr`, bound to the task and to the agent. No other field's ciphertext (a prompt, a note) and no other task's PR opens as this one. The user's own text can never stand in for it.
+
+The CLI refuses anything but `https://github.com/<owner>/<repo>/pull/<number>` before sealing. The browser and the CLI show a value only when it opens under that binding and passes the same check again.
+
+- A server cannot make a card link anywhere but to a GitHub pull request, and it cannot make a PR up.
+- It can still drop, repeat or reorder the PRs of a task, or serve again one that was sealed for the task.
+
+The prompt's own PR (a review task) comes first when both exist.
+
+## The watches of a task
+
+The CLI of the machine that runs a task's watches seals what the board shows of them as `watches`, bound to the task and to the agent like a PR. It is one JSON document, `{"watches":[…],"pendingEvents":n}`. Each entry has a `name`, a `kind`, a `label` such as `CI #116`, a one-line `status`, the `deadline` and the last look. `pendingEvents` is how many events wait for the agent.
+
+- The command a watch runs and its output are never in it. They stay on the machine.
+- A client shows an entry only when it has exactly that shape and drops one that does not. A list that does not open or parse is unreadable (`watches` in `unreadable`), which never keeps a task from running.
+- The server can drop, repeat or serve a stale list, or serve one sealed for the same task again. It cannot make one up.
+- What the user asks to stop (`watchStops`) is a list of watch ids in clear. The server learns which of a task's watches the user stopped, not what they are, and the machine acts only on an id it has a watch for.
+
+## Unreadable values
+
+The CLI never crashes a listing on a value it cannot open, and never treats one as a prompt. The cause can be plain text, another key, another row or damage.
+
+- **Tasks and schedules** get `unreadable`: the names of the fields that failed (`title`, `input`, `workdir`, `agent`, `watches`). A workdir that opens to a relative path counts. An unreadable title shows as a placeholder, an unreadable input is empty, an unreadable workdir is `null`.
+- **Dispatch** skips a task whose input or workdir is unreadable. The worker refuses to run it and reports why on the task. An unreadable title alone does not stop a run.
+- **Notes** that cannot be opened, or whose questions or answers do not parse, are `unreadable` with no text.
+- **A run is refused** when it would hand the agent an unreadable note of the user's: the reply a resume carries, or what a fresh run is told the user wrote since the previous run started. Older notes do not matter, so Re-run fresh, which starts after the refused attempt, gets past it.
+- `board show` and `board tasks` print `(cannot decrypt …)` instead of text.
+
+The data key is read from `AGENT_BOARD_DATA_KEY`. It is never printed or put into an error.
+
+## What the server can still do
+
+The server relays what the user does, and the user's actions are not signed. A hostile server, or a stolen database login, can therefore:
+
+- decide **when** a task starts, resumes, re-runs, is paused or closed
+- decide **on which of the user's machines** it runs (any machine that holds a token) and **in which lane**
+- change a task's priority or position
+- choose the model of any run: a review of untrusted PR text on a weaker model, or every task on the most expensive one
+- withhold, delay or reorder anything, notes and answers included
+
+It cannot:
+
+- make a worker run text the user's clients did not seal for that task
+- run a task with the permissions of another creator
+- put its own words in a note or an agent's prompt
+
+It sees everything listed under [What the server sees](#what-the-server-sees). It does not see what an answer, a prompt or a note says, or which PR a task is about.
+
+These limits are inherent to a server that stores ciphertext and cannot sign what the user did:
+
+- **Ciphertext never expires.** The server can run a closed or done task again, and a deleted or paused schedule, as often as it likes. The prompt still opens, and the run is judged as the user's.
+- **Replay within one task.** It can replay an older value of a field (an earlier prompt or directory of that task). It can reorder, duplicate or withhold notes, including serving an older reply after a newer question. A note's id, author, kind and task are bound. Its place in the thread is not.
+- **Fixed event texts.** It can insert any number of them. `Taken back from <machine>` carries a machine name, at most 64 characters of `[A-Za-z0-9_.-]`.
+- **No key rotation.** A passphrase change leaves the old wrapped copy of the key with the server, and the data key is never rotated. A passphrase or a key that has leaked stays leaked, and a recovery key that was kept still opens the board.
+- **The key on worker machines.** Every worker machine keeps the raw data key in `~/.config/agent-board/env`, readable by any process of that user, an agent in `auto` mode included. An agent that reads it can seal what it likes, as any creator.
+- **An unlocked browser.** It stays unlocked until Lock, per tab, and its derived keys stay in IndexedDB until then.
+- **A dropped directory.** The server can drop a task's directory (`workdir: null`) and withhold the `home_workdir` copy that Re-run fresh restores. The task then runs in the lane's or the default directory of that machine instead of the one the user chose. With a `dirs` list on the machine, that directory must itself be listed, else the run is refused.
+
+## Error text from the server
+
+A `board` command reports a server refusal as:
+
+```text
+error from the board server (HTTP <status>), quoted and not part of the board: "<text>"
+```
+
+The hook that tells an agent a question could not be put on the board does the same. The text is the server's words, JSON-quoted, on one line, at most 200 characters.
+
+The agent sees it as an error, never as a note, a prompt or an instruction. A client never shows server text as board content. What a parser quotes of a value it refuses is quoted too, and cut at 40 characters.
