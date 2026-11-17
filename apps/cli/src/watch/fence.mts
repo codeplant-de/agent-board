@@ -44,13 +44,33 @@ export function clockTime(date: Date, now: Date): string {
   return date.toDateString() === now.toDateString() ? text.slice(-5) : text;
 }
 
+// A deadline closer than this is shown to the second.
+export const NEAR_DEADLINE_MS = 10 * 60_000;
+
+/**
+ * When a watch ends, as the agent reads it: 2027-01-01 12:00, never earlier than the deadline. Less than ten minutes ahead it is
+ * to the second (12:00:40), so a one-minute timer does not read as one that ends in twenty seconds; further out the minute is
+ * rounded up.
+ */
+export function deadlineTime(deadline: Date, now: Date): string {
+  if (deadline.getTime() - now.getTime() < NEAR_DEADLINE_MS)
+    return deadline.toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'medium' });
+  return localTime(new Date(Math.ceil(deadline.getTime() / 60_000) * 60_000));
+}
+
+// `deadlineTime` without the date on the day of `now`.
+export function deadlineClock(deadline: Date, now: Date): string {
+  const text = deadlineTime(deadline, now);
+  return deadline.toDateString() === now.toDateString() ? text.slice(text.indexOf(' ') + 1) : text;
+}
+
 export type OpenWatch = Pick<WatchDef, 'name' | 'source' | 'everyMs' | 'deadline'>;
 
 /** One line on the watches still open, for the end of an events message and the resume prompts. */
 export function openWatchesLine(open: OpenWatch[], now: Date = new Date()): string {
   if (open.length === 0) return 'No watch is open any more.';
   const parts = open.map(({ name, source, everyMs, deadline }) => {
-    const until = clockTime(new Date(deadline), now);
+    const until = deadlineClock(new Date(deadline), now);
     return source.kind === 'timer'
       ? `"${name}" (at ${until})`
       : `"${name}" (every ${describeEvery(everyMs)}, until ${until})`;

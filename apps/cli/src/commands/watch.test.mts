@@ -367,6 +367,16 @@ test('an agent run and a task of the removed intake may watch a ci, a review or 
   assert.deepEqual(intake.watches.list(ID).defs, []);
 });
 
+test('a timer says its end once, to the second when it is less than ten minutes away', async () => {
+  const { go, printed } = setup();
+  await go(['watch', ID, '--in', '1m'], { now: () => new Date('2026-01-01T11:45:40Z') });
+  assert.match(printed[0] ?? '', /^watching "timer" on Zt0Test1: waiting until 2026-01-01 \d\d:\d\d:40$/);
+  assert.equal(printed[0]?.match(/until/g)?.length, 1);
+  printed.length = 0;
+  await go(['watch', ID, '--in', '20m', '--name', 'later']);
+  assert.match(printed[0] ?? '', /^watching "later" on Zt0Test1: waiting until 20\d\d-\d\d-\d\d \d\d:\d\d$/);
+});
+
 test('--dry-run stores nothing and runs nothing', async () => {
   const { go, watches, run, printed } = setup();
   await go(['watch', '--dry-run', ID, '--name', 'x', '--', 'true']);

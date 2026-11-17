@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import type { TaskWatch } from '@agent-board/shared';
 import { BackendError } from '../backend/backend.mts';
 import { commandDef, PR, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
-import { publishWatches, taskWatchesOf } from './publish.mts';
+import { isBoardStale, publishWatches, taskWatchesOf } from './publish.mts';
 import { createWatchStore, newWatchId } from './store.mts';
 
 const TASK = 'Ab3dEf9x';
@@ -114,4 +114,46 @@ test('a board without task.watches is skipped with one line, and any other failu
   await publishWatches(deps, TASK);
   assert.match(logs[1] ?? '', /^WARN publishing the watches of Ab3dEf9x failed: board down/);
   assert.deepEqual(sent, []);
+});
+
+test('the board is stale when it shows watches the store does not hold, other watches, none, or another count of events', () => {
+  const { store } = setup();
+  const board = (watches: TaskWatch[] | null, watchEvents = 0, unreadable: ('watches' | 'title')[] = []) =>
+    isBoardStale(store, { id: TASK, watches, watchEvents, unreadable }, NOW);
+  assert.equal(board(null), false);
+  assert.equal(board(null, 0, ['title']), false);
+  assert.equal(board(null, 0, ['watches']), true);
+  const gone = taskWatchesOf(
+    (() => {
+      const other = createWatchStore(join(tempDir(), 'watches'));
+      other.write(timerDef());
+      return other;
+    })(),
+    TASK,
+    NOW,
+  );
+  assert.equal(board(gone), true);
+  assert.equal(board([]), true);
+
+  store.write(commandDef('true', { last: { at: '2026-01-01T11:58:00.000Z', summary: 'exit 1: no' } }));
+  const shown = taskWatchesOf(store, TASK, NOW);
+  assert.equal(board(shown), false);
+  assert.equal(board(null), true);
+  assert.equal(board([...shown, ...gone.map((watch) => ({ ...watch, id: '1111111111111111' }))]), true);
+  assert.equal(board(shown.map((watch) => ({ ...watch, id: '1111111111111111' }))), true);
+  assert.equal(board(shown.map((watch) => ({ ...watch, deadline: '2026-01-01T15:00:00.000Z' }))), true);
+  // What the last look said changes all the time and is the unit's to publish.
+  assert.equal(
+    board(shown.map((watch) => ({ ...watch, status: 'exit 2 at 11:00', lastAttemptAt: NOW.toISOString() }))),
+    false,
+  );
+  store.writeEvent({ id: newWatchId(), task: TASK, name: 'ci', at: NOW.toISOString(), kind: 'event', text: 'x' });
+  assert.equal(board(shown), true);
+  assert.equal(board(shown, 1), false);
+});
+
+test('a timer close to its end is published to the second', () => {
+  const { store } = setup();
+  store.write(timerDef({ deadline: '2026-01-01T12:01:40.000Z' }));
+  assert.match(taskWatchesOf(store, TASK, NOW)[0]?.status ?? '', /^fires at \d\d:\d\d:40$/);
 });

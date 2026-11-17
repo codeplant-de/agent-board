@@ -217,6 +217,13 @@ A new watch source: the first review or comment someone else leaves on a pull re
 - On the board, a review watch shows once the web app is the version that knows the `pr-review` kind. An older one leaves the entry out of the list and shows the task's other watches.
 - The shipped `reviewer` agent's allow list is unchanged. An agent that should wait for reviews needs `Bash(board watch * --pr-review)` and `Bash(board watch * --pr-review *)` in its `allowedTools`.
 
+### Watch times and a self-repairing watch list (CLI 0.21.1)
+
+The CLI alone changes. Run `board self-update` on each machine, or pull and restart the units on a checkout (`board restart`).
+
+- `board watch` names a timer's end once, and an end less than ten minutes away is shown to the second.
+- The dispatch tick publishes a task's watches again when the board's list is not the machine's (see [Publishing and stops](workers.md#publishing-and-stops)). On a server without `task.watches` this logs the "does not show watches yet" line on every tick while a task there has open watches.
+
 ### Watches on the board (CLI 0.21.0)
 
 A new server feature, `task.watches`. The CLI publishes the sealed list of a task's watches, and the server stores it with the stop requests of the user. The board shows a badge on the card and a **Watches** list on the task page (see [What the board shows of watches](usage.md#what-the-board-shows-of-watches)). A migration adds the columns `watches` and `watch_stops` to `task`.
