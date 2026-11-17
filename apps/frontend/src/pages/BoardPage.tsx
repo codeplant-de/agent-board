@@ -1,5 +1,5 @@
 import { statePrOf, type Status } from '@agent-board/shared';
-import { Badge, Button, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
+import { Badge, Box, Button, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
 import { IconGitMerge } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState, type DragEvent } from 'react';
@@ -53,7 +53,8 @@ const scrollMaxHeight = (status: Status, waitingEmpty: boolean): string => {
 /** Narrow on a wide screen until hovered, then they float over their neighbors at full width. */
 const COLLAPSIBLE = new Set<Status>(['backlog', 'done']);
 
-export function BoardPage() {
+/** `only` renders just that column, on its own page instead of the board's grid. */
+function BoardColumns({ only }: { only?: Status }) {
   const trpc = useTRPC();
   const tasks = useQuery({ ...trpc.tasks.list.queryOptions(), refetchInterval: POLL_MS });
   const move = useMutation(trpc.tasks.move.mutationOptions());
@@ -183,20 +184,31 @@ export function BoardPage() {
   return (
     <Stack gap="md">
       <IncompatibleMachinesBanner />
-      <SlackInbox />
+      {only === undefined && <SlackInbox />}
       <QueryStatus query={tasks} what="the board" />
-      <div className="board">
-        {CELLS.map((statuses) => (
-          <div
-            key={statuses.join()}
-            className="board-cell"
-            data-collapsible={statuses.length === 1 && COLLAPSIBLE.has(statuses[0]!)}
-            data-status={statuses.join(' ')}
-          >
-            {statuses.map(renderColumn)}
-          </div>
-        ))}
-      </div>
+      {only !== undefined ? (
+        <Box maw={640} w="100%" mx="auto">
+          {renderColumn(only)}
+        </Box>
+      ) : (
+        <div className="board">
+          {CELLS.map((statuses) => (
+            <div
+              key={statuses.join()}
+              className="board-cell"
+              data-collapsible={statuses.length === 1 && COLLAPSIBLE.has(statuses[0]!)}
+              data-status={statuses.join(' ')}
+            >
+              {statuses.map(renderColumn)}
+            </div>
+          ))}
+        </div>
+      )}
     </Stack>
   );
 }
+
+export const BoardPage = () => <BoardColumns />;
+
+/** Backlog is hidden from the board on a phone, so it gets a page of its own. */
+export const BacklogPage = () => <BoardColumns only="backlog" />;
