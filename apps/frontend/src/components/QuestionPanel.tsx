@@ -85,6 +85,9 @@ export function QuestionPanel({ questions, submitting, onSubmit }: Props) {
   return <QuestionForm key={round} questions={shown} submitting={submitting} onSubmit={onSubmit} />;
 }
 
+/** A drawer or modal covers the form, so a key pressed there must not change the answer behind it. */
+const isOverlayOpen = (): boolean => document.querySelector('[role="dialog"]') !== null;
+
 function QuestionForm({ questions, submitting, onSubmit }: FormProps) {
   const [drafts, setDrafts] = useState<Draft[]>(() => initial(questions));
   const [active, setActive] = useState(0);
@@ -125,11 +128,11 @@ function QuestionForm({ questions, submitting, onSubmit }: FormProps) {
           String(n),
           () => {
             const option = questions[active]?.options[n - 1];
-            if (option) pick(active, option.label);
+            if (option && !isOverlayOpen()) pick(active, option.label);
           },
         ] as [string, () => void],
     ),
-    ['mod+Enter', submit],
+    ['mod+Enter', () => !isOverlayOpen() && submit()],
   ]);
 
   return (
