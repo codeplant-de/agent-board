@@ -154,7 +154,6 @@ function settingsDirOf(deps: WatchDeps): { settingsDir?: string } {
   return deps.settingsDir === undefined ? {} : { settingsDir: deps.settingsDir };
 }
 
-// The PR as gh prints it, and its head commit, from a URL or number (or the task's PR) read in the agent's directory.
 // The PR `--ci` watches when none is given: the newest one the task reported with `board pr` that is still open (or whose
 // state is not known yet), else the newest one.
 export function reportedPr(prs: readonly TaskPr[]): string | null {
@@ -162,6 +161,7 @@ export function reportedPr(prs: readonly TaskPr[]): string | null {
   return (open.at(-1) ?? prs.at(-1))?.url ?? null;
 }
 
+// The PR as gh prints it, and its head commit, from a URL or number (or the task's PR) read in the agent's directory.
 async function resolvePr(
   id: string,
   given: string | undefined,

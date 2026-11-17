@@ -1,17 +1,22 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { BackendError } from '../backend/backend.mts';
+import type { TaskPr } from '@agent-board/shared';
 import { UsageError } from '../cli.mts';
 import type { LinkingContext } from '../cli.mts';
 import { CONFIG, fakeBackend, linkTo, task } from '../__tests__/helpers/fakes.mts';
 import { commandResult, fakeRunner, HEAD, PR, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
 import type { FakeRunner } from '../__tests__/helpers/watch.mts';
 import { createWatchStore } from '../watch/store.mts';
-import { parseWatchFlags } from './watch.mts';
+import { parseWatchFlags, reportedPr } from './watch.mts';
 import { runBoard } from './program.mts';
 import type { ProgramOptions } from './program-shared.mts';
 
 const ID = 'Zt0Test1';
+function taskPr(url: string, state: TaskPr['state'] = null, id = url): TaskPr {
+  return { id, url, state };
+}
+
 const NOW = new Date('2026-01-01T12:00:00Z');
 const HOUR = 60 * 60_000;
 
@@ -165,7 +170,7 @@ test('a pending command is stored with its first attempt, and the agent is told 
 });
 
 test('a ci watch resolves the PR in the directory, stores its URL and head, and waits', async () => {
-  const { go, watches, run, printed } = setup({ pr: PR });
+  const { go, watches, run, printed } = setup({ prs: [taskPr(PR)] });
   await go(['watch', ID, '--ci', '--required']);
   const [def] = watches.list(ID).defs;
   assert.equal(def?.name, 'ci');
@@ -184,13 +189,13 @@ test('a ci watch resolves the PR in the directory, stores its URL and head, and 
 });
 
 test("a ci watch takes a PR number, or a URL, over the task's PR, and checks the shape before argv", async () => {
-  const { go, run, watches } = setup({ pr: PR });
+  const { go, run, watches } = setup({ prs: [taskPr(PR)] });
   await go(['watch', ID, '--ci', '17']);
   assert.equal(run.runner.calls[0], `gh pr view '17' --json url,headRefOid`);
   assert.equal(watches.list(ID).defs.length, 1);
   for (const bad of ['17; rm -rf ~', '$(id)', '0', 'https://example.com/a/b/pull/1', '-1'])
     await assert.rejects(go(['watch', ID, '--ci', bad]), /--ci takes a PR URL or number/, bad);
-  const hostile = setup({ pr: "https://github.com/a/b/pull/1'; id #" });
+  const hostile = setup({ prs: [taskPr("https://github.com/a/b/pull/1'; id #")] });
   await assert.rejects(hostile.go(['watch', ID, '--ci']), /--ci takes a PR URL or number/);
   assert.deepEqual(hostile.run.runner.calls, []);
   const none = setup();
@@ -198,7 +203,7 @@ test("a ci watch takes a PR number, or a URL, over the task's PR, and checks the
 });
 
 test('a ci watch whose PR gh cannot read fails the call', async () => {
-  const { go, run, watches } = setup({ pr: PR });
+  const { go, run, watches } = setup({ prs: [taskPr(PR)] });
   run.runner = fakeRunner({ 'gh pr view': commandResult(1, 'no pull requests found') });
   await assert.rejects(go(['watch', ID, '--ci']), /cannot read the PR .*no pull requests found/);
   run.runner = fakeRunner({ 'gh pr view': commandResult(0, '{"url":"https://evil.example/x","headRefOid":"zz"}') });
@@ -207,7 +212,7 @@ test('a ci watch whose PR gh cannot read fails the call', async () => {
 });
 
 test('a ci watch whose checks have all passed reports at once and stores nothing', async () => {
-  const { go, run, watches, printed } = setup({ pr: PR });
+  const { go, run, watches, printed } = setup({ prs: [taskPr(PR)] });
   run.runner = fakeRunner({
     'gh pr checks': commandResult(0, JSON.stringify([{ name: 'build', bucket: 'pass', link: 'https://ci/1' }])),
   });
@@ -236,7 +241,7 @@ test('a timer is stored without an attempt, and the same name replaces the open 
 });
 
 test('a task may hold several watches', async () => {
-  const { go, watches } = setup({ pr: PR });
+  const { go, watches } = setup({ prs: [taskPr(PR)] });
   await go(['watch', ID, '--ci']);
   await go(['watch', ID, '--name', 'health', '--', 'curl x']);
   await go(['watch', ID, '--in', '1h']);
@@ -262,7 +267,7 @@ test('the task must be here and running or waiting', async () => {
 });
 
 test('an agent run and a task of the removed intake may watch a ci or a timer, not a command', async () => {
-  const restricted = setup({ pr: PR });
+  const restricted = setup({ prs: [taskPr(PR)] });
   await assert.rejects(
     restricted.go(['watch', ID, '--name', 'x', '--', 'true'], { env: { AGENT_BOARD_RESTRICTED: '1' } }),
     /fixed list of commands.*--ci or --in\/--at only/,
@@ -424,4 +429,24 @@ test('a run watches, lists and stops its own task only', async () => {
     watches.list(ID).defs.map((def) => def.name),
     ['second'],
   );
+});
+
+test('reportedPr is the newest open PR, else the newest, else none', () => {
+  const a = 'https://github.com/a/b/pull/1';
+  const b = 'https://github.com/a/b/pull/2';
+  const c = 'https://github.com/a/b/pull/3';
+  assert.equal(reportedPr([]), null);
+  assert.equal(reportedPr([taskPr(a)]), a);
+  assert.equal(reportedPr([taskPr(a, 'open'), taskPr(b, 'open')]), b);
+  assert.equal(reportedPr([taskPr(a, 'open'), taskPr(b, 'merged')]), a);
+  assert.equal(reportedPr([taskPr(a, 'merged'), taskPr(b, 'closed')]), b);
+  assert.equal(reportedPr([taskPr(a, 'closed'), taskPr(b, 'open'), taskPr(c, 'merged')]), b);
+  assert.equal(reportedPr([taskPr(a, 'merged'), taskPr(b, null)]), b);
+});
+
+test('a ci watch without a PR argument takes the newest open reported PR', async () => {
+  const second = 'https://github.com/acme/app/pull/8';
+  const { go, run } = setup({ prs: [taskPr(PR, 'open'), taskPr(second, 'merged')] });
+  await go(['watch', ID, '--ci']);
+  assert.equal(run.runner.calls[0], `gh pr view '${PR}' --json url,headRefOid`);
 });

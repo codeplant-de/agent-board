@@ -178,7 +178,7 @@ Settings has a **Desktop notifications** switch, off by default. Turning it on a
 An agent that has to wait for something outside the run (CI, a deploy, a review bot) starts a **watch** instead of sleeping in its slot:
 
 ```
-board watch <task> --ci                                  # the PR the task reported with board pr
+board watch <task> --ci                                  # the newest open PR the task reported with board pr
 board watch <task> --ci https://github.com/o/r/pull/7 --required
 board watch <task> --name health --every 30s -- 'curl -fsS https://staging.example.com/health'
 board watch <task> --in 20m --name settle
@@ -206,7 +206,7 @@ An event's text can come from text you did not write (job names from a PR's work
 
 The sources:
 
-- **CI** (`--ci [pr]`): the PR given, else the PR the task reported with `board pr`. Every 30 seconds the machine reads `gh pr checks <pr> --json name,bucket,link`, all checks or with `--required` the required ones. It reports at the first failed or cancelled check, with the failed checks' names and links and how many are still running or passed, or once every check has passed or been skipped, and the watch ends with that event. A PR that was merged or closed reports that. Right after a push, "no checks reported" counts as running for 3 minutes, then reports "no checks appeared". A new head commit restarts the watch on that commit. The agent fixes, pushes and starts a new `--ci` watch after a red build.
+- **CI** (`--ci [pr]`): the PR given, else the newest PR the task reported with `board pr` that is not merged or closed (the newest one when all are). Every 30 seconds the machine reads `gh pr checks <pr> --json name,bucket,link`, all checks or with `--required` the required ones. It reports at the first failed or cancelled check, with the failed checks' names and links and how many are still running or passed, or once every check has passed or been skipped, and the watch ends with that event. A PR that was merged or closed reports that. Right after a push, "no checks reported" counts as running for 3 minutes, then reports "no checks appeared". A new head commit restarts the watch on that commit. The agent fixes, pushes and starts a new `--ci` watch after a red build.
 - **A command** (`--name <name> --every <dur> -- '<command>'`): a shell command that exits 0 once the wait is over, run with `bash -c` in the directory the agent was in, every `--every` (default 30s, at least 15s), with the `env` of the Claude Code settings the run loaded (`~/.claude/settings.json`, then `.claude/settings.json` and `settings.local.json` of the directory the run started in, which the worker passes on as `AGENT_BOARD_START_DIR`) on top of the machine's environment. Exit 0 is the event, with the end of the output; anything else is kept for the next attempt.
 - **A timer** (`--in <dur>` or `--at <time>`, the forms of [Scheduling](#scheduling)): one event when the time is up.
 

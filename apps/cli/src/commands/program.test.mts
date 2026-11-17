@@ -434,7 +434,7 @@ test('every board command in the run rules, the hook messages and the selftest s
         Object.assign(backend.tasks[0]!, {
           status: 'running',
           machine: CONFIG.machine,
-          pr: 'https://github.com/acme/app/pull/7',
+          prs: [{ id: 'p1', url: 'https://github.com/acme/app/pull/7', state: null }],
         });
       // `unwatch` needs something to stop; the runner answers the gh calls of a ci watch and fails every other command.
       watches.write(watchDef({ task: ID, name: 'x', source: { kind: 'timer' }, everyMs: 0 }));

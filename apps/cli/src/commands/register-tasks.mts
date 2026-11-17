@@ -311,14 +311,17 @@ export function registerTaskCommands(shared: ProgramShared): void {
       .description(
         paragraphs(
           'Inside a run: start a watch instead of sleeping or polling. A watch belongs to the task, lives on its machine, and reports an event that reaches you as a message: in this run if it is still going, otherwise when the task resumes in its session. Keep working if there is work; end your turn when there is none, and the task waits without holding a slot. A task may have several watches.',
-          `Give exactly one source. --ci watches the checks of a pull request (the PR is the argument, or the one you reported with "board pr"; --required looks at the required checks only; a new commit restarts it) and reports when they have passed, one failed, or the PR was merged or closed. A command after -- is run every --every (default ${DEFAULT_WATCH_EVERY}, at least 15s) in this directory, with the env of your Claude Code settings, and reports once it exits 0; it needs --name, and it is run once right away. --in or --at is a timer.`,
+          `Give exactly one source. --ci watches the checks of a pull request (the PR is the argument, or the newest open one you reported with "board pr"; --required looks at the required checks only; a new commit restarts it) and reports when they have passed, one failed, or the PR was merged or closed. A command after -- is run every --every (default ${DEFAULT_WATCH_EVERY}, at least 15s) in this directory, with the env of your Claude Code settings, and reports once it exits 0; it needs --name, and it is run once right away. --in or --at is a timer.`,
           `--timeout (default ${DEFAULT_WATCH_TIMEOUT}, at most 7 days) is how long a ci or command watch looks before it reports that it timed out. The command stays on this machine. The same name again replaces the open watch. If the answer is there at once, it is printed and no watch is stored; a command that cannot run here is refused.`,
           ID_NOTE,
         ),
       )
       .argument('<task>', TASK_ARGUMENT)
       .argument('[command...]', 'after --: the shell command that exits 0 once the wait is over')
-      .option('--ci [pr]', 'watch the checks of a PR (URL or number; default: the PR of this task)')
+      .option(
+        '--ci [pr]',
+        'watch the checks of a PR (URL or number; default: the newest open PR reported for this task)',
+      )
       .option('--required', 'with --ci: the required checks only')
       .option('--name <name>', "the watch's name (default: ci, or timer); a command needs one")
       .option('--every <duration>', `with a command: how often it runs (default ${DEFAULT_WATCH_EVERY}, at least 15s)`)
