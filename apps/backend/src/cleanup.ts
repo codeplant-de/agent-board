@@ -6,7 +6,7 @@ import { archiveStaleDone } from './services/tasks';
 import { deleteOldTranscripts } from './services/transcripts';
 
 /**
- * Tasks untouched in Done for 14 days are closed, the transcripts of tasks closed 14 days ago go, and Slack inbox items go
+ * Tasks untouched in Done for 7 days are closed, the transcripts of tasks closed 14 days ago go, and Slack inbox items go
  * after 30 days, for every user's board in turn. A failing board is reported and does not stop the others.
  */
 export async function cleanupAllBoards(
