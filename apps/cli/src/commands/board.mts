@@ -574,8 +574,8 @@ export async function wait(
       check: plan.check !== undefined,
     });
   } catch (error) {
-    // Only a refusal: after a timeout or a 5xx the board may have taken the wait, and its check must stay. A stray one goes at
-    // the next tick, once the task neither runs nor waits.
+    // Only a refusal: after a timeout or a 5xx the board may have taken the wait, and its check must stay. If it did not, the
+    // watch stays while the task runs and parks the run when it ends, until its deadline or the task's watches are dropped.
     if (watchId !== undefined && isPermanentRefusal(error)) deps.watches.claim(id, 'wait', watchId)?.done();
     if (error instanceof BackendError && error.status === 409)
       throw new UsageError(`${id} cannot wait: ${error.message}`);

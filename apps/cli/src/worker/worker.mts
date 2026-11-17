@@ -50,6 +50,8 @@ import type { StoredEvent, WatchDef, WatchStore } from '../watch/store.mts';
 const PAUSE_GRACE_MINUTES = 2;
 // The board's liveness is updated at most this often.
 const HEARTBEAT_EVERY_MS = 15_000;
+// The earliest a park wakes the task: the board refuses a time that is not in the future.
+const MIN_PARK_MS = 60_000;
 // How often the spool is looked at for events to hand a running agent.
 const SPOOL_EVERY_MS = 2_000;
 // A watch tick that finds this much more time gone than its 15 s interval ran while the machine slept (or the clock was set).
@@ -348,6 +350,8 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
   // that comes in meanwhile makes one more.
   let channel: RunChannel | undefined;
   let inboxOff = false;
+  // The board answered the run inbox with 409: the task is no longer Running (board ask, board wait).
+  let leftRunning = false;
   let looking: Promise<void> | undefined;
   let lookAgain = false;
   // The messages the agent has been handed, so that a lost acknowledgement does not hand one over twice.
@@ -393,7 +397,8 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
       if (error instanceof BackendError && error.missingFeature !== undefined) {
         inboxOff = true;
         deps.appendLog(taskId, 'the board has no run inbox: messages and stop requests are not delivered');
-      } else if (!(error instanceof BackendError && error.status === 409)) logFailure('run inbox failed', error);
+      } else if (error instanceof BackendError && error.status === 409) leftRunning = true;
+      else logFailure('run inbox failed', error);
       return;
     }
     // The run ended while the board answered.
@@ -459,9 +464,11 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
       watches.list(task.id).defs,
       deps.now(),
     );
+  // Once the task left Running or a pause was asked for, the events wait for the resume.
+  const holdsEvents = (): boolean => leftRunning || files.pauseRequestedAt(taskId) !== undefined;
   const handOverSpool = (): void => {
     const live = channel;
-    if (turnHoldsSpool || live === undefined || !live.open) return;
+    if (turnHoldsSpool || live === undefined || !live.open || holdsEvents()) return;
     try {
       const stored = unprompted();
       if (stored.length > 0 && live.send(eventsText(stored))) handedWatchEvents(stored);
@@ -472,11 +479,11 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
   // At the end of a turn: events the run has not seen go on as its next turn, but only while the task is still this run's to
   // continue. After `board ask`, a wait or a move the events stay for the next resume, and never pull a task out of Needs me.
   const handOverAtTurnEnd = async (): Promise<string | undefined> => {
-    if (unprompted().length === 0) return undefined;
+    if (unprompted().length === 0 || holdsEvents()) return undefined;
     turnHoldsSpool = true;
     try {
       const current = await backend.getTask(task.id);
-      if (current.status !== 'running' || isRunOver(task, current)) return undefined;
+      if (current.status !== 'running' || isRunOver(task, current) || holdsEvents()) return undefined;
       const stored = unprompted();
       if (stored.length === 0) return undefined;
       turnFiles = stored.map(({ file }) => file);
@@ -584,17 +591,24 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
   // The agent ended its turn with watches open: the task waits for them, without the agent having to say so.
   const parkOnWatches = async (open: WatchDef[]): Promise<void> => {
     const now = deps.now();
-    const earliest = Math.min(...open.map(({ deadline }) => Date.parse(deadline)));
-    const list = open.map(({ name, deadline }) => `"${name}" (until ${clockTime(new Date(deadline), now)})`).join(', ');
+    // The board wants a time in the future; a deadline that has passed is for the tick or the unit to act on soon.
+    const earliest = Math.max(
+      now.getTime() + MIN_PARK_MS,
+      open.length === 0 ? 0 : Math.min(...open.map(({ deadline }) => Date.parse(deadline))),
+    );
+    const list =
+      open.length === 0
+        ? 'a watch event'
+        : open.map(({ name, deadline }) => `"${name}" (until ${clockTime(new Date(deadline), now)})`).join(', ');
     try {
       await backend.wait(task.id, {
         text: `Waiting for watches: ${list}.`,
-        wakeAt: new Date(Math.max(earliest, now.getTime())),
+        wakeAt: new Date(earliest),
         check: open.some(({ source }) => source.kind !== 'timer'),
       });
       deps.appendLog(taskId, `the task waits for its watches: ${list}`);
     } catch (error) {
-      if (!(error instanceof BackendError && error.status === 409)) throw error;
+      if (!(error instanceof BackendError && (error.status === 409 || error.status === 400))) throw error;
       deps.appendLog(taskId, `the board did not park the task on its watches: ${errorText(error)}`);
     }
   };
@@ -633,7 +647,7 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
       pauseRequested,
       stopRequested: endedByStop,
       reported: after.status !== 'running',
-      watching: openWatches.length > 0,
+      watching: openWatches.length > 0 || unprompted().length > 0,
     });
     if (outcome.kind === 'ok') return;
     if (outcome.kind === 'parked') {

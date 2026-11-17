@@ -407,3 +407,21 @@ test('wait --check at once calls the board with check true; --in keeps its meani
   assert.equal(check.watches.read(ID, 'wait')?.everyMs, 60_000);
   await assert.rejects(setup().go(['wait', ID, '--check', 'true', '--every', '0m']), /--every/);
 });
+
+test('a run watches, lists and stops its own task only', async () => {
+  const { go, watches } = setup();
+  watches.write(timerDef({ task: ID }));
+  const env = { AGENT_BOARD_TASK: 'Other0Tk' };
+  await assert.rejects(go(['watch', ID, '--in', '5m'], { env }), /not the task of this run \(Other0Tk\)/);
+  await assert.rejects(go(['watches', ID], { env }), /not the task of this run/);
+  await assert.rejects(go(['unwatch', ID, 'timer'], { env }), /not the task of this run/);
+  assert.equal(watches.list(ID).defs.length, 1);
+  const own = { AGENT_BOARD_TASK: ID };
+  await go(['watches', ID], { env: own });
+  await go(['watch', ID, '--in', '9m', '--name', 'second'], { env: own });
+  await go(['unwatch', ID, 'timer'], { env: own });
+  assert.deepEqual(
+    watches.list(ID).defs.map((def) => def.name),
+    ['second'],
+  );
+});

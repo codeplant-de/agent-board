@@ -39,7 +39,7 @@ export function watchesToPoll(store: WatchStore, now: Date): WatchDef[] | undefi
 }
 
 export const UNIT_MISSING_WARNING =
-  'WARN watches on this machine are polled by the dispatch tick: the watch unit is not running; run "board setup"';
+  'WARN watches on this machine are polled by the dispatch tick: the watch unit is not running; run "board setup --enable"';
 
 /**
  * Ends the watches of `task` whose deadline has passed: a timer reports its end, any other watch its timeout. No command runs.

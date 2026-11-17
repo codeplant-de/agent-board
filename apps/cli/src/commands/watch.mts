@@ -126,6 +126,8 @@ export interface WatchDeps {
   settingsDir?: string;
   // The run's AGENT_BOARD_RESTRICTED marker, which the worker sets on this machine for an agent's run.
   restricted?: boolean;
+  // The task of the run (AGENT_BOARD_TASK); outside a run, absent.
+  ownTask?: string;
   now?: Date;
 }
 
@@ -134,6 +136,12 @@ function requireHere(context: Context, task: Task, what: string): void {
     throw new UsageError(
       `${task.id} runs on ${task.machine ?? 'no machine'}, not on ${context.config.machine}: ${what} lives on the task's machine`,
     );
+}
+
+// A run may watch its own task only.
+function requireOwnTask(id: string, ownTask: string | undefined): void {
+  if (ownTask !== undefined && ownTask !== '' && ownTask !== id)
+    throw new UsageError(`${id} is not the task of this run (${ownTask}): a run watches its own task only`);
 }
 
 async function openTask(context: Context, id: string, what: string): Promise<Task> {
@@ -204,6 +212,7 @@ export async function watch(
 ): Promise<void> {
   const now = deps.now ?? new Date();
   const plan = parseWatchFlags(flags, words, now);
+  requireOwnTask(id, deps.ownTask);
   const task = await openTask(context, id, 'a watch');
   if (task.status !== 'running' && task.status !== 'waiting')
     throw new UsageError(`${id} is ${task.status}: only a running or waiting task can have a watch`);
@@ -310,7 +319,13 @@ export interface OpenWatches {
 }
 
 /** The open watches of a task on this machine. */
-export async function readWatches(context: Context, id: string, store: WatchStore): Promise<OpenWatches> {
+export async function readWatches(
+  context: Context,
+  id: string,
+  store: WatchStore,
+  ownTask?: string,
+): Promise<OpenWatches> {
+  requireOwnTask(id, ownTask);
   await openTask(context, id, 'its watches live');
   const { defs, unreadable } = store.list(id);
   return { defs, undelivered: store.events(id).length, unreadable: unreadable.length };
@@ -342,8 +357,9 @@ export async function unwatch(
   context: Context,
   id: string,
   name: string,
-  deps: { watches: WatchStore },
+  deps: { watches: WatchStore; ownTask?: string },
 ): Promise<void> {
+  requireOwnTask(id, deps.ownTask);
   await openTask(context, id, 'its watches live');
   checkedName(name);
   if (context.dryRun) {

@@ -298,6 +298,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
     run: options.watchRunner ?? ((job) => runCommand(job)),
     cwd: options.cwd ?? realpathSync(process.cwd()),
     restricted: env['AGENT_BOARD_RESTRICTED'] === '1',
+    ...(env['AGENT_BOARD_TASK'] ? { ownTask: env['AGENT_BOARD_TASK'] } : {}),
     ...(env['AGENT_BOARD_START_DIR'] ? { settingsDir: env['AGENT_BOARD_START_DIR'] } : {}),
     ...(options.now ? { now: options.now() } : {}),
   });
@@ -356,7 +357,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
   ).action(async (arg: string, flags: { json?: boolean }, command: Command) => {
     const context = contextOf(command, { strictConfig: true, json: flags.json === true });
     const id = await taskIdOf(context, arg);
-    const open = await readWatches(context, id, watchStore());
+    const open = await readWatches(context, id, watchStore(), env['AGENT_BOARD_TASK']);
     if (flags.json) writeJson(watchesJson(open));
     else for (const line of formatWatches(id, open)) context.print(line);
   });
@@ -377,7 +378,10 @@ export function registerTaskCommands(shared: ProgramShared): void {
       .addHelpText('after', examples('board unwatch Ab3dEf9x ci')),
   ).action(async (arg: string, name: string, _flags: unknown, command: Command) => {
     const context = contextOf(command, { strictConfig: true });
-    await unwatch(context, await taskIdOf(context, arg), name, { watches: watchStore() });
+    await unwatch(context, await taskIdOf(context, arg), name, {
+      watches: watchStore(),
+      ...(env['AGENT_BOARD_TASK'] ? { ownTask: env['AGENT_BOARD_TASK'] } : {}),
+    });
   });
 
   dryRunOption(

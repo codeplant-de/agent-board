@@ -2077,3 +2077,61 @@ test('the events of the prompt are not sent again by the spool look', async () =
   });
   assert.deepEqual(channel.sent, []);
 });
+
+test('an event left in the spool after the last watch was claimed still parks the task, not a failure', async () => {
+  const harness = setupResumed({ exitCode: 0, signal: null });
+  // The unit claimed the only watch and wrote its event while the run ended.
+  harness.deps.run = async () => {
+    spoolEvent(harness.deps, 'ci', '2026-01-01T10:10:00.000Z');
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(harness.deps, 'w1');
+  assert.ok(!harness.backend.writes.some((line) => line.startsWith('fail ')));
+  assert.match(
+    harness.backend.writes.find((line) => line.startsWith('wait w1')) ?? '',
+    /Waiting for watches: a watch event\./,
+  );
+  assert.equal(harness.deps.watches.events('w1').length, 1);
+});
+
+test('a deadline that has passed parks for at least a minute, and a 400 from the board is logged', async () => {
+  const { backend } = await endedWatching({ watches: [timerDef({ ...W1, deadline: '2000-01-01T14:00:00.000Z' })] });
+  const wait = backend.writes.find((line) => line.startsWith('wait w1')) ?? '';
+  const until = Date.parse(/until (\S+Z)/.exec(wait)?.[1] ?? '');
+  assert.ok(until - Date.now() > 50_000, wait);
+
+  const refused = setupResumed({ exitCode: 0, signal: null });
+  refused.deps.watches.write(watchDef({ ...W1 }));
+  refused.backend.wait = async () => {
+    throw new BackendError('wait: wakeAt must be in the future', 400);
+  };
+  await runWorker(refused.deps, 'w1');
+  assert.ok(refused.calls.some((line) => line.includes('did not park the task')));
+});
+
+test('events are not handed over once a pause was requested or the task left Running', async () => {
+  const paused = setupResumed({ exitCode: 0, signal: null }, true);
+  await runWithDeps(paused, async ({ deps, channel, watch }) => {
+    deps.files.requestPause('w1');
+    spoolEvent(deps, 'ci', '2026-01-01T10:10:00.000Z');
+    await sleep(40);
+    assert.deepEqual(channel.sent, []);
+    assert.equal(await watch.onTurnEnd?.(), undefined);
+    assert.equal(deps.watches.events('w1').length, 1);
+  });
+
+  const left = setupResumed({ exitCode: 0, signal: null }, true);
+  left.backend.runInbox = async () => {
+    throw new BackendError('run-inbox: the task is not running', 409);
+  };
+  await runWithDeps(left, async ({ deps, channel, watch }) => {
+    await watch.tick();
+    await settle();
+    spoolEvent(deps, 'ci', '2026-01-01T10:10:00.000Z');
+    await sleep(40);
+    assert.deepEqual(channel.sent, []);
+    left.backend.tasks[0]!.status = 'running';
+    assert.equal(await watch.onTurnEnd?.(), undefined);
+    assert.equal(deps.watches.events('w1').length, 1);
+  });
+});
