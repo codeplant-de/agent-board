@@ -209,13 +209,28 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
-### Stream watches (CLI 0.22.0)
+### Stream watches (CLI 0.23.0)
 
 The CLI alone changes: `board watch <task> --name <name> --stream -- '<command>'` keeps a command running in the watch unit and reports its output lines as events (see [Sources](usage.md#sources) and [Streams](workers.md#streams)). The server and the contract stay as they are. Update machines in any order.
 
 - On a checkout install, restart the watch unit after updating: `board restart watch`. `board self-update` restarts it. A unit that still runs the older code skips a stream watch and logs that it cannot read its file.
 - A stream needs the watch unit. On a machine without it, `board watch --stream` is refused; run `board setup --enable`.
 - The board shows a stream once the server of this version is deployed. An older page leaves the watch out of its list.
+
+### `board watch --pr-review` (CLI 0.22.0)
+
+A new watch source: the first review or comment someone else leaves on a pull request (see [Sources](usage.md#sources)). Nothing changes on the server, and no feature name is added.
+
+- The watch unit polls it, so restart the unit after updating the CLI on a checkout install: `board restart watch`. `board self-update` restarts it. A unit that still runs the older CLI skips the watch file with a warning in its log until then.
+- On the board, a review watch shows once the web app is the version that knows the `pr-review` kind. An older one leaves the entry out of the list and shows the task's other watches.
+- The shipped `reviewer` agent's allow list is unchanged. An agent that should wait for reviews needs `Bash(board watch * --pr-review)` and `Bash(board watch * --pr-review *)` in its `allowedTools`.
+
+### Watch times and a self-repairing watch list (CLI 0.21.1)
+
+The CLI alone changes. Run `board self-update` on each machine, or pull and restart the units on a checkout (`board restart`).
+
+- `board watch` names a timer's end once, and an end less than ten minutes away is shown to the second.
+- The dispatch tick publishes a task's watches again when the board's list is not the machine's (see [Publishing and stops](workers.md#publishing-and-stops)). On a server without `task.watches` this logs the "does not show watches yet" line on every tick while a task there has open watches.
 
 ### Watches on the board (CLI 0.21.0)
 

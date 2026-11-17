@@ -98,8 +98,8 @@ export interface FakeRunner extends WatchRunner {
 }
 
 /**
- * A runner that starts no process: `gh pr view` finds the open PR at HEAD, `gh pr checks` has one check still running, and any
- * other command exits 1 with "not yet". `answer` overrides a command by a prefix it starts with.
+ * A runner that starts no process: `gh pr view` finds the open PR at HEAD (asked for its reviews and comments: none, by
+ * octo-dev), `gh pr checks` has one check still running, and any other command exits 1 with "not yet". `answer` overrides a command by a prefix it starts with.
  */
 export function fakeRunner(answer: Record<string, CommandResult> = {}): FakeRunner {
   const calls: string[] = [];
@@ -107,6 +107,11 @@ export function fakeRunner(answer: Record<string, CommandResult> = {}): FakeRunn
     calls.push(command);
     const given = Object.entries(answer).find(([prefix]) => command.startsWith(prefix));
     if (given !== undefined) return given[1];
+    if (command.startsWith('gh pr view') && command.includes('reviews,comments'))
+      return commandResult(
+        0,
+        JSON.stringify({ url: PR, state: 'OPEN', author: { login: 'octo-dev' }, reviews: [], comments: [] }),
+      );
     if (command.startsWith('gh pr view'))
       return commandResult(0, JSON.stringify({ url: PR, headRefOid: HEAD, state: 'OPEN' }));
     if (command.startsWith('gh pr checks'))

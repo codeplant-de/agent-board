@@ -75,7 +75,7 @@ import {
   watchesToPoll,
 } from '../watch/tick.mts';
 import type { DropReason, TickWatchDeps } from '../watch/tick.mts';
-import { publishWatches } from '../watch/publish.mts';
+import { isBoardStale, publishWatches } from '../watch/publish.mts';
 import { handleWatchStops } from '../watch/stops.mts';
 import { isRunLive, wakeReason } from '../watch/wake.mts';
 import { isProcessAlive } from '../worker/process.mts';
@@ -172,7 +172,7 @@ async function unlistedDropReason(deps: DispatchDeps, id: string): Promise<DropR
 
 // Watches (and their spool) of a task that is done, closed, in Backlog or gone are of no use to anyone. Running, Waiting, Todo and
 // Needs me keep theirs: they survive a question and a pause.
-async function dropFinishedWatches(deps: DispatchDeps, listed: Task[]): Promise<void> {
+async function dropFinishedWatches(deps: DispatchDeps, listed: Task[], published: Set<string>): Promise<void> {
   const shown = new Map(listed.map((task) => [task.id, task]));
   let lookups = 0;
   for (const id of deps.watches.tasks()) {
@@ -185,15 +185,32 @@ async function dropFinishedWatches(deps: DispatchDeps, listed: Task[]): Promise<
     if (deps.dryRun) continue;
     deps.watches.dropTask(id);
     // The board clears them itself for a task that left; this keeps its copy right when it did not.
-    if (reason !== 'gone') await publishWatches(publishDepsOf(deps), id);
+    if (reason === 'gone') continue;
+    published.add(id);
+    await publishWatches(publishDepsOf(deps), id);
   }
 }
 
 // The stop requests of the user for the tasks on this machine, after the watches of finished tasks are dropped.
-async function stopWatches(deps: DispatchDeps, tasks: Task[]): Promise<void> {
+async function stopWatches(deps: DispatchDeps, tasks: Task[], published: Set<string>): Promise<void> {
   for (const task of tasks) {
     if (task.machine !== deps.config.machine || task.watchStops.length === 0) continue;
+    published.add(task.id);
     await handleWatchStops({ ...watchDepsOf(deps), backend: deps.backend }, task);
+  }
+}
+
+// The board's list of a task's watches goes stale when this machine went down between changing the store and publishing. A task
+// here whose list on the board is not the store's is published again, once per tick; `published` are the tasks this tick has
+// told the board about already, whose listed copy is older than that.
+async function republishStaleWatches(deps: DispatchDeps, tasks: Task[], published: Set<string>): Promise<void> {
+  for (const task of tasks) {
+    if (task.machine !== deps.config.machine || published.has(task.id)) continue;
+    if (!isBoardStale(deps.watches, task, deps.now())) continue;
+    deps.print(`${deps.dryRun ? 'DRY ' : ''}REPUBLISH-WATCHES ${task.id} the board's list is not this machine's`);
+    if (deps.dryRun) continue;
+    published.add(task.id);
+    await publishWatches(publishDepsOf(deps), task.id);
   }
 }
 
@@ -216,12 +233,14 @@ async function wakeDue(deps: DispatchDeps, tasks: Task[]): Promise<{ tasks: Task
     deps.print(`DROP-CHECK ${id} its task no longer waits here`);
     if (!deps.dryRun) waits.remove(id);
   }
+  const published = new Set<string>();
   try {
-    await dropFinishedWatches(deps, tasks);
+    await dropFinishedWatches(deps, tasks, published);
   } catch (error) {
     deps.print(`WARN dropping the watches of finished tasks failed: ${errorText(error)}`);
   }
-  await stopWatches(deps, tasks);
+  await stopWatches(deps, tasks, published);
+  await republishStaleWatches(deps, tasks, published);
   const checks: Task[] = [];
   const replaced = new Map<string, Task>();
   for (const task of waiting) {

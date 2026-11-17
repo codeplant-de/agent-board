@@ -21,7 +21,7 @@ export function isWatchId(value: unknown): value is string {
   return typeof value === 'string' && WATCH_ID.test(value);
 }
 
-export const WATCH_KINDS = ['ci', 'command', 'stream', 'timer'] as const;
+export const WATCH_KINDS = ['ci', 'command', 'stream', 'timer', 'pr-review'] as const;
 export type WatchKind = (typeof WATCH_KINDS)[number];
 
 export const MAX_WATCH_LABEL_CHARS = 120;

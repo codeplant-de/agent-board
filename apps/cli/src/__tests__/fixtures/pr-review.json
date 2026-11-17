@@ -1,0 +1,79 @@
+{
+  "author": { "id": "MDQ6VXNlcjE=", "is_bot": false, "login": "octo-dev", "name": "Octo Dev" },
+  "comments": [
+    {
+      "id": "IC_kwDODKw3uc8AAAABly43Ww",
+      "author": { "login": "octo-dev" },
+      "authorAssociation": "MEMBER",
+      "body": "Tested against the real API. Labels are applied directly.",
+      "createdAt": "2026-11-12T17:45:33Z",
+      "includesCreatedEdit": true,
+      "isMinimized": false,
+      "minimizedReason": "",
+      "reactionGroups": [],
+      "url": "https://github.com/acme/app/pull/7#issuecomment-6831355739",
+      "viewerDidAuthor": false
+    },
+    {
+      "id": "IC_kwDODKw3uc8AAAABmKGY9A",
+      "author": { "login": "acme-triage" },
+      "authorAssociation": "NONE",
+      "body": "**Recommendation: Review before merging, Confidence: Medium**\n\nThe upstream change renames two exported functions.\r\nSee the release notes.\n\nLine four.\nLine five.\nLine six.",
+      "createdAt": "2026-11-13T14:23:00Z",
+      "includesCreatedEdit": false,
+      "isMinimized": false,
+      "minimizedReason": "",
+      "reactionGroups": [],
+      "url": "https://github.com/acme/app/pull/7#issuecomment-6855694580",
+      "viewerDidAuthor": false
+    }
+  ],
+  "reviews": [
+    {
+      "id": "PRR_kwDODKw3uc8AAAABXmsRwQ",
+      "author": { "login": "copilot-pull-request-reviewer" },
+      "authorAssociation": "CONTRIBUTOR",
+      "body": "<!-- ccr-overview-v2 -->\n\n### Changes recommended\n\nThe retry loop never backs off.",
+      "submittedAt": "2026-11-12T17:28:15Z",
+      "includesCreatedEdit": false,
+      "reactionGroups": [],
+      "state": "COMMENTED",
+      "commit": { "oid": "d49685754b8b2c4c8b9b18d3dfd96c95629c97d2" }
+    },
+    {
+      "id": "PRR_kwDODKw3uc8AAAABXBhYKQ",
+      "author": { "login": "reviewer-one" },
+      "authorAssociation": "MEMBER",
+      "body": "",
+      "submittedAt": "2026-11-13T10:09:08Z",
+      "includesCreatedEdit": false,
+      "reactionGroups": [],
+      "state": "CHANGES_REQUESTED",
+      "commit": { "oid": "e8022e837d4d422370059c3ea954d13e11ebeeaf" }
+    },
+    {
+      "id": "PRR_kwDODKw3uc8AAAABXnR0Cw",
+      "author": { "login": "board-machine" },
+      "authorAssociation": "MEMBER",
+      "body": "Looks fine to me.",
+      "submittedAt": "2026-11-13T18:11:44Z",
+      "includesCreatedEdit": false,
+      "reactionGroups": [],
+      "state": "APPROVED",
+      "commit": { "oid": "d49685754b8b2c4c8b9b18d3dfd96c95629c97d2" }
+    },
+    {
+      "id": "PRR_kwDODKw3uc8AAAABYRBaIw",
+      "author": { "login": "board-machine" },
+      "authorAssociation": "MEMBER",
+      "body": "a draft nobody submitted",
+      "submittedAt": null,
+      "includesCreatedEdit": false,
+      "reactionGroups": [],
+      "state": "PENDING",
+      "commit": { "oid": "d49685754b8b2c4c8b9b18d3dfd96c95629c97d2" }
+    }
+  ],
+  "state": "OPEN",
+  "url": "https://github.com/acme/app/pull/7"
+}

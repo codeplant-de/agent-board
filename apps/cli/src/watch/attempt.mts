@@ -5,11 +5,14 @@ import { localTime } from '../commands/schedule.mts';
 import type { CommandResult } from '../dispatch/waits.mts';
 import { ciChecksCommand, ciViewCommand, decideCi, isViewOpen } from './ci.mts';
 import type { CiSource } from './ci.mts';
+import { deadlineTime } from './fence.mts';
+import { decideReview, reviewViewCommand } from './review.mts';
+import type { ReviewSource } from './review.mts';
 import type { WatchDef } from './store.mts';
 
 export const UNIT_ATTEMPT_LIMIT_MS = 120_000;
 export const TICK_ATTEMPT_LIMIT_MS = 45_000;
-// gh is asked twice per ci attempt, each call with this at the most.
+// gh is asked twice per ci attempt and once per pr-review attempt, each call with this at the most.
 const CI_CALL_LIMIT_MS = 60_000;
 const OUTPUT_SUMMARY_CHARS = 2000;
 
@@ -36,13 +39,14 @@ export interface AttemptDeps {
 export type AttemptResult =
   // The watch is over; the text is the report.
   | { kind: 'event'; text: string }
-  // Still going. `def` is the watch as the attempt leaves it, when that differs (a ci watch that moved to a new head).
+  // Still going. `def` is the watch as the attempt leaves it, when that differs (a ci watch that moved to a new head, a
+  // pr-review watch that saw more).
   | { kind: 'pending'; summary: string; def?: WatchDef }
   | { kind: 'broken'; reason: string };
 
-/** Whether the watch is looked at on a timer (ci, command). A timer only ends, and a stream's command runs on in the watch unit. */
+/** Whether the watch is looked at on a timer (ci, pr-review, command). A timer only ends, and a stream's command runs on in the watch unit. */
 export function isPolled(def: Pick<WatchDef, 'source'>): boolean {
-  return def.source.kind === 'ci' || def.source.kind === 'command';
+  return def.source.kind !== 'timer' && def.source.kind !== 'stream';
 }
 
 /** When a polled watch is next due: `everyMs` after its last attempt, or after it was registered (which ran the first one). */
@@ -50,7 +54,7 @@ export function nextAttemptAt(def: Pick<WatchDef, 'last' | 'createdAt' | 'everyM
   return Date.parse(def.last?.at ?? def.createdAt) + def.everyMs;
 }
 
-function sourceOf(def: WatchDef, source: CiSource): WatchDef {
+function sourceOf(def: WatchDef, source: CiSource | ReviewSource): WatchDef {
   return { ...def, source };
 }
 
@@ -108,6 +112,23 @@ async function attemptCi(def: WatchDef & { source: CiSource }, now: Date, deps: 
   return { kind: 'pending', summary: decision.reason };
 }
 
+async function attemptReview(def: WatchDef & { source: ReviewSource }, deps: AttemptDeps): Promise<AttemptResult> {
+  const { source } = def;
+  const view = await deps.run({
+    command: reviewViewCommand(source.pr),
+    cwd: source.cwd,
+    timeLimitMs: Math.min(CI_CALL_LIMIT_MS, deps.timeLimitMs),
+    ...(source.settingsDir === undefined ? {} : { settingsDir: source.settingsDir }),
+    ...(deps.signal === undefined ? {} : { signal: deps.signal }),
+  });
+  const decision = decideReview({ source, view });
+  if (decision.kind === 'event') return { kind: 'event', text: decision.text };
+  if (decision.kind === 'pending')
+    return { kind: 'pending', summary: decision.summary, def: sourceOf(def, decision.source) };
+  if (deps.registration === true) return { kind: 'broken', reason: decision.reason };
+  return { kind: 'pending', summary: decision.reason };
+}
+
 /**
  * Looks at one watch. A timer is never polled: its end is its event. A stream is never polled either. Every other source returns
  * its event, or its state.
@@ -117,11 +138,12 @@ export async function attempt(def: WatchDef, now: Date, deps: AttemptDeps): Prom
   if (source.kind === 'timer')
     return now.getTime() >= Date.parse(def.deadline)
       ? { kind: 'event', text: timerText(def) }
-      : { kind: 'pending', summary: `waiting until ${localTime(new Date(def.deadline))}` };
+      : { kind: 'pending', summary: `waiting until ${deadlineTime(new Date(def.deadline), now)}` };
   // A stream is not looked at: the watch unit runs its command and reports what it prints (see stream.mts).
   if (source.kind === 'stream')
     return { kind: 'pending', summary: source.starts === 0 ? 'not started yet' : 'streaming' };
   if (source.kind === 'command') return attemptCommand({ ...def, source }, deps);
+  if (source.kind === 'pr-review') return attemptReview({ ...def, source }, deps);
   return attemptCi({ ...def, source }, now, deps);
 }
 
