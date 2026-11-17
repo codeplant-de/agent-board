@@ -20,6 +20,7 @@ vi.mock('../lib/trpc', () => ({
         }),
       },
       setPriority: { mutationOptions: () => ({ mutationFn: async () => null }) },
+      configure: { mutationOptions: () => ({ mutationFn: async () => null }) },
     },
     machines: {
       list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => shown.machines }) },

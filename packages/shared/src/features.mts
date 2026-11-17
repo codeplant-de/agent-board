@@ -17,6 +17,7 @@ export const ADDED_SERVER_FEATURES = [
   'machine.dirs',
   'task.agent',
   'task.run',
+  'task.configure',
 ] as const;
 
 export const SERVER_FEATURES = [...BASELINE_SERVER_FEATURES, ...ADDED_SERVER_FEATURES] as const;
@@ -35,6 +36,7 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'machine.dirs': 'directory lists',
   'task.agent': 'running a task as an agent',
   'task.run': 'telling runs of a task apart',
+  'task.configure': 'changing a task’s settings',
   wait: 'waiting',
 };
 

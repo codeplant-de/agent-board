@@ -24,9 +24,11 @@ const VISIBLE = [
   'wait',
   'add',
   'polish',
+  'task',
   'schedule',
   'schedules',
   'dirs',
+  'config',
   'delay',
   'init',
   'doctor',
@@ -56,6 +58,17 @@ test('the model lists the visible commands only, with their flags', () => {
   );
   assert.deepEqual(model.flagValues['--priority'], ['urgent', 'high', 'normal', 'low']);
   assert.deepEqual(model.flagValues['--model'], ['fable', 'opus', 'sonnet', 'haiku']);
+});
+
+test('task completes its id, then set or unset, then the setting', () => {
+  assert.deepEqual(model.commands.find((command) => command.name === 'task')?.positionals, [
+    'task',
+    'task-action',
+    'task-key',
+  ]);
+  assert.ok(script('bash').includes('compgen -W "set unset"'));
+  assert.ok(script('bash').includes('compgen -W "priority model dir"'));
+  assert.ok(script('fish').includes("'__board_at 3 task' -a 'priority model dir'"));
 });
 
 for (const shell of SHELLS) {
@@ -161,6 +174,9 @@ test('the bash script completes commands, task ids, statuses, priorities and sch
   assert.deepEqual(bashOffers(['dirs', 'unset'], 'd'), ['default']);
   assert.deepEqual(bashOffers(['dirs', 'add'], ''), [], 'only set and unset take a setting');
   assert.deepEqual(bashOffers(['dirs', 'set', 'label'], ''), [], 'the value is free text');
+  assert.deepEqual(bashOffers(['config'], ''), ['show', 'get', 'set', 'unset', 'edit', 'path']);
+  assert.ok(bashOffers(['config', 'set'], 'pause').includes('pauseAfterMinutes'));
+  assert.deepEqual(bashOffers(['config', 'edit'], ''), [], 'only get, set and unset take a key');
   assert.deepEqual(bashOffers(['schedules', 'rm'], ''), ['Sc1aBcDe']);
   assert.deepEqual(bashOffers(['schedules', '--dry-run', 'pause'], ''), ['Sc1aBcDe']);
   assert.deepEqual(bashOffers(['tasks'], '--st'), ['--status']);

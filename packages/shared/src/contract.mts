@@ -358,6 +358,9 @@ export interface Backend {
   addTask(draft: TaskDraft): Promise<AddTaskResult>;
   // With `patch.expect`, a task of another status is left alone and the call throws an error with status 409.
   updateTask(id: string, patch: TaskPatch): Promise<Task>;
+  // The user's edit of a task's settings. A new directory is pinned to this machine and drops the session; the server
+  // refuses with 409 while the task runs or waits.
+  configureTask(id: string, change: TaskConfigChange): Promise<Task>;
   // Moves a todo task to running for `machine`; undefined when another caller got it first or it is pinned elsewhere.
   claimTask(id: string, machine: string): Promise<Task | undefined>;
   // A `suggestion` (agent comments only) is the reply the user will most likely send next; a `polish` note is a rewritten prompt.
@@ -473,6 +476,21 @@ export interface WireRunInbox {
 export type WireTaskDraft = Omit<TaskDraft, 'id'> & { id: string };
 // A task patch; input and workdir are sealed, head is a blind index.
 export type WireTaskPatch = Omit<TaskPatch, 'seal'>;
+// A task's settings as the user edits them after creation. Each key is optional, at least one is present.
+export interface TaskConfigChange {
+  priority?: Priority;
+  // A model name, or null for claude's default. It applies from the next run on.
+  model?: string | null;
+  // Where the task runs from now on. An object pins it to the directory on the calling machine and drops the session (it
+  // cannot be resumed from another directory); null gives the task no directory of its own.
+  place?: { workdir: string } | null;
+  // Needed for a directory: what the sealer must know of the task.
+  seal?: PatchSealing;
+}
+
+// The body of configure-task: the directory is sealed.
+export type WireTaskConfig = Omit<TaskConfigChange, 'seal'>;
+
 // A schedule draft with its id; title, input and workdir are sealed.
 export type WireScheduleDraft = Omit<ScheduleDraft, 'id'> & { id: string };
 
@@ -548,6 +566,7 @@ export interface WireBackend {
   attachSession(id: string): Promise<WireTask>;
   addTask(draft: WireTaskDraft): Promise<WireAddTaskResult>;
   updateTask(id: string, patch: WireTaskPatch): Promise<WireTask>;
+  configureTask(id: string, body: WireTaskConfig): Promise<WireTask>;
   claimTask(id: string, machine: string): Promise<WireTask | undefined>;
   addNote(
     id: string,
@@ -1343,6 +1362,26 @@ export function parseWireTaskPatch(value: unknown): WireTaskPatch {
   if ('notBefore' in obj) patch.notBefore = nullableDate(obj, 'notBefore', 'patch');
   if ('workdir' in obj) patch.workdir = nullableSealedField(obj, 'workdir', 'patch', 'workdir');
   return patch;
+}
+
+// Body of configure-task. At least one key. `place` carries the sealed directory only: the machine is the token's.
+export function parseWireTaskConfig(value: unknown): WireTaskConfig {
+  const obj = record(value, 'config');
+  const keys = ['priority', 'model', 'place'];
+  rejectUnknownKeys(obj, keys, 'config');
+  if (!keys.some((key) => key in obj)) throw new ContractError(`config needs one of ${keys.join(', ')}`);
+  const config: WireTaskConfig = {};
+  if ('priority' in obj) config.priority = member(obj, 'priority', 'config', PRIORITIES);
+  if ('model' in obj) config.model = obj['model'] === null ? null : modelName(obj, 'config');
+  if ('place' in obj) {
+    if (obj['place'] === null) config.place = null;
+    else {
+      const place = record(obj['place'], 'config.place');
+      rejectUnknownKeys(place, ['workdir'], 'config.place');
+      config.place = { workdir: sealedField(place, 'workdir', 'config.place', 'workdir') };
+    }
+  }
+  return config;
 }
 
 // Body of add-note, pause and fail: a sealed text and, optionally, the sealed start of it. Only add-note takes a suggestion.

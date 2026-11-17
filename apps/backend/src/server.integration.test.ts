@@ -208,6 +208,7 @@ describe('machine API', () => {
       dirsIndex: null,
     });
     expect(LEGACY_CONTRACT).toBe(9);
+    expect(json.result.features).toContain('task.configure');
   });
 
   it('the UI needs a signed-in user in an allowed group; Remote-* headers do not open the machine API', async () => {

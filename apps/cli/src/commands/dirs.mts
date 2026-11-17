@@ -1,18 +1,10 @@
-import { chmodSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isRecord } from '@agent-board/shared';
 import type { Backend, Schedule, Task } from '@agent-board/shared';
 import { UsageError } from '../cli.mts';
-import {
-  ConfigError,
-  DIR_SETTINGS,
-  dirKeyPath,
-  dirSettingProblem,
-  expandHome,
-  MAX_DIRS,
-  parseConfig,
-} from '../config/config.mts';
+import { DIR_SETTINGS, dirKeyPath, dirSettingProblem, expandHome, MAX_DIRS, parseConfig } from '../config/config.mts';
 import type { Config, DirEntry, DirSetting } from '../config/config.mts';
+import { readConfigFile, writeConfigFile } from '../config/config-file.mts';
 import { coveringDir, isDirectory, routedDirs, syncDirs, tryRealpath } from '../config/dirs.mts';
 import { plainLine } from '../output/terminal.mts';
 import { errorText } from '../output/text.mts';
@@ -35,7 +27,7 @@ interface DirKey extends DirRecord {
   path: string;
 }
 
-interface ConfigFile {
+interface DirsFile {
   raw: Record<string, unknown>;
   config: Config;
   mode: number;
@@ -43,28 +35,9 @@ interface ConfigFile {
   keys: DirKey[] | undefined;
 }
 
-function readConfigFile(configFile: string): ConfigFile {
-  let text: string;
-  let mode: number;
-  try {
-    text = readFileSync(configFile, 'utf8');
-    mode = statSync(configFile).mode & 0o777;
-  } catch (error) {
-    const missing = error instanceof Error && 'code' in error && error.code === 'ENOENT';
-    throw new ConfigError(
-      missing
-        ? `config file missing: ${configFile} (run "board init")`
-        : `cannot read the config file ${configFile} (${error instanceof Error && 'code' in error ? String(error.code) : 'unknown error'})`,
-    );
-  }
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    throw new ConfigError(`config file is not valid JSON: ${configFile}; fix it before changing the dirs list`);
-  }
+function readDirsFile(configFile: string): DirsFile {
+  const { raw, mode } = readConfigFile(configFile, 'fix it before changing the dirs list');
   const config = parseConfig(raw);
-  if (!isRecord(raw)) throw new ConfigError('config: top level must be an object');
   const rawDirs = raw['dirs'];
   const keys = isRecord(rawDirs)
     ? Object.keys(rawDirs).flatMap((key) => {
@@ -83,20 +56,10 @@ function readConfigFile(configFile: string): ConfigFile {
  * lost; every other key keeps its value and its place.
  */
 export function changeDirs(configFile: string, change: (keys: DirKey[]) => DirRecord[]): void {
-  // A config.json that is a link (a dotfiles checkout) is changed where it points, not replaced by a plain file.
-  const target = tryRealpath(configFile) ?? configFile;
-  const { raw, mode, keys } = readConfigFile(target);
+  const { raw, mode, keys } = readDirsFile(configFile);
   const next = change(keys ?? []);
   const dirs = Object.fromEntries(next.map(({ key, settings }) => [key, settings]));
-  const temp = `${target}.tmp-${process.pid}`;
-  try {
-    rmSync(temp, { force: true });
-    writeFileSync(temp, `${JSON.stringify({ ...raw, dirs }, null, 2)}\n`, { mode, flag: 'wx' });
-    chmodSync(temp, mode);
-    renameSync(temp, target);
-  } finally {
-    rmSync(temp, { force: true });
-  }
+  writeConfigFile(configFile, { ...raw, dirs }, mode);
 }
 
 export interface DirsDeps {
@@ -110,6 +73,11 @@ export interface DirsDeps {
   bold?: (text: string) => string;
 }
 
+// What sending the list needs, which `board config` has as well.
+export type DirsSyncDeps = Pick<DirsDeps, 'configFile' | 'dryRun' | 'print'> & {
+  backend: Pick<Backend, 'checkDirs' | 'setDirs'>;
+};
+
 export interface DirsAddFlags {
   fromConfig?: boolean;
 }
@@ -118,7 +86,7 @@ export interface DirsRemoveFlags {
   force?: boolean;
 }
 
-function warn(deps: DirsDeps, line: string): void {
+function warn(deps: Pick<DirsDeps, 'print'>, line: string): void {
   deps.print(`warning: ${line}`);
 }
 
@@ -132,7 +100,7 @@ function write(deps: DirsDeps, line: string, change: (keys: DirKey[]) => DirReco
 }
 
 export function dirsList(deps: DirsDeps): void {
-  const { config } = readConfigFile(deps.configFile);
+  const { config } = readDirsFile(deps.configFile);
   const bold = deps.bold ?? ((text: string) => text);
   if (config.dirs === undefined) {
     deps.print(
@@ -160,10 +128,10 @@ function settingsText(entry: DirEntry): string {
  * After `add` or `rm`: sends the new list to the board and says so. A board that cannot be reached or refuses is a warning,
  * never a failure: the list in config.json is what counts, and the next dispatch tick sends it.
  */
-export async function reportDirsSync(deps: DirsDeps): Promise<void> {
+export async function reportDirsSync(deps: DirsSyncDeps): Promise<void> {
   if (deps.dryRun) return;
   try {
-    const sync = await syncDirs({ backend: deps.backend, config: readConfigFile(deps.configFile).config });
+    const sync = await syncDirs({ backend: deps.backend, config: readDirsFile(deps.configFile).config });
     if (sync.result === 'unsupported')
       deps.print('the board cannot show this list yet: its server has no directory lists');
     else if (sync.result !== 'not-listed') deps.print('the board has the list');
@@ -186,7 +154,7 @@ export function dirsAdd(deps: DirsDeps, path: string | undefined, flags: DirsAdd
     if (path !== undefined) throw new UsageError('--from-config takes no path');
     return addFromConfig(deps);
   }
-  const { config } = readConfigFile(deps.configFile);
+  const { config } = readDirsFile(deps.configFile);
   const entries = config.dirs ?? [];
   const wanted = absolute(deps, path);
   const real = tryRealpath(wanted);
@@ -209,7 +177,7 @@ export function dirsAdd(deps: DirsDeps, path: string | undefined, flags: DirsAdd
 }
 
 function addFromConfig(deps: DirsDeps): void {
-  const { config } = readConfigFile(deps.configFile);
+  const { config } = readDirsFile(deps.configFile);
   const entries = config.dirs ?? [];
   const added: string[] = [];
   const known: DirEntry[] = [...entries];
@@ -280,7 +248,7 @@ function listedEntry(deps: DirsDeps, dirs: readonly DirEntry[], path: string | u
 }
 
 export async function dirsRemove(deps: DirsDeps, path: string | undefined, flags: DirsRemoveFlags = {}): Promise<void> {
-  const { config } = readConfigFile(deps.configFile);
+  const { config } = readDirsFile(deps.configFile);
   if (config.dirs === undefined) throw new UsageError('no directories are listed');
   const match = listedEntry(deps, config.dirs, path);
   const remaining = config.dirs.filter((entry) => entry !== match);
@@ -346,7 +314,7 @@ function settingValue(setting: DirSetting, value: string): string | true {
 export function dirsSet(deps: DirsDeps, key: string, text: string, path: string | undefined): void {
   const setting = settingKey(key);
   const value = settingValue(setting, text);
-  const { config } = readConfigFile(deps.configFile);
+  const { config } = readDirsFile(deps.configFile);
   if (config.dirs === undefined) throw new UsageError('no directories are listed; "board dirs add" lists one first');
   const match = listedEntry(deps, config.dirs, path);
   const problem = dirSettingProblem(
@@ -376,7 +344,7 @@ export function dirsSet(deps: DirsDeps, key: string, text: string, path: string 
 
 export function dirsUnset(deps: DirsDeps, key: string, path: string | undefined): void {
   const setting = settingKey(key);
-  const { config } = readConfigFile(deps.configFile);
+  const { config } = readDirsFile(deps.configFile);
   if (config.dirs === undefined) throw new UsageError('no directories are listed');
   const match = listedEntry(deps, config.dirs, path);
   if (match[setting] === undefined) {

@@ -43,6 +43,8 @@ export interface ProgramOptions {
   cwd?: string;
   // The home directory, which `board dirs` warns about.
   home?: string;
+  // Runs the editor of `board config edit` with the terminal: its command line, the file last. Returns the exit status, or undefined when it did not start.
+  runEditor?: (argv: string[]) => number | undefined;
   // Whether stderr is a terminal, the only place the update hint is shown.
   stderrIsTty?: boolean;
   // Where the update hint remembers when it was last shown.

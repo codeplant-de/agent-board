@@ -32,6 +32,8 @@ Tasks:
                             check
   add                       propose a follow-up task
   polish <task>             post a polished title and prompt for a task
+  task <task> [action...]   show a task's settings, or change its priority,
+                            model or directory
 
 Scheduling:
   schedule <prompt...>      a task from a prompt, run here on this machine
@@ -41,6 +43,7 @@ Scheduling:
 Setup:
   dirs [action...]          list, add, remove or set up the directories workers
                             may run in on this machine
+  config [action...]        show or change this machine's config.json
   init                      write web.json, env and config.json for this machine
   doctor                    check this machine: config, token, server, worker
                             tools and units
@@ -386,6 +389,66 @@ Examples:
   board polish Ab3dEf9x --title "Fix the export" --file /tmp/prompt.md
 ```
 
+### board task
+
+```
+Usage: board task [options] <task> [set <key> <value> | unset <key>]
+
+Without an action, print a task's settings: status, priority, model, agent, who
+made it, the machine it is pinned to and its directory, when it starts, its
+schedule, whether its next run resumes a session, and its PR. With --json, print
+the task as `board tasks --json` does.
+
+`set priority <urgent|high|normal|low>` and `set model <alias or model id>`
+change the setting, `unset model` goes back to claude's default model. A model
+applies from the next run on; a run in progress keeps its own.
+
+`set dir [path]` pins the task to this machine and the directory (default: the
+current one; a path is relative to it and `~` expands). `unset dir` removes the
+directory and the pin: any machine takes the task, in its default directory.
+Claude Code keeps a session under its working directory and cannot resume it
+from another one, so changing the directory drops the task's session: the next
+run starts fresh there and reads the thread. A running or waiting task is
+refused: stop it first. With a `dirs` list on this machine, the directory must
+be listed (`board dirs add`).
+
+On a card of a repeating schedule a change applies to that card only: the next
+occurrence takes its priority, model, machine and directory from the schedule
+again, which the command says. `set dir` needs this machine's config.json, since
+it pins the task to the machine's name.
+
+`set` and `unset` are not available inside a board run: only you change where a
+task runs, and with what. Viewing works there.
+
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
+
+Arguments:
+  task        the task: its id, a board task link or the start of its id
+  action      set priority|model|dir <value>, or unset model|dir
+
+Options:
+  --json      print JSON on stdout instead of text; a value this machine cannot
+              decrypt is null there and named in "unreadable" (text shows
+              "(cannot decrypt: input)" after the task, and "(cannot decrypt
+              this title)" for a title)
+  --dry-run   read everything, print every write instead of doing it
+  -h, --help  display help for command
+
+Examples:
+  board task Ab3dEf9x
+  board task Ab3 --json
+  board task Ab3 set priority high
+  board task Ab3 set model opus
+  board task Ab3 unset model
+  board task Ab3 set dir
+  board task Ab3 set dir ~/workspace/agent-board
+  board task Ab3 unset dir
+```
+
 ## Scheduling
 
 ### board schedule
@@ -614,6 +677,81 @@ Examples:
   board dirs set default true
   board dirs set lane reviews ~/workspace/reviews
   board dirs unset label
+```
+
+### board config
+
+```
+Usage: board config [options] [show | get <key> | set <key> <value> | unset <key> | edit | path]
+
+View and edit this machine's config.json (`AGENT_BOARD_CONFIG_DIR` changes where
+it is) without a text editor. Without arguments (or with `show`), print the path
+of the file and the settings as the CLI reads them, a value that comes from a
+default marked `(default)`, the lanes, repos and agents (an agent that cannot be
+loaded with its error), the size of the `dirs` list, and then every warning
+about the file (a key the CLI ignores, a `dirs` setting that overrides an older
+key). `show --json` prints the file as JSON. `path` prints the path alone.
+
+`get <key>` prints the value in the file at a dotted key (`machine`,
+`lanes.reviews.slots`, `agents.reviewer.tools`): a string bare, anything else as
+JSON. A key the file leaves out prints its default when it has one (`machine`,
+`defaultCwd`, `pauseAfterMinutes`, `inactivityMinutes`, `maxRunHours`,
+`autoUpdate`, `lanes`) and is an error otherwise. A name that holds dots (a
+lane, a `dirs` path, `owner/name.js` under `repos`) is read as the document has
+it.
+
+`set <key> <value>` takes the value as JSON when it is JSON (`3`, `true`,
+`["Read","Bash"]`, `{"skills":["*"],"slots":2}`) and as a string otherwise
+(write `'"123"'` for the string 123), and creates the objects on the way. The
+whole resulting file is checked before anything is written, and the change is
+refused, with the file left as it is, when the config would not load, when it
+would add an agent that cannot be loaded, when the key is not one the CLI reads
+(the error names the nearest key), or when a directory the config routes work to
+(`defaultCwd`, the `cwd` of a lane, a `repos` checkout) would newly not be a
+directory or not be covered by `dirs`. Setting one lane in a file that has no
+`lanes` key writes the default lane out too. A change to `dirs` that drops a
+listed directory warns that work still pinned to it stops in Needs me (`board
+dirs rm` checks for that). `unset <key>` removes a key so its default applies
+again, with the same check. Setting what is already there writes nothing. The
+file is rewritten as JSON with 2 spaces and keeps its key order and mode, and a
+config.json that is a link is changed where it points. `--dry-run` shows what
+would be written. The entries of `dirs` are changed with `board dirs`; `set` and
+`unset` refuse a key below `dirs`.
+
+`edit` opens the file in $VISUAL, else $EDITOR (run through the shell the way
+git runs its editor, so a command line with arguments or quotes such as `code
+-w` or `emacsclient -a ""` works; there is no default), on a copy beside it, and
+replaces the file only when the result is JSON the CLI can load. An unknown key,
+an agent that cannot be loaded or a route that is not a directory or not in
+`dirs` is a warning there, since you wrote it by hand. If the result is not
+valid, the file stays as it was and the message names the copy with your edits.
+It needs a terminal. `set`, `unset` and `edit` are not available inside a board
+run: the file holds the rules runs work under.
+
+After a change the CLI sends a changed `dirs` list to the board (a failure is a
+warning), warns when `machine` changed (the board names a machine by its token),
+and says that the change applies from the next dispatch tick. A run that is
+already going keeps the settings it started with, except `maxRunHours`,
+`inactivityMinutes` and `pauseAfterMinutes`: the dispatcher reads those from the
+file on each tick and applies them to runs already going (a run past a lowered
+`maxRunHours` is stopped then).
+
+Arguments:
+  action      show, get, set, unset, edit or path, and a key and its value
+
+Options:
+  --dry-run   read everything, print every write instead of doing it
+  --json      print JSON on stdout instead of text
+  -h, --help  display help for command
+
+Examples:
+  board config
+  board config get lanes.reviews.slots
+  board config set pauseAfterMinutes 10
+  board config set agents.reviewer.tools '["Read","Bash"]'
+  board config set lanes.reviews '{"skills":["/review"],"slots":2}'
+  board config --dry-run unset maxRunHours
+  board config edit
 ```
 
 ### board init

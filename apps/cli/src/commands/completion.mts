@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import { MODEL_ALIASES, PRIORITIES, STATUSES } from '@agent-board/shared';
-import { DIR_SETTINGS } from '../config/config.mts';
+import { DIR_SETTINGS, TOP_KEYS } from '../config/config.mts';
 import { shellQuote } from '../output/text.mts';
 
 export const SHELLS = ['bash', 'zsh', 'fish'] as const;
@@ -12,7 +12,18 @@ interface CommandModel {
   flags: string[];
   // What the positional words complete to, in order.
   positionals: (
-    'task' | 'status' | 'schedule-action' | 'schedule' | 'dirs-action' | 'dirs-key' | 'command' | 'shell'
+    | 'task'
+    | 'status'
+    | 'schedule-action'
+    | 'schedule'
+    | 'dirs-action'
+    | 'dirs-key'
+    | 'config-action'
+    | 'config-key'
+    | 'task-action'
+    | 'task-key'
+    | 'command'
+    | 'shell'
   )[];
 }
 
@@ -40,7 +51,9 @@ function positionalsOf(command: Command): CommandModel['positionals'] {
   if (command.name() === 'completion') return ['shell'];
   if (command.name() === 'schedules') return ['schedule-action', 'schedule'];
   if (command.name() === 'dirs') return ['dirs-action', 'dirs-key'];
+  if (command.name() === 'config') return ['config-action', 'config-key'];
   if (command.name() === 'move') return ['task', 'status'];
+  if (command.name() === 'task') return ['task', 'task-action', 'task-key'];
   return command.registeredArguments[0]?.name() === 'task' ? ['task'] : [];
 }
 
@@ -102,6 +115,14 @@ function positionalWords(kind: Kind, model: CompletionModel): string | undefined
       return 'list add rm set unset';
     case 'dirs-key':
       return words(DIR_SETTINGS);
+    case 'config-action':
+      return 'show get set unset edit path';
+    case 'config-key':
+      return words(TOP_KEYS);
+    case 'task-action':
+      return 'set unset';
+    case 'task-key':
+      return 'priority model dir';
     case 'command':
       return words(model.commands.map((command) => command.name));
     case 'shell':
@@ -134,7 +155,9 @@ function bash(model: CompletionModel): string {
             ? ' && [[ " pause resume rm " == *" $first "* ]]'
             : kind === 'dirs-key'
               ? ' && [[ " set unset " == *" $first "* ]]'
-              : '';
+              : kind === 'config-key'
+                ? ' && [[ " get set unset " == *" $first "* ]]'
+                : '';
         const candidates =
           kind === 'task'
             ? '$(__board_ids tasks)'
@@ -235,7 +258,9 @@ function zsh(model: CompletionModel): string {
             ? ' && [[ $first == (pause|resume|rm) ]]'
             : kind === 'dirs-key'
               ? ' && [[ $first == (set|unset) ]]'
-              : '';
+              : kind === 'config-key'
+                ? ' && [[ $first == (get|set|unset) ]]'
+                : '';
         const offer =
           kind === 'task'
             ? '__board_ids tasks'
@@ -344,6 +369,11 @@ function fish(model: CompletionModel): string {
     '  set -l positionals (__board_positionals)',
     '  test (count $positionals) -eq 2; and test "$positionals[1]" = dirs; and contains -- "$positionals[2]" set unset',
     'end',
+    'function __board_config_key',
+    '  __board_value_pending; and return 1',
+    '  set -l positionals (__board_positionals)',
+    '  test (count $positionals) -eq 2; and test "$positionals[1]" = config; and contains -- "$positionals[2]" get set unset',
+    'end',
     'function __board_schedule_id',
     '  __board_value_pending; and return 1',
     '  set -l positionals (__board_positionals)',
@@ -376,6 +406,10 @@ function fish(model: CompletionModel): string {
   lines.push(`complete -c board -n '__board_schedule_id' -a '(__board_ids schedules)'`);
   lines.push(`complete -c board -n '__board_at 1 dirs' -a 'list add rm set unset'`);
   lines.push(`complete -c board -n '__board_dirs_key' -a ${fishQuote(words(DIR_SETTINGS))}`);
+  lines.push(`complete -c board -n '__board_at 1 config' -a 'show get set unset edit path'`);
+  lines.push(`complete -c board -n '__board_config_key' -a ${fishQuote(words(TOP_KEYS))}`);
+  lines.push(`complete -c board -n '__board_at 2 task' -a 'set unset'`);
+  lines.push(`complete -c board -n '__board_at 3 task' -a 'priority model dir'`);
   lines.push(`complete -c board -n '__board_at 1 help' -a ${fishQuote(words(names))}`);
   lines.push(`complete -c board -n '__board_at 1 completion' -a ${fishQuote(words(SHELLS))}`);
   return `${lines.join('\n')}\n`;

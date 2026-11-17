@@ -89,9 +89,9 @@ test('a usage error exits 2 with the usage of its command and a hint', async () 
 test('an unknown command gets the nearest match', async () => {
   const dir = emptyConfigDir();
   try {
-    const result = await run('board', ['taks'], dir);
+    const result = await run('board', ['shw'], dir);
     assert.equal(result.code, 2);
-    assert.match(result.stderr, /^board: unknown command 'taks'\n\(Did you mean tasks\?\)\n/);
+    assert.match(result.stderr, /^board: unknown command 'shw'\n\(Did you mean show\?\)\n/);
   } finally {
     rmSync(dir, { recursive: true });
   }

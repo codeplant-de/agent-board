@@ -291,6 +291,7 @@ test('a missing config fails the first call, not the construction', async () => 
 });
 
 test('a dry run reads through and prints every write instead of sending it', async () => {
+  const sealing = { createdBy: 'user' as const, scheduleId: null, agent: null };
   const { seen, fetcher } = board({ 'get-task': { body: { result: await taskJson('a') } } });
   const lines: string[] = [];
   const dry = dryRunBackend(createSealedBackend({ loadConfig: () => config, fetch: fetcher }), (line) =>
@@ -303,10 +304,21 @@ test('a dry run reads through and prints every write instead of sending it', asy
   const added = await dry.addSchedule({ title: 't', input: 'i', cron: '0 9 * * *', timezone: 'UTC', times: 3 });
   assert.deepEqual([added.schedule.cron, added.schedule.remaining, added.task.scheduleId], ['0 9 * * *', 2, 'dry']);
   await dry.removeSchedule('sch1');
+  const configured = await dry.configureTask('a', { place: { workdir: '/srv/new' }, seal: sealing });
+  assert.deepEqual([configured.workdir, configured.sessionId, configured.next], ['/srv/new', null, 'fresh']);
   assert.deepEqual(
     lines.map((line) => line.split(' ').slice(0, 2).join(' ')),
-    ['DRY update-task', 'DRY add-note', 'DRY add-note', 'DRY claim-task', 'DRY add-schedule', 'DRY remove-schedule'],
+    [
+      'DRY update-task',
+      'DRY add-note',
+      'DRY add-note',
+      'DRY claim-task',
+      'DRY add-schedule',
+      'DRY remove-schedule',
+      'DRY configure-task',
+    ],
   );
+  assert.ok(!lines.at(-1)!.includes('creator'));
   assert.deepEqual([...new Set(seen.map((request) => request.command))], ['version', 'get-task']);
 });
 
@@ -567,6 +579,25 @@ test('reporting a PR needs the task.pr feature and is refused without it, before
   const withIt = boardWith(['task.pr'], { 'set-pr': { body: { result: null } } });
   await withIt.backend.setPr('abc', { pr: 'abe1.pr' });
   assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { pr: 'abe1.pr' } });
+});
+
+test('changing a task’s settings needs the task.configure feature and is refused without it, before anything is sent', async () => {
+  const without = boardWith(['task.pr'], {});
+  await assert.rejects(
+    without.backend.configureTask('abc', { priority: 'high' }),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'task.configure' &&
+      error.message === 'the board server does not support changing a task’s settings yet; update the board server',
+  );
+  assert.deepEqual(
+    without.seen.map((request) => request.command),
+    ['version'],
+  );
+  const answer = await taskJson('abc');
+  const withIt = boardWith(['task.configure'], { 'configure-task': { body: { result: answer } } });
+  await withIt.backend.configureTask('abc', { model: null, place: { workdir: 'abe1.dir' } });
+  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { model: null, place: { workdir: 'abe1.dir' } } });
 });
 
 test('recording a PR state needs the task.pr-state feature and is refused without it, before anything is sent', async () => {

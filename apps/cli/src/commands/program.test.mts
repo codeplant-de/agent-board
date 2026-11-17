@@ -201,9 +201,9 @@ test('a usage error carries the usage of its own command', async () => {
     assert.equal(error.details[1], 'Run "board help comment" for the details.');
     return true;
   });
-  await assert.rejects(go(['taks']), (error: Error) => {
+  await assert.rejects(go(['shw']), (error: Error) => {
     assert.ok(error instanceof UsageError);
-    assert.match(error.message, /unknown command 'taks'\n\(Did you mean tasks\?\)/);
+    assert.match(error.message, /unknown command 'shw'\n\(Did you mean show\?\)/);
     assert.deepEqual(error.details, ['usage: board <command> [options]', 'Run "board help" for the commands.']);
     return true;
   });

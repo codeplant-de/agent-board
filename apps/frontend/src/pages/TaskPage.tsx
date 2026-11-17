@@ -25,9 +25,9 @@ import { PriorityPicker } from '../components/PriorityPicker';
 import { PrStateIcon } from '../components/PrStateIcon';
 import { PolishItem } from '../components/PolishItem';
 import { TaskBadges } from '../components/TaskBadges';
+import { ModelPicker, WorkdirSetting } from '../components/TaskSettings';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
-import { modelLabel } from '../lib/model';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago, stamp } from '../lib/time';
 import { errorMessage, POLL_MS, useTRPC } from '../lib/trpc';
@@ -106,11 +106,7 @@ function TaskView({ id }: { id: string }) {
               value={task.priority}
               onChange={(priority) => setPriority.mutate({ id: task.id, priority })}
             />
-            {task.model !== null && (
-              <Badge variant="default" tt="none" size="sm" title="The Claude model its runs use">
-                Model: {modelLabel(task.model)}
-              </Badge>
-            )}
+            <ModelPicker task={task} />
             {task.agent ? (
               <Badge variant="default" tt="none" size="sm" title="The agent of the machine's config.json it runs as">
                 Agent: {task.agent}
@@ -121,19 +117,7 @@ function TaskView({ id }: { id: string }) {
               created by {task.createdBy} {ago(task.createdAt)}
             </Text>
           </Group>
-          {task.workdir && (
-            <Text
-              size="xs"
-              c="dimmed"
-              ff="monospace"
-              className="wrap-anywhere"
-              title="Where the task's session last worked; a resume starts here"
-            >
-              {task.machine ? `${task.machine}:` : ''}
-              {task.workdir}
-              {unlisted !== undefined && ` · not listed on ${unlisted}`}
-            </Text>
-          )}
+          <WorkdirSetting task={task} unlisted={unlisted} />
           <Group gap="xs">
             <Button
               variant="default"

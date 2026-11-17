@@ -208,10 +208,41 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       Object.assign(found, fields);
       return { ...found };
     },
+    // The server's rules, for a token of the machine `CONFIG.machine`: a new place drops the session and pins to this machine.
+    async configureTask(id, change) {
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`configure-task: no task ${id}`, 404, true);
+      const { priority, model, place } = change;
+      if (place !== undefined && (found.status === 'running' || found.status === 'waiting')) {
+        state.writes.push(`configure ${id} refused: ${found.status}`);
+        throw new BackendError(`the task is ${found.status}. Stop it first, then move it.`, 409, true);
+      }
+      if (priority !== undefined) state.writes.push(`priority ${id}: ${priority}`);
+      if (model !== undefined) state.writes.push(`model ${id}: ${model ?? 'default'}`);
+      if (place !== undefined) state.writes.push(`place ${id}: ${place === null ? 'none' : place.workdir}`);
+      Object.assign(found, {
+        ...(priority === undefined ? {} : { priority }),
+        ...(model === undefined ? {} : { model }),
+        ...(place === undefined
+          ? {}
+          : {
+              machine: place === null ? null : CONFIG.machine,
+              workdir: place?.workdir ?? null,
+              sessionId: null,
+              next: 'fresh',
+              paused: false,
+              woken: false,
+            }),
+      });
+      return { ...found };
+    },
     async claimTask(id, machine) {
       const found = state.tasks.find((t) => t.id === id);
       if (!found) throw new Error(`no task ${id}`);
-      const pinned = found.next === 'resume' && found.machine !== null && found.machine !== machine;
+      const pinned =
+        found.machine !== null &&
+        found.machine !== machine &&
+        (found.workdir !== null || (found.next === 'resume' && found.sessionId !== null));
       const waiting = found.notBefore !== null && found.notBefore.getTime() > Date.now();
       if (found.status !== 'todo' || pinned || waiting || state.lostClaims.includes(id)) {
         state.writes.push(`claim ${id} lost`);

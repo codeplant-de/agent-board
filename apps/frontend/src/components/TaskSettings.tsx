@@ -1,0 +1,126 @@
+import { ActionIcon, Button, Group, Modal, Select, Stack, Text } from '@mantine/core';
+import { IconPencil } from '@tabler/icons-react';
+import { useMutation } from '@tanstack/react-query';
+import { useState } from 'react';
+import { DEFAULT_MODEL, modelFromOption, modelOptions } from '../lib/model';
+import { useTRPC, type BoardTask } from '../lib/trpc';
+import { isCurrentPlace } from '../lib/workingDirectories';
+import { confirmPlace } from './confirmPlace';
+import { DirectorySelect } from './DirectorySelect';
+import { useDirectoryChoices } from './useDirectoryChoices';
+
+const SCHEDULE_HINT =
+  'This card belongs to a schedule: the change applies to it only, the next occurrence takes its settings from the schedule.';
+
+/** A change applies from the next run on, in every status. */
+export function ModelPicker({ task }: { task: BoardTask }) {
+  const trpc = useTRPC();
+  const configure = useMutation(trpc.tasks.configure.mutationOptions());
+  return (
+    <Select
+      aria-label="Model"
+      title={`The Claude model its runs use, from the next run on${task.scheduleId === null ? '' : `. ${SCHEDULE_HINT}`}`}
+      size="xs"
+      w={130}
+      allowDeselect={false}
+      data={modelOptions(task.model)}
+      value={task.model ?? DEFAULT_MODEL}
+      onChange={(value) => value !== null && configure.mutate({ task, model: modelFromOption(value) })}
+      disabled={configure.isPending}
+    />
+  );
+}
+
+function WorkdirModal({ task, onClose }: { task: BoardTask; onClose: () => void }) {
+  const trpc = useTRPC();
+  const configure = useMutation(trpc.tasks.configure.mutationOptions());
+  const directories = useDirectoryChoices();
+  // Untouched is not "no directory": saving then would drop a directory the lists do not offer.
+  const [picked, setPicked] = useState<string | null | undefined>(undefined);
+  const current = directories.choices.find(({ machine, path }) => machine === task.machine && path === task.workdir);
+  const shown = picked === undefined ? (current?.value ?? null) : picked;
+  const target = directories.choices.find(({ value }) => value === picked);
+  // A pick the lists no longer offer (a refetch dropped it) is not "no directory": only the button chooses that.
+  const unchanged = picked === undefined || (picked !== null && target === undefined) || isCurrentPlace(task, target);
+  const currentPlace =
+    task.workdir === null ? undefined : `${task.machine === null ? '' : `${task.machine}:`}${task.workdir}`;
+  const save = () => {
+    const place = target === undefined ? null : { machine: target.machine, workdir: target.path };
+    const move = () => configure.mutate({ task, place }, { onSuccess: onClose });
+    if (task.sessionId === null) move();
+    else
+      confirmPlace(
+        { to: target === undefined ? 'in a default directory' : `in ${target.machine}:${target.path}` },
+        move,
+      );
+  };
+  return (
+    <Stack>
+      <DirectorySelect
+        label="Working directory"
+        directories={directories}
+        value={shown}
+        onChange={setPicked}
+        placeholder={picked === undefined ? currentPlace : undefined}
+      />
+      {task.scheduleId !== null && (
+        <Text size="xs" c="dimmed">
+          {SCHEDULE_HINT}
+        </Text>
+      )}
+      <Group justify="space-between" wrap="wrap">
+        <Button variant="subtle" size="xs" onClick={() => setPicked(null)}>
+          No directory
+        </Button>
+        <Group gap="xs">
+          <Button variant="default" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button onClick={save} disabled={unchanged} loading={configure.isPending}>
+            Save
+          </Button>
+        </Group>
+      </Group>
+    </Stack>
+  );
+}
+
+/** Where the task runs, as the machine and directory it is pinned to, with a way to change it while it is not running. */
+export function WorkdirSetting({ task, unlisted }: { task: BoardTask; unlisted: string | undefined }) {
+  const [opened, setOpened] = useState(false);
+  const locked = task.status === 'running' || task.status === 'waiting';
+  const where = task.unreadable.includes('workdir')
+    ? 'Directory cannot be read'
+    : task.workdir === null
+      ? 'No directory: runs in the default directory of whichever machine takes it'
+      : `${task.machine ? `${task.machine}:` : ''}${task.workdir}${unlisted === undefined ? '' : ` · not listed on ${unlisted}`}`;
+  return (
+    <Group gap={4} wrap="nowrap" align="flex-start">
+      <Text
+        size="xs"
+        c="dimmed"
+        ff="monospace"
+        className="wrap-anywhere"
+        title="Where the task's session last worked; a resume starts here"
+      >
+        {where}
+        {locked && ' · stop the task to change it'}
+      </Text>
+      <ActionIcon
+        variant="subtle"
+        color="gray"
+        size="xs"
+        aria-label="Change the working directory"
+        title={locked ? `The task is ${task.status}: stop it to change the directory` : 'Change the working directory'}
+        disabled={locked}
+        onClick={() => setOpened(true)}
+        style={{ flexShrink: 0 }}
+      >
+        <IconPencil size={14} />
+      </ActionIcon>
+      <Modal opened={opened} onClose={() => setOpened(false)} title="Working directory">
+        <WorkdirModal task={task} onClose={() => setOpened(false)} />
+      </Modal>
+    </Group>
+  );
+}

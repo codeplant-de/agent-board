@@ -1,0 +1,187 @@
+import { MantineProvider } from '@mantine/core';
+import { ModalsProvider } from '@mantine/modals';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Machine } from '../lib/opening';
+import type { BoardTask } from '../lib/trpc';
+import { ModelPicker, WorkdirSetting } from './TaskSettings';
+
+const configure = vi.hoisted(() => vi.fn(async (_: unknown) => ({})));
+const listed = vi.hoisted(() => ({ paths: ['/work/app', '/work/other'] }));
+
+vi.mock('../lib/trpc', () => ({
+  useTRPC: () => ({
+    tasks: { configure: { mutationOptions: () => ({ mutationFn: configure }) } },
+    machines: {
+      list: {
+        queryOptions: () => ({
+          queryKey: ['machines.list'],
+          queryFn: async () => [
+            {
+              name: 'laptop',
+              shown: 'Laptop',
+              dirs: listed.paths.map((path) => ({ path })),
+              dirsUnreadable: false,
+              revokedAt: null,
+              lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
+            } as Machine,
+          ],
+        }),
+      },
+    },
+  }),
+  errorMessage: (error: unknown) => String(error),
+}));
+
+const task = (extra: Partial<BoardTask> = {}): BoardTask =>
+  ({
+    id: 'task0001',
+    status: 'needs-me',
+    createdBy: 'user',
+    scheduleId: null,
+    machine: 'laptop',
+    workdir: '/work/app',
+    sessionId: null,
+    model: null,
+    unreadable: [],
+    ...extra,
+  }) as BoardTask;
+
+function renderWith(ui: React.ReactNode): QueryClient {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <MantineProvider>
+      <ModalsProvider>
+        <QueryClientProvider client={client}>{ui}</QueryClientProvider>
+      </ModalsProvider>
+    </MantineProvider>,
+  );
+  return client;
+}
+
+const sent = () => configure.mock.calls[0]?.[0];
+const openEditor = async () => userEvent.click(screen.getByRole('button', { name: 'Change the working directory' }));
+const pick = async (path: string) => {
+  await userEvent.click(await screen.findByRole('combobox', { name: 'Working directory' }));
+  await userEvent.click((await screen.findAllByRole('option', { name: path, hidden: true }))[0]!);
+};
+const save = () => screen.findByRole('button', { name: 'Save' });
+
+beforeEach(() => {
+  configure.mockClear();
+  listed.paths = ['/work/app', '/work/other'];
+});
+
+describe('ModelPicker', () => {
+  it('shows a full model name that is not an alias and sends the alias picked', async () => {
+    renderWith(<ModelPicker task={task({ model: 'claude-opus-5-5' })} />);
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('claude-opus-5-5');
+    await userEvent.click(screen.getByRole('combobox', { name: 'Model' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'Sonnet', hidden: true }));
+    await waitFor(() => expect(configure).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ model: 'sonnet' });
+  });
+
+  it('sends null for Default', async () => {
+    renderWith(<ModelPicker task={task({ model: 'opus' })} />);
+    await userEvent.click(screen.getByRole('combobox', { name: 'Model' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'Default', hidden: true }));
+    await waitFor(() => expect(configure).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ model: null });
+  });
+});
+
+describe('WorkdirSetting', () => {
+  it('changes the directory without a confirmation when the task has no session', async () => {
+    renderWith(<WorkdirSetting task={task()} unlisted={undefined} />);
+    await openEditor();
+    expect(await save()).toBeDisabled();
+    await pick('/work/other');
+    await userEvent.click(await save());
+    await waitFor(() => expect(configure).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ place: { machine: 'laptop', workdir: '/work/other' } });
+  });
+
+  it('does nothing for the directory it already has', async () => {
+    renderWith(<WorkdirSetting task={task()} unlisted={undefined} />);
+    await openEditor();
+    await pick('/work/app');
+    expect(await save()).toBeDisabled();
+  });
+
+  it('confirms first when the task has a session, and drops nothing on cancel', async () => {
+    renderWith(<WorkdirSetting task={task({ sessionId: 's1' })} unlisted={undefined} />);
+    await openEditor();
+    await pick('/work/other');
+    await userEvent.click(await save());
+    expect(await screen.findByText(/session is dropped/)).toBeInTheDocument();
+    expect(configure).not.toHaveBeenCalled();
+    await userEvent.click(screen.getAllByRole('button', { name: 'Cancel' }).at(-1)!);
+    expect(configure).not.toHaveBeenCalled();
+  });
+
+  it('sends the move after the confirmation', async () => {
+    renderWith(<WorkdirSetting task={task({ sessionId: 's1' })} unlisted={undefined} />);
+    await openEditor();
+    await pick('/work/other');
+    await userEvent.click(await save());
+    await userEvent.click(await screen.findByRole('button', { name: 'Move and drop the session' }));
+    await waitFor(() => expect(configure).toHaveBeenCalled());
+  });
+
+  it('removes the directory with No directory', async () => {
+    renderWith(<WorkdirSetting task={task()} unlisted={undefined} />);
+    await openEditor();
+    await userEvent.click(await screen.findByRole('button', { name: 'No directory' }));
+    await userEvent.click(await save());
+    await waitFor(() => expect(configure).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ place: null });
+  });
+
+  it('states the current directory when the lists do not offer it, instead of the default', async () => {
+    renderWith(<WorkdirSetting task={task({ workdir: '/work/app/.claude/worktrees/x' })} unlisted={undefined} />);
+    await openEditor();
+    expect(await screen.findByPlaceholderText('laptop:/work/app/.claude/worktrees/x')).toBeInTheDocument();
+    expect(await save()).toBeDisabled();
+  });
+
+  it('has nothing to save when a refetch drops the picked directory', async () => {
+    const client = renderWith(<WorkdirSetting task={task()} unlisted={undefined} />);
+    await openEditor();
+    await pick('/work/other');
+    expect(await save()).toBeEnabled();
+    listed.paths = ['/work/app'];
+    await client.invalidateQueries({ queryKey: ['machines.list'] });
+    await waitFor(() => expect(screen.queryByRole('option', { name: '/work/other', hidden: true })).toBeNull());
+    expect(await save()).toBeDisabled();
+  });
+
+  it('hints that a scheduled card changes alone', async () => {
+    renderWith(<WorkdirSetting task={task({ scheduleId: 'sched001' })} unlisted={undefined} />);
+    await openEditor();
+    expect(await screen.findByText(/belongs to a schedule/)).toBeInTheDocument();
+  });
+
+  it.each(['running', 'waiting'] as const)('cannot be changed while the task is %s', (status) => {
+    renderWith(<WorkdirSetting task={task({ status })} unlisted={undefined} />);
+    expect(screen.getByRole('button', { name: 'Change the working directory' })).toBeDisabled();
+  });
+
+  it('keeps the not-listed hint and lets an unreadable directory be replaced', async () => {
+    renderWith(<WorkdirSetting task={task()} unlisted="Laptop" />);
+    expect(screen.getByText(/laptop:\/work\/app · not listed on Laptop/)).toBeInTheDocument();
+  });
+
+  it('can replace a directory that could not be read', async () => {
+    renderWith(
+      <WorkdirSetting task={task({ workdir: null, machine: null, unreadable: ['workdir'] })} unlisted={undefined} />,
+    );
+    expect(screen.getByText('Directory cannot be read')).toBeInTheDocument();
+    await openEditor();
+    await pick('/work/app');
+    await userEvent.click(await save());
+    await waitFor(() => expect(configure).toHaveBeenCalled());
+  });
+});

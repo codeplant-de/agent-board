@@ -392,7 +392,7 @@ export function parseConfig(raw: unknown): Config {
 }
 
 // The keys parseConfig reads at each level. Anything else is ignored, so a misspelt key would silently keep its default.
-const TOP_KEYS = [
+export const TOP_KEYS = [
   'machine',
   'lanes',
   'defaultCwd',

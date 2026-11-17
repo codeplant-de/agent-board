@@ -23,6 +23,8 @@ const ADDED: VocabularyFeatures = {
 test('every server feature has a label, and the baseline is part of the list', () => {
   assert.deepEqual(Object.keys(SERVER_FEATURE_LABELS).sort(), [...SERVER_FEATURES].sort());
   for (const feature of BASELINE_SERVER_FEATURES) assert.ok(SERVER_FEATURES.includes(feature));
+  assert.ok(SERVER_FEATURES.includes('task.configure'));
+  assert.ok(!BASELINE_SERVER_FEATURES.includes('task.configure' as never));
 });
 
 test('a version answer without features has the baseline; a list is taken as it is; junk is refused', () => {

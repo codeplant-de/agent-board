@@ -8,6 +8,7 @@ import {
   sealInput,
   sealNote,
   sealTitle,
+  sealWorkdir,
   type Answer,
   type Keys,
   type Priority,
@@ -189,5 +190,42 @@ export async function sealApply(
     previous: await checked(() =>
       sealNote(seal, { taskId: target.id, author: 'user', kind: 'event' }, previousText(target)),
     ),
+  };
+}
+
+/** The task whose settings change, as the page shows it: its directory is sealed under its own row. */
+export interface ConfigureTarget {
+  id: string;
+  createdBy: TaskCreator;
+  scheduleId: string | null;
+}
+
+/** The settings to change; absent leaves one alone. A null model is claude's default, a null place is no directory and no machine. */
+export interface Configuration {
+  model?: string | null;
+  place?: { machine: string; workdir: string } | null;
+}
+
+/** A new directory is sealed as the user's under the row's own binding, the one the page opens it under; a schedule's occurrence is bound to both. */
+export async function sealConfigure(
+  keys: Keys,
+  options: { task: ConfigureTarget } & Configuration,
+): Promise<RouterInputs['tasks']['configure']> {
+  const { task, model, place } = options;
+  const row: RowRef = { kind: 'task', id: task.id, createdBy: task.createdBy, scheduleId: task.scheduleId };
+  return {
+    id: task.id,
+    ...(model === undefined ? {} : { model }),
+    ...(place === undefined
+      ? {}
+      : {
+          place:
+            place === null
+              ? null
+              : {
+                  machine: place.machine,
+                  workdir: await checked(() => sealWorkdir(sealerFor(keys), row, place.workdir)),
+                },
+        }),
   };
 }

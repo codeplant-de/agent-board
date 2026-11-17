@@ -10,11 +10,13 @@ import { updateHint } from '../self/update-hint.mts';
 import { createUpdateState, updateStateFile } from '../self/update-state.mts';
 import { SETUP } from './help-text.mts';
 import type { ProgramOptions, ProgramShared } from './program-shared.mts';
+import { registerConfigCommand } from './register-config.mts';
 import { registerDirsCommand } from './register-dirs.mts';
 import { registerInternalCommands } from './register-internal.mts';
 import { registerDelayCommand, registerScheduleCommands } from './register-scheduling.mts';
 import { registerSetupCommands } from './register-setup.mts';
 import { registerTaskCommands } from './register-tasks.mts';
+import { registerTaskSettingsCommand } from './register-task-settings.mts';
 
 // `comment <task> [text...]` in the overview, without commander's `[options]` and without the long usage of `comment`.
 function overviewTerm(command: Command): string {
@@ -131,8 +133,10 @@ export function buildProgram(options: ProgramOptions = {}): Command {
     textOf,
   };
   registerTaskCommands(shared);
+  registerTaskSettingsCommand(shared);
   registerScheduleCommands(shared);
   registerDirsCommand(shared);
+  registerConfigCommand(shared);
   registerDelayCommand(shared);
   registerSetupCommands(shared);
 
