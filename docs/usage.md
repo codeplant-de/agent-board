@@ -710,12 +710,13 @@ board watch <task> --ci https://github.com/o/r/pull/7 --required
 board watch <task> --pr-review                           # the first review or comment someone else leaves on that PR
 board watch <task> --pr-merged                           # once that PR is merged or closed
 board watch <task> --name health --every 30s -- 'curl -fsS https://staging.example.com/health'
+board watch <task> --name rollout --stream -- 'kubectl rollout status deploy/api --watch'
 board watch <task> --in 20m --name settle
 board watches <task>
 board unwatch <task> health
 ```
 
-A watch belongs to its task, has a name, and lives on the machine that runs the task. A task can hold several. Each watch reports an **event**, and the event reaches the agent as a message.
+A watch belongs to its task, has a name, and lives on the machine that runs the task. A task can hold several. Each watch reports an **event**, and the event reaches the agent as a message. A stream reports one event after another until its command exits.
 
 ### How events reach the agent
 
@@ -784,13 +785,22 @@ The watch ends with its event. The text is written by someone else: it is a repo
 - Exit 0 is the event, with the end of the output. Any other result is kept for the next attempt.
 - The command sees the machine's environment plus the `env` of the Claude Code settings the run loaded: `~/.claude/settings.json`, then `.claude/settings.json` and `settings.local.json` of the directory the run started in.
 
+**A stream** (`--name <name> --stream -- '<command>'`). A shell command the machine starts once and keeps running. What it prints is reported while it runs.
+
+- The watch unit starts it with `bash -c` within 2 seconds, in the directory the agent was in and with the environment of a command watch.
+- Every line of stdout and stderr is reported. The lines that arrive within about 2 seconds go into one event. Blank lines are dropped.
+- The watch stays open after an event. It ends when the command exits, and that is the last event: the lines not yet reported, then `The command exited with code 0. The watch is over.` A command killed by a signal, or one that could not start, says so there.
+- **A flood is stopped.** From 25 events within 10 minutes on, the lines of 10 seconds go into one event. A command that reports more than 50 events or prints more than 20 KB within 10 minutes is killed, and the watch ends with a notice and the last lines. So filter the output down to the lines that matter, for example with `grep --line-buffered`.
+- **A restart starts it again.** After a restart of the watch unit or a reboot the command starts again from the beginning. Its next event begins with a line that says so, since earlier lines may come again. The restart alone is no event.
+- It needs the watch unit. `board watch --stream` is refused on a machine where the unit does not run.
+
 **A timer** (`--in <dur>` or `--at <time>`, in the forms of [Delays](#delays)). One event when the time is up.
 
 ### Timeouts and the first attempt
 
-Every watch also ends after `--timeout` with an event that says so and carries the last attempt. The default is 2h and the maximum 7 days.
+Every watch also ends after `--timeout` with an event that says so and carries the last attempt. The default is 2h and the maximum 7 days. A stream's command is killed then, and the event says how many events it reported.
 
-`board watch` runs the first attempt itself, before it stores anything, and prints the result.
+`board watch` runs the first attempt of a CI, review or command watch itself, before it stores anything, and prints the result. A stream has no first attempt: a command that cannot start reports that as its exit.
 
 - A command that cannot run there (`gh: command not found`, exit 126 or 127) fails the call.
 - A thing that is already done prints its event and starts no watch.
@@ -807,7 +817,7 @@ The machine writes each event to the same directory and deletes it only once the
 
 The thread gets a note per event, an agent comment that starts with `agent-board: watch`. So you see what the agent will see. The task page draws it as a compact row (`Watch "ci" reported · 10:47`) with the fenced text behind **Details**.
 
-Watches run on the machine that ran the task, since the session lives there. A watch on a machine that is off goes on when the machine comes back. After a reboot the machine reads the watches from disk and polls again.
+Watches run on the machine that ran the task, since the session lives there. A watch on a machine that is off goes on when the machine comes back. After a reboot the machine reads the watches from disk and polls again, and starts the commands of its streams again.
 
 ### What the board shows of watches
 
@@ -848,7 +858,7 @@ On the task's machine, `board watches <task>` lists its watches with their last 
 
 ### Watches in an agent's run
 
-A run that is restricted to an [agent](workers.md#agents) may use `--ci`, `--pr-review`, `--pr-merged` and timers, which run no command of its choosing. A command watch is a usage error there, since it would bypass the run's fixed command list.
+A run that is restricted to an [agent](workers.md#agents) may use `--ci`, `--pr-review`, `--pr-merged` and timers, which run no command of its choosing. A command watch is a usage error there, polled or streamed, since it would bypass the run's fixed command list.
 
 ### `board wait`
 

@@ -5,11 +5,13 @@
 //     .heartbeat                          touched by the watch unit on every scan; its mtime is the heartbeat
 //     <task>/                             mode 700
 //       watch-<name>.json                 one watch and its last attempt, mode 600
-//       event-<epochMs>-<name>.json       one event the agent has not been handed yet (the spool), mode 600
+//       event-<epochMs>-<name>.json       one event the agent has not been handed yet (the spool), mode 600; a stream watch
+//                                         writes one per batch of lines, so the time counts up when two fall on one millisecond
 //       live                              the pid of the worker running the task, there from its start to its end
 // Writes are atomic. Finishing a watch is a claim by rename: only the process whose rename succeeded writes the event, so the
 // unit, the tick and `board unwatch` cannot produce one twice.
 import {
+  existsSync,
   linkSync,
   mkdirSync,
   readdirSync,
@@ -75,6 +77,17 @@ export type WatchSource =
       settingsDir?: string;
     }
   | {
+      kind: 'stream';
+      // A shell command (bash -c) the watch unit keeps running; its output lines are the events and its exit ends the watch.
+      command: string;
+      cwd: string;
+      settingsDir?: string;
+      // How often the unit started the command: more than once after a restart of the unit or a reboot.
+      starts: number;
+      // How many events the watch has reported.
+      events: number;
+    }
+  | {
       // The merge or close of a PR (`--pr-merged`).
       kind: 'pr-merged';
       // The PR URL as gh prints it.
@@ -90,13 +103,14 @@ export interface WatchDef {
   name: string;
   task: string;
   source: WatchSource;
-  // 0 for a timer, which is not polled.
+  // 0 for a timer and a stream, which are not polled.
   everyMs: number;
   createdAt: string;
   // A timer's end; any other watch's timeout.
   deadline: string;
   // The last attempt: when it ended and a one-line state (ci: "3 of 7 passed, 4 running", pr-review: how many
-  // reviews and comments it has seen, pr-merged: "still open", command: exit code and the end of its output).
+  // reviews and comments it has seen, command: exit code and the end of its output). For a stream: when it last started or
+  // reported, and "started" or "streaming".
   last?: { at: string; summary: string };
 }
 
@@ -169,6 +183,10 @@ function isIso(value: unknown): value is string {
   return typeof value === 'string' && !Number.isNaN(Date.parse(value));
 }
 
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 function optionalSettingsDir(raw: Record<string, unknown>): { settingsDir?: string } {
   const { settingsDir } = raw;
   return typeof settingsDir === 'string' && isSafeWorkdir(settingsDir) ? { settingsDir } : {};
@@ -183,6 +201,12 @@ function parseSource(raw: unknown): WatchSource | undefined {
     const { command } = raw;
     if (typeof command !== 'string' || command.trim() === '' || command.length > MAX_COMMAND_CHARS) return undefined;
     return { kind, command, cwd, ...optionalSettingsDir(raw) };
+  }
+  if (kind === 'stream') {
+    const { command, starts, events } = raw;
+    if (typeof command !== 'string' || command.trim() === '' || command.length > MAX_COMMAND_CHARS) return undefined;
+    if (!isCount(starts) || !isCount(events)) return undefined;
+    return { kind, command, cwd, starts, events, ...optionalSettingsDir(raw) };
   }
   if (kind === 'ci') {
     const { pr, required, head, headSince } = raw;
@@ -233,7 +257,7 @@ export function parseWatchDef(raw: unknown): WatchDef | undefined {
   const parsed = parseSource(source);
   if (parsed === undefined) return undefined;
   if (typeof everyMs !== 'number' || !Number.isFinite(everyMs) || everyMs < 0) return undefined;
-  if (parsed.kind !== 'timer' && everyMs <= 0) return undefined;
+  if (parsed.kind !== 'timer' && parsed.kind !== 'stream' && everyMs <= 0) return undefined;
   if (!isIso(createdAt) || !isIso(deadline)) return undefined;
   const def: WatchDef = { id, name, task, source: parsed, everyMs, createdAt, deadline };
   if (isRecord(last) && isIso(last['at']) && typeof last['summary'] === 'string')
@@ -370,7 +394,10 @@ export function createWatchStore(dir: string = getPaths().watchDir): WatchStore 
     },
     writeEvent(event) {
       ensure(event.task);
-      const file = `event-${Date.parse(event.at)}-${event.name}.json`;
+      // A stream reports again and again under one name: an event never takes the file of one that is still in the spool.
+      let ms = Date.parse(event.at);
+      while (existsSync(join(taskDir(event.task), `event-${ms}-${event.name}.json`))) ms += 1;
+      const file = `event-${ms}-${event.name}.json`;
       atomicWrite(join(taskDir(event.task), file), JSON.stringify({ ...event, text: sanitizeEventText(event.text) }));
       return file;
     },

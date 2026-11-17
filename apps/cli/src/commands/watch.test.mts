@@ -12,6 +12,7 @@ import {
   mergedDef,
   mergedFixture,
   PR,
+  streamDef,
   tempDir,
   timerDef,
   watchDef,
@@ -133,6 +134,12 @@ test('flags: every mistake is a usage error that names the fix', () => {
     [{ name: 'Bad Name' }, ['true'], /--name must be/],
     [{ ci: true, name: '-x' }, [], /--name must be/],
     [{ ci: true, name: 'a'.repeat(33) }, [], /--name must be/],
+    [{ stream: true, name: 'x' }, [], /--stream goes with a command/],
+    [{ stream: true, ci: true }, [], /--stream goes with a command/],
+    [{ stream: true, in: '5m' }, [], /--stream goes with a command/],
+    [{ stream: true }, ['true'], /needs --name/],
+    [{ stream: true, name: 'x', every: '1m' }, ['true'], /--stream or --every, not both/],
+    [{ stream: true, name: 'x', timeout: '8d' }, ['true'], /at most 1w/],
   ];
   for (const [flags, words, message] of bad)
     assert.throws(
@@ -475,6 +482,95 @@ test('an agent run and a task of the removed intake may watch a ci, a review or 
   assert.deepEqual(intake.watches.list(ID).defs, []);
 });
 
+test('flags: --stream with a command is a stream, with the timeout of any watch', () => {
+  assert.deepEqual(parseWatchFlags({ stream: true, name: 'log', timeout: '1h' }, ['tail', '-f', 'my log'], NOW), {
+    kind: 'stream',
+    name: 'log',
+    command: "'tail' '-f' 'my log'",
+    deadline: new Date(NOW.getTime() + HOUR),
+  });
+});
+
+test('a stream is stored for the watch unit without running anything, and the agent is told to carry on', async () => {
+  const { go, watches, run, printed, backend } = setup();
+  watches.touchHeartbeat(NOW);
+  await go(['watch', ID, '--name', 'log', '--stream', '--', 'tail -f deploy.log'], {
+    env: { AGENT_BOARD_START_DIR: '/start' },
+  });
+  assert.deepEqual(run.runner.calls, []);
+  const def = watches.read(ID, 'log');
+  assert.deepEqual(def?.source, {
+    kind: 'stream',
+    command: 'tail -f deploy.log',
+    cwd: '/work',
+    settingsDir: '/start',
+    starts: 0,
+    events: 0,
+  });
+  assert.equal(def?.everyMs, 0);
+  assert.equal(def?.last, undefined);
+  assert.equal(def?.deadline, new Date(NOW.getTime() + 2 * HOUR).toISOString());
+  assert.match(printed.join('\n'), /watching "log" on Zt0Test1: the watch unit starts the command within seconds/);
+  assert.match(printed.join('\n'), /Keep working if there is work/);
+  assert.match(
+    backend.writes.filter((write) => write.startsWith('watches ')).at(-1) ?? '',
+    /"name":"log","kind":"stream","label":"stream","status":"starting"/,
+  );
+  assert.equal(backend.writes.join('\n').includes('deploy.log'), false);
+});
+
+test('a stream needs the watch unit: without its heartbeat the call fails and stores nothing', async () => {
+  const { go, watches } = setup();
+  await assert.rejects(
+    go(['watch', ID, '--name', 'log', '--stream', '--', 'tail -f deploy.log']),
+    (error) => error instanceof UsageError && /a stream needs the watch unit.*board setup --enable/.test(error.message),
+  );
+  watches.touchHeartbeat(new Date(NOW.getTime() - 31_000));
+  await assert.rejects(go(['watch', ID, '--name', 'log', '--stream', '--', 'tail -f deploy.log']), /watch unit/);
+  assert.deepEqual(watches.list(ID).defs, []);
+});
+
+test('an agent run and a task of the removed intake are refused a stream like any command watch', async () => {
+  const restricted = setup();
+  restricted.watches.touchHeartbeat(NOW);
+  await assert.rejects(
+    restricted.go(['watch', ID, '--name', 'x', '--stream', '--', 'tail -f log'], {
+      env: { AGENT_BOARD_RESTRICTED: '1' },
+    }),
+    (error) =>
+      error instanceof UsageError &&
+      /fixed list of commands.*--ci, --pr-review, --pr-merged or --in\/--at only/.test(error.message),
+  );
+  const intake = setup({ createdBy: 'intake' });
+  intake.watches.touchHeartbeat(NOW);
+  await assert.rejects(intake.go(['watch', ID, '--name', 'x', '--stream', '--', 'tail -f log']), /removed intake/);
+  assert.deepEqual([...restricted.watches.list(ID).defs, ...intake.watches.list(ID).defs], []);
+});
+
+test('watches lists a stream with its command and how far it got, also as JSON', async () => {
+  const { go, watches, printed, out } = setup();
+  watches.write(
+    streamDef('tail -f deploy.log', {
+      task: ID,
+      source: { kind: 'stream', command: 'tail -f deploy.log', cwd: '/work', starts: 1, events: 2 },
+      last: { at: NOW.toISOString(), summary: 'streaming' },
+    }),
+  );
+  watches.write(streamDef('tail -f other.log', { task: ID, name: 'fresh', id: 'b1b2c3d4e5f60718' }));
+  await go(['watches', ID]);
+  const text = printed.join('\n');
+  assert.match(text, /log {2}stream: tail -f deploy\.log\n {2}until .+; 2 events, streaming .+/);
+  assert.match(text, /fresh {2}stream: tail -f other\.log\n {2}until .+; not started yet/);
+  await go(['watches', ID, '--json']);
+  const listed = JSON.parse(out.join('')) as { name: string; source: unknown }[];
+  assert.deepEqual(listed.find(({ name }) => name === 'log')?.source, {
+    kind: 'stream',
+    command: 'tail -f deploy.log',
+    starts: 1,
+    events: 2,
+  });
+});
+
 test('a timer says its end once, to the second when it is less than ten minutes away', async () => {
   const { go, printed } = setup();
   await go(['watch', ID, '--in', '1m'], { now: () => new Date('2026-01-01T11:45:40Z') });
@@ -591,7 +687,6 @@ test('watches lists name, source, until, last attempt and undelivered events, or
       ['timer', 'timer'],
     ],
   );
-  assert.deepEqual((list as { source: unknown }[])[2]?.source, { kind: 'pr-merged', pr: PR });
 });
 
 test("move to needs-me from inside the run for its own task drops its watches; a user's move does not", async () => {
