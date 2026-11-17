@@ -55,7 +55,7 @@ interface Check {
   link: string;
 }
 
-function firstLine(text: string, fallback: string): string {
+export function firstLine(text: string, fallback: string): string {
   return (
     text
       .split('\n')

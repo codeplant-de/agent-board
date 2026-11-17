@@ -36,6 +36,7 @@ export const MAX_COMMAND_CHARS = 8000;
 
 export const DEFAULT_TIMEOUT_MS = 2 * 60 * 60_000;
 export const CI_EVERY_MS = 30_000;
+export const PR_EVERY_MS = 60_000;
 export const MIN_COMMAND_EVERY_MS = 15_000;
 
 export type WatchSource =
@@ -58,6 +59,14 @@ export type WatchSource =
       // Whose `.claude` settings give the command their `env` (see WaitCheck.settingsDir).
       settingsDir?: string;
     }
+  | {
+      // The merge or close of a PR (`--pr-merged`).
+      kind: 'pr';
+      // The PR URL as gh prints it.
+      pr: string;
+      cwd: string;
+      settingsDir?: string;
+    }
   | { kind: 'timer' };
 
 export interface WatchDef {
@@ -71,7 +80,7 @@ export interface WatchDef {
   createdAt: string;
   // A timer's end; any other watch's timeout.
   deadline: string;
-  // The last attempt: when it ended and a one-line state (ci: "3 of 7 passed, 4 running", command: exit code and the end of its output).
+  // The last attempt: when it ended and a one-line state (ci: "3 of 7 passed, 4 running", pr: "still open", command: exit code and the end of its output).
   last?: { at: string; summary: string };
 }
 
@@ -158,6 +167,11 @@ function parseSource(raw: unknown): WatchSource | undefined {
     const { command } = raw;
     if (typeof command !== 'string' || command.trim() === '' || command.length > MAX_COMMAND_CHARS) return undefined;
     return { kind, command, cwd, ...optionalSettingsDir(raw) };
+  }
+  if (kind === 'pr') {
+    const { pr } = raw;
+    if (typeof pr !== 'string' || !isPrUrl(pr)) return undefined;
+    return { kind, pr, cwd, ...optionalSettingsDir(raw) };
   }
   if (kind === 'ci') {
     const { pr, required, head, headSince } = raw;

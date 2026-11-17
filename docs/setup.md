@@ -209,6 +209,14 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
+### `board watch --pr-merged` (CLI 0.22.0)
+
+A new watch source: one event when a PR is merged or closed (see [Sources](usage.md#sources)). Nothing changes on the server, and no `MIN_CLIENT` is raised.
+
+- Restart the watch unit after updating the CLI on a checkout install: `board restart watch`. `board self-update` restarts it. A watch unit that still runs the older code logs a `--pr-merged` watch as a file it cannot read and skips it until the restart; the watch is not lost.
+- The board lists the watch as `merge of #<n>` once its frontend knows the kind `pr`. A browser tab that still has the older frontend leaves the entry out of the Watches list until it reloads.
+- An agent that should use it needs `Bash(board watch * --pr-merged)` and `Bash(board watch * --pr-merged *)` in its `allowedTools`.
+
 ### Watches on the board (CLI 0.21.0)
 
 A new server feature, `task.watches`. The CLI publishes the sealed list of a task's watches, and the server stores it with the stop requests of the user. The board shows a badge on the card and a **Watches** list on the task page (see [What the board shows of watches](usage.md#what-the-board-shows-of-watches)). A migration adds the columns `watches` and `watch_stops` to `task`.

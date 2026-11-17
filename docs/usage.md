@@ -707,6 +707,7 @@ An agent that has to wait for something outside the run, such as CI, a deploy or
 ```sh
 board watch <task> --ci                                  # the newest open PR the task reported with board pr
 board watch <task> --ci https://github.com/o/r/pull/7 --required
+board watch <task> --pr-merged                           # the same PR: once it is merged or closed
 board watch <task> --name health --every 30s -- 'curl -fsS https://staging.example.com/health'
 board watch <task> --in 20m --name settle
 board watches <task>
@@ -749,6 +750,14 @@ An event's text can come from text you did not write, such as job names from a P
 - A new head commit restarts the watch on that commit.
 
 The watch ends with its event. After a red build the agent fixes, pushes and starts a new `--ci` watch.
+
+**A merge** (`--pr-merged [pr]`). The watch follows the PR given, or the same default as `--ci`.
+
+- Every 60 seconds the machine reads `gh pr view <pr> --json state,mergedAt,closedAt,mergeCommit`.
+- It reports `PR <url> was merged as <sha7>.` with the merge commit, or `PR <url> was closed without merging.`
+- A PR that is merged or closed when the watch is started is reported at once, and no watch is stored.
+- Its timeout defaults to 7 days, the longest a watch may look, because a merge waits for people. `--timeout` shortens it.
+- Its default name is `pr-merged`.
 
 **A command** (`--name <name> --every <dur> -- '<command>'`). A shell command that exits 0 once the wait is over.
 
@@ -818,7 +827,7 @@ On the task's machine, `board watches <task>` lists its watches with their last 
 
 ### Watches in an agent's run
 
-A run that is restricted to an [agent](workers.md#agents) may use `--ci` and timers, which run no command of its choosing. A command watch is a usage error there, since it would bypass the run's fixed command list.
+A run that is restricted to an [agent](workers.md#agents) may use `--ci`, `--pr-merged` and timers, which run no command of its choosing. A command watch is a usage error there, since it would bypass the run's fixed command list.
 
 ### `board wait`
 

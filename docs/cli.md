@@ -364,15 +364,18 @@ and the task waits without holding a slot. A task may have several watches.
 Give exactly one source. --ci watches the checks of a pull request (the PR is
 the argument, or the newest open one you reported with "board pr"; --required
 looks at the required checks only; a new commit restarts it) and reports when
-they have passed, one failed, or the PR was merged or closed. A command after --
-is run every --every (default 30s, at least 15s) in this directory, with the env
-of your Claude Code settings, and reports once it exits 0; it needs --name, and
-it is run once right away. --in or --at is a timer.
+they have passed, one failed, or the PR was merged or closed. --pr-merged
+watches the PR itself (the same default) and reports once it was merged, with
+the merge commit, or closed without merging; it looks every minute. A command
+after -- is run every --every (default 30s, at least 15s) in this directory,
+with the env of your Claude Code settings, and reports once it exits 0; it needs
+--name, and it is run once right away. --in or --at is a timer.
 
---timeout (default 2h, at most 7 days) is how long a ci or command watch looks
-before it reports that it timed out. The command stays on this machine. The same
-name again replaces the open watch. If the answer is there at once, it is
-printed and no watch is stored; a command that cannot run here is refused.
+--timeout (default 2h, for --pr-merged 7d; at most 7 days) is how long a ci, pr
+or command watch looks before it reports that it timed out. The command stays on
+this machine. The same name again replaces the open watch. If the answer is
+there at once, it is printed and no watch is stored; a command that cannot run
+here is refused.
 
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
@@ -390,12 +393,14 @@ Options:
   --ci [pr]             watch the checks of a PR (URL or number; default: the
                         newest open PR reported for this task)
   --required            with --ci: the required checks only
-  --name <name>         the watch's name (default: ci, or timer); a command
-                        needs one
+  --pr-merged [pr]      watch for the merge or close of a PR (URL or number;
+                        default: the newest open PR reported for this task)
+  --name <name>         the watch's name (default: ci, pr-merged, or timer); a
+                        command needs one
   --every <duration>    with a command: how often it runs (default 30s, at least
                         15s)
-  --timeout <duration>  report a timeout after this long (default 2h, at most
-                        7d)
+  --timeout <duration>  report a timeout after this long (default 2h, with
+                        --pr-merged 7d; at most 7d)
   --in <duration>       a timer: report after this long (30m, 2h, 1d, 1h30m)
   --at <time>           a timer: report then (2027-01-01T12:00, 2027-01-01,
                         09:30)
@@ -405,6 +410,7 @@ Options:
 Examples:
   board watch Ab3dEf9x --ci
   board watch Ab3dEf9x --ci 17741 --required --timeout 1h
+  board watch Ab3dEf9x --pr-merged
   board watch Ab3dEf9x --name health --every 1m -- 'curl -fsS https://staging.example.com/health'
   board watch Ab3dEf9x --in 30m --name deploy
 ```

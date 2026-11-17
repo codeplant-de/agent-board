@@ -5,12 +5,14 @@ import { localTime } from '../commands/schedule.mts';
 import type { CommandResult } from '../dispatch/waits.mts';
 import { ciChecksCommand, ciViewCommand, decideCi, isViewOpen } from './ci.mts';
 import type { CiSource } from './ci.mts';
+import { decidePr, prViewCommand } from './pr.mts';
+import type { PrSource } from './pr.mts';
 import type { WatchDef } from './store.mts';
 
 export const UNIT_ATTEMPT_LIMIT_MS = 120_000;
 export const TICK_ATTEMPT_LIMIT_MS = 45_000;
-// gh is asked twice per ci attempt, each call with this at the most.
-const CI_CALL_LIMIT_MS = 60_000;
+// gh is asked twice per ci attempt and once per pr attempt, each call with this at the most.
+const GH_CALL_LIMIT_MS = 60_000;
 const OUTPUT_SUMMARY_CHARS = 2000;
 
 export interface RunJob {
@@ -84,21 +86,34 @@ async function attemptCommand(
   return { kind: 'pending', summary: `${exitWord(result)}${end}`.slice(0, OUTPUT_SUMMARY_CHARS + 20) };
 }
 
-async function attemptCi(def: WatchDef & { source: CiSource }, now: Date, deps: AttemptDeps): Promise<AttemptResult> {
-  const { source } = def;
-  const job = (command: string): RunJob => ({
+// One gh call of a ci or pr watch, in the directory and with the settings of the run that started it.
+function ghJob(source: CiSource | PrSource, deps: AttemptDeps, command: string): RunJob {
+  return {
     command,
     cwd: source.cwd,
-    timeLimitMs: Math.min(CI_CALL_LIMIT_MS, deps.timeLimitMs),
+    timeLimitMs: Math.min(GH_CALL_LIMIT_MS, deps.timeLimitMs),
     ...(source.settingsDir === undefined ? {} : { settingsDir: source.settingsDir }),
     ...(deps.signal === undefined ? {} : { signal: deps.signal }),
-  });
+  };
+}
+
+async function attemptCi(def: WatchDef & { source: CiSource }, now: Date, deps: AttemptDeps): Promise<AttemptResult> {
+  const { source } = def;
+  const job = (command: string): RunJob => ghJob(source, deps, command);
   const view = await deps.run(job(ciViewCommand(source.pr)));
   const checks = isViewOpen(view) ? await deps.run(job(ciChecksCommand(source.pr, source.required))) : undefined;
   const decision = decideCi({ source, now, view, ...(checks === undefined ? {} : { checks }) });
   if (decision.kind === 'event') return { kind: 'event', text: decision.text };
   if (decision.kind === 'pending')
     return { kind: 'pending', summary: decision.summary, def: sourceOf(def, decision.source) };
+  if (deps.registration === true) return { kind: 'broken', reason: decision.reason };
+  return { kind: 'pending', summary: decision.reason };
+}
+
+async function attemptPr({ source }: { source: PrSource }, deps: AttemptDeps): Promise<AttemptResult> {
+  const decision = decidePr(source, await deps.run(ghJob(source, deps, prViewCommand(source.pr))));
+  if (decision.kind === 'event') return { kind: 'event', text: decision.text };
+  if (decision.kind === 'pending') return { kind: 'pending', summary: decision.summary };
   if (deps.registration === true) return { kind: 'broken', reason: decision.reason };
   return { kind: 'pending', summary: decision.reason };
 }
@@ -113,6 +128,7 @@ export async function attempt(def: WatchDef, now: Date, deps: AttemptDeps): Prom
       ? { kind: 'event', text: timerText(def) }
       : { kind: 'pending', summary: `waiting until ${localTime(new Date(def.deadline))}` };
   if (source.kind === 'command') return attemptCommand({ ...def, source }, deps);
+  if (source.kind === 'pr') return attemptPr({ source }, deps);
   return attemptCi({ ...def, source }, now, deps);
 }
 

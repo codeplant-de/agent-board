@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { commandDef, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
+import { commandDef, PR, prDef, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
 import { createWatchStore, isWatchName, parseWatchDef, parseWatchEvent } from './store.mts';
 import type { WatchEvent } from './store.mts';
 
@@ -90,6 +90,18 @@ test('a watch definition is shape-checked: the PR, the directories, the commit a
   assert.equal(bad({ deadline: 'soon' }), undefined);
   assert.equal(bad({ everyMs: 0 }), undefined);
   assert.equal(parseWatchDef(timerDef())?.everyMs, 0);
+  const pr = prDef({ source: { kind: 'pr', pr: PR, cwd: '/work', settingsDir: '/start' } });
+  assert.deepEqual(parseWatchDef(pr), pr);
+  // A pr watch keeps its PR, its directories and nothing else.
+  assert.deepEqual(parseWatchDef({ ...pr, source: { ...pr.source, settingsDir: 'rel', required: true } })?.source, {
+    kind: 'pr',
+    pr: PR,
+    cwd: '/work',
+  });
+  assert.equal(parseWatchDef({ ...pr, source: { ...pr.source, pr: 'https://evil.test/a/b/pull/7' } }), undefined);
+  assert.equal(parseWatchDef({ ...pr, source: { ...pr.source, pr: 7 } }), undefined);
+  assert.equal(parseWatchDef({ ...pr, source: { kind: 'pr', pr: PR } }), undefined);
+  assert.equal(parseWatchDef({ ...pr, everyMs: 0 }), undefined);
   const noisy = parseWatchDef({
     ...good,
     source: { ...good.source, head: 'not-a-commit', settingsDir: 'rel' },
