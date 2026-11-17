@@ -56,7 +56,7 @@ export function directoryChoices(machines: readonly Machine[], now: number): Dir
 
 const segments = (path: string): string[] => path.split('/').filter((segment) => segment !== '');
 
-const isWithin = (path: string, dir: string): boolean => {
+export const isWithin = (path: string, dir: string): boolean => {
   const below = segments(path);
   return segments(dir).every((segment, index) => below[index] === segment);
 };

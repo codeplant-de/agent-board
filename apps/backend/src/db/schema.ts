@@ -309,11 +309,18 @@ export const machines = pgTable(
     /** The blind index of that list, which the machine compares with its own to know whether to send again. */
     dirsIndex: text('dirs_index'),
     dirsUpdatedAt: timestamp('dirs_updated_at', { withTimezone: true }),
+    /** The sealed catalogue of skills and models the machine's CLI sent (`machine.catalog`), advice for completion in the browser; null until it sends one. */
+    catalog: text('catalog'),
+    /** The blind index of that catalogue, which the machine compares with its own to know whether to send again. */
+    catalogIndex: text('catalog_index'),
+    catalogUpdatedAt: timestamp('catalog_updated_at', { withTimezone: true }),
   },
   (t) => [
     primaryKey({ columns: [t.owner, t.name] }),
     check('machine_dirs_sealed', isEnvelope(t.dirs)),
     check('machine_dirs_index_blind', isBlindIndex(t.dirsIndex)),
+    check('machine_catalog_sealed', isEnvelope(t.catalog)),
+    check('machine_catalog_index_blind', isBlindIndex(t.catalogIndex)),
     tenant(),
   ],
 ).enableRLS();

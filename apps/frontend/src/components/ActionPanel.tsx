@@ -1,3 +1,4 @@
+import type { CatalogSkill } from '@agent-board/shared';
 import { Alert, Anchor, Button, Group, Kbd, Loader, Menu, Paper, Stack, Text } from '@mantine/core';
 import { modals } from '@mantine/modals';
 import {
@@ -243,10 +244,13 @@ export function ActionPanel({
   task,
   thread,
   followUps,
+  skills,
 }: {
   task: BoardTask;
   thread: ThreadNote[];
   followUps: BoardTask[];
+  /** What a reply may start with after a `/`: the skills of the task's machine and directory. */
+  skills?: readonly CatalogSkill[];
 }) {
   const actions = useActions(task.id);
   const polish = usePolish();
@@ -541,6 +545,7 @@ export function ActionPanel({
           minRows={3}
           onSubmit={send}
           suggestion={suggestion}
+          skills={skills}
           placeholder={
             task.sessionId
               ? 'Steer the agent: a follow-up, a correction, a new instruction…'

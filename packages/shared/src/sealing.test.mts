@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { checkSealedSize, ContractError, parseVersionDirsIndex, parseWireDirs, SEALED_LIMITS } from './contract.mts';
+import {
+  checkSealedSize,
+  ContractError,
+  parseVersionCatalogIndex,
+  parseVersionDirsIndex,
+  parseWireCatalog,
+  parseWireDirs,
+  SEALED_LIMITS,
+} from './contract.mts';
+import { machineCatalogJson } from './catalog.mts';
+import type { MachineCatalog } from './catalog.mts';
 import { blindIndex, deriveKeys, open, seal } from './crypto.mts';
 import type { Keys } from './crypto.mts';
 import {
@@ -8,10 +18,14 @@ import {
   headIndex,
   agentBinding,
   inputBinding,
+  machineCatalogBinding,
+  machineCatalogIndex,
   machineDirsBinding,
   machineDirsIndex,
   machineDirsJson,
+  openMachineCatalog,
   openMachineDirs,
+  sealMachineCatalog,
   sealMachineDirs,
   noteBinding,
   prBinding,
@@ -849,4 +863,74 @@ test('set-dirs takes exactly a sealed list and a blind index; the version answer
     { dirsIndex: dirs },
   ])
     assert.equal(parseVersionDirsIndex(odd), null);
+});
+
+const CATALOG: MachineCatalog = {
+  claude: '2.1.326',
+  models: [{ value: 'opus', label: 'Opus' }],
+  skills: [{ name: 'review-pr', description: 'Review a pull request' }],
+  dirs: { '/work/app': [{ name: 'deploy' }] },
+};
+
+test('a machine catalogue is one JSON document, sealed under the machine and opened as the same catalogue', async () => {
+  const wire = await sealMachineCatalog(seals, 'laptop', CATALOG);
+  assert.equal(await open(keys, 'machine.catalog', 'machine:laptop', wire), machineCatalogJson(CATALOG));
+  assert.deepEqual(machineCatalogBinding('laptop'), { field: 'machine.catalog', context: 'machine:laptop' });
+  assert.deepEqual(await openMachineCatalog(opens, 'laptop', wire), CATALOG);
+});
+
+test('a catalogue sealed for one machine does not open as another’s, nor as a directory list, and nothing else opens as one', async () => {
+  const wire = await sealMachineCatalog(seals, 'laptop', CATALOG);
+  assert.equal(await openMachineCatalog(opens, 'desktop', wire), undefined);
+  assert.equal(await openMachineDirs(opens, 'laptop', wire), undefined);
+  const dirs = await sealMachineDirs(seals, 'laptop', DIRS);
+  assert.equal(await openMachineCatalog(opens, 'laptop', dirs), undefined);
+  assert.equal(await openMachineCatalog(opens, 'laptop', null), undefined);
+  assert.equal(await openMachineCatalog(opens, 'laptop', undefined), undefined);
+  assert.equal(await openMachineCatalog(opens, 'laptop', machineCatalogJson(CATALOG)), undefined);
+  const sealed = (text: string) => seal(keys, 'machine.catalog', 'machine:laptop', text);
+  for (const text of ['not json', '[]', '{"skills":"x"}'])
+    assert.equal(await openMachineCatalog(opens, 'laptop', await sealed(text)), undefined, text);
+  assert.deepEqual(
+    await openMachineCatalog(opens, 'laptop', await sealed('{"skills":[{"name":"a b"},{"name":"c"}],"x":1}')),
+    { models: [], skills: [{ name: 'c' }], dirs: {} },
+  );
+});
+
+test('sealing a catalogue refuses an entry of the wrong shape, too many entries and more than the board takes', async () => {
+  await assert.rejects(sealMachineCatalog(seals, 'laptop', { ...CATALOG, skills: [{ name: 'a b' }] }), ContractError);
+  const many = Array.from({ length: 501 }, (_, i) => ({ name: `s${i}` }));
+  await assert.rejects(sealMachineCatalog(seals, 'laptop', { ...CATALOG, skills: many }), /more than 500 skills/);
+  assert.equal(SEALED_LIMITS['machine.catalog'], 256 * 1024);
+  const wide = Object.fromEntries(
+    Array.from({ length: 200 }, (_, i) => [`/${String(i).padEnd(3000, 'x')}`, [{ name: 'a' }]]),
+  );
+  await assert.rejects(sealMachineCatalog(seals, 'laptop', { ...CATALOG, dirs: wide }), /the catalogue is too long/);
+});
+
+test('the blind index of a catalogue is of the same document, bound to the machine, and changes with the catalogue', async () => {
+  const index = await machineCatalogIndex(keys, 'laptop', CATALOG);
+  assert.equal(index, await blindIndex(keys, `catalog:laptop:${machineCatalogJson(CATALOG)}`));
+  assert.notEqual(index, await machineCatalogIndex(keys, 'desktop', CATALOG));
+  assert.notEqual(index, await machineCatalogIndex(keys, 'laptop', { ...CATALOG, skills: [] }));
+  assert.notEqual(index, await machineDirsIndex(keys, 'laptop', DIRS));
+});
+
+test('set-catalog takes exactly a sealed catalogue and a blind index; the version answer’s index is read leniently', async () => {
+  const catalog = await sealMachineCatalog(seals, 'laptop', CATALOG);
+  const index = await machineCatalogIndex(keys, 'laptop', CATALOG);
+  assert.deepEqual(parseWireCatalog({ catalog, index }), { catalog, index });
+  for (const bad of [
+    null,
+    {},
+    { catalog },
+    { index },
+    { catalog: 'plain', index },
+    { catalog, index: catalog },
+    { catalog, index, x: 1 },
+  ])
+    assert.throws(() => parseWireCatalog(bad), ContractError);
+  assert.equal(parseVersionCatalogIndex({ catalogIndex: index }), index);
+  for (const odd of [undefined, null, {}, { catalogIndex: null }, { catalogIndex: 5 }, { catalogIndex: 'plain' }])
+    assert.equal(parseVersionCatalogIndex(odd), null);
 });

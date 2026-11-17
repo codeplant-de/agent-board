@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { encodeDataKey, machineDirsIndex } from '@agent-board/shared';
-import { DATA_KEY, KEYS, OWNER, SERVER_API, SERVER_HAS } from '../__tests__/helpers/fakes.mts';
+import { encodeDataKey, machineCatalogIndex, machineDirsIndex } from '@agent-board/shared';
+import { DATA_KEY, fakeCatalogStore, KEYS, OWNER, SERVER_API, SERVER_HAS } from '../__tests__/helpers/fakes.mts';
 import { BackendError } from '../backend/backend.mts';
 import { formatResult, hasFailure, runChecks } from './doctor.mts';
 import type { CheckResult, DoctorDeps } from './doctor.mts';
@@ -42,6 +42,7 @@ function machine(
     },
     systemctl: async () => 0,
     verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId, api: SERVER_API, features: SERVER_HAS }),
+    catalogStore: fakeCatalogStore(),
     ...overrides,
   };
 }
@@ -598,6 +599,63 @@ test('doctor says whether the board has the current directory list, comparing in
   const results = await runChecks(lacking);
   assert.deepEqual(dirsOnBoard(results), []);
   assert.match(results.find(({ name }) => name === 'server features')?.message ?? '', /directory lists/);
+});
+
+const catalogOnBoard = (results: CheckResult[]): CheckResult[] =>
+  results.filter((result) => result.name === 'catalog on board');
+
+test('doctor says whether the board has the catalogue this machine probed, and nothing is probed yet on a fresh one', async () => {
+  const files = withConfig({ machine: 'box', dirs: { '/home/me/.config/agent-board': {} } });
+  const result = {
+    claude: '2.1.326',
+    models: [{ value: 'opus', label: 'Opus' }],
+    commands: [{ name: 'review', builtin: false }],
+  };
+  const catalog = { claude: '2.1.326', models: result.models, skills: [{ name: 'review' }], dirs: {} };
+  const serving = (catalogIndex?: string): Partial<DoctorDeps> => ({
+    verifyServer: async () => ({
+      owner: OWNER,
+      keyId: KEYS.keyId,
+      api: SERVER_API,
+      features: SERVER_HAS,
+      ...(catalogIndex === undefined ? {} : { catalogIndex }),
+    }),
+  });
+  const fresh = catalogOnBoard(await runChecks(machine(files, serving())));
+  assert.deepEqual(
+    fresh.map(({ level }) => level),
+    ['ok'],
+  );
+  assert.match(fresh[0]?.message ?? '', /nothing probed yet/);
+  const catalogStore = fakeCatalogStore();
+  catalogStore.write({
+    path: '/home/me/.config/agent-board',
+    fingerprint: 'fp',
+    probedAt: '2026-11-17T10:00:00.000Z',
+    probedForInit: null,
+    result,
+  });
+  const current = catalogOnBoard(
+    await runChecks(machine(files, { ...serving(await machineCatalogIndex(KEYS, 'box', catalog)), catalogStore })),
+  );
+  assert.deepEqual(
+    current.map(({ level, message }) => [level, message]),
+    [['ok', 'the board has the current catalogue (1 skills, 1 models)']],
+  );
+  const behind = catalogOnBoard(await runChecks(machine(files, { ...serving(), catalogStore })));
+  assert.deepEqual(
+    behind.map(({ level }) => level),
+    ['warn'],
+  );
+  assert.match(behind[0]?.message ?? '', /does not have the current catalogue yet \(1 skills, 1 models\)/);
+  assert.match(behind[0]?.hint ?? '', /next dispatch tick/);
+  const lacking = machine(files, {
+    catalogStore,
+    verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId, api: SERVER_API, features: new Set(['events']) }),
+  });
+  const results = await runChecks(lacking);
+  assert.deepEqual(catalogOnBoard(results), []);
+  assert.match(results.find(({ name }) => name === 'server features')?.message ?? '', /machine catalogues/);
 });
 
 const PLUGINS = '/home/me/.claude/plugins';

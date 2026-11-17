@@ -50,6 +50,7 @@ pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 | `worker/`   | One run: its plan and prompts (`plan.mts`, `prompts.mts`), starting Claude (`process.mts`), the hook, run files, logs, sessions, transcripts, plugins                |
 | `setup/`    | `board init`, `board setup`, `board doctor`, systemd, launchd agents, the macOS process supervisor                                                                   |
 | `self/`     | The CLI about itself: its executable, version, self-update, the update hint                                                                                          |
+| `catalog/`  | The machine catalogue: asking `claude` for its skills and models (`probe.mts`), the per-directory cache (`cache.mts`), the document and its send (`catalog.mts`)     |
 | `config/`   | `config.json`, the `dirs` rules (`dirs.mts`), paths, the credentials file                                                                                            |
 | `output/`   | Text for a terminal: stand-ins for control characters, colour, links, small text helpers                                                                             |
 

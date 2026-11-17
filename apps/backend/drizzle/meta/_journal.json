@@ -239,6 +239,13 @@
       "when": 1794905985299,
       "tag": "0033_drop_task_pr",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1794908668234,
+      "tag": "0034_machine-catalog",
+      "breakpoints": true
     }
   ]
 }

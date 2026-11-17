@@ -17,6 +17,7 @@ import {
   CONFIG,
   DATA_KEY,
   fakeBackend,
+  fakeCatalogStore,
   fakeRunFiles,
   fakeTaskFiles,
   fakeWorktreeLocks,
@@ -28,6 +29,7 @@ import type { CheckResult, WaitCheck } from './waits.mts';
 import { TASK_FILES_KEEP_MS } from './dispatch.mts';
 import type { TaskFile } from './task-files.mts';
 import type { FakeBackend } from '../__tests__/helpers/fakes.mts';
+import type { ProbeResult } from '../catalog/probe.mts';
 import { GitHubError } from './github.mts';
 import type { GitHub } from './github.mts';
 import { createPrRefreshState, PR_REFRESH_INTERVAL_MS, prRefreshFile } from './pr-states.mts';
@@ -1060,6 +1062,121 @@ test('a failure to send the directory list costs one WARN line, and the tick goe
   assert.ok(logs.includes('WARN sending the directory list failed: set-dirs: the server answered 502 without JSON'));
   assert.deepEqual(started, ['t1']);
   assert.ok(logs.some((line) => line.startsWith('TICK ')));
+});
+
+function withCatalog(tasks: ReturnType<typeof task>[], result: ProbeResult | undefined) {
+  const made = setup(tasks);
+  const store = fakeCatalogStore();
+  const probes: string[] = [];
+  made.deps.config = listed;
+  made.deps.catalog = {
+    store,
+    probe: async (dir) => {
+      probes.push(dir);
+      return result;
+    },
+    fingerprintDeps: () => ({ claude: '/usr/bin/claude', mtime: () => 1, claudeDir: '/home/me/.claude' }),
+  };
+  return { ...made, store, probes };
+}
+
+const FOUND: ProbeResult = {
+  claude: '2.1.326',
+  models: [{ value: 'opus', label: 'Opus' }],
+  commands: [{ name: 'review', builtin: false }],
+};
+
+test('a tick probes the machine’s directory, sends the catalogue once, and logs it', async () => {
+  const { deps, backend, logs, probes, started } = withCatalog([todo('t1')], FOUND);
+  await runDispatch(deps);
+  assert.deepEqual(probes, [tmpdir()]);
+  assert.deepEqual(
+    backend.writes.filter((w) => w.startsWith('catalog ')),
+    ['catalog here: 1 skills, 0 directories, 1 models'],
+  );
+  assert.ok(logs.includes('CATALOG sent 1 skills and 1 models to the board'));
+  await runDispatch(deps);
+  assert.equal(backend.writes.filter((w) => w.startsWith('catalog ')).length, 1);
+  assert.deepEqual(probes, [tmpdir()], 'nothing was stale the second time');
+  assert.deepEqual(started, ['t1']);
+});
+
+test('the probe runs after the tasks start', async () => {
+  const { deps, store, started } = withCatalog([todo('t1')], FOUND);
+  const startsAtProbe: number[] = [];
+  const probe = deps.catalog?.probe;
+  assert.ok(probe);
+  deps.catalog = {
+    store,
+    fingerprintDeps: () => ({ claude: '/usr/bin/claude', mtime: () => 1, claudeDir: '/home/me/.claude' }),
+    probe: async (dir) => {
+      startsAtProbe.push(started.length);
+      return probe(dir);
+    },
+  };
+  await runDispatch(deps);
+  assert.deepEqual(startsAtProbe, [1]);
+});
+
+test('a tick with too little time left for a probe skips it and still sends the cached catalogue', async () => {
+  const { deps, backend, logs, probes, store } = withCatalog([todo('t1')], FOUND);
+  await runDispatch(deps);
+  assert.deepEqual(probes, [tmpdir()]);
+  backend.boardCatalog.held = undefined;
+  deps.catalog = {
+    store,
+    probe: async (dir) => {
+      probes.push(dir);
+      return FOUND;
+    },
+    // Another mtime: the cached probe is stale now.
+    fingerprintDeps: () => ({ claude: '/usr/bin/claude', mtime: () => 2, claudeDir: '/home/me/.claude' }),
+  };
+  let now = NOW;
+  const listTasks = backend.listTasks.bind(backend);
+  backend.listTasks = async (options) => {
+    const tasks = await listTasks(options);
+    now = new Date(NOW.getTime() + 80_000);
+    return tasks;
+  };
+  await runDispatch({ ...deps, now: () => now });
+  assert.deepEqual(probes, [tmpdir()], 'no second probe');
+  assert.equal(backend.writes.filter((w) => w.startsWith('catalog ')).length, 2);
+  assert.equal(logs.filter((line) => line.startsWith('CATALOG sent')).length, 2);
+});
+
+test('a tick whose probe finds nothing sends nothing, logs a WARN, and still starts the tasks', async () => {
+  const { deps, backend, logs, started } = withCatalog([todo('t1')], undefined);
+  await runDispatch(deps);
+  assert.ok(!backend.writes.some((w) => w.startsWith('catalog ')));
+  assert.equal(logs.filter((line) => line.startsWith('WARN asking claude')).length, 1);
+  assert.deepEqual(started, ['t1']);
+  await runDispatch(deps);
+  assert.equal(logs.filter((line) => line.startsWith('WARN asking claude')).length, 1, 'not retried at once');
+});
+
+test('a failure to send the catalogue costs one WARN line, and the tick goes on', async () => {
+  const { deps, backend, logs, started } = withCatalog([todo('t1')], FOUND);
+  backend.boardCatalog.failure = new BackendError('set-catalog: the server answered 502 without JSON', 502);
+  await runDispatch(deps);
+  assert.ok(
+    logs.includes('WARN sending the skill catalogue failed: set-catalog: the server answered 502 without JSON'),
+  );
+  assert.deepEqual(started, ['t1']);
+  assert.ok(logs.some((line) => line.startsWith('TICK ')));
+});
+
+test('a tick on a server without catalogues asks nothing more, and a dry tick starts no probe', async () => {
+  const old = withCatalog([todo('t1')], FOUND);
+  old.backend.boardCatalog.supported = false;
+  await runDispatch(old.deps);
+  assert.ok(!old.backend.writes.some((w) => w.startsWith('catalog ')));
+  assert.ok(!old.logs.some((line) => line.startsWith('CATALOG sent')));
+  const dry = withCatalog([todo('t1')], FOUND);
+  dry.deps.dryRun = true;
+  await runDispatch(dry.deps);
+  assert.deepEqual(dry.probes, []);
+  assert.ok(dry.logs.includes(`DRY probe claude in ${tmpdir()}`));
 });
 
 const PR = 'https://github.com/cosuno/cosuno/pull/5';

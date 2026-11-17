@@ -96,7 +96,7 @@ export async function syncDirs(
 }
 
 // Where the config sends work: the default directory, every lane's, every repo's checkout.
-export function routedDirs(config: Config): { label: string; path: string }[] {
+export function routedDirs(config: Pick<Config, 'defaultCwd' | 'lanes' | 'repos'>): { label: string; path: string }[] {
   return [
     { label: 'defaultCwd', path: config.defaultCwd },
     ...config.lanes.flatMap(({ name, cwd }) => (cwd === undefined ? [] : [{ label: `lane ${name} cwd`, path: cwd }])),

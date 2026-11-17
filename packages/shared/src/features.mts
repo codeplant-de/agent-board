@@ -17,6 +17,7 @@ export const ADDED_SERVER_FEATURES = [
   'task.pr-remove',
   'run-inbox',
   'machine.dirs',
+  'machine.catalog',
   'task.agent',
   'task.run',
 ] as const;
@@ -37,6 +38,7 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'task.pr-remove': 'removing a reported pull request',
   'run-inbox': 'messages and stop requests for a running task',
   'machine.dirs': 'directory lists',
+  'machine.catalog': 'machine catalogues',
   'task.agent': 'running a task as an agent',
   'task.run': 'telling runs of a task apart',
   wait: 'waiting',
