@@ -101,58 +101,107 @@ export interface CheckResult {
   output: string;
 }
 
+export interface CommandResult extends CheckResult {
+  // The end of each stream alone, for a command whose stdout is data (`gh ... --json`).
+  stdout: string;
+  stderr: string;
+}
+
 // One attempt may take this long; the dispatcher's tick has 110 seconds in all and leaves the checks to the next tick when
 // fewer remain.
 export const CHECK_TIME_LIMIT_MS = 45_000;
 const OUTPUT_KEEP_CHARS = 2000;
+// A `gh pr checks --json` list of a big PR is longer than an output worth keeping.
+const STREAM_KEEP_CHARS = 200_000;
+
+export interface CommandSpec {
+  command: string;
+  cwd: string;
+  // See WaitCheck.
+  settingsDir?: string;
+  timeLimitMs?: number;
+  // Aborting kills the process group at once; the result is the one of a killed command.
+  signal?: AbortSignal;
+}
 
 /**
- * Runs a check as the agent would have: in its directory, with the `env` of the user's and the run's Claude Code settings on top
- * of this environment (tokens such as GH_TOKEN or CIRCLECI_TOKEN usually live there). After `timeLimitMs` its whole process
- * group is killed.
+ * Runs a shell command as the agent would have: in its directory, with the `env` of the user's and the run's Claude Code
+ * settings on top of this environment (tokens such as GH_TOKEN or CIRCLECI_TOKEN usually live there). After the time limit its
+ * whole process group is killed.
  */
-export function runCheck(
-  check: WaitCheck,
-  home: string = homedir(),
-  timeLimitMs: number = CHECK_TIME_LIMIT_MS,
-): Promise<CheckResult> {
-  const env = { ...process.env, ...readSettingsEnv(home), ...readSettingsEnv(check.settingsDir ?? check.cwd) };
+export function runCommand(spec: CommandSpec, home: string = homedir()): Promise<CommandResult> {
+  const { command, cwd, settingsDir, timeLimitMs = CHECK_TIME_LIMIT_MS, signal } = spec;
+  const env = { ...process.env, ...readSettingsEnv(home), ...readSettingsEnv(settingsDir ?? cwd) };
   return new Promise((resolve) => {
     let output = '';
+    let stdout = '';
+    let stderr = '';
     let timedOut = false;
-    const keep = (chunk: Buffer): void => {
-      output = (output + chunk.toString('utf8')).slice(-OUTPUT_KEEP_CHARS);
-    };
+    const finish = (exitCode: number | null, extra = ''): CommandResult => ({
+      exitCode,
+      timedOut,
+      output: `${output}${extra}`.slice(-OUTPUT_KEEP_CHARS),
+      stdout,
+      stderr: `${stderr}${extra}`.slice(-STREAM_KEEP_CHARS),
+    });
     let child;
     try {
-      child = spawn('bash', ['-c', check.command], {
-        cwd: check.cwd,
-        env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-      });
+      child = spawn('bash', ['-c', command], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     } catch (error) {
-      resolve({ exitCode: null, timedOut: false, output: errorText(error) });
+      output = errorText(error);
+      stderr = output;
+      resolve(finish(null));
       return;
     }
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const killGroup = (): void => {
       // The whole process group: a check that started children must not leave them behind.
       try {
         if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
       } catch {
         child.kill('SIGKILL');
       }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killGroup();
     }, timeLimitMs);
-    child.stdout.on('data', keep);
-    child.stderr.on('data', keep);
-    child.on('error', (error) => {
+    const onAbort = (): void => killGroup();
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+    const settle = (result: CommandResult): void => {
       clearTimeout(timer);
-      resolve({ exitCode: null, timedOut, output: `${output}${error.message}`.slice(-OUTPUT_KEEP_CHARS) });
+      signal?.removeEventListener('abort', onAbort);
+      resolve(result);
+    };
+    child.stdout.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf8');
+      output = (output + text).slice(-OUTPUT_KEEP_CHARS);
+      stdout = (stdout + text).slice(-STREAM_KEEP_CHARS);
     });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ exitCode: timedOut ? null : code, timedOut, output });
+    child.stderr.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf8');
+      output = (output + text).slice(-OUTPUT_KEEP_CHARS);
+      stderr = (stderr + text).slice(-STREAM_KEEP_CHARS);
     });
+    child.on('error', (error) => settle(finish(null, error.message)));
+    child.on('close', (code) => settle(finish(timedOut ? null : code)));
   });
+}
+
+/** `runCommand` for a stored check, whose time limit is a parameter. */
+export async function runCheck(
+  check: WaitCheck,
+  home: string = homedir(),
+  timeLimitMs: number = CHECK_TIME_LIMIT_MS,
+): Promise<CheckResult> {
+  const { exitCode, timedOut, output } = await runCommand(
+    {
+      command: check.command,
+      cwd: check.cwd,
+      timeLimitMs,
+      ...(check.settingsDir === undefined ? {} : { settingsDir: check.settingsDir }),
+    },
+    home,
+  );
+  return { exitCode, timedOut, output };
 }
