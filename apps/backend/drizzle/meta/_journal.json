@@ -232,6 +232,13 @@
       "when": 1794900426723,
       "tag": "0032_task_prs",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794905985299,
+      "tag": "0033_drop_task_pr",
+      "breakpoints": true
     }
   ]
 }
