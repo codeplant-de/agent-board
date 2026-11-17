@@ -20,6 +20,8 @@ describe('AppLayout', () => {
     for (const name of ['Board', 'Schedules', 'Closed', 'Settings']) {
       expect(screen.getByRole('link', { name })).toBeInTheDocument();
     }
+    // jsdom applies Mantine's hiddenFrom rule: the phone-only link is hidden, so it has no computed name to query by.
+    expect(screen.getByRole('link', { hidden: true, name: '' })).toHaveAttribute('aria-label', 'Backlog');
     expect(screen.getByRole('button', { name: 'New task' })).toBeInTheDocument();
   });
 });
