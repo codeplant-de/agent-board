@@ -594,16 +594,91 @@ test('--key and --version are checked, and refuse what they cannot go with', () 
     /--version is longer than 200/,
   );
   assert.throws(() => parseScheduleArgs(['--version', 'v', 'x']), /--version belongs to --key/);
-  for (const flags of [
-    ['--every', '2h'],
-    ['--cron', '0 9 * * *'],
-    ['--polish'],
-    ['--hold'],
-    ['--backlog'],
-    ['--in', '1h'],
-    ['--at', '14:30'],
-  ])
+  for (const flags of [['--every', '2h'], ['--cron', '0 9 * * *'], ['--polish'], ['--hold'], ['--backlog']])
     assert.throws(() => parseScheduleArgs(['--key', 'k', ...flags, 'x'], NOW), /--key makes or finds one task in Todo/);
+});
+
+const LATER = new Date('2030-01-01T10:00:00Z');
+const WAIT = ['--at', '2030-01-01T10:00:00Z'];
+
+test('--key with --at creates the task in Todo with its start time', async () => {
+  const { deps, backend, printed } = keyedSetup();
+  const outcome = await schedule(deps, parseScheduleArgs(['--key', 'other', ...WAIT, 'x'], NOW));
+  assert.deepEqual(outcome?.keyed, { result: 'created' });
+  assert.equal(outcome?.task.notBefore?.getTime(), LATER.getTime());
+  assert.match(printed[0] ?? '', /^created new https:\/\/board\.test\/t\/new, starts /);
+  assert.ok(backend.writes[0]?.endsWith('| key other'));
+});
+
+test('a waiting task of the key moves its start time, with the version, the same version or none', async () => {
+  for (const [args, head, notes] of [
+    [KEYED, 'sha1', ['note old (system): New version sha2. Starts']],
+    [KEYED, 'sha2', []],
+    [['--agent', 'reviewer', '--key', PR, 'x'], 'sha1', []],
+  ] as const) {
+    const { deps, backend, printed } = keyedSetup({ status: 'todo', next: 'fresh', head });
+    const outcome = await schedule(deps, parseScheduleArgs([...WAIT, ...args], NOW));
+    assert.deepEqual(outcome?.keyed, { result: 'rescheduled' });
+    assert.equal(backend.tasks[0]?.notBefore?.getTime(), LATER.getTime());
+    assert.equal(backend.tasks[0]?.head, args === KEYED ? 'sha2' : head);
+    assert.deepEqual(
+      backend.writes
+        .filter((w) => w.startsWith('note'))
+        .map((w) => w.slice(0, 'note old (system): New version sha2. Starts'.length)),
+      notes,
+    );
+    assert.ok(!backend.writes.some((w) => w.startsWith('status')));
+    assert.match(printed[0] ?? '', /^rescheduled old https:\/\/board\.test\/t\/old, starts /);
+  }
+});
+
+test('a reschedule that finds the task moved is exists (changed)', async () => {
+  const { deps, backend, printed } = keyedSetup({ status: 'todo', next: 'fresh' });
+  const addTask = backend.addTask.bind(backend);
+  backend.addTask = async (draft) => {
+    const found = await addTask(draft);
+    backend.tasks[0]!.status = 'running';
+    return found;
+  };
+  assert.deepEqual((await schedule(deps, parseScheduleArgs([...WAIT, ...KEYED], NOW)))?.keyed, {
+    result: 'exists',
+    reason: 'changed',
+  });
+  assert.deepEqual(printed, ['exists old https://board.test/t/old (changed)']);
+  assert.equal(backend.tasks[0]?.notBefore ?? null, null);
+});
+
+test('a Todo task that resumes, or runs as another agent, or has no start time given, is not rescheduled', async () => {
+  const resume = keyedSetup({ status: 'todo', next: 'resume' });
+  assert.deepEqual((await schedule(resume.deps, parseScheduleArgs([...WAIT, ...KEYED], NOW)))?.keyed, {
+    result: 'exists',
+    reason: 'busy',
+  });
+  const other = keyedSetup({ status: 'todo', next: 'fresh', agent: 'other' });
+  assert.deepEqual((await schedule(other.deps, parseScheduleArgs([...WAIT, ...KEYED], NOW)))?.keyed, {
+    result: 'exists',
+    reason: 'busy',
+  });
+  const plain = keyedSetup({ status: 'todo', next: 'fresh' });
+  assert.deepEqual((await schedule(plain.deps, parseScheduleArgs(KEYED)))?.keyed, { result: 'exists', reason: 'busy' });
+  const none = keyedSetup({ status: 'todo', next: 'fresh' });
+  assert.deepEqual((await schedule(none.deps, parseScheduleArgs(['--agent', 'reviewer', '--key', PR, 'x'])))?.keyed, {
+    result: 'exists',
+    reason: 'no-version',
+  });
+  for (const { backend } of [resume, other, plain, none]) {
+    assert.equal(backend.tasks[0]?.notBefore ?? null, null);
+    assert.ok(!backend.writes.some((w) => w.startsWith('notBefore')));
+  }
+});
+
+test('a requeue with --at also sets the start time', async () => {
+  const { deps, backend, printed } = keyedSetup();
+  const outcome = await schedule(deps, parseScheduleArgs([...WAIT, ...KEYED], NOW));
+  assert.deepEqual(outcome?.keyed, { result: 'requeued' });
+  assert.equal(backend.tasks[0]?.notBefore?.getTime(), LATER.getTime());
+  assert.match(printed[0] ?? '', /^requeued old https:\/\/board\.test\/t\/old, starts /);
+  assert.match(backend.writes.find((w) => w.startsWith('note')) ?? '', /Queued again, starts /);
 });
 
 test('the key reaches the board as the blind index of the PR URL', async () => {

@@ -196,7 +196,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
   result.until = parseStart({ at: until }, now);
   if (result.until !== undefined && result.until.getTime() < (result.notBefore ?? now).getTime())
     throw new UsageError('--until is before the first run');
-  parseKeyFlags(flags, result, { hold, backlog, delayed: delay !== undefined || at !== undefined });
+  parseKeyFlags(flags, result, { hold, backlog });
   result.prompt = words.join(' ').trim();
   if (result.prompt === '') throw new UsageError('a prompt is required');
   return result;
@@ -210,11 +210,7 @@ function checkedText(flag: string, value: string, max: number): string {
 }
 
 // `--key` and `--version`: the key is used as given, so the same text from any machine finds the same task.
-function parseKeyFlags(
-  flags: ScheduleFlags,
-  result: ScheduleArgs,
-  other: { hold: boolean; backlog: boolean; delayed: boolean },
-): void {
+function parseKeyFlags(flags: ScheduleFlags, result: ScheduleArgs, other: { hold: boolean; backlog: boolean }): void {
   if (flags.key === undefined) {
     if (flags.version !== undefined) throw new UsageError('--version belongs to --key: add --key');
     return;
@@ -225,7 +221,6 @@ function parseKeyFlags(
     result.polish && '--polish',
     other.hold && '--hold',
     other.backlog && '--backlog',
-    other.delayed && '--in/--at',
   ].filter((flag) => flag !== false);
   if (conflicts.length > 0)
     throw new UsageError(
@@ -392,7 +387,8 @@ async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<T
 // Why `--key` found a task and left it as it is.
 export type ExistsReason = 'closed' | 'same-version' | 'no-version' | 'busy' | 'other-agent' | 'changed';
 
-export type KeyedOutcome = { result: 'created' | 'requeued' } | { result: 'exists'; reason: ExistsReason };
+export type KeyedOutcome =
+  { result: 'created' | 'requeued' | 'rescheduled' } | { result: 'exists'; reason: ExistsReason };
 
 export interface Scheduled {
   task: Task;
@@ -405,7 +401,7 @@ export interface Scheduled {
 // A task that waits for the user, or finished, goes back to Todo for a new version; one in any other status is busy with the old.
 const REQUEUEABLE: readonly Task['status'][] = ['needs-me', 'done'];
 
-// Finds or creates the task of the key; a new version requeues one that waits in Needs me or is Done.
+// Finds or creates the task of the key; a new version requeues one that waits in Needs me or is Done, and a start time moves the wait of one in Todo.
 async function scheduleKeyed(deps: ScheduleDeps, args: ScheduleArgs, key: string): Promise<Scheduled> {
   const { backend } = deps;
   const { task, created } = await backend.addTask({
@@ -420,9 +416,12 @@ async function scheduleKeyed(deps: ScheduleDeps, args: ScheduleArgs, key: string
     ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
     ...(args.version === undefined ? {} : { head: args.version }),
+    ...(args.notBefore ? { notBefore: args.notBefore } : {}),
   });
   const say = (verb: string, shown: Task, reason?: ExistsReason): void =>
-    (deps.confirm ?? deps.print)(`${verb} ${shown.id} ${deps.link(shown.id)}${reason ? ` (${reason})` : ''}`);
+    (deps.confirm ?? deps.print)(
+      `${verb} ${shown.id} ${deps.link(shown.id)}${reason ? ` (${reason})` : ''}${verb !== 'exists' && args.notBefore ? `, starts ${localTime(args.notBefore)}` : ''}`,
+    );
   const exists = (shown: Task, reason: ExistsReason): Scheduled => {
     say('exists', shown, reason);
     return { task: shown, keyed: { result: 'exists', reason } };
@@ -432,12 +431,32 @@ async function scheduleKeyed(deps: ScheduleDeps, args: ScheduleArgs, key: string
     return { task, keyed: { result: 'created' } };
   }
   if (task.closed) return exists(task, 'closed');
+  // The agent is written once; a task of another agent (or none) would run the new version under the wrong rules.
+  const isOtherAgent = task.unreadable.includes('agent') || (task.agent ?? null) !== (args.agent ?? null);
+  if (args.notBefore && task.status === 'todo' && task.next === 'fresh' && !isOtherAgent) {
+    const versionChanged = args.version !== undefined && task.head !== (await backend.indexHead(args.version));
+    let moved: Task;
+    try {
+      moved = await backend.updateTask(task.id, {
+        notBefore: args.notBefore,
+        ...(versionChanged ? { head: args.version } : {}),
+        expect: 'todo',
+      });
+    } catch (error) {
+      if (error instanceof BackendError && error.status === 409) return exists(task, 'changed');
+      throw error;
+    }
+    if (versionChanged)
+      await backend.addNote(task.id, `New version ${args.version}. Starts ${localTime(args.notBefore)}.`, {
+        author: 'system',
+      });
+    say('rescheduled', moved);
+    return { task: moved, keyed: { result: 'rescheduled' } };
+  }
   if (args.version === undefined) return exists(task, 'no-version');
   if (task.head !== null && task.head === (await backend.indexHead(args.version))) return exists(task, 'same-version');
   if (!REQUEUEABLE.includes(task.status)) return exists(task, 'busy');
-  // The agent is written once; a task of another agent (or none) would run the new version under the wrong rules.
-  if (task.unreadable.includes('agent') || (task.agent ?? null) !== (args.agent ?? null))
-    return exists(task, 'other-agent');
+  if (isOtherAgent) return exists(task, 'other-agent');
   let requeued: Task;
   try {
     // One atomic update, and only if the task is still as it was read: a head changed without the move would leave it behind.
@@ -445,13 +464,18 @@ async function scheduleKeyed(deps: ScheduleDeps, args: ScheduleArgs, key: string
       status: 'todo',
       head: args.version,
       next: 'fresh',
+      ...(args.notBefore ? { notBefore: args.notBefore } : {}),
       expect: task.status,
     });
   } catch (error) {
     if (error instanceof BackendError && error.status === 409) return exists(task, 'changed');
     throw error;
   }
-  await backend.addNote(task.id, `New version ${args.version}. Queued again.`, { author: 'system' });
+  await backend.addNote(
+    task.id,
+    `New version ${args.version}. Queued again${args.notBefore ? `, starts ${localTime(args.notBefore)}` : ''}.`,
+    { author: 'system' },
+  );
   say('requeued', requeued);
   return { task: requeued, keyed: { result: 'requeued' } };
 }
