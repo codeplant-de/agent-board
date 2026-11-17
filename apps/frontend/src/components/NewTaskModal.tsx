@@ -117,6 +117,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           setTitle('');
           setInput('');
           setPriority('normal');
+          setWhen('now');
           setModel(DEFAULT_MODEL);
           setDirectory(null);
           setAgent('');

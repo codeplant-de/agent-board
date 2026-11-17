@@ -1087,6 +1087,40 @@ describe('transitions', () => {
   });
 });
 
+describe('a question from a run that no longer holds the task', () => {
+  async function running() {
+    const task = await plainUi(db).tasks.create({ title: 't', input: 'do it' });
+    await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' });
+    return task.id;
+  }
+  const ask = (id: string) => ctx.call('laptop', 'ask', { id, body: { questions: [question] } });
+
+  it.each([
+    ['done', 'the task is done, not running'],
+    ['todo', 'the task is todo, not running'],
+    ['needs-me', 'the task is needs-me, not running'],
+  ] as const)('is refused once the task is %s, and changes nothing', async (status, error) => {
+    const id = await running();
+    await ctx.call('laptop', 'update-task', { id, body: { status } });
+    const before = await plainUi(db).tasks.get({ id });
+    expect(await ask(id)).toMatchObject({ status: 409, json: { error } });
+    expect(await plainUi(db).tasks.get({ id })).toEqual(before);
+  });
+
+  it('is refused after the user took the run back', async () => {
+    const id = await running();
+    await admin
+      .update(tasks)
+      .set({ lastActiveAt: new Date(Date.now() - TAKE_BACK_AFTER_MS - 60_000) })
+      .where(eq(tasks.id, id));
+    await plainUi(db).tasks.takeBack({ id });
+    expect(await ask(id)).toMatchObject({ status: 409, json: { error: 'the task is needs-me, not running' } });
+    const { task, thread } = await plainUi(db).tasks.get({ id });
+    expect(task.openQuestion).toBe(false);
+    expect(thread.filter((n) => n.kind === 'question')).toEqual([]);
+  });
+});
+
 describe('taking back a stuck task', () => {
   async function running() {
     const task = await plainUi(db).tasks.create({ title: 't', input: 'do it' });
@@ -1837,6 +1871,19 @@ describe('a run taken back and claimed by another machine', () => {
       false,
     );
     expect((await ctx.call('workstation', 'fail', { id, body: 'x' })).json.result.applied).toBe(true);
+  });
+
+  it('refuses a question from the old machine, and takes the new machine’s', async () => {
+    const id = await movedToWorkstation();
+    expect(await ctx.call('laptop', 'ask', { id, body: { questions: [question] } })).toMatchObject({
+      status: 409,
+      json: { error: 'the task is running on workstation, not on laptop' },
+    });
+    const before = await plainUi(db).tasks.get({ id });
+    expect(before.task).toMatchObject({ status: 'running', machine: 'workstation', openQuestion: false });
+    expect(before.thread.filter((n) => n.kind === 'question')).toEqual([]);
+    expect((await ctx.call('workstation', 'ask', { id, body: { questions: [question] } })).status).toBe(200);
+    expect(await get(id)).toMatchObject({ status: 'needs-me', openQuestion: true });
   });
 
   it('lets only the machine the task waits on end the wait', async () => {

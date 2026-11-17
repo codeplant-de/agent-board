@@ -16,7 +16,7 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
-import { INVALID_VALUE, MACHINE_NAME_RULE, type KeySetup, type Keys } from '@agent-board/shared';
+import { INVALID_VALUE, isSafeMachineName, MACHINE_NAME_RULE, type KeySetup, type Keys } from '@agent-board/shared';
 import { modals } from '@mantine/modals';
 import { notifications } from '@mantine/notifications';
 import { IconCheck, IconCopy, IconKey } from '@tabler/icons-react';
@@ -71,6 +71,9 @@ function Machines() {
   const [name, setName] = useState('');
   const [issued, setIssued] = useState<Enrolment | null>(null);
   const [asking, setAsking] = useState<{ name: string; issuing: boolean } | null>(null);
+  // Checked here so a bad name fails before the passphrase prompt, not after it in the server's reply.
+  const machineName = name.trim();
+  const nameError = machineName !== '' && !isSafeMachineName(machineName) ? `Use ${MACHINE_NAME_RULE}` : undefined;
 
   // The passphrase is checked before a token is issued, so a wrong one leaves the machine's old token alone.
   const enrol = async (passphrase: string) => {
@@ -230,9 +233,10 @@ function Machines() {
             placeholder="laptop"
             value={name}
             onChange={(e) => setName(e.currentTarget.value)}
+            error={nameError}
             style={{ flex: 1 }}
           />
-          <Button onClick={() => issueFor(name.trim())} disabled={!name.trim()}>
+          <Button onClick={() => issueFor(machineName)} disabled={machineName === '' || nameError !== undefined}>
             Create token
           </Button>
         </Group>

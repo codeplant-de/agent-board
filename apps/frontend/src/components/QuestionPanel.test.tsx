@@ -50,6 +50,18 @@ describe('QuestionPanel', () => {
     expect(onSubmit).toHaveBeenCalledWith(questions, [{ selected: ['Nit'] }, { selected: ['Audit', 'Fixtures'] }], '');
   });
 
+  it('number keys and mod+Enter do nothing while a drawer or modal is open', async () => {
+    const onSubmit = renderPanel();
+    const overlay = document.body.appendChild(document.createElement('div'));
+    overlay.setAttribute('role', 'dialog');
+    await userEvent.keyboard('2');
+    await userEvent.keyboard('{Control>}{Enter}{/Control}');
+    expect(onSubmit).not.toHaveBeenCalled();
+    overlay.remove();
+    await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
+    expect(onSubmit.mock.calls[0]?.[1][0]).toEqual({ selected: ['Blocking'] });
+  });
+
   it('the Other text goes with the answer', async () => {
     const onSubmit = renderPanel();
     await userEvent.type(screen.getAllByPlaceholderText(/Other…/)[0]!, 'only if cheap');

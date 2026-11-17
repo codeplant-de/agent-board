@@ -13,24 +13,27 @@ import { POLL_MS, useTRPC, type ListedTask } from '../lib/trpc';
 /** The user is looking at the board, which already shows what needs them. */
 const isWatchingBoard = (): boolean => document.visibilityState === 'visible' && document.hasFocus();
 
+const canNotify = (): boolean => isNotificationSupported() && Notification.permission === 'granted';
+
 /** Shows an OS notification for each task that newly needs the user, while a board tab is open and the setting is on. */
 export function useDesktopNotifications(): void {
   const trpc = useTRPC();
   const navigate = useNavigate();
-  // React Query pauses interval polling in hidden tabs, which is when the user needs the notification.
+  const enabled = useSyncExternalStore(subscribeToDesktopNotificationsPreference, readDesktopNotificationsPreference);
+  // React Query pauses interval polling in hidden tabs, which is when the user needs the notification. Only a tab that can
+  // show one keeps polling there.
   const tasks = useQuery({
     ...trpc.tasks.list.queryOptions(),
     refetchInterval: POLL_MS,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: enabled && canNotify(),
   });
-  const enabled = useSyncExternalStore(subscribeToDesktopNotificationsPreference, readDesktopNotificationsPreference);
   const remembered = useRef<Set<string> | null>(null);
 
   useEffect(() => {
     if (!tasks.data) return;
     const previous = remembered.current;
     remembered.current = idsNeedingMe(tasks.data);
-    if (!enabled || !isNotificationSupported() || Notification.permission !== 'granted' || isWatchingBoard()) return;
+    if (!enabled || !canNotify() || isWatchingBoard()) return;
     newlyNeedingMe(previous, tasks.data).forEach((task) => notify(task, (path) => void navigate(path)));
   }, [tasks.data, enabled, navigate]);
 }
