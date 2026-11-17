@@ -1,5 +1,6 @@
 import { formatAnswers } from '@agent-board/shared';
 import type { Note, Task } from '@agent-board/shared';
+import { plainLine } from '../output/terminal.mts';
 import { START_MARKER, WAKE_MARKER, WATCH_MARKER } from '../task-rules.mts';
 import { eventsMessage, openWatchesLine } from '../watch/fence.mts';
 import type { OpenWatch } from '../watch/fence.mts';
@@ -183,4 +184,24 @@ export function boardRules(task: Task, options: { asAgent?: boolean } = {}): str
 /** Told to a resumed session whose directory is gone, ahead of the reply: it has to get back to its worktree itself. */
 export function goneDirNotice(gone: string, checkout: string): string {
   return `The directory this session last worked in, ${gone}, no longer exists on this machine (it was deleted, for example when its worktree was cleaned up). This run continues the same session in ${checkout}, the git checkout that held it. Anything in ${gone} that was not committed and pushed is lost. Before you change any files, get back to where you were working: if it was a git worktree, recreate it on its branch the way this repository creates worktrees (see its CLAUDE.md) and move into it, then check that the branch still has your last commits (locally or on the remote), and say in your next board comment which commit you continue from. If the branch is gone as well, say so with \`board comment\` and ask the user how to go on instead of working in this checkout.`;
+}
+
+const FORK_TITLE_CHARS = 200;
+
+/**
+ * What a fork's first run is told: where its conversation comes from, which task it is now, and that the directory it starts in
+ * is the parent's, ahead of the user's instructions. The parent's title is the user's text, shown on one line and cut.
+ */
+export function forkPrompt(
+  task: Pick<Task, 'id'>,
+  parent: { id: string; title: string },
+  cwd: string,
+  instructions: string,
+): string {
+  const title = JSON.stringify(Array.from(plainLine(parent.title)).slice(0, FORK_TITLE_CHARS).join(''));
+  return [
+    `This conversation was forked from board task ${parent.id} (${title}). That task continues separately. You now run as board task ${task.id}: use ${task.id} for every board command (board comment, board ask, board pr, board watch, board move), never ${parent.id}.`,
+    `The directory ${JSON.stringify(plainLine(cwd))} and the branch checked out in it belong to task ${parent.id}. Do not commit, switch branches or change files there. For code changes, create your own worktree and branch the way the repository says (see its CLAUDE.md).`,
+    `Your task:\n\n${instructions}`,
+  ].join('\n\n');
 }

@@ -5,7 +5,7 @@
 //
 //   field          context
 //   title          <origin>
-//   input          <origin>:<creator>, or with an agent <origin>:<creator>:agent:<name>
+//   input          <origin>:<creator>, then :fork:<parentId> for a fork, then :agent:<name> with an agent
 //   agent          <origin> (the name of the agent the task runs as)
 //   workdir        <origin>, or for a scheduled task also task:<id>:schedule:<scheduleId> (the worker's rewrite)
 //   pr             task:<id>:agent (a PR URL the task's agent reported; every PR of the task has this binding)
@@ -18,7 +18,9 @@
 //
 // An agent's name is in the context of the input as well as sealed on its own, so a board that drops or swaps the agent field
 // leaves a prompt that opens under no binding: the task is unreadable and never runs unrestricted. A row without an agent
-// has the context it always had.
+// has the context it always had. The task a fork was made from is in the context the same way, before the agent: a board that
+// adds, drops or swaps `fork_of` leaves a prompt that opens under no binding, so the task never runs, and a fork never runs as
+// anything but what it was made as.
 //
 // <origin> is task:<id> for a task, schedule:<id> for a schedule and for a task that is an occurrence of one (the server
 // copies the schedule's ciphertext into it); <creator> is who made the task: user, agent, or intake (a task of the removed built-in intake).
@@ -37,6 +39,7 @@ import {
   DIR_LABEL_RULE,
   isAgentName,
   isSafeDirLabel,
+  isSafeTaskId,
   isSafeWorkdir,
   NOTE_SUGGESTION_CHARS,
   notePreview,
@@ -73,9 +76,16 @@ export type Sealer = (binding: Binding, plaintext: string) => Promise<string>;
 /** Opens one value under its binding; undefined when it cannot be opened: plain text, another key, another binding, damage. */
 export type Opener = (binding: Binding, value: string) => Promise<string | undefined>;
 
-/** `agent` is the name of the agent the row runs as, when it has one. */
+/** `agent` is the name of the agent the row runs as, when it has one; `forkOf` the id of the task a task was forked from. */
 export type RowRef =
-  | { kind: 'task'; id: string; createdBy: TaskCreator; scheduleId: string | null; agent?: string | null }
+  | {
+      kind: 'task';
+      id: string;
+      createdBy: TaskCreator;
+      scheduleId: string | null;
+      agent?: string | null;
+      forkOf?: string | null;
+    }
   | { kind: 'schedule'; id: string; agent?: string | null };
 
 // The creator an occurrence has: the server makes it as the user's.
@@ -97,9 +107,21 @@ function agentOf(row: RowRef): string | null {
   return name;
 }
 
+/** The task a row was forked from, or null; an id that is not a task's cannot be sealed, and a schedule or an occurrence is never a fork. */
+function forkOf(row: RowRef): string | null {
+  const parent = row.kind === 'task' ? (row.forkOf ?? null) : null;
+  if (parent === null) return null;
+  if (!isSafeTaskId(parent)) throw new ContractError('the task a fork was made from must be a task id');
+  if (row.kind === 'task' && row.scheduleId !== null)
+    throw new ContractError('an occurrence of a schedule cannot be a fork');
+  return parent;
+}
+
 export function inputBinding(row: RowRef): Binding {
   const agent = agentOf(row);
-  const context = `${origin(row)}:${creatorOf(row)}`;
+  const parent = forkOf(row);
+  const creator = `${origin(row)}:${creatorOf(row)}`;
+  const context = parent === null ? creator : `${creator}:fork:${parent}`;
   return { field: 'input', context: agent === null ? context : `${context}:agent:${agent}` };
 }
 
@@ -493,13 +515,24 @@ async function openFirst(open: Opener, bindings: Binding[], value: string): Prom
   return undefined;
 }
 
+/** The input under its binding; a row that cannot have one (a fork link that is not a task id, or on an occurrence) has an unreadable input. */
+async function openInput(open: Opener, row: RowRef, value: string): Promise<string | undefined> {
+  try {
+    return await open(inputBinding(row), value);
+  } catch (error) {
+    if (error instanceof ContractError) return undefined;
+    throw error;
+  }
+}
+
 /**
  * Opens the title, input, directory and agent of a task or schedule. A field that cannot be opened under its binding (or a
  * directory that is not a safe absolute path, or an agent name that is not an agent's) is listed in `unreadable` and replaced:
  * the title by a placeholder, the input by an empty prompt, the directory and the agent by none. A task with an unreadable
  * input, directory or agent must never be run. The input is opened under the agent the wire names, so an unreadable agent
  * leaves it unreadable too, and an input sealed for an agent the wire no longer names does not open at all. `row.agent` is
- * ignored: the wire is the source.
+ * ignored: the wire is the source. `row.forkOf` is a clear value of the wire, so the caller takes it from there, and the input
+ * opens only under exactly that fork link.
  */
 export async function openFields(
   open: Opener,
@@ -511,7 +544,7 @@ export async function openFields(
   const agentReadable = wire.agent == null || agent !== null;
   const [title, input, workdir] = await Promise.all([
     open(titleBinding(row), wire.title),
-    agentReadable ? open(inputBinding({ ...row, agent }), wire.input) : undefined,
+    agentReadable ? openInput(open, { ...row, agent }, wire.input) : undefined,
     wire.workdir == null ? null : openFirst(open, workdirOpenBindings(row), wire.workdir),
   ]);
   const unreadable: UnreadableField[] = [];

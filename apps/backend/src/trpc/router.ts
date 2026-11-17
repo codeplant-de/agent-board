@@ -28,6 +28,7 @@ import {
   answer,
   applyPolish,
   configureTask,
+  forkTask,
   getTask,
   listTasksWithLastNote,
   type LastNote,
@@ -216,6 +217,36 @@ const tasksRouter = router({
       });
       return boardTask(ctx.db, row);
     }),
+
+  /**
+   * A new task, in Todo, that continues a copy of the session of `parentId` with its own prompt. The server takes the machine, the
+   * model and the priority from the parent; the browser seals the prompt for the fork link, and the parent's directory and agent
+   * for the new task.
+   */
+  fork: procedure
+    .input(
+      z.object({
+        id,
+        parentId: id,
+        title: sealed('title', 'title'),
+        input: sealed('input', 'input'),
+        workdir: sealed('workdir', 'directory'),
+        agent: sealed('agent', 'agent').optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) =>
+      boardTask(
+        ctx.db,
+        await forkTask(ctx.db, {
+          id: input.id,
+          parentId: input.parentId,
+          title: input.title,
+          input: input.input,
+          workdir: input.workdir,
+          ...(input.agent === undefined ? {} : { agent: input.agent }),
+        }),
+      ),
+    ),
 
   answer: procedure
     .input(

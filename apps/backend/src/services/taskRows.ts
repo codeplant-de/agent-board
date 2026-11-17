@@ -21,13 +21,14 @@ export async function getTask(db: DbOrTx, id: string): Promise<TaskRow> {
 }
 
 /**
- * New task at the bottom of its status. A known dedupe key returns the existing task instead. The id is the caller's (a client
- * seals the task's fields against it, the server makes one for a schedule's occurrence); one that is taken, by anyone, is a conflict.
+ * New task at the bottom of its status, or at the top for a fork, which the user started by hand. A known dedupe key returns the
+ * existing task instead. The id is the caller's (a client seals the task's fields against it, the server makes one for a
+ * schedule's occurrence); one that is taken, by anyone, is a conflict. `extra` is what no draft of a machine can set.
  */
 export async function insertTask(
   tx: DbOrTx,
   draft: Omit<WireTaskDraft, 'id'> & { id?: string },
-  extra: { scheduleId?: string } = {},
+  extra: { scheduleId?: string; forkOf?: string } = {},
 ): Promise<{ row: TaskRow; created: boolean }> {
   // A follow-up is as pressing as the task it came from, unless its creator says otherwise.
   const parent = draft.parentId === undefined ? undefined : await getTask(tx, draft.parentId);
@@ -51,10 +52,11 @@ export async function insertTask(
       head: draft.head ?? null,
       notBefore: draft.notBefore ?? null,
       scheduleId: extra.scheduleId ?? null,
+      forkOf: extra.forkOf ?? null,
       status,
       priority: draft.priority ?? parent?.priority ?? DEFAULT_PRIORITY,
       model: draft.model ?? null,
-      position: await edgePosition(tx, status, 'bottom'),
+      position: await edgePosition(tx, status, extra.forkOf === undefined ? 'bottom' : 'top'),
       dedupeKey: draft.dedupeKey ?? null,
       parentId: draft.parentId ?? null,
       createdBy: draft.createdBy ?? 'user',

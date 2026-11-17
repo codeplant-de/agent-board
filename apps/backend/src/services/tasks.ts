@@ -76,6 +76,7 @@ export function toTask(row: TaskRow, prs: readonly TaskPrRow[] = [], noteCount?:
     sessionId: row.sessionId,
     workdir: row.workdir,
     ...(row.agent === null ? {} : { agent: row.agent }),
+    ...(row.forkOf === null ? {} : { forkOf: row.forkOf }),
     pr: newest?.pr ?? null,
     prState: newest === undefined ? row.prState : newest.state,
     prs: prs.map(({ id, pr, state }) => ({ id, pr, state })),
@@ -192,6 +193,53 @@ export async function listTasksWithLastNote(
 /** New task at the bottom of its status. A known dedupe key returns the existing task instead. */
 export async function addTask(db: DbOrTx, draft: WireTaskDraft): Promise<{ row: TaskRow; created: boolean }> {
   return db.transaction((tx) => insertTask(tx, draft));
+}
+
+export interface ForkRequest {
+  /** The new task's id, which its sealed fields are bound to. */
+  id: string;
+  parentId: string;
+  title: string;
+  input: string;
+  /** The parent's directory, sealed for the new task. */
+  workdir: string;
+  /** The parent's agent, sealed for the new task; present exactly when the parent has one. */
+  agent?: string;
+}
+
+/**
+ * A new task in Todo whose first run continues a copy of the parent's Claude session, on the parent's machine, with the parent's
+ * model and agent. The parent stays as it is. Only the user forks: the prompt is bound to the fork link by the browser, so a
+ * server cannot make one up, and a machine's `add-task` has no way to name a parent to fork.
+ */
+export async function forkTask(db: DbOrTx, request: ForkRequest): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const parent = await getTask(tx, request.parentId);
+    if (parent.proposed || parent.createdBy === 'agent')
+      throw new AppError('FORBIDDEN', 'An agent proposed this task; start it first.');
+    if (parent.closed) throw new AppError('CONFLICT', 'A closed task cannot be forked.');
+    if (parent.sessionId === null || parent.machine === null)
+      throw new AppError('CONFLICT', 'This task has no Claude session on a machine yet, so there is nothing to fork.');
+    if ((request.agent === undefined) !== (parent.agent === null))
+      throw new AppError('BAD_REQUEST', 'A fork runs as the agent of the task it was forked from, and as no other.');
+    const { row } = await insertTask(
+      tx,
+      {
+        id: request.id,
+        title: request.title,
+        input: request.input,
+        status: 'todo',
+        createdBy: 'user',
+        parentId: parent.id,
+        machine: parent.machine,
+        workdir: request.workdir,
+        ...(parent.model === null ? {} : { model: parent.model }),
+        ...(request.agent === undefined ? {} : { agent: request.agent }),
+      },
+      { forkOf: parent.id },
+    );
+    return row;
+  });
 }
 
 type TaskValues = Partial<typeof tasks.$inferInsert>;

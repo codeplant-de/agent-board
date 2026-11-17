@@ -153,6 +153,8 @@ export interface PolishTarget {
   createdBy: TaskCreator;
   /** The agent the task runs as, null for none: its prompt is sealed under it too, so it must be stated. */
   agent: string | null;
+  /** The task it was forked from, if it is a fork: its prompt is sealed under the link too. */
+  forkOf?: string;
   unreadable: UnreadableField[];
 }
 
@@ -181,7 +183,14 @@ export async function sealApply(
   // The watches are only shown, so a list that does not open leaves the task readable.
   if (target.unreadable.some((field) => field !== 'watches'))
     throw new InputError('This task cannot be read, so what it says now could not be kept.');
-  const row: RowRef = { kind: 'task', id: target.id, createdBy: 'user', scheduleId: null, agent: target.agent };
+  const row: RowRef = {
+    kind: 'task',
+    id: target.id,
+    createdBy: 'user',
+    scheduleId: null,
+    agent: target.agent,
+    forkOf: target.forkOf ?? null,
+  };
   const seal = sealerFor(keys);
   return {
     id: target.id,
@@ -199,6 +208,7 @@ export interface ConfigureTarget {
   id: string;
   createdBy: TaskCreator;
   scheduleId: string | null;
+  forkOf?: string;
 }
 
 /** The settings to change; absent leaves one alone. A null model is claude's default, a null place is no directory and no machine. */
@@ -213,7 +223,13 @@ export async function sealConfigure(
   options: { task: ConfigureTarget } & Configuration,
 ): Promise<RouterInputs['tasks']['configure']> {
   const { task, model, place } = options;
-  const row: RowRef = { kind: 'task', id: task.id, createdBy: task.createdBy, scheduleId: task.scheduleId };
+  const row: RowRef = {
+    kind: 'task',
+    id: task.id,
+    createdBy: task.createdBy,
+    scheduleId: task.scheduleId,
+    forkOf: task.forkOf ?? null,
+  };
   return {
     id: task.id,
     ...(model === undefined ? {} : { model }),
@@ -228,5 +244,72 @@ export async function sealConfigure(
                   workdir: await checked(() => sealWorkdir(sealerFor(keys), row, place.workdir)),
                 },
         }),
+  };
+}
+
+/** What forking a task needs of it as the page shows it. */
+export interface ForkSource {
+  id: string;
+  status: Status;
+  closed: boolean;
+  createdBy: TaskCreator;
+  machine: string | null;
+  sessionId: string | null;
+  workdir: string | null;
+  /** The agent it runs as, which the fork keeps. */
+  agent?: string | null;
+  unreadable: UnreadableField[];
+}
+
+/** Whether the task page offers Fork: a task with a Claude session on a machine, that is not closed and not an agent's proposal. */
+export function canFork(task: Pick<ForkSource, 'sessionId' | 'machine' | 'closed' | 'createdBy'>): boolean {
+  return task.sessionId !== null && task.machine !== null && !task.closed && task.createdBy !== 'agent';
+}
+
+/** Why a task cannot be forked, or undefined when it can: only a task with a Claude session on a machine that is not closed or an agent's proposal. */
+export function forkProblem(task: ForkSource): string | undefined {
+  if (task.createdBy === 'agent') return 'An agent proposed this task; start it first.';
+  if (task.closed) return 'A closed task cannot be forked.';
+  if (task.sessionId === null || task.machine === null)
+    return 'This task has no Claude session on a machine yet, so there is nothing to fork.';
+  if (task.workdir === null || task.unreadable.some((field) => field === 'workdir' || field === 'agent'))
+    return 'This task’s directory or agent cannot be read, and a fork takes over both.';
+  return undefined;
+}
+
+/**
+ * Forking is the user's sealed act: the instructions are sealed for the new task, its fork link and the parent's agent, and the
+ * parent's directory for the new task. The board takes the machine and the model from the parent itself.
+ */
+export async function sealFork(
+  keys: Keys,
+  options: { parent: ForkSource; title: string; input: string },
+): Promise<RouterInputs['tasks']['fork']> {
+  const { parent } = options;
+  const problem = forkProblem(parent);
+  if (problem !== undefined || parent.workdir === null) throw new InputError(problem ?? 'This task has no directory.');
+  const input = options.input.trim();
+  if (input === '') throw new InputError('Write the instructions first');
+  const title = options.title.trim() || defaultTitle(input);
+  const id = newTaskId();
+  const row: RowRef = {
+    kind: 'task',
+    id,
+    createdBy: 'user',
+    scheduleId: null,
+    agent: parent.agent ?? null,
+    forkOf: parent.id,
+  };
+  const sealed = await checked(() =>
+    sealFields(sealerFor(keys), row, { title, input, workdir: parent.workdir ?? undefined }),
+  );
+  if (sealed.workdir === undefined) throw new InputError('The directory could not be sealed.');
+  return {
+    id,
+    parentId: parent.id,
+    title: sealed.title,
+    input: sealed.input,
+    workdir: sealed.workdir,
+    ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
   };
 }

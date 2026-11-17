@@ -9,6 +9,7 @@ import {
   decideOutcome,
   expandRule,
   isRunOver,
+  planFork,
   planRun,
   pluginPlaceholders,
   supervise,
@@ -497,6 +498,114 @@ test('a run resumes only a session this machine started, and only with a reply i
   const unreadable = [questionNote, makeNote('', at(2), { author: 'user', unreadable: true })];
   const blocked = planRun(resume(SESSION), unreadable, options());
   assert.ok(blocked.kind === 'blocked' && /Re-run fresh/.test(blocked.reason));
+});
+
+const FRESH_RUN = { kind: 'fresh', sessionId: OTHER_SESSION } as const;
+const PARENT = { id: 'par', title: 'Parent work', sessionId: SESSION.toUpperCase() };
+
+test('a fork that starts over continues a copy of its parent’s session, and a task that is no fork starts fresh', () => {
+  const fork = task({ id: 'f', forkOf: 'par' });
+  assert.deepEqual(planFork(FRESH_RUN, fork, PARENT, options()), {
+    kind: 'fork',
+    sessionId: OTHER_SESSION,
+    fromSessionId: SESSION,
+    parent: { id: 'par', title: 'Parent work' },
+  });
+  assert.deepEqual(planFork({ ...FRESH_RUN, thread: 'see the thread' }, fork, PARENT, options()), {
+    kind: 'fork',
+    sessionId: OTHER_SESSION,
+    fromSessionId: SESSION,
+    parent: { id: 'par', title: 'Parent work' },
+    thread: 'see the thread',
+  });
+  assert.equal(planFork(FRESH_RUN, task({ id: 'f' }), PARENT, options()), FRESH_RUN);
+});
+
+test('a fork is blocked without a parent, without its session, and when this machine did not start that session', () => {
+  const fork = task({ id: 'f', forkOf: 'par' });
+  const reason = (parent: Parameters<typeof planFork>[2], own = true) => {
+    const plan = planFork(FRESH_RUN, fork, parent, options(OTHER_SESSION, own));
+    assert.equal(plan.kind, 'blocked');
+    return plan.kind === 'blocked' ? plan.reason : '';
+  };
+  assert.match(reason(undefined), /forked from task par, which is not on the board any more/);
+  assert.match(reason({ ...PARENT, sessionId: null }), /no Claude session now/);
+  assert.match(reason(PARENT, false), /whose session this machine did not start/);
+});
+
+test('the own-session check of a fork asks about the parent’s task and session', () => {
+  const asked: [string, string][] = [];
+  planFork(FRESH_RUN, task({ id: 'f', forkOf: 'par' }), PARENT, {
+    isOwnSession: (taskId, sessionId) => {
+      asked.push([taskId, sessionId]);
+      return true;
+    },
+  });
+  assert.deepEqual(asked, [['par', SESSION.toUpperCase()]]);
+});
+
+const FORK_RUN = {
+  kind: 'fork',
+  sessionId: OTHER_SESSION,
+  fromSessionId: SESSION,
+  parent: { id: 'par', title: 'Parent work' },
+} as const;
+
+test('a fork runs the parent’s session into a copy with its own id, in the task’s directory, told who it is now', () => {
+  const plan = invoke(
+    { id: 'abc', input: 'look into the flaky test', forkOf: 'par', machine: 'here', workdir: '/work/cosuno' },
+    FORK_RUN,
+  );
+  assert.ok(plan.ok);
+  const { args, cwd, prompt } = plan.invocation;
+  assert.deepEqual(args.slice(0, 4), ['-p', `--resume=${SESSION}`, '--fork-session', `--session-id=${OTHER_SESSION}`]);
+  assert.equal(cwd, '/work/cosuno');
+  assert.match(prompt, /forked from board task par \("Parent work"\)/);
+  assert.match(prompt, /You now run as board task abc: use abc for every board command .*never par/);
+  assert.match(prompt, /directory "\/work\/cosuno" and the branch checked out in it belong to task par/);
+  assert.match(prompt, /Do not commit, switch branches or change files there/);
+  assert.ok(prompt.endsWith('Your task:\n\nlook into the flaky test'), prompt);
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'auto');
+});
+
+test('a fork keeps what a fresh run adds to its prompt, and what a resume does not carry', () => {
+  const plan = invoke({ id: 'abc', input: 'go', forkOf: 'par', workdir: '/w' }, { ...FORK_RUN, thread: 'THREAD' });
+  assert.ok(plan.ok);
+  assert.ok(plan.invocation.prompt.endsWith('Your task:\n\ngo\n\nTHREAD'));
+});
+
+test('a fork’s notice shows the parent’s title and directory on one line, cut and quoted', () => {
+  const run = { ...FORK_RUN, parent: { id: 'par', title: `a "quoted"\nsecond\u001b[31m line ${'x'.repeat(300)}` } };
+  const plan = invoke({ id: 'abc', input: 'go', forkOf: 'par', workdir: '/w/a b' }, run);
+  assert.ok(plan.ok);
+  const [notice] = plan.invocation.prompt.split('\n\n');
+  assert.ok(!notice?.includes('\n'));
+  assert.ok(!plan.invocation.prompt.includes('\u001b'));
+  assert.ok(!plan.invocation.prompt.includes('x'.repeat(250)));
+  assert.match(plan.invocation.prompt, /directory "\/w\/a b"/);
+});
+
+test('a fork needs a prompt, and neither of its session ids may be anything but a UUID', () => {
+  const refused = (run: Parameters<typeof invoke>[1], input = 'go') => {
+    const plan = invoke({ id: 'abc', input, forkOf: 'par', workdir: '/w' }, run);
+    assert.ok(!plan.ok);
+    return plan.reason;
+  };
+  assert.match(refused(FORK_RUN, '  '), /no prompt/);
+  assert.match(refused({ ...FORK_RUN, fromSessionId: '--dangerously-skip-permissions' }), /not a UUID/);
+  assert.match(refused({ ...FORK_RUN, sessionId: '--x' }), /not a UUID/);
+});
+
+test('a fork resumes its own session after its first run, with the reply, and never forks again', () => {
+  const replied = [questionNote, makeNote('go on', at(2), { author: 'user' })];
+  const forked = task({ id: 'f', forkOf: 'par', next: 'resume', sessionId: OTHER_SESSION });
+  const plan = planRun(forked, replied, options());
+  assert.equal(plan.kind, 'resume');
+  assert.equal(plan.kind === 'resume' ? plan.sessionId : '', OTHER_SESSION);
+  const invoked = invoke({ ...forked }, plan);
+  assert.ok(invoked.ok);
+  assert.deepEqual(invoked.invocation.args.slice(0, 2), ['-p', `--resume=${OTHER_SESSION}`]);
+  assert.ok(!invoked.invocation.args.includes('--fork-session'));
 });
 
 // `claude -p <prompt>` would take the prompt as an operand, and a sealed prompt is whatever the user (or an agent's proposal the

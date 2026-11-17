@@ -2,7 +2,14 @@ import { isModelName, isSafeWorkdir, isSessionId, parsePrUrl, prUrlIn } from '@a
 import type { Note, Task } from '@agent-board/shared';
 import type { AgentConfig } from '../config/config.mts';
 import { agentFor, neverRun, removedIntakeProblem } from '../task-rules.mts';
-import { boardRules, buildResumePrompt, freshThreadBlock, userReply, writtenSincePreviousRun } from './prompts.mts';
+import {
+  boardRules,
+  buildResumePrompt,
+  forkPrompt,
+  freshThreadBlock,
+  userReply,
+  writtenSincePreviousRun,
+} from './prompts.mts';
 import type { ResumeWatches } from './prompts.mts';
 
 // `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives the one installed `<plugin>@*`, such as
@@ -69,9 +76,26 @@ export function expandRule(rule: string, home: string, pluginRoots: Record<strin
     .replace(PLUGIN_PLACEHOLDER, (match, name: string) => pluginRoots[name] ?? match);
 }
 
-// What the worker starts: a new Claude session, or the task's last one with the user's reply; or why it starts nothing.
+export interface FreshRun {
+  kind: 'fresh';
+  sessionId: string;
+  thread?: string;
+}
+
+// The task a fork was made from, as the board has it.
+export type ForkParent = Pick<Task, 'id' | 'title' | 'sessionId'>;
+
+// What the worker starts: a new Claude session, a copy of another task's session (a fork), or the task's last one with the
+// user's reply; or why it starts nothing. A fork's `sessionId` is the copy's own, and `fromSessionId` the parent's.
 export type RunPlan =
-  | { kind: 'fresh'; sessionId: string; thread?: string }
+  | FreshRun
+  | {
+      kind: 'fork';
+      sessionId: string;
+      fromSessionId: string;
+      parent: Pick<ForkParent, 'id' | 'title'>;
+      thread?: string;
+    }
   | { kind: 'resume'; sessionId: string; prompt: string }
   | { kind: 'blocked'; reason: string };
 
@@ -110,6 +134,36 @@ export function planRun(task: Task, notes: Note[], options: RunPlanOptions): Run
     return { kind: 'blocked', reason: UNREADABLE_NOTE_REASON };
   const thread = freshThreadBlock(task, notes);
   return { kind: 'fresh', sessionId: options.newSessionId(), ...(thread === undefined ? {} : { thread }) };
+}
+
+/**
+ * A start-over of a fork continues a copy of the session of the task it was forked from, and that session is the board's word
+ * for it: the run is blocked unless this machine started that session for that task, like a resume. `parent` is the task the
+ * board answered for the fork link; undefined when there is none.
+ */
+export function planFork(
+  fresh: FreshRun,
+  task: Pick<Task, 'forkOf'>,
+  parent: ForkParent | undefined,
+  options: Pick<RunPlanOptions, 'isOwnSession'>,
+): RunPlan {
+  const { forkOf } = task;
+  if (forkOf === undefined) return fresh;
+  const blocked = (why: string): RunPlan => ({
+    kind: 'blocked',
+    reason: `This task was forked from task ${forkOf}, ${why}, so there is no session to continue and the run was not started. Close it, or fork the task you want to continue again.`,
+  });
+  if (parent === undefined) return blocked('which is not on the board any more');
+  if (parent.sessionId === null) return blocked('which has no Claude session now (it never ran, or was re-run fresh)');
+  if (!options.isOwnSession(parent.id, parent.sessionId))
+    return blocked('whose session this machine did not start, and a fork runs on the machine of its parent');
+  return {
+    kind: 'fork',
+    sessionId: fresh.sessionId,
+    fromSessionId: parent.sessionId.toLowerCase(),
+    parent: { id: parent.id, title: parent.title },
+    ...(fresh.thread === undefined ? {} : { thread: fresh.thread }),
+  };
 }
 
 /**
@@ -241,8 +295,9 @@ export function buildInvocation(input: {
   if (agent.kind === 'missing')
     return { ok: false, reason: `The task runs as an agent that is not defined on this machine: ${agent.reason}.` };
   if (input.run.kind === 'blocked') return { ok: false, reason: input.run.reason };
-  if (input.run.kind === 'fresh' && prompt === '') return { ok: false, reason: 'The task has no prompt.' };
-  if (!isSessionId(input.run.sessionId)) return { ok: false, reason: 'The session id is not a UUID.' };
+  if (input.run.kind !== 'resume' && prompt === '') return { ok: false, reason: 'The task has no prompt.' };
+  if (!isSessionId(input.run.sessionId) || (input.run.kind === 'fork' && !isSessionId(input.run.fromSessionId)))
+    return { ok: false, reason: 'The session id is not a UUID.' };
   if (task.workdir !== null && !isSafeWorkdir(task.workdir))
     return { ok: false, reason: 'The task directory is not an absolute path.' };
   if (task.model !== null && !isModelName(task.model))
@@ -258,16 +313,22 @@ export function buildInvocation(input: {
     input.hookCommand === undefined
       ? {}
       : { hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: input.hookCommand }] }] } };
-  // One argument each, so an id can never be read as a flag of its own.
+  // One argument each, so an id can never be read as a flag of its own. A fork resumes the parent's session into a copy that
+  // has the new id, and leaves the parent's as it is.
   const session =
-    input.run.kind === 'fresh' ? `--session-id=${input.run.sessionId}` : `--resume=${input.run.sessionId}`;
+    input.run.kind === 'resume'
+      ? [`--resume=${input.run.sessionId}`]
+      : input.run.kind === 'fork'
+        ? [`--resume=${input.run.fromSessionId}`, '--fork-session', `--session-id=${input.run.sessionId}`]
+        : [`--session-id=${input.run.sessionId}`];
+  const startPrompt = input.run.kind === 'fork' ? forkPrompt(task, input.run.parent, cwd, prompt) : prompt;
   const promptText =
-    input.run.kind === 'fresh'
-      ? [prompt, input.run.thread].filter((part) => part !== undefined).join('\n\n')
-      : input.run.prompt;
+    input.run.kind === 'resume'
+      ? input.run.prompt
+      : [startPrompt, input.run.thread].filter((part) => part !== undefined).join('\n\n');
   const args = [
     '-p',
-    session,
+    ...session,
     // One argument, like the session id.
     ...(task.model === null ? [] : [`--model=${task.model}`]),
     // Every event as a JSON line: the worker keeps a readable log and sends the transcript to the board.

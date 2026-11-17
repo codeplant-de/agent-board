@@ -78,6 +78,8 @@ export interface TaskShapes {
   head: string | null;
   scheduleId: string | null;
   parentId: string | null;
+  /** The task this one was forked from; absent for any other task. */
+  forkOf?: string;
   // The fields that did not have the shape the board promises, for the page to say so.
   invalid: string[];
 }
@@ -96,6 +98,7 @@ export function checkTaskShapes(wire: {
   head: string | null;
   scheduleId: string | null;
   parentId?: string | null;
+  forkOf?: string | null;
 }): TaskShapes {
   safeId(wire.id, 'task id');
   const status = guarded(wire.status, isStatus, NEUTRAL_STATUS);
@@ -130,6 +133,7 @@ export function checkTaskShapes(wire: {
     head: head.value,
     scheduleId: safeNullableId(wire.scheduleId, 'schedule id'),
     parentId: safeNullableId(wire.parentId, 'parent id'),
+    ...(wire.forkOf == null ? {} : { forkOf: safeId(wire.forkOf, 'fork id') }),
     invalid: fields.filter(([, { invalid }]) => invalid).map(([name]) => name),
   };
 }

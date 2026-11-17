@@ -225,7 +225,7 @@ A task is bound to a directory on the machine that ran it.
 
 ### A fresh run
 
-A fresh run starts in the task's own directory. That is where it was scheduled from with `board schedule`, the directory chosen in the New task form, or where the proposing agent worked.
+A fresh run starts in the task's own directory. That is where it was scheduled from with `board schedule`, the directory chosen in the New task form, or where the proposing agent worked. A [fork](usage.md#forking-a-task) has its parent's directory as its own, as the parent had it when it was forked, and the first run starts there. The directory must be a listed one, as for any task.
 
 A task without a directory of its own starts in the first of these that applies:
 
@@ -555,6 +555,17 @@ in the task's directory (see [Where a task runs](#where-a-task-runs)).
 - A task that names a model adds `--model=<model>` as one argument, on a fresh run and on a resume. Without one, `claude` uses its own default. A name that does not have the shape of a model name refuses the run.
 
 A resumed run is `claude -p --resume=<session>` with the same flags and your reply on stdin (see [Ask and resume](usage.md#ask-and-resume)).
+
+The first run of a [fork](usage.md#forking-a-task) is
+
+```text
+claude -p --resume=<parent's session> --fork-session --session-id=<new uuid> <the same flags>
+```
+
+Claude Code copies the parent's session into a new one with the given id and leaves the parent's as it is. It works from any directory. The worker takes the parent from the board (`forkOf`) and blocks the run unless the parent has a session that this machine started for it. The cases are a parent that is gone, has none or ran elsewhere, and the reason goes to the task, which waits in Needs me. The new id is recorded as the fork's own session, as for a fresh run, so the next run is a plain resume.
+
+- The prompt on stdin is a notice, then `Your task:` and the instructions. The notice says that the conversation was forked from the parent (its id and title), that the agent now runs as the fork's task id and must use it for every `board` command, and that the directory and its branch belong to the parent, so it must not commit, switch branches or change files there and makes its own worktree instead. The parent's title is shown on one line and cut.
+- A start-over of a fork forks again: Re-run fresh does it, and so does a run that wants to resume with nothing to say to the session.
 
 ### The board's rules
 

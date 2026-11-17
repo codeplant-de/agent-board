@@ -30,27 +30,28 @@ The operator can read, swap, replay and forge anything in the database and in AP
 
 ## Sealing contexts
 
-| Field                        | Context                                                               | Written by                                                                                                                                      |
-| ---------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `title`                      | `<origin>`                                                            | the client that makes the task or schedule                                                                                                      |
-| `input`                      | `<origin>:<creator>`, with an agent `<origin>:<creator>:agent:<name>` | the same client, which states the creator and the agent itself                                                                                  |
-| `agent`                      | `<origin>`                                                            | the same client. The value is the agent's name.                                                                                                 |
-| `workdir`                    | `<origin>`, for an occurrence also `task:<id>:schedule:<scheduleId>`  | the same client, and the worker when it rewrites an occurrence's directory                                                                      |
-| `workdir` (home)             | none of its own                                                       | the server copies the `workdir` envelope, see [A task keeps the directory it was created with](#a-task-keeps-the-directory-it-was-created-with) |
-| `pr`                         | `task:<id>:agent`                                                     | the agent's CLI (`board pr`), once for each PR                                                                                                  |
-| `watches`                    | `task:<id>:agent`                                                     | the machine's CLI (`board watch`, the watch unit, dispatch), one document for all the task's watches                                            |
-| `machine.dirs`               | `machine:<name>`                                                      | the machine's CLI (`board dirs`, dispatch)                                                                                                      |
-| `machine.catalog`            | `machine:<name>`                                                      | the machine's CLI (dispatch)                                                                                                                    |
-| `machine.usage`              | `machine:<name>`                                                      | the machine's CLI (dispatch)                                                                                                                    |
-| `note.body`, `note.preview`  | `note:<taskId>:<author>:<kind>`                                       | the client of that author                                                                                                                       |
-| `note.suggestion`            | `note:<taskId>:agent:comment`                                         | the agent's CLI                                                                                                                                 |
-| `note.questions`             | `note:<taskId>:agent:question`                                        | the agent's CLI                                                                                                                                 |
-| `note.body` of a polish note | `note:<taskId>:agent:polish`                                          | the agent's CLI (`board polish`)                                                                                                                |
-| `note.answers`               | `note:<taskId>:user:answer`                                           | the user's browser                                                                                                                              |
-| `tr.data`, `tr.output`       | `<taskId>:<runId>:<seq>`                                              | the worker                                                                                                                                      |
+| Field                        | Context                                                                                      | Written by                                                                                                                                      |
+| ---------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `title`                      | `<origin>`                                                                                   | the client that makes the task or schedule                                                                                                      |
+| `input`                      | `<origin>:<creator>`, then for a fork `:fork:<parentId>`, then with an agent `:agent:<name>` | the same client, which states the creator, the fork parent and the agent itself                                                                 |
+| `agent`                      | `<origin>`                                                                                   | the same client. The value is the agent's name.                                                                                                 |
+| `workdir`                    | `<origin>`, for an occurrence also `task:<id>:schedule:<scheduleId>`                         | the same client, and the worker when it rewrites an occurrence's directory                                                                      |
+| `workdir` (home)             | none of its own                                                                              | the server copies the `workdir` envelope, see [A task keeps the directory it was created with](#a-task-keeps-the-directory-it-was-created-with) |
+| `pr`                         | `task:<id>:agent`                                                                            | the agent's CLI (`board pr`), once for each PR                                                                                                  |
+| `watches`                    | `task:<id>:agent`                                                                            | the machine's CLI (`board watch`, the watch unit, dispatch), one document for all the task's watches                                            |
+| `machine.dirs`               | `machine:<name>`                                                                             | the machine's CLI (`board dirs`, dispatch)                                                                                                      |
+| `machine.catalog`            | `machine:<name>`                                                                             | the machine's CLI (dispatch)                                                                                                                    |
+| `machine.usage`              | `machine:<name>`                                                                             | the machine's CLI (dispatch)                                                                                                                    |
+| `note.body`, `note.preview`  | `note:<taskId>:<author>:<kind>`                                                              | the client of that author                                                                                                                       |
+| `note.suggestion`            | `note:<taskId>:agent:comment`                                                                | the agent's CLI                                                                                                                                 |
+| `note.questions`             | `note:<taskId>:agent:question`                                                               | the agent's CLI                                                                                                                                 |
+| `note.body` of a polish note | `note:<taskId>:agent:polish`                                                                 | the agent's CLI (`board polish`)                                                                                                                |
+| `note.answers`               | `note:<taskId>:user:answer`                                                                  | the user's browser                                                                                                                              |
+| `tr.data`, `tr.output`       | `<taskId>:<runId>:<seq>`                                                                     | the worker                                                                                                                                      |
 
 - `<origin>` is `task:<id>` for a task. It is `schedule:<id>` for a schedule and for a task that is an occurrence of one. The server copies the schedule's ciphertext into each occurrence, so the occurrence opens against its schedule's id.
 - `<creator>` is `user`, `agent` or `intake`. `intake` exists only on tasks of the removed built-in intake. An occurrence's creator is `user`.
+- `<parentId>` is the task a fork was made from (`fork_of`). Only a task of the user's has one; a schedule and its occurrences never do.
 - In `pr`, `watches` and in a polish note, `<id>` and `<taskId>` are the task the agent runs. The sealed text of a polish note is `{"target", "title", "prompt"}`, where `target` is the task it polishes.
 - The three machine documents are one JSON document each:
   - `machine.dirs` is `{"dirs":[{"path":…,"label":…}]}`, with `label` only when the directory has one.
@@ -149,6 +150,34 @@ A CLI that does not know the field computes the prompt's context without the nam
 - `board schedule` and the other commands refused inside a run rely on `AGENT_BOARD_TASK` being set. What stops an agent from running `env -u AGENT_BOARD_TASK board schedule` is that agent's own tool lists.
 - The name is the only link to the agent's definition, which lives on each machine. Machines that should behave alike must define agents of the same name the same way.
 
+### Forks
+
+A fork is a task whose first run continues a copy of another task's Claude session, with the user's instructions as its prompt (see [Forking a task](usage.md#forking-a-task)). The link to the parent, `fork_of`, is a clear column, so the server could move it. The prompt is therefore bound to it, in the same way as the agent.
+
+**The mechanism.** The browser seals the instructions under `<origin>:<creator>:fork:<parentId>`. With an agent the order is fixed, link first: `<origin>:<creator>:fork:<parentId>:agent:<name>`. A client opens the prompt under the `forkOf` the board shows. When the board added, dropped or swapped `forkOf`, the prompt opens under no binding, the task is unreadable, and the worker never starts it.
+
+What that stops:
+
+- **A dropped link.** The instructions were written for a conversation that holds the parent's context. Run without it, in the parent's directory, they would do something else than the user meant.
+- **An added link.** A task of the user's would continue another task's conversation, with everything that conversation knows and holds in its context. The user asked for nothing of the kind.
+- **A swapped link.** The instructions would continue a different conversation than the one the user forked.
+- **A made-up fork.** A prompt can only be sealed for a fork by a client that holds the key. The server cannot turn a task into a fork, and nothing an agent sends can: `add-task` takes no `forkOf`, and an agent's draft is sealed for the creator `agent`.
+
+A fork keeps the restrictions of its parent. The browser seals the parent's agent name for the new task, and the context above carries it, so a fork never lifts an agent's tool lists. The board also refuses a fork that names an agent the parent lacks, or none where the parent has one.
+
+**What the worker still checks.** The link only says which task the user forked from. The session to copy is the parent's, as the board names it in the clear, and it is held to the rule of [Session ids from the server](#session-ids-from-the-server): the worker continues it only when this machine started it for that parent task. A fork whose parent is gone, has no session or ran elsewhere is blocked and goes to Needs me with the reason. The copy gets a new session id that the worker records for the fork, so the fork resumes its own session from then on.
+
+**What a writer must state.**
+
+- Whoever seals a new prompt for a fork must state the link: `patch.seal.forkOf` is required, with `null` for none, and the browser's Polish prompt passes it on. A prompt sealed without the link of a fork does not open.
+- Nothing changes the link of an existing task. It is written once, when the fork is made.
+
+**Limits.**
+
+- A CLI that does not know the field computes the prompt's context without the link. It cannot open the prompt, so it never runs a fork: its dispatcher logs `SKIP <id> cannot decrypt its input` and the task waits in Todo. Update the CLI of the machine (see [Upgrading](setup.md#forking-a-task-cli-0250)).
+- The user's instructions and the parent's title reach the agent. The title is the user's own text and is shown to the agent on one line, cut.
+- The copy holds what the parent's conversation held, including what the parent read of untrusted text. That is what forking is for, and it runs under the same agent or settings as the parent.
+
 ### Relabelled notes
 
 A note is bound to its author and kind. An agent note, which can quote an untrusted PR or a log tail, cannot be served back as "the user replied". A system note cannot be served as an agent's.
@@ -185,7 +214,7 @@ The browser seals the questions it showed together with the answers in one envel
 
 ### Session ids from the server
 
-A session id is a UUID or nothing. The worker resumes only the session this machine started for the task's newest fresh run. The record is `<state dir>/sessions/<task>` and holds one id.
+A session id is a UUID or nothing. The worker resumes only the session this machine started for the task's newest fresh run. A fork's first run copies the parent's session under the same rule: it must be the one this machine started for the parent task. The record is `<state dir>/sessions/<task>` and holds one id.
 
 Any other id blocks the run with a message that points to Re-run fresh. That covers the board's id, an agent's, and one that Re-run fresh abandoned on this machine. The worker does not start fresh by itself, because that would run a prompt again that may already have done its work.
 
@@ -197,9 +226,9 @@ A worker could drop its record when the sealed start notes (`agent-board: starte
 
 The prompt reaches `claude` on stdin, never as an argument. A sealed prompt or a reply can start with `-`, or look like `--mcp-config=…`, and still cannot be read as an option.
 
-Two clear values become arguments, one argument each:
+Three kinds of clear value become arguments, one argument each:
 
-- the session id, as `--resume=<uuid>`
+- the session id, as `--resume=<uuid>`; for a fork also the parent's, as `--resume=<uuid>`, and the copy's own as `--session-id=<uuid>`
 - a task's model, as `--model=<name>`, held to `isModelName`, so it never starts with `-`
 
 Every other clear value that reaches an argument, a path, a unit name, an environment variable or a shell is checked to a tight shape when it is parsed. That covers ids, machine and lane names, a schedule's cron expression and time zone, note ids, the key id and the user name. The sealed directory is checked after opening: an absolute path without control characters.

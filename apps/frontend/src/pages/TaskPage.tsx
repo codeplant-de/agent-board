@@ -17,11 +17,12 @@ import {
   Title,
 } from '@mantine/core';
 import { modals } from '@mantine/modals';
-import { IconCornerDownRight, IconLockOff, IconTerminal2, IconX } from '@tabler/icons-react';
+import { IconCornerDownRight, IconGitFork, IconLockOff, IconTerminal2, IconX } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ActionPanel } from '../components/ActionPanel';
+import { ForkModal } from '../components/ForkModal';
 import { WatchList } from '../components/WatchList';
 import { Markdown } from '../components/Markdown';
 import { PriorityPicker } from '../components/PriorityPicker';
@@ -32,6 +33,7 @@ import { ModelPicker, WorkdirSetting } from '../components/TaskSettings';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
 import { skillsFor } from '../lib/catalog';
+import { canFork } from '../lib/sealing';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago, stamp } from '../lib/time';
 import { errorMessage, POLL_MS, useTRPC } from '../lib/trpc';
@@ -62,6 +64,7 @@ function TaskView({ id }: { id: string }) {
   const [search, setSearch] = useSearchParams();
   const transcriptOpen = search.get('transcript') !== null;
   const setTranscriptOpen = (open: boolean) => setSearch(open ? { transcript: '1' } : {}, { replace: true });
+  const [forking, setForking] = useState(false);
   const noteCount = query.data?.thread.length ?? 0;
 
   // Land on the newest note and the action panel; follow new notes as they arrive.
@@ -127,6 +130,14 @@ function TaskView({ id }: { id: string }) {
               created by {task.createdBy} {ago(task.createdAt)}
             </Text>
           </Group>
+          {task.forkOf !== undefined && (
+            <Text size="sm" c="dimmed" data-testid="forked-from">
+              Forked from{' '}
+              <Anchor component={Link} to={`/t/${task.forkOf}`} size="sm">
+                {parent?.id === task.forkOf ? parent.title : task.forkOf}
+              </Anchor>
+            </Text>
+          )}
           <WorkdirSetting task={task} unlisted={unlisted} />
           <Group gap="xs">
             <Button
@@ -137,7 +148,21 @@ function TaskView({ id }: { id: string }) {
             >
               Transcript
             </Button>
+            {canFork(task) && (
+              <Button
+                variant="default"
+                size="xs"
+                leftSection={<IconGitFork size={14} />}
+                title="Side work with the context of this task: a new task that continues a copy of its session"
+                onClick={() => setForking(true)}
+              >
+                Fork
+              </Button>
+            )}
           </Group>
+          {canFork(task) && (
+            <ForkModal key={task.id} opened={forking} onClose={() => setForking(false)} parent={task} />
+          )}
           {prs.length > 0 && (
             <Group gap="xs">
               {prs.map(({ url, state, id: prId, prompt }) => {

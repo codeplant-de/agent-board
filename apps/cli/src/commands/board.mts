@@ -235,6 +235,7 @@ export function renderThread(task: Task, notes: Note[]): string {
     '',
     `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(', ') || '-'}`,
     ...(task.agent == null ? [] : [`agent: ${task.agent}`]),
+    ...(task.forkOf === undefined ? [] : [`fork of: ${task.forkOf}`]),
     ...task.prs.map((pr) => `pr: ${pr.url}`),
     ...(task.sessionId ? [`session: ${task.sessionId} · ${task.machine ?? '-'}:${task.workdir ?? '-'}`] : []),
     '',

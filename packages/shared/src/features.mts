@@ -24,6 +24,7 @@ export const ADDED_SERVER_FEATURES = [
   'task.configure',
   'task.watches',
   'task.note-count',
+  'task.fork',
 ] as const;
 
 export const SERVER_FEATURES = [...BASELINE_SERVER_FEATURES, ...ADDED_SERVER_FEATURES] as const;
@@ -49,6 +50,7 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'task.configure': 'changing a task’s settings',
   'task.watches': 'showing a task’s watches',
   'task.note-count': 'the number of notes of a task',
+  'task.fork': 'forking a task',
   wait: 'waiting',
 };
 

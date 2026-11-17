@@ -112,6 +112,11 @@ test('board show renders questions and answers in the thread', () => {
   assert.ok(text.indexOf('agent question') < text.indexOf('user answer'), 'oldest first');
 });
 
+test('board show names the task a fork was forked from, and a task that is no fork says nothing of it', () => {
+  assert.match(renderThread(task({ id: 'a', title: 'T', forkOf: 'par12345' }), []), /\nfork of: par12345\n/);
+  assert.doesNotMatch(renderThread(task({ id: 'a', title: 'T' }), []), /fork of/);
+});
+
 test('board schedule refuses inside a board run', async () => {
   const env = { AGENT_BOARD_TASK: 'abc' };
   await assert.rejects(

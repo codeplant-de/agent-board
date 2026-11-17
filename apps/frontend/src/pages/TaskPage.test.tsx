@@ -1,7 +1,7 @@
 import { MantineProvider } from '@mantine/core';
 import { ModalsProvider } from '@mantine/modals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -33,6 +33,7 @@ vi.mock('../lib/trpc', () => {
         setNotBefore: idle,
         wakeNow: idle,
         applyPolish: idle,
+        fork: idle,
       },
       machines: {
         list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => [] }) },
@@ -139,5 +140,57 @@ describe('TaskPage', () => {
     first.unmount();
     render(view(without.id));
     expect(screen.queryByText(/Agent:/)).not.toBeInTheDocument();
+  });
+
+  const page = (tasks: BoardTask[], parent: BoardTask | null = null) => {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    for (const one of tasks)
+      client.setQueryData(['tasks.get', one.id], { task: one, thread: [], followUps: [], parent });
+    render(
+      <MemoryRouter initialEntries={[`/t/${tasks[0]?.id}`]}>
+        <MantineProvider>
+          <ModalsProvider>
+            <QueryClientProvider client={client}>
+              <Routes>
+                <Route path="/t/:id" element={<TaskPage />} />
+              </Routes>
+            </QueryClientProvider>
+          </ModalsProvider>
+        </MantineProvider>
+      </MemoryRouter>,
+    );
+  };
+  const fork = () => screen.queryByRole('button', { name: 'Fork' });
+
+  it('offers Fork on a task with a session on a machine, and opens the dialog', async () => {
+    page([{ ...task('aaaa1111', 'Task A'), machine: 'laptop', workdir: '/work/a' }]);
+    await userEvent.click(fork()!);
+    expect(await screen.findByRole('dialog', { name: 'Fork this task' })).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Fork of Task A')).toBeInTheDocument();
+  });
+
+  it.each([
+    ['has no session', { sessionId: null, machine: 'laptop' }],
+    ['has run on no machine', { sessionId: 's', machine: null }],
+    ['is closed', { sessionId: 's', machine: 'laptop', closed: true }],
+    ['is an agent’s proposal', { sessionId: 's', machine: 'laptop', createdBy: 'agent' as const, proposed: true }],
+  ])('offers no Fork on a task that %s', (_name, overrides) => {
+    page([{ ...task('aaaa1111', 'Task A'), ...overrides }]);
+    expect(fork()).not.toBeInTheDocument();
+  });
+
+  it('says which task a fork was forked from, with a link, and nothing for another task', () => {
+    const parent = task('pppp1111', 'The parent');
+    page([{ ...task('ffff1111', 'The fork'), forkOf: parent.id, parentId: parent.id }], parent);
+    expect(screen.getByTestId('forked-from')).toHaveTextContent('Forked from The parent');
+    expect(within(screen.getByTestId('forked-from')).getByRole('link', { name: 'The parent' })).toHaveAttribute(
+      'href',
+      '/t/pppp1111',
+    );
+  });
+
+  it('names the parent by its id when the board has no such task any more', () => {
+    page([{ ...task('ffff1111', 'The fork'), forkOf: 'gone1111' }]);
+    expect(screen.getByTestId('forked-from')).toHaveTextContent('Forked from gone1111');
   });
 });
