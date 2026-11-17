@@ -282,6 +282,21 @@ test('the version is checked once per process, and the config is loaded only on 
   assert.deepEqual(commands, ['version', 'list-tasks', 'list-tasks']);
 });
 
+test('a failed first call does not fail every later one: the next call connects again', async () => {
+  let up = false;
+  const commands: string[] = [];
+  const fetcher: Fetch = async (url) => {
+    commands.push(url.slice(`${config.url}/api/machine/`.length));
+    if (!up) throw new Error('fetch failed');
+    return new Response(JSON.stringify({ result: url.endsWith('/version') ? VERSION_ANSWER : [] }));
+  };
+  const backend = createWebBackend({ loadConfig: () => config, fetch: fetcher });
+  await assert.rejects(backend.listTasks());
+  up = true;
+  assert.deepEqual(await backend.listTasks(), []);
+  assert.deepEqual(commands, ['version', 'version', 'list-tasks']);
+});
+
 test('a missing config fails the first call, not the construction', async () => {
   const backend = createWebBackend({
     loadConfig: () => {
@@ -747,6 +762,48 @@ test('the catalogue: the server must name machine.catalog, its index comes from 
       /does not support machine catalogues yet/.test(error.message),
   );
   assert.deepEqual(lacking.seen, ['version']);
+});
+
+test('the usage status: the server must name machine.usage, its index comes from the version answer, and a junk index is none', async () => {
+  const make = (features: string[], usageIndex?: unknown) => {
+    const seen: string[] = [];
+    const fetcher: Fetch = async (url) => {
+      const command = url.slice(`${config.url}/api/machine/`.length);
+      seen.push(command);
+      const result = command === 'version' ? { ...VERSION_ANSWER, features, usageIndex } : null;
+      return new Response(JSON.stringify({ result }));
+    };
+    return { seen, backend: createWebBackend({ loadConfig: () => config, fetch: fetcher }) };
+  };
+  const index = await blindIndex(KEYS, 'usage:here:{}');
+  const having = make(['machine.usage'], index);
+  assert.deepEqual(await having.backend.usageState(), { supported: true, index });
+  await having.backend.setUsage({ usage: 'abe1.x', index });
+  assert.deepEqual(having.seen, ['version', 'set-usage']);
+  for (const junk of [undefined, null, 7, 'abh1.short', 'abe1.x']) {
+    assert.deepEqual(await make(['machine.usage'], junk).backend.usageState(), { supported: true, index: null });
+  }
+  const lacking = make(['machine.dirs'], index);
+  assert.deepEqual(await lacking.backend.usageState(), { supported: false, index });
+  await assert.rejects(
+    lacking.backend.setUsage({ usage: 'abe1.x', index }),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'machine.usage' &&
+      /does not support usage status of machines yet/.test(error.message),
+  );
+  assert.deepEqual(lacking.seen, ['version']);
+});
+
+test('a dry run prints the usage status it would send and sends nothing', async () => {
+  const { seen, fetcher } = board({});
+  const lines: string[] = [];
+  const dry = dryRunBackend(createSealedBackend({ loadConfig: () => config, fetch: fetcher }), (line) =>
+    lines.push(line),
+  );
+  await dry.setUsage('here', { windows: {}, reached: ['fiveHour'], held: ['a'], open: ['b', 'c'] });
+  assert.deepEqual(lines, ['DRY set-usage 1 held and 2 open tasks, reached fiveHour']);
+  assert.deepEqual(seen, []);
 });
 
 test('a dry run prints the catalogue it would send and sends nothing', async () => {

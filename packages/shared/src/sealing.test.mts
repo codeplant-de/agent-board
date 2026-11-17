@@ -4,12 +4,16 @@ import {
   checkSealedSize,
   ContractError,
   parseVersionCatalogIndex,
+  parseVersionUsageIndex,
+  parseWireUsage,
   parseVersionDirsIndex,
   parseWireCatalog,
   parseWireDirs,
   SEALED_LIMITS,
 } from './contract.mts';
 import { machineCatalogJson } from './catalog.mts';
+import { machineUsageJson } from './machineUsage.mts';
+import type { MachineUsage } from './machineUsage.mts';
 import type { MachineCatalog } from './catalog.mts';
 import { blindIndex, deriveKeys, open, seal } from './crypto.mts';
 import type { Keys } from './crypto.mts';
@@ -21,6 +25,10 @@ import {
   machineCatalogBinding,
   machineCatalogIndex,
   machineDirsBinding,
+  machineUsageBinding,
+  machineUsageIndex,
+  openMachineUsage,
+  sealMachineUsage,
   machineDirsIndex,
   machineDirsJson,
   openMachineCatalog,
@@ -933,4 +941,67 @@ test('set-catalog takes exactly a sealed catalogue and a blind index; the versio
   assert.equal(parseVersionCatalogIndex({ catalogIndex: index }), index);
   for (const odd of [undefined, null, {}, { catalogIndex: null }, { catalogIndex: 5 }, { catalogIndex: 'plain' }])
     assert.equal(parseVersionCatalogIndex(odd), null);
+});
+
+const USAGE: MachineUsage = {
+  limits: { fiveHour: 80, priority: 'urgent' },
+  windows: { fiveHour: { percent: 85, resetsAt: '2026-11-17T14:05:00.000Z', seenAt: '2026-11-17T12:00:00.000Z' } },
+  reached: ['fiveHour'],
+  held: ['taskA'],
+  open: ['taskB'],
+};
+
+test('a usage status is one JSON document, sealed under the machine and opened as the same status', async () => {
+  const wire = await sealMachineUsage(seals, 'laptop', USAGE);
+  assert.equal(await open(keys, 'machine.usage', 'machine:laptop', wire), machineUsageJson(USAGE));
+  assert.deepEqual(machineUsageBinding('laptop'), { field: 'machine.usage', context: 'machine:laptop' });
+  assert.deepEqual(await openMachineUsage(opens, 'laptop', wire), USAGE);
+});
+
+test('a status sealed for one machine does not open as another’s, nor as a catalogue, and nothing else opens as one', async () => {
+  const wire = await sealMachineUsage(seals, 'laptop', USAGE);
+  assert.equal(await openMachineUsage(opens, 'desktop', wire), undefined);
+  assert.equal(await openMachineCatalog(opens, 'laptop', wire), undefined);
+  const catalog = await sealMachineCatalog(seals, 'laptop', CATALOG);
+  assert.equal(await openMachineUsage(opens, 'laptop', catalog), undefined);
+  assert.equal(await openMachineUsage(opens, 'laptop', null), undefined);
+  assert.equal(await openMachineUsage(opens, 'laptop', undefined), undefined);
+  assert.equal(await openMachineUsage(opens, 'laptop', machineUsageJson(USAGE)), undefined);
+  const sealed = (text: string) => seal(keys, 'machine.usage', 'machine:laptop', text);
+  for (const text of ['not json', '[]', '{"held":"x"}'])
+    assert.equal(await openMachineUsage(opens, 'laptop', await sealed(text)), undefined, text);
+});
+
+test('sealing a usage status refuses an entry of the wrong shape and too many task ids', async () => {
+  await assert.rejects(sealMachineUsage(seals, 'laptop', { ...USAGE, held: ['a b'] }), ContractError);
+  const many = Array.from({ length: 501 }, (_, i) => `t${i}`);
+  await assert.rejects(sealMachineUsage(seals, 'laptop', { ...USAGE, open: many }), /more than 500 open tasks/);
+  assert.equal(SEALED_LIMITS['machine.usage'], 64 * 1024);
+});
+
+test('the blind index of a usage status is of the same document, bound to the machine, and changes with the status', async () => {
+  const index = await machineUsageIndex(keys, 'laptop', USAGE);
+  assert.equal(index, await blindIndex(keys, `usage:laptop:${machineUsageJson(USAGE)}`));
+  assert.notEqual(index, await machineUsageIndex(keys, 'desktop', USAGE));
+  assert.notEqual(index, await machineUsageIndex(keys, 'laptop', { ...USAGE, held: [] }));
+  assert.notEqual(index, await machineCatalogIndex(keys, 'laptop', CATALOG));
+});
+
+test('set-usage takes exactly a sealed status and a blind index; the version answer’s index is read leniently', async () => {
+  const usage = await sealMachineUsage(seals, 'laptop', USAGE);
+  const index = await machineUsageIndex(keys, 'laptop', USAGE);
+  assert.deepEqual(parseWireUsage({ usage, index }), { usage, index });
+  for (const bad of [
+    null,
+    {},
+    { usage },
+    { index },
+    { usage: 'plain', index },
+    { usage, index: usage },
+    { usage, index, x: 1 },
+  ])
+    assert.throws(() => parseWireUsage(bad), ContractError);
+  assert.equal(parseVersionUsageIndex({ usageIndex: index }), index);
+  for (const odd of [undefined, null, {}, { usageIndex: null }, { usageIndex: 5 }, { usageIndex: 'plain' }])
+    assert.equal(parseVersionUsageIndex(odd), null);
 });

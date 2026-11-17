@@ -34,6 +34,7 @@ import {
   parseWireTaskDraft,
   parseWireTaskPatch,
   parseWireTranscriptBatch,
+  parseWireUsage,
   parseWireWait,
   TranscriptError,
   SERVER_FEATURES,
@@ -52,9 +53,11 @@ import {
   machineCatalogIndex,
   machineDirsIndex,
   machineForToken,
+  machineUsageIndex,
   recordClient,
   setMachineCatalog,
   setMachineDirs,
+  setMachineUsage,
 } from './services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
 import { appendTranscript } from './services/transcripts';
@@ -75,6 +78,7 @@ import {
   runInbox,
   addPr,
   removePr,
+  countTaskNotes,
   listTaskPrs,
   setPr,
   setPrState,
@@ -156,7 +160,10 @@ async function handleMachineCall(
   const machine = identity.name;
   const visible = knownTo(client.features, client.vocabulary);
   const task = async (row: Parameters<typeof toTask>[0]) =>
-    visible.one(toTask(row, (await listTaskPrs(db, [row.id])).get(row.id)), 'task');
+    visible.one(
+      toTask(row, (await listTaskPrs(db, [row.id])).get(row.id), (await countTaskNotes(db, [row.id])).get(row.id) ?? 0),
+      'task',
+    );
   const schedule = (row: Parameters<typeof toSchedule>[0]) => visible.one(toSchedule(row), 'schedule');
   switch (command) {
     case 'version':
@@ -169,6 +176,7 @@ async function handleMachineCall(
         features: SERVER_FEATURES,
         dirsIndex: await machineDirsIndex(db, machine),
         catalogIndex: await machineCatalogIndex(db, machine),
+        usageIndex: await machineUsageIndex(db, machine),
         ...(config.cliVersion === null ? {} : { cli: config.cliVersion }),
       };
     case 'list-tasks': {
@@ -177,7 +185,11 @@ async function handleMachineCall(
         db,
         rows.map(({ id }) => id),
       );
-      return visible.only(rows.map((row) => toTask(row, prs.get(row.id))));
+      const noteCounts = await countTaskNotes(
+        db,
+        rows.map(({ id }) => id),
+      );
+      return visible.only(rows.map((row) => toTask(row, prs.get(row.id), noteCounts.get(row.id) ?? 0)));
     }
     case 'get-task':
       return task(await getTask(db, idOf(body, 'task')));
@@ -268,6 +280,13 @@ async function handleMachineCall(
         db,
         machine,
         parsed(() => parseWireCatalog(body['body'])),
+      );
+      return null;
+    case 'set-usage':
+      await setMachineUsage(
+        db,
+        machine,
+        parsed(() => parseWireUsage(body['body'])),
       );
       return null;
     case 'ask': {

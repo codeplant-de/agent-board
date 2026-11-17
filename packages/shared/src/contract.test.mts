@@ -930,6 +930,15 @@ test('a task shows stopRequested only when the server sends it', () => {
   assert.throws(() => parseWireTask({ ...wire, stopRequested: 1 }), ContractError);
 });
 
+test('a task has a noteCount only when the server sends it, as a non-negative integer', () => {
+  const wire = RUNNING_WIRE;
+  assert.equal('noteCount' in parseWireTask(wire), false);
+  assert.equal(parseWireTask({ ...wire, noteCount: 0 }).noteCount, 0);
+  assert.equal(parseWireTask({ ...wire, noteCount: 7 }).noteCount, 7);
+  for (const bad of [-1, 1.5, '3', null, Number.NaN])
+    assert.throws(() => parseWireTask({ ...wire, noteCount: bad }), ContractError);
+});
+
 test('a task names its run only while the server sends a well-formed run id', () => {
   const wire = RUNNING_WIRE;
   assert.equal('run' in parseWireTask(wire), false);

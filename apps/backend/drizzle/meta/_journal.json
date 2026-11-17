@@ -246,6 +246,20 @@
       "when": 1794908668234,
       "tag": "0034_machine-catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1794909311117,
+      "tag": "0035_drop_slack",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1794915784557,
+      "tag": "0036_machine-usage",
+      "breakpoints": true
     }
   ]
 }

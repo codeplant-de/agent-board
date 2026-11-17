@@ -6,7 +6,6 @@ import { Fragment, useState, type DragEvent } from 'react';
 import { moveConfirmed } from '../components/confirmStart';
 import { IncompatibleMachinesBanner } from '../components/IncompatibleMachinesBanner';
 import { QueryStatus } from '../components/QueryStatus';
-import { SlackInbox } from '../components/SlackInbox';
 import { TaskCard } from '../components/TaskCard';
 import { usePolish } from '../components/usePolish';
 import { beforeIdOver, dropNeighbors } from '../lib/dropPosition';
@@ -14,6 +13,8 @@ import { canMoveMergedToDone } from '../lib/mergedPrs';
 import { canPolish, isOpenPolishOf } from '../lib/polish';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { POLL_MS, useTRPC, type ListedTask } from '../lib/trpc';
+import { heldTask } from '../lib/usageHold';
+import { useNow } from '../lib/useNow';
 
 const HINT: Record<Status, string> = {
   backlog: 'Parked; no worker takes these',
@@ -57,6 +58,8 @@ const COLLAPSIBLE = new Set<Status>(['backlog', 'done']);
 function BoardColumns({ only }: { only?: Status }) {
   const trpc = useTRPC();
   const tasks = useQuery({ ...trpc.tasks.list.queryOptions(), refetchInterval: POLL_MS });
+  const machines = useQuery({ ...trpc.machines.list.queryOptions(), refetchInterval: POLL_MS });
+  const now = useNow(30_000);
   const move = useMutation(trpc.tasks.move.mutationOptions());
   const done = useMutation(trpc.tasks.done.mutationOptions());
   const polish = usePolish();
@@ -147,6 +150,7 @@ function BoardColumns({ only }: { only?: Status }) {
                   task={task}
                   draggable={canDrag(task)}
                   dragging={dragId === task.id}
+                  hold={heldTask(task, machines.data ?? [], now)}
                   {...(canPolish(task) ? { onPolish: () => polish.polish(task) } : {})}
                   polishDisabled={
                     polish.isPending || (tasks.data ?? []).some((child) => isOpenPolishOf(child, task.id))
@@ -185,7 +189,6 @@ function BoardColumns({ only }: { only?: Status }) {
   return (
     <Stack gap="md">
       <IncompatibleMachinesBanner />
-      {only === undefined && <SlackInbox />}
       <QueryStatus query={tasks} what="the board" />
       {only !== undefined ? (
         <Box maw={640} w="100%" mx="auto">

@@ -36,10 +36,11 @@ import {
   subscribeToDesktopNotificationsPreference,
   writeDesktopNotificationsPreference,
 } from '../lib/desktopNotifications';
+import { MachineUsageLines } from '../components/MachineUsageLines';
 import { QueryStatus } from '../components/QueryStatus';
-import { SlackSettings } from '../components/SlackSettings';
 import { ago } from '../lib/time';
 import { useTRPC } from '../lib/trpc';
+import { useNow } from '../lib/useNow';
 
 /**
  * The slots the board stores, read as the key this browser is using: the owner and key id are the browser's, not the ones the
@@ -63,6 +64,7 @@ const envLines = ({ token, dataKey }: Enrolment): string[] => [
 function Machines() {
   const trpc = useTRPC();
   const machines = useQuery(trpc.machines.list.queryOptions());
+  const now = useNow(30_000);
   const advertised = useQuery(trpc.machines.advertisedCli.queryOptions());
   const issue = useMutation(trpc.machines.issue.mutationOptions());
   const revoke = useMutation(trpc.machines.revoke.mutationOptions());
@@ -179,6 +181,7 @@ function Machines() {
                       </Badge>
                     )}
                   </Group>
+                  <MachineUsageLines machine={m} now={now} />
                 </Table.Td>
                 <Table.Td>
                   <Text size="sm" c={CLIENT_COLOR[m.clientStatus]}>
@@ -372,7 +375,6 @@ export function SettingsPage() {
       <Title order={3}>Settings</Title>
       <Machines />
       <DesktopNotifications />
-      <SlackSettings />
       <Encryption />
     </Stack>
   );

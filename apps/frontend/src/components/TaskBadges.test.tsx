@@ -1,8 +1,9 @@
 import { MantineProvider } from '@mantine/core';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { stamp } from '../lib/time';
+import { clock, stamp } from '../lib/time';
 import type { BoardTask } from '../lib/trpc';
+import type { TaskHold } from '../lib/usageHold';
 import { TaskBadges } from './TaskBadges';
 
 const task = (overrides: Partial<BoardTask>) =>
@@ -92,5 +93,49 @@ describe('TaskBadges', () => {
     expect(screen.queryByText(/Starts in/)).not.toBeInTheDocument();
     renderBadges({ status: 'backlog', notBefore: new Date(Date.now() + 3_600_000).toISOString() });
     expect(screen.queryByText(/Starts in/)).not.toBeInTheDocument();
+  });
+});
+
+describe('TaskBadges hold for usage', () => {
+  const hold = (until: Date): TaskHold => ({
+    until,
+    machines: [
+      {
+        name: 'laptop',
+        hold: {
+          priority: 'urgent',
+          until,
+          windows: [{ window: 'fiveHour', percent: 85, threshold: 80, resetsAt: until }],
+        },
+      },
+    ],
+  });
+  const renderHeld = (until: Date, overrides: Partial<BoardTask> = {}) =>
+    render(
+      <MantineProvider>
+        <TaskBadges task={task(overrides)} hold={hold(until)} />
+      </MantineProvider>,
+    );
+
+  it('shows when the hold ends, with the reason per machine as its title', () => {
+    const until = new Date(Date.now() + 60_000);
+    renderHeld(until);
+    const badge = screen.getByText(`Held until ${clock(until)}`);
+    expect(badge.closest('[title]')).toHaveAttribute(
+      'title',
+      `laptop holds tasks below urgent: 5-hour usage 85% (limit 80%) until ${clock(until)}`,
+    );
+  });
+
+  it('shows the date for another day', () => {
+    const until = new Date(Date.now() + 3 * 24 * 3_600_000);
+    renderHeld(until);
+    expect(screen.getByText(`Held until ${clock(until)}`)).toBeInTheDocument();
+    expect(clock(until)).toMatch(/^\d{1,2} \w{3}, \d{2}:\d{2}$/);
+  });
+
+  it('shows nothing for a task that is not held', () => {
+    renderBadges({});
+    expect(screen.queryByText(/Held until/)).not.toBeInTheDocument();
   });
 });

@@ -25,6 +25,7 @@ const VISIBLE = [
   'watch',
   'watches',
   'unwatch',
+  'events',
   'add',
   'polish',
   'task',
@@ -62,6 +63,8 @@ test('the model lists the visible commands only, with their flags', () => {
   );
   assert.deepEqual(model.flagValues['--priority'], ['urgent', 'high', 'normal', 'low']);
   assert.deepEqual(model.flagValues['--model'], ['fable', 'opus', 'sonnet', 'haiku']);
+  assert.deepEqual(model.flagValues['--type'], ['created', 'moved', 'changed', 'closed', 'removed', 'note']);
+  assert.ok(model.taskFlags.includes('--task') && model.taskFlags.includes('--parent'));
 });
 
 test('task completes its id, then set or unset, then the setting', () => {
@@ -172,6 +175,9 @@ test('the bash script completes commands, task ids, statuses, priorities and sch
   assert.deepEqual(bashOffers(['add', '--priority'], 'h'), ['high']);
   assert.deepEqual(bashOffers(['schedule', '--model'], 'o'), ['opus']);
   assert.deepEqual(bashOffers(['add', '--parent'], 'Z'), ['Zk7mNp2q']);
+  assert.deepEqual(bashOffers(['events', '--task'], 'Z'), ['Zk7mNp2q']);
+  assert.deepEqual(bashOffers(['events', '--type'], 'n'), ['note']);
+  assert.deepEqual(bashOffers(['events', '--status'], 'n'), ['needs-me']);
   assert.deepEqual(bashOffers(['schedules'], 'p'), ['pause']);
   assert.deepEqual(bashOffers(['dirs'], ''), ['list', 'add', 'rm', 'set', 'unset']);
   assert.deepEqual(bashOffers(['agents'], ''), ['list', 'show', 'export', 'add', 'rm']);

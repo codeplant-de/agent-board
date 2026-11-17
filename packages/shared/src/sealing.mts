@@ -11,6 +11,7 @@
 //   pr             task:<id>:agent (a PR URL the task's agent reported; every PR of the task has this binding)
 //   machine.dirs   machine:<name> (the directory list the machine's CLI sends, one JSON document)
 //   machine.catalog machine:<name> (the skills and models the machine's CLI found, one JSON document)
+//   machine.usage  machine:<name> (the usage limits, readings and held tasks the machine's CLI found, one JSON document)
 //   note.*         note:<taskId>:<author>:<kind>
 //   tr.*           <taskId>:<runId>:<seq>
 //
@@ -26,6 +27,8 @@
 // unreadable value is never replaced by a looser reading.
 import { catalogProblem, machineCatalogJson, parseMachineCatalog } from './catalog.mts';
 import type { MachineCatalog } from './catalog.mts';
+import { machineUsageJson, parseMachineUsage, usageProblem } from './machineUsage.mts';
+import type { MachineUsage } from './machineUsage.mts';
 import {
   AGENT_NAME_RULE,
   checkSealedSize,
@@ -233,6 +236,42 @@ export async function openMachineCatalog(
   if (text === undefined) return undefined;
   try {
     return parseMachineCatalog(JSON.parse(text));
+  } catch {
+    return undefined;
+  }
+}
+
+/** The usage status of a machine: bound to the machine's name and to its own field, so no other document opens as it. */
+export const machineUsageBinding = (machine: string): Binding => ({
+  field: 'machine.usage',
+  context: `machine:${machine}`,
+});
+
+/** A machine's `usageIndex` as the board stores it: the blind index of `usage:<machine>:<document>`, to tell whether the status changed. */
+export const machineUsageIndex = (keys: Keys, machine: string, usage: MachineUsage): Promise<string> =>
+  blindIndex(keys, `usage:${machine}:${machineUsageJson(usage)}`);
+
+/** Seals the usage status of `machine`; refuses more than the board takes and an entry that is not of its shape. */
+export async function sealMachineUsage(seal: Sealer, machine: string, usage: MachineUsage): Promise<string> {
+  const problem = usageProblem(usage);
+  if (problem !== undefined) throw new ContractError(`the usage status has ${problem}`);
+  return sealChecked(seal, machineUsageBinding(machine), machineUsageJson(usage), 'the usage status');
+}
+
+/**
+ * The usage status a machine sent, or undefined when it is unreadable: it does not open under exactly this machine's binding
+ * or is not a usage document (`parseMachineUsage`, which drops an entry of the wrong shape and keeps the rest). Display only.
+ */
+export async function openMachineUsage(
+  open: Opener,
+  machine: string,
+  wire: string | null | undefined,
+): Promise<MachineUsage | undefined> {
+  if (wire === null || wire === undefined) return undefined;
+  const text = await open(machineUsageBinding(machine), wire);
+  if (text === undefined) return undefined;
+  try {
+    return parseMachineUsage(JSON.parse(text));
   } catch {
     return undefined;
   }

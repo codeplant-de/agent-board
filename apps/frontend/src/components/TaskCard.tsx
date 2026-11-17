@@ -5,6 +5,7 @@ import type { DragEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ago } from '../lib/time';
 import type { LastNote, ListedTask } from '../lib/trpc';
+import type { TaskHold } from '../lib/usageHold';
 import { LivenessText } from './LivenessText';
 import { PrStateIcon } from './PrStateIcon';
 import { TaskBadges } from './TaskBadges';
@@ -40,6 +41,8 @@ interface Props {
   /** Queues a polish of this Backlog task's prompt; absent when it cannot be polished. */
   onPolish?: () => void;
   polishDisabled?: boolean;
+  /** Why the task has not started for usage; absent when it is not held. */
+  hold?: TaskHold | undefined;
 }
 
 export function TaskCard({
@@ -51,6 +54,7 @@ export function TaskCard({
   onDragOver,
   onPolish,
   polishDisabled = false,
+  hold,
 }: Props) {
   const prs = prsOf(task);
   const navigate = useNavigate();
@@ -125,7 +129,7 @@ export function TaskCard({
             </Tooltip>
           )}
         </Group>
-        <TaskBadges task={task} />
+        <TaskBadges task={task} hold={hold} />
         {task.status === 'running' && <LivenessText size="xs" lastActiveAt={task.lastActiveAt} />}
         <Text size="xs" c="dimmed" lineClamp={1} className="wrap-anywhere">
           {lastNoteLine(task.lastNote, task)}

@@ -6,34 +6,20 @@
  */
 import { spawn } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
-import { ConfigError, getPaths } from '../config/config.mts';
-import { BackendError, machineHeaders, requireFeature } from '../backend/backend.mts';
+import { getPaths } from '../config/config.mts';
+import { requireFeature } from '../backend/backend.mts';
 import type { Fetch } from '../backend/backend.mts';
 import { verifyContract } from '../backend/contract-check.mts';
+import { holdEventStream, realTimers } from '../backend/event-stream.mts';
+import type { StreamOptions, Timers } from '../backend/event-stream.mts';
 import { loadWebConfig } from '../backend/web-config.mts';
 import type { WebConfig } from '../backend/web-config.mts';
-import { createSseParser } from '../backend/sse.mts';
-import type { SseEvent } from '../backend/sse.mts';
 import { print } from '../cli.mts';
 import { selfCommand } from '../self/self.mts';
 import { errorText } from '../output/text.mts';
 import { signalGroup } from '../worker/process.mts';
 import { createRunFiles, lockDir } from '../worker/runtime.mts';
 import { TICK_GRACE_S, TICK_LIMIT_S, lockFileName } from './tick.mts';
-
-export interface Timers {
-  now: () => number;
-  // Calls `fn` after `ms`; returns the function that cancels it.
-  after: (ms: number, fn: () => void) => () => void;
-}
-
-export const realTimers: Timers = {
-  now: () => Date.now(),
-  after: (ms, fn) => {
-    const timer = setTimeout(fn, ms);
-    return () => clearTimeout(timer);
-  },
-};
 
 // Exit code of `flock -E 75`: the timer's tick holds the lock.
 const LOCKED = 75;
@@ -162,13 +148,7 @@ export function createTicker({
   };
 }
 
-export interface ListenerOptions {
-  // No bytes for this long (the server pings every 25 s) is a dead connection.
-  idleMs: number;
-  backoffBaseMs: number;
-  backoffMaxMs: number;
-  // A connection this old counts as healthy and resets the backoff.
-  healthyMs: number;
+export interface ListenerOptions extends StreamOptions {
   debounceMs: number;
   retryMs: number;
   dueFloorMs: number;
@@ -203,133 +183,24 @@ export interface ListenerDeps {
   options?: Partial<ListenerOptions>;
 }
 
-// Rejects when `promise` takes longer than `ms`, or when `signal` aborts.
-function within<T>(promise: Promise<T>, ms: number, timers: Timers, signal: AbortSignal, what: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => finish(() => reject(new Error('stopped')));
-    const cancel = timers.after(ms, () => finish(() => reject(new Error(`${what} took longer than ${ms / 1000} s`))));
-    function finish(settle: () => void): void {
-      cancel();
-      signal.removeEventListener('abort', onAbort);
-      settle();
-    }
-    if (signal.aborted) return onAbort();
-    signal.addEventListener('abort', onAbort);
-    promise.then(
-      (value) => finish(() => resolve(value)),
-      (error: unknown) => finish(() => reject(error instanceof Error ? error : new Error(String(error)))),
-    );
-  });
-}
-
-// Reads the stream until it ends; throws when it goes quiet for `idleMs`.
-async function readEvents(
-  body: ReadableStream<Uint8Array>,
-  onEvent: (event: SseEvent) => void,
-  { idleMs, timers, signal }: { idleMs: number; timers: Timers; signal: AbortSignal },
-): Promise<void> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  const parser = createSseParser(onEvent);
-  try {
-    for (;;) {
-      const { done, value } = await within(reader.read(), idleMs, timers, signal, 'the stream, between two reads,');
-      if (done) return;
-      parser.push(decoder.decode(value, { stream: true }));
-    }
-  } finally {
-    reader.cancel().catch(() => undefined);
-  }
-}
-
-// The delay before reconnect number `attempt` (from 0): doubles from the base to the cap, and is cut by up to half.
-export function backoffMs(attempt: number, { backoffBaseMs, backoffMaxMs }: ListenerOptions, random: number): number {
-  return Math.min(backoffMaxMs, backoffBaseMs * 2 ** attempt) * (0.5 + random / 2);
-}
-
-function sleep(ms: number, timers: Timers, signal: AbortSignal): Promise<void> {
-  return within(new Promise<never>(() => undefined), ms, timers, signal, 'sleep').catch(() => undefined);
-}
-
 // Runs until `signal` aborts (exit code 0) or the board no longer serves this CLI (1: systemd or launchd restarts it, on new code after an update).
 export async function runListener(deps: ListenerDeps): Promise<number> {
   const { timers, log, signal } = deps;
   const options = { ...LISTENER_OPTIONS, ...deps.options };
   const ticker = createTicker({ run: deps.runTick, timers, log, nextDue: deps.nextDue, ...options });
-  let attempt = 0;
-  // A board server older than this CLI, or without the event stream, is a rollout in progress: the listener keeps trying, saying so once per state.
-  let loggedOlder: string | undefined;
   try {
-    while (!signal.aborted) {
-      let connectedAt: number | undefined;
-      const connection = new AbortController();
-      const stopConnection = (): void => connection.abort();
-      signal.addEventListener('abort', stopConnection);
-      try {
-        const target = await deps.verify();
-        const response = await within(
-          deps.fetch(`${target.url}/api/machine/events`, {
-            headers: { ...machineHeaders(target.token), accept: 'text/event-stream' },
-            signal: connection.signal,
-            redirect: 'error',
-          }),
-          options.idleMs,
-          timers,
-          signal,
-          'connecting',
-        );
-        if (response.status === 401)
-          throw new Error(
-            'the board refused the token (401): it was revoked or replaced; run "board init" with a new one',
-          );
-        if (!response.ok || response.body === null)
-          throw new Error(`the board answered the event stream with HTTP ${response.status}`);
-        connectedAt = timers.now();
-        loggedOlder = undefined;
-        log('connected');
-        ticker.now();
-        await readEvents(
-          response.body,
-          ({ event }) => {
-            if (event === 'tasks') ticker.soon();
-          },
-          { idleMs: options.idleMs, timers, signal },
-        );
-        log('disconnected: the board closed the stream');
-      } catch (error) {
-        if (signal.aborted) break;
-        if (error instanceof BackendError && error.contractMismatch === 'cli-older') {
-          log(error.message);
-          return 1;
-        }
-        if (error instanceof ConfigError) {
-          log(error.message);
-          return 1;
-        }
-        if (
-          error instanceof BackendError &&
-          (error.contractMismatch === 'server-older' || error.missingFeature !== undefined)
-        ) {
-          if (error.message !== loggedOlder) log(error.message);
-          loggedOlder = error.message;
-        } else {
-          log(
-            error instanceof BackendError && error.status === 401
-              ? 'the board refused the token (401): it was revoked or replaced; run "board init" with a new one'
-              : `disconnected: ${errorText(error)}`,
-          );
-        }
-      } finally {
-        signal.removeEventListener('abort', stopConnection);
-        connection.abort();
-      }
-      if (signal.aborted) break;
-      if (connectedAt !== undefined && timers.now() - connectedAt >= options.healthyMs) attempt = 0;
-      const delay = backoffMs(attempt, options, deps.random());
-      attempt += 1;
-      log(`reconnecting in ${(delay / 1000).toFixed(1)} s`);
-      await sleep(delay, timers, signal);
-    }
+    const code = await holdEventStream({
+      timers,
+      random: deps.random,
+      log,
+      signal,
+      verify: deps.verify,
+      fetch: deps.fetch,
+      options,
+      onConnect: () => ticker.now(),
+      onTasks: () => ticker.soon(),
+    });
+    if (code !== 0) return code;
   } finally {
     // A tick between claiming a task and starting its worker must not be cut off: systemd kills what is left once this exits.
     // The listener unit's stop timeout (LISTEN_STOP_TIMEOUT_S) covers a whole tick.
