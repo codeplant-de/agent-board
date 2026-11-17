@@ -72,6 +72,17 @@ test('board pr reports the pull request of a task, and refuses anything but a Gi
   assert.equal(backend.writes.length, 1);
 });
 
+test('board pr adds another pull request, and the same URL twice changes nothing but still confirms', async () => {
+  const { backend, printed, go } = setup();
+  const first = 'https://github.com/acme/app/pull/1';
+  const second = 'https://github.com/acme/app/pull/2';
+  await go(['pr', ID, first]);
+  await go(['pr', ID, second]);
+  await go(['pr', ID, first]);
+  assert.deepEqual(backend.writes, [`pr ${ID} ${first}`, `pr ${ID} ${second}`]);
+  assert.equal(printed.filter((line) => line.startsWith(`reported ${first} for ${ID}`)).length, 2);
+});
+
 test('a suggested reply can come from a file in /tmp, and not from both', async () => {
   const dir = mkdtempSync('/tmp/board-commands-test-');
   try {

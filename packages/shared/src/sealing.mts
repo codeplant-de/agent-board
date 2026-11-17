@@ -8,7 +8,7 @@
 //   input          <origin>:<creator>, or with an agent <origin>:<creator>:agent:<name>
 //   agent          <origin> (the name of the agent the task runs as)
 //   workdir        <origin>, or for a scheduled task also task:<id>:schedule:<scheduleId> (the worker's rewrite)
-//   pr             task:<id>:agent (the PR URL the task's agent reported)
+//   pr             task:<id>:agent (a PR URL the task's agent reported; every PR of the task has this binding)
 //   machine.dirs   machine:<name> (the directory list the machine's CLI sends, one JSON document)
 //   note.*         note:<taskId>:<author>:<kind>
 //   tr.*           <taskId>:<runId>:<seq>
@@ -35,7 +35,16 @@ import {
   notePreview,
   UNREADABLE_TITLE,
 } from './contract.mts';
-import type { MachineDir, NoteKind, TaskCreator, UnreadableField, WireNoteAuthor, WireNoteInput } from './contract.mts';
+import type {
+  MachineDir,
+  NoteKind,
+  TaskCreator,
+  TaskPr,
+  UnreadableField,
+  WireNoteAuthor,
+  WireNoteInput,
+  WireTaskPr,
+} from './contract.mts';
 import { blindIndex } from './crypto.mts';
 import type { Field, Keys } from './crypto.mts';
 import { isServerEventText } from './events.mts';
@@ -117,6 +126,17 @@ export async function openPr(open: Opener, taskId: string, wire: string | null |
   if (wire === null || wire === undefined) return null;
   const url = await open(prBinding(taskId), wire);
   return url !== undefined && isPrUrl(url) ? url : null;
+}
+
+/** The reported PRs of a task, in the order given; a row that does not open as a GitHub PR URL is dropped. */
+export async function openPrs(open: Opener, taskId: string, rows: readonly WireTaskPr[]): Promise<TaskPr[]> {
+  const opened = await Promise.all(
+    rows.map(async ({ id, pr, state }) => {
+      const url = await openPr(open, taskId, pr);
+      return url === null ? [] : [{ id, url, state }];
+    }),
+  );
+  return opened.flat();
 }
 
 /** The directory list of a machine: bound to the machine's name, so a list sealed for one machine never opens as another's. */

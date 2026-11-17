@@ -146,8 +146,16 @@ test('board show names the session, its machine and directory only when there is
   assert.equal(renderThread(task({ id: 'a', title: 'T' }), []).includes('session:'), false);
 });
 
-test('board show names the PR the agent reported, when there is one', () => {
+test('board show names each PR the agent reported, when there are any', () => {
   const url = 'https://github.com/acme/app/pull/9';
-  assert.match(renderThread(task({ id: 'a', title: 'T', pr: url }), []), new RegExp(`labels: -\npr: ${url}\n`));
+  const other = 'https://github.com/acme/app/pull/10';
+  const prs = [
+    { id: 'r1', url, state: null },
+    { id: 'r2', url: other, state: 'merged' as const },
+  ];
+  assert.match(
+    renderThread(task({ id: 'a', title: 'T', prs }), []),
+    new RegExp(`labels: -\npr: ${url}\npr: ${other}\n`),
+  );
   assert.equal(renderThread(task({ id: 'a', title: 'T' }), []).includes('pr:'), false);
 });

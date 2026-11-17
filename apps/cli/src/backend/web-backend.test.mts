@@ -12,6 +12,7 @@ import {
   serializeTask,
   SERVER_FEATURES,
 } from '@agent-board/shared';
+import type { PrStates } from '@agent-board/shared';
 import { BackendError, dryRunBackend } from './backend.mts';
 import { createWebBackend } from './web-backend.mts';
 import type { Fetch } from './backend.mts';
@@ -551,10 +552,27 @@ test('an agent is sent only to a server that names task.agent, and refused befor
   assert.deepEqual(having.seen, ['version', 'add-task', 'add-schedule']);
 });
 
-test('reporting a PR needs the task.pr feature and is refused without it, before anything is sent', async () => {
+test('a PR is added with add-pr on a server with task.prs, and replaces the earlier one with set-pr on one without', async () => {
+  const withIt = boardWith(['task.pr', 'task.prs'], { 'add-pr': { body: { result: null } } });
+  await withIt.backend.addPr('abc', { pr: 'abe1.pr' });
+  assert.deepEqual(
+    withIt.seen.map((request) => request.command),
+    ['version', 'add-pr'],
+  );
+  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { pr: 'abe1.pr' } });
+  const older = boardWith(['task.pr'], { 'set-pr': { body: { result: null } } });
+  await older.backend.addPr('abc', { pr: 'abe1.pr' });
+  assert.deepEqual(
+    older.seen.map((request) => request.command),
+    ['version', 'set-pr'],
+  );
+  assert.deepEqual(older.seen[1]?.body, { id: 'abc', body: { pr: 'abe1.pr' } });
+});
+
+test('reporting a PR on a server with neither task.prs nor task.pr is refused, before anything is sent', async () => {
   const without = boardWith(['events'], {});
   await assert.rejects(
-    without.backend.setPr('abc', { pr: 'abe1.pr' }),
+    without.backend.addPr('abc', { pr: 'abe1.pr' }),
     (error: unknown) =>
       error instanceof BackendError &&
       error.missingFeature === 'task.pr' &&
@@ -564,24 +582,55 @@ test('reporting a PR needs the task.pr feature and is refused without it, before
     without.seen.map((request) => request.command),
     ['version'],
   );
-  const withIt = boardWith(['task.pr'], { 'set-pr': { body: { result: null } } });
-  await withIt.backend.setPr('abc', { pr: 'abe1.pr' });
-  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { pr: 'abe1.pr' } });
 });
 
-test('recording a PR state needs the task.pr-state feature and is refused without it, before anything is sent', async () => {
-  const without = boardWith(['task.pr'], {});
+test('PR states go to set-pr-states on a server with task.prs, as given', async () => {
+  const states: PrStates = { prompt: 'open', prs: [{ id: 'row1', state: 'merged' }] };
+  const withIt = boardWith(['task.prs'], { 'set-pr-states': { body: { result: null } } });
+  await withIt.backend.setPrStates('abc', states);
+  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: states });
+});
+
+test('without task.prs a PR state goes to set-pr-state for the one PR that server states: the reported one, else the prompt’s', async () => {
+  const reported = await taskJson('abc');
+  const withReported = boardWith(['task.pr', 'task.pr-state'], {
+    'get-task': { body: { result: { ...reported, pr: 'abe1.pr' } } },
+    'set-pr-state': { body: { result: null } },
+  });
+  await withReported.backend.setPrStates('abc', {
+    prompt: 'open',
+    prs: [{ id: 'legacy', state: 'merged' }],
+  });
+  assert.deepEqual(
+    withReported.seen.map((request) => request.command),
+    ['version', 'get-task', 'set-pr-state'],
+  );
+  assert.deepEqual(withReported.seen[2]?.body, { id: 'abc', body: { prState: 'merged' } });
+  const promptOnly = boardWith(['task.pr', 'task.pr-state'], {
+    'get-task': { body: { result: { ...reported, pr: null } } },
+    'set-pr-state': { body: { result: null } },
+  });
+  await promptOnly.backend.setPrStates('abc', { prompt: 'closed' });
+  assert.deepEqual(promptOnly.seen[2]?.body, { id: 'abc', body: { prState: 'closed' } });
+  // Only the prompt's PR changed, but the task has a reported one that the server would take it for: nothing is written.
+  const mismatched = boardWith(['task.pr', 'task.pr-state'], {
+    'get-task': { body: { result: { ...reported, pr: 'abe1.pr' } } },
+  });
+  await mismatched.backend.setPrStates('abc', { prompt: 'closed' });
+  assert.deepEqual(
+    mismatched.seen.map((request) => request.command),
+    ['version', 'get-task'],
+  );
+});
+
+test('recording a PR state on a server with neither task.prs nor task.pr-state is refused', async () => {
+  const without = boardWith(['task.pr'], {
+    'get-task': { body: { result: { ...(await taskJson('abc')), pr: null } } },
+  });
   await assert.rejects(
-    without.backend.setPrState('abc', { prState: 'merged' }),
+    without.backend.setPrStates('abc', { prompt: 'merged' }),
     (error: unknown) => error instanceof BackendError && error.missingFeature === 'task.pr-state',
   );
-  assert.deepEqual(
-    without.seen.map((request) => request.command),
-    ['version'],
-  );
-  const withIt = boardWith(['task.pr-state'], { 'set-pr-state': { body: { result: null } } });
-  await withIt.backend.setPrState('abc', { prState: 'merged' });
-  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { prState: 'merged' } });
 });
 
 test('the directory list: the server must name machine.dirs, its index comes from the version answer, and a junk index is none', async () => {

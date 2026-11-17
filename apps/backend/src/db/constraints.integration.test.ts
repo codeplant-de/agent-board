@@ -108,6 +108,10 @@ describe('what the application role can store afterwards', () => {
     tx.execute(sql`
       insert into task (id, title, input, workdir, home_workdir, agent, pr, dedupe_key, head, position)
       values ('t1', ${o.title ?? ENVELOPE}, ${o.input ?? ENVELOPE}, ${o.workdir ?? null}, ${o.homeWorkdir ?? null}, ${o.agent ?? null}, ${o.pr ?? null}, ${o.dedupeKey ?? null}, ${o.head ?? null}, 0)`);
+  const taskPr = async (tx: Tx, o: { pr?: string } = {}) => {
+    await task(tx);
+    await tx.execute(sql`insert into task_pr (id, task_id, pr) values ('p1', 't1', ${o.pr ?? ENVELOPE})`);
+  };
   const schedule = (
     tx: Tx,
     o: { title?: string; input?: string; workdir?: string | null; agent?: string | null } = {},
@@ -155,7 +159,12 @@ describe('what the application role can store afterwards', () => {
     ['task_home_workdir_sealed', 'a plain home directory', (tx) => task(tx, { homeWorkdir: '/home/a' })],
     ['task_agent_sealed', 'a plain agent name', (tx) => task(tx, { agent: 'reviewer' })],
     ['schedule_agent_sealed', 'a plain schedule agent name', (tx) => schedule(tx, { agent: 'reviewer' })],
-    ['task_pr_sealed', 'a plain PR URL', (tx) => task(tx, { pr: 'https://github.com/o/r/pull/1' })],
+    [
+      'task_pr_sealed',
+      'a plain PR URL on the retired column',
+      (tx) => task(tx, { pr: 'https://github.com/o/r/pull/1' }),
+    ],
+    ['task_pr_pr_sealed', 'a plain PR URL', (tx) => taskPr(tx, { pr: 'https://github.com/o/r/pull/1' })],
     ['task_dedupe_key_blind', 'a plain dedupe key', (tx) => task(tx, { dedupeKey: 'https://github.com/o/r/pull/1' })],
     ['task_head_blind', 'a plain head', (tx) => task(tx, { head: 'abcdef1' })],
     ['task_head_blind', 'an envelope as a head', (tx) => task(tx, { head: ENVELOPE })],
@@ -219,6 +228,7 @@ describe('what the application role can store afterwards', () => {
         head: BLIND_INDEX,
       });
       await schedule(tx, { workdir: ENVELOPE, agent: ENVELOPE });
+      await tx.execute(sql`insert into task_pr (id, task_id, pr) values ('p1', 't1', ${ENVELOPE})`);
       await machine(tx, { dirs: ENVELOPE, dirsIndex: BLIND_INDEX });
     });
     await clear();

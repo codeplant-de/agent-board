@@ -1,4 +1,4 @@
-import { prOf, statePrOf, type UnreadableField } from '@agent-board/shared';
+import { prsOf, type UnreadableField } from '@agent-board/shared';
 import {
   Alert,
   Anchor,
@@ -75,9 +75,8 @@ function TaskView({ id }: { id: string }) {
   }
 
   const { task, thread, followUps, parent } = query.data;
-  // The prompt's PR first; the agent's reported one too when it is another PR. The state belongs to `statePrOf`.
   const unlisted = unlistedMachine(task, machines.data ?? []);
-  const prs = [...new Set([prOf(task), task.pr].filter((url): url is string => url != null))];
+  const prs = prsOf(task);
 
   return (
     <Container size="md" px={0}>
@@ -146,19 +145,19 @@ function TaskView({ id }: { id: string }) {
           </Group>
           {prs.length > 0 && (
             <Group gap="xs">
-              {prs.map((pr) => (
+              {prs.map(({ url, state }) => (
                 <Button
-                  key={pr}
+                  key={url}
                   component="a"
-                  href={pr}
+                  href={url}
                   target="_blank"
                   rel="noopener noreferrer"
                   variant="default"
                   size="xs"
                   className="truncate-flex"
-                  leftSection={<PrStateIcon state={pr === statePrOf(task) ? task.prState : null} size={14} />}
+                  leftSection={<PrStateIcon state={state} size={14} />}
                 >
-                  {pr.replace('https://github.com/', '')}
+                  {url.replace('https://github.com/', '')}
                 </Button>
               ))}
             </Group>

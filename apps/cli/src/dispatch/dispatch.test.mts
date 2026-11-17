@@ -1089,7 +1089,7 @@ test('a tick refreshes the PR state of open tasks and stamps the time', async ()
   const { deps, backend, logs, asked, state } = withGitHub([withPr()], {});
   await runDispatch(deps);
   assert.deepEqual(asked, [[PR]]);
-  assert.ok(backend.writes.includes('prState pr1 merged'));
+  assert.ok(backend.writes.includes('prStates pr1 prompt=merged'));
   assert.ok(logs.includes('PRSTATES changed=1'));
   assert.deepEqual(state.at, NOW);
 });

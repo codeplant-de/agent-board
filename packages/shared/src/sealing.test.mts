@@ -18,6 +18,7 @@ import {
   openFields,
   openNote,
   openPr,
+  openPrs,
   openPreview,
   sealAnswers,
   sealChecked,
@@ -664,6 +665,21 @@ test('the PR of a task is bound to the task and to its agent, and opens only as 
   // Plain text and a sealed value that is not a PR URL are not shown either.
   assert.equal(await openPr(opens, TASK, PR_URL), null);
   assert.equal(await openPr(opens, TASK, await seal(keys, 'pr', prBinding(TASK).context, 'javascript:alert(1)')), null);
+});
+
+test('the PRs of a task open in order, and one that does not open as the task’s PR is dropped', async () => {
+  const other = 'https://github.com/o/r/pull/8';
+  const rows = [
+    { id: 'a', pr: await sealPr(seals, TASK, PR_URL), state: 'merged' as const },
+    { id: 'b', pr: await sealPr(seals, 'Zz9dEf9x', other), state: null },
+    { id: 'c', pr: await sealPr(seals, TASK, other), state: 'open' as const },
+    { id: 'd', pr: PR_URL, state: null },
+  ];
+  assert.deepEqual(await openPrs(opens, TASK, rows), [
+    { id: 'a', url: PR_URL, state: 'merged' },
+    { id: 'c', url: other, state: 'open' },
+  ]);
+  assert.deepEqual(await openPrs(opens, TASK, []), []);
 });
 
 test('only a GitHub pull request URL is sealed as a PR, and within the limit', async () => {

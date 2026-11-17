@@ -2,8 +2,8 @@
 // it drives the merged icon and "Move merged to Done". The dispatcher runs it at most every PR_REFRESH_INTERVAL_MS.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { isRecord, statePrOf } from '@agent-board/shared';
-import type { Backend, PrState, Task } from '@agent-board/shared';
+import { isRecord, prsOf } from '@agent-board/shared';
+import type { Backend, PrStates, Task } from '@agent-board/shared';
 import { BackendError } from '../backend/backend.mts';
 import { GitHubError } from './github.mts';
 import type { GitHub, PrStateLookup } from './github.mts';
@@ -11,18 +11,30 @@ import { errorText } from '../output/text.mts';
 
 export const PR_REFRESH_INTERVAL_MS = 10 * 60_000;
 
-/** The PRs whose state to look up: those of the tasks still on the board, each once. */
+/** The PRs of the tasks still on the board whose state to look up, each URL once. */
 export function prsToCheck(tasks: Task[]): string[] {
-  const urls = tasks.filter((task) => !task.closed && task.status !== 'done').map((task) => statePrOf(task));
-  return [...new Set(urls.filter((url): url is string => url !== undefined))];
+  const urls = tasks.filter(isOnBoard).flatMap((task) => prsOf(task).map(({ url }) => url));
+  return [...new Set(urls)];
 }
 
-/** The tasks whose stored state differs from what GitHub says; a PR GitHub did not answer for changes nothing. */
-export function planPrStates(tasks: Task[], lookup: PrStateLookup): { task: Task; prState: PrState }[] {
-  return tasks.flatMap((task) => {
-    const url = task.closed || task.status === 'done' ? undefined : statePrOf(task);
-    const prState = url === undefined ? undefined : lookup.states.get(url);
-    return prState === undefined || prState === task.prState ? [] : [{ task, prState }];
+const isOnBoard = (task: Task): boolean => !task.closed && task.status !== 'done';
+
+/** What to write to each task whose stored states differ from what GitHub says; a PR GitHub did not answer for changes nothing. */
+export function planPrStates(tasks: Task[], lookup: PrStateLookup): { task: Task; states: PrStates }[] {
+  return tasks.filter(isOnBoard).flatMap((task) => {
+    const changed = prsOf(task).flatMap((pr) => {
+      const state = lookup.states.get(pr.url);
+      return state === undefined || state === pr.state ? [] : [{ id: pr.id, state }];
+    });
+    if (changed.length === 0) return [];
+    const prompt = changed.find(({ id }) => id === undefined);
+    const prs = changed.flatMap(({ id, state }) => (id === undefined ? [] : [{ id, state }]));
+    return [
+      {
+        task,
+        states: { ...(prompt === undefined ? {} : { prompt: prompt.state }), ...(prs.length === 0 ? {} : { prs }) },
+      },
+    ];
   });
 }
 
@@ -42,15 +54,17 @@ export async function refreshPrStates(
   }
   for (const url of lookup.unreadable) log(`WARN no state for ${url}`);
   let changed = 0;
-  for (const { task, prState } of planPrStates(tasks, lookup)) {
+  for (const { task, states } of planPrStates(tasks, lookup)) {
     try {
-      await backend.setPrState(task.id, prState);
+      await backend.setPrStates(task.id, states);
     } catch (error) {
       if (!(error instanceof BackendError && error.missingFeature === 'task.pr-state')) throw error;
       log(`WARN PR states not written: ${error.message}`);
       return changed;
     }
-    log(`PRSTATE ${task.id} ${prState}`);
+    log(
+      `PRSTATE ${task.id} ${[states.prompt, ...(states.prs ?? []).map(({ state }) => state)].filter(Boolean).join(' ')}`,
+    );
     changed += 1;
   }
   return changed;

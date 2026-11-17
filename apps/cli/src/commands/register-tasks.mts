@@ -150,10 +150,10 @@ export function registerTaskCommands(shared: ProgramShared): void {
     program
       .command('pr')
       .helpGroup(TASKS)
-      .summary('report the pull request you opened for a task')
+      .summary('report a pull request you opened for a task')
       .description(
         paragraphs(
-          "Inside a run: after you open a pull request for this task, report its URL. The board then shows it on the task's card and page, like the pull request of a review task. A later call replaces the earlier URL.",
+          "Inside a run: after you open a pull request for this task, report its URL. The board then shows it on the task's card and page, like the pull request of a review task. A later call adds another pull request to the task; the same URL twice changes nothing.",
           'The URL must be a GitHub pull request, https://github.com/<owner>/<repo>/pull/<number>, and nothing else.',
           ID_NOTE,
         ),

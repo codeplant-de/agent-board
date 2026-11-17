@@ -39,6 +39,7 @@ const TITLE = 'MARKER-title: rotate the staging credentials';
 const INPUT = '/review-pr https://github.com/acme/secret-repo/pull/17 MARKER-input';
 const WORKDIR = '/home/me/MARKER-workdir';
 const PR_URL = 'https://github.com/acme/secret-repo/pull/17';
+const OTHER_PR_URL = 'https://github.com/acme/secret-repo/pull/18';
 const MARKERS = ['MARKER', 'secret-repo', 'rotate the staging'];
 
 const question: Question = {
@@ -125,18 +126,16 @@ function fakeWire(): FakeWire {
       push(state, id, { body: sent.body }, 'agent', 'question', sent.questions);
     },
     async heartbeat() {},
-    async setPr(id, body) {
+    async addPr(id, body) {
       const sent = parseWirePr(JSON.parse(record(state, body)));
-      Object.assign(
-        state.tasks.find((t) => t.id === id)!,
-        { pr: sent.pr },
-      );
+      const found = state.tasks.find((t) => t.id === id)!;
+      found.prs = [...(found.prs ?? []), { id: `row${(found.prs?.length ?? 0) + 1}`, pr: sent.pr, state: null }];
     },
-    async setPrState(id, body) {
-      Object.assign(
-        state.tasks.find((t) => t.id === id)!,
-        { prState: body.prState },
-      );
+    async setPrStates(id, states) {
+      const found = state.tasks.find((t) => t.id === id)!;
+      if (states.prompt !== undefined) found.promptPrState = states.prompt;
+      for (const row of found.prs ?? [])
+        row.state = states.prs?.find((entry) => entry.id === row.id)?.state ?? row.state;
     },
     async setDirs(body) {
       state.dirs = parseWireDirs(JSON.parse(record(state, body)));
@@ -867,41 +866,71 @@ test('the key is resolved on first use, once', async () => {
   assert.deepEqual(schedule({ id: 'x' }).unreadable, []);
 });
 
-test('the PR an agent reports is sealed for its task and agent, and opens on the task; another value is no PR', async () => {
+test('the PRs an agent reports are sealed for its task and agent, and open on the task; another value is no PR', async () => {
   const wire = fakeWire();
   wire.tasks.push(await wireTask({ id: 't1' }), await wireTask({ id: 't2' }));
   const board = sealingBackend(wire, KEYS);
-  assert.equal((await board.getTask('t1')).pr, null);
-  await board.setPr('t1', PR_URL);
-  const sent = wire.tasks[0]!.pr!;
-  assert.equal(await open(KEYS, 'pr', 'task:t1:agent', sent), PR_URL);
-  assert.equal((await board.getTask('t1')).pr, PR_URL);
+  assert.deepEqual((await board.getTask('t1')).prs, []);
+  await board.addPr('t1', PR_URL);
+  await board.addPr('t1', OTHER_PR_URL);
+  const [first, second] = wire.tasks[0]!.prs!;
+  assert.equal(await open(KEYS, 'pr', 'task:t1:agent', first!.pr), PR_URL);
+  assert.equal(await open(KEYS, 'pr', 'task:t1:agent', second!.pr), OTHER_PR_URL);
+  assert.deepEqual(
+    (await board.getTask('t1')).prs.map(({ url }) => url),
+    [PR_URL, OTHER_PR_URL],
+  );
   // Another task serving the same ciphertext, or a value sealed for another purpose, is not shown.
-  wire.tasks[1]!.pr = sent;
-  assert.equal((await board.getTask('t2')).pr, null);
-  wire.tasks[0]!.pr = await seal(KEYS, 'pr', 'task:t1:agent', 'https://example.com/x');
-  assert.equal((await board.getTask('t1')).pr, null);
-  wire.tasks[0]!.pr = await seal(KEYS, 'workdir', 'task:t1', PR_URL);
-  assert.equal((await board.getTask('t1')).pr, null);
+  wire.tasks[1]!.prs = [first!];
+  assert.deepEqual((await board.getTask('t2')).prs, []);
+  wire.tasks[0]!.prs = [
+    { id: 'a', pr: await seal(KEYS, 'pr', 'task:t1:agent', 'https://example.com/x'), state: null },
+    { id: 'b', pr: await seal(KEYS, 'workdir', 'task:t1', PR_URL), state: null },
+    { id: 'c', pr: second!.pr, state: 'merged' },
+  ];
+  assert.deepEqual((await board.getTask('t1')).prs, [{ id: 'c', url: OTHER_PR_URL, state: 'merged' }]);
   noMarkers(wire);
+});
+
+test('a task from a server without task.prs shows its one PR and the state it states', async () => {
+  const wire = fakeWire();
+  const {
+    prs: _prs,
+    promptPrState: _state,
+    ...legacy
+  } = await wireTask({ id: 't1', prs: [{ id: 'x', url: PR_URL, state: 'open' }] });
+  wire.tasks.push(
+    legacy,
+    (({ prs: _p, promptPrState: _s, ...rest }) => rest)(await wireTask({ id: 't2', promptPrState: 'merged' })),
+  );
+  const board = sealingBackend(wire, KEYS);
+  const reported = await board.getTask('t1');
+  assert.deepEqual(reported.prs, [{ id: 'legacy', url: PR_URL, state: 'open' }]);
+  assert.equal(reported.promptPrState, null);
+  const prompt = await board.getTask('t2');
+  assert.deepEqual(prompt.prs, []);
+  assert.equal(prompt.promptPrState, 'merged');
 });
 
 test('a PR that is not a GitHub pull request URL is refused before sealing', async () => {
   const wire = fakeWire();
   wire.tasks.push(await wireTask({ id: 't1' }));
   const board = sealingBackend(wire, KEYS);
-  await assert.rejects(board.setPr('t1', 'https://github.com/acme/repo/issues/3'), /set-pr: the pull request must be/);
+  await assert.rejects(board.addPr('t1', 'https://github.com/acme/repo/issues/3'), /add-pr: the pull request must be/);
   assert.equal(wire.requests.length, 0);
-  assert.equal(wire.tasks[0]!.pr, null);
+  assert.deepEqual(wire.tasks[0]!.prs, []);
 });
 
-test('the state of a PR goes to the board in clear, as it is', async () => {
+test('the states of PRs go to the board in clear, as they are', async () => {
   const wire = fakeWire();
-  wire.tasks.push(await wireTask({ id: 't1' }));
+  wire.tasks.push(await wireTask({ id: 't1', prs: [{ id: 'row1', url: PR_URL, state: null }] }));
   const board = sealingBackend(wire, KEYS);
-  await board.setPrState('t1', 'merged');
-  assert.equal(wire.tasks[0]!.prState, 'merged');
-  assert.equal((await board.getTask('t1')).prState, 'merged');
+  await board.setPrStates('t1', { prompt: 'open', prs: [{ id: 'row1', state: 'merged' }] });
+  assert.equal(wire.tasks[0]!.promptPrState, 'open');
+  assert.equal(wire.tasks[0]!.prs![0]!.state, 'merged');
+  const opened = await board.getTask('t1');
+  assert.equal(opened.promptPrState, 'open');
+  assert.equal(opened.prs[0]!.state, 'merged');
 });
 
 test('the directory list is sealed for this machine with an index of the same document, and the board tells whether it holds it', async () => {

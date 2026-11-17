@@ -1,4 +1,4 @@
-import { statePrOf, type Status } from '@agent-board/shared';
+import type { Status } from '@agent-board/shared';
 import { Badge, Box, Button, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
 import { IconGitMerge } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -10,6 +10,7 @@ import { SlackInbox } from '../components/SlackInbox';
 import { TaskCard } from '../components/TaskCard';
 import { usePolish } from '../components/usePolish';
 import { beforeIdOver, dropNeighbors } from '../lib/dropPosition';
+import { canMoveMergedToDone } from '../lib/mergedPrs';
 import { canPolish, isOpenPolishOf } from '../lib/polish';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { POLL_MS, useTRPC, type ListedTask } from '../lib/trpc';
@@ -32,10 +33,6 @@ interface DropTarget {
 /** Only a worker moves a task into or out of Running, and only a running agent puts one in Waiting (a drag out ends the wait). */
 const canDrag = (task: ListedTask) => task.status !== 'running';
 const canDrop = (status: Status) => status !== 'running' && status !== 'waiting';
-
-/** A task of the user's whose PR has been merged and that asks nothing: it can go to Done. */
-const hasMergedPr = (task: ListedTask) =>
-  task.prState === 'merged' && statePrOf(task) !== undefined && !task.proposed && !task.openQuestion;
 
 /** The board's cells in order; Waiting sits above Todo in one cell, so a wait never takes a column of its own. */
 const CELLS: Status[][] = [['backlog'], ['waiting', 'todo'], ['running'], ['needs-me'], ['done']];
@@ -66,7 +63,7 @@ function BoardColumns({ only }: { only?: Status }) {
   const byStatus = (status: Status) => (tasks.data ?? []).filter((t) => t.status === status);
 
   const moveMergedToDone = async () => {
-    for (const { id } of byStatus('needs-me').filter(hasMergedPr))
+    for (const { id } of byStatus('needs-me').filter(canMoveMergedToDone))
       await done.mutateAsync({ id }).catch(() => undefined);
   };
 
@@ -125,7 +122,7 @@ function BoardColumns({ only }: { only?: Status }) {
               {HINT[status]}
             </Text>
           </Group>
-          {status === 'needs-me' && column.some(hasMergedPr) && (
+          {status === 'needs-me' && column.some(canMoveMergedToDone) && (
             <Button
               size="compact-xs"
               variant="light"
@@ -135,7 +132,7 @@ function BoardColumns({ only }: { only?: Status }) {
               loading={done.isPending}
               onClick={() => void moveMergedToDone()}
             >
-              Move merged to Done ({column.filter(hasMergedPr).length})
+              Move merged to Done ({column.filter(canMoveMergedToDone).length})
             </Button>
           )}
           <ScrollArea.Autosize mah={scrollMaxHeight(status, byStatus('waiting').length === 0)} offsetScrollbars>
