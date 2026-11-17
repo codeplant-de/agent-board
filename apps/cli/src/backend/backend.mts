@@ -263,6 +263,11 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     async setDirs(_machine, dirs) {
       print(`DRY set-dirs ${dirs.length} directories`);
     },
+    async setCatalog(_machine, catalog) {
+      print(
+        `DRY set-catalog ${catalog.skills.length} skills, ${Object.keys(catalog.dirs).length} directories with their own, ${catalog.models.length} models`,
+      );
+    },
     async heartbeat(id, beat) {
       print(`DRY heartbeat ${id} ${JSON.stringify(beat)}`);
     },

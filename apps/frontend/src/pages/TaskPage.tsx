@@ -29,6 +29,7 @@ import { PolishItem } from '../components/PolishItem';
 import { TaskBadges } from '../components/TaskBadges';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
+import { skillsFor } from '../lib/catalog';
 import { modelLabel } from '../lib/model';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago, stamp } from '../lib/time';
@@ -51,6 +52,7 @@ function TaskView({ id }: { id: string }) {
   const setPriority = useMutation(trpc.tasks.setPriority.mutationOptions());
   const removePr = useMutation(trpc.tasks.removePr.mutationOptions());
   const machines = useQuery(trpc.machines.list.queryOptions());
+  const catalogs = useQuery(trpc.machines.catalogs.queryOptions());
   const bottom = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useSearchParams();
   const transcriptOpen = search.get('transcript') !== null;
@@ -79,6 +81,7 @@ function TaskView({ id }: { id: string }) {
 
   const { task, thread, followUps, parent } = query.data;
   const unlisted = unlistedMachine(task, machines.data ?? []);
+  const skills = skillsFor(catalogs.data ?? [], task);
   const prs = prsOf(task);
 
   return (
@@ -281,7 +284,7 @@ function TaskView({ id }: { id: string }) {
         />
 
         <div ref={bottom}>
-          <ActionPanel task={task} thread={thread} followUps={followUps} />
+          <ActionPanel task={task} thread={thread} followUps={followUps} skills={skills} />
         </div>
       </Stack>
     </Container>

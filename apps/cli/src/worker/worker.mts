@@ -23,6 +23,8 @@ import { agentFor, neverRun, ownLane, removedIntakeProblem, unreadableForRun } f
 import { buildInvocation, decideOutcome, isRunOver, planRun, pluginPlaceholders, supervise } from './plan.mts';
 import type { Invocation } from './plan.mts';
 import { goneDirNotice, inboxMessageText, lastWakeNote, pauseMessageText } from './prompts.mts';
+import { createCatalogStore } from '../catalog/cache.mts';
+import { initSkillsIn, recordRunSkills } from '../catalog/catalog.mts';
 import { getPaths } from '../config/config.mts';
 import { checkoutAbove, isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import { selfCommand } from '../self/self.mts';
@@ -103,6 +105,9 @@ export interface WorkerDeps extends Context {
   spoolEveryMs?: number;
   // Keeps the machine awake while the run goes (macOS); returns the function that ends it. Best effort.
   keepAwake?: () => () => void;
+  // The run reported the skills it has in its start event: remembers them for the directory that covers `cwd`. Best effort,
+  // and what it throws goes in the log.
+  recordSkills?: (cwd: string, skills: unknown[]) => void;
   // Makes the backend's calls for the task name this run, so the board refuses them once a later run holds the task.
   bindRun?: (scope: RunScope) => void;
 }
@@ -329,7 +334,18 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
     return beating;
   };
   let firstOutput = oldestEvent === undefined;
+  // An agent's run lists the skills of the user's settings only (`--setting-sources user`), which the directory's catalogue is not.
+  let skillsReported = restricted !== undefined;
   const onLine = (line: string): string | undefined => {
+    const skills = skillsReported || deps.recordSkills === undefined ? undefined : initSkillsIn(line);
+    if (skills !== undefined) {
+      skillsReported = true;
+      try {
+        deps.recordSkills?.(plan.invocation.cwd, skills);
+      } catch (error) {
+        deps.appendLog(taskId, `the run's skills were not recorded: ${errorText(error)}`);
+      }
+    }
     if (!firstOutput && oldestEvent !== undefined) {
       firstOutput = true;
       const at = deps.now().getTime();
@@ -733,6 +749,8 @@ export async function workerMain(taskId: string): Promise<void> {
     },
     watchEveryMs: 15_000,
     ...(process.platform === 'darwin' ? { keepAwake: () => keepAwake() } : {}),
+    recordSkills: (cwd, skills) =>
+      recordRunSkills({ store: createCatalogStore(), config: context.config }, cwd, skills),
     bindRun: (scope) => {
       run = scope;
     },

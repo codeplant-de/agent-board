@@ -32,7 +32,10 @@ vi.mock('../lib/trpc', () => {
         wakeNow: idle,
         applyPolish: idle,
       },
-      machines: { list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => [] }) } },
+      machines: {
+        list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => [] }) },
+        catalogs: { queryOptions: () => ({ queryKey: ['machines.catalogs'], queryFn: async () => [] }) },
+      },
       transcript: {
         runs: { queryOptions: ({ id }: { id: string }) => ({ queryKey: ['transcript.runs', id] }) },
         events: { queryKey: (input: unknown) => ['transcript.events', input] },

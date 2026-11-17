@@ -1,4 +1,5 @@
 // The vocabulary shared by the CLI, the server and the UI. docs/machine-api.md documents it.
+import type { MachineCatalog } from './catalog.mts';
 import { envelopeLength, isBlindIndex, isEnvelope } from './crypto.mts';
 import type { Field } from './crypto.mts';
 import { isRecord } from './guards.mts';
@@ -423,6 +424,10 @@ export interface Backend {
   checkDirs(machine: string, dirs: readonly MachineDir[]): Promise<DirsOnBoard>;
   // Replaces the board's copy of this machine's directory list. The copy is advice for the New task form and is never read back by a CLI.
   setDirs(machine: string, dirs: readonly MachineDir[]): Promise<void>;
+  // Whether the board holds `catalog` as this machine's catalogue, by comparing blind indexes; 'unsupported' for a server without the feature.
+  checkCatalog(machine: string, catalog: MachineCatalog): Promise<CatalogOnBoard>;
+  // Replaces the board's copy of this machine's catalogue. Advice for completing skills and choosing models, never read back by a CLI.
+  setCatalog(machine: string, catalog: MachineCatalog): Promise<void>;
 }
 
 /** A directory the machine lists in its config, with the label it gave it (`isSafeDirLabel`). */
@@ -432,6 +437,8 @@ export interface MachineDir {
 }
 
 export type DirsOnBoard = 'unsupported' | 'current' | 'stale';
+
+export type CatalogOnBoard = DirsOnBoard;
 
 // What the board server stores and returns: the sealed fields are envelopes (`abe1.…`) it cannot read. Values the server
 // returns may also be legacy plain text from before encryption; only what a client sends is checked to be sealed.
@@ -548,6 +555,19 @@ export interface WireDirsState {
   index: string | null;
 }
 
+// Body of set-catalog: the sealed catalogue ("machine.catalog") and the blind index of what it holds.
+export interface WireCatalog {
+  catalog: string;
+  index: string;
+}
+
+// What the `version` answer says of the calling machine's catalogue.
+export interface WireCatalogState {
+  supported: boolean;
+  // The blind index the board holds for this machine's catalogue; null when it holds none.
+  index: string | null;
+}
+
 export interface WireAsk {
   // Sealed empty text: a question note carries its content in `questions`.
   body: string;
@@ -615,6 +635,8 @@ export interface WireBackend {
   setPrStates(id: string, body: WirePrStates): Promise<void>;
   setDirs(body: WireDirs): Promise<void>;
   dirsState(): Promise<WireDirsState>;
+  setCatalog(body: WireCatalog): Promise<void>;
+  catalogState(): Promise<WireCatalogState>;
 }
 
 // The characters of a suggested reply the board takes.
@@ -629,6 +651,7 @@ export const SEALED_LIMITS: Record<Field, number> = {
   agent: 256,
   pr: 1024,
   'machine.dirs': 256 * 1024,
+  'machine.catalog': 256 * 1024,
   'note.body': 4 * 100_000,
   'note.preview': 4 * 300,
   'note.suggestion': 4 * NOTE_SUGGESTION_CHARS,
@@ -1235,6 +1258,12 @@ export function parseVersionDirsIndex(value: unknown): string | null {
   return typeof dirsIndex === 'string' && isBlindIndex(dirsIndex) ? dirsIndex : null;
 }
 
+/** The blind index of the calling machine's catalogue in a `version` answer. Lenient like `parseVersionDirsIndex`. */
+export function parseVersionCatalogIndex(value: unknown): string | null {
+  const catalogIndex = isRecord(value) ? value['catalogIndex'] : undefined;
+  return typeof catalogIndex === 'string' && isBlindIndex(catalogIndex) ? catalogIndex : null;
+}
+
 // What the server checks of every request: the shape, the sealed fields being envelopes, and nothing about their content.
 
 function sealedField(obj: Record<string, unknown>, key: string, what: string, field: Field): string {
@@ -1296,6 +1325,16 @@ export function parseWireDirs(value: unknown): WireDirs {
   return {
     dirs: sealedField(obj, 'dirs', 'dirs', 'machine.dirs'),
     index: parseBlindIndex(obj['index'], 'dirs.index'),
+  };
+}
+
+// Body of set-catalog: the sealed catalogue and its blind index.
+export function parseWireCatalog(value: unknown): WireCatalog {
+  const obj = record(value, 'catalog');
+  rejectUnknownKeys(obj, ['catalog', 'index'], 'catalog');
+  return {
+    catalog: sealedField(obj, 'catalog', 'catalog', 'machine.catalog'),
+    index: parseBlindIndex(obj['index'], 'catalog.index'),
   };
 }
 

@@ -2,6 +2,7 @@ import {
   agentBinding,
   deriveKeys,
   inputBinding,
+  machineCatalogBinding,
   machineDirsBinding,
   prBinding,
   seal,
@@ -11,7 +12,7 @@ import {
 } from '@agent-board/shared';
 import type { PrState } from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
-import { openBoardTask, openEvent, openMachines } from './opening';
+import { openBoardTask, openCatalogs, openEvent, openMachines } from './opening';
 import { sealerFor } from './contexts';
 import type { RouterOutputs } from './wire';
 
@@ -214,6 +215,37 @@ describe('the directory lists of machines, as the browser opens them', () => {
     const name = 'bad name\n';
     const machine = await openOne(wire(name, await sealFor(name, list(['/a']))));
     expect(machine).toMatchObject({ shown: '(invalid)', name, dirs: null, dirsUnreadable: false });
+  });
+});
+
+describe('the catalogues of machines, as the browser opens them', () => {
+  const catalog = {
+    claude: '2.1.326',
+    models: [{ value: 'opus', label: 'Opus' }],
+    skills: [{ name: 'review', description: 'Reviews', argumentHint: '<pr>' }],
+    dirs: { '/a': [{ name: 'deploy' }] },
+  };
+  const sealFor = (machine: string, text: string) => sealerFor(keys)(machineCatalogBinding(machine), text);
+  const wire = (name: string, sealed: string | null) =>
+    ({ name, catalog: sealed, catalogUpdatedAt: null }) as RouterOutputs['machines']['catalogs'][number];
+  const openOne = async (...catalogs: RouterOutputs['machines']['catalogs']) => (await openCatalogs(keys, catalogs))[0];
+
+  it('opens a good catalogue under the machine own name', async () => {
+    const opened = await openOne(wire('laptop', await sealFor('laptop', JSON.stringify(catalog))));
+    expect(opened).toEqual({ name: 'laptop', catalog });
+  });
+
+  it('has no catalogue when it was sealed for another machine, is not an envelope or is not of its shape', async () => {
+    const elsewhere = await sealFor('desktop', JSON.stringify(catalog));
+    expect(await openOne(wire('laptop', elsewhere))).toEqual({ name: 'laptop', catalog: null });
+    expect(await openOne(wire('laptop', JSON.stringify(catalog)))).toEqual({ name: 'laptop', catalog: null });
+    const shapeless = await sealFor('laptop', JSON.stringify({ models: 'x' }));
+    expect(await openOne(wire('laptop', shapeless))).toEqual({ name: 'laptop', catalog: null });
+  });
+
+  it('offers nothing for a name that does not pass the shape check', async () => {
+    const name = 'bad name\n';
+    expect(await openOne(wire(name, await sealFor(name, JSON.stringify(catalog))))).toEqual({ name, catalog: null });
   });
 });
 

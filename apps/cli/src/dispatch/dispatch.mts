@@ -25,6 +25,10 @@ import { neverRun, ownLane, START_MARKER, unreadableForRun, WAKE_MARKER } from '
 import { unitName } from '../task-id.mts';
 import type { LaneRun } from './decide.mts';
 import { syncDirs } from '../config/dirs.mts';
+import { realFingerprintDeps, syncCatalog } from '../catalog/catalog.mts';
+import type { CatalogSyncDeps } from '../catalog/catalog.mts';
+import { createCatalogStore } from '../catalog/cache.mts';
+import { EXIT_GRACE_MS, PROBE_TIMEOUT_MS, probeClaude } from '../catalog/probe.mts';
 import { createRunFiles } from '../worker/runtime.mts';
 import type { RunFiles } from '../worker/runtime.mts';
 import { EXEC_PATH, isCompiledBinary } from '../self/self.mts';
@@ -86,6 +90,8 @@ export interface DispatchDeps extends Context {
   configWarnings: () => string[];
   // The PR states of open tasks are looked up here at most every 10 minutes; undefined `github`: `gh` is not installed.
   prRefresh: { github: GitHub | undefined; state: PrRefreshState };
+  // Where the machine catalogue of skills and models is kept and asked for; undefined: the tick leaves it alone.
+  catalog?: Pick<CatalogSyncDeps, 'store' | 'probe' | 'fingerprintDeps'>;
 }
 
 // Ends a wait on the board: the woken task, or undefined when it no longer waited or the call failed.
@@ -344,6 +350,22 @@ async function sendDirs({ backend, config, print: log }: DispatchDeps): Promise<
   }
 }
 
+// Probes at most one directory for its skills and models, then tells the board this machine's catalogue when it changed; a
+// server that cannot hold one or a failure costs one line at most. A tick with less time left than a probe can take only
+// sends what is cached.
+async function sendCatalog(deps: DispatchDeps, tickStart: Date): Promise<void> {
+  const { backend, config, catalog, now, dryRun, print: log } = deps;
+  if (catalog === undefined) return;
+  const left = TICK_LIMIT_MS - TICK_MARGIN_MS - (now().getTime() - tickStart.getTime());
+  const skipProbe = left < PROBE_TIMEOUT_MS + EXIT_GRACE_MS;
+  try {
+    const sync = await syncCatalog({ ...catalog, backend, config, now, dryRun, log, skipProbe });
+    if (sync.result === 'sent') log(`CATALOG sent ${sync.skills} skills and ${sync.models} models to the board`);
+  } catch (error) {
+    log(`WARN sending the skill catalogue failed: ${errorText(error)}`);
+  }
+}
+
 /**
  * When this machine next has something to do that no event announces: a wait here ends or its check is due again. A check that
  * never ran, or that this tick put off, is due now. A wait whose time is up was woken in this tick or its wake failed; the
@@ -594,6 +616,8 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   log(
     `TICK started=${started.size} ${summary}${checks.length > 0 ? ` checks=${checks.length}` : ''}${next === undefined ? '' : ` next=${next.toISOString()}`}`,
   );
+  // After the starts and the checks, so a probe never holds one back.
+  await sendCatalog(deps, tickStart);
   // Last, so a slow or failing GitHub never holds back a start.
   await refreshPrStatesIfDue({ ...deps.prRefresh, backend, now: deps.now, dryRun: deps.dryRun, print: log }, listed);
 }
@@ -644,6 +668,11 @@ export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<voi
         runWatch: (job) => runCommand(job),
         isAlive: isProcessAlive,
         configWarnings: () => loadConfigWarnings(getPaths().configFile),
+        catalog: {
+          store: createCatalogStore(),
+          probe: (dir) => probeClaude(dir),
+          fingerprintDeps: () => realFingerprintDeps(),
+        },
         prRefresh: {
           github:
             whichOnPath('gh') === undefined

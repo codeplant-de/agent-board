@@ -56,6 +56,7 @@ interface Connection {
   keys: Keys;
   features: ReadonlySet<string>;
   dirsIndex: string | null;
+  catalogIndex: string | null;
 }
 
 // The server feature each command needs; a command not listed works on every server this CLI accepts.
@@ -72,6 +73,7 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   'ack-messages': 'run-inbox',
   stopped: 'run-inbox',
   'set-dirs': 'machine.dirs',
+  'set-catalog': 'machine.catalog',
 };
 
 // The commands a run makes for its own task that the server checks against the task's current run (`task.run`).
@@ -97,7 +99,13 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       options.onServer?.(identity);
       const checked = await checkDataKey(config.dataKey, identity);
       if ('problem' in checked) throw new BackendError(keyProblemMessage(checked));
-      return { config, keys: checked.keys, features: identity.features, dirsIndex: identity.dirsIndex ?? null };
+      return {
+        config,
+        keys: checked.keys,
+        features: identity.features,
+        dirsIndex: identity.dirsIndex ?? null,
+        catalogIndex: identity.catalogIndex ?? null,
+      };
     })();
     return ready;
   };
@@ -239,6 +247,11 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     dirsState: async () => {
       const { features, dirsIndex } = await connect();
       return { supported: features.has('machine.dirs'), index: dirsIndex };
+    },
+    setCatalog: async (body) => send('set-catalog', { body }),
+    catalogState: async () => {
+      const { features, catalogIndex } = await connect();
+      return { supported: features.has('machine.catalog'), index: catalogIndex };
     },
     pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
     fail: async (id, note) => call('fail', { id: taskId(id), body: note }, parseWireFailResult),

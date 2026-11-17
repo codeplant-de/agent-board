@@ -531,6 +531,50 @@ test("the run's stream becomes readable log lines and a transcript sent with eac
   );
 });
 
+const INIT_LINE = JSON.stringify({ type: 'system', subtype: 'init', cwd: '/tmp', skills: ['review', 'docx'] });
+
+test("the skills in the run's start event are handed over once with the run's directory", async () => {
+  const { deps } = setup({ exitCode: 0, signal: null });
+  const recorded: [string, unknown[]][] = [];
+  deps.recordSkills = (cwd, skills) => void recorded.push([cwd, skills]);
+  deps.run = async (_invocation, _taskId, _env, _watch, onLine) => {
+    onLine(INIT_LINE);
+    onLine(INIT_LINE);
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.deepEqual(recorded, [['/tmp', ['review', 'docx']]]);
+});
+
+test("a run restricted to an agent does not report its skills: its list lacks the directory's own", async () => {
+  const { deps } = setupAgent();
+  const recorded: unknown[] = [];
+  deps.recordSkills = (_cwd, skills) => void recorded.push(skills);
+  const run = deps.run;
+  deps.run = async (invocation, taskId, env, watch, onLine) => {
+    onLine(INIT_LINE);
+    return run(invocation, taskId, env, watch, onLine);
+  };
+  await runWorker(deps, 'w1');
+  assert.deepEqual(recorded, []);
+});
+
+test('recording the skills of a run can fail without touching the run, and is logged', async () => {
+  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
+  deps.recordSkills = () => {
+    throw new Error('disk full');
+  };
+  deps.run = async (_invocation, _taskId, _env, _watch, onLine) => {
+    onLine(INIT_LINE);
+    onLine(JSON.stringify({ type: 'result', result: 'All done', is_error: false }));
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.ok(calls.includes("append w1: the run's skills were not recorded: disk full"));
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail w1')));
+});
+
 test('a transcript batch the board refused is sent again with the next one', async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
   let failures = 1;

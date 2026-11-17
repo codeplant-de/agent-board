@@ -20,6 +20,7 @@ export type Field =
   | 'agent'
   | 'pr'
   | 'machine.dirs'
+  | 'machine.catalog'
   | 'note.body'
   | 'note.preview'
   | 'note.suggestion'

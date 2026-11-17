@@ -12,6 +12,8 @@ const shown = vi.hoisted(() => ({
   task: undefined as unknown,
   machines: [] as unknown[],
   removed: [] as unknown[],
+  catalogs: [] as unknown[],
+  skills: [] as readonly { name: string }[],
 }));
 
 vi.mock('../lib/trpc', () => ({
@@ -37,10 +39,16 @@ vi.mock('../lib/trpc', () => ({
     },
     machines: {
       list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => shown.machines }) },
+      catalogs: { queryOptions: () => ({ queryKey: ['machines.catalogs'], queryFn: async () => shown.catalogs }) },
     },
   }),
 }));
-vi.mock('../components/ActionPanel', () => ({ ActionPanel: () => null }));
+vi.mock('../components/ActionPanel', () => ({
+  ActionPanel: ({ skills }: { skills: readonly { name: string }[] }) => {
+    shown.skills = skills;
+    return null;
+  },
+}));
 vi.mock('../components/TranscriptDrawer', () => ({ TranscriptDrawer: () => null }));
 
 const task = (overrides: Partial<BoardTask>): BoardTask =>
@@ -213,5 +221,24 @@ describe('TaskPage directory', () => {
   it('says nothing about a directory below a listed one', async () => {
     renderPage({ machine: 'laptop', workdir: '/work/app/.claude/worktrees/x' });
     expect(await screen.findByText('laptop:/work/app/.claude/worktrees/x')).toBeInTheDocument();
+  });
+});
+
+describe('TaskPage skills', () => {
+  it('offers the reply field the skills of its machine and directory, from the catalogues query', async () => {
+    shown.machines = [{ name: 'laptop', shown: 'laptop', dirs: [{ path: '/work/app' }] }];
+    shown.catalogs = [
+      {
+        name: 'laptop',
+        catalog: {
+          models: [],
+          skills: [{ name: 'review' }],
+          dirs: { '/work/app': [{ name: 'deploy' }], '/work/other': [{ name: 'sweep' }] },
+        },
+      },
+    ];
+    renderPage({ machine: 'laptop', workdir: '/work/app' });
+    await screen.findByText('laptop:/work/app');
+    await waitFor(() => expect(shown.skills.map(({ name }) => name)).toEqual(['deploy', 'review']));
   });
 });
