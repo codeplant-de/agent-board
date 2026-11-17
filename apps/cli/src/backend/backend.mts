@@ -235,6 +235,18 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
       const { expect: _expect, ...fields } = patch;
       return { ...(await inner.getTask(id)), ...fields };
     },
+    async configureTask(id, change) {
+      const { seal: _seal, ...fields } = change;
+      print(`DRY configure-task ${id} ${oneLine(JSON.stringify(fields), 160)}`);
+      const { priority, model, place } = change;
+      const task = await inner.getTask(id);
+      return {
+        ...task,
+        ...(priority === undefined ? {} : { priority }),
+        ...(model === undefined ? {} : { model }),
+        ...(place === undefined ? {} : { workdir: place?.workdir ?? null, sessionId: null, next: 'fresh' as const }),
+      };
+    },
     async claimTask(id, machine) {
       print(`DRY claim-task ${id} --machine ${machine}`);
       const task = await inner.getTask(id);

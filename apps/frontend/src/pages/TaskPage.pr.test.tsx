@@ -28,6 +28,7 @@ vi.mock('../lib/trpc', () => ({
         }),
       },
       setPriority: { mutationOptions: () => ({ mutationFn: async () => null }) },
+      configure: { mutationOptions: () => ({ mutationFn: async () => null }) },
       removePr: {
         mutationOptions: () => ({
           mutationFn: async (input: unknown) => {

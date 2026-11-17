@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Machine } from './opening';
-import { unlistedMachine } from './workingDirectories';
+import { isCurrentPlace, unlistedMachine } from './workingDirectories';
 
 const laptop = (dirs: string[] | null): Machine =>
   ({ name: 'laptop', shown: 'Laptop', dirs: dirs === null ? null : dirs.map((path) => ({ path })) }) as Machine;
@@ -27,5 +27,25 @@ describe('unlistedMachine', () => {
     expect(unlistedMachine(task('/x'), [laptop(null)])).toBeUndefined();
     expect(unlistedMachine(task('/x'), [laptop([])])).toBeUndefined();
     expect(unlistedMachine(task('/x', 'other'), [laptop(['/a'])])).toBeUndefined();
+  });
+});
+
+describe('isCurrentPlace', () => {
+  it('is true for the machine and directory the task already has', () => {
+    expect(isCurrentPlace({ machine: 'laptop', workdir: '/work/app' }, { machine: 'laptop', path: '/work/app' })).toBe(
+      true,
+    );
+  });
+
+  it('is false for the same path on another machine and for another path', () => {
+    const task = { machine: 'laptop', workdir: '/work/app' };
+    expect(isCurrentPlace(task, { machine: 'desk', path: '/work/app' })).toBe(false);
+    expect(isCurrentPlace(task, { machine: 'laptop', path: '/work/other' })).toBe(false);
+  });
+
+  it('treats no directory as current only for a task with neither a directory nor a machine', () => {
+    expect(isCurrentPlace({ machine: null, workdir: null }, undefined)).toBe(true);
+    expect(isCurrentPlace({ machine: 'laptop', workdir: null }, undefined)).toBe(false);
+    expect(isCurrentPlace({ machine: 'laptop', workdir: '/work/app' }, undefined)).toBe(false);
   });
 });

@@ -33,6 +33,7 @@ import {
   parseWireSchedules,
   parseWireTask,
   parseWireTaskDraft,
+  parseWireTaskConfig,
   parseWireTaskPatch,
   parseWireTasks,
   parseWireWait,
@@ -256,6 +257,27 @@ test('a patch takes the session and the next run', () => {
   assert.deepEqual(parseWireTaskPatch({ workdir: WORKDIR, input: INPUT }), { workdir: WORKDIR, input: INPUT });
   assert.deepEqual(parseWireTaskPatch({ workdir: null }), { workdir: null });
   assert.throws(() => parseWireTaskPatch({ priority: 'asap' }), /priority must be one of urgent, high, normal, low/);
+});
+
+test('a task config takes a priority, a model or null, and a place with a sealed directory or null, and nothing else', () => {
+  assert.deepEqual(parseWireTaskConfig({ priority: 'low' }), { priority: 'low' });
+  assert.deepEqual(parseWireTaskConfig({ model: null }), { model: null });
+  assert.deepEqual(parseWireTaskConfig({ model: 'claude-sonnet-5-5[1m]' }), { model: 'claude-sonnet-5-5[1m]' });
+  assert.deepEqual(parseWireTaskConfig({ place: null }), { place: null });
+  assert.deepEqual(parseWireTaskConfig({ place: { workdir: WORKDIR }, priority: 'high', model: 'opus' }), {
+    place: { workdir: WORKDIR },
+    priority: 'high',
+    model: 'opus',
+  });
+  assert.throws(() => parseWireTaskConfig({}), /config needs one of priority, model, place/);
+  assert.throws(() => parseWireTaskConfig([]), /must be a JSON object/);
+  assert.throws(() => parseWireTaskConfig({ priority: 'asap' }), /priority must be one of/);
+  for (const model of ['', 'not a model', '-x', 5, undefined])
+    assert.throws(() => parseWireTaskConfig({ model }), /model is not a model name/, String(model));
+  for (const place of [{}, { workdir: '/home/me' }, { workdir: 5 }, { workdir: null }, 'x', []])
+    assert.throws(() => parseWireTaskConfig({ place }), ContractError, JSON.stringify(place));
+  assert.throws(() => parseWireTaskConfig({ place: { workdir: WORKDIR, machine: 'laptop' } }), /unknown key "machine"/);
+  assert.throws(() => parseWireTaskConfig({ status: 'done' }), /unknown key "status"/);
 });
 
 test('a note carries its text, preview, questions and answers as received', () => {

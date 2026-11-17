@@ -1,4 +1,4 @@
-import { AGENT_NAME_RULE, isAgentName, MODEL_ALIASES, PRIORITIES, type Priority } from '@agent-board/shared';
+import { AGENT_NAME_RULE, isAgentName, PRIORITIES, type Priority } from '@agent-board/shared';
 import {
   Button,
   Code,
@@ -12,19 +12,19 @@ import {
   TextInput,
 } from '@mantine/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { modelsFor, skillsFor } from '../lib/catalog';
-import { modelLabel } from '../lib/model';
+import { skillsFor } from '../lib/catalog';
+import { DEFAULT_MODEL } from '../lib/model';
 import { PRIORITY_LABEL } from '../lib/priority';
 import { parseRepeatRule } from '../lib/repeat';
 import { errorMessage, useTRPC } from '../lib/trpc';
 import { useNow } from '../lib/useNow';
-import { directoryChoices } from '../lib/workingDirectories';
+import { DirectorySelect } from './DirectorySelect';
 import { MarkdownEditor } from './MarkdownEditor';
+import { useDirectoryChoices } from './useDirectoryChoices';
+import { useModelOptions } from './useModelOptions';
 
-const DEFAULT_MODEL = 'default';
-const ALIAS_OPTIONS = MODEL_ALIASES.map(({ value, label }) => ({ value, label }));
 const WHEN_LABEL = { now: 'Now', later: 'Later', repeat: 'Repeating', backlog: 'Backlog', hold: 'Needs me' } as const;
 type When = keyof typeof WHEN_LABEL;
 
@@ -35,21 +35,6 @@ interface Props {
   initial?: { title: string; input: string };
   /** After the task exists. */
   onCreated?: () => void;
-}
-
-function directoryDescription(noList: boolean, unreadable: string[]): ReactNode {
-  const unreadableNote =
-    unreadable.length === 0
-      ? null
-      : `The directory ${unreadable.length === 1 ? 'list' : 'lists'} of ${unreadable.join(', ')} could not be read.`;
-  if (noList)
-    return (
-      <>
-        No machine has listed a directory yet. Run <Code>board dirs add</Code> in a checkout.
-        {unreadableNote !== null && ` ${unreadableNote}`}
-      </>
-    );
-  return unreadableNote ?? undefined;
 }
 
 /** A prompt, as you would type it into Claude Code, and optionally the directory of a machine it runs in. */
@@ -66,7 +51,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [directory, setDirectory] = useState<string | null>(null);
   const [agent, setAgent] = useState('');
-  const machines = useQuery(trpc.machines.list.queryOptions());
+  const directories = useDirectoryChoices();
   const catalogs = useQuery(trpc.machines.catalogs.queryOptions());
   const create = useMutation(trpc.tasks.create.mutationOptions());
 
@@ -74,32 +59,12 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const start = new Date(at);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const parsedRule = parseRepeatRule(rule, timezone);
-  const { groups, choices, unreadable } = useMemo(
-    () => directoryChoices(machines.data ?? [], now),
-    [machines.data, now],
-  );
-  const place = choices.find(({ value }) => value === directory);
+  const place = directories.choices.find(({ value }) => value === directory);
   const skills = useMemo(
     () => skillsFor(catalogs.data ?? [], { machine: place?.machine, workdir: place?.path }),
     [catalogs.data, place?.machine, place?.path],
   );
-  const catalogModels = modelsFor(catalogs.data ?? [], place?.machine);
-  const offered = catalogModels.length > 0 ? catalogModels : ALIAS_OPTIONS;
-  // A model picked before the machine changed stays selected even when the new list lacks it.
-  const modelOptions = [
-    { value: DEFAULT_MODEL, label: 'Default' },
-    ...(model === DEFAULT_MODEL || offered.some(({ value }) => value === model)
-      ? []
-      : [
-          {
-            value: model,
-            label:
-              modelsFor(catalogs.data ?? [], undefined).find(({ value }) => value === model)?.label ??
-              modelLabel(model),
-          },
-        ]),
-    ...offered.map(({ value, label }) => ({ value, label })),
-  ];
+  const models = useModelOptions(place?.machine, model);
   const agentName = agent.trim();
   const agentError = agentName !== '' && !isAgentName(agentName) ? `Use ${AGENT_NAME_RULE}` : undefined;
   const startsLater = when === 'later' || when === 'repeat';
@@ -170,17 +135,11 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           machine and directory. Without a working directory it runs in the default directory of whichever machine takes
           it.
         </Text>
-        <Select
+        <DirectorySelect
           label="Working directory"
-          placeholder={machines.isPending ? 'Loading machines…' : 'Default directory of whichever machine takes it'}
-          searchable
-          clearable
-          data={groups}
+          directories={directories}
           value={directory}
           onChange={setDirectory}
-          disabled={machines.isPending || machines.isError || choices.length === 0}
-          error={machines.isError ? errorMessage(machines.error) : undefined}
-          description={directoryDescription(choices.length === 0 && !machines.isPending, unreadable)}
         />
         <TextInput
           label="Agent"
@@ -212,9 +171,9 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           allowDeselect={false}
           value={model}
           onChange={(value) => value && setModel(value)}
-          data={modelOptions}
+          data={models.options}
           description={
-            catalogModels.length > 0
+            models.fromCatalog
               ? 'The models claude lists on the chosen machine, or on any machine. Default is the model claude picks on the machine that runs it'
               : 'Default is the model claude picks on the machine that runs it'
           }

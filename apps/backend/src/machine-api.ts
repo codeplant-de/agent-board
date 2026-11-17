@@ -30,6 +30,7 @@ import {
   parseWirePrState,
   parseWirePrStates,
   parseWireScheduleDraft,
+  parseWireTaskConfig,
   parseWireTaskDraft,
   parseWireTaskPatch,
   parseWireTranscriptBatch,
@@ -67,6 +68,7 @@ import {
   ask,
   attachSession,
   claimTask,
+  configureTask,
   failTask,
   getTask,
   heartbeat,
@@ -207,6 +209,12 @@ async function handleMachineCall(
           runOf(body),
         ),
       );
+    case 'configure-task': {
+      const { place, ...config } = parsed(() => parseWireTaskConfig(body['body']));
+      // A machine pins a task to itself only: the token names the machine, never the body.
+      const pinned = place === undefined ? {} : { place: place === null ? null : { machine, workdir: place.workdir } };
+      return task(await configureTask(db, idOf(body, 'task'), { ...config, ...pinned }, machine));
+    }
     case 'claim-task': {
       const id = idOf(body, 'task');
       const asMachine = body['machine'];
@@ -363,6 +371,7 @@ async function handleMachineCall(
 const DISPATCH_WRITES = new Set([
   'add-task',
   'update-task',
+  'configure-task',
   'claim-task',
   'add-note',
   'set-pr',

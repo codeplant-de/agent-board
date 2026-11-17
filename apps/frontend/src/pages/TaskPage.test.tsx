@@ -17,6 +17,7 @@ vi.mock('../lib/trpc', () => {
       tasks: {
         get: { queryOptions: ({ id }: { id: string }) => ({ queryKey: ['tasks.get', id] }) },
         setPriority: idle,
+        configure: idle,
         removePr: idle,
         answer: idle,
         reply: idle,

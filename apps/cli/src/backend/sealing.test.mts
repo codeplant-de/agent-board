@@ -14,6 +14,7 @@ import {
   parseWireNoteInput,
   parseWirePr,
   parseWireScheduleDraft,
+  parseWireTaskConfig,
   parseWireTaskDraft,
   parseWireTaskPatch,
   parseWireTranscriptBatch,
@@ -125,6 +126,12 @@ function fakeWire(): FakeWire {
       Object.assign(found, { ...(sent.input === undefined ? {} : { input: sent.input }) });
       if (sent.workdir !== undefined) found.workdir = sent.workdir;
       if (sent.head !== undefined) found.head = sent.head;
+      return found;
+    },
+    async configureTask(id, body) {
+      const sent = parseWireTaskConfig(JSON.parse(record(state, body)));
+      const found = state.tasks.find((t) => t.id === id)!;
+      if (sent.place !== undefined) Object.assign(found, { workdir: sent.place?.workdir ?? null });
       return found;
     },
     async claimTask(id) {
@@ -820,6 +827,33 @@ test('an occurrence opens against its schedule, also after the schedule is gone,
   const ordinary = await wireTask({ id: 'occ1', workdir: '/srv/other' });
   wire.tasks[0] = { ...wire.tasks[0]!, workdir: ordinary.workdir };
   assert.deepEqual((await board.getTask('occ1')).unreadable, ['workdir']);
+});
+
+test('a directory chosen for a task is sealed as its own, an occurrence’s under its schedule, and opens again', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  const writer = { createdBy: 'user' as const, scheduleId: null, agent: null };
+  wire.tasks.push(await wireTask({ id: 'plain', workdir: '/srv/old' }));
+  await assert.rejects(board.configureTask('plain', { place: { workdir: '/srv/new' } }), /change\.seal/);
+  await assert.rejects(board.configureTask('plain', { place: { workdir: 'rel' }, seal: writer }), /absolute path/);
+  const moved = await board.configureTask('plain', { model: 'opus', place: { workdir: '/srv/new' }, seal: writer });
+  assert.deepEqual([moved.workdir, moved.unreadable], ['/srv/new', []]);
+  assert.equal(
+    wire.requests.some((request) => request.includes('/srv/new')),
+    false,
+  );
+  assert.equal(await open(KEYS, 'workdir', 'task:plain', wire.tasks[0]!.workdir!), '/srv/new');
+  const cleared = await board.configureTask('plain', { place: null, model: null });
+  assert.deepEqual([cleared.workdir, cleared.unreadable], [null, []]);
+
+  wire.tasks.push(await wireTask({ id: 'occ', scheduleId: 'sched' }));
+  const occurrence = await board.configureTask('occ', {
+    priority: 'high',
+    place: { workdir: '/srv/app' },
+    seal: { createdBy: 'user', scheduleId: 'sched', agent: null },
+  });
+  assert.deepEqual([occurrence.workdir, occurrence.unreadable], ['/srv/app', []]);
+  assert.equal(await open(KEYS, 'workdir', 'task:occ:schedule:sched', wire.tasks[1]!.workdir!), '/srv/app');
 });
 
 test('ids are the client’s: a task and a schedule are sealed against the id the draft carries', async () => {
