@@ -3,6 +3,7 @@ import {
   deriveKeys,
   inputBinding,
   machineCatalogBinding,
+  machineUsageBinding,
   machineDirsBinding,
   prBinding,
   seal,
@@ -257,6 +258,57 @@ describe('the directory lists of machines, as the browser opens them', () => {
     const name = 'bad name\n';
     const machine = await openOne(wire(name, await sealFor(name, list(['/a']))));
     expect(machine).toMatchObject({ shown: '(invalid)', name, dirs: null, dirsUnreadable: false });
+  });
+});
+
+describe('the usage status of machines, as the browser opens them', () => {
+  const usage = {
+    limits: { fiveHour: 80, priority: 'urgent' },
+    windows: { fiveHour: { percent: 85, resetsAt: '2026-11-17T14:05:00.000Z', seenAt: '2026-11-17T12:00:00.000Z' } },
+    reached: ['fiveHour'],
+    held: ['taskA'],
+    open: [],
+  };
+  const sealFor = (machine: string, text: string) => sealerFor(keys)(machineUsageBinding(machine), text);
+  const wire = (name: string, sealed: string | null, revokedAt: Date | null = null) =>
+    ({ name, usage: sealed, revokedAt, lastSeenAt: null }) as unknown as RouterOutputs['machines']['list'][number];
+  const openOne = async (...machines: RouterOutputs['machines']['list']) => (await openMachines(keys, machines))[0];
+
+  it('opens a good status under the machine own name', async () => {
+    const machine = await openOne(wire('laptop', await sealFor('laptop', JSON.stringify(usage))));
+    expect(machine).toMatchObject({ usage, usageUnreadable: false });
+  });
+
+  it('has no status when the machine sent none', async () => {
+    expect(await openOne(wire('laptop', null))).toMatchObject({ usage: null, usageUnreadable: false });
+  });
+
+  it('drops an id that is no task id and keeps the rest', async () => {
+    const text = JSON.stringify({ ...usage, held: ['taskA', '../x'] });
+    expect((await openOne(wire('laptop', await sealFor('laptop', text))))?.usage?.held).toEqual(['taskA']);
+  });
+
+  it('is unreadable when sealed for another machine, not JSON or not a status', async () => {
+    expect(await openOne(wire('laptop', await sealFor('desktop', JSON.stringify(usage))))).toMatchObject({
+      usage: null,
+      usageUnreadable: true,
+    });
+    for (const text of ['nope', '[]', '{"held":"x"}'])
+      expect(await openOne(wire('laptop', await sealFor('laptop', text)))).toMatchObject({
+        usage: null,
+        usageUnreadable: true,
+      });
+    expect(await openOne(wire('laptop', JSON.stringify(usage)))).toMatchObject({ usageUnreadable: true });
+  });
+
+  it('offers nothing for a revoked machine or a name that does not pass the shape check', async () => {
+    const sealed = await sealFor('laptop', JSON.stringify(usage));
+    expect(await openOne(wire('laptop', sealed, new Date()))).toMatchObject({ usage: null, usageUnreadable: false });
+    const name = 'bad name\n';
+    expect(await openOne(wire(name, await sealFor(name, JSON.stringify(usage))))).toMatchObject({
+      usage: null,
+      usageUnreadable: false,
+    });
   });
 });
 

@@ -4,6 +4,7 @@ import {
   IconClock,
   IconDeviceDesktop,
   IconEye,
+  IconGauge,
   IconHourglass,
   IconMessageQuestion,
   IconPlayerPause,
@@ -14,24 +15,29 @@ import {
 } from '@tabler/icons-react';
 import { startsIn, wakesIn } from '../lib/startsIn';
 import { isStopping } from '../lib/stopping';
-import { stamp } from '../lib/time';
+import { clock, stamp } from '../lib/time';
 import { watchBadgeText } from '../lib/watches';
 import type { BoardTask } from '../lib/trpc';
+import { describeHolding } from '../lib/usageHold';
+import type { TaskHold } from '../lib/usageHold';
 import { useNow } from '../lib/useNow';
 import { PriorityBadge } from './PriorityPicker';
 
 /**
  * What sets a task apart at a glance: its priority (unless normal), an open question, a proposal, a pending
- * resume, a start time still ahead, the end of a wait, a repeating schedule, where it runs.
+ * resume, a start time still ahead, the end of a wait, a repeating schedule, where it runs, a hold for usage.
  */
 export function TaskBadges({
   task,
   withLabels = true,
   withPriority = true,
+  hold,
 }: {
   task: BoardTask;
   withLabels?: boolean;
   withPriority?: boolean;
+  /** Why the task has not started for usage (`heldTask`); absent when it is not held. */
+  hold?: TaskHold | undefined;
 }) {
   const now = useNow(30_000);
   const waiting = task.status === 'todo' && task.notBefore !== null ? startsIn(task.notBefore, now) : undefined;
@@ -94,6 +100,18 @@ export function TaskBadges({
           }
         >
           {wakes}
+        </Badge>
+      )}
+      {hold !== undefined && (
+        <Badge
+          size="sm"
+          color="yellow"
+          variant="light"
+          tt="none"
+          leftSection={<IconGauge size={12} />}
+          title={hold.machines.map((machine) => describeHolding(machine, now)).join('\n')}
+        >
+          Held until {clock(hold.until, now)}
         </Badge>
       )}
       {task.scheduleId !== null && (

@@ -322,6 +322,11 @@ export const machines = pgTable(
     /** The blind index of that catalogue, which the machine compares with its own to know whether to send again. */
     catalogIndex: text('catalog_index'),
     catalogUpdatedAt: timestamp('catalog_updated_at', { withTimezone: true }),
+    /** The sealed usage status the machine's CLI sent (`machine.usage`): limits, readings and held tasks, display only; null until it sends one. */
+    usage: text('usage'),
+    /** The blind index of that status, which the machine compares with its own to know whether to send again. */
+    usageIndex: text('usage_index'),
+    usageUpdatedAt: timestamp('usage_updated_at', { withTimezone: true }),
   },
   (t) => [
     primaryKey({ columns: [t.owner, t.name] }),
@@ -329,6 +334,8 @@ export const machines = pgTable(
     check('machine_dirs_index_blind', isBlindIndex(t.dirsIndex)),
     check('machine_catalog_sealed', isEnvelope(t.catalog)),
     check('machine_catalog_index_blind', isBlindIndex(t.catalogIndex)),
+    check('machine_usage_sealed', isEnvelope(t.usage)),
+    check('machine_usage_index_blind', isBlindIndex(t.usageIndex)),
     tenant(),
   ],
 ).enableRLS();

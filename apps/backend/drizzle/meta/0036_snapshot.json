@@ -1,5 +1,5 @@
 {
-  "id": "3010541d-64a8-4f1a-aef9-0d8da142b4fb",
+  "id": "21df1d31-8fd0-436e-910e-24fb40bd6e6f",
   "prevId": "3a6707f7-eb67-4adc-aa6b-3522250acc31",
   "version": "7",
   "dialect": "postgresql",
@@ -151,6 +151,24 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "usage": {
+          "name": "usage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "usage_index": {
+          "name": "usage_index",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "usage_updated_at": {
+          "name": "usage_updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -215,6 +233,14 @@
         "machine_catalog_index_blind": {
           "name": "machine_catalog_index_blind",
           "value": "\"machine\".\"catalog_index\" ~ '^abh1[.][A-Za-z0-9_-]{43}$'"
+        },
+        "machine_usage_sealed": {
+          "name": "machine_usage_sealed",
+          "value": "\"machine\".\"usage\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
+        },
+        "machine_usage_index_blind": {
+          "name": "machine_usage_index_blind",
+          "value": "\"machine\".\"usage_index\" ~ '^abh1[.][A-Za-z0-9_-]{43}$'"
         }
       },
       "isRLSEnabled": true
@@ -843,19 +869,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "watches": {
-          "name": "watches",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "watch_stops": {
-          "name": "watch_stops",
-          "type": "text[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::text[]"
-        },
         "pr_state": {
           "name": "pr_state",
           "type": "pr_state",
@@ -1128,10 +1141,6 @@
         "task_agent_sealed": {
           "name": "task_agent_sealed",
           "value": "\"task\".\"agent\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
-        },
-        "task_watches_sealed": {
-          "name": "task_watches_sealed",
-          "value": "\"task\".\"watches\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
         },
         "task_dedupe_key_blind": {
           "name": "task_dedupe_key_blind",

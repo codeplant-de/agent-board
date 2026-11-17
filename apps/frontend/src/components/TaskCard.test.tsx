@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { PrState, TaskWatch } from '@agent-board/shared';
 import type { ListedTask } from '../lib/trpc';
+import { clock } from '../lib/time';
 import { TaskCard } from './TaskCard';
 
 const task = (overrides: Partial<ListedTask>): ListedTask =>
@@ -168,5 +169,32 @@ describe('TaskCard watches', () => {
   it('shows watch text as plain text', () => {
     renderCard({ status: 'running', watches: [watch({ label: '<b>bold</b> **x**' })] });
     expect(screen.getByText('Watching <b>bold</b> **x** · 4/7')).toBeInTheDocument();
+  });
+});
+
+describe('TaskCard hold for usage', () => {
+  it('shows the badge of a held task', () => {
+    const until = new Date(Date.now() + 60_000);
+    render(
+      <MemoryRouter>
+        <MantineProvider>
+          <TaskCard
+            task={task({ status: 'todo' })}
+            hold={{ until, machines: [] }}
+            draggable={false}
+            dragging={false}
+            onDragStart={() => {}}
+            onDragEnd={() => {}}
+            onDragOver={() => {}}
+          />
+        </MantineProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText(`Held until ${clock(until)}`)).toBeInTheDocument();
+  });
+
+  it('shows none without a hold', () => {
+    renderCard({ status: 'todo' });
+    expect(screen.queryByText(/Held until/)).not.toBeInTheDocument();
   });
 });

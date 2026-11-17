@@ -18,9 +18,11 @@ export const ADDED_SERVER_FEATURES = [
   'run-inbox',
   'machine.dirs',
   'machine.catalog',
+  'machine.usage',
   'task.agent',
   'task.run',
   'task.watches',
+  'task.note-count',
 ] as const;
 
 export const SERVER_FEATURES = [...BASELINE_SERVER_FEATURES, ...ADDED_SERVER_FEATURES] as const;
@@ -40,9 +42,11 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'run-inbox': 'messages and stop requests for a running task',
   'machine.dirs': 'directory lists',
   'machine.catalog': 'machine catalogues',
+  'machine.usage': 'usage status of machines',
   'task.agent': 'running a task as an agent',
   'task.run': 'telling runs of a task apart',
   'task.watches': 'showing a task’s watches',
+  'task.note-count': 'the number of notes of a task',
   wait: 'waiting',
 };
 
@@ -75,7 +79,8 @@ export interface Vocabulary {
 // Enum value -> the client feature that understands it. Only values added after the baseline appear here: every client
 // from 0.7.0 on knows today's. Adding a value to an enum means adding its row, and the server then withholds the value
 // from a client that did not send the feature. The first row waits until every machine runs CLI 0.8.0 or newer (0.7.0
-// cannot handle the 422 for a task it cannot read), or it comes with a raised MIN_CLIENT.
+// cannot handle the 422 for a task it cannot read), or it comes with a raised MIN_CLIENT. A row for a note author or kind
+// must also make the server's `noteCount` (`countTaskNotes`) leave out the notes `read-notes` leaves out.
 export type VocabularyFeatures = { [Field in keyof Vocabulary]?: Partial<Record<Vocabulary[Field], string>> };
 export const VOCABULARY_FEATURES: VocabularyFeatures = {};
 

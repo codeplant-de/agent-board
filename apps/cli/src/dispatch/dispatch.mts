@@ -10,7 +10,7 @@ import { BackendError, isVocabularyRefusal } from '../backend/backend.mts';
 import { updateCliHint } from '../backend/contract-check.mts';
 import { buildContext, print, skipTickWhileServerOlder } from '../cli.mts';
 import type { Context } from '../cli.mts';
-import type { Task } from '@agent-board/shared';
+import type { MachineUsage, Task } from '@agent-board/shared';
 import { promptSkill } from '@agent-board/shared';
 import {
   checkOutputBlock,
@@ -53,6 +53,7 @@ import { createPrRefreshState, prRefreshFile, refreshPrStatesIfDue } from './pr-
 import type { PrRefreshState } from './pr-states.mts';
 import { TICK_LIMIT_S } from './tick.mts';
 import {
+  buildMachineUsage,
   createUsageStore,
   describeReached,
   earliestReset,
@@ -401,6 +402,21 @@ async function sendCatalog(deps: DispatchDeps, tickStart: Date): Promise<void> {
   }
 }
 
+// Tells the board why this machine holds tasks back, and which Todo tasks it could serve and does not hold, on every tick.
+// A server that cannot hold it or a failure costs one line at most.
+async function sendUsage({ backend, config, dryRun, print: log }: DispatchDeps, status: MachineUsage): Promise<void> {
+  try {
+    const onBoard = await backend.checkUsage(config.machine, status);
+    if (onBoard === 'unsupported') return;
+    // Every tick, so the board sees that this dispatcher is running; the log keeps to what changed or what is held.
+    await backend.setUsage(config.machine, status);
+    if (!dryRun && (onBoard === 'stale' || status.held.length > 0))
+      log(`USAGE sent ${status.held.length} held and ${status.open.length} open`);
+  } catch (error) {
+    log(`WARN sending the usage status failed: ${errorText(error)}`);
+  }
+}
+
 /**
  * When this machine next has something to do that no event announces: a wait here ends or its check is due again. A check that
  * never ran, or that this tick put off, is due now. A wait whose time is up was woken in this tick or its wake failed; the
@@ -547,10 +563,11 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
 
   // While a configured threshold is reached, work below the limit's priority does not start, resumes included: they use quota
   // too. Held tasks are out of `candidates` for good, so they do not make a lane pause a borrowed run either.
+  const storedUsage = deps.usage?.read() ?? {};
   const reached =
-    config.usageLimits === undefined || deps.usage === undefined
+    config.usageLimits === undefined
       ? []
-      : reachedWindows({ limits: config.usageLimits, usage: deps.usage.read(), now: deps.now() });
+      : reachedWindows({ limits: config.usageLimits, usage: storedUsage, now: deps.now() });
   const lowest = config.usageLimits?.priority ?? 'urgent';
   const isHeld = (task: Task): boolean => reached.length > 0 && isBelowPriority(task.priority, lowest);
   const held = eligible.filter(isHeld);
@@ -664,6 +681,16 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   if (!deps.dryRun) files.writeNextDue(next);
   log(
     `TICK started=${started.size} ${summary}${checks.length > 0 ? ` checks=${checks.length}` : ''}${held.length > 0 ? ` held=${held.length}` : ''}${next === undefined ? '' : ` next=${next.toISOString()}`}`,
+  );
+  await sendUsage(
+    deps,
+    buildMachineUsage({
+      limits: config.usageLimits,
+      stored: storedUsage,
+      reached,
+      heldIds: held.map(({ id }) => id),
+      openIds: candidates.map(({ id }) => id),
+    }),
   );
   // After the starts and the checks, so a probe never holds one back.
   await sendCatalog(deps, tickStart);

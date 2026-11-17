@@ -1,4 +1,4 @@
-import { decodeDataKey, deriveKeys, type KeySetup, type Keys } from '@agent-board/shared';
+import { decodeDataKey, deriveKeys, machineUsageBinding, type KeySetup, type Keys } from '@agent-board/shared';
 import { MantineProvider } from '@mantine/core';
 import { ModalsProvider } from '@mantine/modals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -21,6 +21,8 @@ interface MachineRow {
   revokedAt: string | null;
   clientVersion?: string | null;
   clientStatus?: 'current' | 'outdated' | 'incompatible' | 'unknown';
+  usage?: string | null;
+  usageUpdatedAt?: string | null;
 }
 const machines = vi.hoisted(() => ({ current: [] as MachineRow[], failure: null as Error | null }));
 const stored = vi.hoisted(() => ({ current: null as unknown }));
@@ -216,6 +218,61 @@ describe('what the machines list says about each CLI', () => {
     expect(screen.getByText('0.4.0 · incompatible — run board self-update')).toBeInTheDocument();
     expect(screen.getByText('version unknown')).toBeInTheDocument();
     expect(screen.getByText(/The newest CLI is 0\.7\.0/)).toBeInTheDocument();
+  });
+});
+
+describe('what the machines list says about usage', () => {
+  const minutes = (count: number) => new Date(Date.now() + count * 60_000).toISOString();
+  const status = {
+    limits: { fiveHour: 80, priority: 'urgent' },
+    windows: {
+      fiveHour: { percent: 85, resetsAt: minutes(125), seenAt: minutes(-2) },
+      sevenDay: { percent: 40, resetsAt: minutes(60 * 48), seenAt: minutes(-2) },
+    },
+    reached: ['fiveHour'],
+    held: ['t1', 't2'],
+    open: [],
+  };
+  const row = (overrides: Partial<MachineRow>): MachineRow => ({
+    name: 'laptop',
+    lastSeenAt: minutes(-1),
+    revokedAt: null,
+    clientVersion: '0.7.0',
+    clientStatus: 'current' as const,
+    ...overrides,
+  });
+  const sealedStatus = (value: unknown) => sealerFor(held)(machineUsageBinding('laptop'), JSON.stringify(value));
+
+  it('shows the readings, the limits and the hold with its reason, until and held count', async () => {
+    machines.current = [row({ usage: await sealedStatus(status), usageUpdatedAt: minutes(-2) })];
+    renderPage();
+    const readings = await screen.findByText('Usage 5-hour 85% · 7-day 40%');
+    expect(readings).toHaveAttribute('title', expect.stringMatching(/^5-hour resets .*; 7-day resets /));
+    expect(screen.getByText('Limits 5-hour 80% · holds below urgent')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Holding tasks below urgent until \d{2}:\d{2}: 5-hour usage 85% \(limit 80%\) · 2 tasks held$/),
+    ).toBeInTheDocument();
+  });
+
+  it('says as of when for a machine not seen for a while', async () => {
+    machines.current = [row({ usage: await sealedStatus(status), usageUpdatedAt: minutes(-60) })];
+    renderPage();
+    expect(await screen.findByText(/2 tasks held \(as of an hour ago\)$/)).toBeInTheDocument();
+  });
+
+  it('shows no hold line when no window is reached, but still the readings', async () => {
+    const quiet = { ...status, reached: [] };
+    machines.current = [row({ usage: await sealedStatus(quiet), usageUpdatedAt: minutes(-2) })];
+    renderPage();
+    expect(await screen.findByText('Usage 5-hour 85% · 7-day 40%')).toBeInTheDocument();
+    expect(screen.queryByText(/Holding tasks/)).not.toBeInTheDocument();
+  });
+
+  it('says a status that does not open is unreadable, and shows nothing for a machine that sent none', async () => {
+    machines.current = [row({ usage: 'abe1.notanenvelope' }), row({ name: 'desktop', usage: null })];
+    renderPage();
+    expect(await screen.findAllByText('usage status unreadable')).toHaveLength(1);
+    expect(screen.queryByText(/^Usage /)).not.toBeInTheDocument();
   });
 });
 

@@ -22,6 +22,7 @@ export type Field =
   | 'watches'
   | 'machine.dirs'
   | 'machine.catalog'
+  | 'machine.usage'
   | 'note.body'
   | 'note.preview'
   | 'note.suggestion'

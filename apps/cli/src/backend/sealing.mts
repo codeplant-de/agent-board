@@ -7,6 +7,7 @@ import {
   isSafeWorkdir,
   machineCatalogIndex,
   machineDirsIndex,
+  machineUsageIndex,
   newTaskId,
   open,
   openFields,
@@ -22,6 +23,7 @@ import {
   sealInput,
   sealMachineCatalog,
   sealMachineDirs,
+  sealMachineUsage,
   sealNote,
   sealPr,
   sealQuestions,
@@ -326,6 +328,15 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     async setCatalog(machine, catalog) {
       const sealed = await checked('set-catalog', () => sealMachineCatalog(sealer, machine, catalog));
       await inner.setCatalog({ catalog: sealed, index: await machineCatalogIndex(await getKeys(), machine, catalog) });
+    },
+    async checkUsage(machine, usage) {
+      const { supported, index } = await inner.usageState();
+      if (!supported) return 'unsupported';
+      return index === (await machineUsageIndex(await getKeys(), machine, usage)) ? 'current' : 'stale';
+    },
+    async setUsage(machine, usage) {
+      const sealed = await checked('set-usage', () => sealMachineUsage(sealer, machine, usage));
+      await inner.setUsage({ usage: sealed, index: await machineUsageIndex(await getKeys(), machine, usage) });
     },
     async pause(id, note) {
       return opened(await inner.pause(id, await noteInput('pause', id, 'system', note.trim())), openTask);

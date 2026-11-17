@@ -35,6 +35,8 @@ import { modelLabel } from '../lib/model';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago, stamp } from '../lib/time';
 import { errorMessage, POLL_MS, useTRPC } from '../lib/trpc';
+import { heldTask } from '../lib/usageHold';
+import { useNow } from '../lib/useNow';
 import { unlistedMachine } from '../lib/workingDirectories';
 
 const UNREADABLE_LABEL = (field: UnreadableField): string =>
@@ -53,7 +55,8 @@ function TaskView({ id }: { id: string }) {
   const setPriority = useMutation(trpc.tasks.setPriority.mutationOptions());
   const removePr = useMutation(trpc.tasks.removePr.mutationOptions());
   const stopWatch = useMutation(trpc.tasks.stopWatch.mutationOptions());
-  const machines = useQuery(trpc.machines.list.queryOptions());
+  const machines = useQuery({ ...trpc.machines.list.queryOptions(), refetchInterval: POLL_MS });
+  const now = useNow(30_000);
   const catalogs = useQuery(trpc.machines.catalogs.queryOptions());
   const bottom = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useSearchParams();
@@ -123,7 +126,7 @@ function TaskView({ id }: { id: string }) {
                 Agent: {task.agent}
               </Badge>
             ) : null}
-            <TaskBadges task={task} withPriority={false} />
+            <TaskBadges task={task} withPriority={false} hold={heldTask(task, machines.data ?? [], now)} />
             <Text size="xs" c="dimmed" title={stamp(task.createdAt)}>
               created by {task.createdBy} {ago(task.createdAt)}
             </Text>
@@ -265,7 +268,7 @@ function TaskView({ id }: { id: string }) {
                   <Badge size="xs" color={STATUS_COLOR[f.status]} variant="light">
                     {STATUS_LABEL[f.status]}
                   </Badge>
-                  <TaskBadges task={f} withLabels={false} />
+                  <TaskBadges task={f} withLabels={false} hold={heldTask(f, machines.data ?? [], now)} />
                 </Group>
               ))}
             </Stack>

@@ -272,7 +272,10 @@ test("another machine's running task is not swept here", async () => {
   const theirs = task({ id: 'theirs', status: 'running', input: '/selftest go', machine: 'there' });
   const { deps, backend } = setup([theirs]);
   await runDispatch(deps);
-  assert.deepEqual(backend.writes, []);
+  assert.deepEqual(
+    backend.writes.filter((write) => !write.startsWith('usage ')),
+    [],
+  );
 });
 
 test('a stale Running task goes to Needs me with the log tail and frees its slot', async () => {
@@ -349,7 +352,10 @@ test("the run is timed from its unit first, and from the task's claim without on
   });
   await runDispatch(deps);
   assert.deepEqual(stopped, []);
-  assert.deepEqual(backend.writes, []);
+  assert.deepEqual(
+    backend.writes.filter((write) => !write.startsWith('usage ')),
+    [],
+  );
 });
 
 test('the cap counts active units even when fewer tasks sit in Running', async () => {
@@ -1417,6 +1423,61 @@ test('a reached threshold with nothing below the priority to hold logs nothing a
   assert.deepEqual(started, ['u1']);
   assert.ok(!logs.some((line) => line.startsWith('HOLD') || line.includes('held=')));
   assert.equal(files.next, undefined);
+});
+
+const usageWrites = (writes: string[]): string[] => writes.filter((write) => write.startsWith('usage '));
+
+test('a tick sends the held and the open tasks with the limits and the reading, and logs it', async () => {
+  const { deps, backend, logs } = limitedSetup([urgent('u1'), lowPriority('n1'), lowPriority('n2', 'high')]);
+  await runDispatch(deps);
+  assert.deepEqual(usageWrites(backend.writes), ['usage here: 2 held, 1 open']);
+  assert.deepEqual(backend.boardUsage.held, {
+    limits: { fiveHour: 80, priority: 'urgent' },
+    windows: { fiveHour: { percent: 85, resetsAt: USAGE_RESET.toISOString(), seenAt: NOW.toISOString() } },
+    reached: ['fiveHour'],
+    held: ['n1', 'n2'],
+    open: ['u1'],
+  });
+  assert.ok(logs.includes('USAGE sent 2 held and 1 open'));
+});
+
+test('a machine without limits sends its open tasks, so the board knows they are not held', async () => {
+  const { deps, backend } = setup([lowPriority('n1')]);
+  await runDispatch(deps);
+  assert.deepEqual(backend.boardUsage.held, { windows: {}, reached: [], held: [], open: ['n1'] });
+});
+
+test('the status is sent on every tick, and logged only when it changed or tasks are held', async () => {
+  const { deps, backend, logs } = limitedSetup([]);
+  await runDispatch(deps);
+  await runDispatch(deps);
+  assert.equal(usageWrites(backend.writes).length, 2);
+  assert.equal(logs.filter((line) => line.startsWith('USAGE sent')).length, 1);
+  const held = limitedSetup([lowPriority('n1')]);
+  await runDispatch(held.deps);
+  await runDispatch(held.deps);
+  assert.equal(held.logs.filter((line) => line.startsWith('USAGE sent')).length, 2);
+});
+
+test('a server without the feature gets nothing, and a dry tick logs no send', async () => {
+  const old = limitedSetup([lowPriority('n1')]);
+  old.backend.boardUsage.supported = false;
+  await runDispatch(old.deps);
+  assert.deepEqual(usageWrites(old.backend.writes), []);
+  assert.ok(!old.logs.some((line) => line.startsWith('USAGE sent')));
+  const dry = limitedSetup([lowPriority('n1')]);
+  dry.deps.dryRun = true;
+  await runDispatch(dry.deps);
+  assert.ok(!dry.logs.some((line) => line.startsWith('USAGE sent')));
+});
+
+test('a failure to send the usage status costs one WARN line, and the tick goes on', async () => {
+  const { deps, backend, logs, started } = limitedSetup([urgent('u1')]);
+  backend.boardUsage.failure = new BackendError('set-usage: the server answered 502 without JSON', 502);
+  await runDispatch(deps);
+  assert.ok(logs.includes('WARN sending the usage status failed: set-usage: the server answered 502 without JSON'));
+  assert.deepEqual(started, ['u1']);
+  assert.ok(logs.some((line) => line.startsWith('TICK ')));
 });
 
 // Watches of task w1, which waits here; the unit's heartbeat is fresh unless a test says otherwise.

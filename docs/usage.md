@@ -173,6 +173,50 @@ Dragging a card moves it the way the matching button would, minus the reply. Not
 
 Settings has a **Desktop notifications** switch, off by default. Turning it on asks the browser for permission; once granted, the browser shows an OS notification for each task that newly enters Needs me ("Asked you a question" when an agent asked one, "Needs you" otherwise), and clicking it opens the task. Tasks already waiting when you open the board do not notify, and nothing is shown while you are looking at a focused board tab. It works while a board tab is open, a background tab included, though browsers may slow a hidden tab's timers to about once a minute. The title is opened in your browser, so there is no server push, and the browser needs https or localhost.
 
+## Board events
+
+`board events` prints one line per change on your board, as it happens, until you stop it. It is for scripts that react to the board, such as a notification:
+
+```
+board events --json --type moved --status needs-me | while read -r event; do
+  notify-send "Board: needs you" "$(jq -r '.task.title' <<<"$event")"
+done
+```
+
+It reads the board when it starts and prints nothing for that first look. After that it prints only what changed. The board's event stream says that tasks changed, not what changed, so the command lists your open tasks again after each signal, after every reconnect and every 2 minutes (some changes, such as the hourly cleanup of old Done tasks, send no signal), and compares the list with the one before.
+
+| Type      | When                                                                                                                                               | Extra               |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| `created` | A task that was not on the board before, or a closed task that was reopened.                                                                       |                     |
+| `moved`   | The status changed.                                                                                                                                | `from`, `to`        |
+| `changed` | The title, priority, model, agent, machine, open question, start time, wake time, pull requests or the state of the prompt's pull request changed. | `fields`: the names |
+| `closed`  | The task left the open tasks and is closed.                                                                                                        |                     |
+| `removed` | The task left the open tasks and was deleted.                                                                                                      |                     |
+| `note`    | A new note in the task's thread: a comment, question, answer, event or polish note.                                                                | `note`              |
+
+Changes between two looks are joined. A task that went todo, running and needs-me in between prints one `moved` from `todo` to `needs-me`. A move and a change of a field in the same look print a `moved` and a `changed`. A task is not reported for the activity of a run (its heartbeat, lane or session). A task that enters the list (new, or reopened) prints `created` only: notes written before the CLI first saw it are not reported. A note the CLI cannot decrypt is still an event; its `text` is `null` in JSON.
+
+```
+board events [--task <id>]... [--status <status>]... [--type <type>]... [--machine <name>] [--json]
+```
+
+- `--task` takes the same ids, prefixes and links as other commands. `--machine` keeps the tasks of one machine.
+- `--status` keeps the events of tasks that are in one of these statuses after the change. For `closed` and `removed` that is the last status seen. Everything that enters Needs me is `--type moved --status needs-me`.
+- `--type` keeps these types. `--task`, `--status` and `--type` can be repeated.
+- The filters only choose what is printed. The command always follows the whole board.
+
+Without `--json` a line has the time, the type, the task id, what happened and the title. A note adds its author and kind and the first line of its text. With `--json` every line is one JSON object, so `read -r` and `jq` work on it:
+
+```
+{"type": "moved", "at": "2027-01-01T14:02:11.000Z", "task": {...}, "from": "todo", "to": "needs-me"}
+```
+
+`task` is the task as `board tasks --json` shows it, plus its `url`. `at` is when this CLI saw the change, not when it happened. `fields` is on `changed`. `note` is on `note`: `{"id", "author", "kind", "text", "createdAt", "unreadable"}`.
+
+Messages about the connection (connected, lost, reconnecting) go to stderr, so stdout holds the events alone. The command reconnects by itself with a growing delay. It ends with exit code 0 on Ctrl-C or SIGTERM and when the pipe it writes to closes (`| head -1`). It ends with 1 when the board refuses the token or the CLI is too old for the board.
+
+It reads with this machine's token and data key, so titles and note texts are plain text on this machine and nowhere else. A board server without the `task.note-count` feature has no `note` events: the command says so once on stderr and goes on, and `--type note` is refused. `board events` is not available inside a board run, because it never ends.
+
 ## Waiting
 
 An agent that has to wait for something outside the run (CI, a deploy, a review bot) starts a **watch** instead of sleeping in its slot:
@@ -223,3 +267,12 @@ Every watch also ends after `--timeout` (default 2h, 7 days at most) with an eve
 - Watches run on the machine that ran the task, since the session lives there: a watch on a machine that is off goes on when it comes back.
 
 `board wait` still works with its flags and meaning, for sessions that were given the older rule: `board wait <task> --in 20m` parks the task until then, and `board wait <task> --check '<command>' [--every 2m] [--timeout 2h]` starts a command watch named `wait` (every 1m at least) and parks the task at once; the agent ends its turn after it. A check that an older CLI stored in `<state dir>/waits/<task>.json` is still run by the dispatch tick until it is gone.
+
+## Usage limits
+
+A machine with `usageLimits` in its `config.json` leaves Todo tasks below a priority unclaimed while its Claude usage is at or over a threshold (see [Usage limits](workers.md#usage-limits)). The board shows it:
+
+- A held Todo card carries a yellow **Held until 14:05** badge (with the date when the reset is on another day). Hover it for the reason of each machine that holds the task: `laptop holds tasks below urgent: 5-hour usage 85% (limit 80%) until 14:05`. It shows only while a machine that sent its status in the last 10 minutes holds the task and no such machine could still run it: a task another machine can take is waiting, not held. A machine holds until the last reset among its windows over their threshold, since any one of them holds; with several holding machines the badge shows the earliest of their times, as the first to release it lets it start.
+- A machine's row in **Settings** shows the readings it last saw (`5-hour 85% · 7-day 40%`, with the reset times on hover), its limits, and, while it holds tasks, `Holding tasks below urgent until 14:05: 5-hour usage 85% (limit 80%)` with the number of held tasks. Readings of a window that has already reset are left out. For a machine that sent nothing for 10 minutes (switched off, or its dispatcher failing) the line says `as of` when it last sent it. A status the browser cannot read shows `usage status unreadable`.
+
+The machine sends this with every dispatch tick, so a badge can lag a change by a poll of the board (5 seconds) and a tick of the machine (up to 2 minutes).

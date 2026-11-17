@@ -3,6 +3,7 @@ import type { MachineCatalog } from './catalog.mts';
 import { envelopeLength, isBlindIndex, isEnvelope } from './crypto.mts';
 import type { Field } from './crypto.mts';
 import { isRecord } from './guards.mts';
+import type { MachineUsage } from './machineUsage.mts';
 import { isKeyId } from './keys.mts';
 import type { Answer, Question } from './questions.mts';
 import type { TranscriptBatch, WireTranscriptBatch } from './transcript.mts';
@@ -169,6 +170,9 @@ export interface Task {
   // While it runs: the user asked for the run to be interrupted and no worker has acted on it yet. Absent from a server
   // without the `run-inbox` feature.
   stopRequested?: boolean;
+  // How many notes the task's thread holds; notes are never deleted, so it only grows. Absent from a server without the
+  // `task.note-count` feature.
+  noteCount?: number;
   unreadable: UnreadableField[];
 }
 
@@ -440,6 +444,10 @@ export interface Backend {
   checkCatalog(machine: string, catalog: MachineCatalog): Promise<CatalogOnBoard>;
   // Replaces the board's copy of this machine's catalogue. Advice for completing skills and choosing models, never read back by a CLI.
   setCatalog(machine: string, catalog: MachineCatalog): Promise<void>;
+  // Whether the board holds `usage` as this machine's usage status, by comparing blind indexes; 'unsupported' for a server without the feature.
+  checkUsage(machine: string, usage: MachineUsage): Promise<UsageOnBoard>;
+  // Replaces the board's copy of this machine's usage status. Display only, never read back by a CLI.
+  setUsage(machine: string, usage: MachineUsage): Promise<void>;
 }
 
 /** A directory the machine lists in its config, with the label it gave it (`isSafeDirLabel`). */
@@ -451,6 +459,8 @@ export interface MachineDir {
 export type DirsOnBoard = 'unsupported' | 'current' | 'stale';
 
 export type CatalogOnBoard = DirsOnBoard;
+
+export type UsageOnBoard = DirsOnBoard;
 
 // What the board server stores and returns: the sealed fields are envelopes (`abe1.…`) it cannot read. Values the server
 // returns may also be legacy plain text from before encryption; only what a client sends is checked to be sealed.
@@ -594,6 +604,19 @@ export interface WireCatalogState {
   index: string | null;
 }
 
+// Body of set-usage: the sealed usage status ("machine.usage") and the blind index of what it holds.
+export interface WireUsage {
+  usage: string;
+  index: string;
+}
+
+// What the `version` answer says of the calling machine's usage status.
+export interface WireUsageState {
+  supported: boolean;
+  // The blind index the board holds for this machine's usage status; null when it holds none.
+  index: string | null;
+}
+
 export interface WireAsk {
   // Sealed empty text: a question note carries its content in `questions`.
   body: string;
@@ -665,6 +688,8 @@ export interface WireBackend {
   dirsState(): Promise<WireDirsState>;
   setCatalog(body: WireCatalog): Promise<void>;
   catalogState(): Promise<WireCatalogState>;
+  setUsage(body: WireUsage): Promise<void>;
+  usageState(): Promise<WireUsageState>;
 }
 
 // The characters of a suggested reply the board takes.
@@ -681,6 +706,7 @@ export const SEALED_LIMITS: Record<Field, number> = {
   watches: 32 * 1024,
   'machine.dirs': 256 * 1024,
   'machine.catalog': 256 * 1024,
+  'machine.usage': 64 * 1024,
   'note.body': 4 * 100_000,
   'note.preview': 4 * 300,
   'note.suggestion': 4 * NOTE_SUGGESTION_CHARS,
@@ -904,6 +930,12 @@ function positiveInt(obj: Record<string, unknown>, key: string, what: string, ma
   return value;
 }
 
+function count(obj: Record<string, unknown>, key: string, what: string): number {
+  const value = obj[key];
+  if (!isWholeNumber(value)) throw new ContractError(`${what}.${key} must be a non-negative integer`);
+  return value;
+}
+
 function nullablePositiveInt(obj: Record<string, unknown>, key: string, what: string): number | null {
   return obj[key] === null ? null : positiveInt(obj, key, what);
 }
@@ -1048,6 +1080,7 @@ export function parseWireTask(value: unknown): WireTask {
     waitCheck: boolean(obj, 'waitCheck', 'task'),
     woken: boolean(obj, 'woken', 'task'),
     ...(obj['stopRequested'] === undefined ? {} : { stopRequested: boolean(obj, 'stopRequested', 'task') }),
+    ...(obj['noteCount'] === undefined ? {} : { noteCount: count(obj, 'noteCount', 'task') }),
   };
 }
 
@@ -1301,6 +1334,12 @@ export function parseVersionCatalogIndex(value: unknown): string | null {
   return typeof catalogIndex === 'string' && isBlindIndex(catalogIndex) ? catalogIndex : null;
 }
 
+/** The blind index of the calling machine's usage status in a `version` answer. Lenient like `parseVersionDirsIndex`. */
+export function parseVersionUsageIndex(value: unknown): string | null {
+  const usageIndex = isRecord(value) ? value['usageIndex'] : undefined;
+  return typeof usageIndex === 'string' && isBlindIndex(usageIndex) ? usageIndex : null;
+}
+
 // What the server checks of every request: the shape, the sealed fields being envelopes, and nothing about their content.
 
 function sealedField(obj: Record<string, unknown>, key: string, what: string, field: Field): string {
@@ -1389,6 +1428,16 @@ export function parseWireCatalog(value: unknown): WireCatalog {
   return {
     catalog: sealedField(obj, 'catalog', 'catalog', 'machine.catalog'),
     index: parseBlindIndex(obj['index'], 'catalog.index'),
+  };
+}
+
+// Body of set-usage: the sealed usage status and its blind index.
+export function parseWireUsage(value: unknown): WireUsage {
+  const obj = record(value, 'usage');
+  rejectUnknownKeys(obj, ['usage', 'index'], 'usage');
+  return {
+    usage: sealedField(obj, 'usage', 'usage', 'machine.usage'),
+    index: parseBlindIndex(obj['index'], 'usage.index'),
   };
 }
 

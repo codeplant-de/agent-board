@@ -12,6 +12,7 @@ import {
   LEGACY_CONTRACT,
   machineCatalogJson,
   machineDirsJson,
+  machineUsageJson,
   MIN_CLIENT,
   deriveKeys,
   encodeDataKey,
@@ -28,6 +29,7 @@ import type {
   Backend,
   MachineCatalog,
   MachineDir,
+  MachineUsage,
   Note,
   Schedule,
   Task,
@@ -123,6 +125,8 @@ export interface FakeBackend extends Backend {
   boardDirs: { supported: boolean; held: MachineDir[] | undefined; failure: Error | undefined };
   // The same for the catalogue of skills and models.
   boardCatalog: { supported: boolean; held: MachineCatalog | undefined; failure: Error | undefined };
+  // The same for the usage status.
+  boardUsage: { supported: boolean; held: MachineUsage | undefined; failure: Error | undefined };
 }
 
 function parseFirstLine(input: string): string {
@@ -154,6 +158,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     keys: new Map(),
     boardDirs: { supported: true, held: undefined, failure: undefined },
     boardCatalog: { supported: true, held: undefined, failure: undefined },
+    boardUsage: { supported: true, held: undefined, failure: undefined },
     async listTasks({ all = false } = {}) {
       return state.tasks.filter((t) => all || !t.closed).map(asBoardShows);
     },
@@ -309,6 +314,17 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         `catalog ${machine}: ${catalog.skills.length} skills, ${Object.keys(catalog.dirs).length} directories, ${catalog.models.length} models`,
       );
       state.boardCatalog.held = structuredClone(catalog);
+    },
+    async checkUsage(_machine, usage) {
+      if (state.boardUsage.failure) throw state.boardUsage.failure;
+      if (!state.boardUsage.supported) return 'unsupported';
+      const { held } = state.boardUsage;
+      return held !== undefined && machineUsageJson(held) === machineUsageJson(usage) ? 'current' : 'stale';
+    },
+    async setUsage(machine, usage) {
+      if (state.boardUsage.failure) throw state.boardUsage.failure;
+      state.writes.push(`usage ${machine}: ${usage.held.length} held, ${usage.open.length} open`);
+      state.boardUsage.held = structuredClone(usage);
     },
     async heartbeat(id, beat) {
       state.writes.push(`heartbeat ${id} ${beat.lane}${beat.borrowed ? ' borrowed' : ''}`);
