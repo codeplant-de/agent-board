@@ -9,12 +9,21 @@ import type { BoardTask } from '../lib/trpc';
 import { ModelPicker, WorkdirSetting } from './TaskSettings';
 
 const configure = vi.hoisted(() => vi.fn(async (_: unknown) => ({})));
-const listed = vi.hoisted(() => ({ paths: ['/work/app', '/work/other'] }));
+const listed = vi.hoisted(() => ({
+  paths: ['/work/app', '/work/other'],
+  models: [] as { value: string; label: string }[],
+}));
 
 vi.mock('../lib/trpc', () => ({
   useTRPC: () => ({
     tasks: { configure: { mutationOptions: () => ({ mutationFn: configure }) } },
     machines: {
+      catalogs: {
+        queryOptions: () => ({
+          queryKey: ['machines.catalogs'],
+          queryFn: async () => [{ name: 'laptop', catalog: { models: listed.models, skills: [], dirs: {} } }],
+        }),
+      },
       list: {
         queryOptions: () => ({
           queryKey: ['machines.list'],
@@ -72,6 +81,7 @@ const save = () => screen.findByRole('button', { name: 'Save' });
 beforeEach(() => {
   configure.mockClear();
   listed.paths = ['/work/app', '/work/other'];
+  listed.models = [];
 });
 
 describe('ModelPicker', () => {
@@ -82,6 +92,18 @@ describe('ModelPicker', () => {
     await userEvent.click(await screen.findByRole('option', { name: 'Sonnet', hidden: true }));
     await waitFor(() => expect(configure).toHaveBeenCalled());
     expect(sent()).toMatchObject({ model: 'sonnet' });
+  });
+
+  it("offers the models the task's machine listed instead of the aliases", async () => {
+    listed.models = [{ value: 'claude-opus-5-5', label: 'Opus 5.5' }];
+    renderWith(<ModelPicker task={task({ model: 'sonnet' })} />);
+    await userEvent.click(screen.getByRole('combobox', { name: 'Model' }));
+    expect(await screen.findByRole('option', { name: 'Opus 5.5', hidden: true })).toBeInTheDocument();
+    expect(screen.getAllByRole('option', { hidden: true }).map((option) => option.textContent)).toEqual([
+      'Default',
+      'Sonnet',
+      'Opus 5.5',
+    ]);
   });
 
   it('sends null for Default', async () => {

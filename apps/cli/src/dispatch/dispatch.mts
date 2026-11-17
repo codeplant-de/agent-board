@@ -25,6 +25,10 @@ import { neverRun, ownLane, START_MARKER, unreadableForRun, WAKE_MARKER } from '
 import { unitName } from '../task-id.mts';
 import type { LaneRun } from './decide.mts';
 import { syncDirs } from '../config/dirs.mts';
+import { realFingerprintDeps, syncCatalog } from '../catalog/catalog.mts';
+import type { CatalogSyncDeps } from '../catalog/catalog.mts';
+import { createCatalogStore } from '../catalog/cache.mts';
+import { EXIT_GRACE_MS, PROBE_TIMEOUT_MS, probeClaude } from '../catalog/probe.mts';
 import { createRunFiles } from '../worker/runtime.mts';
 import type { RunFiles } from '../worker/runtime.mts';
 import { EXEC_PATH, isCompiledBinary } from '../self/self.mts';
@@ -39,7 +43,7 @@ import type { WorktreeLocks } from '../worker/worktree-lock.mts';
 import type { TaskFileStore } from './task-files.mts';
 import { errorText, fence } from '../output/text.mts';
 import type { CheckResult, WaitCheck, WaitStore } from './waits.mts';
-import { CHECK_TIME_LIMIT_MS, createWaitStore, runCheck } from './waits.mts';
+import { CHECK_TIME_LIMIT_MS, createWaitStore, runCheck, runCommand } from './waits.mts';
 import { createUpdateState, updateStateFile } from '../self/update-state.mts';
 import { cliVersion, releaseVersion } from '../self/version.mts';
 import { getPaths, loadConfigWarnings } from '../config/config.mts';
@@ -48,6 +52,30 @@ import type { GitHub } from './github.mts';
 import { createPrRefreshState, prRefreshFile, refreshPrStatesIfDue } from './pr-states.mts';
 import type { PrRefreshState } from './pr-states.mts';
 import { TICK_LIMIT_S } from './tick.mts';
+import {
+  createUsageStore,
+  describeReached,
+  earliestReset,
+  isBelowPriority,
+  reachedWindows,
+  usageFile,
+} from '../usage/usage.mts';
+import type { UsageStore } from '../usage/usage.mts';
+import type { WatchRunner } from '../watch/attempt.mts';
+import type { WatchStore } from '../watch/store.mts';
+import { createWatchStore } from '../watch/store.mts';
+import {
+  dropReason,
+  finishDeadlines,
+  nextWatchDue,
+  pollWatches,
+  undeliveredEvent,
+  UNIT_MISSING_WARNING,
+  watchesToPoll,
+} from '../watch/tick.mts';
+import type { DropReason, TickWatchDeps } from '../watch/tick.mts';
+import { isRunLive, wakeReason } from '../watch/wake.mts';
+import { isProcessAlive } from '../worker/process.mts';
 
 // Below the tick's 110 s limit: a stalled gh must not take the tick down with it.
 const PR_REFRESH_GH_TIMEOUT_MS = 30_000;
@@ -61,11 +89,20 @@ export interface DispatchDeps extends Context {
   taskFiles: TaskFileStore;
   worktreeLocks: WorktreeLocks;
   runCheck: (check: WaitCheck) => Promise<CheckResult>;
+  // The watches of tasks on this machine (see watch/store.mts), how the tick polls one when the watch unit is not running, and
+  // whether a process exists (a worker's `live` marker).
+  watches: WatchStore;
+  runWatch: WatchRunner;
+  isAlive: (pid: number) => boolean;
   update: UpdateDeps;
   // Keys of config.json the CLI ignores (see configWarnings), logged at the start of every tick.
   configWarnings: () => string[];
   // The PR states of open tasks are looked up here at most every 10 minutes; undefined `github`: `gh` is not installed.
   prRefresh: { github: GitHub | undefined; state: PrRefreshState };
+  // Where the machine catalogue of skills and models is kept and asked for; undefined: the tick leaves it alone.
+  catalog?: Pick<CatalogSyncDeps, 'store' | 'probe' | 'fingerprintDeps'>;
+  // The subscription usage this machine's runs reported; undefined: nothing is held back for usage.
+  usage?: Pick<UsageStore, 'read'>;
 }
 
 // Ends a wait on the board: the woken task, or undefined when it no longer waited or the call failed.
@@ -98,6 +135,47 @@ async function isGone(deps: DispatchDeps, id: string): Promise<boolean> {
   }
 }
 
+const watchDepsOf = (deps: DispatchDeps): TickWatchDeps => ({
+  store: deps.watches,
+  backend: deps.backend,
+  run: deps.runWatch,
+  now: deps.now,
+  log: deps.print,
+  dryRun: deps.dryRun,
+});
+
+// Why the watches of a task that the list does not show are dropped, or undefined when they stay: only the board's 404, or a
+// task that is done or closed, lets them go; a task that cannot be read now keeps them.
+async function unlistedDropReason(deps: DispatchDeps, id: string): Promise<DropReason | undefined> {
+  try {
+    return dropReason(await deps.backend.getTask(id));
+  } catch (error) {
+    if (error instanceof BackendError && error.fromApi && error.status === 404) return 'gone';
+    deps.print(
+      isVocabularyRefusal(error)
+        ? `KEEP-WATCHES ${id} its task uses a value this CLI does not know; ${updateCliHint()}`
+        : `KEEP-WATCHES ${id} its task could not be read: ${errorText(error)}`,
+    );
+    return undefined;
+  }
+}
+
+// Watches (and their spool) of a task that is done, closed, in Backlog or gone are of no use to anyone. Running, Waiting, Todo and
+// Needs me keep theirs: they survive a question and a pause.
+async function dropFinishedWatches(deps: DispatchDeps, listed: Task[]): Promise<void> {
+  const shown = new Map(listed.map((task) => [task.id, task]));
+  let lookups = 0;
+  for (const id of deps.watches.tasks()) {
+    const task = shown.get(id);
+    if (task === undefined && lookups >= TASK_FILE_LOOKUPS_PER_TICK) continue;
+    if (task === undefined) lookups += 1;
+    const reason = task === undefined ? await unlistedDropReason(deps, id) : dropReason(task);
+    if (reason === undefined) continue;
+    deps.print(`DROP-WATCHES ${id} its task is ${reason}`);
+    if (!deps.dryRun) deps.watches.dropTask(id);
+  }
+}
+
 /**
  * Waits whose time is up, or whose check is gone, end now, before the slots are filled: the woken tasks are Todo again and can
  * start in this tick. Returns the tasks with the woken ones replaced, and the waiting tasks whose check is due.
@@ -117,10 +195,27 @@ async function wakeDue(deps: DispatchDeps, tasks: Task[]): Promise<{ tasks: Task
     deps.print(`DROP-CHECK ${id} its task no longer waits here`);
     if (!deps.dryRun) waits.remove(id);
   }
+  try {
+    await dropFinishedWatches(deps, tasks);
+  } catch (error) {
+    deps.print(`WARN dropping the watches of finished tasks failed: ${errorText(error)}`);
+  }
   const checks: Task[] = [];
   const replaced = new Map<string, Task>();
   for (const task of waiting) {
-    const decision = decideWake({ task, check: waits.read(task.id), machine: config.machine, now: deps.now() });
+    const held = deps.watches.list(task.id).defs.length > 0 || deps.watches.events(task.id).length > 0;
+    // A timeout is an event the resume prompt carries, so a task whose time ran out gets it before it is woken.
+    if (held && task.wakeAt !== null && task.wakeAt.getTime() <= deps.now().getTime())
+      await finishDeadlines(watchDepsOf(deps), task.id);
+    const event = isRunLive(deps.watches, task.id, deps.isAlive) ? undefined : undeliveredEvent(deps.watches, task.id);
+    const decision = decideWake({
+      task,
+      check: waits.read(task.id),
+      machine: config.machine,
+      now: deps.now(),
+      watches: held,
+      ...(event === undefined ? {} : { event }),
+    });
     if (decision.kind === 'check') checks.push(task);
     if (decision.kind === 'wake' || decision.kind === 'timeout') {
       const after = await wakeTask(deps, task, decision.why);
@@ -239,6 +334,23 @@ async function runChecks(deps: DispatchDeps, checks: Task[], tickStart: Date): P
   );
 }
 
+// With no watch unit running, the tick polls the due watches and finishes the ones whose time is up, then wakes the waiting tasks
+// that got an event. Returns whether it polled: only then are the watches' times the tick's own to come back for.
+async function pollWatchesInstead(deps: DispatchDeps, tasks: Task[], tickStart: Date): Promise<boolean> {
+  const defs = watchesToPoll(deps.watches, deps.now());
+  if (defs === undefined) return false;
+  deps.print(UNIT_MISSING_WARNING);
+  const timeLeftMs = TICK_LIMIT_MS - TICK_MARGIN_MS - (deps.now().getTime() - tickStart.getTime());
+  const got = await pollWatches(watchDepsOf(deps), defs, { timeLeftMs });
+  for (const id of got) {
+    const task = tasks.find((candidate) => candidate.id === id);
+    const name = undeliveredEvent(deps.watches, id);
+    if (task?.status !== 'waiting' || task.machine !== deps.config.machine || name === undefined) continue;
+    if (!isRunLive(deps.watches, id, deps.isAlive)) await wakeTask(deps, task, wakeReason(name));
+  }
+  return true;
+}
+
 // Tells the board this machine's directory list when it changed; a server that cannot hold one or a failure costs one line at most.
 async function sendDirs({ backend, config, print: log }: DispatchDeps): Promise<void> {
   try {
@@ -249,19 +361,36 @@ async function sendDirs({ backend, config, print: log }: DispatchDeps): Promise<
   }
 }
 
+// Probes at most one directory for its skills and models, then tells the board this machine's catalogue when it changed; a
+// server that cannot hold one or a failure costs one line at most. A tick with less time left than a probe can take only
+// sends what is cached.
+async function sendCatalog(deps: DispatchDeps, tickStart: Date): Promise<void> {
+  const { backend, config, catalog, now, dryRun, print: log } = deps;
+  if (catalog === undefined) return;
+  const left = TICK_LIMIT_MS - TICK_MARGIN_MS - (now().getTime() - tickStart.getTime());
+  const skipProbe = left < PROBE_TIMEOUT_MS + EXIT_GRACE_MS;
+  try {
+    const sync = await syncCatalog({ ...catalog, backend, config, now, dryRun, log, skipProbe });
+    if (sync.result === 'sent') log(`CATALOG sent ${sync.skills} skills and ${sync.models} models to the board`);
+  } catch (error) {
+    log(`WARN sending the skill catalogue failed: ${errorText(error)}`);
+  }
+}
+
 /**
  * When this machine next has something to do that no event announces: a wait here ends or its check is due again. A check that
  * never ran, or that this tick put off, is due now. A wait whose time is up was woken in this tick or its wake failed; the
  * timer's tick retries that, so it does not count.
  */
-function nextWaitDue({ config, waits, now }: DispatchDeps, tasks: Task[]): Date[] {
+function nextWaitDue({ config, waits, watches, now }: DispatchDeps, tasks: Task[]): Date[] {
   const at = now().getTime();
   const times: Date[] = [];
   for (const task of tasks) {
     if (task.status !== 'waiting' || task.machine !== config.machine) continue;
     const check = task.waitCheck ? waits.read(task.id) : undefined;
-    // Gone: the check passed and woke the task in this tick, or a wake that failed is the timer's to retry.
-    if (task.waitCheck && check === undefined) continue;
+    // Gone: the check passed and woke the task in this tick, or a wake that failed is the timer's to retry. Watches stand in for
+    // a stored check.
+    if (task.waitCheck && check === undefined && watches.list(task.id).defs.length === 0) continue;
     if (task.wakeAt !== null && task.wakeAt.getTime() > at) times.push(task.wakeAt);
     if (check !== undefined) times.push(new Date((check.lastCheckAt?.getTime() ?? at) + check.everyMs));
   }
@@ -356,7 +485,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     }),
   );
 
-  const candidates: Task[] = [];
+  const eligible: Task[] = [];
   // When the delayed Todo tasks this machine could serve come due.
   const delayed: Date[] = [];
   // The backend lists Todo with resumes first, then by priority.
@@ -389,8 +518,20 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
       log(`SKIP ${task.id} ${elsewhere}`);
       continue;
     }
-    candidates.push(task);
+    eligible.push(task);
   }
+
+  // While a configured threshold is reached, work below the limit's priority does not start, resumes included: they use quota
+  // too. Held tasks are out of `candidates` for good, so they do not make a lane pause a borrowed run either.
+  const reached =
+    config.usageLimits === undefined || deps.usage === undefined
+      ? []
+      : reachedWindows({ limits: config.usageLimits, usage: deps.usage.read(), now: deps.now() });
+  const lowest = config.usageLimits?.priority ?? 'urgent';
+  const isHeld = (task: Task): boolean => reached.length > 0 && isBelowPriority(task.priority, lowest);
+  const held = eligible.filter(isHeld);
+  const candidates = eligible.filter((task) => !isHeld(task));
+  if (held.length > 0) log(`HOLD ${held.length} task(s) below ${lowest}: ${describeReached(reached)}`);
 
   const ownLaneOf = (task: Task) => ownLane(task, config.lanes);
   const started = new Set<string>();
@@ -476,17 +617,32 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     log(`WARN unlocking the worktrees of finished tasks failed: ${errorText(error)}`);
   }
   await runChecks(deps, checks, tickStart);
+  let polled = false;
+  try {
+    polled = await pollWatchesInstead(deps, tasks, tickStart);
+  } catch (error) {
+    log(`WARN polling the watches failed: ${errorText(error)}`);
+  }
   // Read after the checks ran: each one that failed is due again `everyMs` from now.
   const pauseAt = nextPauseAt({
     ...lanes,
     running: runs.map((run) => (paused.has(run.taskId) ? { ...run, pauseRequested: true } : run)),
     now: deps.now(),
   });
-  const next = earliest([...delayed, ...nextWaitDue(deps, tasks), ...(pauseAt === undefined ? [] : [pauseAt])]);
+  const usageReset = held.length > 0 ? earliestReset(reached) : undefined;
+  const next = earliest([
+    ...delayed,
+    ...nextWaitDue(deps, tasks),
+    ...(polled ? nextWatchDue(deps.watches.all()) : []),
+    ...(pauseAt === undefined ? [] : [pauseAt]),
+    ...(usageReset === undefined ? [] : [usageReset]),
+  ]);
   if (!deps.dryRun) files.writeNextDue(next);
   log(
-    `TICK started=${started.size} ${summary}${checks.length > 0 ? ` checks=${checks.length}` : ''}${next === undefined ? '' : ` next=${next.toISOString()}`}`,
+    `TICK started=${started.size} ${summary}${checks.length > 0 ? ` checks=${checks.length}` : ''}${held.length > 0 ? ` held=${held.length}` : ''}${next === undefined ? '' : ` next=${next.toISOString()}`}`,
   );
+  // After the starts and the checks, so a probe never holds one back.
+  await sendCatalog(deps, tickStart);
   // Last, so a slow or failing GitHub never holds back a start.
   await refreshPrStatesIfDue({ ...deps.prRefresh, backend, now: deps.now, dryRun: deps.dryRun, print: log }, listed);
 }
@@ -533,7 +689,16 @@ export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<voi
         taskFiles: createTaskFileStore(),
         worktreeLocks: createWorktreeLocks(),
         runCheck: (check) => runCheck(check),
+        watches: createWatchStore(),
+        runWatch: (job) => runCommand(job),
+        isAlive: isProcessAlive,
         configWarnings: () => loadConfigWarnings(getPaths().configFile),
+        catalog: {
+          store: createCatalogStore(),
+          probe: (dir) => probeClaude(dir),
+          fingerprintDeps: () => realFingerprintDeps(),
+        },
+        usage: createUsageStore(usageFile(getPaths().stateDir)),
         prRefresh: {
           github:
             whichOnPath('gh') === undefined

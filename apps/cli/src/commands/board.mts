@@ -17,6 +17,7 @@ import {
   formatQuestions,
   isPriority,
   isPrUrl,
+  prUrlIn,
   isSafeTaskId,
   isSafeWorkdir,
   isStatus,
@@ -36,7 +37,8 @@ import { plainLine, plainText } from '../output/terminal.mts';
 import type { Style } from '../output/style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
 import type { Choice, Scheduled, ScheduleFlags } from './schedule.mts';
-import type { WaitStore } from '../dispatch/waits.mts';
+import { newWatchId } from '../watch/store.mts';
+import type { WatchStore } from '../watch/store.mts';
 
 const NOTE_FILE_DIR = '/tmp/';
 const NOTE_FILE_MAX_BYTES = 1024 * 1024;
@@ -92,7 +94,7 @@ export function parseStatus(name: string): Status {
 }
 
 // Nothing is confirmed in a dry run: the DRY lines already say what would happen.
-function confirm(context: Context, line: string): void {
+export function confirm(context: Context, line: string): void {
   if (!context.dryRun) context.print(line);
 }
 
@@ -115,6 +117,23 @@ export async function reportPr(context: LinkingContext, id: string, url: string)
   const known = (await context.backend.getTask(id)).prs.some((pr) => pr.url === url);
   if (!known) await context.backend.addPr(id, url);
   confirm(context, `reported ${url} for ${id}  ${context.taskLink(id)}`);
+}
+
+export async function removePr(context: LinkingContext, id: string, url: string): Promise<void> {
+  if (!isPrUrl(url))
+    throw new UsageError(
+      `"${url.slice(0, 80)}" is not a pull request URL: use https://github.com/<owner>/<repo>/pull/<number>`,
+    );
+  const task = await context.backend.getTask(id);
+  const reported = task.prs.find((pr) => pr.url === url);
+  if (reported !== undefined) {
+    await context.backend.removePr(id, reported.id);
+    confirm(context, `removed ${url} from ${id}  ${context.taskLink(id)}`);
+  } else if (prUrlIn(task.input) === url)
+    throw new UsageError(
+      `${url} is the pull request the prompt of ${id} names, not a reported one, and cannot be removed`,
+    );
+  else confirm(context, `${url} was not reported for ${id}; nothing changed  ${context.taskLink(id)}`);
 }
 
 export interface CommentFlags {
@@ -500,7 +519,8 @@ export function waitText(plan: WaitPlan, reason: string | undefined, machine: st
 
 /**
  * A running task waits: the slot frees, and the task resumes in its session once the time is up or the check passes. The
- * check is stored on this machine before the board hears of the wait, so no tick sees a waiting task without it.
+ * check is stored on this machine as a command watch named "wait" before the board hears of the wait, so no tick sees a
+ * waiting task without it.
  */
 export async function wait(
   context: Context,
@@ -508,10 +528,11 @@ export async function wait(
   flags: WaitFlags,
   // `settingsDir`: the directory the run started in (AGENT_BOARD_START_DIR), whose settings the check takes its `env` from.
   // `restricted`: the run's AGENT_BOARD_RESTRICTED marker, which the worker sets on this machine for an agent's run.
-  deps: { waits: WaitStore; cwd: string; settingsDir?: string; restricted?: boolean; now?: Date },
+  deps: { watches: WatchStore; cwd: string; settingsDir?: string; restricted?: boolean; now?: Date },
 ): Promise<void> {
   const now = deps.now ?? new Date();
   const plan = parseWaitFlags(flags, now);
+  let watchId: string | undefined;
   if (plan.check !== undefined) {
     const task = await context.backend.getTask(id);
     if (task.status !== 'running') throw new UsageError(`${id} is ${task.status}: only a running task can wait`);
@@ -526,14 +547,25 @@ export async function wait(
         `${id} runs on ${task.machine ?? 'no machine'}, not on ${context.config.machine}: a check runs on the task's machine`,
       );
     if (context.dryRun) context.print(`DRY store check for ${id} in ${deps.cwd}: ${plainLine(plan.check.command)}`);
-    else
-      deps.waits.write(id, {
-        command: plan.check.command,
-        cwd: deps.cwd,
-        ...(deps.settingsDir !== undefined && isSafeWorkdir(deps.settingsDir) ? { settingsDir: deps.settingsDir } : {}),
+    else {
+      watchId = newWatchId();
+      deps.watches.write({
+        id: watchId,
+        name: 'wait',
+        task: id,
+        source: {
+          kind: 'command',
+          command: plan.check.command,
+          cwd: deps.cwd,
+          ...(deps.settingsDir !== undefined && isSafeWorkdir(deps.settingsDir)
+            ? { settingsDir: deps.settingsDir }
+            : {}),
+        },
         everyMs: plan.check.everyMs,
-        createdAt: now,
+        createdAt: now.toISOString(),
+        deadline: plan.wakeAt.toISOString(),
       });
+    }
   }
   try {
     await context.backend.wait(id, {
@@ -542,9 +574,9 @@ export async function wait(
       check: plan.check !== undefined,
     });
   } catch (error) {
-    // Only a refusal: after a timeout or a 5xx the board may have taken the wait, and its check must stay. A stray one goes at
-    // the next tick, once the task neither runs nor waits.
-    if (plan.check !== undefined && !context.dryRun && isPermanentRefusal(error)) deps.waits.remove(id);
+    // Only a refusal: after a timeout or a 5xx the board may have taken the wait, and its check must stay. If it did not, the
+    // watch stays while the task runs and parks the run when it ends, until its deadline or the task's watches are dropped.
+    if (watchId !== undefined && isPermanentRefusal(error)) deps.watches.claim(id, 'wait', watchId)?.done();
     if (error instanceof BackendError && error.status === 409)
       throw new UsageError(`${id} cannot wait: ${error.message}`);
     throw error;

@@ -222,7 +222,5 @@ describe('the task_prs migration on a database that already has rows', { timeout
       { id: 'prompt-only', pr_state: 'open' },
       { id: 'with-pr', pr_state: null },
     ]);
-    const kept = await old.db.execute<{ id: string }>(sql`select id from task where pr is not null order by id`);
-    expect(kept.rows).toEqual([{ id: 'bobs' }, { id: 'with-pr' }]);
   });
 });

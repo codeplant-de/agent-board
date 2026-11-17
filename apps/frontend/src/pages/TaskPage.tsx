@@ -1,5 +1,6 @@
 import { prsOf, type UnreadableField } from '@agent-board/shared';
 import {
+  ActionIcon,
   Alert,
   Anchor,
   Badge,
@@ -15,7 +16,8 @@ import {
   Text,
   Title,
 } from '@mantine/core';
-import { IconCornerDownRight, IconLockOff, IconTerminal2 } from '@tabler/icons-react';
+import { modals } from '@mantine/modals';
+import { IconCornerDownRight, IconLockOff, IconTerminal2, IconX } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
@@ -28,6 +30,7 @@ import { TaskBadges } from '../components/TaskBadges';
 import { ModelPicker, WorkdirSetting } from '../components/TaskSettings';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
+import { skillsFor } from '../lib/catalog';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { ago, stamp } from '../lib/time';
 import { errorMessage, POLL_MS, useTRPC } from '../lib/trpc';
@@ -47,7 +50,9 @@ function TaskView({ id }: { id: string }) {
   const trpc = useTRPC();
   const query = useQuery({ ...trpc.tasks.get.queryOptions({ id }), refetchInterval: POLL_MS });
   const setPriority = useMutation(trpc.tasks.setPriority.mutationOptions());
+  const removePr = useMutation(trpc.tasks.removePr.mutationOptions());
   const machines = useQuery(trpc.machines.list.queryOptions());
+  const catalogs = useQuery(trpc.machines.catalogs.queryOptions());
   const bottom = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useSearchParams();
   const transcriptOpen = search.get('transcript') !== null;
@@ -76,6 +81,7 @@ function TaskView({ id }: { id: string }) {
 
   const { task, thread, followUps, parent } = query.data;
   const unlisted = unlistedMachine(task, machines.data ?? []);
+  const skills = skillsFor(catalogs.data ?? [], task);
   const prs = prsOf(task);
 
   return (
@@ -129,21 +135,51 @@ function TaskView({ id }: { id: string }) {
           </Group>
           {prs.length > 0 && (
             <Group gap="xs">
-              {prs.map(({ url, state }) => (
-                <Button
-                  key={url}
-                  component="a"
-                  href={url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  variant="default"
-                  size="xs"
-                  className="truncate-flex"
-                  leftSection={<PrStateIcon state={state} size={14} />}
-                >
-                  {url.replace('https://github.com/', '')}
-                </Button>
-              ))}
+              {prs.map(({ url, state, id: prId, prompt }) => {
+                const name = url.replace('https://github.com/', '');
+                const confirmRemove = (rowId: string) =>
+                  modals.openConfirmModal({
+                    title: `Remove ${name}?`,
+                    children: (
+                      <Text size="sm">
+                        It comes off this task and no longer counts for Move merged to Done. The agent can report it
+                        again with board pr.
+                      </Text>
+                    ),
+                    labels: { confirm: 'Remove', cancel: 'Cancel' },
+                    confirmProps: { color: 'red' },
+                    onConfirm: () => removePr.mutate({ id: task.id, prId: rowId }),
+                  });
+                return (
+                  <Group key={url} gap={4} wrap="nowrap" className="truncate-flex">
+                    <Button
+                      component="a"
+                      href={url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      variant="default"
+                      size="xs"
+                      className="truncate-flex"
+                      leftSection={<PrStateIcon state={state} size={14} />}
+                    >
+                      {name}
+                    </Button>
+                    {prId !== undefined && !prompt && (
+                      <ActionIcon
+                        variant="subtle"
+                        color="gray"
+                        size="sm"
+                        aria-label={`Remove ${name}`}
+                        title="Take this pull request off the task"
+                        loading={removePr.isPending}
+                        onClick={() => confirmRemove(prId)}
+                      >
+                        <IconX size={14} />
+                      </ActionIcon>
+                    )}
+                  </Group>
+                );
+              })}
             </Group>
           )}
         </Stack>
@@ -232,7 +268,7 @@ function TaskView({ id }: { id: string }) {
         />
 
         <div ref={bottom}>
-          <ActionPanel task={task} thread={thread} followUps={followUps} />
+          <ActionPanel task={task} thread={thread} followUps={followUps} skills={skills} />
         </div>
       </Stack>
     </Container>

@@ -22,6 +22,9 @@ const VISIBLE = [
   'move',
   'ask',
   'wait',
+  'watch',
+  'watches',
+  'unwatch',
   'add',
   'polish',
   'task',
@@ -29,6 +32,7 @@ const VISIBLE = [
   'schedules',
   'dirs',
   'config',
+  'agents',
   'delay',
   'init',
   'doctor',
@@ -170,6 +174,7 @@ test('the bash script completes commands, task ids, statuses, priorities and sch
   assert.deepEqual(bashOffers(['add', '--parent'], 'Z'), ['Zk7mNp2q']);
   assert.deepEqual(bashOffers(['schedules'], 'p'), ['pause']);
   assert.deepEqual(bashOffers(['dirs'], ''), ['list', 'add', 'rm', 'set', 'unset']);
+  assert.deepEqual(bashOffers(['agents'], ''), ['list', 'show', 'export', 'add', 'rm']);
   assert.deepEqual(bashOffers(['dirs', 'set'], ''), ['label', 'repo', 'default', 'lane']);
   assert.deepEqual(bashOffers(['dirs', 'unset'], 'd'), ['default']);
   assert.deepEqual(bashOffers(['dirs', 'add'], ''), [], 'only set and unset take a setting');

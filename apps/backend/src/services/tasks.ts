@@ -940,6 +940,18 @@ export async function addPr(db: DbOrTx, taskId: string, pr: string): Promise<voi
   });
 }
 
+/** Takes a reported PR off the task. An id that is not one of the task's rows changes nothing, so a retry is safe. */
+export async function removePr(db: DbOrTx, taskId: string, prId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    await lockTask(tx, taskId);
+    const removed = await tx
+      .delete(taskPrs)
+      .where(and(eq(taskPrs.taskId, taskId), eq(taskPrs.id, prId)))
+      .returning({ id: taskPrs.id });
+    if (removed.length > 0) await tx.update(tasks).set({ updatedAt: new Date() }).where(eq(tasks.id, taskId));
+  });
+}
+
 /** What a CLI without `task.prs` does to report a PR: the task's PRs become this one, whose state is unknown. */
 export async function setPr(db: DbOrTx, taskId: string, pr: string): Promise<void> {
   requireSealed(pr, 'the pull request');

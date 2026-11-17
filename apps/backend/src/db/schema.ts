@@ -124,8 +124,6 @@ export const tasks = pgTable(
     homeWorkdir: text('home_workdir'),
     /** The sealed name of the agent the task runs as; null runs as the user's config says. Written once, at creation. */
     agent: text('agent'),
-    /** No longer read or written: the PRs are in `task_pr`. Kept so the previous backend image still runs on this database; a later migration drops it. */
-    pr: text('pr'),
     /** GitHub's state of the PR the prompt names, as a worker's dispatcher last saw it. Clear on purpose: it says only that some PR of the task merged. */
     prState: prState('pr_state'),
     next: nextRun('next').notNull().default('fresh'),
@@ -177,7 +175,6 @@ export const tasks = pgTable(
     check('task_workdir_sealed', isEnvelope(t.workdir)),
     check('task_home_workdir_sealed', isEnvelope(t.homeWorkdir)),
     check('task_agent_sealed', isEnvelope(t.agent)),
-    check('task_pr_sealed', isEnvelope(t.pr)),
     check('task_dedupe_key_blind', isBlindIndex(t.dedupeKey)),
     check('task_head_blind', isBlindIndex(t.head)),
     unique('task_owner_dedupe_key_unique').on(t.owner, t.dedupeKey),
@@ -312,11 +309,18 @@ export const machines = pgTable(
     /** The blind index of that list, which the machine compares with its own to know whether to send again. */
     dirsIndex: text('dirs_index'),
     dirsUpdatedAt: timestamp('dirs_updated_at', { withTimezone: true }),
+    /** The sealed catalogue of skills and models the machine's CLI sent (`machine.catalog`), advice for completion in the browser; null until it sends one. */
+    catalog: text('catalog'),
+    /** The blind index of that catalogue, which the machine compares with its own to know whether to send again. */
+    catalogIndex: text('catalog_index'),
+    catalogUpdatedAt: timestamp('catalog_updated_at', { withTimezone: true }),
   },
   (t) => [
     primaryKey({ columns: [t.owner, t.name] }),
     check('machine_dirs_sealed', isEnvelope(t.dirs)),
     check('machine_dirs_index_blind', isBlindIndex(t.dirsIndex)),
+    check('machine_catalog_sealed', isEnvelope(t.catalog)),
+    check('machine_catalog_index_blind', isBlindIndex(t.catalogIndex)),
     tenant(),
   ],
 ).enableRLS();

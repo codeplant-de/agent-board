@@ -295,7 +295,14 @@ test('a run whose task left Running is still its own: the board drops runStarted
 });
 
 test('outcomes: a pause wins over the stop it caused, a report wins over a pause', () => {
-  const base = { signal: null, stopped: undefined, pauseRequested: false, stopRequested: false, reported: false };
+  const base = {
+    signal: null,
+    stopped: undefined,
+    pauseRequested: false,
+    stopRequested: false,
+    reported: false,
+    watching: false,
+  };
   const forced = { kind: 'stop' as const, why: 'pause-forced' as const, message: 'forced' };
   const inactive = { kind: 'stop' as const, why: 'inactive' as const, message: 'Stopped: no tool call' };
   assert.equal(decideOutcome({ ...base, exitCode: 1 }).kind, 'failed');
@@ -313,8 +320,32 @@ test('outcomes: a pause wins over the stop it caused, a report wins over a pause
   assert.equal(decideOutcome({ ...base, exitCode: 0, pauseRequested: true, reported: true }).kind, 'ok');
 });
 
+test('outcomes: a run that ended with watches open parks, unless it failed, paused, stopped or reported', () => {
+  const base = {
+    signal: null,
+    stopped: undefined,
+    pauseRequested: false,
+    stopRequested: false,
+    reported: false,
+    watching: true,
+  };
+  assert.equal(decideOutcome({ ...base, exitCode: 0 }).kind, 'parked');
+  assert.equal(decideOutcome({ ...base, exitCode: 1 }).kind, 'failed');
+  assert.equal(decideOutcome({ ...base, exitCode: 0, pauseRequested: true }).kind, 'paused');
+  assert.equal(decideOutcome({ ...base, exitCode: 0, stopRequested: true }).kind, 'stopped');
+  assert.equal(decideOutcome({ ...base, exitCode: 0, reported: true }).kind, 'ok');
+  assert.equal(decideOutcome({ ...base, exitCode: 0, watching: false }).kind, 'unreported');
+});
+
 test('outcomes: a stop the user asked for ends in Needs me, and a report still wins', () => {
-  const base = { signal: null, stopped: undefined, pauseRequested: false, stopRequested: true, reported: false };
+  const base = {
+    signal: null,
+    stopped: undefined,
+    pauseRequested: false,
+    stopRequested: true,
+    reported: false,
+    watching: false,
+  };
   assert.equal(decideOutcome({ ...base, exitCode: 0 }).kind, 'stopped');
   assert.equal(decideOutcome({ ...base, exitCode: 143 }).kind, 'stopped', 'whatever the exit code says');
   assert.equal(decideOutcome({ ...base, exitCode: 0, pauseRequested: true }).kind, 'stopped');
@@ -600,7 +631,7 @@ test('an agent run gets the reduced board rules, whoever made the task', () => {
   assert.equal(rules, boardRules(task({ id: 'abc' }), { asAgent: true }));
   assert.doesNotMatch(rules, /board wait|board pr|gh pr create|Work on your own/);
   assert.match(rules, /stands alone/);
-  assert.match(boardRules(task({ id: 'abc' })), /board wait abc --check/);
+  assert.match(boardRules(task({ id: 'abc' })), /board watch abc --ci/);
 });
 
 test('a task naming an agent this machine lacks is refused, a resume included', () => {
@@ -610,10 +641,7 @@ test('a task naming an agent this machine lacks is refused, a resume included', 
       { reviewer: REVIEWER },
       run,
     );
-    assert.ok(
-      !plan.ok && /not defined on this machine: no agents\.ghost in config\.json here/.test(plan.reason),
-      run.kind,
-    );
+    assert.ok(!plan.ok && /not defined on this machine: no agent ghost defined here/.test(plan.reason), run.kind);
   }
   for (const name of ['constructor', 'toString', '__proto__', 'Reviewer'])
     assert.ok(!invokeAgent({ id: 'abc', input: 'x', agent: name }).ok, name);
@@ -676,7 +704,7 @@ test('a machine leaves a task naming an agent it does not define to another mach
   const named = (agent: string | null, extra: Parameters<typeof task>[0] = { id: 'a' }) =>
     notServableHere(task({ input: 'x', ...extra, agent }), 'here', config);
   assert.equal(named('reviewer'), undefined);
-  assert.equal(named('ghost'), 'no agents.ghost in config.json here');
+  assert.equal(named('ghost'), 'no agent ghost defined here');
   assert.equal(named(null), undefined);
   assert.equal(
     named('ghost', { id: 'a', machine: 'there', workdir: '/x' }),
@@ -685,7 +713,7 @@ test('a machine leaves a task naming an agent it does not define to another mach
   );
   assert.equal(
     named('ghost', { id: 'a', createdBy: 'intake', input: `/review-pr ${PR}` }),
-    'no agents.ghost in config.json here',
+    'no agent ghost defined here',
   );
 });
 
@@ -734,6 +762,6 @@ test('a pinned task naming a missing agent is not skipped, so a worker here can 
   assert.equal(notServableHere(resume, 'here', config), undefined);
   assert.equal(
     notServableHere(task({ id: 'a', input: 'x', agent: 'ghost' }), 'here', config),
-    'no agents.ghost in config.json here',
+    'no agent ghost defined here',
   );
 });

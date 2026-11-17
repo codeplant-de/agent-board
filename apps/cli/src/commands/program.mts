@@ -11,6 +11,7 @@ import { createUpdateState, updateStateFile } from '../self/update-state.mts';
 import { SETUP } from './help-text.mts';
 import type { ProgramOptions, ProgramShared } from './program-shared.mts';
 import { registerConfigCommand } from './register-config.mts';
+import { registerAgentsCommand } from './register-agents.mts';
 import { registerDirsCommand } from './register-dirs.mts';
 import { registerInternalCommands } from './register-internal.mts';
 import { registerDelayCommand, registerScheduleCommands } from './register-scheduling.mts';
@@ -137,6 +138,7 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   registerScheduleCommands(shared);
   registerDirsCommand(shared);
   registerConfigCommand(shared);
+  registerAgentsCommand(shared);
   registerDelayCommand(shared);
   registerSetupCommands(shared);
 

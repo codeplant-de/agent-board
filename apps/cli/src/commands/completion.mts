@@ -22,6 +22,7 @@ interface CommandModel {
     | 'config-key'
     | 'task-action'
     | 'task-key'
+    | 'agents-action'
     | 'command'
     | 'shell'
   )[];
@@ -52,6 +53,7 @@ function positionalsOf(command: Command): CommandModel['positionals'] {
   if (command.name() === 'schedules') return ['schedule-action', 'schedule'];
   if (command.name() === 'dirs') return ['dirs-action', 'dirs-key'];
   if (command.name() === 'config') return ['config-action', 'config-key'];
+  if (command.name() === 'agents') return ['agents-action'];
   if (command.name() === 'move') return ['task', 'status'];
   if (command.name() === 'task') return ['task', 'task-action', 'task-key'];
   return command.registeredArguments[0]?.name() === 'task' ? ['task'] : [];
@@ -123,6 +125,8 @@ function positionalWords(kind: Kind, model: CompletionModel): string | undefined
       return 'set unset';
     case 'task-key':
       return 'priority model dir';
+    case 'agents-action':
+      return 'list show export add rm';
     case 'command':
       return words(model.commands.map((command) => command.name));
     case 'shell':

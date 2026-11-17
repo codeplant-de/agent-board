@@ -36,7 +36,7 @@ interface DirsFile {
 }
 
 function readDirsFile(configFile: string): DirsFile {
-  const { raw, mode } = readConfigFile(configFile, 'fix it before changing the dirs list');
+  const { raw, mode } = readConfigFile(configFile, 'fix it first');
   const config = parseConfig(raw);
   const rawDirs = raw['dirs'];
   const keys = isRecord(rawDirs)
@@ -50,16 +50,27 @@ function readDirsFile(configFile: string): DirsFile {
 }
 
 /**
- * Rewrites the `dirs` key of config.json and nothing else: the file is read again here, `change` maps the entries now in it
- * to the entries to keep, and the result is written beside the file and renamed over it, with the file's mode. An entry
- * `change` passes on keeps its settings as they are. The file is rewritten as JSON with 2 spaces, so hand formatting is
- * lost; every other key keeps its value and its place.
+ * Rewrites config.json: the file is read again here and `change` maps its parsed contents to what to write, which is
+ * written beside the file and renamed over it, with the file's mode. The file is rewritten as JSON with 2 spaces, so hand
+ * formatting is lost; every key `change` passes on keeps its value and its place.
+ */
+export function rewriteConfigFile(
+  configFile: string,
+  change: (file: { raw: Record<string, unknown>; keys: DirKey[] | undefined }) => Record<string, unknown>,
+): void {
+  const { raw, mode, keys } = readDirsFile(configFile);
+  writeConfigFile(configFile, change({ raw, keys }), mode);
+}
+
+/**
+ * Rewrites the `dirs` key of config.json and nothing else: `change` maps the entries now in it to the entries to keep. An
+ * entry `change` passes on keeps its settings as they are.
  */
 export function changeDirs(configFile: string, change: (keys: DirKey[]) => DirRecord[]): void {
-  const { raw, mode, keys } = readDirsFile(configFile);
-  const next = change(keys ?? []);
-  const dirs = Object.fromEntries(next.map(({ key, settings }) => [key, settings]));
-  writeConfigFile(configFile, { ...raw, dirs }, mode);
+  rewriteConfigFile(configFile, ({ raw, keys }) => {
+    const dirs = Object.fromEntries(change(keys ?? []).map(({ key, settings }) => [key, settings]));
+    return { ...raw, dirs };
+  });
 }
 
 export interface DirsDeps {

@@ -22,9 +22,11 @@ import {
   parseHeartbeat,
   parseSchedulePatch,
   parseWireAsk,
+  parseWireCatalog,
   parseWireDirs,
   parseWireNoteInput,
   parseWirePr,
+  parseWirePrRemoval,
   parseWirePrState,
   parseWirePrStates,
   parseWireScheduleDraft,
@@ -46,7 +48,14 @@ import { withOwner } from './db/scope';
 import type { Changes } from './services/changes';
 import { AppError } from './services/errors';
 import { getKeys } from './services/keys';
-import { machineDirsIndex, machineForToken, recordClient, setMachineDirs } from './services/machines';
+import {
+  machineCatalogIndex,
+  machineDirsIndex,
+  machineForToken,
+  recordClient,
+  setMachineCatalog,
+  setMachineDirs,
+} from './services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
 import { appendTranscript } from './services/transcripts';
 import {
@@ -65,6 +74,7 @@ import {
   readNotes,
   runInbox,
   addPr,
+  removePr,
   listTaskPrs,
   setPr,
   setPrState,
@@ -158,6 +168,7 @@ async function handleMachineCall(
         api: { version: API_VERSION, minClient: MIN_CLIENT },
         features: SERVER_FEATURES,
         dirsIndex: await machineDirsIndex(db, machine),
+        catalogIndex: await machineCatalogIndex(db, machine),
         ...(config.cliVersion === null ? {} : { cli: config.cliVersion }),
       };
     case 'list-tasks': {
@@ -230,6 +241,11 @@ async function handleMachineCall(
       await addPr(db, idOf(body, 'task'), pr);
       return null;
     }
+    case 'remove-pr': {
+      const { pr } = parsed(() => parseWirePrRemoval(body['body']));
+      await removePr(db, idOf(body, 'task'), pr);
+      return null;
+    }
     case 'set-pr-states': {
       const states = parsed(() => parseWirePrStates(body['body']));
       await setPrStates(db, idOf(body, 'task'), states);
@@ -245,6 +261,13 @@ async function handleMachineCall(
         db,
         machine,
         parsed(() => parseWireDirs(body['body'])),
+      );
+      return null;
+    case 'set-catalog':
+      await setMachineCatalog(
+        db,
+        machine,
+        parsed(() => parseWireCatalog(body['body'])),
       );
       return null;
     case 'ask': {
@@ -334,6 +357,7 @@ const DISPATCH_WRITES = new Set([
   'add-note',
   'set-pr',
   'add-pr',
+  'remove-pr',
   'ask',
   'pause',
   'stopped',

@@ -5,6 +5,7 @@ import {
   ContractError,
   dedupeKeyIndex,
   isSafeWorkdir,
+  machineCatalogIndex,
   machineDirsIndex,
   newTaskId,
   open,
@@ -18,6 +19,7 @@ import {
   sealChecked,
   sealFields,
   sealInput,
+  sealMachineCatalog,
   sealMachineDirs,
   sealNote,
   sealPr,
@@ -305,6 +307,7 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     async addPr(id, url) {
       await inner.addPr(id, { pr: await checked('add-pr', () => sealPr(sealer, id, url)) });
     },
+    removePr: (id, prId) => inner.removePr(id, { pr: prId }),
     setPrStates: (id, states) => inner.setPrStates(id, states),
     async checkDirs(machine, dirs) {
       const { supported, index } = await inner.dirsState();
@@ -314,6 +317,15 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     async setDirs(machine, dirs) {
       const sealed = await checked('set-dirs', () => sealMachineDirs(sealer, machine, dirs));
       await inner.setDirs({ dirs: sealed, index: await machineDirsIndex(await getKeys(), machine, dirs) });
+    },
+    async checkCatalog(machine, catalog) {
+      const { supported, index } = await inner.catalogState();
+      if (!supported) return 'unsupported';
+      return index === (await machineCatalogIndex(await getKeys(), machine, catalog)) ? 'current' : 'stale';
+    },
+    async setCatalog(machine, catalog) {
+      const sealed = await checked('set-catalog', () => sealMachineCatalog(sealer, machine, catalog));
+      await inner.setCatalog({ catalog: sealed, index: await machineCatalogIndex(await getKeys(), machine, catalog) });
     },
     async pause(id, note) {
       return opened(await inner.pause(id, await noteInput('pause', id, 'system', note.trim())), openTask);

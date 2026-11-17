@@ -97,6 +97,7 @@ describe('one user cannot reach another user’s board', () => {
     const alice = ui.alice;
     const before = await bobsRows();
     const own = await alice.tasks.create({ input: 'mine' });
+    const [bobsPr] = await admin.select().from(taskPrs).where(eq(taskPrs.taskId, bob.idle.id));
     const attempts: (() => Promise<unknown>)[] = [
       () => alice.tasks.get({ id: bob.idle.id }),
       () => alice.tasks.answer({ id: bob.asked.id, questionNoteId: bob.questionId, answers: [{ selected: ['Yes'] }] }),
@@ -110,6 +111,7 @@ describe('one user cannot reach another user’s board', () => {
       () => alice.tasks.takeBack({ id: bob.running.id }),
       () => alice.tasks.setClosed({ id: bob.idle.id, closed: true }),
       () => alice.tasks.move({ id: bob.idle.id, status: 'backlog' }),
+      () => alice.tasks.removePr({ id: bob.idle.id, prId: bobsPr!.id }),
       () => alice.schedules.setPaused({ id: bob.scheduleId, paused: true }),
       () => alice.schedules.remove({ id: bob.scheduleId }),
       () => alice.transcript.output({ taskId: bob.idle.id, runId: 'run-bob-0001', seq: 1 }),
@@ -137,6 +139,7 @@ describe('one user cannot reach another user’s board', () => {
     const own = await alice.tasks.create({ input: 'mine' });
     const ownSchedule = (await alice.tasks.create({ input: 'sweep', when: { every: HOUR } })).scheduleId!;
     const foreign = { id: bob.idle.id };
+    const [bobsPr] = await admin.select().from(taskPrs).where(eq(taskPrs.taskId, bob.idle.id));
     const commands: [string, Record<string, unknown>][] = [
       ['get-task', foreign],
       ['attach-session', foreign],
@@ -152,6 +155,7 @@ describe('one user cannot reach another user’s board', () => {
       ['read-notes', foreign],
       ['add-pr', { ...foreign, body: { pr: SEALED } }],
       ['set-pr', { ...foreign, body: { pr: SEALED } }],
+      ['remove-pr', { ...foreign, body: { pr: bobsPr!.id } }],
       ['set-pr-states', { ...foreign, body: { prompt: 'merged' } }],
       ['set-pr-state', { ...foreign, body: { prState: 'merged' } }],
       ['update-schedule', { id: bob.scheduleId, body: { paused: true } }],

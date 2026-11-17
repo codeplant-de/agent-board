@@ -23,6 +23,8 @@ export interface Prompts {
     options: { defaultValue?: string; validate: (value: string) => string | undefined },
   ) => Promise<string>;
   secret: (message: string, options: { validate: (value: string) => string | undefined }) => Promise<string>;
+  // A yes or no; no is the default.
+  confirm?: (message: string) => Promise<boolean>;
 }
 
 export interface InitDeps {
@@ -62,6 +64,11 @@ export function clackPrompts(): Prompts {
     secret: async (message, { validate }) => {
       const clack = await import('@clack/prompts');
       return answer(await clack.password({ message, validate: (value) => validate(value ?? '') }));
+    },
+    confirm: async (message) => {
+      const clack = await import('@clack/prompts');
+      const value = await clack.confirm({ message, initialValue: false });
+      return value === true;
     },
   };
 }

@@ -18,6 +18,7 @@ vi.mock('../lib/trpc', () => {
         get: { queryOptions: ({ id }: { id: string }) => ({ queryKey: ['tasks.get', id] }) },
         setPriority: idle,
         configure: idle,
+        removePr: idle,
         answer: idle,
         reply: idle,
         send: idle,
@@ -32,7 +33,10 @@ vi.mock('../lib/trpc', () => {
         wakeNow: idle,
         applyPolish: idle,
       },
-      machines: { list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => [] }) } },
+      machines: {
+        list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => [] }) },
+        catalogs: { queryOptions: () => ({ queryKey: ['machines.catalogs'], queryFn: async () => [] }) },
+      },
       transcript: {
         runs: { queryOptions: ({ id }: { id: string }) => ({ queryKey: ['transcript.runs', id] }) },
         events: { queryKey: (input: unknown) => ['transcript.events', input] },

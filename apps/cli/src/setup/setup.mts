@@ -48,6 +48,13 @@ const REMOVED_TIMER = 'agent-board-intake.timer';
 const LISTEN_NAME: ToolUnitName = 'listen';
 export const LISTEN_SERVICE = `agent-board-${LISTEN_NAME}.service`;
 
+// The watch unit runs the machine's watches (`board watch`); like the listener it is a service without a timer.
+const WATCH_NAME: ToolUnitName = 'watch';
+export const WATCH_SERVICE = `agent-board-${WATCH_NAME}.service`;
+
+// The services that keep running code until they are restarted.
+export const LONG_RUNNING_SERVICES = [LISTEN_SERVICE, WATCH_SERVICE];
+
 // Exit 75 is `flock -E 75`: another tick holds the lock, which is not a failure.
 const UNITS: Record<
   UnitName,
@@ -94,7 +101,7 @@ export interface RenderInput {
   // The absolute path of flock.
   flock: string;
   // The command that runs `internal <name>`.
-  command: (name: UnitName | 'listen') => string[];
+  command: (name: UnitName | 'listen' | 'watch') => string[];
 }
 
 export function renderUnits({ flock, command }: RenderInput): UnitFile[] {
@@ -164,14 +171,33 @@ TimeoutStopSec=${LISTEN_STOP_TIMEOUT_S}
 WantedBy=default.target
 `,
   };
-  return [...timed, listen];
+  const watch: UnitFile = {
+    file: WATCH_SERVICE,
+    text: `[Unit]
+Description=agent-board watch unit: runs the watches of this machine's tasks
+# systemd must keep restarting it, not give up.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# PATH is for the gh and the watch commands it runs.
+Environment=PATH=${UNIT_PATH}
+ExecStart=${command('watch').map(quoteExecArg).join(' ')}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+`,
+  };
+  return [...timed, listen, watch];
 }
 
 export function unitDirectory(env: Record<string, string | undefined>): string {
   return join(env['XDG_CONFIG_HOME'] || join(homedir(), '.config'), 'systemd', 'user');
 }
 
-const ENABLE_UNITS = [...UNIT_NAMES.map((name) => `agent-board-${name}.timer`), LISTEN_SERVICE];
+const ENABLE_UNITS = [...UNIT_NAMES.map((name) => `agent-board-${name}.timer`), ...LONG_RUNNING_SERVICES];
 
 export const ENABLE_COMMAND = `systemctl --user enable --now ${ENABLE_UNITS.join(' ')}`;
 
@@ -341,7 +367,7 @@ async function setupDarwin(deps: SetupDeps, flags: SetupFlags): Promise<void> {
   };
   if (flags.enable) {
     for (const agent of agents) await load(agent);
-    deps.print('loaded the dispatch agent and the listener');
+    deps.print('loaded the dispatch agent, the listener and the watch agent');
     return;
   }
   const loaded = await Promise.all(agents.map((agent) => launchd.loaded(agent.name)));
@@ -352,7 +378,7 @@ async function setupDarwin(deps: SetupDeps, flags: SetupFlags): Promise<void> {
   }
   if (loaded.every(Boolean))
     deps.print(
-      `the dispatch agent and the listener are loaded already; the next tick runs the new files. To restart the listener: launchctl kickstart -k ${agentTarget(launchd.uid, 'listen')}`,
+      `the dispatch, listener and watch agents are loaded already; the next tick runs the new files. To restart the listener and the watch agent: launchctl kickstart -k ${agentTarget(launchd.uid, 'listen')} ${agentTarget(launchd.uid, 'watch')}`,
     );
   else
     deps.print(
@@ -396,26 +422,26 @@ export async function setup(deps: SetupDeps, flags: SetupFlags): Promise<void> {
   }
   mkdirSync(deps.unitDir, { recursive: true });
   await removeIntakeUnits(deps);
-  let listenerChanged = false;
+  const changedServices: string[] = [];
   for (const unit of units) {
-    if (installCopy(deps, join(deps.unitDir, unit.file), unit.file, unit.text) && unit.file === LISTEN_SERVICE)
-      listenerChanged = true;
+    const written = installCopy(deps, join(deps.unitDir, unit.file), unit.file, unit.text);
+    if (written && LONG_RUNNING_SERVICES.includes(unit.file)) changedServices.push(unit.file);
   }
   await deps.run('systemctl', ['--user', 'daemon-reload']);
-  // A running listener keeps the old unit and code until it is restarted; try-restart leaves a stopped one alone.
-  if (listenerChanged) {
-    await deps.run('systemctl', ['--user', 'try-restart', LISTEN_SERVICE]);
-    deps.print(`restarted ${LISTEN_SERVICE} if it was running, to run the new unit`);
+  // A running service keeps the old unit and code until it is restarted; try-restart leaves a stopped one alone.
+  for (const service of changedServices) {
+    await deps.run('systemctl', ['--user', 'try-restart', service]);
+    deps.print(`restarted ${service} if it was running, to run the new unit`);
   }
   if (flags.enable) {
     await deps.run('systemctl', ['--user', 'enable', '--now', ...ENABLE_UNITS]);
-    deps.print('enabled and started the dispatch timer and the listener');
+    deps.print('enabled and started the dispatch timer, the listener and the watch unit');
   } else {
     const enabled = await Promise.all(ENABLE_UNITS.map((unit) => deps.unitEnabled?.(unit) ?? Promise.resolve(false)));
     if (enabled.every(Boolean))
       deps.print(
-        'the timer and the listener are enabled already; the next tick runs the new units, and the listener once it is restarted: systemctl --user restart agent-board-listen',
+        'the timer, the listener and the watch unit are enabled already; the next tick runs the new units, and the listener and the watch unit once they are restarted: systemctl --user restart agent-board-listen agent-board-watch',
       );
-    else deps.print(`Enable the timer and the listener when you are ready:\n  ${ENABLE_COMMAND}`);
+    else deps.print(`Enable the timer, the listener and the watch unit when you are ready:\n  ${ENABLE_COMMAND}`);
   }
 }

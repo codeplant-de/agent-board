@@ -4,8 +4,10 @@ import {
   blindIndex,
   deriveKeys,
   generateDataKey,
+  machineCatalogJson,
   open,
   parseWireAsk,
+  parseWireCatalog,
   parseWireDirs,
   parseWireNoteInput,
   parseWirePr,
@@ -24,6 +26,7 @@ import type {
   Question,
   TranscriptEvent,
   WireBackend,
+  WireCatalog,
   WireDirs,
   WireNote,
   WireNoteInput,
@@ -64,6 +67,8 @@ interface FakeWire extends WireBackend {
   // The directory list the server holds for the machine, as the request that set it carried it.
   dirs: WireDirs | undefined;
   dirsSupported: boolean;
+  catalog: WireCatalog | undefined;
+  catalogSupported: boolean;
 }
 
 let nextId = 0;
@@ -79,6 +84,8 @@ function fakeWire(): FakeWire {
     byKey: new Map(),
     dirs: undefined,
     dirsSupported: true,
+    catalog: undefined,
+    catalogSupported: true,
     async listTasks() {
       return state.tasks;
     },
@@ -138,6 +145,10 @@ function fakeWire(): FakeWire {
       const found = state.tasks.find((t) => t.id === id)!;
       found.prs = [...(found.prs ?? []), { id: `row${(found.prs?.length ?? 0) + 1}`, pr: sent.pr, state: null }];
     },
+    async removePr(id, body) {
+      const found = state.tasks.find((t) => t.id === id)!;
+      found.prs = (found.prs ?? []).filter((row) => row.id !== body.pr);
+    },
     async setPrStates(id, states) {
       const found = state.tasks.find((t) => t.id === id)!;
       if (states.prompt !== undefined) found.promptPrState = states.prompt;
@@ -149,6 +160,12 @@ function fakeWire(): FakeWire {
     },
     async dirsState() {
       return { supported: state.dirsSupported, index: state.dirs?.index ?? null };
+    },
+    async setCatalog(body) {
+      state.catalog = parseWireCatalog(JSON.parse(record(state, body)));
+    },
+    async catalogState() {
+      return { supported: state.catalogSupported, index: state.catalog?.index ?? null };
     },
     async pause(id, note) {
       push(state, id, parseWireNoteInput(JSON.parse(record(state, note)), 'note'), 'system', 'event');
@@ -926,6 +943,20 @@ test('the PRs an agent reports are sealed for its task and agent, and open on th
   noMarkers(wire);
 });
 
+test('removing a PR passes the row id through, with nothing sealed', async () => {
+  const wire = fakeWire();
+  wire.tasks.push(await wireTask({ id: 't1' }));
+  const board = sealingBackend(wire, KEYS);
+  await board.addPr('t1', PR_URL);
+  await board.addPr('t1', OTHER_PR_URL);
+  const [first] = wire.tasks[0]!.prs!;
+  await board.removePr('t1', first!.id);
+  assert.deepEqual(
+    (await board.getTask('t1')).prs.map(({ url }) => url),
+    [OTHER_PR_URL],
+  );
+});
+
 test('a task from a server without task.prs shows its one PR and the state it states', async () => {
   const wire = fakeWire();
   const {
@@ -997,6 +1028,39 @@ test('a directory list the board would refuse is refused before it is sent', asy
   await assert.rejects(
     board.setDirs('laptop', many),
     (error: unknown) => error instanceof BackendError && error.status === 400,
+  );
+  assert.equal(wire.requests.length, 0);
+});
+
+test('the catalogue is sealed for this machine with an index of the same document, and the board tells whether it holds it', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  const catalog = {
+    claude: '2.1.326',
+    models: [{ value: 'opus', label: 'Opus' }],
+    skills: [{ name: 'MARKER-skill', description: 'MARKER-description' }],
+    dirs: {},
+  };
+  assert.equal(await board.checkCatalog('laptop', catalog), 'stale');
+  await board.setCatalog('laptop', catalog);
+  const sent = wire.catalog!;
+  const json = machineCatalogJson(catalog);
+  assert.equal(await open(KEYS, 'machine.catalog', 'machine:laptop', sent.catalog), json);
+  assert.equal(sent.index, await blindIndex(KEYS, `catalog:laptop:${json}`));
+  noMarkers(wire);
+  assert.equal(await board.checkCatalog('laptop', catalog), 'current');
+  assert.equal(await board.checkCatalog('laptop', { ...catalog, skills: [] }), 'stale');
+  assert.equal(await board.checkCatalog('desktop', catalog), 'stale', 'the index is of the machine as well');
+  wire.catalogSupported = false;
+  assert.equal(await board.checkCatalog('laptop', catalog), 'unsupported');
+});
+
+test('a catalogue the board would refuse is refused before it is sent', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  await assert.rejects(
+    board.setCatalog('laptop', { models: [], skills: [{ name: 'has space' }], dirs: {} }),
+    (error: unknown) => error instanceof BackendError && error.status === 400 && /set-catalog: /.test(error.message),
   );
   assert.equal(wire.requests.length, 0);
 });

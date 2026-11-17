@@ -1,4 +1,5 @@
 // The vocabulary shared by the CLI, the server and the UI. docs/machine-api.md documents it.
+import type { MachineCatalog } from './catalog.mts';
 import { envelopeLength, isBlindIndex, isEnvelope } from './crypto.mts';
 import type { Field } from './crypto.mts';
 import { isRecord } from './guards.mts';
@@ -417,12 +418,19 @@ export interface Backend {
   // The agent of a task reports a PR it opened or works on for it, which the task holds besides the ones it has. `url` must be a
   // GitHub PR URL. Against a server without `task.prs` it replaces the earlier one.
   addPr(id: string, url: string): Promise<void>;
+  // Takes a reported PR off the task, by the id of its row in `Task.prs`; an id the task does not list changes nothing. The PR the
+  // prompt names is not a row and cannot be removed.
+  removePr(id: string, prId: string): Promise<void>;
   // A worker's dispatcher records GitHub's state of the PR the prompt names and of reported ones, by the id the task lists them with.
   setPrStates(id: string, states: PrStates): Promise<void>;
   // Whether the board holds `dirs` as this machine's directory list, by comparing blind indexes; 'unsupported' for a server without the feature.
   checkDirs(machine: string, dirs: readonly MachineDir[]): Promise<DirsOnBoard>;
   // Replaces the board's copy of this machine's directory list. The copy is advice for the New task form and is never read back by a CLI.
   setDirs(machine: string, dirs: readonly MachineDir[]): Promise<void>;
+  // Whether the board holds `catalog` as this machine's catalogue, by comparing blind indexes; 'unsupported' for a server without the feature.
+  checkCatalog(machine: string, catalog: MachineCatalog): Promise<CatalogOnBoard>;
+  // Replaces the board's copy of this machine's catalogue. Advice for completing skills and choosing models, never read back by a CLI.
+  setCatalog(machine: string, catalog: MachineCatalog): Promise<void>;
 }
 
 /** A directory the machine lists in its config, with the label it gave it (`isSafeDirLabel`). */
@@ -432,6 +440,8 @@ export interface MachineDir {
 }
 
 export type DirsOnBoard = 'unsupported' | 'current' | 'stale';
+
+export type CatalogOnBoard = DirsOnBoard;
 
 // What the board server stores and returns: the sealed fields are envelopes (`abe1.…`) it cannot read. Values the server
 // returns may also be legacy plain text from before encryption; only what a client sends is checked to be sealed.
@@ -537,6 +547,11 @@ export interface WirePr {
   pr: string;
 }
 
+// Body of remove-pr: the id of the reported PR's row.
+export interface WirePrRemoval {
+  pr: string;
+}
+
 // Body of set-pr-states.
 export type WirePrStates = PrStates;
 
@@ -555,6 +570,19 @@ export interface WireDirs {
 export interface WireDirsState {
   supported: boolean;
   // The blind index the board holds for this machine's list; null when it holds none.
+  index: string | null;
+}
+
+// Body of set-catalog: the sealed catalogue ("machine.catalog") and the blind index of what it holds.
+export interface WireCatalog {
+  catalog: string;
+  index: string;
+}
+
+// What the `version` answer says of the calling machine's catalogue.
+export interface WireCatalogState {
+  supported: boolean;
+  // The blind index the board holds for this machine's catalogue; null when it holds none.
   index: string | null;
 }
 
@@ -622,9 +650,12 @@ export interface WireBackend {
   updateSchedule(id: string, patch: SchedulePatch): Promise<WireSchedule>;
   removeSchedule(id: string): Promise<void>;
   addPr(id: string, body: WirePr): Promise<void>;
+  removePr(id: string, body: WirePrRemoval): Promise<void>;
   setPrStates(id: string, body: WirePrStates): Promise<void>;
   setDirs(body: WireDirs): Promise<void>;
   dirsState(): Promise<WireDirsState>;
+  setCatalog(body: WireCatalog): Promise<void>;
+  catalogState(): Promise<WireCatalogState>;
 }
 
 // The characters of a suggested reply the board takes.
@@ -639,6 +670,7 @@ export const SEALED_LIMITS: Record<Field, number> = {
   agent: 256,
   pr: 1024,
   'machine.dirs': 256 * 1024,
+  'machine.catalog': 256 * 1024,
   'note.body': 4 * 100_000,
   'note.preview': 4 * 300,
   'note.suggestion': 4 * NOTE_SUGGESTION_CHARS,
@@ -664,7 +696,7 @@ export class ContractError extends Error {}
 // The CLI's own systemd units are agent-board-<name>, the same shape as a worker unit agent-board-<task id>,
 // so these names can never be task ids. Add a name here before the CLI installs a unit with it; `intake` stays because machines
 // that have not run `board setup` since the built-in intake was removed still have that unit.
-export const TOOL_UNIT_NAMES = ['dispatch', 'intake', 'listen'] as const;
+export const TOOL_UNIT_NAMES = ['dispatch', 'intake', 'listen', 'watch'] as const;
 const RESERVED_TASK_IDS: readonly string[] = TOOL_UNIT_NAMES;
 
 // The id ends up in a systemd unit name, a log file name and argv, so the CLI checks every id it reads from the board or its arguments.
@@ -1245,6 +1277,12 @@ export function parseVersionDirsIndex(value: unknown): string | null {
   return typeof dirsIndex === 'string' && isBlindIndex(dirsIndex) ? dirsIndex : null;
 }
 
+/** The blind index of the calling machine's catalogue in a `version` answer. Lenient like `parseVersionDirsIndex`. */
+export function parseVersionCatalogIndex(value: unknown): string | null {
+  const catalogIndex = isRecord(value) ? value['catalogIndex'] : undefined;
+  return typeof catalogIndex === 'string' && isBlindIndex(catalogIndex) ? catalogIndex : null;
+}
+
 // What the server checks of every request: the shape, the sealed fields being envelopes, and nothing about their content.
 
 function sealedField(obj: Record<string, unknown>, key: string, what: string, field: Field): string {
@@ -1260,6 +1298,13 @@ export function parseWirePr(value: unknown): WirePr {
   const obj = record(value, 'pr');
   rejectUnknownKeys(obj, ['pr'], 'pr');
   return { pr: sealedField(obj, 'pr', 'pr', 'pr') };
+}
+
+// Body of remove-pr: the id a task lists a reported PR with.
+export function parseWirePrRemoval(value: unknown): WirePrRemoval {
+  const obj = record(value, 'prRemoval');
+  rejectUnknownKeys(obj, ['pr'], 'prRemoval');
+  return { pr: safeId(string(obj, 'pr', 'prRemoval'), 'prRemoval.pr') };
 }
 
 // Body of set-pr-states: the state of the prompt's PR and/or of named rows, at least one of them.
@@ -1299,6 +1344,16 @@ export function parseWireDirs(value: unknown): WireDirs {
   return {
     dirs: sealedField(obj, 'dirs', 'dirs', 'machine.dirs'),
     index: parseBlindIndex(obj['index'], 'dirs.index'),
+  };
+}
+
+// Body of set-catalog: the sealed catalogue and its blind index.
+export function parseWireCatalog(value: unknown): WireCatalog {
+  const obj = record(value, 'catalog');
+  rejectUnknownKeys(obj, ['catalog', 'index'], 'catalog');
+  return {
+    catalog: sealedField(obj, 'catalog', 'catalog', 'machine.catalog'),
+    index: parseBlindIndex(obj['index'], 'catalog.index'),
   };
 }
 

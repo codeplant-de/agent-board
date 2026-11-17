@@ -4,6 +4,7 @@ import {
   MIN_SERVER,
   parseVersion,
   parseVersionCli,
+  parseVersionCatalogIndex,
   parseVersionDirsIndex,
   parseVersionFeatures,
   parseVersionIdentity,
@@ -36,6 +37,8 @@ export interface ServerIdentity {
   cli?: string;
   // The blind index of the directory list this machine last sent; absent when the board holds none or does not say.
   dirsIndex?: string;
+  // The same for the catalogue of skills and models.
+  catalogIndex?: string;
 }
 
 // Asks the server for its API range and refuses a CLI the server no longer serves and a server older than the CLI
@@ -75,12 +78,14 @@ export async function verifyContract(
     const identity = parseVersionIdentity(version);
     const cli = parseVersionCli(version);
     const dirsIndex = parseVersionDirsIndex(version);
+    const catalogIndex = parseVersionCatalogIndex(version);
     return {
       ...identity,
       api: served,
       features: parseVersionFeatures(version),
       ...(cli === null ? {} : { cli }),
       ...(dirsIndex === null ? {} : { dirsIndex }),
+      ...(catalogIndex === null ? {} : { catalogIndex }),
     };
   } catch (error) {
     throw asBackendError('version', error);

@@ -56,6 +56,7 @@ interface Connection {
   keys: Keys;
   features: ReadonlySet<string>;
   dirsIndex: string | null;
+  catalogIndex: string | null;
 }
 
 // The server feature each command needs; a command not listed works on every server this CLI accepts.
@@ -66,12 +67,14 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   'set-pr': 'task.pr',
   'set-pr-state': 'task.pr-state',
   'add-pr': 'task.prs',
+  'remove-pr': 'task.pr-remove',
   'set-pr-states': 'task.prs',
   'run-inbox': 'run-inbox',
   'ack-messages': 'run-inbox',
   stopped: 'run-inbox',
   'set-dirs': 'machine.dirs',
   'configure-task': 'task.configure',
+  'set-catalog': 'machine.catalog',
 };
 
 // The commands a run makes for its own task that the server checks against the task's current run (`task.run`).
@@ -97,7 +100,13 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       options.onServer?.(identity);
       const checked = await checkDataKey(config.dataKey, identity);
       if ('problem' in checked) throw new BackendError(keyProblemMessage(checked));
-      return { config, keys: checked.keys, features: identity.features, dirsIndex: identity.dirsIndex ?? null };
+      return {
+        config,
+        keys: checked.keys,
+        features: identity.features,
+        dirsIndex: identity.dirsIndex ?? null,
+        catalogIndex: identity.catalogIndex ?? null,
+      };
     })();
     return ready;
   };
@@ -227,6 +236,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       const command = (await connect()).features.has('task.prs') ? 'add-pr' : 'set-pr';
       await send(command, { id: checkedId, body });
     },
+    removePr: async (id, body) => send('remove-pr', { id: taskId(id), body }),
     async setPrStates(id, body) {
       const checkedId = taskId(id);
       if ((await connect()).features.has('task.prs')) return send('set-pr-states', { id: checkedId, body });
@@ -239,6 +249,11 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     dirsState: async () => {
       const { features, dirsIndex } = await connect();
       return { supported: features.has('machine.dirs'), index: dirsIndex };
+    },
+    setCatalog: async (body) => send('set-catalog', { body }),
+    catalogState: async () => {
+      const { features, catalogIndex } = await connect();
+      return { supported: features.has('machine.catalog'), index: catalogIndex };
     },
     pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
     fail: async (id, note) => call('fail', { id: taskId(id), body: note }, parseWireFailResult),

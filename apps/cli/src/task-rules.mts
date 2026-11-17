@@ -5,6 +5,8 @@ import type { AgentConfig, Lane } from './config/config.mts';
 export const START_MARKER = 'agent-board: started';
 // The start of the note that ends a wait; the rest of it is why, and the resumed agent is told.
 export const WAKE_MARKER = 'agent-board: wait over:';
+// The start of the thread note a watch's event leaves (see watch/finish.mts); the agent did not write it.
+export const WATCH_MARKER = 'agent-board: watch';
 
 // The lane of this machine whose own work the task is: the lane naming the skill its prompt starts with, else the lane
 // with "*". Undefined when no lane owns it; any lane may still borrow it.
@@ -68,8 +70,8 @@ export function agentFor(
       kind: 'missing',
       reason:
         unreadable === undefined
-          ? `no agents.${agentLabel(name)} in config.json here`
-          : `agents.${agentLabel(name)} in config.json here cannot be used (${unreadable})`,
+          ? `no agent ${agentLabel(name)} defined here`
+          : `agent ${agentLabel(name)} here cannot be used (${unreadable})`,
     };
   }
   return { kind: 'found', name, agent };

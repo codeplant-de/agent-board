@@ -22,7 +22,11 @@ import type { RunInbox, Task } from '@agent-board/shared';
 import { agentFor, neverRun, ownLane, removedIntakeProblem, unreadableForRun } from '../task-rules.mts';
 import { buildInvocation, decideOutcome, isRunOver, planRun, pluginPlaceholders, supervise } from './plan.mts';
 import type { Invocation } from './plan.mts';
-import { goneDirNotice, inboxMessageText, pauseMessageText } from './prompts.mts';
+import { goneDirNotice, inboxMessageText, lastWakeNote, pauseMessageText } from './prompts.mts';
+import { createCatalogStore } from '../catalog/cache.mts';
+import { initSkillsIn, recordRunSkills } from '../catalog/catalog.mts';
+import { createUsageStore, rateLimitIn, sameReading, usageFile } from '../usage/usage.mts';
+import type { RateLimitReading } from '../usage/usage.mts';
 import { getPaths } from '../config/config.mts';
 import { checkoutAbove, isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import { selfCommand } from '../self/self.mts';
@@ -42,11 +46,18 @@ import { createTranscriptUploader } from './transcript-upload.mts';
 import { keepAwake } from './awake.mts';
 import { runProcess } from './process.mts';
 import type { RunChannel, RunResult, Watch } from './process.mts';
+import { clockTime, eventsMessage } from '../watch/fence.mts';
+import { createWatchStore } from '../watch/store.mts';
+import type { StoredEvent, WatchDef, WatchStore } from '../watch/store.mts';
 
 // How long a run may take to end its turn by itself after a pause was asked for.
 const PAUSE_GRACE_MINUTES = 2;
 // The board's liveness is updated at most this often.
 const HEARTBEAT_EVERY_MS = 15_000;
+// The earliest a park wakes the task: the board refuses a time that is not in the future.
+const MIN_PARK_MS = 60_000;
+// How often the spool is looked at for events to hand a running agent.
+const SPOOL_EVERY_MS = 2_000;
 // A watch tick that finds this much more time gone than its 15 s interval ran while the machine slept (or the clock was set).
 const CLOCK_JUMP_MS = 60_000;
 
@@ -90,14 +101,34 @@ export interface WorkerDeps extends Context {
   // The transcript backlog's byte budget; `createTranscriptUploader` has the default.
   maxPendingBytes?: number;
   watchEveryMs: number;
+  // The watches of this machine: the worker marks its task live, hands the agent the events in the spool and parks on open watches.
+  watches: WatchStore;
+  // Default: 2 seconds.
+  spoolEveryMs?: number;
   // Keeps the machine awake while the run goes (macOS); returns the function that ends it. Best effort.
   keepAwake?: () => () => void;
+  // The run reported the skills it has in its start event: remembers them for the directory that covers `cwd`. Best effort,
+  // and what it throws goes in the log.
+  recordSkills?: (cwd: string, skills: unknown[]) => void;
+  // The run reported the subscription's usage in a rate limit event: remembers it for the dispatcher. Called only when the
+  // numbers differ from the last call of this run. Best effort, and what it throws goes in the log.
+  recordUsage?: (reading: RateLimitReading) => void;
   // Makes the backend's calls for the task name this run, so the board refuses them once a later run holds the task.
   bindRun?: (scope: RunScope) => void;
 }
 
 export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void> {
-  const { backend, config } = deps;
+  const workerStartedAt = deps.now();
+  deps.watches.markLive(taskId, process.pid);
+  try {
+    await runTask(deps, taskId, workerStartedAt);
+  } finally {
+    deps.watches.clearLive(taskId);
+  }
+}
+
+async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date): Promise<void> {
+  const { backend, config, watches } = deps;
   deps.resetLog(taskId);
   const task = await backend.getTask(taskId);
   if (task.run !== undefined) deps.bindRun?.({ task: task.id, run: task.run });
@@ -145,9 +176,32 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     }
   }
   const notes = await backend.readNotes(task.id);
-  const run = planRun(task, notes, { newSessionId: deps.newSessionId, isOwnSession: deps.sessions.has });
+  const spooled = watches.events(task.id);
+  const run = planRun(task, notes, {
+    newSessionId: deps.newSessionId,
+    isOwnSession: deps.sessions.has,
+    watches: { events: spooled.map(({ event }) => event), open: watches.list(task.id).defs, now: deps.now() },
+  });
   if (run.kind === 'blocked') return fail(run.reason);
+  // A run that starts over has no use for what the old one waited for; the drop takes the live marker with it.
+  if (run.kind === 'fresh') {
+    watches.dropTask(task.id);
+    watches.markLive(task.id, process.pid);
+  }
+  // What the prompt carries: deleted once the agent has output, which shows that it took the prompt in.
+  const inPrompt: StoredEvent[] = run.kind === 'resume' ? spooled : [];
+  const oldestEvent = inPrompt[0]?.event.at;
   deps.appendLog(taskId, run.kind === 'resume' ? `resuming session ${run.sessionId}` : `new session ${run.sessionId}`);
+  const logTiming = (line: string): void => {
+    deps.appendLog(taskId, line);
+    deps.print(`${taskId} ${line}`);
+  };
+  if (oldestEvent !== undefined) {
+    const wake = lastWakeNote(notes)?.createdAt;
+    logTiming(
+      `resume with watch events: oldest event ${oldestEvent}${wake === undefined ? '' : `, wake ${wake.toISOString()}`}, worker start ${workerStartedAt.toISOString()}`,
+    );
+  }
   // The resume is used up whether or not the run gets going. This is also the update that clears the task's `paused`.
   await backend.updateTask(task.id, { next: 'fresh' });
   const plan = buildInvocation({
@@ -284,7 +338,40 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     });
     return beating;
   };
+  let firstOutput = oldestEvent === undefined;
+  // An agent's run lists the skills of the user's settings only (`--setting-sources user`), which the directory's catalogue is not.
+  let skillsReported = restricted !== undefined;
+  let lastUsage: RateLimitReading | undefined;
   const onLine = (line: string): string | undefined => {
+    const skills = skillsReported || deps.recordSkills === undefined ? undefined : initSkillsIn(line);
+    if (skills !== undefined) {
+      skillsReported = true;
+      try {
+        deps.recordSkills?.(plan.invocation.cwd, skills);
+      } catch (error) {
+        deps.appendLog(taskId, `the run's skills were not recorded: ${errorText(error)}`);
+      }
+    }
+    const usage = deps.recordUsage === undefined ? undefined : rateLimitIn(line);
+    if (usage !== undefined && (lastUsage === undefined || !sameReading(usage, lastUsage))) {
+      lastUsage = usage;
+      try {
+        deps.recordUsage?.(usage);
+      } catch (error) {
+        deps.appendLog(taskId, `the run's usage was not recorded: ${errorText(error)}`);
+      }
+    }
+    if (!firstOutput && oldestEvent !== undefined) {
+      firstOutput = true;
+      const at = deps.now().getTime();
+      watches.deleteEvents(
+        task.id,
+        inPrompt.map(({ file }) => file),
+      );
+      logTiming(
+        `first agent output after ${at - workerStartedAt.getTime()} ms from worker start, ${at - Date.parse(oldestEvent)} ms from the oldest event`,
+      );
+    }
     const events = condenser.line(line);
     transcript.add(events);
     const text = events.map(logLine).filter((part) => part !== undefined);
@@ -294,6 +381,8 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   // that comes in meanwhile makes one more.
   let channel: RunChannel | undefined;
   let inboxOff = false;
+  // The board answered the run inbox with 409: the task is no longer Running (board ask, board wait).
+  let leftRunning = false;
   let looking: Promise<void> | undefined;
   let lookAgain = false;
   // The messages the agent has been handed, so that a lost acknowledgement does not hand one over twice.
@@ -339,7 +428,8 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       if (error instanceof BackendError && error.missingFeature !== undefined) {
         inboxOff = true;
         deps.appendLog(taskId, 'the board has no run inbox: messages and stop requests are not delivered');
-      } else if (!(error instanceof BackendError && error.status === 409)) logFailure('run inbox failed', error);
+      } else if (error instanceof BackendError && error.status === 409) leftRunning = true;
+      else logFailure('run inbox failed', error);
       return;
     }
     // The run ended while the board answered.
@@ -382,15 +472,79 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       });
     return looking;
   };
+  // Events that came while the run went on reach the agent in a message; the file of an event goes once it is written to it.
+  // A turn end holds the spool from its read until its message is out, so that the two do not hand over the same events.
+  let turnHoldsSpool = false;
+  let turnFiles: string[] = [];
+  const handedWatchEvents = (stored: StoredEvent[]): void => {
+    watches.deleteEvents(
+      task.id,
+      stored.map(({ file }) => file),
+    );
+    const names = [...new Set(stored.map(({ event }) => event.name))].join(', ');
+    deps.appendLog(taskId, `handed the agent ${stored.length} watch event(s) (${names})`);
+  };
+  const unprompted = (): StoredEvent[] => {
+    const prompted = new Set(inPrompt.map(({ file }) => file));
+    return watches.events(task.id).filter(({ file }) => !prompted.has(file));
+  };
+  const eventsText = (stored: StoredEvent[]): string =>
+    eventsMessage(
+      task.id,
+      stored.map(({ event }) => event),
+      watches.list(task.id).defs,
+      deps.now(),
+    );
+  // Once the task left Running or a pause was asked for, the events wait for the resume.
+  const holdsEvents = (): boolean => leftRunning || files.pauseRequestedAt(taskId) !== undefined;
+  const handOverSpool = (): void => {
+    const live = channel;
+    if (turnHoldsSpool || live === undefined || !live.open || holdsEvents()) return;
+    try {
+      const stored = unprompted();
+      if (stored.length > 0 && live.send(eventsText(stored))) handedWatchEvents(stored);
+    } catch (error) {
+      logFailure('handing over watch events failed', error);
+    }
+  };
+  // At the end of a turn: events the run has not seen go on as its next turn, but only while the task is still this run's to
+  // continue. After `board ask`, a wait or a move the events stay for the next resume, and never pull a task out of Needs me.
+  const handOverAtTurnEnd = async (): Promise<string | undefined> => {
+    if (unprompted().length === 0 || holdsEvents()) return undefined;
+    turnHoldsSpool = true;
+    try {
+      const current = await backend.getTask(task.id);
+      if (current.status !== 'running' || isRunOver(task, current) || holdsEvents()) return undefined;
+      const stored = unprompted();
+      if (stored.length === 0) return undefined;
+      turnFiles = stored.map(({ file }) => file);
+      return eventsText(stored);
+    } catch (error) {
+      logFailure('could not hand the agent the watch events at the end of its turn', error);
+      return undefined;
+    } finally {
+      if (turnFiles.length === 0) turnHoldsSpool = false;
+    }
+  };
+  const turnMessageSent = (): void => {
+    const files = turnFiles;
+    turnFiles = [];
+    turnHoldsSpool = false;
+    handedWatchEvents(watches.events(task.id).filter(({ file }) => files.includes(file)));
+  };
+  let spoolTimer: NodeJS.Timeout | undefined;
   let lastTickAt = deps.now().getTime();
   const watch: Watch = {
     everyMs: deps.watchEveryMs,
     spawned: (pgid) => files.writeProcessGroup(taskId, pgid),
     start: (live) => {
       channel = live;
+      spoolTimer = setInterval(handOverSpool, deps.spoolEveryMs ?? SPOOL_EVERY_MS);
       // The board marks the run as one that reads its inbox, which is what keeps a late message from being lost.
       void startLooking();
     },
+    onTurnEnd: handOverAtTurnEnd,
+    turnMessageSent,
     tick: async () => {
       // A sleep is not inactivity: after a jump the agent's last sign of life moves up to now, here and for the
       // dispatcher's sweep, which reads the same file.
@@ -437,12 +591,14 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   } catch (error) {
     stopAwake?.();
     stopListening?.();
+    clearInterval(spoolTimer);
     files.clear(taskId);
     if (run.kind === 'fresh') await backend.updateTask(task.id, { sessionId: null });
     return fail(errorText(error));
   }
   stopAwake?.();
   stopListening?.();
+  clearInterval(spoolTimer);
   await transcript.flush();
   if (result.stopped) deps.appendLog(taskId, result.stopped.message);
   const pauseRequested = files.pauseRequestedAt(taskId) !== undefined;
@@ -463,6 +619,30 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     return;
   }
   files.clear(taskId);
+  // The agent ended its turn with watches open: the task waits for them, without the agent having to say so.
+  const parkOnWatches = async (open: WatchDef[]): Promise<void> => {
+    const now = deps.now();
+    // The board wants a time in the future; a deadline that has passed is for the tick or the unit to act on soon.
+    const earliest = Math.max(
+      now.getTime() + MIN_PARK_MS,
+      open.length === 0 ? 0 : Math.min(...open.map(({ deadline }) => Date.parse(deadline))),
+    );
+    const list =
+      open.length === 0
+        ? 'a watch event'
+        : open.map(({ name, deadline }) => `"${name}" (until ${clockTime(new Date(deadline), now)})`).join(', ');
+    try {
+      await backend.wait(task.id, {
+        text: `Waiting for watches: ${list}.`,
+        wakeAt: new Date(earliest),
+        check: open.some(({ source }) => source.kind !== 'timer'),
+      });
+      deps.appendLog(taskId, `the task waits for its watches: ${list}`);
+    } catch (error) {
+      if (!(error instanceof BackendError && (error.status === 409 || error.status === 400))) throw error;
+      deps.appendLog(taskId, `the board did not park the task on its watches: ${errorText(error)}`);
+    }
+  };
   try {
     // The core never writes to a task that left the workflow or runs again elsewhere, whatever this run's outcome.
     if (isRunOver(task, after)) return;
@@ -490,6 +670,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
     }
     // The workdir keeps its lock; worktrees the agent only passed through during the run lose theirs.
     holdWorkdir(workdir);
+    const openWatches = watches.list(task.id).defs;
     const outcome = decideOutcome({
       exitCode: result.exitCode,
       signal: result.signal,
@@ -497,8 +678,13 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
       pauseRequested,
       stopRequested: endedByStop,
       reported: after.status !== 'running',
+      watching: openWatches.length > 0 || unprompted().length > 0,
     });
     if (outcome.kind === 'ok') return;
+    if (outcome.kind === 'parked') {
+      await parkOnWatches(openWatches);
+      return;
+    }
     if (outcome.kind === 'stopped') {
       if (after.status === 'running') await backend.stopped(task.id, 'Stopped by you.');
       return;
@@ -549,6 +735,7 @@ export async function workerMain(taskId: string): Promise<void> {
     sessions: createSessionStore(),
     worktreeLocks: createWorktreeLocks(),
     files: createRunFiles(),
+    watches: createWatchStore(),
     hookCommand,
     now: () => new Date(),
     watchChanges: (onChange) => {
@@ -577,6 +764,9 @@ export async function workerMain(taskId: string): Promise<void> {
     },
     watchEveryMs: 15_000,
     ...(process.platform === 'darwin' ? { keepAwake: () => keepAwake() } : {}),
+    recordSkills: (cwd, skills) =>
+      recordRunSkills({ store: createCatalogStore(), config: context.config }, cwd, skills),
+    recordUsage: (reading) => createUsageStore(usageFile(getPaths().stateDir)).record(reading, new Date()),
     bindRun: (scope) => {
       run = scope;
     },

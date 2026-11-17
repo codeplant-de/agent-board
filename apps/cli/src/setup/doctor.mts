@@ -8,9 +8,11 @@ import type { WebConfig } from '../backend/web-config.mts';
 import {
   ConfigError,
   configWarnings,
+  getPaths,
   isOverrideWarning,
   isSafeMode,
   parseConfig,
+  withAgentsDir,
   REMOVED_INTAKE,
 } from '../config/config.mts';
 import type { Config } from '../config/config.mts';
@@ -18,16 +20,38 @@ import { plainLine } from '../output/terminal.mts';
 import {
   API_VERSION,
   decodeDataKey,
+  machineCatalogIndex,
   machineDirsIndex,
   SERVER_FEATURE_LABELS,
   SERVER_FEATURES,
 } from '@agent-board/shared';
 import type { Keys } from '@agent-board/shared';
 import { pluginPlaceholders } from '../worker/plan.mts';
+import { catalogDirs, composeCatalog } from '../catalog/catalog.mts';
+import { createCatalogStore } from '../catalog/cache.mts';
+import type { CatalogStore } from '../catalog/cache.mts';
 import { dirsToSend, isAllowedDir, isDirectory, routedDirs, UNCOVERED_HINT } from '../config/dirs.mts';
 import { parseEnv } from '../config/env-file.mts';
 import { runDir } from '../worker/runtime.mts';
-import { LISTEN_SERVICE, parseExecStart, REMOVED_UNIT_FILES, UNIT_NAMES, UNIT_PATH, whichOnPath } from './setup.mts';
+import {
+  createUsageStore,
+  describeReached,
+  earliestReset,
+  reachedWindows,
+  usageFile,
+  USAGE_WINDOWS,
+  WINDOW_LABELS,
+} from '../usage/usage.mts';
+import type { UsageStore } from '../usage/usage.mts';
+import {
+  LISTEN_SERVICE,
+  WATCH_SERVICE,
+  parseExecStart,
+  REMOVED_UNIT_FILES,
+  UNIT_NAMES,
+  UNIT_PATH,
+  whichOnPath,
+} from './setup.mts';
 import {
   AGENT_NAMES,
   agentFile,
@@ -75,6 +99,11 @@ export interface DoctorDeps {
   // A read-only systemctl call: its exit code.
   systemctl: (args: string[]) => Promise<number>;
   verifyServer: (config: Pick<WebConfig, 'url' | 'token'>) => Promise<ServerIdentity>;
+  // What this machine learned of its directories' skills and models.
+  catalogStore: CatalogStore;
+  // The subscription usage this machine's runs reported.
+  usageStore: Pick<UsageStore, 'read'>;
+  now: () => Date;
 }
 
 // What the macOS worker checks touch.
@@ -161,6 +190,9 @@ export function realDoctorDeps(
     which,
     systemctl,
     verifyServer: (config) => verifyContract(config),
+    catalogStore: createCatalogStore(),
+    usageStore: createUsageStore(usageFile(getPaths().stateDir)),
+    now: () => new Date(),
   };
 }
 
@@ -304,17 +336,21 @@ const missingFeatureChecks = (features: ReadonlySet<string>): CheckResult[] => {
       ];
 };
 
+// The config of this machine, or undefined when it is missing or does not parse (the config.json check says why).
+function readParsedConfig(deps: DoctorDeps): Config | undefined {
+  const text = deps.readText(join(deps.configDir, 'config.json'));
+  try {
+    return parseConfig(text === undefined ? undefined : JSON.parse(text));
+  } catch {
+    return undefined;
+  }
+}
+
 // Whether the board holds the current directory list of this machine, for a machine with a `dirs` key and a server that can hold one.
 async function dirsOnBoardChecks(deps: DoctorDeps, identity: ServerIdentity, keys: Keys): Promise<CheckResult[]> {
   if (!identity.features.has('machine.dirs')) return [];
-  const text = deps.readText(join(deps.configDir, 'config.json'));
-  let config: Config;
-  try {
-    config = parseConfig(text === undefined ? undefined : JSON.parse(text));
-  } catch {
-    return [];
-  }
-  if (config.dirs === undefined) return [];
+  const config = readParsedConfig(deps);
+  if (config?.dirs === undefined) return [];
   const index = await machineDirsIndex(keys, config.machine, dirsToSend(config.dirs, deps.isDirectory));
   return [
     index === identity.dirsIndex
@@ -324,6 +360,33 @@ async function dirsOnBoardChecks(deps: DoctorDeps, identity: ServerIdentity, key
           'warn',
           'the board does not have the current list yet',
           'the next dispatch tick sends it; "board dirs add" or "board dirs rm" send it at once',
+        ),
+  ];
+}
+
+// Whether the board holds the current catalogue of skills and models, as far as this machine has probed: the dispatcher asks
+// claude in one directory per tick, so a machine with several directories is complete after as many ticks.
+async function catalogOnBoardChecks(deps: DoctorDeps, identity: ServerIdentity, keys: Keys): Promise<CheckResult[]> {
+  if (!identity.features.has('machine.catalog')) return [];
+  const config = readParsedConfig(deps);
+  if (config === undefined) return [];
+  const entries = catalogDirs(config, deps.isDirectory).flatMap((dir) => {
+    const entry = deps.catalogStore.read(dir);
+    return entry?.result ? [{ ...entry, result: entry.result }] : [];
+  });
+  let trimmed = false;
+  const catalog = composeCatalog(entries, deps.catalogStore.initSkills(), () => (trimmed = true));
+  if (catalog === undefined)
+    return [ok('catalog on board', 'nothing probed yet: the next dispatch tick asks claude for its skills and models')];
+  const count = `${catalog.skills.length + Object.values(catalog.dirs).reduce((sum, list) => sum + list.length, 0)} skills, ${catalog.models.length} models${trimmed ? ', cut to fit the size limit' : ''}`;
+  return [
+    (await machineCatalogIndex(keys, config.machine, catalog)) === identity.catalogIndex
+      ? ok('catalog on board', `the board has the current catalogue (${count})`)
+      : problem(
+          'catalog on board',
+          'warn',
+          `the board does not have the current catalogue yet (${count})`,
+          'the next dispatch tick sends it',
         ),
   ];
 }
@@ -360,6 +423,7 @@ const checkServer: Check = async (deps) => {
         ...results,
         ok('board key', `the board's data key is id ${checked.keys.keyId}, and this machine holds it`),
         ...(await dirsOnBoardChecks(deps, identity, checked.keys)),
+        ...(await catalogOnBoardChecks(deps, identity, checked.keys)),
       ];
     return [
       ...results,
@@ -459,7 +523,9 @@ function checkAgents(config: Config, deps: DoctorDeps): CheckResult[] {
         `agent ${plainLine(name.slice(0, 40))}`,
         'fail',
         `${reason}; tasks that name it are not run`,
-        'fix the agent in config.json',
+        Object.hasOwn(config.agentFiles ?? {}, name)
+          ? `fix the file, or remove it with "board agents rm ${plainLine(name.slice(0, 40))}"`
+          : 'fix the agent in config.json',
       ),
     ),
     ...(entries.length === 0 ? [] : [ok('agents', entries.map(([name]) => name).join(', '))]),
@@ -500,7 +566,7 @@ const checkConfig: Check = (deps) => {
     ];
   try {
     const raw: unknown = JSON.parse(text);
-    const config = parseConfig(raw);
+    const config = withAgentsDir(parseConfig(raw), join(configDir, 'agents'));
     return [
       ok('config.json', `machine ${config.machine}`),
       ...checkAgents(config, deps),
@@ -567,6 +633,31 @@ const checkDirs: Check = (deps) => {
   return results;
 };
 
+// The usage thresholds, the last reading of each limited window and whether work is held back right now. Nothing here can
+// fail: a missing reading only means no run here has reported one yet.
+const checkUsageLimits: Check = (deps) => {
+  const limits = readParsedConfig(deps)?.usageLimits;
+  if (limits === undefined) return [];
+  const usage = deps.usageStore.read();
+  const now = deps.now();
+  const limited = USAGE_WINDOWS.filter((window) => limits[window] !== undefined);
+  const parts = limited.map((window) => {
+    const label = `${WINDOW_LABELS[window]} limit ${limits[window]}%`;
+    const stored = usage[window];
+    if (stored === undefined) return `${label}, no reading yet (the first run here reports one)`;
+    const percent = Math.round(stored.utilization * 100);
+    const over = new Date(stored.resetsAt) <= now ? ', window since reset, so void' : '';
+    return `${label}, last reading ${percent}% seen ${stored.seenAt}${over}`;
+  });
+  const reached = reachedWindows({ limits, usage, now });
+  const reset = earliestReset(reached);
+  const held =
+    reset === undefined
+      ? `tasks below ${limits.priority} are not held now`
+      : `tasks below ${limits.priority} are held now until ${reset.toISOString()} (${describeReached(reached)})`;
+  return [ok('usage limits', `${parts.length === 0 ? 'no window limited' : parts.join('; ')}; ${held}`)];
+};
+
 // Absolute paths in a unit's ExecStart that are not systemd specifiers must still exist: a moved checkout or a removed Node breaks the unit quietly.
 function checkCommand(deps: DoctorDeps, service: string): CheckResult[] {
   const text = deps.readText(join(deps.unitDir, service));
@@ -596,6 +687,7 @@ function installedUnits(deps: DoctorDeps): string[] {
   return [
     ...UNIT_NAMES.flatMap((name) => [`agent-board-${name}.service`, `agent-board-${name}.timer`]),
     LISTEN_SERVICE,
+    WATCH_SERVICE,
   ].filter((file) => deps.exists(join(deps.unitDir, file)));
 }
 
@@ -658,7 +750,7 @@ function checkAgentCommand(deps: DoctorDeps, name: AgentName): CheckResult[] {
   ];
 }
 
-// A macOS worker machine: its tools, the two launch agents, the run directory and the folders it can read. Like Linux, a warning
+// A macOS worker machine: its tools, the launch agents, the run directory and the folders it can read. Like Linux, a warning
 // on a machine that installed no agent and a failure on one that did.
 async function checkMacWorker(deps: DoctorDeps): Promise<CheckResult[]> {
   const { launchd } = deps;
@@ -712,10 +804,10 @@ async function checkMacWorker(deps: DoctorDeps): Promise<CheckResult[]> {
     const file = agentFile(name);
     const path = join(launchd.agentsDir, file);
     if (!installed.includes(name)) {
-      // The listener only adds speed to the timer's ticks.
+      // The listener only adds speed to the timer's ticks, and the watch unit to the tick's own polling.
       if (installed.length > 0)
         results.push(
-          problem(`launchd ${file}`, name === 'listen' ? 'warn' : 'fail', `${path} is missing`, 'run "board setup"'),
+          problem(`launchd ${file}`, name === 'dispatch' ? 'fail' : 'warn', `${path} is missing`, 'run "board setup"'),
         );
       continue;
     }
@@ -804,33 +896,40 @@ const checkWorker: Check = async (deps) => {
       );
     }
   }
-  results.push(...(await checkListener(deps, installed)));
+  results.push(
+    ...(await checkService(deps, installed, LISTEN_SERVICE, 'new tasks wait for the next timer tick')),
+    ...(await checkService(
+      deps,
+      installed,
+      WATCH_SERVICE,
+      'the dispatch tick polls the watches, and their events reach a task only when it is woken',
+    )),
+  );
   return results;
 };
 
-// The listener is an addition to the timers, which do the same work every 2 minutes: a missing or stopped one only warns.
-async function checkListener(deps: DoctorDeps, installed: string[]): Promise<CheckResult[]> {
-  if (!installed.includes(LISTEN_SERVICE))
-    return [
-      problem(
-        `unit ${LISTEN_SERVICE}`,
-        'warn',
-        'not installed: new tasks wait for the next timer tick',
-        'run "board setup" to install it',
-      ),
-    ];
-  const enabled = (await deps.systemctl(['--user', 'is-enabled', LISTEN_SERVICE])) === 0;
-  const active = (await deps.systemctl(['--user', 'is-active', LISTEN_SERVICE])) === 0;
+// The listener and the watch unit are additions to the timers, which do the same work every 2 minutes: a missing or stopped one
+// only warns. `whenMissing` says what the machine does without it.
+async function checkService(
+  deps: DoctorDeps,
+  installed: string[],
+  service: string,
+  whenMissing: string,
+): Promise<CheckResult[]> {
+  if (!installed.includes(service))
+    return [problem(`unit ${service}`, 'warn', `not installed: ${whenMissing}`, 'run "board setup" to install it')];
+  const enabled = (await deps.systemctl(['--user', 'is-enabled', service])) === 0;
+  const active = (await deps.systemctl(['--user', 'is-active', service])) === 0;
   return [
-    ok(`unit ${LISTEN_SERVICE}`, 'installed'),
-    ...checkCommand(deps, LISTEN_SERVICE),
+    ok(`unit ${service}`, 'installed'),
+    ...checkCommand(deps, service),
     enabled && active
-      ? ok(`${LISTEN_SERVICE} state`, 'enabled and active')
+      ? ok(`${service} state`, 'enabled and active')
       : problem(
-          `${LISTEN_SERVICE} state`,
+          `${service} state`,
           'warn',
           `${enabled ? 'enabled' : 'not enabled'}, ${active ? 'active' : 'not active'}`,
-          `systemctl --user enable --now ${LISTEN_SERVICE}`,
+          `systemctl --user enable --now ${service}`,
         ),
   ];
 }
@@ -843,6 +942,7 @@ const CHECKS: Check[] = [
   checkServer,
   checkConfig,
   checkDirs,
+  checkUsageLimits,
   checkWorker,
 ];
 

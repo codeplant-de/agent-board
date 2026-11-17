@@ -11,10 +11,11 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
-import { useMutation } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { DEFAULT_MODEL, MODEL_OPTIONS } from '../lib/model';
+import { skillsFor } from '../lib/catalog';
+import { DEFAULT_MODEL } from '../lib/model';
 import { PRIORITY_LABEL } from '../lib/priority';
 import { parseRepeatRule } from '../lib/repeat';
 import { errorMessage, useTRPC } from '../lib/trpc';
@@ -22,6 +23,7 @@ import { useNow } from '../lib/useNow';
 import { DirectorySelect } from './DirectorySelect';
 import { MarkdownEditor } from './MarkdownEditor';
 import { useDirectoryChoices } from './useDirectoryChoices';
+import { useModelOptions } from './useModelOptions';
 
 const WHEN_LABEL = { now: 'Now', later: 'Later', repeat: 'Repeating', backlog: 'Backlog', hold: 'Needs me' } as const;
 type When = keyof typeof WHEN_LABEL;
@@ -50,6 +52,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const [directory, setDirectory] = useState<string | null>(null);
   const [agent, setAgent] = useState('');
   const directories = useDirectoryChoices();
+  const catalogs = useQuery(trpc.machines.catalogs.queryOptions());
   const create = useMutation(trpc.tasks.create.mutationOptions());
 
   const now = useNow(30_000);
@@ -57,6 +60,11 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const parsedRule = parseRepeatRule(rule, timezone);
   const place = directories.choices.find(({ value }) => value === directory);
+  const skills = useMemo(
+    () => skillsFor(catalogs.data ?? [], { machine: place?.machine, workdir: place?.path }),
+    [catalogs.data, place?.machine, place?.path],
+  );
+  const models = useModelOptions(place?.machine, model);
   const agentName = agent.trim();
   const agentError = agentName !== '' && !isAgentName(agentName) ? `Use ${AGENT_NAME_RULE}` : undefined;
   const startsLater = when === 'later' || when === 'repeat';
@@ -119,11 +127,13 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           minRows={6}
           onSubmit={submit}
           autoFocus
+          skills={skills}
           placeholder={'/review-pr 17741\n\nor any instruction, as you would type it into Claude Code'}
         />
         <Text size="xs" c="dimmed" mt={-8}>
-          A leading <Code>/skill</Code> picks the lane. Without a working directory it runs in the default directory of
-          whichever machine takes it.
+          A leading <Code>/skill</Code> picks the lane; type <Code>/</Code> to pick one from the skills of the chosen
+          machine and directory. Without a working directory it runs in the default directory of whichever machine takes
+          it.
         </Text>
         <DirectorySelect
           label="Working directory"
@@ -161,8 +171,12 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           allowDeselect={false}
           value={model}
           onChange={(value) => value && setModel(value)}
-          data={MODEL_OPTIONS}
-          description="Default is the model claude picks on the machine that runs it"
+          data={models.options}
+          description={
+            models.fromCatalog
+              ? 'The models claude lists on the chosen machine, or on any machine. Default is the model claude picks on the machine that runs it'
+              : 'Default is the model claude picks on the machine that runs it'
+          }
         />
         <div>
           <Text size="sm" fw={500} mb={4}>

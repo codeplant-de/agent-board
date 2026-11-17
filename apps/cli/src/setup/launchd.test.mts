@@ -25,12 +25,16 @@ const input: LaunchdRenderInput = {
   command: (name) => ['/Users/me/.local/bin/board', 'internal', name],
 };
 
-const [dispatch, listen] = renderAgents(input);
+const [dispatch, listen, watch] = renderAgents(input);
 
-test('there are two agents, dispatch and listen, and none for intake', () => {
+test('there are three agents, dispatch, listen and watch, and none for intake', () => {
   assert.deepEqual(
-    [dispatch?.file, listen?.file],
-    ['de.codeplant.agent-board.dispatch.plist', 'de.codeplant.agent-board.listen.plist'],
+    [dispatch?.file, listen?.file, watch?.file],
+    [
+      'de.codeplant.agent-board.dispatch.plist',
+      'de.codeplant.agent-board.listen.plist',
+      'de.codeplant.agent-board.watch.plist',
+    ],
   );
 });
 
@@ -86,6 +90,17 @@ test('the listener is kept alive, restarted every 10 s, and given 120 s to end a
   assert.doesNotMatch(text, /StartInterval/);
 });
 
+test("the watch agent is kept alive and restarted every 5 s, with the listener's environment", () => {
+  const text = watch?.text ?? '';
+  assert.match(text, /<key>KeepAlive<\/key>\n\t<true\/>/);
+  assert.match(text, /<key>RunAtLoad<\/key>\n\t<true\/>/);
+  assert.match(text, /<key>ThrottleInterval<\/key>\n\t<integer>5<\/integer>/);
+  assert.match(text, /<key>AbandonProcessGroup<\/key>\n\t<true\/>/);
+  assert.match(text, /<key>PATH<\/key>\n\t\t<string>\/Users\/me\/\.local\/bin:/);
+  assert.deepEqual(parseProgramArguments(text), ['/Users/me/.local/bin/board', 'internal', 'watch']);
+  assert.doesNotMatch(text, /StartInterval|ExitTimeOut/);
+});
+
 test('the PATH is written out, and the variables that move the CLI files are passed on', () => {
   assert.equal(
     agentPath('/Users/me'),
@@ -110,7 +125,7 @@ test('every string is XML-escaped and a control character is refused', () => {
 });
 
 test('the launchd logs cannot be taken for the log of a task', () => {
-  for (const name of ['dispatch', 'listen'] as const) {
+  for (const name of ['dispatch', 'listen', 'watch'] as const) {
     const file = agentLog('/logs', name).split('/').pop() ?? '';
     assert.ok(file.endsWith('.log'));
     assert.equal(isSafeTaskId(file.slice(0, -'.log'.length)), false, file);

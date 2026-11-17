@@ -1,5 +1,5 @@
 import { compareVersions, isSafeMachineName, MACHINE_NAME_RULE, MIN_CLIENT } from '@agent-board/shared';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { createHash, randomBytes } from 'node:crypto';
 import type { DbOrTx } from '../db/client';
 import { machines } from '../db/schema';
@@ -26,6 +26,9 @@ export async function issueToken(db: DbOrTx, name: string): Promise<string> {
         dirs: null,
         dirsIndex: null,
         dirsUpdatedAt: null,
+        catalog: null,
+        catalogIndex: null,
+        catalogUpdatedAt: null,
       },
     });
   return token;
@@ -100,10 +103,27 @@ export async function listMachines(db: DbOrTx, advertisedCli: string | null) {
   }));
 }
 
+/** The sealed catalogues the machines sent, by machine name; kept out of `listMachines` because that one is polled. */
+export async function listMachineCatalogs(db: DbOrTx) {
+  return db
+    .select({ name: machines.name, catalog: machines.catalog, catalogUpdatedAt: machines.catalogUpdatedAt })
+    .from(machines)
+    .where(and(isNull(machines.revokedAt), isNotNull(machines.catalog)))
+    .orderBy(asc(machines.name));
+}
+
 export async function revokeMachine(db: DbOrTx, name: string): Promise<void> {
   await db
     .update(machines)
-    .set({ revokedAt: new Date(), dirs: null, dirsIndex: null, dirsUpdatedAt: null })
+    .set({
+      revokedAt: new Date(),
+      dirs: null,
+      dirsIndex: null,
+      dirsUpdatedAt: null,
+      catalog: null,
+      catalogIndex: null,
+      catalogUpdatedAt: null,
+    })
     .where(eq(machines.name, name));
 }
 
@@ -118,5 +138,23 @@ export async function setMachineDirs(db: DbOrTx, name: string, list: { dirs: str
 /** The blind index of the list a machine last sent, or null when it sent none. */
 export async function machineDirsIndex(db: DbOrTx, name: string): Promise<string | null> {
   const [row] = await db.select({ index: machines.dirsIndex }).from(machines).where(eq(machines.name, name));
+  return row?.index ?? null;
+}
+
+/** Stores the sealed catalogue a machine sent, with the blind index of what it holds. */
+export async function setMachineCatalog(
+  db: DbOrTx,
+  name: string,
+  sent: { catalog: string; index: string },
+): Promise<void> {
+  await db
+    .update(machines)
+    .set({ catalog: sent.catalog, catalogIndex: sent.index, catalogUpdatedAt: new Date() })
+    .where(eq(machines.name, name));
+}
+
+/** The blind index of the catalogue a machine last sent, or null when it sent none. */
+export async function machineCatalogIndex(db: DbOrTx, name: string): Promise<string | null> {
+  const [row] = await db.select({ index: machines.catalogIndex }).from(machines).where(eq(machines.name, name));
   return row?.index ?? null;
 }

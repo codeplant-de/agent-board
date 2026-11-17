@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { limitTick, runDispatch } from './dispatch.mts';
 import type { DispatchDeps } from './dispatch.mts';
 import { BackendError } from '../backend/backend.mts';
@@ -17,6 +17,7 @@ import {
   CONFIG,
   DATA_KEY,
   fakeBackend,
+  fakeCatalogStore,
   fakeRunFiles,
   fakeTaskFiles,
   fakeWorktreeLocks,
@@ -28,14 +29,25 @@ import type { CheckResult, WaitCheck } from './waits.mts';
 import { TASK_FILES_KEEP_MS } from './dispatch.mts';
 import type { TaskFile } from './task-files.mts';
 import type { FakeBackend } from '../__tests__/helpers/fakes.mts';
+import type { ProbeResult } from '../catalog/probe.mts';
 import { GitHubError } from './github.mts';
 import type { GitHub } from './github.mts';
 import { createPrRefreshState, PR_REFRESH_INTERVAL_MS, prRefreshFile } from './pr-states.mts';
 import type { PrRefreshState } from './pr-states.mts';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createWatchStore } from '../watch/store.mts';
+import type { WatchEvent } from '../watch/store.mts';
+import { commandDef, commandResult, timerDef } from '../__tests__/helpers/watch.mts';
+import { HEARTBEAT_STALE_MS } from '../watch/tick.mts';
+import type { WatchRunner } from '../watch/attempt.mts';
 import { join } from 'node:path';
 
 const NOW = new Date('2026-01-01T12:00:00Z');
+
+const watchDirs: string[] = [];
+after(() => {
+  for (const dir of watchDirs) rmSync(dir, { recursive: true, force: true });
+});
 
 function fakePrRefreshState(at?: Date): PrRefreshState & { at: Date | undefined } {
   const state = {
@@ -55,6 +67,8 @@ function setup(
   {
     checks = {},
     checkResult,
+    watchRun,
+    alive = [],
     taskFiles: initialFiles = [],
     locks = {},
     ...updating
@@ -63,6 +77,10 @@ function setup(
     taskFiles?: TaskFile[];
     locks?: Record<string, string[]>;
     checkResult?: (check: WaitCheck) => CheckResult;
+    // What a watch's command or gh call answers; the default is a failing command.
+    watchRun?: WatchRunner;
+    // Pids that exist.
+    alive?: number[];
     autoUpdate?: AutoUpdate;
     advertised?: string;
     compiled?: boolean;
@@ -111,6 +129,10 @@ function setup(
   };
   const taskFiles = fakeTaskFiles(initialFiles);
   const worktreeLocks = fakeWorktreeLocks(locks);
+  const watchDir = mkdtempSync('/tmp/board-dispatch-watches-');
+  watchDirs.push(watchDir);
+  const watches = createWatchStore(watchDir);
+  const ranWatches: string[] = [];
   const deps: DispatchDeps = {
     backend,
     config: { ...CONFIG, autoUpdate: updating.autoUpdate ?? 'incompatible' },
@@ -123,6 +145,14 @@ function setup(
     waits,
     taskFiles,
     worktreeLocks,
+    watches,
+    runWatch: async (job) => {
+      ranWatches.push(job.command);
+      return (
+        (await watchRun?.(job)) ?? { exitCode: 1, timedOut: false, output: 'pending', stdout: '', stderr: 'pending' }
+      );
+    },
+    isAlive: (pid) => alive.includes(pid),
     runCheck: async (check) => {
       ranChecks.push(check.command);
       return checkResult?.(check) ?? { exitCode: 1, timedOut: false, output: 'pending' };
@@ -131,7 +161,22 @@ function setup(
     configWarnings: () => updating.warnings ?? [],
     prRefresh: { github: undefined, state: fakePrRefreshState() },
   };
-  return { backend, deps, started, stopped, logs, files, waits, taskFiles, worktreeLocks, ranChecks, updates, state };
+  return {
+    backend,
+    deps,
+    started,
+    stopped,
+    logs,
+    files,
+    waits,
+    taskFiles,
+    worktreeLocks,
+    ranChecks,
+    updates,
+    state,
+    watches,
+    ranWatches,
+  };
 }
 
 const running = (id: string) => task({ id, status: 'running', input: '/selftest go' });
@@ -184,7 +229,7 @@ test('a task that names an agent this machine does not define is skipped, and on
   await runDispatch(deps);
   assert.deepEqual(started, ['known']);
   assert.ok(!backend.writes.some((w) => w.includes('ghost')), 'left in Todo, not claimed or failed');
-  assert.ok(logs.includes('SKIP ghost no agents.ghost in config.json here'));
+  assert.ok(logs.includes('SKIP ghost no agent ghost defined here'));
 });
 
 test('a task pinned here that names a missing agent is claimed, so its worker can fail it', async () => {
@@ -201,7 +246,7 @@ test('an agent that cannot be read is logged as a warning every tick, and the re
   await runDispatch(deps);
   assert.deepEqual(started, ['t1']);
   assert.ok(logs.some((line) => line.startsWith('WARN config.json: config: agents.broken has no key "tool"')));
-  assert.ok(logs.some((line) => line.startsWith('SKIP bad agents.broken in config.json here cannot be used')));
+  assert.ok(logs.some((line) => line.startsWith('SKIP bad agent broken here cannot be used')));
 });
 
 test('a task of the removed intake without an agent is claimed and started, so that its worker fails it', async () => {
@@ -1062,6 +1107,121 @@ test('a failure to send the directory list costs one WARN line, and the tick goe
   assert.ok(logs.some((line) => line.startsWith('TICK ')));
 });
 
+function withCatalog(tasks: ReturnType<typeof task>[], result: ProbeResult | undefined) {
+  const made = setup(tasks);
+  const store = fakeCatalogStore();
+  const probes: string[] = [];
+  made.deps.config = listed;
+  made.deps.catalog = {
+    store,
+    probe: async (dir) => {
+      probes.push(dir);
+      return result;
+    },
+    fingerprintDeps: () => ({ claude: '/usr/bin/claude', mtime: () => 1, claudeDir: '/home/me/.claude' }),
+  };
+  return { ...made, store, probes };
+}
+
+const FOUND: ProbeResult = {
+  claude: '2.1.326',
+  models: [{ value: 'opus', label: 'Opus' }],
+  commands: [{ name: 'review', builtin: false }],
+};
+
+test('a tick probes the machine’s directory, sends the catalogue once, and logs it', async () => {
+  const { deps, backend, logs, probes, started } = withCatalog([todo('t1')], FOUND);
+  await runDispatch(deps);
+  assert.deepEqual(probes, [tmpdir()]);
+  assert.deepEqual(
+    backend.writes.filter((w) => w.startsWith('catalog ')),
+    ['catalog here: 1 skills, 0 directories, 1 models'],
+  );
+  assert.ok(logs.includes('CATALOG sent 1 skills and 1 models to the board'));
+  await runDispatch(deps);
+  assert.equal(backend.writes.filter((w) => w.startsWith('catalog ')).length, 1);
+  assert.deepEqual(probes, [tmpdir()], 'nothing was stale the second time');
+  assert.deepEqual(started, ['t1']);
+});
+
+test('the probe runs after the tasks start', async () => {
+  const { deps, store, started } = withCatalog([todo('t1')], FOUND);
+  const startsAtProbe: number[] = [];
+  const probe = deps.catalog?.probe;
+  assert.ok(probe);
+  deps.catalog = {
+    store,
+    fingerprintDeps: () => ({ claude: '/usr/bin/claude', mtime: () => 1, claudeDir: '/home/me/.claude' }),
+    probe: async (dir) => {
+      startsAtProbe.push(started.length);
+      return probe(dir);
+    },
+  };
+  await runDispatch(deps);
+  assert.deepEqual(startsAtProbe, [1]);
+});
+
+test('a tick with too little time left for a probe skips it and still sends the cached catalogue', async () => {
+  const { deps, backend, logs, probes, store } = withCatalog([todo('t1')], FOUND);
+  await runDispatch(deps);
+  assert.deepEqual(probes, [tmpdir()]);
+  backend.boardCatalog.held = undefined;
+  deps.catalog = {
+    store,
+    probe: async (dir) => {
+      probes.push(dir);
+      return FOUND;
+    },
+    // Another mtime: the cached probe is stale now.
+    fingerprintDeps: () => ({ claude: '/usr/bin/claude', mtime: () => 2, claudeDir: '/home/me/.claude' }),
+  };
+  let now = NOW;
+  const listTasks = backend.listTasks.bind(backend);
+  backend.listTasks = async (options) => {
+    const tasks = await listTasks(options);
+    now = new Date(NOW.getTime() + 80_000);
+    return tasks;
+  };
+  await runDispatch({ ...deps, now: () => now });
+  assert.deepEqual(probes, [tmpdir()], 'no second probe');
+  assert.equal(backend.writes.filter((w) => w.startsWith('catalog ')).length, 2);
+  assert.equal(logs.filter((line) => line.startsWith('CATALOG sent')).length, 2);
+});
+
+test('a tick whose probe finds nothing sends nothing, logs a WARN, and still starts the tasks', async () => {
+  const { deps, backend, logs, started } = withCatalog([todo('t1')], undefined);
+  await runDispatch(deps);
+  assert.ok(!backend.writes.some((w) => w.startsWith('catalog ')));
+  assert.equal(logs.filter((line) => line.startsWith('WARN asking claude')).length, 1);
+  assert.deepEqual(started, ['t1']);
+  await runDispatch(deps);
+  assert.equal(logs.filter((line) => line.startsWith('WARN asking claude')).length, 1, 'not retried at once');
+});
+
+test('a failure to send the catalogue costs one WARN line, and the tick goes on', async () => {
+  const { deps, backend, logs, started } = withCatalog([todo('t1')], FOUND);
+  backend.boardCatalog.failure = new BackendError('set-catalog: the server answered 502 without JSON', 502);
+  await runDispatch(deps);
+  assert.ok(
+    logs.includes('WARN sending the skill catalogue failed: set-catalog: the server answered 502 without JSON'),
+  );
+  assert.deepEqual(started, ['t1']);
+  assert.ok(logs.some((line) => line.startsWith('TICK ')));
+});
+
+test('a tick on a server without catalogues asks nothing more, and a dry tick starts no probe', async () => {
+  const old = withCatalog([todo('t1')], FOUND);
+  old.backend.boardCatalog.supported = false;
+  await runDispatch(old.deps);
+  assert.ok(!old.backend.writes.some((w) => w.startsWith('catalog ')));
+  assert.ok(!old.logs.some((line) => line.startsWith('CATALOG sent')));
+  const dry = withCatalog([todo('t1')], FOUND);
+  dry.deps.dryRun = true;
+  await runDispatch(dry.deps);
+  assert.deepEqual(dry.probes, []);
+  assert.ok(dry.logs.includes(`DRY probe claude in ${tmpdir()}`));
+});
+
 const PR = 'https://github.com/cosuno/cosuno/pull/5';
 const withPr = () => task({ id: 'pr1', status: 'needs-me', input: `/review-pr ${PR} --auto` });
 
@@ -1158,4 +1318,327 @@ test('the PR refresh time is kept in a small file in the state directory, and a 
   } finally {
     rmSync(dir, { recursive: true });
   }
+});
+
+const USAGE_RESET = new Date(NOW.getTime() + 3 * 60 * 60_000);
+const usageAt = (utilization: number, resetsAt: Date = USAGE_RESET) => ({
+  read: () => ({ fiveHour: { utilization, resetsAt: resetsAt.toISOString(), seenAt: NOW.toISOString() } }),
+});
+const urgent = (id: string) => task({ id, input: '/selftest go', priority: 'urgent' });
+const lowPriority = (id: string, priority: 'high' | 'normal' | 'low' = 'normal') =>
+  task({ id, input: '/selftest go', priority });
+
+function limitedSetup(tasks: ReturnType<typeof task>[], utilization = 0.85) {
+  const result = setup(tasks);
+  result.deps.config = { ...CONFIG, usageLimits: { fiveHour: 80, priority: 'urgent' } };
+  result.deps.usage = usageAt(utilization);
+  return result;
+}
+
+test('over a usage threshold only urgent tasks start, one HOLD line names the window, and the reset is the next time', async () => {
+  const { deps, started, logs, files } = limitedSetup([urgent('u1'), lowPriority('n1'), lowPriority('n2', 'high')]);
+  await runDispatch(deps);
+  assert.deepEqual(started, ['u1']);
+  assert.deepEqual(
+    logs.filter((line) => line.startsWith('HOLD')),
+    [`HOLD 2 task(s) below urgent: 5-hour usage 85% (limit 80%, resets ${USAGE_RESET.toISOString()})`],
+  );
+  assert.ok(logs.includes(`TICK started=1 general=1/2 held=2 next=${USAGE_RESET.toISOString()}`), logs.join('\n'));
+  assert.equal(files.next?.getTime(), USAGE_RESET.getTime());
+});
+
+test('a resume of a held task is held too', async () => {
+  const resume = task({ id: 'r1', input: '/selftest go', next: 'resume', sessionId: 's1', machine: 'here' });
+  const { deps, started, logs } = limitedSetup([resume]);
+  await runDispatch(deps);
+  assert.deepEqual(started, []);
+  assert.ok(logs.some((line) => line.startsWith('HOLD 1 task(s) below urgent')));
+});
+
+test('the priority of the limit decides what is held, and a window can name its own reset', async () => {
+  const { deps, started, logs } = limitedSetup([
+    lowPriority('h1', 'high'),
+    lowPriority('n1'),
+    lowPriority('l1', 'low'),
+  ]);
+  deps.config = { ...CONFIG, usageLimits: { fiveHour: 80, sevenDay: 50, priority: 'high' } };
+  const later = new Date(NOW.getTime() + 24 * 60 * 60_000);
+  deps.usage = {
+    read: () => ({
+      fiveHour: { utilization: 0.9, resetsAt: USAGE_RESET.toISOString(), seenAt: NOW.toISOString() },
+      sevenDay: { utilization: 0.6, resetsAt: later.toISOString(), seenAt: NOW.toISOString() },
+    }),
+  };
+  await runDispatch(deps);
+  assert.deepEqual(started, ['h1']);
+  const hold = logs.filter((line) => line.startsWith('HOLD'));
+  assert.equal(hold.length, 1);
+  assert.match(hold[0] ?? '', /^HOLD 2 task\(s\) below high: 5-hour usage 90% .*; 7-day usage 60% \(limit 50%/);
+  assert.ok(logs.some((line) => line.includes(`held=2 next=${USAGE_RESET.toISOString()}`)));
+});
+
+test('held work does not make a lane pause a borrowed run', async () => {
+  const borrowed = task({ id: 'b1', status: 'running', input: '/selftest go', machine: 'here' });
+  // Both lanes are full, so without the limit i1 would wait for its lane and b1 would be asked to pause.
+  const own = task({ id: 'r0', status: 'running', input: '/selftest go', machine: 'here' });
+  const { deps, files, logs } = setup([borrowed, own, impl('i1')], ['agent-board-b1', 'agent-board-r0']);
+  deps.config = { ...LANED, usageLimits: { fiveHour: 80, priority: 'urgent' } };
+  deps.usage = usageAt(0.85);
+  files.runs.set('b1', { lane: 'implement', borrowed: true, startedAt: new Date(NOW.getTime() - 10 * 60_000) });
+  files.alive.set('b1', NOW);
+  files.runs.set('r0', { lane: 'reviews', borrowed: false, startedAt: NOW });
+  files.alive.set('r0', NOW);
+  await runDispatch(deps);
+  assert.equal(files.pauses.size, 0);
+  assert.ok(!logs.some((line) => line.startsWith('PAUSE')));
+  assert.ok(logs.some((line) => line.startsWith('HOLD 1')));
+});
+
+test('under the threshold, without limits, without a reading or after the reset nothing is held or logged', async () => {
+  const cases: [string, (deps: DispatchDeps) => void][] = [
+    ['under', (deps) => void (deps.usage = usageAt(0.79))],
+    ['no limits', (deps) => void (deps.config = CONFIG)],
+    ['no reading', (deps) => void (deps.usage = { read: () => ({}) })],
+    ['reset', (deps) => void (deps.usage = usageAt(0.95, NOW))],
+    ['no reader', (deps) => void (deps.usage = undefined)],
+  ];
+  for (const [name, change] of cases) {
+    const { deps, started, logs } = limitedSetup([lowPriority('n1')]);
+    change(deps);
+    await runDispatch(deps);
+    assert.deepEqual(started, ['n1'], name);
+    assert.ok(!logs.some((line) => line.startsWith('HOLD') || line.includes('held=')), name);
+  }
+});
+
+test('a reached threshold with nothing below the priority to hold logs nothing and adds no time', async () => {
+  const { deps, started, logs, files } = limitedSetup([urgent('u1')]);
+  await runDispatch(deps);
+  assert.deepEqual(started, ['u1']);
+  assert.ok(!logs.some((line) => line.startsWith('HOLD') || line.includes('held=')));
+  assert.equal(files.next, undefined);
+});
+
+// Watches of task w1, which waits here; the unit's heartbeat is fresh unless a test says otherwise.
+const probe = (overrides: Partial<ReturnType<typeof commandDef>> = {}) =>
+  commandDef('probe', {
+    task: 'w1',
+    createdAt: at(-10 * MIN).toISOString(),
+    deadline: at(60 * MIN).toISOString(),
+    everyMs: 30_000,
+    ...overrides,
+  });
+const spooled = (overrides: Partial<WatchEvent> = {}): WatchEvent => ({
+  id: 'e1e2e3e4e5e6e7e8',
+  task: 'w1',
+  name: 'health',
+  at: at(-MIN).toISOString(),
+  kind: 'event',
+  text: 'Exit 0.',
+  ...overrides,
+});
+const wakes = (writes: string[]): string[] => writes.filter((write) => write.startsWith('wake'));
+
+test('with a fresh heartbeat the tick attempts no watch and says nothing about the unit', async () => {
+  const { deps, watches, ranWatches, logs, files } = setup([
+    waitingTask('w1', { wakeAt: at(30 * MIN), waitCheck: true }),
+  ]);
+  watches.write(probe());
+  watches.touchHeartbeat(at(-HEARTBEAT_STALE_MS + 1000));
+  await runDispatch(deps);
+  assert.deepEqual(ranWatches, []);
+  assert.equal(logs.filter((line) => line.includes('watch unit')).length, 0);
+  assert.equal(watches.read('w1', 'health')?.last, undefined);
+  assert.equal(files.next?.getTime(), at(30 * MIN).getTime());
+});
+
+test('with a stale or missing heartbeat the tick polls the due watches, warns once, and comes back when the next one is due', async () => {
+  for (const beat of [undefined, at(-HEARTBEAT_STALE_MS - 1000)]) {
+    const { deps, watches, ranWatches, logs, files } = setup(
+      [waitingTask('w1', { wakeAt: at(90 * MIN), waitCheck: true })],
+      [],
+      {},
+      { watchRun: async () => commandResult(1, 'still down') },
+    );
+    watches.write(probe());
+    watches.write(probe({ name: 'later', last: { at: at(-5_000).toISOString(), summary: 'x' } }));
+    if (beat !== undefined) watches.touchHeartbeat(beat);
+    await runDispatch(deps);
+    assert.deepEqual(ranWatches, ['probe']);
+    assert.equal(
+      logs.filter((line) => line.startsWith('WARN watches on this machine are polled by the dispatch tick')).length,
+      1,
+    );
+    assert.equal(watches.read('w1', 'health')?.last?.summary, 'exit 1: still down');
+    // The next due watch attempt (the one that just ran, 30 s from now) is where the listener looks next.
+    assert.equal(files.next?.getTime(), NOW.getTime() + 25_000);
+  }
+});
+
+test('a watch the tick polls that ends wakes its waiting task in the same tick', async () => {
+  const { deps, watches, backend, logs } = setup(
+    [waitingTask('w1', { wakeAt: at(90 * MIN), waitCheck: true })],
+    [],
+    {},
+    { watchRun: async () => commandResult(0, 'healthy') },
+  );
+  watches.write(probe());
+  await runDispatch(deps);
+  assert.deepEqual(watches.list('w1').defs, []);
+  assert.deepEqual(wakes(backend.writes), ['wake w1: agent-board: wait over: watch "health" reported.']);
+  assert.ok(backend.writes.some((write) => write.startsWith('note w1: agent-board: watch "health" reported.')));
+  assert.ok(logs.some((line) => line.startsWith('EVENT w1 health event')));
+  assert.equal(watches.events('w1').length, 1);
+});
+
+test('the tick polls a watch no earlier than its period, and not at all after its deadline', async () => {
+  const { deps, watches, ranWatches } = setup([waitingTask('w1', { wakeAt: at(90 * MIN), waitCheck: true })]);
+  watches.write(probe({ last: { at: at(-5_000).toISOString(), summary: 'x' } }));
+  watches.write(
+    probe({ name: 'late', last: { at: at(-60_000).toISOString(), summary: 'x' }, deadline: at(-1000).toISOString() }),
+  );
+  await runDispatch(deps);
+  assert.deepEqual(ranWatches, []);
+  assert.equal(watches.events('w1').length, 1);
+  assert.equal(watches.events('w1')[0]?.event.kind, 'timeout');
+});
+
+test('the tick leaves watches that would not finish before its limit to the next tick', async () => {
+  const { deps, watches, ranWatches, logs } = setup([waitingTask('w1', { wakeAt: at(90 * MIN), waitCheck: true })]);
+  watches.write(probe());
+  let calls = 0;
+  deps.now = () => new Date(NOW.getTime() + (calls++ > 0 ? 70_000 : 0));
+  await runDispatch(deps);
+  assert.deepEqual(ranWatches, []);
+  assert.ok(logs.some((line) => line.startsWith('DEFER-WATCHES 1')));
+});
+
+test('a waiting task whose wakeAt passed gets its overdue watches finished first, with the unit running or not', async () => {
+  const { deps, watches, backend } = setup([waitingTask('w1', { wakeAt: at(-MIN), waitCheck: true })]);
+  watches.touchHeartbeat(NOW);
+  watches.write(probe({ deadline: at(-MIN).toISOString() }));
+  watches.write(timerDef({ task: 'w1', deadline: at(-30_000).toISOString() }));
+  watches.write(probe({ name: 'open', deadline: at(60 * MIN).toISOString() }));
+  await runDispatch(deps);
+  assert.deepEqual(
+    watches
+      .events('w1')
+      .map(({ event }) => [event.name, event.kind])
+      .sort(),
+    [
+      ['health', 'timeout'],
+      ['timer', 'event'],
+    ],
+  );
+  assert.deepEqual(
+    watches.list('w1').defs.map((def) => def.name),
+    ['open'],
+  );
+  // One wake, and the timeouts were written before it.
+  assert.equal(wakes(backend.writes).length, 1);
+  assert.ok(
+    backend.writes.findIndex((write) => write.startsWith('note')) <
+      backend.writes.findIndex((write) => write.startsWith('wake')),
+  );
+});
+
+test('a watch whose deadline has not passed is left to the unit, even when the task is woken for another reason', async () => {
+  const { deps, watches } = setup([waitingTask('w1', { wakeAt: at(-MIN) })]);
+  watches.touchHeartbeat(NOW);
+  watches.write(probe());
+  await runDispatch(deps);
+  assert.equal(watches.list('w1').defs.length, 1);
+  assert.equal(watches.events('w1').length, 0);
+});
+
+test('a check wait with watches here and no wait file sleeps until its wakeAt; with neither it wakes', async () => {
+  const held = setup([waitingTask('w1', { wakeAt: at(30 * MIN), waitCheck: true })]);
+  held.watches.touchHeartbeat(NOW);
+  held.watches.write(probe());
+  await runDispatch(held.deps);
+  assert.deepEqual(wakes(held.backend.writes), []);
+
+  const over = setup([waitingTask('w1', { wakeAt: at(-MIN), waitCheck: true })]);
+  over.watches.touchHeartbeat(NOW);
+  over.watches.write(probe());
+  await runDispatch(over.deps);
+  assert.equal(wakes(over.backend.writes).length, 1);
+
+  const none = setup([waitingTask('w1', { wakeAt: at(30 * MIN), waitCheck: true })]);
+  await runDispatch(none.deps);
+  assert.ok(none.backend.writes.some((write) => write.startsWith('wake w1:') && write.includes('no longer stored')));
+});
+
+test('the tick wakes a waiting task with an event nobody was handed, unless a worker runs for it', async () => {
+  const idle = setup([waitingTask('w1', { wakeAt: at(30 * MIN), waitCheck: true })]);
+  idle.watches.touchHeartbeat(NOW);
+  idle.watches.writeEvent(spooled());
+  await runDispatch(idle.deps);
+  assert.deepEqual(wakes(idle.backend.writes), ['wake w1: agent-board: wait over: watch "health" reported.']);
+  // The event stays: the resumed worker reads it.
+  assert.equal(idle.watches.events('w1').length, 1);
+
+  const live = setup([waitingTask('w1', { wakeAt: at(30 * MIN), waitCheck: true })], [], {}, { alive: [4242] });
+  live.watches.touchHeartbeat(NOW);
+  live.watches.writeEvent(spooled());
+  live.watches.markLive('w1', 4242);
+  await runDispatch(live.deps);
+  assert.deepEqual(wakes(live.backend.writes), []);
+
+  const gone = setup([waitingTask('w1', { wakeAt: at(30 * MIN), waitCheck: true })]);
+  gone.watches.touchHeartbeat(NOW);
+  gone.watches.writeEvent(spooled());
+  gone.watches.markLive('w1', 4242);
+  await runDispatch(gone.deps);
+  assert.equal(wakes(gone.backend.writes).length, 1);
+});
+
+test('the watches of a task that is done, closed, in Backlog or gone are dropped; the others keep theirs', async () => {
+  const { deps, watches, logs } = setup(
+    [
+      task({ id: 'd1', status: 'done' }),
+      task({ id: 'b1', status: 'backlog' }),
+      task({ id: 'c1', status: 'needs-me', closed: true }),
+      task({ id: 't1', status: 'todo', input: '/selftest go', notBefore: at(MIN) }),
+      task({ id: 'n1', status: 'needs-me', machine: 'here' }),
+      task({ id: 'r1', status: 'running', machine: 'here' }),
+      waitingTask('w1', { wakeAt: at(30 * MIN), waitCheck: true }),
+    ],
+    ['agent-board-r1'],
+  );
+  watches.touchHeartbeat(NOW);
+  for (const id of ['d1', 'b1', 'c1', 't1', 'n1', 'r1', 'w1', 'gone']) {
+    watches.write(probe({ task: id }));
+    watches.writeEvent(spooled({ task: id, name: 'health' }));
+  }
+  // The board lists open tasks only: a closed one is looked up.
+  const listTasks = deps.backend.listTasks.bind(deps.backend);
+  deps.backend.listTasks = async (options) => (await listTasks(options)).filter((listed) => !listed.closed);
+  await runDispatch(deps);
+  assert.deepEqual(watches.tasks().sort(), ['n1', 'r1', 't1', 'w1']);
+  for (const [id, why] of [
+    ['d1', 'done'],
+    ['b1', 'in Backlog'],
+    ['c1', 'closed'],
+    ['gone', 'gone'],
+  ])
+    assert.ok(logs.includes(`DROP-WATCHES ${id} its task is ${why}`), id);
+});
+
+test('a task the board cannot be asked about keeps its watches; a dry run drops nothing', async () => {
+  const hidden = setup([]);
+  hidden.watches.write(probe({ task: 'h1' }));
+  hidden.backend.getTask = async () => {
+    throw new BackendError('cannot reach the board');
+  };
+  await runDispatch(hidden.deps);
+  assert.deepEqual(hidden.watches.tasks(), ['h1']);
+  assert.ok(hidden.logs.some((line) => line.startsWith('KEEP-WATCHES h1')));
+
+  const dry = setup([task({ id: 'd1', status: 'done' })]);
+  dry.deps.dryRun = true;
+  dry.watches.write(probe({ task: 'd1' }));
+  await runDispatch(dry.deps);
+  assert.deepEqual(dry.watches.tasks(), ['d1']);
+  assert.ok(dry.logs.includes('DROP-WATCHES d1 its task is done'));
 });

@@ -581,6 +581,29 @@ test('a PR is added with add-pr on a server with task.prs, and replaces the earl
   assert.deepEqual(older.seen[1]?.body, { id: 'abc', body: { pr: 'abe1.pr' } });
 });
 
+test('removing a PR needs task.pr-remove, and an older server refuses before anything is sent', async () => {
+  const withIt = boardWith(['task.prs', 'task.pr-remove'], { 'remove-pr': { body: { result: null } } });
+  await withIt.backend.removePr('abc', { pr: 'row1' });
+  assert.deepEqual(
+    withIt.seen.map((request) => request.command),
+    ['version', 'remove-pr'],
+  );
+  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { pr: 'row1' } });
+  const older = boardWith(['task.prs'], {});
+  await assert.rejects(
+    older.backend.removePr('abc', { pr: 'row1' }),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'task.pr-remove' &&
+      error.message ===
+        'the board server does not support removing a reported pull request yet; update the board server',
+  );
+  assert.deepEqual(
+    older.seen.map((request) => request.command),
+    ['version'],
+  );
+});
+
 test('reporting a PR on a server with neither task.prs nor task.pr is refused, before anything is sent', async () => {
   const without = boardWith(['events'], {});
   await assert.rejects(
@@ -693,6 +716,52 @@ test('the directory list: the server must name machine.dirs, its index comes fro
       /does not support directory lists yet/.test(error.message),
   );
   assert.deepEqual(lacking.seen, ['version']);
+});
+
+test('the catalogue: the server must name machine.catalog, its index comes from the version answer, and a junk index is none', async () => {
+  const make = (features: string[], catalogIndex?: unknown) => {
+    const seen: string[] = [];
+    const fetcher: Fetch = async (url) => {
+      const command = url.slice(`${config.url}/api/machine/`.length);
+      seen.push(command);
+      const result = command === 'version' ? { ...VERSION_ANSWER, features, catalogIndex } : null;
+      return new Response(JSON.stringify({ result }));
+    };
+    return { seen, backend: createWebBackend({ loadConfig: () => config, fetch: fetcher }) };
+  };
+  const index = await blindIndex(KEYS, 'catalog:here:{}');
+  const having = make(['machine.catalog'], index);
+  assert.deepEqual(await having.backend.catalogState(), { supported: true, index });
+  await having.backend.setCatalog({ catalog: 'abe1.x', index });
+  assert.deepEqual(having.seen, ['version', 'set-catalog']);
+  for (const junk of [undefined, null, 7, 'abh1.short', 'abe1.x']) {
+    assert.deepEqual(await make(['machine.catalog'], junk).backend.catalogState(), { supported: true, index: null });
+  }
+  const lacking = make(['machine.dirs'], index);
+  assert.deepEqual(await lacking.backend.catalogState(), { supported: false, index });
+  await assert.rejects(
+    lacking.backend.setCatalog({ catalog: 'abe1.x', index }),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'machine.catalog' &&
+      /does not support machine catalogues yet/.test(error.message),
+  );
+  assert.deepEqual(lacking.seen, ['version']);
+});
+
+test('a dry run prints the catalogue it would send and sends nothing', async () => {
+  const { seen, fetcher } = board({});
+  const lines: string[] = [];
+  const dry = dryRunBackend(createSealedBackend({ loadConfig: () => config, fetch: fetcher }), (line) =>
+    lines.push(line),
+  );
+  await dry.setCatalog('here', {
+    models: [{ value: 'opus', label: 'Opus' }],
+    skills: [{ name: 'a' }, { name: 'b' }],
+    dirs: { '/a': [{ name: 'c' }] },
+  });
+  assert.deepEqual(lines, ['DRY set-catalog 2 skills, 1 directories with their own, 1 models']);
+  assert.deepEqual(seen, []);
 });
 
 test('a dry run prints the directory list it would send and sends nothing', async () => {

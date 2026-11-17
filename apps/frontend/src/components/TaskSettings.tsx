@@ -2,12 +2,13 @@ import { ActionIcon, Button, Group, Modal, Select, Stack, Text } from '@mantine/
 import { IconPencil } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
-import { DEFAULT_MODEL, modelFromOption, modelOptions } from '../lib/model';
+import { DEFAULT_MODEL, modelFromOption } from '../lib/model';
 import { useTRPC, type BoardTask } from '../lib/trpc';
 import { isCurrentPlace } from '../lib/workingDirectories';
 import { confirmPlace } from './confirmPlace';
 import { DirectorySelect } from './DirectorySelect';
 import { useDirectoryChoices } from './useDirectoryChoices';
+import { useModelOptions } from './useModelOptions';
 
 const SCHEDULE_HINT =
   'This card belongs to a schedule: the change applies to it only, the next occurrence takes its settings from the schedule.';
@@ -16,6 +17,7 @@ const SCHEDULE_HINT =
 export function ModelPicker({ task }: { task: BoardTask }) {
   const trpc = useTRPC();
   const configure = useMutation(trpc.tasks.configure.mutationOptions());
+  const { options } = useModelOptions(task.machine, task.model);
   return (
     <Select
       aria-label="Model"
@@ -23,7 +25,7 @@ export function ModelPicker({ task }: { task: BoardTask }) {
       size="xs"
       w={130}
       allowDeselect={false}
-      data={modelOptions(task.model)}
+      data={options}
       value={task.model ?? DEFAULT_MODEL}
       onChange={(value) => value !== null && configure.mutate({ task, model: modelFromOption(value) })}
       disabled={configure.isPending}

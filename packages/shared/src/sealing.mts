@@ -10,6 +10,7 @@
 //   workdir        <origin>, or for a scheduled task also task:<id>:schedule:<scheduleId> (the worker's rewrite)
 //   pr             task:<id>:agent (a PR URL the task's agent reported; every PR of the task has this binding)
 //   machine.dirs   machine:<name> (the directory list the machine's CLI sends, one JSON document)
+//   machine.catalog machine:<name> (the skills and models the machine's CLI found, one JSON document)
 //   note.*         note:<taskId>:<author>:<kind>
 //   tr.*           <taskId>:<runId>:<seq>
 //
@@ -23,6 +24,8 @@
 // The plumbing stays with the callers: `Sealer` and `Opener` seal and open one value (the browser memoises opening), and
 // everything here is the rules around them. A value that does not open under exactly its binding is unreadable, and an
 // unreadable value is never replaced by a looser reading.
+import { catalogProblem, machineCatalogJson, parseMachineCatalog } from './catalog.mts';
+import type { MachineCatalog } from './catalog.mts';
 import {
   AGENT_NAME_RULE,
   checkSealedSize,
@@ -196,6 +199,43 @@ export async function openMachineDirs(
     opened.push(typeof label === 'string' && isSafeDirLabel(label) ? { path, label } : { path });
   }
   return opened;
+}
+
+/** The catalogue of a machine: bound to the machine's name like its directory list, and to its own field, so neither opens as the other. */
+export const machineCatalogBinding = (machine: string): Binding => ({
+  field: 'machine.catalog',
+  context: `machine:${machine}`,
+});
+
+/** A machine's `catalogIndex` as the board stores it: the blind index of `catalog:<machine>:<document>`, to tell whether a catalogue changed. */
+export const machineCatalogIndex = (keys: Keys, machine: string, catalog: MachineCatalog): Promise<string> =>
+  blindIndex(keys, `catalog:${machine}:${machineCatalogJson(catalog)}`);
+
+/** Seals the catalogue of `machine`; refuses more than the board takes and an entry that is not of its shape. */
+export async function sealMachineCatalog(seal: Sealer, machine: string, catalog: MachineCatalog): Promise<string> {
+  const problem = catalogProblem(catalog);
+  if (problem !== undefined) throw new ContractError(`the catalogue has ${problem}`);
+  return sealChecked(seal, machineCatalogBinding(machine), machineCatalogJson(catalog), 'the catalogue');
+}
+
+/**
+ * The catalogue a machine sent, or undefined when it is unreadable: it does not open under exactly this machine's binding or
+ * is not a catalogue document (`parseMachineCatalog`, which drops an entry of the wrong shape and keeps the rest). Advice for
+ * what a form offers, never acted on.
+ */
+export async function openMachineCatalog(
+  open: Opener,
+  machine: string,
+  wire: string | null | undefined,
+): Promise<MachineCatalog | undefined> {
+  if (wire === null || wire === undefined) return undefined;
+  const text = await open(machineCatalogBinding(machine), wire);
+  if (text === undefined) return undefined;
+  try {
+    return parseMachineCatalog(JSON.parse(text));
+  } catch {
+    return undefined;
+  }
 }
 
 // A note is bound to its task, its author and its kind, so one author's text can never be served as another's.

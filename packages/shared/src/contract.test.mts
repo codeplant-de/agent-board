@@ -23,6 +23,7 @@ import {
   parseWireNote,
   parseWireNoteInput,
   parseWirePr,
+  parseWirePrRemoval,
   parseWirePrState,
   parseWirePrStates,
   parseWireSchedule,
@@ -163,6 +164,15 @@ test('a task lists its reported PRs with their states, and a server without task
   assert.throws(() => parseWireTask({ ...task, prs: 'x' }), /prs must be a list/);
   assert.throws(() => parseWireTask({ ...task, prs: [{ id: '../x', pr: PR, state: null }] }), /id "..\/x" is not safe/);
   assert.throws(() => parseWireTask({ ...task, prs: [{ id: 'abc123', pr: 5, state: null }] }), /pr must be a string/);
+});
+
+test('remove-pr names one row by a safe id and nothing else', () => {
+  assert.deepEqual(parseWirePrRemoval({ pr: 'abc123' }), { pr: 'abc123' });
+  assert.throws(() => parseWirePrRemoval({}), /pr/);
+  assert.throws(() => parseWirePrRemoval({ pr: 5 }), /pr/);
+  assert.throws(() => parseWirePrRemoval({ pr: 'a b' }), /pr "a b" is not safe/);
+  assert.throws(() => parseWirePrRemoval({ pr: 'abc123', extra: 1 }), /unknown key "extra"/);
+  assert.throws(() => parseWirePrRemoval('abc123'), /prRemoval/);
 });
 
 test('set-pr-states names the prompt PR and/or rows, with a bounded list and no other key', () => {

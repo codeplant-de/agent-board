@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { encodeDataKey, machineDirsIndex } from '@agent-board/shared';
-import { DATA_KEY, KEYS, OWNER, SERVER_API, SERVER_HAS } from '../__tests__/helpers/fakes.mts';
+import { encodeDataKey, machineCatalogIndex, machineDirsIndex } from '@agent-board/shared';
+import { DATA_KEY, fakeCatalogStore, KEYS, OWNER, SERVER_API, SERVER_HAS } from '../__tests__/helpers/fakes.mts';
 import { BackendError } from '../backend/backend.mts';
 import { formatResult, hasFailure, runChecks } from './doctor.mts';
 import type { CheckResult, DoctorDeps } from './doctor.mts';
@@ -42,6 +42,9 @@ function machine(
     },
     systemctl: async () => 0,
     verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId, api: SERVER_API, features: SERVER_HAS }),
+    catalogStore: fakeCatalogStore(),
+    usageStore: { read: () => ({}) },
+    now: () => new Date('2026-11-17T12:00:00Z'),
     ...overrides,
   };
 }
@@ -279,6 +282,36 @@ test('the listener unit is checked like the timers, but a missing or stopped one
 
   const vanished = await runChecks(machine({ ...GOOD, ...units }, { exists: (path) => path !== '/usr/bin/node' }));
   assert.equal(levels(vanished)['agent-board-listen.service command'], 'fail');
+});
+
+test('the watch unit is checked like the listener, and a missing or stopped one only warns', async () => {
+  const units = unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch']);
+  const watch = `${UNIT_DIR}/agent-board-watch.service`;
+  const watcher = (results: CheckResult[]) => results.filter((result) => result.name.includes('agent-board-watch'));
+
+  const missing = watcher(await runChecks(machine({ ...GOOD, ...units }, { exists: (path) => path !== watch })));
+  assert.deepEqual(levels(missing), { 'unit agent-board-watch.service': 'warn' });
+  assert.match(missing[0]?.hint ?? '', /board setup/);
+
+  const running = await runChecks(machine({ ...GOOD, ...units }, { exists: () => true }));
+  assert.deepEqual(levels(watcher(running)), {
+    'unit agent-board-watch.service': 'ok',
+    'agent-board-watch.service command': 'ok',
+    'agent-board-watch.service state': 'ok',
+  });
+
+  const stopped = await runChecks(
+    machine(
+      { ...GOOD, ...units },
+      { exists: () => true, systemctl: async (args) => (args.at(-1) === 'agent-board-watch.service' ? 1 : 0) },
+    ),
+  );
+  assert.equal(levels(stopped)['agent-board-watch.service state'], 'warn');
+  assert.equal(levels(stopped)['agent-board-listen.service state'], 'ok');
+  assert.equal(hasFailure(stopped), false);
+
+  const vanished = await runChecks(machine({ ...GOOD, ...units }, { exists: (path) => path !== '/usr/bin/node' }));
+  assert.equal(levels(vanished)['agent-board-watch.service command'], 'fail');
 });
 
 test('a result prints as one line with its hint under it', () => {
@@ -600,6 +633,63 @@ test('doctor says whether the board has the current directory list, comparing in
   assert.match(results.find(({ name }) => name === 'server features')?.message ?? '', /directory lists/);
 });
 
+const catalogOnBoard = (results: CheckResult[]): CheckResult[] =>
+  results.filter((result) => result.name === 'catalog on board');
+
+test('doctor says whether the board has the catalogue this machine probed, and nothing is probed yet on a fresh one', async () => {
+  const files = withConfig({ machine: 'box', dirs: { '/home/me/.config/agent-board': {} } });
+  const result = {
+    claude: '2.1.326',
+    models: [{ value: 'opus', label: 'Opus' }],
+    commands: [{ name: 'review', builtin: false }],
+  };
+  const catalog = { claude: '2.1.326', models: result.models, skills: [{ name: 'review' }], dirs: {} };
+  const serving = (catalogIndex?: string): Partial<DoctorDeps> => ({
+    verifyServer: async () => ({
+      owner: OWNER,
+      keyId: KEYS.keyId,
+      api: SERVER_API,
+      features: SERVER_HAS,
+      ...(catalogIndex === undefined ? {} : { catalogIndex }),
+    }),
+  });
+  const fresh = catalogOnBoard(await runChecks(machine(files, serving())));
+  assert.deepEqual(
+    fresh.map(({ level }) => level),
+    ['ok'],
+  );
+  assert.match(fresh[0]?.message ?? '', /nothing probed yet/);
+  const catalogStore = fakeCatalogStore();
+  catalogStore.write({
+    path: '/home/me/.config/agent-board',
+    fingerprint: 'fp',
+    probedAt: '2026-11-17T10:00:00.000Z',
+    probedForInit: null,
+    result,
+  });
+  const current = catalogOnBoard(
+    await runChecks(machine(files, { ...serving(await machineCatalogIndex(KEYS, 'box', catalog)), catalogStore })),
+  );
+  assert.deepEqual(
+    current.map(({ level, message }) => [level, message]),
+    [['ok', 'the board has the current catalogue (1 skills, 1 models)']],
+  );
+  const behind = catalogOnBoard(await runChecks(machine(files, { ...serving(), catalogStore })));
+  assert.deepEqual(
+    behind.map(({ level }) => level),
+    ['warn'],
+  );
+  assert.match(behind[0]?.message ?? '', /does not have the current catalogue yet \(1 skills, 1 models\)/);
+  assert.match(behind[0]?.hint ?? '', /next dispatch tick/);
+  const lacking = machine(files, {
+    catalogStore,
+    verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId, api: SERVER_API, features: new Set(['events']) }),
+  });
+  const results = await runChecks(lacking);
+  assert.deepEqual(catalogOnBoard(results), []);
+  assert.match(results.find(({ name }) => name === 'server features')?.message ?? '', /machine catalogues/);
+});
+
 const PLUGINS = '/home/me/.claude/plugins';
 const agentsConfig = (agents: unknown, plugins?: unknown) => ({
   ...GOOD,
@@ -681,6 +771,7 @@ const MAC_CONFIG = `${MAC_HOME}/.config/agent-board`;
 const RUN_DIR = `${MAC_HOME}/.local/state/agent-board/run`;
 const DISPATCH_PLIST = 'de.codeplant.agent-board.dispatch.plist';
 const LISTEN_PLIST = 'de.codeplant.agent-board.listen.plist';
+const WATCH_PLIST = 'de.codeplant.agent-board.watch.plist';
 
 function agentFiles(): Record<string, { text: string }> {
   return Object.fromEntries(
@@ -745,6 +836,9 @@ test('a macOS worker machine in order passes every check', async () => {
       `launchd ${LISTEN_PLIST}`,
       `${LISTEN_PLIST} command`,
       'de.codeplant.agent-board.listen state',
+      `launchd ${WATCH_PLIST}`,
+      `${WATCH_PLIST} command`,
+      'de.codeplant.agent-board.watch state',
     ],
   );
   assert.ok(
@@ -767,6 +861,7 @@ test('a macOS machine with no agent warns, and with one installed a missing tool
   );
   assert.equal(listenerMissing['tool gh'], 'fail');
   assert.equal(listenerMissing[`launchd ${LISTEN_PLIST}`], 'warn', 'the listener only adds speed to the timer');
+  assert.equal(listenerMissing[`launchd ${WATCH_PLIST}`], 'warn', 'the tick polls the watches without the watch agent');
 });
 
 test('a macOS agent whose program is gone fails', async () => {
@@ -774,6 +869,7 @@ test('a macOS agent whose program is gone fails', async () => {
   const results = await runChecks({ ...base, exists: (path) => path !== '/usr/local/bin/board' && base.exists(path) });
   assert.equal(levels(results)[`${DISPATCH_PLIST} command`], 'fail');
   assert.equal(levels(results)[`${LISTEN_PLIST} command`], 'fail');
+  assert.equal(levels(results)[`${WATCH_PLIST} command`], 'fail');
 });
 
 test('a macOS agent that launchd has not loaded warns with the bootstrap line; an unwritable run directory fails', async () => {
@@ -805,5 +901,46 @@ test('on macOS checkouts under the protected folders are warned about', async ()
   assert.equal(
     fine.some((result) => result.name === 'folders'),
     false,
+  );
+});
+
+const usageResults = (results: CheckResult[]): CheckResult[] =>
+  results.filter((result) => result.name === 'usage limits');
+
+test('doctor says nothing about usage limits unless the config sets them', async () => {
+  assert.deepEqual(usageResults(await runChecks(machine(GOOD))), []);
+});
+
+test('doctor shows the thresholds, that no run has reported usage yet, and that nothing is held', async () => {
+  const files = withConfig({ machine: 'box', usageLimits: { fiveHour: 80 } });
+  const [result, ...rest] = usageResults(await runChecks(machine(files)));
+  assert.deepEqual(rest, []);
+  assert.equal(result?.level, 'ok');
+  assert.equal(
+    result?.message,
+    '5-hour limit 80%, no reading yet (the first run here reports one); tasks below urgent are not held now',
+  );
+});
+
+test('doctor shows the last reading with its time, and what is held until when', async () => {
+  const files = withConfig({ machine: 'box', usageLimits: { fiveHour: 80, sevenDay: 90, priority: 'high' } });
+  const results = usageResults(
+    await runChecks(
+      machine(files, {
+        usageStore: {
+          read: () => ({
+            fiveHour: { utilization: 0.85, resetsAt: '2026-11-17T15:00:00.000Z', seenAt: '2026-11-17T11:30:00.000Z' },
+            sevenDay: { utilization: 0.95, resetsAt: '2026-11-17T09:00:00.000Z', seenAt: '2026-11-16T20:00:00.000Z' },
+          }),
+        },
+      }),
+    ),
+  );
+  assert.equal(
+    results[0]?.message,
+    '5-hour limit 80%, last reading 85% seen 2026-11-17T11:30:00.000Z; ' +
+      '7-day limit 90%, last reading 95% seen 2026-11-16T20:00:00.000Z, window since reset, so void; ' +
+      'tasks below high are held now until 2026-11-17T15:00:00.000Z ' +
+      '(5-hour usage 85% (limit 80%, resets 2026-11-17T15:00:00.000Z))',
   );
 });
