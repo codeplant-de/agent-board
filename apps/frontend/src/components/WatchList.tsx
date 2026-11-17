@@ -4,13 +4,15 @@ import { ago, stamp } from '../lib/time';
 
 interface Props {
   watches: TaskWatch[];
+  /** How many events of the task wait for its agent. */
+  pendingEvents: number;
   /** The ids of the watches you asked to stop that the machine has not acknowledged. */
   stopping: string[];
   onStop: (watchId: string) => void;
 }
 
 /** What the task's machine watches for it. Every string is the agent's text: shown as plain text, never as markdown or a link. */
-export function WatchList({ watches, stopping, onStop }: Props) {
+export function WatchList({ watches, pendingEvents, stopping, onStop }: Props) {
   return (
     <Paper withBorder p="sm">
       <Text size="xs" c="dimmed" fw={600} mb={4} tt="uppercase">
@@ -41,12 +43,6 @@ export function WatchList({ watches, stopping, onStop }: Props) {
                   {watch.lastAttemptAt !== undefined && (
                     <span title={stamp(watch.lastAttemptAt)}> · looked {ago(watch.lastAttemptAt)}</span>
                   )}
-                  {watch.pendingEvents > 0 && (
-                    <span>
-                      {' '}
-                      · {watch.pendingEvents} {watch.pendingEvents === 1 ? 'event' : 'events'} waiting
-                    </span>
-                  )}
                 </Text>
               </Stack>
               <Button
@@ -63,6 +59,11 @@ export function WatchList({ watches, stopping, onStop }: Props) {
           );
         })}
       </Stack>
+      {pendingEvents > 0 && (
+        <Text size="xs" c="dimmed" mt={4}>
+          {pendingEvents} {pendingEvents === 1 ? 'event waits' : 'events wait'} for the agent
+        </Text>
+      )}
     </Paper>
   );
 }

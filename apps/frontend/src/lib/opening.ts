@@ -12,6 +12,7 @@ import {
   openNote,
   openPrs,
   openPreview,
+  isWatchId,
   openWatches,
   parseTranscriptEvent,
   taskLabels,
@@ -69,6 +70,8 @@ export type BoardTask = Omit<
     promptPrState: PrState | null;
     // What the task's machine watches for it, when the list opens under its binding; null when there is none or it does not open.
     watches: TaskWatch[] | null;
+    // How many events of the task wait for its agent, as the machine published it.
+    watchEvents: number;
     // The watches you asked to stop that the machine has not acknowledged yet.
     watchStops: string[];
     labels: string[];
@@ -187,7 +190,8 @@ export async function openBoardTask(keys: Keys, wire: WireBoardTask): Promise<Bo
     unreadable: watches.unreadable ? [...fields.unreadable, 'watches'] : fields.unreadable,
     prs,
     watches: watches.watches,
-    watchStops: watchStops ?? [],
+    watchEvents: watches.pendingEvents,
+    watchStops: Array.isArray(watchStops) ? watchStops.filter(isWatchId) : [],
     promptPrState: wire.promptPrState ?? null,
     labels: taskLabels({ input: fields.input, createdBy: shapes.createdBy }),
     invalid,

@@ -232,6 +232,7 @@ function TaskView({ id }: { id: string }) {
         {((task.watches?.length ?? 0) > 0 || task.watchStops.length > 0) && (
           <WatchList
             watches={task.watches ?? []}
+            pendingEvents={task.watchEvents}
             stopping={task.watchStops}
             onStop={(watchId) => stopWatch.mutate({ id: task.id, watchId })}
           />

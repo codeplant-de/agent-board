@@ -131,7 +131,6 @@ const watch = (overrides: Partial<TaskWatch> = {}): TaskWatch => ({
   label: 'CI #116',
   status: '4 of 7 passed, 3 running',
   deadline: new Date(Date.now() + 3_600_000).toISOString(),
-  pendingEvents: 0,
   ...overrides,
 });
 

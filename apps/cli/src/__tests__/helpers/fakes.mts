@@ -52,6 +52,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     prs: [],
     promptPrState: null,
     watches: null,
+    watchEvents: 0,
     watchStops: [],
     next: 'fresh',
     head: null,
@@ -308,11 +309,12 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         if (row) row.state = prState;
       }
     },
-    async setWatches(id, watches) {
+    async setWatches(id, watches, pendingEvents) {
       state.writes.push(`watches ${id} ${watches === null ? 'null' : JSON.stringify(watches)}`);
       const found = state.tasks.find((t) => t.id === id);
       if (!found) throw new BackendError(`set-watches: no task ${id}`, 404, true);
       found.watches = watches === null ? null : [...watches];
+      found.watchEvents = pendingEvents;
     },
     async ackWatchStops(id, ids) {
       state.writes.push(`ackWatchStops ${id} ${ids.join(',')}`);
@@ -561,6 +563,7 @@ export async function wireTask(overrides: Partial<Task> & { id: string }): Promi
     agent,
     prs,
     watches,
+    watchEvents,
     ...rest
   } = task(overrides);
   const sealed = await sealFields(
@@ -581,7 +584,7 @@ export async function wireTask(overrides: Partial<Task> & { id: string }): Promi
     prState: newest === undefined ? promptPrState : newest.state,
     prs: wirePrs,
     promptPrState,
-    watches: watches === null ? null : await sealWatches(seals, rest.id, watches),
+    watches: watches === null ? null : await sealWatches(seals, rest.id, watches, watchEvents),
   };
 }
 

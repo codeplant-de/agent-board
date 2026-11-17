@@ -1564,7 +1564,7 @@ test('a stop the user asked for ends that watch with a stopped event, acknowledg
   assert.deepEqual(watches.list('w1').defs, []);
   assert.deepEqual(
     watches.events('w1').map(({ event }) => [event.name, event.kind, event.text]),
-    [['health', 'stopped', 'Watch "health" was stopped by you.']],
+    [['health', 'stopped', 'Watch "health" was stopped by the user.']],
   );
   assert.ok(logs.includes('STOP-WATCH w1 health'));
   assert.ok(backend.writes.some((write) => write.startsWith('note w1: agent-board: watch "health" reported.')));

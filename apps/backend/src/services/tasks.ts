@@ -869,7 +869,7 @@ export async function configureTask(db: DbOrTx, taskId: string, config: TaskConf
     if (model !== undefined) set.model = model;
     if (place !== undefined) {
       const workdir = place?.workdir ?? null;
-      // A pause or a wake belongs to the session that is gone.
+      // A pause or a wake belongs to the session that is gone, and so do the watches the old machine ran for it.
       Object.assign(set, {
         machine: place?.machine ?? null,
         workdir,
@@ -878,6 +878,8 @@ export async function configureTask(db: DbOrTx, taskId: string, config: TaskConf
         next: 'fresh',
         pausedAt: null,
         wokenAt: null,
+        watches: null,
+        watchStops: [],
       } satisfies TaskValues);
     }
     const priorityChanged = priority !== undefined && priority !== task.priority;

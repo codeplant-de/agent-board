@@ -12,7 +12,7 @@ import type { WatchRunner } from './attempt.mts';
 import { finishWatch } from './finish.mts';
 import { createWatchStore } from './store.mts';
 import type { WatchDef, WatchStore } from './store.mts';
-import { publishWatches, PUBLISH_EVERY_MS } from './publish.mts';
+import { publishWatches, PUBLISH_EVERY_MS, REFRESH_MS } from './publish.mts';
 import { forgetWakeTries, isRunLive, tryWake } from './wake.mts';
 
 export const SCAN_MS = 2000;
@@ -82,7 +82,8 @@ export function createWatchUnit(deps: UnitDeps): WatchUnit {
     if (abort.signal.aborted) return;
     if (result.kind === 'event') return finish(def, { kind: 'event', text: result.text });
     const summary = result.kind === 'pending' ? result.summary : result.reason;
-    if (summary !== def.last?.summary) stale.add(def.task);
+    if (summary !== def.last?.summary || now().getTime() - (publishedAt.get(def.task) ?? 0) >= REFRESH_MS)
+      stale.add(def.task);
     store.update({
       ...(result.kind === 'pending' && result.def ? result.def : def),
       last: { at: now().toISOString(), summary },

@@ -165,6 +165,8 @@ export interface Task {
   // The watches the task's machine runs for it (`board watch`), as the machine last published them; null when it sent none
   // and when they could not be opened (`unreadable` then lists 'watches'). A server without `task.watches` leaves them out.
   watches: TaskWatch[] | null;
+  // How many events of the task wait for its agent, as the machine published it with the watches; 0 without them.
+  watchEvents: number;
   // The ids of watches the user asked to stop that the machine has not acknowledged yet (`ack-watch-stops`).
   watchStops: string[];
   // While it runs: the user asked for the run to be interrupted and no worker has acted on it yet. Absent from a server
@@ -435,8 +437,9 @@ export interface Backend {
   // A worker's dispatcher records GitHub's state of the PR the prompt names and of reported ones, by the id the task lists them with.
   setPrStates(id: string, states: PrStates): Promise<void>;
   // A machine publishes what the watches of a task on it look at and say, for the board to show; null clears the list. The list
-  // never holds a command or its output. Against a server without `task.watches` it throws an error that names the feature.
-  setWatches(id: string, watches: readonly TaskWatch[] | null): Promise<void>;
+  // never holds a command or its output; `pendingEvents` is how many events of the task wait for the agent. Against a server without
+  // `task.watches` it throws an error that names the feature.
+  setWatches(id: string, watches: readonly TaskWatch[] | null, pendingEvents: number): Promise<void>;
   // The machine acted on these stop requests (`Task.watchStops`); the board forgets them.
   ackWatchStops(id: string, ids: readonly string[]): Promise<void>;
   // Whether the board holds `dirs` as this machine's directory list, by comparing blind indexes; 'unsupported' for a server without the feature.
@@ -469,7 +472,7 @@ export type UsageOnBoard = DirsOnBoard;
 // returns may also be legacy plain text from before encryption; only what a client sends is checked to be sealed.
 
 type SealedTaskFields = 'title' | 'input' | 'workdir' | 'agent' | 'labels' | 'unreadable';
-type OpenedTaskFields = 'prs' | 'promptPrState' | 'watches' | 'watchStops';
+type OpenedTaskFields = 'prs' | 'promptPrState' | 'watches' | 'watchEvents' | 'watchStops';
 
 /** What the states of `set-pr-states` and `setPrStates` name: the prompt's PR, and reported PRs by the id of their row. */
 export interface PrStates {

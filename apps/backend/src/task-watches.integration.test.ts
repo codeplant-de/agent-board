@@ -25,7 +25,6 @@ const watch = (overrides: Partial<TaskWatch> = {}): TaskWatch => ({
   status: '4 of 7 passed, 3 running',
   deadline: '2026-11-17T14:20:00.000Z',
   lastAttemptAt: '2026-11-17T13:20:00.000Z',
-  pendingEvents: 1,
   ...overrides,
 });
 
@@ -61,7 +60,7 @@ async function setup() {
   const publish = async (watches: TaskWatch[] | null) =>
     laptop('set-watches', {
       id,
-      body: { watches: watches === null ? null : await sealWatches(sealed.seal, id, watches) },
+      body: { watches: watches === null ? null : await sealWatches(sealed.seal, id, watches, 2) },
     });
   return { laptop, desktop, id, publish };
 }
@@ -76,7 +75,11 @@ describe('set-watches', () => {
     expect(row.watches).not.toContain('CI #116');
     const wire = (await laptop('get-task', { id })).json.result;
     expect(wire).toMatchObject({ watches: row.watches, watchStops: [] });
-    expect(await openWatches(sealed.open, id, wire.watches)).toEqual({ watches: [watch()], unreadable: false });
+    expect(await openWatches(sealed.open, id, wire.watches)).toEqual({
+      watches: [watch()],
+      pendingEvents: 2,
+      unreadable: false,
+    });
     const [listed] = await ui().tasks.list();
     expect(listed).toMatchObject({ watches: row.watches });
   });
@@ -103,10 +106,10 @@ describe('set-watches', () => {
 
   it('is refused for another machine’s task, a task without a machine and an unknown task', async () => {
     const { desktop, id, publish } = await setup();
-    const sent = { id, body: { watches: await sealWatches(sealed.seal, id, [watch()]) } };
+    const sent = { id, body: { watches: await sealWatches(sealed.seal, id, [watch()], 0) } };
     expect((await desktop('set-watches', sent)).status).toBe(409);
     const free = await plainUi(db).tasks.create({ title: 't', input: 'i' });
-    const freeBody = { watches: await sealWatches(sealed.seal, free.id, [watch()]) };
+    const freeBody = { watches: await sealWatches(sealed.seal, free.id, [watch()], 0) };
     expect((await desktop('set-watches', { id: free.id, body: freeBody })).status).toBe(409);
     expect((await desktop('set-watches', { id: 'Nope1234', body: freeBody })).status).toBe(404);
     expect((await rowOf(id)).watches).toBeNull();
@@ -122,7 +125,7 @@ describe('set-watches', () => {
   it('refuses plain text, another binding, another key, unknown keys and a value that is too long', async () => {
     const { laptop, id } = await setup();
     const other = await plainUi(db).tasks.create({ title: 't', input: 'i' });
-    const ofOther = await sealWatches(sealed.seal, other.id, [watch()]);
+    const ofOther = await sealWatches(sealed.seal, other.id, [watch()], 0);
     expect((await laptop('set-watches', { id, body: { watches: '{"watches":[]}' } })).status).toBe(400);
     expect((await laptop('set-watches', { id, body: {} })).status).toBe(400);
     expect((await laptop('set-watches', { id, body: { watches: 7 } })).status).toBe(400);
@@ -133,7 +136,11 @@ describe('set-watches', () => {
     // The server cannot tell another task's ciphertext; opening is what binds it.
     await laptop('set-watches', { id, body: { watches: ofOther } });
     const wire = (await laptop('get-task', { id })).json.result;
-    expect(await openWatches(sealed.open, id, wire.watches)).toEqual({ watches: null, unreadable: true });
+    expect(await openWatches(sealed.open, id, wire.watches)).toEqual({
+      watches: null,
+      pendingEvents: 0,
+      unreadable: true,
+    });
     expect(watchesBinding(id)).toEqual({ field: 'watches', context: `task:${id}:agent` });
   });
 });
@@ -259,6 +266,22 @@ describe('clearing', () => {
     await ui().tasks.stop({ id });
     expect((await rowOf(id)).status).toBe('backlog');
     await cleared(id);
+  });
+
+  it('happens when the user moves the task to another machine, which drops its session', async () => {
+    const { id } = await held();
+    await admin.update(tasks).set({ status: 'needs-me' }).where(eq(tasks.id, id));
+    await plainUi(db).tasks.configure({ id, place: { machine: 'desktop', workdir: '/home/me/code/new' } });
+    expect(await rowOf(id)).toMatchObject({ machine: 'desktop', sessionId: null });
+    await cleared(id);
+  });
+
+  it('does not happen when only the priority or model changes', async () => {
+    const { id } = await held();
+    await admin.update(tasks).set({ status: 'needs-me' }).where(eq(tasks.id, id));
+    await plainUi(db).tasks.configure({ id, model: 'opus' });
+    expect(await rowOf(id)).toMatchObject({ watchStops: [WATCH_ID] });
+    expect((await rowOf(id)).watches).not.toBeNull();
   });
 
   it('does not happen when the task is woken to resume', async () => {

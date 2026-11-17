@@ -178,7 +178,8 @@ export async function sealApply(
 ): Promise<RouterInputs['tasks']['applyPolish']> {
   const { polishId, target, rewrite } = options;
   if (target.createdBy !== 'user') throw new InputError('Only a task you created takes a polished prompt.');
-  if (target.unreadable.length > 0)
+  // The watches are only shown, so a list that does not open leaves the task readable.
+  if (target.unreadable.some((field) => field !== 'watches'))
     throw new InputError('This task cannot be read, so what it says now could not be kept.');
   const row: RowRef = { kind: 'task', id: target.id, createdBy: 'user', scheduleId: null, agent: target.agent };
   const seal = sealerFor(keys);

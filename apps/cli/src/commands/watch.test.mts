@@ -407,11 +407,13 @@ test("move to needs-me from inside the run for its own task drops its watches; a
   await mine.go(['move', ID, 'needs-me'], { env: { AGENT_BOARD_TASK: ID } });
   assert.deepEqual(mine.watches.list(ID).defs, []);
   assert.deepEqual(mine.watches.events(ID), []);
+  assert.ok(mine.backend.writes.includes(`watches ${ID} null`), 'the board’s list is cleared too');
 
   const user = setup();
   user.watches.write(timerDef({ task: ID }));
   await user.go(['move', ID, 'needs-me']);
   assert.equal(user.watches.list(ID).defs.length, 1);
+  assert.ok(!user.backend.writes.some((write) => write.startsWith('watches ')));
 
   // Another task's run, a move to another status and a move the board refuses leave the watches.
   const other = setup();

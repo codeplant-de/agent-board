@@ -24,6 +24,7 @@ import {
 } from './board.mts';
 import type { AddFlags, AttachFlags, CommentFlags, PolishFlags, TasksFlags, WaitFlags } from './board.mts';
 import { CHECK_TIME_LIMIT_MS, runCommand } from '../dispatch/waits.mts';
+import { publishWatches } from '../watch/publish.mts';
 import type { WatchStore } from '../watch/store.mts';
 import { createWatchStore } from '../watch/store.mts';
 import { collect, runEventsCommand } from './events.mts';
@@ -235,7 +236,14 @@ export function registerTaskCommands(shared: ProgramShared): void {
       const id = await taskIdOf(context, arg);
       await move(context, id, target, expect === undefined ? {} : { expect });
       // The agent is done with its task: what it watched for no longer matters. A user's move leaves the watches.
-      if (target === 'needs-me' && env['AGENT_BOARD_TASK'] === id && !context.dryRun) watchStore().dropTask(id);
+      if (target === 'needs-me' && env['AGENT_BOARD_TASK'] === id && !context.dryRun) {
+        const store = watchStore();
+        store.dropTask(id);
+        await publishWatches(
+          { store, backend: context.backend, now: options.now ?? (() => new Date()), log: context.print },
+          id,
+        );
+      }
     } catch (error) {
       if (!(error instanceof MoveRefused)) throw error;
       writeErr(`board: ${error.message}\n`);

@@ -60,7 +60,7 @@ import { isPrUrl } from './prompt.mts';
 import { parseAnswers, parseQuestions, QuestionError } from './questions.mts';
 import type { Answer, Question } from './questions.mts';
 import { parseTaskWatches, taskWatchesJson } from './watches.mts';
-import type { TaskWatch } from './watches.mts';
+import type { TaskWatch, TaskWatchDocument } from './watches.mts';
 
 export interface Binding {
   field: Field;
@@ -152,9 +152,14 @@ export async function openPrs(open: Opener, taskId: string, rows: readonly WireT
 export const watchesBinding = (taskId: string): Binding => ({ field: 'watches', context: `task:${taskId}:agent` });
 
 /** Seals the watches of `taskId`; refuses more than the board shows, an entry of the wrong shape and more than the board takes. */
-export async function sealWatches(seal: Sealer, taskId: string, watches: readonly TaskWatch[]): Promise<string> {
-  const json = taskWatchesJson(watches);
-  if (parseTaskWatches(JSON.parse(json))?.length !== watches.length)
+export async function sealWatches(
+  seal: Sealer,
+  taskId: string,
+  watches: readonly TaskWatch[],
+  pendingEvents: number,
+): Promise<string> {
+  const json = taskWatchesJson(watches, pendingEvents);
+  if (parseTaskWatches(JSON.parse(json))?.watches.length !== watches.length)
     throw new ContractError('the watches must be at most 32 entries of the shape the board shows');
   return sealChecked(seal, watchesBinding(taskId), json, 'the watches');
 }
@@ -162,12 +167,14 @@ export async function sealWatches(seal: Sealer, taskId: string, watches: readonl
 export interface OpenedWatches {
   /** The watches the machine published; null for none, and when they could not be opened. */
   watches: TaskWatch[] | null;
+  /** How many events of the task wait for the agent, as the machine published it; 0 without a list. */
+  pendingEvents: number;
   unreadable: boolean;
 }
 
 /**
- * The watches of a task. A task without any (`wire` null) is `{ watches: null, unreadable: false }`. A value that does not open
- * under exactly the task's binding, or is not `{"watches":[…]}` with at most 32 entries, is unreadable. An entry of the wrong
+ * The watches of a task. A task without any (`wire` null) is `{ watches: null, pendingEvents: 0, unreadable: false }`. A value that does not open
+ * under exactly the task's binding, or is not `{"watches":[…],"pendingEvents":n}` with at most 32 entries, is unreadable. An entry of the wrong
  * shape is dropped without losing the list. They are shown, never acted on.
  */
 export async function openWatches(
@@ -175,15 +182,17 @@ export async function openWatches(
   taskId: string,
   wire: string | null | undefined,
 ): Promise<OpenedWatches> {
-  if (wire === null || wire === undefined) return { watches: null, unreadable: false };
+  if (wire === null || wire === undefined) return { watches: null, pendingEvents: 0, unreadable: false };
   const text = await open(watchesBinding(taskId), wire);
-  let watches: TaskWatch[] | undefined;
+  let document: TaskWatchDocument | undefined;
   try {
-    watches = text === undefined ? undefined : parseTaskWatches(JSON.parse(text));
+    document = text === undefined ? undefined : parseTaskWatches(JSON.parse(text));
   } catch {
-    watches = undefined;
+    document = undefined;
   }
-  return watches === undefined ? { watches: null, unreadable: true } : { watches, unreadable: false };
+  return document === undefined
+    ? { watches: null, pendingEvents: 0, unreadable: true }
+    : { ...document, unreadable: false };
 }
 
 /** The directory list of a machine: bound to the machine's name, so a list sealed for one machine never opens as another's. */

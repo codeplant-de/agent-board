@@ -159,6 +159,7 @@ function dryTask(draft: TaskDraft): Task {
     prs: [],
     promptPrState: null,
     watches: null,
+    watchEvents: 0,
     watchStops: [],
     next: 'fresh',
     head: head ?? null,

@@ -79,6 +79,7 @@ describe('canPolish and isOpenPolishOf', () => {
     ] satisfies Partial<typeof backlog>[])
       expect(canPolish({ ...backlog, ...change })).toBe(false);
     expect(canPolish({ ...backlog, unreadable: ['title'] })).toBe(false);
+    expect(canPolish({ ...backlog, unreadable: ['watches'] })).toBe(true);
   });
 
   it('counts a polish task as open until it is done or closed', () => {
@@ -134,6 +135,9 @@ describe('sealApply', () => {
     await expect(
       sealApply(keys, { polishId: 'p', target: { ...target, unreadable: ['input'] }, rewrite }),
     ).rejects.toThrow(InputError);
+    await expect(
+      sealApply(keys, { polishId: 'p', target: { ...target, unreadable: ['watches'] }, rewrite }),
+    ).resolves.toBeDefined();
   });
 
   it('keeps a prompt that holds code fences inside a longer fence', () => {

@@ -1,4 +1,4 @@
-// What the board shows of a task's watches: a list of names, what each looks at, its state and how many events wait. It is built
+// What the board shows of a task's watches: a list of names, what each looks at and its state, and how many events wait for the agent. It is built
 // from the local store and never holds a command or its output. Publishing is best effort and never throws into its caller.
 import { isWatchId, MAX_TASK_WATCHES, MAX_WATCH_LABEL_CHARS, MAX_WATCH_STATUS_CHARS } from '@agent-board/shared';
 import type { Backend, TaskWatch } from '@agent-board/shared';
@@ -16,6 +16,9 @@ export interface PublishDeps {
 
 /** The unit publishes a task's changing state at most this often; an event or a finished watch goes at once. */
 export const PUBLISH_EVERY_MS = 15_000;
+
+/** An unchanged state is published again after this long, so the board's time of the last look does not freeze. */
+export const REFRESH_MS = 5 * 60_000;
 
 const COMMAND_RESULT = /^(exit \d+|too slow, stopped|killed)/;
 
@@ -38,8 +41,6 @@ function statusOf(def: WatchDef, now: Date): string {
 
 /** The watches of `task` as the board shows them, in name order; the command text and what it printed are left out. */
 export function taskWatchesOf(store: WatchStore, task: string, now: Date): TaskWatch[] {
-  const pending = new Map<string, number>();
-  for (const { event } of store.events(task)) pending.set(event.name, (pending.get(event.name) ?? 0) + 1);
   return store
     .list(task)
     .defs.filter((def) => isWatchId(def.id))
@@ -53,7 +54,6 @@ export function taskWatchesOf(store: WatchStore, task: string, now: Date): TaskW
       status: statusOf(def, now),
       deadline: def.deadline,
       ...(def.last === undefined || def.source.kind === 'timer' ? {} : { lastAttemptAt: def.last.at }),
-      pendingEvents: pending.get(def.name) ?? 0,
     }));
 }
 
@@ -66,7 +66,7 @@ let warnedUnsupported = false;
 export async function publishWatches(deps: PublishDeps, task: string): Promise<void> {
   try {
     const watches = taskWatchesOf(deps.store, task, deps.now());
-    await deps.backend.setWatches(task, watches.length === 0 ? null : watches);
+    await deps.backend.setWatches(task, watches.length === 0 ? null : watches, deps.store.events(task).length);
   } catch (error) {
     if (error instanceof BackendError && error.missingFeature === 'task.watches') {
       if (!warnedUnsupported) deps.log('the board server does not show watches yet; they are not published');

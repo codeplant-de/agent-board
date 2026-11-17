@@ -7,6 +7,7 @@ import { commandDef, commandResult, tempDir, timerDef, watchDef } from '../__tes
 import { task as makeTask } from '../__tests__/helpers/fakes.mts';
 import { WAKE_MARKER, WATCH_MARKER } from '../task-rules.mts';
 import type { RunJob } from './attempt.mts';
+import { REFRESH_MS } from './publish.mts';
 import { createWatchStore } from './store.mts';
 import { createWatchUnit, runWatchUnit } from './unit.mts';
 import type { UnitDeps } from './unit.mts';
@@ -135,8 +136,8 @@ test('an event and a finished watch are published at once, with the event waitin
   assert.equal(published.length, 1);
   const [list] = published;
   assert.deepEqual(
-    list?.map(({ name, kind, label, pendingEvents }) => [name, kind, label, pendingEvents]),
-    [['timer', 'timer', 'timer', 0]],
+    list?.map(({ name, kind, label }) => [name, kind, label]),
+    [['timer', 'timer', 'timer']],
   );
   assert.equal(JSON.stringify(list).includes('probe'), false);
   assert.equal(JSON.stringify(list).includes('secret output'), false);
@@ -173,6 +174,27 @@ test('an unchanged state is not published again', async () => {
     await pass();
   }
   assert.equal(published.length, 1);
+});
+
+test('an unchanged state is published again after five minutes, so the last look does not freeze', async () => {
+  const { store, pass, advance, answers, published } = setup();
+  store.write(commandDef('probe', { everyMs: 15_000 }));
+  answers.set('probe', () => commandResult(1, 'same'));
+  advance(15_000);
+  await pass();
+  assert.equal(published.length, 1);
+  advance(REFRESH_MS - 30_000);
+  await pass();
+  assert.equal(published.length, 1);
+  advance(30_000);
+  await pass();
+  assert.equal(published.length, 2);
+  advance(REFRESH_MS - 15_000);
+  await pass();
+  assert.equal(published.length, 2);
+  advance(15_000);
+  await pass();
+  assert.equal(published.length, 3);
 });
 
 test('a task with a live run is not woken: its worker hands the event over', async () => {

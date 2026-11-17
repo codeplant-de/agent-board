@@ -30,7 +30,7 @@ export async function handleWatchStops(deps: StopDeps, task: { id: string; watch
       }
       deps.log(`${deps.dryRun === true ? 'DRY ' : ''}STOP-WATCH ${id} ${def.name}`);
       if (deps.dryRun === true) continue;
-      await finishWatch(deps, def, { kind: 'stopped', text: `Watch "${def.name}" was stopped by you.` });
+      await finishWatch(deps, def, { kind: 'stopped', text: `Watch "${def.name}" was stopped by the user.` });
     }
     if (deps.dryRun === true) return;
     await deps.backend.ackWatchStops(id, watchStops);

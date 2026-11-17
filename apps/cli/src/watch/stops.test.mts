@@ -46,7 +46,7 @@ test('a stop claims the matching watch, spools a stopped event, posts the note, 
   );
   const [stored] = store.events(TASK);
   assert.equal(stored?.event.kind, 'stopped');
-  assert.equal(stored?.event.text, 'Watch "health" was stopped by you.');
+  assert.equal(stored?.event.text, 'Watch "health" was stopped by the user.');
   assert.deepEqual(calls, ['note agent-board: watch "health" reported.', `ack ${FIRST}`, 'publish timer']);
   assert.ok(logs.includes(`STOP-WATCH ${TASK} health`));
 });

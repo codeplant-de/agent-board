@@ -61,6 +61,7 @@ const task = (id: string, title: string): BoardTask =>
     model: null,
     prs: [],
     watches: null,
+    watchEvents: 0,
     watchStops: [],
     promptPrState: null,
     next: 'resume',

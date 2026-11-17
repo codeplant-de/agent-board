@@ -184,10 +184,19 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
     watches: { events: spooled.map(({ event }) => event), open: watches.list(task.id).defs, now: deps.now() },
   });
   if (run.kind === 'blocked') return fail(run.reason);
+  // Publishing is best effort and does not hold the run.
+  const publishWatchState = (): void => {
+    void publishWatches(
+      { store: watches, backend, now: deps.now, log: (line) => deps.appendLog(taskId, line) },
+      task.id,
+    );
+  };
   // A run that starts over has no use for what the old one waited for; the drop takes the live marker with it.
   if (run.kind === 'fresh') {
+    const hadWatches = watches.list(task.id).defs.length > 0;
     watches.dropTask(task.id);
     watches.markLive(task.id, process.pid);
+    if (hadWatches) publishWatchState();
   }
   // What the prompt carries: deleted once the agent has output, which shows that it took the prompt in.
   const inPrompt: StoredEvent[] = run.kind === 'resume' ? spooled : [];
@@ -340,13 +349,6 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
     return beating;
   };
   let firstOutput = oldestEvent === undefined;
-  // Events handed over change how many wait; publishing is best effort and does not hold the run.
-  const publishWatchState = (): void => {
-    void publishWatches(
-      { store: watches, backend, now: deps.now, log: (line) => deps.appendLog(taskId, line) },
-      task.id,
-    );
-  };
   // An agent's run lists the skills of the user's settings only (`--setting-sources user`), which the directory's catalogue is not.
   let skillsReported = restricted !== undefined;
   let lastUsage: RateLimitReading | undefined;

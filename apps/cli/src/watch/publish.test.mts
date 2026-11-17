@@ -14,23 +14,25 @@ const SECRET = 'curl -H "Authorization: SECRET-TOKEN" https://internal.example/h
 function setup() {
   const store = createWatchStore(join(tempDir(), 'watches'));
   const sent: (TaskWatch[] | null)[] = [];
+  const counts: number[] = [];
   const logs: string[] = [];
   const state = { failure: undefined as Error | undefined };
   const deps = {
     store,
     backend: {
-      async setWatches(_id: string, watches: readonly TaskWatch[] | null) {
+      async setWatches(_id: string, watches: readonly TaskWatch[] | null, pendingEvents: number) {
         if (state.failure) throw state.failure;
         sent.push(watches === null ? null : [...watches]);
+        counts.push(pendingEvents);
       },
     },
     now: () => NOW,
     log: (line: string) => logs.push(line),
   };
-  return { store, sent, logs, state, deps };
+  return { store, sent, counts, logs, state, deps };
 }
 
-test('the list holds a label and a state per kind, the deadline and the events waiting, and never the command or what it printed', () => {
+test('the list holds a label and a state per kind, the deadline, and never the command or what it printed', () => {
   const { store } = setup();
   store.write(
     watchDef({
@@ -63,7 +65,6 @@ test('the list holds a label and a state per kind, the deadline and the events w
   assert.equal(by['health']?.kind, 'command');
   assert.equal(by['health']?.label, 'command, every 30s');
   assert.match(by['health']?.status ?? '', /^exit 1 at \d\d:\d\d$/);
-  assert.equal(by['health']?.pendingEvents, 1);
   assert.equal(by['fresh']?.status, 'not run yet');
   assert.equal(by['fresh']?.label, 'command, every 1m');
   assert.equal(by['timer']?.label, 'timer');
@@ -74,14 +75,17 @@ test('the list holds a label and a state per kind, the deadline and the events w
   for (const secret of ['SECRET', 'curl', 'internal.example']) assert.equal(json.includes(secret), false, secret);
 });
 
-test('publishing sends the list, and an empty list as null', async () => {
-  const { store, deps, sent } = setup();
+test('publishing sends the list with the count of the task’s undelivered events, and an empty list as null', async () => {
+  const { store, deps, sent, counts } = setup();
   store.write(watchDef());
+  store.writeEvent({ id: newWatchId(), task: TASK, name: 'gone', at: NOW.toISOString(), kind: 'event', text: 'x' });
+  store.writeEvent({ id: newWatchId(), task: TASK, name: 'other', at: NOW.toISOString(), kind: 'event', text: 'y' });
   await publishWatches(deps, TASK);
   store.claim(TASK, 'ci')?.done();
   await publishWatches(deps, TASK);
   assert.equal(sent[0]?.[0]?.name, 'ci');
   assert.equal(sent[1], null);
+  assert.deepEqual(counts, [2, 2]);
 });
 
 test('a board without task.watches is skipped with one line, and any other failure is logged and does not throw', async () => {

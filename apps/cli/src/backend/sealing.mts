@@ -133,6 +133,7 @@ async function openTask(keys: Keys, wire: WireTask): Promise<Task> {
     prs,
     promptPrState: promptPrState(wire),
     watches: opened.watches,
+    watchEvents: opened.pendingEvents,
     watchStops: watchStops ?? [],
     labels: taskLabels({ input, createdBy: wire.createdBy }),
     unreadable: opened.unreadable ? [...unreadable, 'watches'] : unreadable,
@@ -316,9 +317,10 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     },
     removePr: (id, prId) => inner.removePr(id, { pr: prId }),
     setPrStates: (id, states) => inner.setPrStates(id, states),
-    async setWatches(id, watches) {
+    async setWatches(id, watches, pendingEvents) {
       await inner.setWatches(id, {
-        watches: watches === null ? null : await checked('set-watches', () => sealWatches(sealer, id, watches)),
+        watches:
+          watches === null ? null : await checked('set-watches', () => sealWatches(sealer, id, watches, pendingEvents)),
       });
     },
     ackWatchStops: (id, ids) => inner.ackWatchStops(id, { ids: [...ids] }),

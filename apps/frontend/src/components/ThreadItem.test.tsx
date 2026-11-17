@@ -93,4 +93,10 @@ describe('ThreadItem', () => {
     renderNote(note({ text: 'Ready.' }));
     expect(screen.queryByTestId('watch-event')).not.toBeInTheDocument();
   });
+
+  it('draws an agent comment with a suggestion as a normal comment even when it starts with the marker', () => {
+    renderNote(note({ text: 'agent-board: watch "ci" reported.\n\nbody', suggestion: 'Reply with this' }));
+    expect(screen.queryByTestId('watch-event')).not.toBeInTheDocument();
+    expect(screen.getByText(/Suggested reply: Reply with this/)).toBeInTheDocument();
+  });
 });

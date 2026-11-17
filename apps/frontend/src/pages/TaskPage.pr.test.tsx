@@ -68,6 +68,7 @@ const task = (overrides: Partial<BoardTask>): BoardTask =>
     input: 'Fix the bug',
     prs: [],
     watches: null,
+    watchEvents: 0,
     watchStops: [],
     model: null,
     promptPrState: null,
@@ -229,22 +230,27 @@ describe('TaskPage watches', () => {
     status: '4 of 7 passed, 3 running',
     deadline: new Date(Date.now() + 3_600_000).toISOString(),
     lastAttemptAt: new Date(Date.now() - 60_000).toISOString(),
-    pendingEvents: 2,
   } as const;
 
   beforeEach(() => {
     shown.stopped = [];
   });
 
-  it('lists each watch with what it watches, its status, until when, when it looked and its waiting events', async () => {
-    renderPage({ status: 'running', watches: [watch] });
+  it('lists each watch with what it watches, its status, until when and when it looked', async () => {
+    renderPage({ status: 'running', watches: [watch], watchEvents: 2 });
     const section = within((await screen.findByText('Watches')).parentElement!);
     expect(section.getByText('ci')).toBeInTheDocument();
     expect(section.getByText(/CI #116/)).toBeInTheDocument();
     expect(section.getByText('4 of 7 passed, 3 running')).toBeInTheDocument();
     expect(section.getByText(/until /)).toBeInTheDocument();
     expect(section.getByText(/looked a minute ago/)).toBeInTheDocument();
-    expect(section.getByText(/2 events waiting/)).toBeInTheDocument();
+    expect(section.getByText('2 events wait for the agent')).toBeInTheDocument();
+  });
+
+  it('says nothing of waiting events when none wait', async () => {
+    renderPage({ status: 'running', watches: [watch] });
+    await screen.findByText('Watches');
+    expect(screen.queryByText(/wait for the agent/)).not.toBeInTheDocument();
   });
 
   it('stops a watch with the id of its entry, without a confirmation', async () => {

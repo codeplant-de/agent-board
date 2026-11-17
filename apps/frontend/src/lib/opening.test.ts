@@ -124,14 +124,14 @@ describe('the watches of a task, as the browser opens it', () => {
     label: 'CI #116',
     status: '4 of 7 passed',
     deadline: '2026-11-17T14:20:00.000Z',
-    pendingEvents: 0,
   };
   const open = async (watches: string | null | undefined, watchStops?: string[]) =>
     openBoardTask(keys, { ...(await wireTask([])), watches, watchStops } as RouterOutputs['tasks']['get']['task']);
 
   it('are the list the agent of the task sealed, with the stops waiting for the machine', async () => {
-    const task = await open(await sealWatches(sealerFor(keys), 'task0001', [watch]), ['fedcba9876543210']);
+    const task = await open(await sealWatches(sealerFor(keys), 'task0001', [watch], 3), ['fedcba9876543210']);
     expect(task.watches).toEqual([watch]);
+    expect(task.watchEvents).toBe(3);
     expect(task.watchStops).toEqual(['fedcba9876543210']);
     expect(task.unreadable).toEqual([]);
   });
@@ -139,13 +139,20 @@ describe('the watches of a task, as the browser opens it', () => {
   it('are none, and no stops, when the board sent neither key', async () => {
     const task = await open(undefined);
     expect(task.watches).toBeNull();
+    expect(task.watchEvents).toBe(0);
     expect(task.watchStops).toEqual([]);
     expect(task.unreadable).toEqual([]);
   });
 
+  it('keeps only well-formed stop ids, and none when the board sent no list', async () => {
+    const task = await open(null, ['fedcba9876543210', 'junk', 7, '0123456789ABCDEF'] as unknown as string[]);
+    expect(task.watchStops).toEqual(['fedcba9876543210']);
+    expect((await open(null, 'fedcba9876543210' as unknown as string[])).watchStops).toEqual([]);
+  });
+
   it('are none and unreadable when sealed for another task, not sealed, or not a list', async () => {
     for (const value of [
-      await sealWatches(sealerFor(keys), 'other001', [watch]),
+      await sealWatches(sealerFor(keys), 'other001', [watch], 0),
       JSON.stringify({ watches: [watch] }),
       await seal(keys, 'watches', watchesBinding('task0001').context, 'not json'),
     ]) {

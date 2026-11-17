@@ -20,9 +20,18 @@ export function watchBadgeText(task: Pick<BoardTask, 'status' | 'watches'>): str
   return more.length === 0 ? text : `${text} +${more.length}`;
 }
 
-/** The note of a watch event: an agent comment that starts with the marker. */
-export const isWatchNote = ({ author, kind, text }: { author: string; kind: string; text: string }): boolean =>
-  author === 'agent' && kind === 'comment' && text.startsWith(WATCH_MARKER);
+/** The note of a watch event: an agent comment with no suggestion that starts with the marker. */
+export const isWatchNote = ({
+  author,
+  kind,
+  text,
+  suggestion,
+}: {
+  author: string;
+  kind: string;
+  text: string;
+  suggestion?: string | undefined;
+}): boolean => author === 'agent' && kind === 'comment' && suggestion === undefined && text.startsWith(WATCH_MARKER);
 
 /** The title of a watch note, `Watch "ci" reported`, and its body (the fenced text); a first line of another shape gets a plain title. */
 export function splitWatchNote(text: string): { title: string; body: string } {

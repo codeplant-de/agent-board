@@ -244,6 +244,7 @@ test('a url the server sends is never used (server-chosen task.url)', () => {
       prs: [],
       promptPrState: null,
       watches: null,
+      watchEvents: 0,
       watchStops: [],
     },
     [],

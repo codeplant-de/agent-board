@@ -465,7 +465,10 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     // A task this machine cannot read says nothing to the check, and the model must not see its placeholder.
     // A task that runs as another agent (or as none) is not the same work, so it is never a duplicate of this one.
     const open = (await backend.listTasks()).filter(
-      (task) => task.status !== 'done' && task.unreadable.length === 0 && (task.agent ?? null) === (args.agent ?? null),
+      (task) =>
+        task.status !== 'done' &&
+        task.unreadable.every((field) => field === 'watches') &&
+        (task.agent ?? null) === (args.agent ?? null),
     );
     const duplicate = await deps.check(args.prompt, deps.workdir, open);
     const existing = duplicate === undefined ? undefined : open.find((task) => task.id === duplicate.taskId);

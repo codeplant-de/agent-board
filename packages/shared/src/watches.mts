@@ -38,8 +38,6 @@ export interface TaskWatch {
   deadline: string;
   /** ISO time of the watch's last look, when it has made one. */
   lastAttemptAt?: string;
-  /** How many events wait for the agent. */
-  pendingEvents: number;
 }
 
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
@@ -60,7 +58,7 @@ function isOneLine(value: unknown, max: number): value is string {
 /** The watch `value` describes, or undefined when it is not one of the shape `TaskWatch` documents. Other keys are ignored. */
 export function parseTaskWatch(value: unknown): TaskWatch | undefined {
   if (!isRecord(value)) return undefined;
-  const { id, name, kind, label, status, deadline, lastAttemptAt, pendingEvents } = value;
+  const { id, name, kind, label, status, deadline, lastAttemptAt } = value;
   if (!isWatchId(id) || typeof name !== 'string' || !isWatchName(name)) return undefined;
   const watchKind = WATCH_KINDS.find((known) => known === kind);
   if (watchKind === undefined) return undefined;
@@ -68,7 +66,6 @@ export function parseTaskWatch(value: unknown): TaskWatch | undefined {
     return undefined;
   if (!isIsoTime(deadline)) return undefined;
   if (lastAttemptAt !== undefined && !isIsoTime(lastAttemptAt)) return undefined;
-  if (typeof pendingEvents !== 'number' || !Number.isSafeInteger(pendingEvents) || pendingEvents < 0) return undefined;
   return {
     id,
     name,
@@ -77,25 +74,36 @@ export function parseTaskWatch(value: unknown): TaskWatch | undefined {
     status,
     deadline,
     ...(lastAttemptAt === undefined ? {} : { lastAttemptAt }),
+  };
+}
+
+/** The sealed document of a task's watches: the list, and how many spooled events of the task wait for the agent. */
+export interface TaskWatchDocument {
+  watches: TaskWatch[];
+  pendingEvents: number;
+}
+
+/**
+ * The sealed document `{"watches":[…],"pendingEvents":n}`, or undefined when it is not one: not an object, no list, more than
+ * 32 entries, or a count that is not a non-negative integer (absent counts as 0). An entry of the wrong shape is dropped and the
+ * rest kept, as is a repeated id (the first stays).
+ */
+export function parseTaskWatches(json: unknown): TaskWatchDocument | undefined {
+  if (!isRecord(json) || !Array.isArray(json['watches']) || json['watches'].length > MAX_TASK_WATCHES) return undefined;
+  const pendingEvents = json['pendingEvents'] ?? 0;
+  if (typeof pendingEvents !== 'number' || !Number.isSafeInteger(pendingEvents) || pendingEvents < 0) return undefined;
+  const entries: unknown[] = json['watches'];
+  const watches = entries.flatMap((entry) => parseTaskWatch(entry) ?? []);
+  return {
+    watches: watches.filter((watch, index) => watches.findIndex(({ id }) => id === watch.id) === index),
     pendingEvents,
   };
 }
 
-/**
- * The watches of the sealed document `{"watches":[…]}`, or undefined when it is not one: not an object, no list, or more than
- * 32 entries. An entry of the wrong shape is dropped and the rest kept, as is a repeated id (the first stays).
- */
-export function parseTaskWatches(json: unknown): TaskWatch[] | undefined {
-  if (!isRecord(json) || !Array.isArray(json['watches']) || json['watches'].length > MAX_TASK_WATCHES) return undefined;
-  const entries: unknown[] = json['watches'];
-  const watches = entries.flatMap((entry) => parseTaskWatch(entry) ?? []);
-  return watches.filter((watch, index) => watches.findIndex(({ id }) => id === watch.id) === index);
-}
-
 /** The one document a task's watches are sealed as. */
-export const taskWatchesJson = (watches: readonly TaskWatch[]): string =>
+export const taskWatchesJson = (watches: readonly TaskWatch[], pendingEvents: number): string =>
   JSON.stringify({
-    watches: watches.map(({ id, name, kind, label, status, deadline, lastAttemptAt, pendingEvents }) => ({
+    watches: watches.map(({ id, name, kind, label, status, deadline, lastAttemptAt }) => ({
       id,
       name,
       kind,
@@ -103,8 +111,8 @@ export const taskWatchesJson = (watches: readonly TaskWatch[]): string =>
       status,
       deadline,
       ...(lastAttemptAt === undefined ? {} : { lastAttemptAt }),
-      pendingEvents,
     })),
+    pendingEvents,
   });
 
 /** The ids a list names when every one is a watch id and there are at most 32, else undefined. */

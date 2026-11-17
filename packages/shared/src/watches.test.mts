@@ -36,7 +36,6 @@ const watch = (overrides: Partial<TaskWatch> = {}): TaskWatch => ({
   status: '4 of 7 passed, 3 running',
   deadline: '2026-11-17T14:20:00.000Z',
   lastAttemptAt: '2026-11-17T13:20:00.000Z',
-  pendingEvents: 2,
   ...overrides,
 });
 
@@ -72,9 +71,6 @@ test('a watch of any other shape is refused', () => {
     { deadline: '2026-13-45T99:00:00Z' },
     { deadline: undefined },
     { lastAttemptAt: 'yesterday' },
-    { pendingEvents: -1 },
-    { pendingEvents: 1.5 },
-    { pendingEvents: '2' },
   ];
   for (const change of bad) assert.equal(parseTaskWatch({ ...watch(), ...change }), undefined, JSON.stringify(change));
   assert.equal(parseTaskWatch('ci'), undefined);
@@ -89,42 +85,58 @@ test('a list keeps the entries that fit, once per id, and is unreadable when it 
   const kept = parseTaskWatches({
     watches: [watch(), { id: 'bad' }, watch({ name: 'again' }), watch({ id: hex(2), name: 'b' })],
   });
-  assert.deepEqual(kept, [watch(), watch({ id: hex(2), name: 'b' })]);
-  assert.deepEqual(parseTaskWatches({ watches: [] }), []);
-  for (const bad of [null, [], 'x', {}, { watches: 'x' }, { watches: {} }])
+  assert.deepEqual(kept, { watches: [watch(), watch({ id: hex(2), name: 'b' })], pendingEvents: 0 });
+  assert.deepEqual(parseTaskWatches({ watches: [], pendingEvents: 3 }), { watches: [], pendingEvents: 3 });
+  for (const bad of [
+    null,
+    [],
+    'x',
+    {},
+    { watches: 'x' },
+    { watches: {} },
+    { watches: [], pendingEvents: -1 },
+    { watches: [], pendingEvents: 1.5 },
+    { watches: [], pendingEvents: '2' },
+  ])
     assert.equal(parseTaskWatches(bad), undefined, JSON.stringify(bad));
   const many = (n: number) => ({
     watches: Array.from({ length: n }, (_, i) => watch({ id: hex(i + 1), name: `w${i}` })),
   });
-  assert.equal(parseTaskWatches(many(MAX_TASK_WATCHES))?.length, MAX_TASK_WATCHES);
+  assert.equal(parseTaskWatches(many(MAX_TASK_WATCHES))?.watches.length, MAX_TASK_WATCHES);
   assert.equal(parseTaskWatches(many(MAX_TASK_WATCHES + 1)), undefined);
 });
 
 test('the document of a list holds the documented keys only', () => {
-  const json = JSON.parse(taskWatchesJson([{ ...watch(), command: 'secret' } as TaskWatch]));
-  assert.deepEqual(json, { watches: [watch()] });
-  assert.deepEqual(JSON.parse(taskWatchesJson([])), { watches: [] });
+  const json = JSON.parse(taskWatchesJson([{ ...watch(), command: 'secret' } as TaskWatch], 2));
+  assert.deepEqual(json, { watches: [watch()], pendingEvents: 2 });
+  assert.deepEqual(JSON.parse(taskWatchesJson([], 0)), { watches: [], pendingEvents: 0 });
 });
 
 test('the watches of a task are bound to the task and its agent, and open as a list', async () => {
   assert.deepEqual(watchesBinding(TASK), { field: 'watches', context: `task:${TASK}:agent` });
-  const sealed = await sealWatches(seals, TASK, [watch(), watch({ id: hex(2), name: 'b', kind: 'command' })]);
+  const sealed = await sealWatches(seals, TASK, [watch(), watch({ id: hex(2), name: 'b', kind: 'command' })], 2);
   assert.deepEqual(await openWatches(opens, TASK, sealed), {
     watches: [watch(), watch({ id: hex(2), name: 'b', kind: 'command' })],
+    pendingEvents: 2,
     unreadable: false,
   });
-  assert.deepEqual(await openWatches(opens, TASK, null), { watches: null, unreadable: false });
-  assert.deepEqual(await openWatches(opens, TASK, undefined), { watches: null, unreadable: false });
-  assert.deepEqual(await openWatches(opens, TASK, await sealWatches(seals, TASK, [])), {
+  assert.deepEqual(await openWatches(opens, TASK, null), { watches: null, pendingEvents: 0, unreadable: false });
+  assert.deepEqual(await openWatches(opens, TASK, undefined), {
+    watches: null,
+    pendingEvents: 0,
+    unreadable: false,
+  });
+  assert.deepEqual(await openWatches(opens, TASK, await sealWatches(seals, TASK, [], 0)), {
     watches: [],
+    pendingEvents: 0,
     unreadable: false,
   });
 });
 
 test('watches that do not open under exactly the task’s binding are unreadable', async () => {
-  const unreadable = { watches: null, unreadable: true };
-  const json = taskWatchesJson([watch()]);
-  const sealed = await sealWatches(seals, TASK, [watch()]);
+  const unreadable = { watches: null, pendingEvents: 0, unreadable: true };
+  const json = taskWatchesJson([watch()], 0);
+  const sealed = await sealWatches(seals, TASK, [watch()], 0);
   assert.deepEqual(await openWatches(opens, 'Zz9dEf9x', sealed), unreadable);
   for (const other of [
     await seal(keys, 'watches', `task:${TASK}:user`, json),
@@ -137,20 +149,20 @@ test('watches that do not open under exactly the task’s binding are unreadable
 });
 
 test('watches are sealed only as at most 32 well-formed entries within the limit', async () => {
-  await assert.rejects(sealWatches(seals, TASK, [watch({ name: 'Bad Name' })]), ContractError);
-  await assert.rejects(sealWatches(seals, TASK, [watch(), watch()]), ContractError);
+  await assert.rejects(sealWatches(seals, TASK, [watch({ name: 'Bad Name' })], 0), ContractError);
+  await assert.rejects(sealWatches(seals, TASK, [watch(), watch()], 0), ContractError);
   const many = Array.from({ length: MAX_TASK_WATCHES + 1 }, (_, i) => watch({ id: hex(i + 1), name: `w${i}` }));
-  await assert.rejects(sealWatches(seals, TASK, many), /at most 32/);
+  await assert.rejects(sealWatches(seals, TASK, many, 0), /at most 32/);
   assert.equal(SEALED_LIMITS.watches, 32 * 1024);
   // 32 entries of the longest label and status fit the limit.
   const full = Array.from({ length: MAX_TASK_WATCHES }, (_, i) =>
     watch({ id: hex(i + 1), name: `w${i}`, label: 'é'.repeat(120), status: 'é'.repeat(200) }),
   );
-  await sealWatches(seals, TASK, full);
+  await sealWatches(seals, TASK, full, 0);
 });
 
 test('the set-watches body is a sealed document or null, and nothing else', async () => {
-  const sealed = await sealWatches(seals, TASK, [watch()]);
+  const sealed = await sealWatches(seals, TASK, [watch()], 0);
   assert.deepEqual(parseWireWatches({ watches: sealed }), { watches: sealed });
   assert.deepEqual(parseWireWatches({ watches: null }), { watches: null });
   assert.throws(() => parseWireWatches({ watches: '{"watches":[]}' }), /must be encrypted/);
@@ -206,7 +218,7 @@ test('a task carries its sealed watches and its stop requests, and a server with
   const older = parseWireTask(wire);
   assert.equal(older.watches, undefined);
   assert.equal(older.watchStops, undefined);
-  const sealed = await sealWatches(seals, TASK, [watch()]);
+  const sealed = await sealWatches(seals, TASK, [watch()], 0);
   const newer = parseWireTask({ ...wire, watches: sealed, watchStops: [hex(1), 'junk', hex(2)] });
   assert.equal(newer.watches, sealed);
   assert.deepEqual(newer.watchStops, [hex(1), hex(2)]);
