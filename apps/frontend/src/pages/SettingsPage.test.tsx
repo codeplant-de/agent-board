@@ -40,13 +40,6 @@ vi.mock('../lib/trpc', () => ({
       get: { queryOptions: () => ({ queryKey: ['keys'], queryFn: async () => stored.current }) },
       replaceSlots: { mutationOptions: () => ({ mutationFn: async () => null }) },
     },
-    slack: {
-      status: {
-        queryOptions: () => ({ queryKey: ['slack.status'], queryFn: async () => ({ enabled: false, link: null }) }),
-        queryFilter: () => ({ queryKey: ['slack.status'] }),
-      },
-      unlink: { mutationOptions: () => ({ mutationFn: async () => true }) },
-    },
     machines: {
       list: {
         queryOptions: () => ({

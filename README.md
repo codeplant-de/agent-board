@@ -17,7 +17,6 @@ All content is end-to-end encrypted. The server never sees a prompt, a note or a
 | `apps/backend` | Fastify server with tRPC for the browser and a token-authenticated machine API for workers. Postgres is the only state. |
 | `apps/frontend` | React, Mantine and TanStack Query. Encrypts and decrypts in the browser. |
 | `apps/cli` | The `board` command. Agents use it to report, and on a worker machine it runs the systemd units (launchd agents on macOS) that claim and run tasks. |
-| `apps/slack` | Optional Slack app in its own container: `/board <text>` puts a task idea in your board's inbox. It reaches the backend only through a narrow, token-gated intake API. |
 | `packages/shared` | The contract between all three: wire types, the sealing rules, crypto. |
 
 A task moves through `backlog → todo → running → needs-me → done`, with `waiting` for tasks parked on CI or a timer. A run that reports, asks or fails ends in `needs-me`, and nothing moves on until you press a button. [docs/architecture.md](docs/architecture.md) explains the design.
@@ -69,8 +68,6 @@ Then work from the task page:
 - `board attach <task>` opens the session in your terminal on the machine that ran it.
 
 Agents report with `board comment`, ask with `board ask`, park on CI with `board wait`, report the PRs they open with `board pr`, and propose follow-up work with `board add`. A proposal only runs after you press **Start**.
-
-With the optional Slack app, `/board <text>` in Slack puts an idea in a **From Slack** box on the board; you turn it into a task in the browser (see [docs/usage.md](docs/usage.md#slack)).
 
 A script such as `github-reviews` can turn GitHub review requests into review tasks on a timer. They run as an agent with a narrow allow-list, because their input is PR text nobody chose to read.
 

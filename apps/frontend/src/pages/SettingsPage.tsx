@@ -38,7 +38,6 @@ import {
 } from '../lib/desktopNotifications';
 import { MachineUsageLines } from '../components/MachineUsageLines';
 import { QueryStatus } from '../components/QueryStatus';
-import { SlackSettings } from '../components/SlackSettings';
 import { ago } from '../lib/time';
 import { useTRPC } from '../lib/trpc';
 import { useNow } from '../lib/useNow';
@@ -376,7 +375,6 @@ export function SettingsPage() {
       <Title order={3}>Settings</Title>
       <Machines />
       <DesktopNotifications />
-      <SlackSettings />
       <Encryption />
     </Stack>
   );

@@ -1,4 +1,4 @@
-import { INBOX_TEXT_MAX, type KeySlot } from '@agent-board/shared';
+import type { KeySlot } from '@agent-board/shared';
 import { sql } from 'drizzle-orm';
 import {
   bigint,
@@ -380,53 +380,6 @@ export const transcriptEvents = pgTable(
     // With the owner, so a colliding (run, seq) of another user is not visible as a duplicate-key error.
     primaryKey({ columns: [t.owner, t.runId, t.seq] }),
     ownerFk('transcript_event_run_fk', [t.owner, t.runId], [transcriptRuns.owner, transcriptRuns.id], 'cascade'),
-    tenant(),
-  ],
-).enableRLS();
-
-/** The Slack user a board user speaks as; one each way. `/board link` and the link page create it. */
-export const slackLinks = pgTable(
-  'slack_link',
-  {
-    owner: owner().primaryKey(),
-    teamId: text('team_id').notNull(),
-    slackUserId: text('slack_user_id').notNull(),
-    /** The Slack name at link time, for the settings page; null when Slack did not give one. */
-    displayName: text('display_name'),
-    createdAt: createdAt(),
-  },
-  (t) => [unique('slack_link_slack_user_unique').on(t.teamId, t.slackUserId), tenant()],
-).enableRLS();
-
-/**
- * A one-time code `/board link` hands out, before anyone knows whose board it is for, so it has no owner and no policy:
- * only the security definer functions of the slack migration read it.
- */
-export const slackLinkCodes = pgTable('slack_link_code', {
-  /** sha256 of the code, hex. */
-  codeHash: text('code_hash').primaryKey(),
-  teamId: text('team_id').notNull(),
-  slackUserId: text('slack_user_id').notNull(),
-  displayName: text('display_name'),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-}).enableRLS();
-
-/**
- * A task a user proposed from Slack. The text is in clear: the server cannot seal it, and a task row accepts only sealed
- * text, so the browser turns an item into a task and deletes it. Workers never see this table.
- */
-export const slackInbox = pgTable(
-  'slack_inbox',
-  {
-    id: text('id').primaryKey(),
-    owner: owner(),
-    text: text('text').notNull(),
-    slackUserId: text('slack_user_id').notNull(),
-    createdAt: createdAt(),
-  },
-  (t) => [
-    check('slack_inbox_text_length', sql`char_length(${t.text}) between 1 and ${sql.raw(String(INBOX_TEXT_MAX))}`),
-    index('slack_inbox_owner_created_idx').on(t.owner, t.createdAt),
     tenant(),
   ],
 ).enableRLS();
