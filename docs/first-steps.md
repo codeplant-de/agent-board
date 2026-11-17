@@ -100,5 +100,5 @@ A second machine needs its own token from **Settings** and the same data key. A 
 
 - `board doctor` checks config, token, data key, server version and units.
 - A task that failed says why in its thread and shows the end of its log. The full log is `~/.local/state/agent-board/logs/<task>.log` on the machine that ran it.
-- A task that sits in Todo usually waits for a machine that is off, a free slot, a start time or a usage limit. `journalctl --user -u agent-board-dispatch` shows what each tick decided.
+- A task that sits in Todo usually waits for a machine that is off, a free slot, a start time or a usage limit. `board logs dispatch` (on Linux `journalctl --user -u agent-board-dispatch`) shows what each tick decided. After you change the CLI or its checkout, `board restart` restarts the units.
 - A running task whose agent has been quiet for 20 minutes offers **Take back** on its page.

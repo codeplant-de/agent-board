@@ -79,7 +79,7 @@ The 2-minute timer is the fallback. It covers the stale sweep, an event missed w
 
 A tick the listener starts runs under the same lock as the timer's and is stopped after 110 s, as the timer's is.
 
-Logs:
+Logs: `board logs` shows the end of the three units together, `board logs listen -f` follows one, and `board logs <task id>` shows a task's log file. `--since "1 hour ago"` limits the units to a time. `board restart` restarts the timer, the listener and the watch unit (or the ones named); running workers are not stopped. The same by hand:
 
 ```sh
 journalctl --user -u agent-board-dispatch
@@ -133,13 +133,13 @@ board setup --print                                              # show the agen
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/de.codeplant.agent-board.listen.plist     # enable (setup --enable does both)
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/de.codeplant.agent-board.dispatch.plist
 launchctl bootout gui/$(id -u)/de.codeplant.agent-board.listen   # disable (dispatch the same way)
-launchctl kickstart -k gui/$(id -u)/de.codeplant.agent-board.listen   # restart the listener (board self-update does it for you)
+launchctl kickstart -k gui/$(id -u)/de.codeplant.agent-board.listen   # restart the listener (board restart and board self-update do it for you)
 launchctl print gui/$(id -u)/de.codeplant.agent-board.listen     # state, last exit code, the program it runs
 ```
 
 #### Logs
 
-launchd writes each agent's output to `~/.local/state/agent-board/logs/launchd.<agent>.log`, next to the task logs. `AGENT_BOARD_STATE_DIR` or `XDG_STATE_HOME` moves them. They are not rotated.
+launchd writes each agent's output to `~/.local/state/agent-board/logs/launchd.<agent>.log`, next to the task logs. `AGENT_BOARD_STATE_DIR` or `XDG_STATE_HOME` moves them. They are not rotated. `board logs [dispatch|listen|watch] [-f]` runs `tail` on them; `--since` is not available there.
 
 #### Runs
 
@@ -203,7 +203,7 @@ The listener is one process that keeps the code it started with, across reconnec
 
 - `board self-update` restarts it after it replaced the binary, and prints a line saying so.
 - `board setup` restarts it when it wrote a changed unit file. It uses `systemctl --user try-restart`, which leaves a stopped listener alone.
-- After a plain `git pull` in a checkout, run `systemctl --user restart agent-board-listen` yourself.
+- After a plain `git pull` in a checkout, run `board restart` (or `board restart listen watch`; on Linux that is `systemctl --user restart agent-board-listen agent-board-watch`).
 
 Stopping the listener waits for a dispatch tick that is running. The unit's `TimeoutStopSec` is 130 s: a tick's 110 s limit, its 10 s grace and a margin.
 
