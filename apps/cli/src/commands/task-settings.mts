@@ -63,7 +63,7 @@ export function formatSettings(deps: TaskSettingsDeps, task: Task): string[] {
     ['starts', task.notBefore === null ? 'when a worker is free' : localTime(task.notBefore)],
     ['schedule', task.scheduleId === null ? 'none' : plainLine(task.scheduleId)],
     ['session', sessionLine(task)],
-    ['pr', task.pr === null ? 'none' : plainLine(task.pr)],
+    ['pr', task.prs.length === 0 ? 'none' : task.prs.map((pr) => plainLine(pr.url)).join(', ')],
   ];
   const width = Math.max(...rows.map(([label]) => label.length));
   return [

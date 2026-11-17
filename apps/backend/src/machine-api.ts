@@ -26,6 +26,7 @@ import {
   parseWireNoteInput,
   parseWirePr,
   parseWirePrState,
+  parseWirePrStates,
   parseWireScheduleDraft,
   parseWireTaskConfig,
   parseWireTaskDraft,
@@ -63,8 +64,11 @@ import {
   pause,
   readNotes,
   runInbox,
+  addPr,
+  listTaskPrs,
   setPr,
   setPrState,
+  setPrStates,
   stopped,
   toNote,
   toTask,
@@ -141,7 +145,8 @@ async function handleMachineCall(
 ): Promise<unknown> {
   const machine = identity.name;
   const visible = knownTo(client.features, client.vocabulary);
-  const task = (row: Parameters<typeof toTask>[0]) => visible.one(toTask(row), 'task');
+  const task = async (row: Parameters<typeof toTask>[0]) =>
+    visible.one(toTask(row, (await listTaskPrs(db, [row.id])).get(row.id)), 'task');
   const schedule = (row: Parameters<typeof toSchedule>[0]) => visible.one(toSchedule(row), 'schedule');
   switch (command) {
     case 'version':
@@ -155,8 +160,14 @@ async function handleMachineCall(
         dirsIndex: await machineDirsIndex(db, machine),
         ...(config.cliVersion === null ? {} : { cli: config.cliVersion }),
       };
-    case 'list-tasks':
-      return visible.only((await listTasks(db, { all: body['all'] === true })).map(toTask));
+    case 'list-tasks': {
+      const rows = await listTasks(db, { all: body['all'] === true });
+      const prs = await listTaskPrs(
+        db,
+        rows.map(({ id }) => id),
+      );
+      return visible.only(rows.map((row) => toTask(row, prs.get(row.id))));
+    }
     case 'get-task':
       return task(await getTask(db, idOf(body, 'task')));
     case 'attach-session':
@@ -164,7 +175,7 @@ async function handleMachineCall(
     case 'add-task': {
       const draft = parsed(() => parseWireTaskDraft(body['body']));
       const { row, created } = await addTask(db, draft);
-      return { task: task(row), created };
+      return { task: await task(row), created };
     }
     case 'update-task':
       return task(
@@ -214,6 +225,16 @@ async function handleMachineCall(
       await setPr(db, idOf(body, 'task'), pr);
       return null;
     }
+    case 'add-pr': {
+      const { pr } = parsed(() => parseWirePr(body['body']));
+      await addPr(db, idOf(body, 'task'), pr);
+      return null;
+    }
+    case 'set-pr-states': {
+      const states = parsed(() => parseWirePrStates(body['body']));
+      await setPrStates(db, idOf(body, 'task'), states);
+      return null;
+    }
     case 'set-pr-state': {
       const { prState } = parsed(() => parseWirePrState(body['body']));
       await setPrState(db, idOf(body, 'task'), prState);
@@ -247,7 +268,7 @@ async function handleMachineCall(
     case 'fail': {
       const note = parsed(() => parseWireNoteInput(body['body'], 'fail note'));
       const { applied, row } = await failTask(db, idOf(body, 'task'), note, machine, runOf(body));
-      return { applied, task: task(row) };
+      return { applied, task: await task(row) };
     }
     case 'wait': {
       const request = parsed(() => parseWireWait(body['body']));
@@ -256,7 +277,7 @@ async function handleMachineCall(
     case 'wake': {
       const note = parsed(() => parseWireNoteInput(body['body'], 'wake note'));
       const { applied, row } = await wake(db, idOf(body, 'task'), note, machine);
-      return { applied, task: task(row) };
+      return { applied, task: await task(row) };
     }
     case 'run-inbox': {
       const inbox = await runInbox(db, idOf(body, 'task'), machine, runOf(body));
@@ -288,7 +309,7 @@ async function handleMachineCall(
     case 'add-schedule': {
       const draft = parsed(() => parseWireScheduleDraft(body['body']));
       const { schedule: created, task: pending } = await addSchedule(db, draft);
-      return { schedule: serializeSchedule(schedule(created)), task: task(pending) };
+      return { schedule: serializeSchedule(schedule(created)), task: await task(pending) };
     }
     case 'list-schedules':
       return visible.only((await listSchedules(db)).map(toSchedule)).map(serializeSchedule);
@@ -312,6 +333,7 @@ const DISPATCH_WRITES = new Set([
   'claim-task',
   'add-note',
   'set-pr',
+  'add-pr',
   'ask',
   'pause',
   'stopped',

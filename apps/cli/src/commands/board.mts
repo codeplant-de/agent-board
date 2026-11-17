@@ -111,7 +111,9 @@ export async function reportPr(context: LinkingContext, id: string, url: string)
     throw new UsageError(
       `"${url.slice(0, 80)}" is not a pull request URL: use https://github.com/<owner>/<repo>/pull/<number>`,
     );
-  await context.backend.setPr(id, url);
+  // The board cannot tell a repeated URL, which it holds sealed.
+  const known = (await context.backend.getTask(id)).prs.some((pr) => pr.url === url);
+  if (!known) await context.backend.addPr(id, url);
   confirm(context, `reported ${url} for ${id}  ${context.taskLink(id)}`);
 }
 
@@ -213,7 +215,7 @@ export function renderThread(task: Task, notes: Note[]): string {
     '',
     `status: ${task.status} · priority: ${task.priority} · labels: ${task.labels.join(', ') || '-'}`,
     ...(task.agent == null ? [] : [`agent: ${task.agent}`]),
-    ...(task.pr === null ? [] : [`pr: ${task.pr}`]),
+    ...task.prs.map((pr) => `pr: ${pr.url}`),
     ...(task.sessionId ? [`session: ${task.sessionId} · ${task.machine ?? '-'}:${task.workdir ?? '-'}`] : []),
     '',
     '## Input',

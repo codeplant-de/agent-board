@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ListedTask } from '../lib/trpc';
-import { BoardPage } from './BoardPage';
+import { BacklogPage, BoardPage } from './BoardPage';
 
 const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const create = vi.hoisted(() => vi.fn(async (_: unknown) => null));
@@ -48,8 +48,8 @@ const task = (overrides: Partial<ListedTask>): ListedTask =>
     id: 'p1',
     title: 'proposal',
     input: 'delete everything',
-    pr: null,
-    prState: null,
+    prs: [],
+    promptPrState: null,
     status: 'needs-me',
     priority: 'normal',
     createdBy: 'agent',
@@ -213,8 +213,7 @@ describe('BoardPage move merged to Done', () => {
       title: `merged ${id}`,
       createdBy: 'user',
       proposed: false,
-      pr: `https://github.com/acme/app/pull/${id.length}${id}`,
-      prState: 'merged',
+      prs: [{ id: `r${id}`, url: `https://github.com/acme/app/pull/${id.length}${id}`, state: 'merged' }],
       ...overrides,
     });
 
@@ -223,8 +222,8 @@ describe('BoardPage move merged to Done', () => {
       merged('m1'),
       merged('m2'),
       merged('m3', { status: 'todo' }),
-      merged('m4', { prState: 'open' }),
-      merged('m5', { pr: null }),
+      merged('m4', { prs: [{ id: 'r4', url: 'https://github.com/acme/app/pull/4', state: 'open' }] }),
+      merged('m5', { prs: [] }),
     ];
     renderBoard();
     await userEvent.click(await screen.findByRole('button', { name: /Move merged to Done/ }));
@@ -241,14 +240,24 @@ describe('BoardPage move merged to Done', () => {
   });
 
   it('is only there while Needs me has a merged PR', async () => {
-    listed.tasks = [merged('m1', { prState: 'closed' }), merged('m2', { status: 'done' }), merged('m3', { pr: null })];
+    listed.tasks = [
+      merged('m1', { prs: [{ id: 'r1', url: 'https://github.com/acme/app/pull/1', state: 'closed' }] }),
+      merged('m2', { status: 'done' }),
+      merged('m3', { prs: [] }),
+    ];
     renderBoard();
     await screen.findByText('merged m1');
     expect(screen.queryByRole('button', { name: /Move merged to Done/ })).not.toBeInTheDocument();
   });
 
   it('counts a review task whose prompt names the PR', async () => {
-    listed.tasks = [merged('r1', { pr: null, input: '/review-pr https://github.com/acme/app/pull/9 --auto' })];
+    listed.tasks = [
+      merged('r1', {
+        prs: [],
+        promptPrState: 'merged',
+        input: '/review-pr https://github.com/acme/app/pull/9 --auto',
+      }),
+    ];
     renderBoard();
     expect(await screen.findByRole('button', { name: 'Move merged to Done (1)' })).toBeInTheDocument();
   });
@@ -344,5 +353,29 @@ describe('BoardPage banner for machines whose CLI the board refuses', () => {
     renderBoard();
     await screen.findByText('Backlog');
     expect(screen.queryByText(/A machine needs a CLI update/)).not.toBeInTheDocument();
+  });
+});
+
+describe('BacklogPage', () => {
+  it('lists the backlog tasks only, outside the board grid', async () => {
+    listed.tasks = [
+      task({ id: 'b1', title: 'parked idea', status: 'backlog', proposed: false }),
+      task({ id: 't1', title: 'ready work', status: 'todo', proposed: false }),
+    ];
+    render(
+      <MemoryRouter>
+        <MantineProvider>
+          <ModalsProvider>
+            <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+              <BacklogPage />
+            </QueryClientProvider>
+          </ModalsProvider>
+        </MantineProvider>
+      </MemoryRouter>,
+    );
+    const card = await screen.findByText('parked idea');
+    expect(card.closest('.board')).toBeNull();
+    expect(screen.queryByText('ready work')).not.toBeInTheDocument();
+    expect(screen.queryByText('Todo')).not.toBeInTheDocument();
   });
 });

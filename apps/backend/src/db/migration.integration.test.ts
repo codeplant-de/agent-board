@@ -178,3 +178,51 @@ describe(
     });
   },
 );
+
+describe('the task_prs migration on a database that already has rows', { timeout: SCRATCH_MIGRATION_TIMEOUT }, () => {
+  const ENVELOPE = `abe1.${'A'.repeat(40)}`;
+  let old: ReturnType<typeof createDb>;
+  let folder: string;
+
+  beforeEach(async () => {
+    if (old) await old.pool.end();
+    scratchUrl = await scratch.create();
+    folder ??= migrationsBefore('_task_prs');
+    old = scratchDb();
+    await migrate(old.db, { migrationsFolder: folder });
+    await old.db.execute(sql`insert into app_user (username) values ('alice'), ('bob')`);
+    await old.db.execute(sql`
+      insert into task (owner, id, title, input, position, pr, pr_state)
+      values ('alice', 'with-pr', ${ENVELOPE}, ${ENVELOPE}, 0, ${ENVELOPE}, 'merged'),
+             ('alice', 'prompt-only', ${ENVELOPE}, ${ENVELOPE}, 1, null, 'open'),
+             ('alice', 'none', ${ENVELOPE}, ${ENVELOPE}, 2, null, null),
+             ('bob', 'bobs', ${ENVELOPE}, ${ENVELOPE}, 0, ${ENVELOPE}, null)`);
+  }, SCRATCH_MIGRATION_TIMEOUT);
+
+  afterAll(async () => {
+    await old.pool.end();
+    removeFolder(folder);
+  });
+
+  it('turns each reported PR into a row with the state it had, and leaves the prompt PR’s state where there was no report', async () => {
+    await runMigrations(old.db);
+    const rows = await old.db.execute<{ owner: string; task_id: string; pr: string; state: string | null }>(
+      sql`select owner, task_id, pr, state from task_pr order by task_id`,
+    );
+    expect(rows.rows).toEqual([
+      { owner: 'bob', task_id: 'bobs', pr: ENVELOPE, state: null },
+      { owner: 'alice', task_id: 'with-pr', pr: ENVELOPE, state: 'merged' },
+    ]);
+    const tasks = await old.db.execute<{ id: string; pr_state: string | null }>(
+      sql`select id, pr_state from task order by id`,
+    );
+    expect(tasks.rows).toEqual([
+      { id: 'bobs', pr_state: null },
+      { id: 'none', pr_state: null },
+      { id: 'prompt-only', pr_state: 'open' },
+      { id: 'with-pr', pr_state: null },
+    ]);
+    const kept = await old.db.execute<{ id: string }>(sql`select id from task where pr is not null order by id`);
+    expect(kept.rows).toEqual([{ id: 'bobs' }, { id: 'with-pr' }]);
+  });
+});

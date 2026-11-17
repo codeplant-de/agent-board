@@ -32,6 +32,17 @@ export type NextRun = (typeof NEXT_RUNS)[number];
 export const PR_STATES = ['open', 'merged', 'closed'] as const;
 export type PrState = (typeof PR_STATES)[number];
 
+/** How many pull requests the board keeps for one task. */
+export const MAX_TASK_PRS = 20;
+
+/** A pull request its agent reported for a task (`board pr`), opened. */
+export interface TaskPr {
+  id: string;
+  url: string;
+  // GitHub's state as a worker's dispatcher last saw it; null while unknown.
+  state: PrState | null;
+}
+
 export const NOTE_AUTHORS = ['agent', 'user', 'system'] as const;
 export type NoteAuthor = (typeof NOTE_AUTHORS)[number];
 
@@ -142,11 +153,11 @@ export interface Task {
   // The task left Waiting for Todo (its wait ended) and has not run since. Like `paused`, kept through the claim so the
   // worker that resumes it can tell the agent, and cleared by that worker's first `update-task` of the run.
   woken: boolean;
-  // The PR the task's agent reported with `board pr`; null for none, or for one that is not a GitHub PR URL.
-  pr: string | null;
-  // GitHub's state of the task's PR (`statePrOf`) as a worker's dispatcher last saw it; null while unknown. Clear, not sealed: it tells the
-  // board only that some PR of the task merged, never which.
-  prState: PrState | null;
+  // The PRs the task's agent reported with `board pr`, oldest first; one that is not a GitHub PR URL is left out.
+  prs: TaskPr[];
+  // GitHub's state of the PR the prompt names, as a worker's dispatcher last saw it; null while unknown. Clear, not sealed: it tells
+  // the board only that a PR of the task merged, never which.
+  promptPrState: PrState | null;
   // While it runs: the user asked for the run to be interrupted and no worker has acted on it yet. Absent from a server
   // without the `run-inbox` feature.
   stopRequested?: boolean;
@@ -403,10 +414,11 @@ export interface Backend {
   removeSchedule(id: string): Promise<void>;
   // The value `Task.head` has for a PR head sha: the board holds only a blind index of it.
   indexHead(sha: string): Promise<string>;
-  // The agent of a task reports the PR it opened for it; the last one wins. `url` must be a GitHub PR URL.
-  setPr(id: string, url: string): Promise<void>;
-  // A worker's dispatcher records GitHub's state of the task's PR (`statePrOf`).
-  setPrState(id: string, prState: PrState): Promise<void>;
+  // The agent of a task reports a PR it opened or works on for it, which the task holds besides the ones it has. `url` must be a
+  // GitHub PR URL. Against a server without `task.prs` it replaces the earlier one.
+  addPr(id: string, url: string): Promise<void>;
+  // A worker's dispatcher records GitHub's state of the PR the prompt names and of reported ones, by the id the task lists them with.
+  setPrStates(id: string, states: PrStates): Promise<void>;
   // Whether the board holds `dirs` as this machine's directory list, by comparing blind indexes; 'unsupported' for a server without the feature.
   checkDirs(machine: string, dirs: readonly MachineDir[]): Promise<DirsOnBoard>;
   // Replaces the board's copy of this machine's directory list. The copy is advice for the New task form and is never read back by a CLI.
@@ -424,16 +436,34 @@ export type DirsOnBoard = 'unsupported' | 'current' | 'stale';
 // What the board server stores and returns: the sealed fields are envelopes (`abe1.…`) it cannot read. Values the server
 // returns may also be legacy plain text from before encryption; only what a client sends is checked to be sealed.
 
-type SealedTaskFields = 'title' | 'input' | 'workdir' | 'agent' | 'pr' | 'labels' | 'unreadable';
+type SealedTaskFields = 'title' | 'input' | 'workdir' | 'agent' | 'labels' | 'unreadable';
 
-// `pr` is the sealed "pr", or null; a server without the `task.pr` feature leaves it out, and without `task.pr-state`
-// it leaves out `prState`. `agent` is the sealed "agent"; the server leaves it out of a task without one.
-export type WireTask = Omit<Task, SealedTaskFields> & {
+/** What the states of `set-pr-states` and `setPrStates` name: the prompt's PR, and reported PRs by the id of their row. */
+export interface PrStates {
+  prompt?: PrState;
+  prs?: { id: string; state: PrState }[];
+}
+
+/** A reported PR as the server holds it: `pr` is the sealed "pr". */
+export interface WireTaskPr {
+  id: string;
+  pr: string;
+  state: PrState | null;
+}
+
+// A server with the `task.prs` feature lists the reported PRs in `prs` (oldest first) and says the state of the prompt's PR in
+// `promptPrState`. `pr` and `prState` are what a CLI without that feature reads: `pr` is the sealed "pr" of the newest one, or
+// null, and `prState` the state of the newest one, or of the prompt's PR while there is none. A server without `task.pr` leaves
+// out `pr`, and without `task.pr-state` `prState`. `agent` is the sealed "agent"; the server leaves it out of a task without one.
+export type WireTask = Omit<Task, SealedTaskFields | 'prs' | 'promptPrState'> & {
   title: string;
   input: string;
   workdir: string | null;
   agent?: string | null;
   pr: string | null;
+  prState: PrState | null;
+  prs?: WireTaskPr[];
+  promptPrState?: PrState | null;
 };
 
 export type WireSchedule = Omit<Schedule, 'title' | 'input' | 'workdir' | 'agent' | 'unreadable'> & {
@@ -502,10 +532,13 @@ export interface WireNoteInput {
   suggestion?: string;
 }
 
-// Body of set-pr: the sealed "pr".
+// Body of set-pr and add-pr: the sealed "pr".
 export interface WirePr {
   pr: string;
 }
+
+// Body of set-pr-states.
+export type WirePrStates = PrStates;
 
 // Body of set-pr-state.
 export interface WirePrState {
@@ -588,8 +621,8 @@ export interface WireBackend {
   listSchedules(): Promise<WireSchedule[]>;
   updateSchedule(id: string, patch: SchedulePatch): Promise<WireSchedule>;
   removeSchedule(id: string): Promise<void>;
-  setPr(id: string, body: WirePr): Promise<void>;
-  setPrState(id: string, body: WirePrState): Promise<void>;
+  addPr(id: string, body: WirePr): Promise<void>;
+  setPrStates(id: string, body: WirePrStates): Promise<void>;
   setDirs(body: WireDirs): Promise<void>;
   dirsState(): Promise<WireDirsState>;
 }
@@ -911,6 +944,18 @@ function skippingUnknown<T>(
 // What the server returns is parsed leniently: a sealed field is any string (it may be legacy plain text), and the
 // client decides what it can open.
 
+function wireTaskPrs(value: unknown): WireTaskPr[] {
+  if (!Array.isArray(value)) throw new ContractError('task.prs must be a list');
+  return value.map((item): WireTaskPr => {
+    const obj = record(item, 'task.prs item');
+    return {
+      id: safeId(string(obj, 'id', 'task.prs item'), 'task.prs item id'),
+      pr: string(obj, 'pr', 'task.prs item'),
+      state: PR_STATES.find((state) => state === obj['state']) ?? null,
+    };
+  });
+}
+
 export function parseWireTask(value: unknown): WireTask {
   const obj = record(value, 'task');
   const id = safeId(string(obj, 'id', 'task'), 'task id');
@@ -933,6 +978,10 @@ export function parseWireTask(value: unknown): WireTask {
     ...(obj['agent'] == null ? {} : { agent: string(obj, 'agent', 'task') }),
     pr: obj['pr'] === undefined ? null : nullableString(obj, 'pr', 'task'),
     prState: PR_STATES.find((state) => state === obj['prState']) ?? null,
+    ...(obj['prs'] === undefined ? {} : { prs: wireTaskPrs(obj['prs']) }),
+    ...(obj['promptPrState'] === undefined
+      ? {}
+      : { promptPrState: PR_STATES.find((state) => state === obj['promptPrState']) ?? null }),
     next: member(obj, 'next', 'task', NEXT_RUNS),
     head: obj['head'] === null ? null : head(obj['head'], 'task'),
     openQuestion: boolean(obj, 'openQuestion', 'task'),
@@ -1206,11 +1255,34 @@ function nullableSealedField(obj: Record<string, unknown>, key: string, what: st
   return obj[key] === null ? null : sealedField(obj, key, what, field);
 }
 
-// Body of set-pr: a sealed PR URL.
+// Body of set-pr and add-pr: a sealed PR URL.
 export function parseWirePr(value: unknown): WirePr {
   const obj = record(value, 'pr');
   rejectUnknownKeys(obj, ['pr'], 'pr');
   return { pr: sealedField(obj, 'pr', 'pr', 'pr') };
+}
+
+// Body of set-pr-states: the state of the prompt's PR and/or of named rows, at least one of them.
+export function parseWirePrStates(value: unknown): WirePrStates {
+  const obj = record(value, 'prStates');
+  rejectUnknownKeys(obj, ['prompt', 'prs'], 'prStates');
+  const rows = obj['prs'];
+  if (rows !== undefined && (!Array.isArray(rows) || rows.length > MAX_TASK_PRS))
+    throw new ContractError(`prStates.prs must be a list of at most ${MAX_TASK_PRS} entries`);
+  const prs = rows?.map((row): { id: string; state: PrState } => {
+    const entry = record(row, 'prStates.prs entry');
+    rejectUnknownKeys(entry, ['id', 'state'], 'prStates.prs entry');
+    return {
+      id: safeId(string(entry, 'id', 'prStates.prs entry'), 'prStates.prs entry id'),
+      state: member(entry, 'state', 'prStates.prs entry', PR_STATES),
+    };
+  });
+  const states: WirePrStates = {
+    ...(obj['prompt'] === undefined ? {} : { prompt: member(obj, 'prompt', 'prStates', PR_STATES) }),
+    ...(prs === undefined ? {} : { prs }),
+  };
+  if (states.prompt === undefined && states.prs === undefined) throw new ContractError('prStates needs prompt or prs');
+  return states;
 }
 
 // Body of set-pr-state.

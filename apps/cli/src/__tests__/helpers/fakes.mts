@@ -35,8 +35,8 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     machine: null,
     sessionId: null,
     workdir: null,
-    pr: null,
-    prState: null,
+    prs: [],
+    promptPrState: null,
     next: 'fresh',
     head: null,
     openQuestion: false,
@@ -260,17 +260,25 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     async transcript(id, batch) {
       state.writes.push(`transcript ${id} ${batch.runId} ${batch.events.map((e) => e.kind).join(',')}`);
     },
-    async setPr(id, url) {
+    async addPr(id, url) {
       state.writes.push(`pr ${id} ${url}`);
       const found = state.tasks.find((t) => t.id === id);
-      if (!found) throw new BackendError(`set-pr: no task ${id}`, 404, true);
-      found.pr = url;
+      if (!found) throw new BackendError(`add-pr: no task ${id}`, 404, true);
+      found.prs.push({ id: `pr${found.prs.length + 1}`, url, state: null });
     },
-    async setPrState(id, prState) {
-      state.writes.push(`prState ${id} ${prState}`);
+    async setPrStates(id, { prompt, prs = [] }) {
+      const written = [
+        ...(prompt === undefined ? [] : [`prompt=${prompt}`]),
+        ...prs.map((pr) => `${pr.id}=${pr.state}`),
+      ];
+      state.writes.push(`prStates ${id} ${written.join(' ')}`);
       const found = state.tasks.find((t) => t.id === id);
-      if (!found) throw new BackendError(`set-pr-state: no task ${id}`, 404, true);
-      found.prState = prState;
+      if (!found) throw new BackendError(`set-pr-states: no task ${id}`, 404, true);
+      if (prompt !== undefined) found.promptPrState = prompt;
+      for (const { id: rowId, state: prState } of prs) {
+        const row = found.prs.find((pr) => pr.id === rowId);
+        if (row) row.state = prState;
+      }
     },
     async checkDirs(_machine, dirs) {
       if (state.boardDirs.failure) throw state.boardDirs.failure;
@@ -480,17 +488,25 @@ const seals: Sealer = async ({ field, context }, text) => seal(KEYS, field, cont
 // A task as the server stores it: title, input and workdir sealed with the test key, for the task's own row (an occurrence's
 // for its schedule).
 export async function wireTask(overrides: Partial<Task> & { id: string }): Promise<WireTask> {
-  const { labels: _labels, unreadable: _unreadable, title, input, workdir, agent, pr, ...rest } = task(overrides);
+  const { labels: _labels, unreadable: _unreadable, title, input, workdir, agent, prs, ...rest } = task(overrides);
   const sealed = await sealFields(
     seals,
     { kind: 'task', id: rest.id, createdBy: rest.createdBy, scheduleId: rest.scheduleId, agent: agent ?? null },
     { title, input, workdir: workdir ?? undefined },
   );
+  const wirePrs = await Promise.all(
+    prs.map(async ({ id, url, state }) => ({ id, pr: await sealPr(seals, rest.id, url), state })),
+  );
+  const newest = wirePrs.at(-1);
+  const { promptPrState, ...others } = rest;
   return {
-    ...rest,
+    ...others,
     ...sealed,
     workdir: sealed.workdir ?? null,
-    pr: pr === null ? null : await sealPr(seals, rest.id, pr),
+    pr: newest?.pr ?? null,
+    prState: newest === undefined ? promptPrState : newest.state,
+    prs: wirePrs,
+    promptPrState,
   };
 }
 

@@ -4,7 +4,7 @@ import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { cleanupAllBoards } from './cleanup';
 import type { Tx } from './db/client';
-import { appUsers, machines, notes, schedules, tasks, transcriptEvents, transcriptRuns } from './db/schema';
+import { appUsers, machines, notes, schedules, taskPrs, tasks, transcriptEvents, transcriptRuns } from './db/schema';
 import { withOwner } from './db/scope';
 import { buildServer } from './server';
 import { plainMachine, plainUi } from './test/client';
@@ -53,6 +53,7 @@ async function setup() {
   const call = (who: Who, command: string, body: Record<string, unknown> = {}) => plain[who](command, body);
 
   const idle = await ui.bob.tasks.create({ input: 'idle' });
+  await call('bob', 'add-pr', { id: idle.id, body: { pr: SEALED } });
   const asked = await ui.bob.tasks.create({ input: 'asked' });
   await call('bob', 'claim-task', { id: asked.id, machine: 'laptop' });
   await call('bob', 'update-task', { id: asked.id, body: { sessionId: SESSION } });
@@ -82,6 +83,7 @@ async function bobsRows() {
   return JSON.stringify({
     tasks: own(await admin.select().from(tasks).orderBy(tasks.id)),
     notes: own(await admin.select().from(notes).orderBy(notes.id)),
+    prs: own(await admin.select().from(taskPrs).orderBy(taskPrs.id)),
     schedules: own(await admin.select().from(schedules).orderBy(schedules.id)),
     machines: own(await admin.select().from(machines).orderBy(machines.name)),
     runs: own(await admin.select().from(transcriptRuns).orderBy(transcriptRuns.id)),
@@ -148,6 +150,10 @@ describe('one user cannot reach another user’s board', () => {
       ['fail', { id: bob.running.id, body: 'broke' }],
       ['transcript', { ...foreign, body: transcript('run-alice-01') }],
       ['read-notes', foreign],
+      ['add-pr', { ...foreign, body: { pr: SEALED } }],
+      ['set-pr', { ...foreign, body: { pr: SEALED } }],
+      ['set-pr-states', { ...foreign, body: { prompt: 'merged' } }],
+      ['set-pr-state', { ...foreign, body: { prState: 'merged' } }],
       ['update-schedule', { id: bob.scheduleId, body: { paused: true } }],
       ['remove-schedule', { id: bob.scheduleId }],
       ['add-task', { body: { title: 'child', parentId: bob.idle.id } }],
@@ -221,7 +227,16 @@ describe('one user cannot reach another user’s board', () => {
   });
 
   it('shows nothing and allows nothing to a connection with no owner', async () => {
-    for (const table of ['task', 'schedule', 'note', 'machine', 'transcript_run', 'transcript_event', 'app_user']) {
+    for (const table of [
+      'task',
+      'schedule',
+      'note',
+      'task_pr',
+      'machine',
+      'transcript_run',
+      'transcript_event',
+      'app_user',
+    ]) {
       const { rows } = await db.execute<{ n: number }>(sql`select count(*)::int as n from ${sql.identifier(table)}`);
       expect(rows[0]!.n, table).toBe(0);
     }
@@ -313,6 +328,11 @@ describe('one user cannot reach another user’s board', () => {
               tx
                 .insert(notes)
                 .values({ id: `n-${id}`.slice(0, 20), taskId: id, author: 'user', kind: 'comment', body: SEALED }),
+            bob.idle.id,
+          ],
+          [
+            'task_pr_task_fk',
+            (id) => tx.insert(taskPrs).values({ id: `p-${id}`.slice(0, 20), taskId: id, pr: SEALED }),
             bob.idle.id,
           ],
           [

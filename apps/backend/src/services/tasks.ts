@@ -1,5 +1,6 @@
 import {
   formatServerEvent,
+  MAX_TASK_PRS,
   MAX_WAIT_MS,
   newTaskId,
   PRIORITIES,
@@ -8,6 +9,7 @@ import {
   type Heartbeat,
   type Priority,
   type PrState,
+  type PrStates,
   type Status,
   type WireNote,
   type WireNoteInput,
@@ -19,7 +21,7 @@ import {
 import { randomBytes } from 'node:crypto';
 import { and, asc, desc, eq, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
-import { notes, tasks, type NoteRow, type TaskRow } from '../db/schema';
+import { notes, taskPrs, tasks, type NoteRow, type TaskPrRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
 import { requireSealed } from './sealed';
 import { DONE_ARCHIVE_DAYS, daysBefore } from './retention';
@@ -28,7 +30,22 @@ import { edgePosition, getTask, insertTask, lockTask } from './taskRows';
 
 export { getTask };
 
-export function toTask(row: TaskRow): WireTask {
+/** The reported PRs of the tasks, oldest first, by task id. */
+export async function listTaskPrs(db: DbOrTx, taskIds: string[]): Promise<Map<string, TaskPrRow[]>> {
+  const byTask = new Map<string, TaskPrRow[]>();
+  if (taskIds.length === 0) return byTask;
+  const rows = await db
+    .select()
+    .from(taskPrs)
+    .where(inArray(taskPrs.taskId, taskIds))
+    .orderBy(asc(taskPrs.createdAt), asc(taskPrs.id));
+  for (const row of rows) byTask.set(row.taskId, [...(byTask.get(row.taskId) ?? []), row]);
+  return byTask;
+}
+
+/** `prs` are the task's rows, oldest first. `pr` and `prState` are what a CLI without `task.prs` reads, see `WireTask`. */
+export function toTask(row: TaskRow, prs: readonly TaskPrRow[] = []): WireTask {
+  const newest = prs.at(-1);
   return {
     id: row.id,
     title: row.title,
@@ -41,8 +58,10 @@ export function toTask(row: TaskRow): WireTask {
     sessionId: row.sessionId,
     workdir: row.workdir,
     ...(row.agent === null ? {} : { agent: row.agent }),
-    pr: row.pr,
-    prState: row.prState,
+    pr: newest?.pr ?? null,
+    prState: newest === undefined ? row.prState : newest.state,
+    prs: prs.map(({ id, pr, state }) => ({ id, pr, state })),
+    promptPrState: row.prState,
     next: row.next,
     head: row.head,
     openQuestion: row.openQuestionNoteId !== null,
@@ -908,18 +927,59 @@ function notInRun(task: TaskRow, run: string, { moves }: { moves: boolean }): st
   return undefined;
 }
 
-/** The pull request the task's agent reported, sealed; the last one wins. */
-export async function setPr(db: DbOrTx, taskId: string, pr: string): Promise<void> {
+/** Adds a pull request the task's agent reported, sealed. The server cannot tell whether it repeats one; the CLI checks. */
+export async function addPr(db: DbOrTx, taskId: string, pr: string): Promise<void> {
   requireSealed(pr, 'the pull request');
-  await getTask(db, taskId);
-  // The new PR's state is unknown; the server cannot tell whether the sealed URL is another one, so it always resets.
-  await db.update(tasks).set({ pr, prState: null, updatedAt: new Date() }).where(eq(tasks.id, taskId));
+  await db.transaction(async (tx) => {
+    await lockTask(tx, taskId);
+    const held = await tx.$count(taskPrs, eq(taskPrs.taskId, taskId));
+    if (held >= MAX_TASK_PRS)
+      throw new AppError('BAD_REQUEST', `the task already has ${MAX_TASK_PRS} pull requests, the most the board keeps`);
+    await tx.insert(taskPrs).values({ id: newTaskId(), taskId, pr });
+    await tx.update(tasks).set({ updatedAt: new Date() }).where(eq(tasks.id, taskId));
+  });
 }
 
-/** GitHub's state of the task's PR, from a worker's dispatcher. */
-export async function setPrState(db: DbOrTx, taskId: string, prState: PrState): Promise<void> {
-  await getTask(db, taskId);
-  await db.update(tasks).set({ prState }).where(eq(tasks.id, taskId));
+/** What a CLI without `task.prs` does to report a PR: the task's PRs become this one, whose state is unknown. */
+export async function setPr(db: DbOrTx, taskId: string, pr: string): Promise<void> {
+  requireSealed(pr, 'the pull request');
+  await db.transaction(async (tx) => {
+    await lockTask(tx, taskId);
+    await tx.delete(taskPrs).where(eq(taskPrs.taskId, taskId));
+    await tx.insert(taskPrs).values({ id: newTaskId(), taskId, pr });
+    await tx.update(tasks).set({ updatedAt: new Date() }).where(eq(tasks.id, taskId));
+  });
+}
+
+/**
+ * GitHub's state of the PR the prompt names and of reported ones, from a worker's dispatcher. A row id that is not the
+ * task's is ignored. Changes nothing else, not even `updatedAt`.
+ */
+export async function setPrStates(db: DbOrTx, taskId: string, states: PrStates): Promise<void> {
+  await db.transaction(async (tx) => {
+    await getTask(tx, taskId);
+    if (states.prompt !== undefined) await tx.update(tasks).set({ prState: states.prompt }).where(eq(tasks.id, taskId));
+    for (const { id, state } of states.prs ?? [])
+      await tx
+        .update(taskPrs)
+        .set({ state })
+        .where(and(eq(taskPrs.taskId, taskId), eq(taskPrs.id, id)));
+  });
+}
+
+/** What a CLI without `task.prs` does to record GitHub's state: of the newest reported PR when there is one, else of the prompt's. */
+export async function setPrState(db: DbOrTx, taskId: string, state: PrState): Promise<void> {
+  await db.transaction(async (tx) => {
+    await getTask(tx, taskId);
+    const [newest] = await tx
+      .select({ id: taskPrs.id })
+      .from(taskPrs)
+      .where(eq(taskPrs.taskId, taskId))
+      .orderBy(desc(taskPrs.createdAt), desc(taskPrs.id))
+      .limit(1);
+    if (newest === undefined) await tx.update(tasks).set({ prState: state }).where(eq(tasks.id, taskId));
+    else await tx.update(taskPrs).set({ state }).where(eq(taskPrs.id, newest.id));
+  });
 }
 
 /**

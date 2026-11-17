@@ -23,6 +23,10 @@ body {
   .header-button .header-button-section {
     margin: 0;
   }
+  /* Doubled to outrank Group's own gap rule; the tighter gaps let the header fit in 320px. */
+  .header-group.header-group {
+    gap: 4px;
+  }
 }
 
 /* Markdown written by agents: readable widths, quiet code, tables that scroll. */
@@ -161,6 +165,12 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--mantine-spacing-md);
+}
+/* On a phone Backlog would push everything else down; the header opens it as its own page. */
+@media (max-width: 47.99em) {
+  .board .board-cell[data-status='backlog'] {
+    display: none;
+  }
 }
 @media (min-width: 48em) {
   .board {

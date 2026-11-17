@@ -1,4 +1,4 @@
-import { prOf, statePrOf } from '@agent-board/shared';
+import { prsOf } from '@agent-board/shared';
 import { ActionIcon, Card, Group, Stack, Text, Tooltip } from '@mantine/core';
 import { IconTerminal2, IconWand } from '@tabler/icons-react';
 import type { DragEvent } from 'react';
@@ -27,6 +27,9 @@ function lastNoteLine(note: LastNote | null, task: ListedTask): string {
   return `${note.author}: ${text} · ${ago(note.createdAt)}`;
 }
 
+/** How many pull requests a card shows an icon for; the rest are a count. */
+const MAX_PR_ICONS = 3;
+
 interface Props {
   task: ListedTask;
   draggable: boolean;
@@ -49,7 +52,7 @@ export function TaskCard({
   onPolish,
   polishDisabled = false,
 }: Props) {
-  const pr = prOf(task);
+  const prs = prsOf(task);
   const navigate = useNavigate();
   return (
     <Card
@@ -70,9 +73,16 @@ export function TaskCard({
     >
       <Stack gap={6}>
         <Group gap={6} wrap="nowrap" align="flex-start">
-          {pr && (
-            <span style={{ display: 'flex', marginTop: 2 }}>
-              <PrStateIcon state={statePrOf(task) === undefined ? null : task.prState} />
+          {prs.length > 0 && (
+            <span style={{ display: 'flex', gap: 2, alignItems: 'center', marginTop: 2 }}>
+              {prs.slice(0, MAX_PR_ICONS).map(({ url, state }) => (
+                <PrStateIcon key={url} state={state} />
+              ))}
+              {prs.length > MAX_PR_ICONS && (
+                <Text size="xs" c="dimmed" aria-label={`${prs.length - MAX_PR_ICONS} more pull requests`}>
+                  +{prs.length - MAX_PR_ICONS}
+                </Text>
+              )}
             </span>
           )}
           <Text size="sm" fw={500} lineClamp={2} className="wrap-anywhere" style={{ flex: 1 }}>

@@ -34,6 +34,7 @@ export const SEALED_COLUMNS: readonly SealedColumn[] = [
   envelope('task', 'home_workdir'),
   envelope('task', 'agent'),
   envelope('task', 'pr'),
+  envelope('task_pr', 'pr'),
   envelope('machine', 'dirs'),
   blindIndex('machine', 'dirs_index'),
   blindIndex('task', 'dedupe_key'),

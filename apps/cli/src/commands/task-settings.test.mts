@@ -98,7 +98,7 @@ test('a pinned task with a session says so, and a directory this machine does no
         model: 'opus',
         agent: 'reviewer',
         scheduleId: 'sch1',
-        pr: 'https://github.com/o/r/pull/1',
+        prs: [{ id: 'p1', url: 'https://github.com/o/r/pull/1', state: null }],
         notBefore: new Date('2027-01-01T08:00:00Z'),
         status: 'needs-me',
         closed: true,

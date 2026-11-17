@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { defaultTitle, isPrUrl, parsePrUrl, prOf, prUrlIn, statePrOf } from './prompt.mts';
+import { defaultTitle, isPrUrl, parsePrUrl, prsOf, prUrlIn } from './prompt.mts';
 
 const PR = 'https://github.com/cosuno/cosuno/pull/17741';
 
@@ -27,11 +27,61 @@ test("a PR URL is exactly a GitHub pull request, and the PR shown is the prompt'
     'https://github.com.x/a/b/pull/2',
   ])
     assert.equal(isPrUrl(other), false, other);
-  const agents = 'https://github.com/a/b/pull/2';
-  assert.equal(prOf({ input: `/review-pr ${PR}`, pr: agents }), PR);
-  assert.equal(prOf({ input: 'Fix the bug', pr: agents }), agents);
-  assert.equal(statePrOf({ input: `/review-pr ${PR}`, pr: agents }), agents);
-  assert.equal(statePrOf({ input: `/review-pr ${PR}`, pr: null }), PR);
-  assert.equal(statePrOf({ input: 'Fix the bug', pr: null }), undefined);
-  assert.equal(prOf({ input: 'Fix the bug', pr: null }), undefined);
+});
+
+test('prsOf lists the PR of the prompt first, then the reported ones in order', () => {
+  const second = 'https://github.com/a/b/pull/2';
+  const third = 'https://github.com/a/b/pull/3';
+  const none = { input: 'Fix the bug', prs: [], promptPrState: null } as const;
+  assert.deepEqual(prsOf(none), []);
+  assert.deepEqual(prsOf({ ...none, input: `/review-pr ${PR}`, promptPrState: 'open' }), [{ url: PR, state: 'open' }]);
+  assert.deepEqual(
+    prsOf({
+      ...none,
+      prs: [
+        { id: 'r1', url: second, state: 'merged' },
+        { id: 'r2', url: third, state: null },
+      ],
+      promptPrState: 'closed',
+    }),
+    [
+      { url: second, state: 'merged', id: 'r1' },
+      { url: third, state: null, id: 'r2' },
+    ],
+  );
+  assert.deepEqual(
+    prsOf({ input: `/review-pr ${PR}`, prs: [{ id: 'r1', url: second, state: 'merged' }], promptPrState: 'closed' }),
+    [
+      { url: PR, state: 'closed' },
+      { url: second, state: 'merged', id: 'r1' },
+    ],
+  );
+});
+
+test('prsOf shows a PR of the prompt that was also reported once, with the reported row and its state', () => {
+  const input = `/review-pr ${PR}`;
+  assert.deepEqual(prsOf({ input, prs: [{ id: 'r1', url: PR, state: 'merged' }], promptPrState: 'open' }), [
+    { url: PR, state: 'merged', id: 'r1' },
+  ]);
+  assert.deepEqual(prsOf({ input, prs: [{ id: 'r1', url: PR, state: null }], promptPrState: 'open' }), [
+    { url: PR, state: 'open', id: 'r1' },
+  ]);
+});
+
+test('prsOf shows a URL once however often it was reported, from its first row', () => {
+  const second = 'https://github.com/a/b/pull/2';
+  const prs = [
+    { id: 'r1', url: second, state: 'open' as const },
+    { id: 'r2', url: PR, state: null },
+    { id: 'r3', url: second, state: 'merged' as const },
+    { id: 'r4', url: PR, state: 'closed' as const },
+  ];
+  assert.deepEqual(prsOf({ input: 'Fix the bug', prs, promptPrState: null }), [
+    { url: second, state: 'open', id: 'r1' },
+    { url: PR, state: null, id: 'r2' },
+  ]);
+  assert.deepEqual(prsOf({ input: `/review-pr ${PR}`, prs, promptPrState: null }), [
+    { url: PR, state: null, id: 'r2' },
+    { url: second, state: 'open', id: 'r1' },
+  ]);
 });

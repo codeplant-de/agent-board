@@ -9,6 +9,7 @@ import {
   transcriptBinding,
   UNREADABLE_TEXT,
 } from '@agent-board/shared';
+import type { PrState } from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
 import { openBoardTask, openEvent, openMachines } from './opening';
 import { sealerFor } from './contexts';
@@ -20,15 +21,20 @@ const keys = await deriveKeys(
   { index: true },
 );
 const PR_URL = 'https://github.com/acme/app/pull/17';
+const OTHER_PR_URL = 'https://github.com/acme/app/pull/18';
 
-const wireTask = async (pr: string | null): Promise<RouterOutputs['tasks']['get']['task']> => {
+const wireTask = async (
+  prs: { id: string; pr: string; state: PrState | null }[],
+  promptPrState: PrState | null = null,
+): Promise<RouterOutputs['tasks']['get']['task']> => {
   const sealer = sealerFor(keys);
   return {
     id: 'task0001',
     title: await sealer({ field: 'title', context: 'task:task0001' }, 'A task'),
     input: await sealer({ field: 'input', context: 'task:task0001:user' }, 'Fix the bug'),
     workdir: null,
-    pr,
+    prs,
+    promptPrState,
     status: 'needs-me',
     priority: 'normal',
     createdBy: 'user',
@@ -55,17 +61,28 @@ const wireTask = async (pr: string | null): Promise<RouterOutputs['tasks']['get'
   } as unknown as RouterOutputs['tasks']['get']['task'];
 };
 
-describe('the PR of a task, as the browser opens it', () => {
-  it('is the PR the agent of the task sealed', async () => {
-    const task = await openBoardTask(keys, await wireTask(await sealPr(sealerFor(keys), 'task0001', PR_URL)));
-    expect(task.pr).toBe(PR_URL);
+describe('the PRs of a task, as the browser opens it', () => {
+  const sealedPr = (url: string) => sealPr(sealerFor(keys), 'task0001', url);
+
+  it('are the PRs the agent of the task sealed, in order, each with its state', async () => {
+    const task = await openBoardTask(
+      keys,
+      await wireTask([
+        { id: 'a', pr: await sealedPr(PR_URL), state: 'merged' },
+        { id: 'b', pr: await sealedPr(OTHER_PR_URL), state: null },
+      ]),
+    );
+    expect(task.prs).toEqual([
+      { id: 'a', url: PR_URL, state: 'merged' },
+      { id: 'b', url: OTHER_PR_URL, state: null },
+    ]);
   });
 
-  it('is none when the board has none', async () => {
-    expect((await openBoardTask(keys, await wireTask(null))).pr).toBeNull();
+  it('are none when the board has none', async () => {
+    expect((await openBoardTask(keys, await wireTask([]))).prs).toEqual([]);
   });
 
-  it('is ignored when it was sealed for another task, another purpose, or is not a PR URL, or is not sealed', async () => {
+  it('leave out one sealed for another task, another purpose, or not a PR URL, or not sealed', async () => {
     const sealer = sealerFor(keys);
     for (const value of [
       await sealPr(sealer, 'other001', PR_URL),
@@ -75,7 +92,23 @@ describe('the PR of a task, as the browser opens it', () => {
       await seal(keys, 'pr', prBinding('task0001').context, 'javascript:alert(1)'),
       PR_URL,
     ])
-      expect((await openBoardTask(keys, await wireTask(value))).pr).toBeNull();
+      expect((await openBoardTask(keys, await wireTask([{ id: 'a', pr: value, state: null }]))).prs).toEqual([]);
+  });
+
+  it('keep the good ones next to a refused one', async () => {
+    const task = await openBoardTask(
+      keys,
+      await wireTask([
+        { id: 'a', pr: PR_URL, state: null },
+        { id: 'b', pr: await sealedPr(OTHER_PR_URL), state: 'open' },
+      ]),
+    );
+    expect(task.prs).toEqual([{ id: 'b', url: OTHER_PR_URL, state: 'open' }]);
+  });
+
+  it('come with the state of the prompt’s PR', async () => {
+    const task = await openBoardTask(keys, await wireTask([], 'closed'));
+    expect(task.promptPrState).toBe('closed');
   });
 });
 
@@ -83,7 +116,7 @@ describe('the agent of a task, as the browser opens it', () => {
   const row = { kind: 'task', id: 'task0001', createdBy: 'user', scheduleId: null } as const;
   const sealedFor = async (agent: string | null) => {
     const sealer = sealerFor(keys);
-    const wire = await wireTask(null);
+    const wire = await wireTask([]);
     return {
       ...wire,
       input: await sealer(inputBinding({ ...row, agent }), 'Fix the bug'),

@@ -124,9 +124,9 @@ export const tasks = pgTable(
     homeWorkdir: text('home_workdir'),
     /** The sealed name of the agent the task runs as; null runs as the user's config says. Written once, at creation. */
     agent: text('agent'),
-    /** The sealed URL of the pull request the task's agent opened for it (`board pr`). */
+    /** No longer read or written: the PRs are in `task_pr`. Kept so the previous backend image still runs on this database; a later migration drops it. */
     pr: text('pr'),
-    /** GitHub's state of that PR or of the one the prompt names, as a worker's dispatcher last saw it. Clear on purpose: it says only that some PR of the task merged. */
+    /** GitHub's state of the PR the prompt names, as a worker's dispatcher last saw it. Clear on purpose: it says only that some PR of the task merged. */
     prState: prState('pr_state'),
     next: nextRun('next').notNull().default('fresh'),
     /** Reported by the worker while the task runs; stale once it stops running. */
@@ -274,6 +274,26 @@ export const notes = pgTable(
   ],
 ).enableRLS();
 
+/** A pull request the task's agent reported with `board pr`; a task holds several. The state is GitHub's, as a worker's dispatcher last saw it. */
+export const taskPrs = pgTable(
+  'task_pr',
+  {
+    id: text('id').primaryKey(),
+    owner: owner(),
+    taskId: text('task_id').notNull(),
+    /** The sealed URL. */
+    pr: text('pr').notNull(),
+    state: prState('state'),
+    createdAt: writtenAt(),
+  },
+  (t) => [
+    check('task_pr_pr_sealed', isEnvelope(t.pr)),
+    index('task_pr_task_created_idx').on(t.taskId, t.createdAt),
+    ownerFk('task_pr_task_fk', [t.owner, t.taskId], [tasks.owner, tasks.id], 'cascade'),
+    tenant(),
+  ],
+).enableRLS();
+
 export const machines = pgTable(
   'machine',
   {
@@ -303,6 +323,7 @@ export const machines = pgTable(
 
 export type TaskRow = typeof tasks.$inferSelect;
 export type NoteRow = typeof notes.$inferSelect;
+export type TaskPrRow = typeof taskPrs.$inferSelect;
 export type ScheduleRow = typeof schedules.$inferSelect;
 
 /** One worker run of a task: a fresh start, a resume or a re-run. */

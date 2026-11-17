@@ -21,6 +21,11 @@ test("the board's rules tell the agent to attach the user's likely next reply to
 
 test("the board's rules tell the agent to report the PR it opens, except in an agent's run", () => {
   assert.match(boardRules(task({ id: 'abc' })), /open a pull request.*board pr abc <url>/s);
+  assert.match(
+    boardRules(task({ id: 'abc' })),
+    /Report every pull request you open or work on for this task, each with its own `board pr abc <url>` call/,
+  );
+  assert.doesNotMatch(boardRules(task({ id: 'abc' })), /replaces the earlier/);
   assert.doesNotMatch(boardRules(task({ id: 'abc' }), { asAgent: true }), /board pr/);
 });
 

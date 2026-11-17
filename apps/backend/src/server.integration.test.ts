@@ -1259,20 +1259,20 @@ describe('Done archival', () => {
       .set({ updatedAt: new Date(Date.now() - days * 24 * 60 * 60_000) })
       .where(eq(tasks.id, id));
 
-  it('closes tasks untouched in Done for 14 days, with a note, and nothing else', async () => {
+  it('closes tasks untouched in Done for 7 days, with a note, and nothing else', async () => {
     const ui = plainUi(db);
     const old = await ui.tasks.create({ title: 'old', input: 'do it', when: 'hold' });
     const recent = await ui.tasks.create({ title: 'recent', input: 'do it', when: 'hold' });
     const waiting = await ui.tasks.create({ title: 'waiting', input: 'do it', when: 'hold' });
     await ui.tasks.done({ id: old.id });
     await ui.tasks.done({ id: recent.id });
-    await idle(old.id, 15);
-    await idle(recent.id, 13);
+    await idle(old.id, 8);
+    await idle(recent.id, 6);
     await idle(waiting.id, 30);
     expect(await asOwner(db, 'jascha', (tx) => archiveStaleDone(tx))).toBe(1);
     const closed = (await ui.tasks.get({ id: old.id })).task;
     expect(closed).toMatchObject({ closed: true, status: 'done' });
-    expect((await ui.tasks.get({ id: old.id })).thread.at(-1)?.text).toBe('Closed after 14 days in Done.');
+    expect((await ui.tasks.get({ id: old.id })).thread.at(-1)?.text).toBe('Closed after 7 days in Done.');
     expect((await ui.tasks.get({ id: recent.id })).task.closed).toBe(false);
     expect((await ui.tasks.get({ id: waiting.id })).task.closed).toBe(false);
     expect(await asOwner(db, 'jascha', (tx) => archiveStaleDone(tx))).toBe(0);

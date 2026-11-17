@@ -1,5 +1,5 @@
-import { statePrOf, type Status } from '@agent-board/shared';
-import { Badge, Button, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
+import type { Status } from '@agent-board/shared';
+import { Badge, Box, Button, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
 import { IconGitMerge } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState, type DragEvent } from 'react';
@@ -10,6 +10,7 @@ import { SlackInbox } from '../components/SlackInbox';
 import { TaskCard } from '../components/TaskCard';
 import { usePolish } from '../components/usePolish';
 import { beforeIdOver, dropNeighbors } from '../lib/dropPosition';
+import { canMoveMergedToDone } from '../lib/mergedPrs';
 import { canPolish, isOpenPolishOf } from '../lib/polish';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { POLL_MS, useTRPC, type ListedTask } from '../lib/trpc';
@@ -33,10 +34,6 @@ interface DropTarget {
 const canDrag = (task: ListedTask) => task.status !== 'running';
 const canDrop = (status: Status) => status !== 'running' && status !== 'waiting';
 
-/** A task of the user's whose PR has been merged and that asks nothing: it can go to Done. */
-const hasMergedPr = (task: ListedTask) =>
-  task.prState === 'merged' && statePrOf(task) !== undefined && !task.proposed && !task.openQuestion;
-
 /** The board's cells in order; Waiting sits above Todo in one cell, so a wait never takes a column of its own. */
 const CELLS: Status[][] = [['backlog'], ['waiting', 'todo'], ['running'], ['needs-me'], ['done']];
 
@@ -53,7 +50,8 @@ const scrollMaxHeight = (status: Status, waitingEmpty: boolean): string => {
 /** Narrow on a wide screen until hovered, then they float over their neighbors at full width. */
 const COLLAPSIBLE = new Set<Status>(['backlog', 'done']);
 
-export function BoardPage() {
+/** `only` renders just that column, on its own page instead of the board's grid. */
+function BoardColumns({ only }: { only?: Status }) {
   const trpc = useTRPC();
   const tasks = useQuery({ ...trpc.tasks.list.queryOptions(), refetchInterval: POLL_MS });
   const move = useMutation(trpc.tasks.move.mutationOptions());
@@ -65,7 +63,7 @@ export function BoardPage() {
   const byStatus = (status: Status) => (tasks.data ?? []).filter((t) => t.status === status);
 
   const moveMergedToDone = async () => {
-    for (const { id } of byStatus('needs-me').filter(hasMergedPr))
+    for (const { id } of byStatus('needs-me').filter(canMoveMergedToDone))
       await done.mutateAsync({ id }).catch(() => undefined);
   };
 
@@ -124,7 +122,7 @@ export function BoardPage() {
               {HINT[status]}
             </Text>
           </Group>
-          {status === 'needs-me' && column.some(hasMergedPr) && (
+          {status === 'needs-me' && column.some(canMoveMergedToDone) && (
             <Button
               size="compact-xs"
               variant="light"
@@ -134,7 +132,7 @@ export function BoardPage() {
               loading={done.isPending}
               onClick={() => void moveMergedToDone()}
             >
-              Move merged to Done ({column.filter(hasMergedPr).length})
+              Move merged to Done ({column.filter(canMoveMergedToDone).length})
             </Button>
           )}
           <ScrollArea.Autosize mah={scrollMaxHeight(status, byStatus('waiting').length === 0)} offsetScrollbars>
@@ -183,20 +181,31 @@ export function BoardPage() {
   return (
     <Stack gap="md">
       <IncompatibleMachinesBanner />
-      <SlackInbox />
+      {only === undefined && <SlackInbox />}
       <QueryStatus query={tasks} what="the board" />
-      <div className="board">
-        {CELLS.map((statuses) => (
-          <div
-            key={statuses.join()}
-            className="board-cell"
-            data-collapsible={statuses.length === 1 && COLLAPSIBLE.has(statuses[0]!)}
-            data-status={statuses.join(' ')}
-          >
-            {statuses.map(renderColumn)}
-          </div>
-        ))}
-      </div>
+      {only !== undefined ? (
+        <Box maw={640} w="100%" mx="auto">
+          {renderColumn(only)}
+        </Box>
+      ) : (
+        <div className="board">
+          {CELLS.map((statuses) => (
+            <div
+              key={statuses.join()}
+              className="board-cell"
+              data-collapsible={statuses.length === 1 && COLLAPSIBLE.has(statuses[0]!)}
+              data-status={statuses.join(' ')}
+            >
+              {statuses.map(renderColumn)}
+            </div>
+          ))}
+        </div>
+      )}
     </Stack>
   );
 }
+
+export const BoardPage = () => <BoardColumns />;
+
+/** Backlog is hidden from the board on a phone, so it gets a page of its own. */
+export const BacklogPage = () => <BoardColumns only="backlog" />;

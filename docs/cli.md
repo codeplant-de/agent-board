@@ -25,7 +25,7 @@ Tasks:
   show <task>               a task and its thread as markdown
   attach <task>             open a task's Claude session in the terminal
   comment <task> [text...]  add a note to a task
-  pr <task> <url>           report the pull request you opened for a task
+  pr <task> <url>           report a pull request you opened for a task
   move <task> <status...>   move a task to the bottom of a status
   ask <task>                ask the user 1-4 questions
   wait <task>               park a running task in Waiting until a time or a
@@ -198,7 +198,8 @@ Usage: board pr [options] <task> <url>
 
 Inside a run: after you open a pull request for this task, report its URL. The
 board then shows it on the task's card and page, like the pull request of a
-review task. A later call replaces the earlier URL.
+review task. A later call adds another pull request to the task; the same URL
+twice changes nothing.
 
 The URL must be a GitHub pull request,
 https://github.com/<owner>/<repo>/pull/<number>, and nothing else.

@@ -4,6 +4,7 @@ import {
   IconArchive,
   IconLayoutKanban,
   IconDots,
+  IconInbox,
   IconLock,
   IconMoon,
   IconPlus,
@@ -18,8 +19,10 @@ import { useLock } from './crypto/KeyContext';
 import { NewTaskModal } from './components/NewTaskModal';
 import { useDesktopNotifications } from './components/useDesktopNotifications';
 
+/** Backlog has a nav entry only on a phone, where the board leaves it out. */
 const NAV = [
   { to: '/', label: 'Board', icon: IconLayoutKanban },
+  { to: '/backlog', label: 'Backlog', icon: IconInbox, phoneOnly: true },
   { to: '/schedules', label: 'Schedules', icon: IconRepeat },
   { to: '/closed', label: 'Closed', icon: IconArchive },
   { to: '/settings', label: 'Settings', icon: IconSettings },
@@ -40,8 +43,8 @@ export function AppLayout() {
   return (
     <AppShell header={{ height: 56 }} padding={{ base: 'xs', sm: 'md' }}>
       <AppShell.Header>
-        <Group h="100%" px={{ base: 'xs', sm: 'md' }} justify="space-between" wrap="nowrap">
-          <Group gap="xs" wrap="nowrap">
+        <Group h="100%" px={{ base: 8, sm: 'md' }} justify="space-between" wrap="nowrap">
+          <Group gap="xs" wrap="nowrap" className="header-group">
             <Group
               gap={8}
               wrap="nowrap"
@@ -61,6 +64,7 @@ export function AppLayout() {
                   component={NavLink}
                   to={item.to}
                   end
+                  hiddenFrom={item.phoneOnly ? 'sm' : undefined}
                   variant={active(item.to) ? 'light' : 'subtle'}
                   size="compact-sm"
                   aria-label={item.label}
@@ -75,7 +79,7 @@ export function AppLayout() {
               ))}
             </Group>
           </Group>
-          <Group gap="xs" wrap="nowrap">
+          <Group gap="xs" wrap="nowrap" className="header-group">
             <Group gap="xs" wrap="nowrap" visibleFrom="sm">
               <Tooltip label={themeLabel}>
                 <ActionIcon variant="default" size="lg" onClick={toggleColorScheme} aria-label="Toggle color scheme">
