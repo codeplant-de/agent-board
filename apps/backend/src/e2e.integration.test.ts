@@ -1,6 +1,9 @@
 // The scenarios here run through the clients themselves: the CLI's `createSealedBackend` over a `fetch` that calls the real
 // server, and the browser's `createPlainTRPC` over a link onto the real router. Nothing seals or opens for them, so a client that
 // forgets to seal a field, or trusts a value it should not, fails here and not only in its own unit tests.
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   decodeDataKey,
   inputBinding,
@@ -23,6 +26,7 @@ import {
   fakeWorktreeLocks,
   fakeWaitStore,
 } from '../../cli/src/__tests__/helpers/fakes.mts';
+import { createWatchStore } from '../../cli/src/watch/store.mts';
 import { createKeySetup, exportDataKey } from '../../frontend/src/crypto/keySlots';
 import { inspectStoredKeys } from '../../frontend/src/crypto/keyStore';
 import { createBrowserHarness } from '../../frontend/src/test/browserHarness';
@@ -34,6 +38,13 @@ import { caller, question, SESSION, testConfig, useTestDb } from './test/helpers
 import { MARKERS, sealed, useDataKey } from './test/sealed';
 
 const { db, admin } = useTestDb();
+
+// The machine's watches, in a directory of their own per test; no watch command ever runs here.
+const watchDeps = (): Pick<DispatchDeps, 'watches' | 'runWatch' | 'isAlive'> => ({
+  watches: createWatchStore(mkdtempSync(join(tmpdir(), 'board-e2e-watches-'))),
+  runWatch: async () => ({ exitCode: 1, timedOut: false, output: '', stdout: '', stderr: '' }),
+  isAlive: () => false,
+});
 
 // Dispatch ticks here never look for a newer CLI.
 const NO_UPDATES: DispatchDeps['update'] = {
@@ -313,12 +324,14 @@ describe('an agent’s proposal', () => {
     now: () => new Date(),
     logTail: () => '',
     waits: fakeWaitStore(),
+    ...watchDeps(),
     taskFiles: fakeTaskFiles(),
     worktreeLocks: fakeWorktreeLocks(),
     runCheck: async () => ({ exitCode: 1, timedOut: false, output: '' }),
     update: NO_UPDATES,
   });
   const workerDeps = (invocations: { args: string[]; prompt: string }[], failures: string[]): WorkerDeps => ({
+    watches: watchDeps().watches,
     backend: ctx.cli,
     config: { ...CONFIG, machine: 'laptop' },
     dryRun: false,
@@ -453,6 +466,7 @@ describe('a wait', () => {
       now: () => new Date(),
       logTail: () => '',
       waits,
+      ...watchDeps(),
       taskFiles: fakeTaskFiles(),
       worktreeLocks: fakeWorktreeLocks(),
       update: NO_UPDATES,
@@ -464,6 +478,7 @@ describe('a wait', () => {
     const sessions = fakeSessions();
     const invocations: { args: string[]; prompt: string }[] = [];
     const worker = (agent: (taskId: string) => Promise<void>): WorkerDeps => ({
+      watches: watchDeps().watches,
       backend: ctx.cli,
       config,
       dryRun: false,

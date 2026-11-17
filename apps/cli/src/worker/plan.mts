@@ -3,6 +3,7 @@ import type { Note, Task } from '@agent-board/shared';
 import type { AgentConfig } from '../config/config.mts';
 import { agentFor, neverRun, removedIntakeProblem } from '../task-rules.mts';
 import { boardRules, buildResumePrompt, freshThreadBlock, userReply, writtenSincePreviousRun } from './prompts.mts';
+import type { ResumeWatches } from './prompts.mts';
 
 // `{<plugin>}` in an allow or deny rule stands for the root Claude Code gives the one installed `<plugin>@*`, such as
 // {pr-review}; `{<plugin>@<marketplace>}` names the marketplace.
@@ -82,6 +83,8 @@ export interface RunPlanOptions {
   // Whether this machine started that Claude session for that task. The board names the session to resume in the clear, so
   // a session this machine has no record of is never resumed: the id could be another task's, or another conversation.
   isOwnSession: (taskId: string, sessionId: string) => boolean;
+  // What the task's watches have to say to a resumed run: undelivered events alone make a resume prompt.
+  watches?: ResumeWatches;
 }
 
 /**
@@ -91,7 +94,7 @@ export interface RunPlanOptions {
  */
 export function planRun(task: Task, notes: Note[], options: RunPlanOptions): RunPlan {
   if (task.next === 'resume' && task.sessionId !== null) {
-    const prompt = buildResumePrompt(task, notes);
+    const prompt = buildResumePrompt(task, notes, options.watches);
     if (prompt !== undefined) {
       if (!options.isOwnSession(task.id, task.sessionId))
         return {
@@ -128,6 +131,8 @@ export function isRunOver(
 
 export type Outcome =
   | { kind: 'ok' }
+  // The agent ended its turn with watches open: the task waits for them.
+  | { kind: 'parked' }
   | { kind: 'failed'; reason: string }
   | { kind: 'unreported' }
   | { kind: 'paused' }
@@ -144,6 +149,8 @@ export function decideOutcome(input: {
   stopRequested: boolean;
   // The task is no longer Running: the agent reported, the user answered, or the task was taken back.
   reported: boolean;
+  // The task has open watches on this machine.
+  watching: boolean;
 }): Outcome {
   // A run that reported before it noticed the pause or the stop is simply done.
   if (input.reported)
@@ -152,7 +159,7 @@ export function decideOutcome(input: {
   if (input.pauseRequested) return { kind: 'paused' };
   if (input.stopped) return { kind: 'failed', reason: input.stopped.message };
   if (input.exitCode !== 0) return failed(input);
-  return { kind: 'unreported' };
+  return input.watching ? { kind: 'parked' } : { kind: 'unreported' };
 }
 
 function failed(input: { exitCode: number | null; signal: string | null }): Outcome {

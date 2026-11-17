@@ -214,6 +214,36 @@ function fakeBin(script: string): { dir: string; env: Record<string, string> } {
   return { dir, env: { PATH: `${dir}:/usr/bin:/bin` } };
 }
 
+test('both the listener and the watch unit are try-restarted, and each failure is named', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'board-fakebin-test-'));
+  const log = join(dir, 'calls.log');
+  const saved = process.env['PATH'];
+  try {
+    writeFileSync(join(dir, 'systemctl'), `#!/bin/sh\necho "$@" >> ${log}\nexit 0\n`, { mode: 0o755 });
+    process.env['PATH'] = `${dir}:${saved ?? ''}`;
+    assert.equal(
+      await realListenerRestart({ block: true, platform: 'linux' })(),
+      'restarted agent-board-listen.service if it was running, to run the new code\nrestarted agent-board-watch.service if it was running, to run the new code',
+    );
+    assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n').sort(), [
+      '--user try-restart agent-board-listen.service',
+      '--user try-restart agent-board-watch.service',
+    ]);
+    writeFileSync(
+      join(dir, 'systemctl'),
+      '#!/bin/sh\n[ "$3" = agent-board-watch.service ] && { echo boom >&2; exit 1; }\nexit 0\n',
+      { mode: 0o755 },
+    );
+    assert.match(
+      (await realListenerRestart({ block: true, platform: 'linux' })()) ?? '',
+      /could not restart agent-board-watch\.service \(boom\); run "systemctl --user restart agent-board-watch"/,
+    );
+  } finally {
+    process.env['PATH'] = saved;
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test('a systemctl that does not know the listener unit (exit 5) is no failure either', async () => {
   const { dir } = fakeBin('systemctl:exit 5');
   const saved = process.env['PATH'];
@@ -248,25 +278,31 @@ test('on macOS the listener is restarted with kickstart -k, only when launchd ha
   const notLoaded = fakeLaunchctl(false);
   const failing = fakeLaunchctl(true, true);
   const target = 'gui/501/de.codeplant.agent-board.listen';
+  const watchTarget = 'gui/501/de.codeplant.agent-board.watch';
   try {
     process.env['PATH'] = `${loaded.dir}:${saved ?? ''}`;
-    assert.match(
-      (await realListenerRestart({ block: true, platform: 'darwin', uid: 501 })()) ?? '',
-      /^restarted de\.codeplant\.agent-board\.listen, to run the new code$/,
+    assert.equal(
+      await realListenerRestart({ block: true, platform: 'darwin', uid: 501 })(),
+      'restarted de.codeplant.agent-board.watch, to run the new code\nrestarted de.codeplant.agent-board.listen, to run the new code',
     );
-    assert.equal(readFileSync(loaded.log, 'utf8'), `print ${target}\nkickstart -k ${target}\n`);
+    assert.equal(
+      readFileSync(loaded.log, 'utf8'),
+      `print ${watchTarget}\nkickstart -k ${watchTarget}\nprint ${target}\nkickstart -k ${target}\n`,
+    );
     process.env['PATH'] = `${notLoaded.dir}:${saved ?? ''}`;
     assert.equal(await realListenerRestart({ block: true, platform: 'darwin', uid: 501 })(), undefined);
     assert.equal(
       readFileSync(notLoaded.log, 'utf8'),
-      `print ${target}\n`,
+      `print ${watchTarget}\nprint ${target}\n`,
       'no kickstart for an agent that is not loaded',
     );
     process.env['PATH'] = `${failing.dir}:${saved ?? ''}`;
+    const failed = (await realListenerRestart({ block: true, platform: 'darwin', uid: 501 })()) ?? '';
     assert.match(
-      (await realListenerRestart({ block: true, platform: 'darwin', uid: 501 })()) ?? '',
+      failed,
       /could not restart .*\(boom\); run "launchctl kickstart -k gui\/501\/de\.codeplant\.agent-board\.listen"/,
     );
+    assert.match(failed, /run "launchctl kickstart -k gui\/501\/de\.codeplant\.agent-board\.watch"/);
     process.env['PATH'] = '/nonexistent';
     assert.equal(await realListenerRestart({ block: true, platform: 'darwin', uid: 501 })(), undefined, 'no launchctl');
   } finally {
@@ -282,9 +318,9 @@ test('on macOS a restart that must not block returns at once and kicks the liste
     process.env['PATH'] = `${loaded.dir}:${saved ?? ''}`;
     assert.match(
       (await realListenerRestart({ block: false, platform: 'darwin', uid: 501 })()) ?? '',
-      /^restarting de\.codeplant\.agent-board\.listen/,
+      /^restarting de\.codeplant\.agent-board\.watch.*\nrestarting de\.codeplant\.agent-board\.listen/,
     );
-    for (let waited = 0; waited < 3000 && !readFileSync(loaded.log, 'utf8').includes('kickstart'); waited += 50)
+    for (let waited = 0; waited < 3000 && readFileSync(loaded.log, 'utf8').split('kickstart').length < 3; waited += 50)
       await new Promise((resolve) => setTimeout(resolve, 50));
     assert.match(readFileSync(loaded.log, 'utf8'), /kickstart -k gui\/501\/de\.codeplant\.agent-board\.listen/);
   } finally {

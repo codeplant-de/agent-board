@@ -17,6 +17,9 @@ test('only units running `internal worker <id>` for their own id are workers', (
     'agent-board-dispatch.service loaded active running agent-board dispatcher: one tick',
     'agent-board-intake.service loaded active running agent-board intake: review requests to tasks',
     'agent-board-listen.service loaded active running agent-board listener: dispatch as soon as the board says tasks changed',
+    "agent-board-watch.service loaded active running agent-board watch unit: runs the watches of this machine's tasks",
+    'agent-board-watch.service loaded active running /home/u/.local/bin/board internal watch',
+    'agent-board-watch.service loaded active running /home/u/.local/bin/board internal worker watch',
     'agent-board-foo.service loaded active running a unit the user made',
     'agent-board-server.service loaded active running /usr/bin/node server.js',
     'agent-board-other1.service loaded active running /home/u/.local/bin/board internal worker abc12345',
@@ -43,6 +46,7 @@ test('a worker unit is started only for a task id of the safe shape, so no argum
     'dispatch',
     'intake',
     'listen',
+    'watch',
     '',
     'x'.repeat(65),
   ])

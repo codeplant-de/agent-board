@@ -15,44 +15,47 @@ Work with the agent board from a terminal, and from inside a run: comment on
 tasks, move them, schedule new ones.
 
 Options:
-  -V, --version             print the version
-  --dry-run                 read everything, print every write instead of doing
-                            it
-  -h, --help                display help for command
+  -V, --version              print the version
+  --dry-run                  read everything, print every write instead of doing
+                             it
+  -h, --help                 display help for command
 
 Tasks:
-  tasks                     open tasks per status
-  show <task>               a task and its thread as markdown
-  attach <task>             open a task's Claude session in the terminal
-  comment <task> [text...]  add a note to a task
-  pr <task> <url>           report a pull request for a task, or remove one
-  move <task> <status...>   move a task to the bottom of a status
-  ask <task>                ask the user 1-4 questions
-  wait <task>               park a running task in Waiting until a time or a
-                            check
-  add                       propose a follow-up task
-  polish <task>             post a polished title and prompt for a task
+  tasks                      open tasks per status
+  show <task>                a task and its thread as markdown
+  attach <task>              open a task's Claude session in the terminal
+  comment <task> [text...]   add a note to a task
+  pr <task> <url>            report the pull request you opened for a task
+  move <task> <status...>    move a task to the bottom of a status
+  ask <task>                 ask the user 1-4 questions
+  wait <task>                park a running task in Waiting until a time or a
+                             check
+  watch <task> [command...]  watch something for a task and get told when it
+                             happens
+  watches <task>             list the open watches of a task
+  unwatch <task> <name>      stop a watch of a task
+  add                        propose a follow-up task
+  polish <task>              post a polished title and prompt for a task
 
 Scheduling:
-  schedule <prompt...>      a task from a prompt, run here on this machine
-  schedules [action...]     list, pause, resume or delete repeating schedules
-  delay <task>              delay a task in Todo, or make it due at once
+  schedule <prompt...>       a task from a prompt, run here on this machine
+  schedules [action...]      list, pause, resume or delete repeating schedules
+  delay <task>               delay a task in Todo, or make it due at once
 
 Setup:
-  dirs [action...]          list, add, remove or set up the directories workers
-                            may run in on this machine
-  agents [action...]        list, show, export, add or remove the agents of this
-                            machine
-  init                      write web.json, env and config.json for this machine
-  doctor                    check this machine: config, token, server, worker
-                            tools and units
-  setup                     install the dispatch timer and the listener: systemd
-                            user units, or launchd agents on macOS
-  self-update               replace this binary with the newest release
-  completion <shell>        print a shell completion script
-  example [name]            list or print the example files that ship with the
-                            CLI
-  help [command]            show the help of a command
+  dirs [action...]           list, add, remove or set up the directories workers
+                             may run in on this machine
+  init                       write web.json, env and config.json for this
+                             machine
+  doctor                     check this machine: config, token, server, worker
+                             tools and units
+  setup                      install the dispatch timer and the listener:
+                             systemd user units, or launchd agents on macOS
+  self-update                replace this binary with the newest release
+  completion <shell>         print a shell completion script
+  example [name]             list or print the example files that ship with the
+                             CLI
+  help [command]             show the help of a command
 
 Run "board help <command>" for the details and examples of one command.
 ```
@@ -197,12 +200,7 @@ Usage: board pr [options] <task> <url>
 
 Inside a run: after you open a pull request for this task, report its URL. The
 board then shows it on the task's card and page, like the pull request of a
-review task. A later call adds another pull request to the task; the same URL
-twice changes nothing.
-
---remove takes a reported pull request off the task again, for a URL reported by
-mistake. The pull request a review task's prompt names is not a reported one and
-stays; a URL the task does not list changes nothing.
+review task. A later call replaces the earlier URL.
 
 The URL must be a GitHub pull request,
 https://github.com/<owner>/<repo>/pull/<number>, and nothing else.
@@ -218,13 +216,11 @@ Arguments:
   url         the pull request URL
 
 Options:
-  --remove    take the reported pull request off the task instead of adding it
   --dry-run   read everything, print every write instead of doing it
   -h, --help  display help for command
 
 Examples:
   board pr Ab3dEf9x https://github.com/acme/app/pull/17741
-  board pr --remove Ab3dEf9x https://github.com/acme/app/pull/17741
 ```
 
 ### board move
@@ -335,6 +331,119 @@ Examples:
   board wait Ab3dEf9x --check 'gh pr checks 17741 --required' --reason "CI on #17741"
   board wait Ab3dEf9x --check 'curl -fsS https://staging.example.com/health' --every 5m --timeout 1h
   board wait Ab3dEf9x --in 20m --reason "the deploy settles"
+```
+
+### board watch
+
+```
+Usage: board watch [options] <task> [command...]
+
+Inside a run: start a watch instead of sleeping or polling. A watch belongs to
+the task, lives on its machine, and reports an event that reaches you as a
+message: in this run if it is still going, otherwise when the task resumes in
+its session. Keep working if there is work; end your turn when there is none,
+and the task waits without holding a slot. A task may have several watches.
+
+Give exactly one source. --ci watches the checks of a pull request (the PR is
+the argument, or the one you reported with "board pr"; --required looks at the
+required checks only; a new commit restarts it) and reports when they have
+passed, one failed, or the PR was merged or closed. A command after -- is run
+every --every (default 30s, at least 15s) in this directory, with the env of
+your Claude Code settings, and reports once it exits 0; it needs --name, and it
+is run once right away. --in or --at is a timer.
+
+--timeout (default 2h, at most 7 days) is how long a ci or command watch looks
+before it reports that it timed out. The command stays on this machine. The same
+name again replaces the open watch. If the answer is there at once, it is
+printed and no watch is stored; a command that cannot run here is refused.
+
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
+
+Arguments:
+  task                  the task: its id, a board task link or the start of its
+                        id
+  command               after --: the shell command that exits 0 once the wait
+                        is over
+
+Options:
+  --ci [pr]             watch the checks of a PR (URL or number; default: the PR
+                        of this task)
+  --required            with --ci: the required checks only
+  --name <name>         the watch's name (default: ci, or timer); a command
+                        needs one
+  --every <duration>    with a command: how often it runs (default 30s, at least
+                        15s)
+  --timeout <duration>  report a timeout after this long (default 2h, at most
+                        7d)
+  --in <duration>       a timer: report after this long (30m, 2h, 1d, 1h30m)
+  --at <time>           a timer: report then (2027-01-01T12:00, 2027-01-01,
+                        09:30)
+  --dry-run             read everything, print every write instead of doing it
+  -h, --help            display help for command
+
+Examples:
+  board watch Ab3dEf9x --ci
+  board watch Ab3dEf9x --ci 17741 --required --timeout 1h
+  board watch Ab3dEf9x --name health --every 1m -- 'curl -fsS https://staging.example.com/health'
+  board watch Ab3dEf9x --in 30m --name deploy
+```
+
+### board watches
+
+```
+Usage: board watches [options] <task>
+
+List the open watches of a task on this machine: each one's name and source,
+until when it looks, and what its last look said, and how many events the agent
+has not been handed yet. With --json, print the list on stdout.
+
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
+
+Arguments:
+  task        the task: its id, a board task link or the start of its id
+
+Options:
+  --json      print JSON on stdout instead of text
+  --dry-run   read everything, print every write instead of doing it
+  -h, --help  display help for command
+
+Examples:
+  board watches Ab3dEf9x
+  board watches Ab3dEf9x --json
+```
+
+### board unwatch
+
+```
+Usage: board unwatch [options] <task> <name>
+
+Stop the open watch of that name on a task on this machine. It reports nothing.
+"board watches" lists the names.
+
+<task> can be the full id, a link to the task on this board (as the CLI prints
+it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
+not exactly 8, which counts as a whole older id; an exact-case match wins, else
+case does not matter; it must be unique). Inside a board run only the full id is
+accepted.
+
+Arguments:
+  task        the task: its id, a board task link or the start of its id
+  name        the name of the watch
+
+Options:
+  --dry-run   read everything, print every write instead of doing it
+  -h, --help  display help for command
+
+Examples:
+  board unwatch Ab3dEf9x ci
 ```
 
 ### board add
@@ -623,70 +732,6 @@ Examples:
   board dirs set default true
   board dirs set lane reviews ~/workspace/reviews
   board dirs unset label
-```
-
-### board agents
-
-```
-Usage: board agents [options] [list | show <name> | export <name> | add <file|-|url|example:name> | rm <name>]
-
-Manage the agents of this machine: the named sets of tools and rules a task runs
-as when it names one (see Agents in docs/workers.md). An agent is defined either
-under `agents` in config.json or as a file `<name>.yaml` (or `.yml`, `.json`) in
-the `agents` directory beside it; both are checked the same strict way, and a
-name defined in both places is unusable.
-
-Without arguments (or with `list`), print each agent with its tools, how many
-allow and deny rules it has, where it is defined, where it came from, and
-whether it is usable here (a definition that does not parse, or a plugin
-placeholder such as `{pr-review}` that does not resolve, is not). `show <name>`
-prints one agent as a YAML document (`--json` for JSON), the same shape `add`
-reads; `export <name>` prints the same without the `source` this machine
-recorded, to share it.
-
-`add <file | - | https-url | example:name>` reads a definition (YAML or JSON:
-the keys of a config.json agent plus `name` and `version`) from a file, from
-stdin, from an https URL or from an example that ships with the CLI, and writes
-it to `agents/<name>.yaml` (mode 600). The name is `--name`, else the document's
-`name`, else the file name. An agent definition decides what a run may do on
-this machine, so `add` first prints the whole definition and every tool, allow
-rule, deny rule, env variable and MCP server it grants, flags broad rules
-(`Bash`, `Bash(*)`, a rule that runs a shell or `curl`, `Read` of a whole tree),
-env names that look like secrets and an empty deny list, says whether its plugin
-placeholders resolve, and writes only after you confirm at a terminal or pass
-`--yes`. An agent that exists needs `--replace`; one defined in config.json is
-not replaced.
-
-A URL must be https; the fetch takes at most 15 seconds and 256 KB, and follows
-a redirect only to https on the same host. `#sha256=<hex>` at the end of the URL
-pins the file: `add` refuses one whose sha256 differs. The URL is recorded as
-the agent's `source`; nothing updates it later, so run `add --replace` again to
-take a newer version.
-
-`rm <name>` removes the agent's file, or its entry in config.json (the rest of
-the file stays as it is). `add` and `rm` are not available inside a board run.
-
-Arguments:
-  action         list, show, export, add or rm, and a name or a source
-
-Options:
-  --json         list, show, export: print JSON instead of text or YAML
-  --yaml         show, export: print YAML (the default)
-  --name <name>  add: the name to add the agent under
-  --replace      add: overwrite an agent of that name
-  -y, --yes      add: write without asking (read the definition first)
-  --dry-run      read everything, print every write instead of doing it
-  -h, --help     display help for command
-
-Examples:
-  board agents
-  board agents show reviewer
-  board agents export reviewer > reviewer.yaml
-  board agents add example:reviewer
-  board agents add ./reviewer.yaml --name reviewer-strict
-  board agents add https://example.com/agents/reviewer.yaml#sha256=<hex>
-  yq -o json reviewer.yaml | board agents add - --yes
-  board agents rm reviewer
 ```
 
 ### board init

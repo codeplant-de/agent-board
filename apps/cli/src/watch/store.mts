@@ -32,7 +32,7 @@ export { isPrUrl, isWatchName } from './shapes.mts';
 
 const COMMIT = /^[0-9a-f]{40}$/;
 const WATCH_ID = /^[A-Za-z0-9-]{8,64}$/;
-const MAX_COMMAND_CHARS = 8000;
+export const MAX_COMMAND_CHARS = 8000;
 
 export const DEFAULT_TIMEOUT_MS = 2 * 60 * 60_000;
 export const CI_EVERY_MS = 30_000;

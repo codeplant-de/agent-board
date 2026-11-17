@@ -56,6 +56,25 @@ The worker starts `claude -p` with `--input-format stream-json` and keeps its st
 
 A message that has not been handed over when the run ends (the agent had finished or the worker had closed stdin) is not lost: the task goes to the top of Todo to resume in its session with the message, and a note in the thread says so. If you stop the run or take the task back instead, the message becomes an ordinary reply that the next Send & continue carries. A worker whose server does not offer the run inbox runs as before and never reads it; a CLI too old to know the inbox ignores stop requests, and the task page says so after a minute (Take back still works).
 
+## Watches
+
+A watch (`board watch`, see [Waiting](usage.md#waiting)) is kept in `<state dir>/watches/<task>/watch-<name>.json` on the task's machine. The **watch unit**, `agent-board-watch.service` (a launchd agent on macOS), written by `board setup`, polls them:
+
+- It rescans the directory every 2 seconds, so `board watch` only writes a file, and attempts each watch on its own timer (`--every`, 30 seconds for `--ci`). An attempt may take 2 minutes. It touches `<state dir>/watches/.heartbeat` on every scan.
+- An event is written to `<state dir>/watches/<task>/event-<time>-<name>.json` and posted to the thread as an agent comment. Then the unit's one rule: an event not handed over and no live run for the task means `wake`. A worker marks its task as live with `<task>/live` (its pid) while it runs. When `wake` answers `applied: false` (the task is in Needs me, paused in Todo, or still running), the event stays for the next resume. If the worker's run goes away while an event waits, the unit tries the wake once more: that covers an event that fires between the worker's decision to park and its exit.
+- It keeps nothing in memory that is not on disk, so `board self-update` restarts it as it restarts the listener, and a reboot loses nothing.
+- Finishing a watch is a rename of its file: whichever process (the unit, the dispatch tick, `board unwatch`) renames it first writes the event, so no event is written twice.
+
+On the worker's side:
+
+- Every 2 seconds the worker looks for events of its task and hands them to the agent on stdin as one user message, deleting the files it handed over.
+- At the end of a turn (a `result` line) it looks again. A pending event is sent as the next message and the run goes on, as long as the task still runs (an agent that asked a question or parked with `board wait` keeps its events for the next resume). Without one, the worker closes stdin as before.
+- A run that ends with watches open and the task still running is parked: the worker calls `wait` itself, with `wakeAt` the earliest timeout and `waitCheck` set when a watch is not a timer, and the thread gets "Waiting for watches: …".
+- A resume builds its prompt from the event files, which are deleted at the agent's first output. The worker logs the oldest event's time, the wake and its own start, and at the first output how long it took from each, so the cost of `claude --resume` can be read from the task log.
+- A fresh run (Re-run fresh) drops the task's watches first.
+
+**Fallback.** On a machine where the unit does not run (`board setup` was not rerun after the update), the dispatch tick polls the watches that are due, with 45 seconds per attempt, and logs `WARN watches on this machine are polled by the dispatch tick: the watch unit is not running; run "board setup"`. The tick polls only when the unit's heartbeat is older than 30 seconds, so the two never run the same attempt. Whatever the heartbeat says, the tick also finishes the timeouts of a task whose `wakeAt` has passed before it wakes it, wakes a waiting task that has an event and no live run, and drops the watches of a task that is Done, closed, in Backlog or gone.
+
 ## Transcripts
 
 Every run records what it did. The worker starts `claude -p` with `--output-format stream-json --verbose`, condenses each event (the agent's text, each tool call with its input, each tool result, subagent calls tagged with their Agent call, notes such as the model and directory, and the result with turns, time, cost and refused tool calls), writes a readable line per event to the local log, and sends the events to the board with every 15-second check and once more when the run ends. A batch the board refuses is sent again with the next. What waits for a board that is down is bounded by count (20,000 events) and by size (32 MB of JSON): past either, the oldest tool outputs are emptied first, then the oldest events dropped, and a note in the transcript says how many. The end of the run makes two bounded passes.

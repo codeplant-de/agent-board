@@ -281,6 +281,36 @@ test('the listener unit is checked like the timers, but a missing or stopped one
   assert.equal(levels(vanished)['agent-board-listen.service command'], 'fail');
 });
 
+test('the watch unit is checked like the listener, and a missing or stopped one only warns', async () => {
+  const units = unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch']);
+  const watch = `${UNIT_DIR}/agent-board-watch.service`;
+  const watcher = (results: CheckResult[]) => results.filter((result) => result.name.includes('agent-board-watch'));
+
+  const missing = watcher(await runChecks(machine({ ...GOOD, ...units }, { exists: (path) => path !== watch })));
+  assert.deepEqual(levels(missing), { 'unit agent-board-watch.service': 'warn' });
+  assert.match(missing[0]?.hint ?? '', /board setup/);
+
+  const running = await runChecks(machine({ ...GOOD, ...units }, { exists: () => true }));
+  assert.deepEqual(levels(watcher(running)), {
+    'unit agent-board-watch.service': 'ok',
+    'agent-board-watch.service command': 'ok',
+    'agent-board-watch.service state': 'ok',
+  });
+
+  const stopped = await runChecks(
+    machine(
+      { ...GOOD, ...units },
+      { exists: () => true, systemctl: async (args) => (args.at(-1) === 'agent-board-watch.service' ? 1 : 0) },
+    ),
+  );
+  assert.equal(levels(stopped)['agent-board-watch.service state'], 'warn');
+  assert.equal(levels(stopped)['agent-board-listen.service state'], 'ok');
+  assert.equal(hasFailure(stopped), false);
+
+  const vanished = await runChecks(machine({ ...GOOD, ...units }, { exists: (path) => path !== '/usr/bin/node' }));
+  assert.equal(levels(vanished)['agent-board-watch.service command'], 'fail');
+});
+
 test('a result prints as one line with its hint under it', () => {
   assert.equal(formatResult({ name: 'x', level: 'ok', message: 'fine' }), '✓ x: fine');
   assert.equal(formatResult({ name: 'x', level: 'fail', message: 'bad', hint: 'fix it' }), '✗ x: bad\n    → fix it');
@@ -681,6 +711,7 @@ const MAC_CONFIG = `${MAC_HOME}/.config/agent-board`;
 const RUN_DIR = `${MAC_HOME}/.local/state/agent-board/run`;
 const DISPATCH_PLIST = 'de.codeplant.agent-board.dispatch.plist';
 const LISTEN_PLIST = 'de.codeplant.agent-board.listen.plist';
+const WATCH_PLIST = 'de.codeplant.agent-board.watch.plist';
 
 function agentFiles(): Record<string, { text: string }> {
   return Object.fromEntries(
@@ -745,6 +776,9 @@ test('a macOS worker machine in order passes every check', async () => {
       `launchd ${LISTEN_PLIST}`,
       `${LISTEN_PLIST} command`,
       'de.codeplant.agent-board.listen state',
+      `launchd ${WATCH_PLIST}`,
+      `${WATCH_PLIST} command`,
+      'de.codeplant.agent-board.watch state',
     ],
   );
   assert.ok(
@@ -767,6 +801,7 @@ test('a macOS machine with no agent warns, and with one installed a missing tool
   );
   assert.equal(listenerMissing['tool gh'], 'fail');
   assert.equal(listenerMissing[`launchd ${LISTEN_PLIST}`], 'warn', 'the listener only adds speed to the timer');
+  assert.equal(listenerMissing[`launchd ${WATCH_PLIST}`], 'warn', 'the tick polls the watches without the watch agent');
 });
 
 test('a macOS agent whose program is gone fails', async () => {
@@ -774,6 +809,7 @@ test('a macOS agent whose program is gone fails', async () => {
   const results = await runChecks({ ...base, exists: (path) => path !== '/usr/local/bin/board' && base.exists(path) });
   assert.equal(levels(results)[`${DISPATCH_PLIST} command`], 'fail');
   assert.equal(levels(results)[`${LISTEN_PLIST} command`], 'fail');
+  assert.equal(levels(results)[`${WATCH_PLIST} command`], 'fail');
 });
 
 test('a macOS agent that launchd has not loaded warns with the bootstrap line; an unwritable run directory fails', async () => {
