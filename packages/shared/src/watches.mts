@@ -21,8 +21,7 @@ export function isWatchId(value: unknown): value is string {
   return typeof value === 'string' && WATCH_ID.test(value);
 }
 
-// `pr` is a watch for the merge or close of a PR (`--pr-merged`).
-export const WATCH_KINDS = ['ci', 'pr', 'command', 'timer'] as const;
+export const WATCH_KINDS = ['ci', 'command', 'timer', 'pr-review', 'pr-merged'] as const;
 export type WatchKind = (typeof WATCH_KINDS)[number];
 
 export const MAX_WATCH_LABEL_CHARS = 120;

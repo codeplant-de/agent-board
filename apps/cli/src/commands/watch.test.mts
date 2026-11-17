@@ -9,15 +9,15 @@ import {
   commandResult,
   fakeRunner,
   HEAD,
+  mergedDef,
+  mergedFixture,
   PR,
-  prDef,
-  prViewFixture,
   tempDir,
   timerDef,
   watchDef,
 } from '../__tests__/helpers/watch.mts';
 import type { FakeRunner } from '../__tests__/helpers/watch.mts';
-import { prViewCommand } from '../watch/pr.mts';
+import { mergedViewCommand } from '../watch/merged.mts';
 import { createWatchStore } from '../watch/store.mts';
 import { parseWatchFlags, reportedPr } from './watch.mts';
 import { runBoard } from './program.mts';
@@ -69,13 +69,13 @@ test('flags: one source, with its defaults', () => {
   });
   assert.equal(parseWatchFlags({ ci: '17', required: true, name: 'build', timeout: '1h' }, [], NOW).kind, 'ci');
   assert.deepEqual(parseWatchFlags({ prMerged: true }, [], NOW), {
-    kind: 'pr',
+    kind: 'pr-merged',
     name: 'pr-merged',
     pr: undefined,
     deadline: new Date(NOW.getTime() + 7 * 24 * HOUR),
   });
   assert.deepEqual(parseWatchFlags({ prMerged: '17', name: 'landed', timeout: '1h' }, [], NOW), {
-    kind: 'pr',
+    kind: 'pr-merged',
     name: 'landed',
     pr: '17',
     deadline: new Date(NOW.getTime() + HOUR),
@@ -108,6 +108,7 @@ test('flags: every mistake is a usage error that names the fix', () => {
     [{ ci: true, in: '5m' }, [], /exactly one source/],
     [{ in: '5m' }, ['true'], /exactly one source/],
     [{ ci: true, prMerged: true }, [], /exactly one source/],
+    [{ prReview: true, prMerged: true }, [], /exactly one source/],
     [{ prMerged: true }, ['true'], /exactly one source/],
     [{ prMerged: true, in: '5m' }, [], /exactly one source/],
     [{ prMerged: true, required: true }, [], /--required goes with --ci/],
@@ -126,8 +127,8 @@ test('flags: every mistake is a usage error that names the fix', () => {
     [{ ci: true, timeout: '8d' }, [], /at most 1w/],
     [{ ci: true, timeout: 'x' }, [], /--timeout/],
     [{ ci: true, every: '1m' }, [], /--every goes with a command/],
-    [{ in: '5m', every: '1m' }, [], /go with --ci, --pr-merged or a command/],
-    [{ in: '5m', timeout: '1h' }, [], /go with --ci, --pr-merged or a command/],
+    [{ in: '5m', every: '1m' }, [], /go with --ci, --pr-review, --pr-merged or a command/],
+    [{ in: '5m', timeout: '1h' }, [], /go with --ci, --pr-review, --pr-merged or a command/],
     [{ in: '8d' }, [], /at most 1w/],
     [{ name: 'Bad Name' }, ['true'], /--name must be/],
     [{ ci: true, name: '-x' }, [], /--name must be/],
@@ -251,16 +252,91 @@ test('a ci watch whose checks have all passed reports at once and stores nothing
   assert.match(printed.join('\n'), /CI on .* passed: 1 check passed/);
 });
 
+const reviewView = (comments: object[]) =>
+  commandResult(0, JSON.stringify({ url: PR, state: 'OPEN', author: { login: 'octo-dev' }, reviews: [], comments }));
+const comment = (id: string, login: string, body: string) => ({
+  id,
+  author: { login },
+  body,
+  createdAt: '2026-01-01T11:00:00Z',
+  url: `${PR}#issuecomment-1`,
+});
+
+test('a pr-review watch follows the PR the task reported, remembers what is there and whose gh this is', async () => {
+  const { go, run, watches, printed } = setup({ prs: [taskPr(PR)] });
+  run.runner = fakeRunner({
+    'gh api user': commandResult(0, 'board-machine\n'),
+    [`gh pr view '${PR}' --json url,state,author,reviews,comments`]: reviewView([comment('IC_old', 'someone', 'old')]),
+  });
+  await go(['watch', ID, '--pr-review']);
+  const [def] = watches.list(ID).defs;
+  assert.equal(def?.name, 'review');
+  assert.deepEqual(def?.source, { kind: 'pr-review', pr: PR, self: 'board-machine', seen: ['IC_old'], cwd: '/work' });
+  assert.equal(def?.everyMs, 60_000);
+  assert.equal(def?.deadline, '2026-01-02T12:00:00.000Z');
+  assert.equal(def?.last?.summary, 'waiting for a review or comment, 1 there already');
+  assert.deepEqual(run.runner.calls, [
+    `gh pr view '${PR}' --json url,headRefOid`,
+    'gh api user --jq .login',
+    `gh pr view '${PR}' --json url,state,author,reviews,comments`,
+  ]);
+  assert.ok(printed.some((line) => line.startsWith('watching "review" on')));
+});
+
+test('a pr-review watch takes a PR and a timeout, works without a gh user, and refuses --every and --required', async () => {
+  const { go, run, watches } = setup();
+  run.runner = fakeRunner({ 'gh api user': commandResult(1, 'HTTP 403') });
+  await go(['watch', ID, '--pr-review', '7', '--timeout', '3h', '--name', 'bot']);
+  const [def] = watches.list(ID).defs;
+  assert.deepEqual(def?.source, { kind: 'pr-review', pr: PR, seen: [], cwd: '/work' });
+  assert.equal(def?.deadline, '2026-01-01T15:00:00.000Z');
+  assert.equal(run.runner.calls[0], `gh pr view '7' --json url,headRefOid`);
+  await assert.rejects(go(['watch', ID, '--pr-review', '--every', '5m']), /a review watch looks every 1m/);
+  await assert.rejects(go(['watch', ID, '--pr-review', '--required']), /--required goes with --ci/);
+  await assert.rejects(go(['watch', ID, '--pr-review', '--ci']), /exactly one source/);
+  await assert.rejects(go(['watch', ID, '--pr-review', 'x; rm -rf /']), /--pr-review takes a PR URL or number/);
+  const none = setup();
+  await assert.rejects(
+    none.go(['watch', ID, '--pr-review']),
+    new RegExp(`give the PR: board watch ${ID} --pr-review <url>`),
+  );
+});
+
+test('a pr-review watch whose PR is merged reports at once, and one gh cannot read fails the call', async () => {
+  const { go, run, watches, printed } = setup({ prs: [taskPr(PR)] });
+  run.runner = fakeRunner({
+    [`gh pr view '${PR}' --json url,state`]: commandResult(
+      0,
+      JSON.stringify({ url: PR, state: 'MERGED', author: { login: 'octo-dev' }, reviews: [], comments: [] }),
+    ),
+  });
+  await go(['watch', ID, '--pr-review']);
+  assert.deepEqual(watches.list(ID).defs, []);
+  assert.match(printed.join('\n'), /was merged/);
+  run.runner = fakeRunner({ [`gh pr view '${PR}' --json url,state`]: commandResult(1, 'HTTP 401: Bad credentials') });
+  await assert.rejects(go(['watch', ID, '--pr-review']), /cannot watch "review": HTTP 401: Bad credentials/);
+});
+
+test('watches lists a pr-review watch, and --json leaves out what it has seen', async () => {
+  const { go, printed, out } = setup({ prs: [taskPr(PR)] });
+  await go(['watch', ID, '--pr-review']);
+  await go(['watches', ID]);
+  assert.ok(printed.some((line) => line === `review  reviews and comments of ${PR}`));
+  await go(['watches', ID, '--json']);
+  const [listed] = JSON.parse(out.join('')) as { source: unknown }[];
+  assert.deepEqual(listed?.source, { kind: 'pr-review', pr: PR });
+});
+
 test('a pr-merged watch resolves the PR, stores its URL and looks every minute for up to seven days', async () => {
   const { go, watches, run, printed } = setup({ prs: [taskPr(PR)] });
   await go(['watch', ID, '--pr-merged'], { env: { AGENT_BOARD_START_DIR: '/start' } });
   const [def] = watches.list(ID).defs;
   assert.equal(def?.name, 'pr-merged');
   assert.equal(def?.everyMs, 60_000);
-  assert.deepEqual(def?.source, { kind: 'pr', pr: PR, cwd: '/work', settingsDir: '/start' });
+  assert.deepEqual(def?.source, { kind: 'pr-merged', pr: PR, cwd: '/work', settingsDir: '/start' });
   assert.equal(def?.deadline, '2026-01-08T12:00:00.000Z');
   assert.deepEqual(def?.last, { at: NOW.toISOString(), summary: 'still open' });
-  assert.deepEqual(run.runner.calls, [`gh pr view '${PR}' --json url,headRefOid`, prViewCommand(PR)]);
+  assert.deepEqual(run.runner.calls, [`gh pr view '${PR}' --json url,headRefOid`, mergedViewCommand(PR)]);
   assert.match(printed[0] ?? '', /^watching "pr-merged" on Zt0Test1: still open; until /);
   assert.ok(printed.some((line) => line.startsWith('Keep working if there is work')));
 });
@@ -270,7 +346,7 @@ test("a pr-merged watch takes a PR number or URL over the task's PR, and checks 
   await go(['watch', ID, '--pr-merged', '17', '--timeout', '1h']);
   assert.equal(run.runner.calls[0], `gh pr view '17' --json url,headRefOid`);
   // The watch follows the URL gh printed for the number.
-  assert.equal(run.runner.calls[1], prViewCommand(PR));
+  assert.equal(run.runner.calls[1], mergedViewCommand(PR));
   assert.equal(watches.list(ID).defs[0]?.deadline, '2026-01-01T13:00:00.000Z');
   for (const bad of ['17; rm -rf ~', '$(id)', '0', 'https://example.com/a/b/pull/1', '-1'])
     await assert.rejects(go(['watch', ID, '--pr-merged', bad]), /--pr-merged takes a PR URL or number/, bad);
@@ -290,7 +366,7 @@ test('a pr-merged watch on a PR that is merged or closed already prints the even
     ['closed', `PR ${PR} was closed without merging.`],
   ] as const) {
     const { go, run, watches, printed, backend } = setup({ prs: [taskPr(PR, state)] });
-    run.runner = fakeRunner({ [prViewCommand(PR)]: commandResult(0, prViewFixture(state)) });
+    run.runner = fakeRunner({ [mergedViewCommand(PR)]: commandResult(0, mergedFixture(state)) });
     await go(['watch', ID, '--pr-merged']);
     assert.deepEqual(watches.list(ID).defs, [], state);
     assert.deepEqual(watches.events(ID), [], state);
@@ -308,8 +384,8 @@ test('a pr-merged watch on a PR that is merged or closed already prints the even
 
 test('a pr-merged watch that has its answer already ends an open watch of that name without a late report', async () => {
   const { go, run, watches, backend } = setup({ prs: [taskPr(PR)] });
-  watches.write(prDef({ task: ID }));
-  run.runner = fakeRunner({ [prViewCommand(PR)]: commandResult(0, prViewFixture('merged')) });
+  watches.write(mergedDef({ task: ID }));
+  run.runner = fakeRunner({ [mergedViewCommand(PR)]: commandResult(0, mergedFixture('merged')) });
   await go(['watch', ID, '--pr-merged']);
   assert.deepEqual(watches.list(ID).defs, []);
   assert.deepEqual(
@@ -322,7 +398,7 @@ test('a pr-merged watch whose PR gh cannot read fails the call, at the resolve a
   const { go, run, watches } = setup({ prs: [taskPr(PR)] });
   run.runner = fakeRunner({ 'gh pr view': commandResult(1, 'no pull requests found') });
   await assert.rejects(go(['watch', ID, '--pr-merged']), /cannot read the PR .*no pull requests found/);
-  run.runner = fakeRunner({ [prViewCommand(PR)]: commandResult(1, 'HTTP 502: Bad Gateway') });
+  run.runner = fakeRunner({ [mergedViewCommand(PR)]: commandResult(1, 'HTTP 502: Bad Gateway') });
   await assert.rejects(go(['watch', ID, '--pr-merged']), /cannot watch "pr-merged": HTTP 502: Bad Gateway/);
   assert.deepEqual(watches.list(ID).defs, []);
 });
@@ -372,21 +448,22 @@ test('the task must be here and running or waiting', async () => {
   assert.equal(waiting.watches.list(ID).defs.length, 1);
 });
 
-test('an agent run and a task of the removed intake may watch a ci or a timer, not a command', async () => {
+test('an agent run and a task of the removed intake may watch a ci, a review or a timer, not a command', async () => {
   const restricted = setup({ prs: [taskPr(PR)] });
   await assert.rejects(
     restricted.go(['watch', ID, '--name', 'x', '--', 'true'], { env: { AGENT_BOARD_RESTRICTED: '1' } }),
-    /fixed list of commands.*--ci, --pr-merged or --in\/--at only/,
+    /fixed list of commands.*--ci, --pr-review, --pr-merged or --in\/--at only/,
   );
   await restricted.go(['watch', ID, '--ci'], { env: { AGENT_BOARD_RESTRICTED: '1' } });
-  await restricted.go(['watch', ID, '--in', '5m'], { env: { AGENT_BOARD_RESTRICTED: '1' } });
+  await restricted.go(['watch', ID, '--pr-review'], { env: { AGENT_BOARD_RESTRICTED: '1' } });
   await restricted.go(['watch', ID, '--pr-merged'], { env: { AGENT_BOARD_RESTRICTED: '1' } });
+  await restricted.go(['watch', ID, '--in', '5m'], { env: { AGENT_BOARD_RESTRICTED: '1' } });
   assert.deepEqual(
     restricted.watches
       .list(ID)
       .defs.map((def) => def.name)
       .sort(),
-    ['ci', 'pr-merged', 'timer'],
+    ['ci', 'pr-merged', 'review', 'timer'],
   );
   assert.deepEqual(
     restricted.run.runner.calls.filter((call) => call.includes('true')),
@@ -396,6 +473,16 @@ test('an agent run and a task of the removed intake may watch a ci or a timer, n
   const intake = setup({ createdBy: 'intake' });
   await assert.rejects(intake.go(['watch', ID, '--name', 'x', '--', 'true']), /removed intake/);
   assert.deepEqual(intake.watches.list(ID).defs, []);
+});
+
+test('a timer says its end once, to the second when it is less than ten minutes away', async () => {
+  const { go, printed } = setup();
+  await go(['watch', ID, '--in', '1m'], { now: () => new Date('2026-01-01T11:45:40Z') });
+  assert.match(printed[0] ?? '', /^watching "timer" on Zt0Test1: waiting until 2026-01-01 \d\d:\d\d:40$/);
+  assert.equal(printed[0]?.match(/until/g)?.length, 1);
+  printed.length = 0;
+  await go(['watch', ID, '--in', '20m', '--name', 'later']);
+  assert.match(printed[0] ?? '', /^watching "later" on Zt0Test1: waiting until 20\d\d-\d\d-\d\d \d\d:\d\d$/);
 });
 
 test('--dry-run stores nothing and runs nothing', async () => {
@@ -470,7 +557,7 @@ test('watches lists name, source, until, last attempt and undelivered events, or
     everyMs: 60_000,
   });
   watches.write(timerDef({ task: ID }));
-  watches.write(prDef({ task: ID, id: 'b1b2c3d4e5f60718' }));
+  watches.write(mergedDef({ task: ID, id: 'b1b2c3d4e5f60718' }));
   watches.writeEvent({
     id: 'e1e1e1e1e1',
     task: ID,
@@ -490,7 +577,7 @@ test('watches lists name, source, until, last attempt and undelivered events, or
   assert.match(text, /timer {2}timer\n/);
   assert.match(
     text,
-    /pr-merged {2}pr-merged https:\/\/github\.com\/acme\/app\/pull\/7\n {2}until .*; not looked at yet/,
+    /pr-merged {2}merge of https:\/\/github\.com\/acme\/app\/pull\/7\n {2}until .*; not looked at yet/,
   );
   assert.match(text, /1 event not handed to the agent yet$/);
   await go(['watches', ID, '--json']);
@@ -500,11 +587,11 @@ test('watches lists name, source, until, last attempt and undelivered events, or
     [
       ['ci', 'ci'],
       ['health', 'command'],
-      ['pr-merged', 'pr'],
+      ['pr-merged', 'pr-merged'],
       ['timer', 'timer'],
     ],
   );
-  assert.deepEqual((list as { source: unknown }[])[2]?.source, { kind: 'pr', pr: PR });
+  assert.deepEqual((list as { source: unknown }[])[2]?.source, { kind: 'pr-merged', pr: PR });
 });
 
 test("move to needs-me from inside the run for its own task drops its watches; a user's move does not", async () => {

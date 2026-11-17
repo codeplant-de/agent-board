@@ -31,12 +31,12 @@ export function commandDef(command: string, overrides: Partial<WatchDef> = {}): 
   });
 }
 
-export const prDef = (overrides: Partial<WatchDef> = {}): WatchDef =>
-  watchDef({ name: 'pr-merged', source: { kind: 'pr', pr: PR, cwd: '/work' }, everyMs: 60_000, ...overrides });
+export const mergedDef = (overrides: Partial<WatchDef> = {}): WatchDef =>
+  watchDef({ name: 'pr-merged', source: { kind: 'pr-merged', pr: PR, cwd: '/work' }, everyMs: 60_000, ...overrides });
 
 // What `gh pr view <pr> --json state,mergedAt,closedAt,mergeCommit` printed for a merged, a closed and an open PR.
-export const prViewFixture = (state: 'merged' | 'closed' | 'open'): string =>
-  readFileSync(new URL(`../fixtures/gh/pr-view-${state}.json`, import.meta.url), 'utf8');
+export const mergedFixture = (state: 'merged' | 'closed' | 'open'): string =>
+  readFileSync(new URL(`../fixtures/pr-merged-${state}.json`, import.meta.url), 'utf8');
 
 export const timerDef = (overrides: Partial<WatchDef> = {}): WatchDef =>
   watchDef({ name: 'timer', source: { kind: 'timer' }, everyMs: 0, ...overrides });
@@ -66,8 +66,8 @@ export interface FakeRunner extends WatchRunner {
 }
 
 /**
- * A runner that starts no process: `gh pr view` finds the open PR at HEAD (and says it is open when asked for its merge), `gh pr checks` has one check still running, and any
- * other command exits 1 with "not yet". `answer` overrides a command by a prefix it starts with.
+ * A runner that starts no process: `gh pr view` finds the open PR at HEAD (asked for its reviews and comments: none, by
+ * octo-dev; asked for its merge: still open), `gh pr checks` has one check still running, and any other command exits 1 with "not yet". `answer` overrides a command by a prefix it starts with.
  */
 export function fakeRunner(answer: Record<string, CommandResult> = {}): FakeRunner {
   const calls: string[] = [];
@@ -76,7 +76,12 @@ export function fakeRunner(answer: Record<string, CommandResult> = {}): FakeRunn
     const given = Object.entries(answer).find(([prefix]) => command.startsWith(prefix));
     if (given !== undefined) return given[1];
     if (command.startsWith('gh pr view') && command.includes('--json state,'))
-      return commandResult(0, prViewFixture('open'));
+      return commandResult(0, mergedFixture('open'));
+    if (command.startsWith('gh pr view') && command.includes('reviews,comments'))
+      return commandResult(
+        0,
+        JSON.stringify({ url: PR, state: 'OPEN', author: { login: 'octo-dev' }, reviews: [], comments: [] }),
+      );
     if (command.startsWith('gh pr view'))
       return commandResult(0, JSON.stringify({ url: PR, headRefOid: HEAD, state: 'OPEN' }));
     if (command.startsWith('gh pr checks'))

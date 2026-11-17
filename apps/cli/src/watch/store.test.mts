@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { commandDef, PR, prDef, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
+import { commandDef, mergedDef, PR, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
 import { createWatchStore, isWatchName, parseWatchDef, parseWatchEvent } from './store.mts';
 import type { WatchEvent } from './store.mts';
 
@@ -90,18 +90,6 @@ test('a watch definition is shape-checked: the PR, the directories, the commit a
   assert.equal(bad({ deadline: 'soon' }), undefined);
   assert.equal(bad({ everyMs: 0 }), undefined);
   assert.equal(parseWatchDef(timerDef())?.everyMs, 0);
-  const pr = prDef({ source: { kind: 'pr', pr: PR, cwd: '/work', settingsDir: '/start' } });
-  assert.deepEqual(parseWatchDef(pr), pr);
-  // A pr watch keeps its PR, its directories and nothing else.
-  assert.deepEqual(parseWatchDef({ ...pr, source: { ...pr.source, settingsDir: 'rel', required: true } })?.source, {
-    kind: 'pr',
-    pr: PR,
-    cwd: '/work',
-  });
-  assert.equal(parseWatchDef({ ...pr, source: { ...pr.source, pr: 'https://evil.test/a/b/pull/7' } }), undefined);
-  assert.equal(parseWatchDef({ ...pr, source: { ...pr.source, pr: 7 } }), undefined);
-  assert.equal(parseWatchDef({ ...pr, source: { kind: 'pr', pr: PR } }), undefined);
-  assert.equal(parseWatchDef({ ...pr, everyMs: 0 }), undefined);
   const noisy = parseWatchDef({
     ...good,
     source: { ...good.source, head: 'not-a-commit', settingsDir: 'rel' },
@@ -109,6 +97,45 @@ test('a watch definition is shape-checked: the PR, the directories, the commit a
   });
   assert.equal(noisy?.source.kind === 'ci' && noisy.source.head, undefined);
   assert.equal(noisy?.last, undefined);
+});
+
+test('a pr-merged watch is shape-checked: it keeps its PR, its directories and nothing else', () => {
+  const merged = mergedDef({ source: { kind: 'pr-merged', pr: PR, cwd: '/work', settingsDir: '/start' } });
+  assert.deepEqual(parseWatchDef(merged), merged);
+  assert.deepEqual(
+    parseWatchDef({ ...merged, source: { ...merged.source, settingsDir: 'rel', required: true } })?.source,
+    { kind: 'pr-merged', pr: PR, cwd: '/work' },
+  );
+  assert.equal(
+    parseWatchDef({ ...merged, source: { ...merged.source, pr: 'https://evil.test/a/b/pull/7' } }),
+    undefined,
+  );
+  assert.equal(parseWatchDef({ ...merged, source: { ...merged.source, pr: 7 } }), undefined);
+  assert.equal(parseWatchDef({ ...merged, source: { kind: 'pr-merged', pr: PR } }), undefined);
+  assert.equal(parseWatchDef({ ...merged, everyMs: 0 }), undefined);
+});
+
+test('a pr-review watch is shape-checked: the PR, the ids it has seen and the gh user', () => {
+  const source = { kind: 'pr-review', pr: PR, self: 'board-machine', seen: ['PRR_kwDO1', 'IC_kwDO2'], cwd: '/work' };
+  const good = { ...watchDef(), name: 'review', source, everyMs: 60_000 };
+  assert.deepEqual(parseWatchDef(good)?.source, source);
+  const withSource = (change: object) => parseWatchDef({ ...good, source: { ...source, ...change } })?.source;
+  assert.equal(withSource({ pr: 'https://evil.test/acme/app/pull/7' }), undefined);
+  assert.equal(withSource({ seen: ['ok', 'not an id\n'] }), undefined);
+  assert.equal(withSource({ seen: 'IC_1' }), undefined);
+  assert.equal(withSource({ seen: Array.from({ length: 201 }, (_, n) => `IC_${n}`) }), undefined);
+  // A login that is not one is dropped: then only the PR's author is left out.
+  assert.deepEqual(withSource({ self: 'eve; rm -rf /' }), {
+    kind: 'pr-review',
+    pr: PR,
+    seen: source.seen,
+    cwd: '/work',
+  });
+  const { seen: _seen, ...unseen } = source;
+  assert.deepEqual(
+    parseWatchDef({ ...good, source: { ...unseen, seenBefore: '2026-01-01T00:00:00Z' } })?.source,
+    unseen,
+  );
 });
 
 test('an update only rewrites a watch that is still there under the same id', () => {

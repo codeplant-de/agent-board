@@ -418,7 +418,7 @@ A state is GitHub's state as a worker's dispatcher last saw it, and `null` while
 The sealed `watches` is one envelope for the task and its agent (`task:<id>:agent`). It holds `{"watches": [{"id", "name", "kind", "label", "status", "deadline", "lastAttemptAt"?}], "pendingEvents": n}`:
 
 - `id` is 16 lowercase hex digits and `name` a watch name (`^[a-z0-9][a-z0-9-]{0,31}$`).
-- `kind` is `ci`, `pr` (the merge or close of a PR, `board watch --pr-merged`), `command` or `timer`. A reader drops an entry whose kind it does not know.
+- `kind` is `ci`, `command`, `timer`, `pr-review` or `pr-merged` (the merge or close of a PR). A client drops an entry whose kind it does not know.
 - `label` is what it watches and `status` its state. Each is one line, at most 120 and 200 characters.
 - `deadline` and `lastAttemptAt` are ISO 8601.
 - At most 32 entries.

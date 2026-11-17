@@ -34,6 +34,7 @@ import { ReportedFailure, UsageError } from '../cli.mts';
 import {
   DEFAULT_WATCH_EVERY,
   DEFAULT_PR_MERGED_TIMEOUT,
+  DEFAULT_REVIEW_TIMEOUT,
   DEFAULT_WATCH_TIMEOUT,
   formatWatches,
   readWatches,
@@ -329,8 +330,8 @@ export function registerTaskCommands(shared: ProgramShared): void {
       .description(
         paragraphs(
           'Inside a run: start a watch instead of sleeping or polling. A watch belongs to the task, lives on its machine, and reports an event that reaches you as a message: in this run if it is still going, otherwise when the task resumes in its session. Keep working if there is work; end your turn when there is none, and the task waits without holding a slot. A task may have several watches.',
-          `Give exactly one source. --ci watches the checks of a pull request (the PR is the argument, or the newest open one you reported with "board pr"; --required looks at the required checks only; a new commit restarts it) and reports when they have passed, one failed, or the PR was merged or closed. --pr-merged watches the PR itself (the same default) and reports once it was merged, with the merge commit, or closed without merging; it looks every minute. A command after -- is run every --every (default ${DEFAULT_WATCH_EVERY}, at least 15s) in this directory, with the env of your Claude Code settings, and reports once it exits 0; it needs --name, and it is run once right away. --in or --at is a timer.`,
-          `--timeout (default ${DEFAULT_WATCH_TIMEOUT}, for --pr-merged ${DEFAULT_PR_MERGED_TIMEOUT}; at most 7 days) is how long a ci, pr or command watch looks before it reports that it timed out. The command stays on this machine. The same name again replaces the open watch. If the answer is there at once, it is printed and no watch is stored; a command that cannot run here is refused.`,
+          `Give exactly one source. --ci watches the checks of a pull request (the PR is the argument, or the newest open one you reported with "board pr"; --required looks at the required checks only; a new commit restarts it) and reports when they have passed, one failed, or the PR was merged or closed. --pr-review watches the reviews and comments of a pull request (the same default) every minute and reports the first one that someone other than the PR's author and this machine's gh user writes after the watch started, with who wrote it, the review's state and the first lines of its text. --pr-merged watches the PR itself (the same default) every minute and reports once it was merged, with the merge commit, or closed without merging. A command after -- is run every --every (default ${DEFAULT_WATCH_EVERY}, at least 15s) in this directory, with the env of your Claude Code settings, and reports once it exits 0; it needs --name, and it is run once right away. --in or --at is a timer.`,
+          `--timeout (default ${DEFAULT_WATCH_TIMEOUT}, for --pr-review ${DEFAULT_REVIEW_TIMEOUT}, for --pr-merged ${DEFAULT_PR_MERGED_TIMEOUT}, at most 7 days) is how long a ci, pr-review, pr-merged or command watch looks before it reports that it timed out. The command stays on this machine. The same name again replaces the open watch. If the answer is there at once, it is printed and no watch is stored; a command that cannot run here is refused.`,
           ID_NOTE,
         ),
       )
@@ -342,14 +343,18 @@ export function registerTaskCommands(shared: ProgramShared): void {
       )
       .option('--required', 'with --ci: the required checks only')
       .option(
+        '--pr-review [pr]',
+        'watch the reviews and comments of a PR (URL or number; default: the newest open PR reported for this task)',
+      )
+      .option(
         '--pr-merged [pr]',
         'watch for the merge or close of a PR (URL or number; default: the newest open PR reported for this task)',
       )
-      .option('--name <name>', "the watch's name (default: ci, pr-merged, or timer); a command needs one")
+      .option('--name <name>', "the watch's name (default: ci, review, pr-merged or timer); a command needs one")
       .option('--every <duration>', `with a command: how often it runs (default ${DEFAULT_WATCH_EVERY}, at least 15s)`)
       .option(
         '--timeout <duration>',
-        `report a timeout after this long (default ${DEFAULT_WATCH_TIMEOUT}, with --pr-merged ${DEFAULT_PR_MERGED_TIMEOUT}; at most 7d)`,
+        `report a timeout after this long (default ${DEFAULT_WATCH_TIMEOUT}, with --pr-review ${DEFAULT_REVIEW_TIMEOUT}, with --pr-merged ${DEFAULT_PR_MERGED_TIMEOUT}; at most 7d)`,
       )
       .option('--in <duration>', 'a timer: report after this long (30m, 2h, 1d, 1h30m)')
       .option('--at <time>', 'a timer: report then (2027-01-01T12:00, 2027-01-01, 09:30)')
@@ -358,6 +363,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
         examples(
           'board watch Ab3dEf9x --ci',
           'board watch Ab3dEf9x --ci 17741 --required --timeout 1h',
+          'board watch Ab3dEf9x --pr-review',
           'board watch Ab3dEf9x --pr-merged',
           `board watch Ab3dEf9x --name health --every 1m -- 'curl -fsS https://staging.example.com/health'`,
           'board watch Ab3dEf9x --in 30m --name deploy',

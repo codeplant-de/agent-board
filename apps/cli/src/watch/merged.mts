@@ -1,4 +1,4 @@
-// The pr source (`--pr-merged`): whether a PR was merged or closed, read with `gh pr view`. What to make of what gh said is a
+// The pr-merged source (`--pr-merged`): whether a PR was merged or closed, read with `gh pr view`. What to make of what gh said is a
 // pure function. The dispatcher's PR state lookup (dispatch/github.mts) asks GitHub for many PRs at once and learns the state
 // alone; a watch asks for one PR, in the run's directory and with its settings, and wants the merge commit too. Both read the
 // state through `prStateOf`.
@@ -9,16 +9,16 @@ import { firstLine } from './ci.mts';
 import type { GhOutput } from './ci.mts';
 import type { WatchSource } from './store.mts';
 
-export type PrSource = Extract<WatchSource, { kind: 'pr' }>;
+export type MergedSource = Extract<WatchSource, { kind: 'pr-merged' }>;
 
-export type PrDecision =
+export type MergedDecision =
   // The watch ends with this text.
   | { kind: 'event'; text: string }
   | { kind: 'pending'; summary: string }
   // gh could not tell (auth, an unknown PR, the network).
   | { kind: 'error'; reason: string };
 
-export const prViewCommand = (pr: string): string =>
+export const mergedViewCommand = (pr: string): string =>
   `gh pr view ${shellQuote(pr)} --json state,mergedAt,closedAt,mergeCommit`;
 
 const COMMIT = /^[0-9a-f]{40}$/;
@@ -30,7 +30,7 @@ const isTime = (value: unknown): boolean => typeof value === 'string' && !Number
  * keeps it pending. A time in `mergedAt` or `closedAt` counts like the state, so a state this CLI does not know still ends the
  * watch. The URL in the text is the one the watch was registered with, already shape-checked.
  */
-export function decidePr(source: PrSource, view: GhOutput): PrDecision {
+export function decideMerged(source: MergedSource, view: GhOutput): MergedDecision {
   if (view.exitCode !== 0) return { kind: 'error', reason: firstLine(view.stderr, 'gh pr view failed') };
   let info: unknown;
   try {

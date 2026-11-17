@@ -71,6 +71,7 @@ test('long text is tailed', () => {
 test('the run rules tell the agent to start a watch instead of polling', () => {
   const rules = boardRules(task({ id: 'r' }));
   assert.match(rules, /board watch r --ci/);
+  assert.match(rules, /board watch r --pr-review/);
   assert.match(rules, /board watch r --pr-merged` for the merge or close of that PR/);
   assert.match(rules, /board watch r --name <name> --every 1m -- '<command>'/);
   assert.match(rules, /board watch r --in 30m/);
@@ -78,9 +79,10 @@ test('the run rules tell the agent to start a watch instead of polling', () => {
   assert.doesNotMatch(rules, /board wait/);
 });
 
-test("an agent's run is told the watches that it may start: CI, a merge and a timer", () => {
+test("an agent's run is told the watches that it may start: CI and a timer", () => {
   const rules = boardRules(task({ id: 'r' }), { asAgent: true });
   assert.match(rules, /board watch r --ci <pr-url>/);
+  assert.match(rules, /board watch r --pr-review <pr-url>/);
   assert.match(rules, /board watch r --pr-merged <pr-url>/);
   assert.match(rules, /board watch r --in 30m/);
   assert.doesNotMatch(rules, /--every/);

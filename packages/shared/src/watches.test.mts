@@ -53,7 +53,7 @@ test('a watch of the documented shape is read as it is, and the optional look is
   const { lastAttemptAt: _look, ...unlooked } = watch({ kind: 'timer', label: 'timer', status: 'fires at 14:20' });
   assert.deepEqual(parseTaskWatch(unlooked), unlooked);
   assert.deepEqual(parseTaskWatch({ ...watch(), command: 'rm -rf /', extra: 1 }), watch());
-  const merge = watch({ name: 'pr-merged', kind: 'pr', label: 'merge of #116', status: 'still open' });
+  const merge = watch({ name: 'pr-merged', kind: 'pr-merged', label: 'merge of #116', status: 'still open' });
   assert.deepEqual(parseTaskWatch(merge), merge);
 });
 

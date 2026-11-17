@@ -3,8 +3,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { TaskWatch } from '@agent-board/shared';
 import { BackendError } from '../backend/backend.mts';
-import { commandDef, PR, prDef, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
-import { publishWatches, taskWatchesOf } from './publish.mts';
+import { commandDef, mergedDef, PR, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
+import { isBoardStale, publishWatches, taskWatchesOf } from './publish.mts';
 import { createWatchStore, newWatchId } from './store.mts';
 
 const TASK = 'Ab3dEf9x';
@@ -49,6 +49,15 @@ test('the list holds a label and a state per kind, the deadline, and never the c
   );
   store.write(commandDef(SECRET, { id: '2222222222222222', name: 'fresh', everyMs: 60_000 }));
   store.write(timerDef({ id: '3333333333333333', deadline: '2026-01-01T14:20:00.000Z' }));
+  store.write(
+    watchDef({
+      id: '4444444444444444',
+      name: 'review',
+      source: { kind: 'pr-review', pr: PR, self: 'board-machine', seen: ['IC_1'], cwd: '/work' },
+      everyMs: 60_000,
+      last: { at: '2026-01-01T11:59:30.000Z', summary: 'no new review or comment by someone else, 1 seen' },
+    }),
+  );
   store.writeEvent({
     id: newWatchId(),
     task: TASK,
@@ -57,8 +66,8 @@ test('the list holds a label and a state per kind, the deadline, and never the c
     kind: 'event',
     text: 'SECRET-OUTPUT',
   });
-  store.write(prDef({ id: '4444444444444444', last: { at: '2026-01-01T11:59:30.000Z', summary: 'still open' } }));
-  store.write(prDef({ id: '5555555555555555', name: 'landed' }));
+  store.write(mergedDef({ id: '4444444444444444', last: { at: '2026-01-01T11:59:30.000Z', summary: 'still open' } }));
+  store.write(mergedDef({ id: '5555555555555555', name: 'landed' }));
   const watches = taskWatchesOf(store, TASK, NOW);
   const by = Object.fromEntries(watches.map((watch) => [watch.name, watch]));
   assert.equal(by['ci']?.label, 'CI #7 · required');
@@ -67,7 +76,7 @@ test('the list holds a label and a state per kind, the deadline, and never the c
   assert.deepEqual(by['pr-merged'], {
     id: '4444444444444444',
     name: 'pr-merged',
-    kind: 'pr',
+    kind: 'pr-merged',
     label: 'merge of #7',
     status: 'still open',
     deadline: '2026-01-01T14:00:00.000Z',
@@ -79,6 +88,10 @@ test('the list holds a label and a state per kind, the deadline, and never the c
   assert.match(by['health']?.status ?? '', /^exit 1 at \d\d:\d\d$/);
   assert.equal(by['fresh']?.status, 'not run yet');
   assert.equal(by['fresh']?.label, 'command, every 1m');
+  assert.equal(by['review']?.kind, 'pr-review');
+  assert.equal(by['review']?.label, 'review #7');
+  assert.equal(by['review']?.status, 'no new review or comment by someone else, 1 seen');
+  assert.equal(by['review']?.lastAttemptAt, '2026-01-01T11:59:30.000Z');
   assert.equal(by['timer']?.label, 'timer');
   assert.match(by['timer']?.status ?? '', /^fires at /);
   assert.equal(by['timer']?.lastAttemptAt, undefined);
@@ -113,4 +126,46 @@ test('a board without task.watches is skipped with one line, and any other failu
   await publishWatches(deps, TASK);
   assert.match(logs[1] ?? '', /^WARN publishing the watches of Ab3dEf9x failed: board down/);
   assert.deepEqual(sent, []);
+});
+
+test('the board is stale when it shows watches the store does not hold, other watches, none, or another count of events', () => {
+  const { store } = setup();
+  const board = (watches: TaskWatch[] | null, watchEvents = 0, unreadable: ('watches' | 'title')[] = []) =>
+    isBoardStale(store, { id: TASK, watches, watchEvents, unreadable }, NOW);
+  assert.equal(board(null), false);
+  assert.equal(board(null, 0, ['title']), false);
+  assert.equal(board(null, 0, ['watches']), true);
+  const gone = taskWatchesOf(
+    (() => {
+      const other = createWatchStore(join(tempDir(), 'watches'));
+      other.write(timerDef());
+      return other;
+    })(),
+    TASK,
+    NOW,
+  );
+  assert.equal(board(gone), true);
+  assert.equal(board([]), true);
+
+  store.write(commandDef('true', { last: { at: '2026-01-01T11:58:00.000Z', summary: 'exit 1: no' } }));
+  const shown = taskWatchesOf(store, TASK, NOW);
+  assert.equal(board(shown), false);
+  assert.equal(board(null), true);
+  assert.equal(board([...shown, ...gone.map((watch) => ({ ...watch, id: '1111111111111111' }))]), true);
+  assert.equal(board(shown.map((watch) => ({ ...watch, id: '1111111111111111' }))), true);
+  assert.equal(board(shown.map((watch) => ({ ...watch, deadline: '2026-01-01T15:00:00.000Z' }))), true);
+  // What the last look said changes all the time and is the unit's to publish.
+  assert.equal(
+    board(shown.map((watch) => ({ ...watch, status: 'exit 2 at 11:00', lastAttemptAt: NOW.toISOString() }))),
+    false,
+  );
+  store.writeEvent({ id: newWatchId(), task: TASK, name: 'ci', at: NOW.toISOString(), kind: 'event', text: 'x' });
+  assert.equal(board(shown), true);
+  assert.equal(board(shown, 1), false);
+});
+
+test('a timer close to its end is published to the second', () => {
+  const { store } = setup();
+  store.write(timerDef({ deadline: '2026-01-01T12:01:40.000Z' }));
+  assert.match(taskWatchesOf(store, TASK, NOW)[0]?.status ?? '', /^fires at \d\d:\d\d:40$/);
 });

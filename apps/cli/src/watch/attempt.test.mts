@@ -4,9 +4,9 @@ import {
   commandDef,
   commandResult,
   HEAD,
+  mergedDef,
+  mergedFixture,
   PR,
-  prDef,
-  prViewFixture,
   timerDef,
   watchDef,
 } from '../__tests__/helpers/watch.mts';
@@ -161,9 +161,54 @@ test('the next attempt is due one period after the last, or after registration, 
   );
 });
 
-test('a pr watch asks gh once in its directory, ends on a merge or a close and stays pending while the PR is open', async () => {
-  const merged = runner(() => commandResult(0, prViewFixture('merged')));
-  const def = prDef({ source: { kind: 'pr', pr: PR, cwd: '/w', settingsDir: '/s' } });
+test('a pr-review watch asks gh once, remembers what it saw, and ends on the first entry by someone else', async () => {
+  const view = (comments: object[]) =>
+    commandResult(0, JSON.stringify({ url: PR, state: 'OPEN', author: { login: 'octo-dev' }, reviews: [], comments }));
+  const comment = (id: string, login: string) => ({
+    id,
+    author: { login },
+    body: 'Please add a test.',
+    createdAt: '2026-01-01T12:00:30Z',
+  });
+  const def = watchDef({
+    name: 'review',
+    source: { kind: 'pr-review', pr: PR, self: 'board-machine', seen: [], cwd: '/w', settingsDir: '/s' },
+    everyMs: 60_000,
+  });
+  const own = runner(() => view([comment('IC_own', 'board-machine')]));
+  const pending = await attempt(def, NOW, { run: own, timeLimitMs: 120_000 });
+  assert.deepEqual(own.jobs, [
+    {
+      command: `gh pr view '${PR}' --json url,state,author,reviews,comments`,
+      cwd: '/w',
+      settingsDir: '/s',
+      timeLimitMs: 60_000,
+    },
+  ]);
+  assert.equal(pending.kind, 'pending');
+  assert.deepEqual(pending.kind === 'pending' && pending.def?.source, { ...def.source, seen: ['IC_own'] });
+  const event = await attempt(def, NOW, {
+    run: runner(() => view([comment('IC_own', 'board-machine'), comment('IC_other', 'reviewer-one')])),
+    timeLimitMs: 120_000,
+  });
+  assert.deepEqual(event, {
+    kind: 'event',
+    text: `New on ${PR}:\nreviewer-one commented:\nPlease add a test.`,
+  });
+  const failing = runner(() => commandResult(1, 'HTTP 502'));
+  assert.deepEqual(await attempt(def, NOW, { run: failing, timeLimitMs: 1000 }), {
+    kind: 'pending',
+    summary: 'HTTP 502',
+  });
+  assert.deepEqual(await attempt(def, NOW, { run: failing, timeLimitMs: 1000, registration: true }), {
+    kind: 'broken',
+    reason: 'HTTP 502',
+  });
+});
+
+test('a pr-merged watch asks gh once in its directory, ends on a merge or a close and stays pending while the PR is open', async () => {
+  const merged = runner(() => commandResult(0, mergedFixture('merged')));
+  const def = mergedDef({ source: { kind: 'pr-merged', pr: PR, cwd: '/w', settingsDir: '/s' } });
   assert.deepEqual(await attempt(def, NOW, { run: merged, timeLimitMs: 120_000 }), {
     kind: 'event',
     text: `PR ${PR} was merged as de9922b.`,
@@ -172,33 +217,33 @@ test('a pr watch asks gh once in its directory, ends on a merge or a close and s
     merged.jobs.map((job) => [job.command, job.cwd, job.settingsDir, job.timeLimitMs]),
     [[`gh pr view '${PR}' --json state,mergedAt,closedAt,mergeCommit`, '/w', '/s', 60_000]],
   );
-  const closed = runner(() => commandResult(0, prViewFixture('closed')));
-  assert.deepEqual(await attempt(prDef(), NOW, { run: closed, timeLimitMs: 45_000 }), {
+  const closed = runner(() => commandResult(0, mergedFixture('closed')));
+  assert.deepEqual(await attempt(mergedDef(), NOW, { run: closed, timeLimitMs: 45_000 }), {
     kind: 'event',
     text: `PR ${PR} was closed without merging.`,
   });
   assert.equal(closed.jobs[0]?.timeLimitMs, 45_000);
-  const open = runner(() => commandResult(0, prViewFixture('open')));
-  assert.deepEqual(await attempt(prDef(), NOW, { run: open, timeLimitMs: 120_000 }), {
+  const open = runner(() => commandResult(0, mergedFixture('open')));
+  assert.deepEqual(await attempt(mergedDef(), NOW, { run: open, timeLimitMs: 120_000 }), {
     kind: 'pending',
     summary: 'still open',
   });
 });
 
-test('a pr watch whose gh fails is pending, and at registration broken', async () => {
+test('a pr-merged watch whose gh fails is pending, and at registration broken', async () => {
   const run = runner(() => commandResult(1, 'HTTP 404: Not Found\n'));
-  assert.deepEqual(await attempt(prDef(), NOW, { run, timeLimitMs: 1000 }), {
+  assert.deepEqual(await attempt(mergedDef(), NOW, { run, timeLimitMs: 1000 }), {
     kind: 'pending',
     summary: 'HTTP 404: Not Found',
   });
-  assert.deepEqual(await attempt(prDef(), NOW, { run, timeLimitMs: 1000, registration: true }), {
+  assert.deepEqual(await attempt(mergedDef(), NOW, { run, timeLimitMs: 1000, registration: true }), {
     kind: 'broken',
     reason: 'HTTP 404: Not Found',
   });
 });
 
-test('a pr watch past its deadline times out with its last look', () => {
-  const report = deadlineReport(prDef({ last: { at: '2026-01-01T13:59:00.000Z', summary: 'still open' } }));
+test('a pr-merged watch past its deadline times out with its last look', () => {
+  const report = deadlineReport(mergedDef({ last: { at: '2026-01-01T13:59:00.000Z', summary: 'still open' } }));
   assert.equal(report.kind, 'timeout');
   assert.match(report.text, /^Watch "pr-merged" timed out after 2h .* still open$/);
 });

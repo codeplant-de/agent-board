@@ -128,7 +128,7 @@ A watch (`board watch`, see [Waiting](usage.md#waiting)) is a file on the task's
 
 `agent-board-watch.service` (a launchd agent on macOS) polls the watches. `board setup` writes it and `board setup --enable` starts it.
 
-- It rescans the directory every 2 seconds, so `board watch` only has to write a file. It attempts each watch on the watch's own timer (`--every`, 30 seconds for `--ci`, 60 seconds for `--pr-merged`). An attempt may take 2 minutes.
+- It rescans the directory every 2 seconds, so `board watch` only has to write a file. It attempts each watch on the watch's own timer (`--every`, 30 seconds for `--ci`, or 60 seconds for `--pr-review` and `--pr-merged`). An attempt may take 2 minutes.
 - It writes an event to `<state dir>/watches/<task>/event-<time>-<name>.json` and posts it to the thread as an agent comment.
 - It wakes the task when an event is not handed over and the task has no live run. A worker marks its task as live with `<task>/live` while it runs. When the wake does not apply, because the task is in Needs me, paused in Todo or still running, the event stays for the next resume. If the worker's run goes away while an event waits, the unit tries the wake once more. That covers an event that fires between the worker's decision to park and its exit.
 - It keeps all state on disk. `board self-update` restarts it as it restarts the listener, and a reboot loses nothing.
@@ -147,11 +147,12 @@ A watch (`board watch`, see [Waiting](usage.md#waiting)) is a file on the task's
 
 The board shows a task's watches and lets the user stop one (see [What the board shows of watches](usage.md#what-the-board-shows-of-watches)). The CLI publishes the list with `set-watches`, sealed as the task's `watches` (see [Encryption](encryption.md)).
 
-- **What is published.** For each watch its name, kind, a label (`CI #116 · required`, `merge of #116`, `command, every 30s`, `timer`), a one-line status, its deadline and the time of its last look. The status is the CI summary, `still open` for a merge, `exit 1 at 10:47` or `not run yet` for a command, or `fires at 14:20` for a timer. The document also holds how many undelivered events of the task wait in the spool, once. The command and what it printed are never in it. An empty list is sent as `null`.
+- **What is published.** For each watch its name, kind, a label (`CI #116 · required`, `review #116`, `merge of #116`, `command, every 30s`, `timer`), a one-line status, its deadline and the time of its last look. The status is the CI summary, how many reviews and comments a review watch has seen, `still open` for a merge, `exit 1 at 10:47` or `not run yet` for a command, or `fires at 14:20` for a timer (`fires at 14:20:40` when that was less than ten minutes away at the time of publishing). The document also holds how many undelivered events of the task wait in the spool, once. The command and what it printed are never in it. An empty list is sent as `null`.
 - **When.**
   - `board watch`, `board unwatch` and `board wait --check` publish after they changed the store.
   - The watch unit publishes at once when an event or a finished watch changes the list. For a changed status it publishes at most every 15 seconds per task. An unchanged state goes again after 5 minutes, so the time of the last look does not freeze.
   - The dispatch tick publishes `null` when it drops the watches of a finished task, and after it acted on stops.
+  - The dispatch tick also publishes a task of its machine whose list on the board is not the one in the store, at most once per tick. The list counts as different when the board shows watches and the machine holds none, when the watches differ in id, name, kind, label or deadline, when the number of waiting events differs, or when the list cannot be opened. A status that lags does not count: the watch unit publishes it. This repairs a list that went stale because the machine went down between changing its store and publishing. The tick logs `REPUBLISH-WATCHES <task>`.
   - The worker publishes when it hands events over, which changes how many wait.
 - **Failures.** A server without the `task.watches` feature gets nothing: the CLI logs one line per process and goes on. Any other failure is logged, and the next publish sends the whole list again.
 - **Stop.** The board lists the ids the user stopped in `watchStops` of the task, and its event stream wakes the listener, so the tick acts within seconds. For each id of a task on this machine the tick:
@@ -347,7 +348,7 @@ Tasks from `board schedule --agent`, the **Agent** field of the New task form, o
 The shipped `reviewer` (`board agents add example:reviewer`, also `agents.reviewer` in `apps/cli/examples/config.reviews.json`) shows the shape:
 
 - It allows reading, `gh` and `git` reads, the pr-review plugin's scripts, CircleCI through the engineering plugin's `cci.sh` and a few Shortcut reads.
-- Of the board it allows `board comment`, `ask`, `add`, `show`, `move <task> needs-me`, and `board watch` with `--ci` or `--in`. It cannot `board schedule` or start work. The CLI would also let it watch with `--pr-merged`; its allow rules do not list that.
+- Of the board it allows `board comment`, `ask`, `add`, `show`, `move <task> needs-me`, and `board watch` with `--ci` or `--in`. It cannot `board schedule` or start work.
 - It cannot push, merge or approve.
 - Its `env` hands it `CIRCLECI_TOKEN` and `SHORTCUT_API_TOKEN` from the checkout's settings, and nothing else from there.
 
@@ -383,7 +384,7 @@ A config that allows `Bash(board *)` covers `board schedule` and `board move <ta
 
 A command watch (`board watch <task> --name <name> -- '<command>'`, and `board wait --check`) runs later, from the watch unit or the dispatcher, outside Claude Code. Claude Code's permission rules and the auto-mode classifier see the command only as part of the `board watch` or `board wait` call.
 
-So do not allow `Bash(board watch *)` or `Bash(board wait *)` by rule in a run that is not an agent's, or the command skips the classifier. An agent's run may allow `board watch`: the CLI refuses a command watch there, and `--ci`, `--pr-merged` and timers run no command of the agent's choosing.
+So do not allow `Bash(board watch *)` or `Bash(board wait *)` by rule in a run that is not an agent's, or the command skips the classifier. An agent's run may allow `board watch`: the CLI refuses a command watch there, and `--ci`, `--pr-review`, `--pr-merged` and timers run no command of the agent's choosing.
 
 ### Not a security boundary
 
@@ -509,7 +510,7 @@ in the working directory the task would run in anyway.
 
 A tool the agent needs and does not allow shows up as a failed run, and the log says what was denied. Add it to the agent's `allowedTools`.
 
-**Board rules.** An agent's run gets reduced board rules: watches only with `--ci`, `--pr-merged` and timers, and no opening PRs. It has `AGENT_BOARD_RESTRICTED=1` in its environment, which the agent's `env` cannot override. A command watch (`board watch -- '<command>'`, `board wait --check`) refuses while it is set, because it would run any command outside the agent's list. Inside any run, `board watch`, `board watches` and `board unwatch` act only on the run's own task.
+**Board rules.** An agent's run gets reduced board rules: watches only with `--ci`, `--pr-review`, `--pr-merged` and timers, and no opening PRs. It has `AGENT_BOARD_RESTRICTED=1` in its environment, which the agent's `env` cannot override. A command watch (`board watch -- '<command>'`, `board wait --check`) refuses while it is set, because it would run any command outside the agent's list. Inside any run, `board watch`, `board watches` and `board unwatch` act only on the run's own task.
 
 **Subagents.** An agent with `Agent` in its `tools` can start subagents, and they stay inside the run's limits (checked against Claude Code 2.1.325). A subagent gets only the tools in `--tools`, inherits `dontAsk` mode and both lists, and a subagent's own `permissionMode: bypassPermissions` does not take effect. Two things to know:
 
