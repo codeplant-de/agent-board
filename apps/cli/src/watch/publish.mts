@@ -1,10 +1,10 @@
 // What the board shows of a task's watches: a list of names, what each looks at and its state, and how many events wait for the agent. It is built
 // from the local store and never holds a command or its output. Publishing is best effort and never throws into its caller.
 import { isWatchId, MAX_TASK_WATCHES, MAX_WATCH_LABEL_CHARS, MAX_WATCH_STATUS_CHARS } from '@agent-board/shared';
-import type { Backend, TaskWatch } from '@agent-board/shared';
+import type { Backend, Task, TaskWatch } from '@agent-board/shared';
 import { BackendError } from '../backend/backend.mts';
 import { errorText, oneLine } from '../output/text.mts';
-import { clockTime, describeEvery, withoutControls } from './fence.mts';
+import { clockTime, deadlineClock, describeEvery, withoutControls } from './fence.mts';
 import type { WatchDef, WatchStore } from './store.mts';
 
 export interface PublishDeps {
@@ -32,7 +32,7 @@ function labelOf(def: WatchDef): string {
 
 function statusOf(def: WatchDef, now: Date): string {
   const { source, last } = def;
-  if (source.kind === 'timer') return `fires at ${clockTime(new Date(def.deadline), now)}`;
+  if (source.kind === 'timer') return `fires at ${deadlineClock(new Date(def.deadline), now)}`;
   if (last === undefined) return source.kind === 'command' ? 'not run yet' : 'not looked at yet';
   if (source.kind === 'ci') return withoutControls(oneLine(last.summary, MAX_WATCH_STATUS_CHARS));
   const result = COMMAND_RESULT.exec(last.summary)?.[1] ?? 'ran';
@@ -55,6 +55,29 @@ export function taskWatchesOf(store: WatchStore, task: string, now: Date): TaskW
       deadline: def.deadline,
       ...(def.last === undefined || def.source.kind === 'timer' ? {} : { lastAttemptAt: def.last.at }),
     }));
+}
+
+// What says which watches a task has; a watch's state changes with every look and is the unit's to publish.
+const identityOf = ({ id, name, kind, label, deadline }: TaskWatch): string =>
+  JSON.stringify([id, name, kind, label, deadline]);
+
+/**
+ * Whether the board's copy of a task's watches is not what the store holds: it shows watches where there are none (the machine
+ * went down between dropping them and saying so), other watches, none, a list that cannot be opened, or another count of events
+ * that wait for the agent. A state line that lags is not a difference.
+ */
+export function isBoardStale(
+  store: WatchStore,
+  task: Pick<Task, 'id' | 'watches' | 'watchEvents' | 'unreadable'>,
+  now: Date,
+): boolean {
+  const local = taskWatchesOf(store, task.id, now);
+  // A task without watches is published as no list at all, which holds no count either.
+  if (local.length === 0) return task.watches !== null || task.unreadable.includes('watches');
+  if (task.watches === null || task.watches.length !== local.length) return true;
+  if (task.watchEvents !== store.events(task.id).length) return true;
+  const shown = new Set(task.watches.map(identityOf));
+  return local.some((watch) => !shown.has(identityOf(watch)));
 }
 
 let warnedUnsupported = false;

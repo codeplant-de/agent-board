@@ -769,6 +769,8 @@ Every watch also ends after `--timeout` with an event that says so and carries t
 
 A second watch with the same name replaces the first.
 
+The times a watch ends at are never shown earlier than they are. An end less than ten minutes away is shown to the second (`waiting until 2026-11-17 11:46:40`), and a later one in the minute it falls in, rounded up.
+
 ### What stays on the machine
 
 The command and its output stay on the machine, in `<state dir>/watches/<task>/` (mode 700, files 600). The board learns only that the task waits and until when. Nothing on the board can make a machine run a command.

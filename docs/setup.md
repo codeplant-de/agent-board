@@ -209,6 +209,13 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
+### Watch times and a self-repairing watch list (CLI 0.21.1)
+
+The CLI alone changes. Run `board self-update` on each machine, or pull and restart the units on a checkout (`board restart`).
+
+- `board watch` names a timer's end once, and an end less than ten minutes away is shown to the second.
+- The dispatch tick publishes a task's watches again when the board's list is not the machine's (see [Publishing and stops](workers.md#publishing-and-stops)). On a server without `task.watches` this logs the "does not show watches yet" line on every tick while a task there has open watches.
+
 ### Watches on the board (CLI 0.21.0)
 
 A new server feature, `task.watches`. The CLI publishes the sealed list of a task's watches, and the server stores it with the stop requests of the user. The board shows a badge on the card and a **Watches** list on the task page (see [What the board shows of watches](usage.md#what-the-board-shows-of-watches)). A migration adds the columns `watches` and `watch_stops` to `task`.

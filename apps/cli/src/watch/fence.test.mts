@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { localTime } from '../commands/schedule.mts';
 import { commandDef, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
-import { eventsMessage, openWatchesLine, sanitizeEventText } from './fence.mts';
+import { deadlineClock, deadlineTime, eventsMessage, openWatchesLine, sanitizeEventText } from './fence.mts';
 
 test('control characters go, a tab becomes a space, a carriage return is dropped and newlines stay', () => {
   assert.equal(sanitizeEventText('a\tb\r\nc\u0000d\u001b[31me\u007ff\u0085g h'), 'a b\ncd[31mefgh');
@@ -77,4 +77,24 @@ test('the open line names every watch with its rhythm and end, a timer by the ti
     `Still open: "health" (every 30s, until ${clock('2026-01-01T13:00:00Z')}), "settle" (at ${clock('2026-01-01T13:20:00Z')}), "ci" (every 2m, until ${localTime(new Date('2026-01-03T13:00:00Z'))}).`,
   );
   assert.equal(openWatchesLine([], now), 'No watch is open any more.');
+});
+
+test('a deadline less than ten minutes away is shown to the second, a later one in the minute it ends in, rounded up', () => {
+  const now = new Date('2026-01-01T11:45:40Z');
+  const soon = new Date('2026-01-01T11:46:40Z');
+  assert.equal(deadlineTime(soon, now), `${localTime(soon)}:40`);
+  assert.equal(deadlineClock(soon, now), `${localTime(soon).slice(-5)}:40`);
+  const edge = new Date(now.getTime() + 10 * 60_000 - 1000);
+  assert.match(deadlineTime(edge, now), /:\d\d:39$/);
+  // Two hours from 11:45:40 is 13:45:40: "13:45" would read as shorter than asked.
+  const far = new Date('2026-01-01T13:45:40Z');
+  assert.equal(deadlineTime(far, now), localTime(new Date('2026-01-01T13:46:00Z')));
+  assert.equal(deadlineClock(far, now), localTime(new Date('2026-01-01T13:46:00Z')).slice(-5));
+  const whole = new Date('2026-01-01T14:20:00Z');
+  assert.equal(deadlineTime(whole, now), localTime(whole));
+  assert.equal(deadlineClock(new Date('2026-01-03T13:00:00Z'), now), localTime(new Date('2026-01-03T13:00:00Z')));
+  assert.equal(
+    openWatchesLine([timerDef({ name: 'settle', deadline: soon.toISOString() })], now),
+    `Still open: "settle" (at ${localTime(soon).slice(-5)}:40).`,
+  );
 });

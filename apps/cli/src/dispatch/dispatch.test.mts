@@ -7,6 +7,7 @@ import { BackendError } from '../backend/backend.mts';
 import type { Fetch } from '../backend/backend.mts';
 import { createWebBackend } from '../backend/web-backend.mts';
 import { API_VERSION, MIN_SERVER } from '@agent-board/shared';
+import type { TaskWatch } from '@agent-board/shared';
 import { RETRY_AFTER_FAILURE_MS, RETRY_AFTER_UNPUBLISHED_MS } from '../self/auto-update.mts';
 import type { UpdateDeps } from '../self/auto-update.mts';
 import type { AutoUpdate } from '../config/config.mts';
@@ -1593,6 +1594,72 @@ test('a stop for a watch that is gone is acknowledged and writes no event, and a
   assert.equal(watches.list('w2').defs.length, 1);
 });
 
+const watchWrites = (writes: string[]) => writes.filter((write) => write.startsWith('watches '));
+const shownWatch = (overrides: Partial<TaskWatch> = {}): TaskWatch => ({
+  id: WATCH_ID,
+  name: 'health',
+  kind: 'command',
+  label: 'command, every 30s',
+  status: 'not run yet',
+  deadline: at(60 * MIN).toISOString(),
+  ...overrides,
+});
+
+test('a task whose board list shows watches this machine no longer holds is published again, once', async () => {
+  const { deps, watches, backend, logs } = setup([
+    task({ id: 'r1', status: 'running', machine: 'here', watches: [shownWatch()] }),
+    task({ id: 'r2', status: 'running', machine: 'elsewhere', watches: [shownWatch()] }),
+    task({ id: 'r3', status: 'running', machine: 'here' }),
+  ]);
+  watches.touchHeartbeat(NOW);
+  await runDispatch(deps);
+  assert.deepEqual(watchWrites(backend.writes), ['watches r1 null']);
+  assert.ok(logs.includes("REPUBLISH-WATCHES r1 the board's list is not this machine's"));
+  backend.writes.length = 0;
+  await runDispatch(deps);
+  assert.deepEqual(watchWrites(backend.writes), []);
+});
+
+test('a board list that differs from the open watches is published again, and one that only lags in its state is left', async () => {
+  const { deps, watches, backend } = setup([
+    task({ id: 'r1', status: 'running', machine: 'here', watches: [shownWatch({ id: '0000000000000000' })] }),
+    task({ id: 'r2', status: 'running', machine: 'here' }),
+    task({ id: 'r3', status: 'running', machine: 'here', watches: [shownWatch({ status: 'exit 1 at 11:00' })] }),
+  ]);
+  watches.touchHeartbeat(NOW);
+  for (const id of ['r1', 'r2', 'r3'])
+    watches.write(probe({ id: WATCH_ID, task: id, last: { at: at(-5_000).toISOString(), summary: 'exit 1: x' } }));
+  await runDispatch(deps);
+  const sent = watchWrites(backend.writes);
+  assert.deepEqual(
+    sent.map((write) => write.split(' ')[1]),
+    ['r1', 'r2'],
+  );
+  assert.ok(sent.every((write) => write.includes(`"id":"${WATCH_ID}"`)));
+});
+
+test('the tick publishes a task at most once: watches it dropped or stopped are not published a second time', async () => {
+  const { deps, watches, backend } = setup([
+    task({ id: 'd1', status: 'done', machine: 'here', watches: [shownWatch()] }),
+    waitingTask('w1', { wakeAt: at(90 * MIN), watchStops: [WATCH_ID], watches: [shownWatch()] }),
+  ]);
+  watches.touchHeartbeat(NOW);
+  watches.write(probe({ id: WATCH_ID, task: 'd1' }));
+  watches.write(probe({ id: WATCH_ID }));
+  await runDispatch(deps);
+  assert.deepEqual(watchWrites(backend.writes).sort(), ['watches d1 null', 'watches w1 null']);
+});
+
+test('a dry run says which stale list it would publish and sends nothing', async () => {
+  const { deps, backend, logs } = setup([
+    task({ id: 'r1', status: 'running', machine: 'here', watches: [shownWatch()] }),
+  ]);
+  deps.dryRun = true;
+  await runDispatch(deps);
+  assert.ok(logs.includes("DRY REPUBLISH-WATCHES r1 the board's list is not this machine's"));
+  assert.deepEqual(watchWrites(backend.writes), []);
+});
+
 test('a dry run says which watch it would stop and changes nothing', async () => {
   const { deps, watches, backend, logs } = setup([
     task({ id: 'r1', status: 'running', machine: 'here', watchStops: [WATCH_ID] }),
@@ -1742,12 +1809,15 @@ test('the watches of a task that is done, closed, in Backlog or gone are dropped
     ['gone', 'gone'],
   ])
     assert.ok(logs.includes(`DROP-WATCHES ${id} its task is ${why}`), id);
-  // The board hears of the empty list for the tasks it still has, and has nothing to hear for a task that is gone.
-  assert.deepEqual(backend.writes.filter((write) => write.startsWith('watches ')).sort(), [
-    'watches b1 null',
-    'watches c1 null',
-    'watches d1 null',
-  ]);
+  // The board hears of the empty list for the tasks it still has, and has nothing to hear for a task that is gone. The tasks
+  // here that keep their watches, which this board does not show yet, are published too.
+  assert.deepEqual(
+    backend.writes
+      .filter((write) => write.startsWith('watches '))
+      .map((write) => write.split(' ').slice(0, 3).join(' ').replace(/ \[.*/, ''))
+      .sort(),
+    ['watches b1 null', 'watches c1 null', 'watches d1 null', 'watches n1', 'watches r1', 'watches w1'],
+  );
 });
 
 test('a task the board cannot be asked about keeps its watches; a dry run drops nothing', async () => {
