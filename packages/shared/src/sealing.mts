@@ -9,6 +9,7 @@
 //   agent          <origin> (the name of the agent the task runs as)
 //   workdir        <origin>, or for a scheduled task also task:<id>:schedule:<scheduleId> (the worker's rewrite)
 //   pr             task:<id>:agent (a PR URL the task's agent reported; every PR of the task has this binding)
+//   watches        task:<id>:agent (the watches of the task the machine's CLI runs for it, one JSON document)
 //   machine.dirs   machine:<name> (the directory list the machine's CLI sends, one JSON document)
 //   machine.catalog machine:<name> (the skills and models the machine's CLI found, one JSON document)
 //   note.*         note:<taskId>:<author>:<kind>
@@ -55,6 +56,8 @@ import { isRecord } from './guards.mts';
 import { isPrUrl } from './prompt.mts';
 import { parseAnswers, parseQuestions, QuestionError } from './questions.mts';
 import type { Answer, Question } from './questions.mts';
+import { parseTaskWatches, taskWatchesJson } from './watches.mts';
+import type { TaskWatch } from './watches.mts';
 
 export interface Binding {
   field: Field;
@@ -140,6 +143,44 @@ export async function openPrs(open: Opener, taskId: string, rows: readonly WireT
     }),
   );
   return opened.flat();
+}
+
+/** The watches of a task: bound to the task and to its agent side, like a reported PR, so nothing else's ciphertext opens as them. */
+export const watchesBinding = (taskId: string): Binding => ({ field: 'watches', context: `task:${taskId}:agent` });
+
+/** Seals the watches of `taskId`; refuses more than the board shows, an entry of the wrong shape and more than the board takes. */
+export async function sealWatches(seal: Sealer, taskId: string, watches: readonly TaskWatch[]): Promise<string> {
+  const json = taskWatchesJson(watches);
+  if (parseTaskWatches(JSON.parse(json))?.length !== watches.length)
+    throw new ContractError('the watches must be at most 32 entries of the shape the board shows');
+  return sealChecked(seal, watchesBinding(taskId), json, 'the watches');
+}
+
+export interface OpenedWatches {
+  /** The watches the machine published; null for none, and when they could not be opened. */
+  watches: TaskWatch[] | null;
+  unreadable: boolean;
+}
+
+/**
+ * The watches of a task. A task without any (`wire` null) is `{ watches: null, unreadable: false }`. A value that does not open
+ * under exactly the task's binding, or is not `{"watches":[…]}` with at most 32 entries, is unreadable. An entry of the wrong
+ * shape is dropped without losing the list. They are shown, never acted on.
+ */
+export async function openWatches(
+  open: Opener,
+  taskId: string,
+  wire: string | null | undefined,
+): Promise<OpenedWatches> {
+  if (wire === null || wire === undefined) return { watches: null, unreadable: false };
+  const text = await open(watchesBinding(taskId), wire);
+  let watches: TaskWatch[] | undefined;
+  try {
+    watches = text === undefined ? undefined : parseTaskWatches(JSON.parse(text));
+  } catch {
+    watches = undefined;
+  }
+  return watches === undefined ? { watches: null, unreadable: true } : { watches, unreadable: false };
 }
 
 /** The directory list of a machine: bound to the machine's name, so a list sealed for one machine never opens as another's. */

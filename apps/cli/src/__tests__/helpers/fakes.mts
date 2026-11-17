@@ -20,6 +20,7 @@ import {
   SERVER_FEATURES,
   sealFields,
   sealPr,
+  sealWatches,
   taskLabels,
 } from '@agent-board/shared';
 import type { Sealer } from '@agent-board/shared';
@@ -48,6 +49,8 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     workdir: null,
     prs: [],
     promptPrState: null,
+    watches: null,
+    watchStops: [],
     next: 'fresh',
     head: null,
     openQuestion: false,
@@ -490,7 +493,17 @@ const seals: Sealer = async ({ field, context }, text) => seal(KEYS, field, cont
 // A task as the server stores it: title, input and workdir sealed with the test key, for the task's own row (an occurrence's
 // for its schedule).
 export async function wireTask(overrides: Partial<Task> & { id: string }): Promise<WireTask> {
-  const { labels: _labels, unreadable: _unreadable, title, input, workdir, agent, prs, ...rest } = task(overrides);
+  const {
+    labels: _labels,
+    unreadable: _unreadable,
+    title,
+    input,
+    workdir,
+    agent,
+    prs,
+    watches,
+    ...rest
+  } = task(overrides);
   const sealed = await sealFields(
     seals,
     { kind: 'task', id: rest.id, createdBy: rest.createdBy, scheduleId: rest.scheduleId, agent: agent ?? null },
@@ -509,6 +522,7 @@ export async function wireTask(overrides: Partial<Task> & { id: string }): Promi
     prState: newest === undefined ? promptPrState : newest.state,
     prs: wirePrs,
     promptPrState,
+    watches: watches === null ? null : await sealWatches(seals, rest.id, watches),
   };
 }
 

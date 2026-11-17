@@ -11,3 +11,4 @@ export * from './sealing.mts';
 export * from './catalog.mts';
 export * from './polish.mts';
 export * from './features.mts';
+export * from './watches.mts';

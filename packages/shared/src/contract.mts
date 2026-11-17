@@ -6,6 +6,8 @@ import { isRecord } from './guards.mts';
 import { isKeyId } from './keys.mts';
 import type { Answer, Question } from './questions.mts';
 import type { TranscriptBatch, WireTranscriptBatch } from './transcript.mts';
+import { isWatchId, MAX_TASK_WATCHES, parseWatchIds } from './watches.mts';
+import type { TaskWatch } from './watches.mts';
 
 // What an installed CLI up to 0.7.0 compares exactly. The server reports it as max(LEGACY_CONTRACT, MIN_CLIENT): it stays 9
 // until the first breaking change, which then refuses those CLIs as well. Never change this number.
@@ -89,7 +91,7 @@ export const TASK_CREATORS = ['intake', 'user', 'agent'] as const;
 export type TaskCreator = (typeof TASK_CREATORS)[number];
 
 // The sealed fields of a task or schedule a client may find it cannot read.
-export type UnreadableField = 'title' | 'input' | 'workdir' | 'agent';
+export type UnreadableField = 'title' | 'input' | 'workdir' | 'agent' | 'watches';
 
 // What a client shows where it could not open a title or a text. Never used as data: an unreadable input is empty, and
 // the task's `unreadable` list says so.
@@ -159,6 +161,11 @@ export interface Task {
   // GitHub's state of the PR the prompt names, as a worker's dispatcher last saw it; null while unknown. Clear, not sealed: it tells
   // the board only that a PR of the task merged, never which.
   promptPrState: PrState | null;
+  // The watches the task's machine runs for it (`board watch`), as the machine last published them; null when it sent none
+  // and when they could not be opened (`unreadable` then lists 'watches'). A server without `task.watches` leaves them out.
+  watches: TaskWatch[] | null;
+  // The ids of watches the user asked to stop that the machine has not acknowledged yet (`ack-watch-stops`).
+  watchStops: string[];
   // While it runs: the user asked for the run to be interrupted and no worker has acted on it yet. Absent from a server
   // without the `run-inbox` feature.
   stopRequested?: boolean;
@@ -444,6 +451,7 @@ export type CatalogOnBoard = DirsOnBoard;
 // returns may also be legacy plain text from before encryption; only what a client sends is checked to be sealed.
 
 type SealedTaskFields = 'title' | 'input' | 'workdir' | 'agent' | 'labels' | 'unreadable';
+type OpenedTaskFields = 'prs' | 'promptPrState' | 'watches' | 'watchStops';
 
 /** What the states of `set-pr-states` and `setPrStates` name: the prompt's PR, and reported PRs by the id of their row. */
 export interface PrStates {
@@ -462,7 +470,8 @@ export interface WireTaskPr {
 // `promptPrState`. `pr` and `prState` are what a CLI without that feature reads: `pr` is the sealed "pr" of the newest one, or
 // null, and `prState` the state of the newest one, or of the prompt's PR while there is none. A server without `task.pr` leaves
 // out `pr`, and without `task.pr-state` `prState`. `agent` is the sealed "agent"; the server leaves it out of a task without one.
-export type WireTask = Omit<Task, SealedTaskFields | 'prs' | 'promptPrState'> & {
+// A server with `task.watches` answers `watches` (the sealed "watches", null for none) and `watchStops`; one without leaves both out.
+export type WireTask = Omit<Task, SealedTaskFields | OpenedTaskFields> & {
   title: string;
   input: string;
   workdir: string | null;
@@ -471,6 +480,8 @@ export type WireTask = Omit<Task, SealedTaskFields | 'prs' | 'promptPrState'> & 
   prState: PrState | null;
   prs?: WireTaskPr[];
   promptPrState?: PrState | null;
+  watches?: string | null;
+  watchStops?: string[];
 };
 
 export type WireSchedule = Omit<Schedule, 'title' | 'input' | 'workdir' | 'agent' | 'unreadable'> & {
@@ -532,6 +543,16 @@ export interface WirePr {
 // Body of remove-pr: the id of the reported PR's row.
 export interface WirePrRemoval {
   pr: string;
+}
+
+// Body of set-watches: the sealed "watches" document, or null to clear the task's watches.
+export interface WireWatches {
+  watches: string | null;
+}
+
+// Body of ack-watch-stops: the stop requests the machine has handled.
+export interface WireWatchStopAck {
+  ids: string[];
 }
 
 // Body of set-pr-states.
@@ -650,6 +671,7 @@ export const SEALED_LIMITS: Record<Field, number> = {
   workdir: 4096,
   agent: 256,
   pr: 1024,
+  watches: 32 * 1024,
   'machine.dirs': 256 * 1024,
   'machine.catalog': 256 * 1024,
   'note.body': 4 * 100_000,
@@ -969,6 +991,12 @@ function wireTaskPrs(value: unknown): WireTaskPr[] {
   });
 }
 
+// A list of ids the machine looks up; one that is not a watch id cannot name a watch, so it is left out.
+function wireWatchStops(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new ContractError('task.watchStops must be a list');
+  return value.filter(isWatchId).slice(0, MAX_TASK_WATCHES);
+}
+
 export function parseWireTask(value: unknown): WireTask {
   const obj = record(value, 'task');
   const id = safeId(string(obj, 'id', 'task'), 'task id');
@@ -995,6 +1023,8 @@ export function parseWireTask(value: unknown): WireTask {
     ...(obj['promptPrState'] === undefined
       ? {}
       : { promptPrState: PR_STATES.find((state) => state === obj['promptPrState']) ?? null }),
+    ...(obj['watches'] === undefined ? {} : { watches: nullableString(obj, 'watches', 'task') }),
+    ...(obj['watchStops'] === undefined ? {} : { watchStops: wireWatchStops(obj['watchStops']) }),
     next: member(obj, 'next', 'task', NEXT_RUNS),
     head: obj['head'] === null ? null : head(obj['head'], 'task'),
     openQuestion: boolean(obj, 'openQuestion', 'task'),
@@ -1286,6 +1316,23 @@ export function parseWirePrRemoval(value: unknown): WirePrRemoval {
   const obj = record(value, 'prRemoval');
   rejectUnknownKeys(obj, ['pr'], 'prRemoval');
   return { pr: safeId(string(obj, 'pr', 'prRemoval'), 'prRemoval.pr') };
+}
+
+// Body of set-watches: the sealed watches document, or null.
+export function parseWireWatches(value: unknown): WireWatches {
+  const obj = record(value, 'watches');
+  rejectUnknownKeys(obj, ['watches'], 'watches');
+  return { watches: nullableSealedField(obj, 'watches', 'watches', 'watches') };
+}
+
+// Body of ack-watch-stops: at most 32 watch ids.
+export function parseWireWatchStopAck(value: unknown): WireWatchStopAck {
+  const obj = record(value, 'watchStopAck');
+  rejectUnknownKeys(obj, ['ids'], 'watchStopAck');
+  const ids = parseWatchIds(obj['ids']);
+  if (ids === undefined)
+    throw new ContractError(`watchStopAck.ids must be a list of at most ${MAX_TASK_WATCHES} watch ids`);
+  return { ids };
 }
 
 // Body of set-pr-states: the state of the prompt's PR and/or of named rows, at least one of them.

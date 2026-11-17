@@ -1,6 +1,7 @@
 import {
   formatServerEvent,
   MAX_TASK_PRS,
+  MAX_TASK_WATCHES,
   MAX_WAIT_MS,
   newTaskId,
   PRIORITIES,
@@ -62,6 +63,8 @@ export function toTask(row: TaskRow, prs: readonly TaskPrRow[] = []): WireTask {
     prState: newest === undefined ? row.prState : newest.state,
     prs: prs.map(({ id, pr, state }) => ({ id, pr, state })),
     promptPrState: row.prState,
+    watches: row.watches,
+    watchStops: row.watchStops,
     next: row.next,
     head: row.head,
     openQuestion: row.openQuestionNoteId !== null,
@@ -249,6 +252,10 @@ async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promis
     values.runId = null;
   }
   if (to !== 'todo') values.notBefore = null;
+  if (to === 'done' || to === 'backlog' || change.set?.closed === true) {
+    values.watches = null;
+    values.watchStops = [];
+  }
   if (to !== 'running') {
     values.stopRequestedAt = null;
     values.stopMessageId = null;
@@ -624,7 +631,16 @@ export async function rerunFresh(db: DbOrTx, taskId: string, by: string): Promis
       place: 'bottom',
       by: 'user',
       // A fresh run is not a resume after a wait, even when it comes out of Waiting.
-      set: { next: 'fresh', sessionId: null, workdir: task.homeWorkdir, closed: false, closedAt: null, wokenAt: null },
+      set: {
+        next: 'fresh',
+        sessionId: null,
+        workdir: task.homeWorkdir,
+        closed: false,
+        closedAt: null,
+        wokenAt: null,
+        watches: null,
+        watchStops: [],
+      },
     });
   });
 }
@@ -913,6 +929,53 @@ export async function setPr(db: DbOrTx, taskId: string, pr: string): Promise<voi
     await tx.delete(taskPrs).where(eq(taskPrs.taskId, taskId));
     await tx.insert(taskPrs).values({ id: newTaskId(), taskId, pr });
     await tx.update(tasks).set({ updatedAt: new Date() }).where(eq(tasks.id, taskId));
+  });
+}
+
+/** The task of `machine`, whatever its status: only the machine that runs a task's watches may publish them or acknowledge stops. */
+function requireMachineOf(task: TaskRow, machine: string): void {
+  if (task.machine !== machine)
+    throw new AppError('CONFLICT', `the task belongs to ${task.machine ?? 'no machine'}, not to ${machine}`);
+}
+
+/** Stores the sealed watches the task's machine runs for it, or clears them (`null`). Changes nothing else, not even `updatedAt`. */
+export async function setWatches(db: DbOrTx, taskId: string, watches: string | null, by: string): Promise<void> {
+  if (watches !== null) requireSealed(watches, 'the watches');
+  await db.transaction(async (tx) => {
+    requireMachineOf(await lockTask(tx, taskId), by);
+    await tx.update(tasks).set({ watches }).where(eq(tasks.id, taskId));
+  });
+}
+
+/** The machine has acted on these stop requests: they stop being pending. An id that is not pending changes nothing. */
+export async function ackWatchStops(db: DbOrTx, taskId: string, ids: readonly string[], by: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    requireMachineOf(task, by);
+    const watchStops = task.watchStops.filter((id) => !ids.includes(id));
+    if (watchStops.length !== task.watchStops.length)
+      await tx.update(tasks).set({ watchStops }).where(eq(tasks.id, taskId));
+  });
+}
+
+/**
+ * The user's Stop of one watch: its id waits in `watchStops` until the task's machine acknowledges it, which its listener does
+ * on the next tick. Needs a task that has a machine and is not done or closed; an id that already waits changes nothing.
+ */
+export async function stopWatch(db: DbOrTx, taskId: string, watchId: string): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    if (task.machine === null) throw new AppError('CONFLICT', 'The task has no machine that runs watches.');
+    if (task.status === 'done' || task.closed) throw new AppError('CONFLICT', 'The task is done or closed.');
+    if (task.watchStops.includes(watchId)) return task;
+    if (task.watchStops.length >= MAX_TASK_WATCHES)
+      throw new AppError('BAD_REQUEST', `${MAX_TASK_WATCHES} stop requests already wait for the machine`);
+    const [row] = await tx
+      .update(tasks)
+      .set({ watchStops: [...task.watchStops, watchId] })
+      .where(eq(tasks.id, taskId))
+      .returning();
+    return row!;
   });
 }
 

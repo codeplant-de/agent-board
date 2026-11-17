@@ -20,6 +20,7 @@ export const ADDED_SERVER_FEATURES = [
   'machine.catalog',
   'task.agent',
   'task.run',
+  'task.watches',
 ] as const;
 
 export const SERVER_FEATURES = [...BASELINE_SERVER_FEATURES, ...ADDED_SERVER_FEATURES] as const;
@@ -41,6 +42,7 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'machine.catalog': 'machine catalogues',
   'task.agent': 'running a task as an agent',
   'task.run': 'telling runs of a task apart',
+  'task.watches': 'showing a task’s watches',
   wait: 'waiting',
 };
 

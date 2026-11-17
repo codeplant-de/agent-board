@@ -20,9 +20,10 @@ export function ownLane(task: Task, lanes: Lane[]): string | undefined {
 }
 
 // The fields this machine could not open that a run needs: its prompt and the directory it works in. A task listed here must
-// not be started, since an empty prompt or a missing directory would run something else than the user wrote.
+// not be started, since an empty prompt or a missing directory would run something else than the user wrote. The title and the
+// watches are only shown.
 export function unreadableForRun(task: Task): UnreadableField[] {
-  return task.unreadable.filter((field) => field !== 'title');
+  return task.unreadable.filter((field) => field !== 'title' && field !== 'watches');
 }
 
 /**

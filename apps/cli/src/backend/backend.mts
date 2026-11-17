@@ -158,6 +158,8 @@ function dryTask(draft: TaskDraft): Task {
     workdir: workdir ?? null,
     prs: [],
     promptPrState: null,
+    watches: null,
+    watchStops: [],
     next: 'fresh',
     head: head ?? null,
     openQuestion: false,

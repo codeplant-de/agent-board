@@ -12,6 +12,7 @@ import {
   openFields,
   openNote,
   openPrs,
+  openWatches,
   headIndex,
   parsePolish,
   QuestionError,
@@ -114,11 +115,12 @@ function promptPrState(wire: WireTask): PrState | null {
 
 async function openTask(keys: Keys, wire: WireTask): Promise<Task> {
   const opener = openerFor(keys);
-  const [{ title, input, workdir, agent, unreadable }, prs] = await Promise.all([
+  const [{ title, input, workdir, agent, unreadable }, prs, opened] = await Promise.all([
     openFields(opener, taskRef(wire), wire),
     openPrs(opener, wire.id, reportedPrs(wire)),
+    openWatches(opener, wire.id, wire.watches),
   ]);
-  const { pr: _pr, prState: _prState, prs: _prs, ...rest } = wire;
+  const { pr: _pr, prState: _prState, prs: _prs, watches: _watches, watchStops, ...rest } = wire;
   return {
     ...rest,
     title,
@@ -127,8 +129,10 @@ async function openTask(keys: Keys, wire: WireTask): Promise<Task> {
     agent,
     prs,
     promptPrState: promptPrState(wire),
+    watches: opened.watches,
+    watchStops: watchStops ?? [],
     labels: taskLabels({ input, createdBy: wire.createdBy }),
-    unreadable,
+    unreadable: opened.unreadable ? [...unreadable, 'watches'] : unreadable,
   };
 }
 

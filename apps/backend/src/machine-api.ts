@@ -29,6 +29,8 @@ import {
   parseWirePrRemoval,
   parseWirePrState,
   parseWirePrStates,
+  parseWireWatches,
+  parseWireWatchStopAck,
   parseWireScheduleDraft,
   parseWireTaskDraft,
   parseWireTaskPatch,
@@ -71,12 +73,14 @@ import {
   pause,
   readNotes,
   runInbox,
+  ackWatchStops,
   addPr,
   removePr,
   listTaskPrs,
   setPr,
   setPrState,
   setPrStates,
+  setWatches,
   stopped,
   toNote,
   toTask,
@@ -246,6 +250,16 @@ async function handleMachineCall(
     case 'set-pr-state': {
       const { prState } = parsed(() => parseWirePrState(body['body']));
       await setPrState(db, idOf(body, 'task'), prState);
+      return null;
+    }
+    case 'set-watches': {
+      const { watches } = parsed(() => parseWireWatches(body['body']));
+      await setWatches(db, idOf(body, 'task'), watches, machine);
+      return null;
+    }
+    case 'ack-watch-stops': {
+      const { ids } = parsed(() => parseWireWatchStopAck(body['body']));
+      await ackWatchStops(db, idOf(body, 'task'), ids, machine);
       return null;
     }
     case 'set-dirs':
