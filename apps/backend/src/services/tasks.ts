@@ -392,7 +392,10 @@ export async function addNote(
   return row!;
 }
 
-/** The agent's question: a question note, and the task waits in needs-me for the answer. */
+/**
+ * The agent's question: a question note, and the task waits in needs-me for the answer. Only the machine whose run holds the
+ * task may ask: a stale agent (its run taken back, the task finished or run elsewhere) must not pull the task into Needs me.
+ */
 export async function ask(
   db: DbOrTx,
   taskId: string,
@@ -403,6 +406,8 @@ export async function ask(
     const current = await lockTask(tx, taskId);
     // Answering a question starts the task as the user, so a proposal cannot ask one.
     if (current.proposed) throw new AppError('FORBIDDEN', 'An agent proposed this task; only you start it.');
+    const refused = notHeldBy(current, by, 'running');
+    if (refused) throw new AppError('CONFLICT', refused);
     const note = await addNote(tx, taskId, {
       author: 'agent',
       kind: 'question',
