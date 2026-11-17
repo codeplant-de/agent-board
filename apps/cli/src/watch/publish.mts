@@ -26,6 +26,7 @@ function labelOf(def: WatchDef): string {
   const { source } = def;
   if (source.kind === 'timer') return 'timer';
   if (source.kind === 'command') return `command, every ${describeEvery(def.everyMs)}`;
+  if (source.kind === 'pr-review') return `review #${source.pr.slice(source.pr.lastIndexOf('/') + 1)}`;
   const number = source.pr.slice(source.pr.lastIndexOf('/') + 1);
   return `CI #${number}${source.required ? ' · required' : ''}`;
 }
@@ -34,7 +35,7 @@ function statusOf(def: WatchDef, now: Date): string {
   const { source, last } = def;
   if (source.kind === 'timer') return `fires at ${deadlineClock(new Date(def.deadline), now)}`;
   if (last === undefined) return source.kind === 'command' ? 'not run yet' : 'not looked at yet';
-  if (source.kind === 'ci') return withoutControls(oneLine(last.summary, MAX_WATCH_STATUS_CHARS));
+  if (source.kind !== 'command') return withoutControls(oneLine(last.summary, MAX_WATCH_STATUS_CHARS));
   const result = COMMAND_RESULT.exec(last.summary)?.[1] ?? 'ran';
   return `${result} at ${clockTime(new Date(last.at), now)}`;
 }
