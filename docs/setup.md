@@ -1,51 +1,134 @@
 # Setting up a machine
 
-Installing the `board` CLI, its configuration, and upgrading.
+Installing the `board` CLI, configuring it, and upgrading.
 
 ## Install
 
-The `board` command and the worker (`dispatch`, `listen`, `worker`) are one program. A released build is a single binary per platform (Linux x64 and arm64, macOS arm64) and needs no Node; a worker machine needs `gh` (logged in) and `claude` (logged in), and on Linux systemd, `flock` and `systemd-run`, on macOS `lockf` (part of macOS). [macOS](#macos) has its own section.
+The `board` command and the worker (`dispatch`, `listen`, `worker`) are one program. A released build is a single binary per platform (Linux x64 and arm64, macOS arm64) and needs no Node.
+
+A worker machine needs:
+
+- `claude` and `gh`, both logged in.
+- On Linux: systemd, `flock`, `systemd-run` and `timeout` from coreutils.
+- On macOS: `lockf`, which ships with it. See [macOS](#macos).
+
+A machine that only uses the board, without running tasks, needs just `board init`.
 
 ### From a release
 
-```
+Set up encryption in the browser first (see [Encryption](encryption.md#encryption)). On the board's **Settings** page, create a token for this machine and copy your data key. Then:
+
+```sh
 gh release download --repo codeplant-de/agent-board --pattern install.sh -O - | sh
 board init
 board setup --enable
 board doctor
 ```
 
-`install.sh` needs `gh`, logged in. It downloads the newest `cli-v*` release for this platform, checks it against `SHA256SUMS` and installs it as `~/.local/bin/board` (`BOARD_INSTALL_DIR` chooses another directory). Set up encryption in the browser first (see [Encryption](encryption.md#encryption)), and copy your data key from the **Settings** page. `board init` asks for the board's URL, the token (create one for this machine on the board's **Settings** page; it is not shown), the data key (not shown either) and the machine name (at a prompt paste one line: the bare value, or its own `AGENT_BOARD_TOKEN=…` or `AGENT_BOARD_DATA_KEY=…` line as the Settings page offers it; a file or a pipe given with `--token-file` or `--data-key-file` can hold both lines), and writes `~/.config/agent-board/web.json`, `env` (mode 600, token and data key; a file with any other mode is refused) and, if it is missing, `config.json` from `apps/cli/config.example.json` (one `general` lane, no `repos`); add `repos` there for this machine's checkouts. For a script: `board init --url https://board.codeplant.de --token-file <file> --data-key-file <file> --machine <name>`; a secret never goes on the command line, and a file can be `/dev/stdin` for one of them (a pipe). An `env` that has the token but no data key (a machine from before encryption) is completed without `--force`: `board init` asks for the missing value only. A file that exists is kept unless `--force`, which copies it to `<name>.bak-<timestamp>` first and keeps the secrets you do not give again. `board setup` writes the dispatch service and timer, the listener service (`agent-board-listen.service`) and the watch unit (`agent-board-watch.service`, `board internal watch`, restarted always, which polls the [watches](usage.md#waiting) of this machine's tasks; its log is `journalctl --user -u agent-board-watch`) into `~/.config/systemd/user` as copies and reloads systemd; `--enable` also enables and starts the timer, the listener and the watch unit, and `--print` only shows the units. Setup also disables, stops and deletes the intake timer and service that an earlier version installed, and says so (not with `--print`). The listener holds a stream to the board and runs a dispatch tick about a second after a task, an answer or a drag to Todo; and when a delayed task, the end of a wait, a check or taking back a borrowed slot is due, a time each tick leaves in the run directory (see [How it decides](workers.md#how-it-decides)). The 2-minute timer stays as the fallback for what nothing announces (the stale sweep, an event missed while the stream was down) and for a listener that is down. A tick it starts runs under the same lock as the timer's and is stopped after 110 s, like the timer's (`timeout` from coreutils is needed). Its log is `journalctl --user -u agent-board-listen`. `board doctor` checks the whole machine: Node (checkout only), config, token, server and API range, the worker tools and the units (an installed intake timer is a warning: `board setup` removes it). A key in `config.json` the CLI does not read (a typo such as `inactivityMinuts`, or one a newer version dropped) is a warning naming the nearest known key, in `board doctor` and as a `WARN config.json:` line at the start of every dispatch tick; it never stops the machine, and its setting keeps the default.
+#### install.sh
 
-The credentials file `env` holds two lines, the token and the data key: `AGENT_BOARD_TOKEN=abm_...` and `AGENT_BOARD_DATA_KEY=abk1_...`. The data key is the same on every machine and never leaves your machines and browser. The CLI refuses to start without it, with a different key than the board's, or before the board has a key; `board doctor` checks all three.
+`install.sh` downloads the newest `cli-v*` release for this platform, checks it against `SHA256SUMS` and installs it as `~/.local/bin/board`. `BOARD_INSTALL_DIR` chooses another directory.
 
-The checksum catches a broken or partial download. It is not a signature: anyone who can write releases of this repository can replace the binary and `SHA256SUMS` together, so the trust is in who has write access to the repository.
+The checksum catches a broken or partial download. It is not a signature. Anyone who can write releases of this repository can replace the binary and `SHA256SUMS` together, so the trust is in who has write access to the repository.
 
-The units run the installed binary under `flock`: `<board> internal dispatch`. Run `board setup` again after moving the binary. A board-only machine needs just `board init`.
+#### board init
+
+`board init` asks for four things: the board's URL, the machine token, the data key and the machine name. It does not show the token or the data key as you type. At each prompt, paste one line: the bare value, or the `AGENT_BOARD_TOKEN=…` or `AGENT_BOARD_DATA_KEY=…` line as the Settings page offers it.
+
+It writes three files into `~/.config/agent-board`:
+
+| File          | Contents                                                                                                                |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `web.json`    | The board's URL.                                                                                                        |
+| `env`         | The token and the data key, mode 600. The CLI refuses a file with any other mode.                                       |
+| `config.json` | Written only if missing, from `apps/cli/config.example.json`: one `general` lane and no `repos`. See [Config](#config). |
+
+`env` holds two lines, `AGENT_BOARD_TOKEN=abm_...` and `AGENT_BOARD_DATA_KEY=abk1_...`. The data key is the same on every machine and never leaves your machines and browser. The CLI refuses to start without it, with a different key than the board's, or before the board has a key. `board doctor` checks all three.
+
+`board init` keeps a file that exists. With `--force` it copies the file to `<name>.bak-<timestamp>` first, replaces it, and keeps the secrets you do not give again. An `env` that has a token but no data key is completed without `--force`: `board init` asks for the missing value only.
+
+For a script, pass everything as flags:
+
+```sh
+board init --url https://board.codeplant.de --token-file <file> --data-key-file <file> --machine <name>
+```
+
+A secret never goes on the command line. A file given with `--token-file` or `--data-key-file` can hold both lines, and one of the two can be `/dev/stdin`.
+
+#### board setup
+
+`board setup` writes four systemd user units into `~/.config/systemd/user` as copies and reloads systemd:
+
+| Unit                                        | What it does                                                                                    |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `agent-board-dispatch.service` and `.timer` | A dispatch tick every 2 minutes, run under `flock`.                                             |
+| `agent-board-listen.service`                | The listener. It holds a stream to the board and starts a dispatch tick when something changes. |
+| `agent-board-watch.service`                 | Polls the [watches](usage.md#waiting) of this machine's tasks. Always restarted.                |
+
+`--enable` also enables and starts the timer, the listener and the watch unit. `--print` only shows the units. Setup also removes the intake timer and service that an earlier version installed, and says so.
+
+The units run the installed binary as `<board> internal dispatch`. Run `board setup` again after moving the binary.
+
+User units only run while you are logged in. For runs after logout, run `loginctl enable-linger $USER`.
+
+#### The listener and the timer
+
+The listener runs a dispatch tick about a second after a new task, an answer or a drag to Todo. It also starts a tick when something is due that no event announces: a delayed task, the end of a wait, a check, or taking back a borrowed slot. Each tick leaves the next such time in the run directory (see [How it decides](workers.md#how-it-decides)).
+
+The 2-minute timer is the fallback. It covers the stale sweep, an event missed while the stream was down, and a listener that is down.
+
+A tick the listener starts runs under the same lock as the timer's and is stopped after 110 s, as the timer's is.
+
+Logs:
+
+```sh
+journalctl --user -u agent-board-dispatch
+journalctl --user -u agent-board-listen
+journalctl --user -u agent-board-watch
+```
+
+#### board doctor
+
+`board doctor` checks the whole machine: config, token, data key, the server and its API range, the worker tools and the units. From a checkout it also checks Node.
+
+A key in `config.json` that the CLI does not read is a warning that names the nearest known key. That covers a typo such as `inactivityMinuts` and a key a newer version dropped. The warning appears in `board doctor` and as a `WARN config.json:` line at the start of every dispatch tick. It never stops the machine, and the setting keeps its default.
+
+`board completion bash|zsh|fish` prints a shell completion script. See the [CLI reference](cli.md).
 
 ### From a checkout (development)
 
-Needs Node 24+, pnpm, and for a worker the tools above. `pnpm install` in the repo (the CLI depends on `commander` and `@clack/prompts`, and imports `@agent-board/shared` through the workspace link, so every machine needs this install, again after each pull). Then `apps/cli/install.sh`: it links `board` into `~/.local/bin` and `apps/cli/bin/.node` to a Node 24+ binary (`NODE=` chooses one; it is a real binary, not a mise shim, which does not resolve a version outside a project directory), and runs `board setup`. Continue with `board init` and `board doctor` as above, then enable the timers with `board setup --enable` (or run `apps/cli/install.sh --enable` instead of the plain `install.sh`). The units then run `<node> <checkout>/apps/cli/src/main.mts internal dispatch`, with the Node that ran `board setup`; run `install.sh` or `board setup` again after moving the checkout or upgrading Node (`board doctor` flags a unit whose Node or checkout has gone).
+You need Node 24+, pnpm, and for a worker the tools above.
 
-`apps/cli/build.sh` compiles the binaries (needs Bun, pinned in `mise.toml`) into `apps/cli/dist` with a `SHA256SUMS`; `pnpm --filter @agent-board/cli test:binary` builds one for this host and runs it the way a worker machine would. A release is a GitHub release `cli-v<version>` of the version in `apps/cli/package.json`; after a merge to `main` that has no release for that version, `.github/workflows/release-cli.yml` builds, tests and publishes it (see [Releasing the CLI](development.md#releasing-the-cli)).
+1. Run `pnpm install` in the repository. The CLI imports its dependencies and `@agent-board/shared` from the workspace, so repeat this after each pull.
+2. Run `apps/cli/install.sh`. It links `board` into `~/.local/bin`, links `apps/cli/bin/.node` to a Node 24+ binary, and runs `board setup`. `NODE=` chooses the binary. It must be a real binary, not a mise shim, because a shim does not resolve a version outside a project directory.
+3. Continue with `board init` and `board doctor` as above.
+4. Enable the units with `board setup --enable`. `apps/cli/install.sh --enable` does steps 2 and 4 in one.
 
-User timers and the listener only run while you are logged in. For runs after logout: `loginctl enable-linger $USER`. `board completion bash|zsh|fish` prints a shell completion script, see [Commands](cli.md).
+The units then run `<node> <checkout>/apps/cli/src/main.mts internal dispatch`, with the Node that ran `board setup`. Run `install.sh` or `board setup` again after moving the checkout or upgrading Node. `board doctor` flags a unit whose Node or checkout has gone.
+
+To build the binaries, run `apps/cli/build.sh`. It needs Bun, pinned in `mise.toml`, and writes them into `apps/cli/dist` with a `SHA256SUMS`. `pnpm --filter @agent-board/cli test:binary` builds one for this host and runs it the way a worker machine would. [Releasing the CLI](development.md#releasing-the-cli) describes how a release is published.
 
 ### macOS
 
-A Mac runs the worker the same way a Linux machine does, with launchd in place of systemd and detached processes in place of transient units. The install is the same (`install.sh`, `board init`, then `board setup --enable`, then `board doctor`). Requirements: `claude` and `gh`, logged in, and `lockf`, which ships with macOS. The released binary is built for Apple silicon (arm64); an Intel Mac runs the CLI from a checkout.
+A Mac runs the worker the way a Linux machine does, with launchd in place of systemd and detached processes in place of transient units. The install is the same: `install.sh`, `board init`, `board setup --enable`, `board doctor`.
 
-`board setup` writes three launch agents into `~/Library/LaunchAgents` as copies (mode 644) and, with `--enable`, loads them with `launchctl bootout` and `launchctl bootstrap gui/<uid>`:
+The released binary is built for Apple silicon (arm64). An Intel Mac runs the CLI from a checkout.
 
-| Agent                               | What it does                                                                                                                                                                         |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `de.codeplant.agent-board.dispatch` | A dispatch tick every 120 s and at load, run as `lockf -s -t 0 <run dir>/agent-board-dispatch.lock <board> internal dispatch` (exit 75: another tick holds the lock, not a failure). |
-| `de.codeplant.agent-board.listen`   | The listener, kept alive (`KeepAlive`, restarted every 10 s at the soonest). `ExitTimeOut` 130 s lets a stop wait for a running tick.                                                |
-| `de.codeplant.agent-board.watch`    | The watch unit (`board internal watch`), kept alive (`KeepAlive`, restarted every 5 s at the soonest).                                                                               |
+`board setup` writes three launch agents into `~/Library/LaunchAgents` as copies (mode 644). With `--enable` it loads them with `launchctl bootout` and `launchctl bootstrap gui/<uid>`.
 
-All set `AbandonProcessGroup`, so launchd never kills a worker the job started, and a `PATH` of `~/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` written out (a plist expands nothing; launchd's own default has only `/usr/bin:/bin:/usr/sbin:/sbin`), so `claude`, `gh` and `node` are found where Homebrew and the installer put them. `AGENT_BOARD_CONFIG_DIR`, `AGENT_BOARD_STATE_DIR`, `AGENT_BOARD_RUN_DIR`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` are passed on when the shell that ran `board setup` sets them. Run `board setup` again after moving the binary.
+| Agent                               | What it does                                                                                                                                                                                      |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `de.codeplant.agent-board.dispatch` | A dispatch tick every 120 s and at load, run as `lockf -s -t 0 <run dir>/agent-board-dispatch.lock <board> internal dispatch`. Exit 75 means another tick holds the lock, which is not a failure. |
+| `de.codeplant.agent-board.listen`   | The listener, kept alive and restarted every 10 s at the soonest. `ExitTimeOut` 130 s lets a stop wait for a running tick.                                                                        |
+| `de.codeplant.agent-board.watch`    | The watch unit (`board internal watch`), kept alive and restarted every 5 s at the soonest.                                                                                                       |
 
-```
+All three set `AbandonProcessGroup`, so launchd never kills a worker the job started.
+
+A plist expands nothing, and launchd's own default `PATH` has only `/usr/bin:/bin:/usr/sbin:/sbin`. So setup writes out a `PATH` of `~/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`, where Homebrew and the installer put `claude`, `gh` and `node`.
+
+Setup passes on `AGENT_BOARD_CONFIG_DIR`, `AGENT_BOARD_STATE_DIR`, `AGENT_BOARD_RUN_DIR`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` when the shell that ran it sets them. Run `board setup` again after moving the binary.
+
+```sh
 board setup --print                                              # show the agents, change nothing
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/de.codeplant.agent-board.listen.plist     # enable (setup --enable does both)
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/de.codeplant.agent-board.dispatch.plist
@@ -54,105 +137,338 @@ launchctl kickstart -k gui/$(id -u)/de.codeplant.agent-board.listen   # restart 
 launchctl print gui/$(id -u)/de.codeplant.agent-board.listen     # state, last exit code, the program it runs
 ```
 
-- **Logs.** launchd writes each agent's output to `~/.local/state/agent-board/logs/launchd.dispatch.log` and `launchd.listen.log` (`AGENT_BOARD_STATE_DIR` or `XDG_STATE_HOME` moves them), next to the task logs; the dot in the name keeps them apart from `<task>.log`. They are not rotated.
-- **Runs.** A run is a detached `board internal worker <task>` process (its own session), not a transient unit. Its `<task>.pid` and the agent's process group (`<task>.agent`) are kept in the run directory, `~/.local/state/agent-board/run` (mode 700; `XDG_RUNTIME_DIR` or `AGENT_BOARD_RUN_DIR` override it), which nothing clears at reboot: a stale `.pid` fails the dispatcher's identity check (the pid is alive and its command line ends in `internal worker <task>`) and is removed. A stop signals the worker's process group and the agent's, SIGTERM and then SIGKILL after 10 s; the worker also ends the agent's group when the run ends. A process a run started in a session of its own (a daemon, `setsid`) is not reached: macOS has no cgroup to clean up after a run as Linux does.
-- **Where checkouts can be.** A background job may not read `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive (`~/Library/Mobile Documents`) without the user's consent, and no one is there to give it (macOS's TCC). Keep checkouts, `dirs`, `defaultCwd` and lane `cwd`s elsewhere, such as `~/code`. `board doctor` warns about a path under them. Full Disk Access (System Settings, Privacy & Security) is an unverified way out: macOS may attribute a background job's access to a binary other than `board` (the dispatch agent's program is `/usr/bin/lockf`, which then starts `board`), so granting it to `board` alone may not cover runs the timer starts, and the listener's and the timer's ticks may need different grants. Do not rely on it.
-- **Sleep.** A sleeping Mac runs nothing. While a run goes the worker holds `caffeinate -i` (idle sleep off; closing the lid, or a low battery, still sleeps). After a sleep the worker's 15-second check sees the jump of the clock and starts the idle time over, so a night's sleep is not read as hours without a tool call, and the next dispatch tick, which sees a gap of more than 10 minutes since the last one, does not count quiet time against the runs either. The 6-hour limit counts wall-clock time, sleep included.
-- **Login.** The agents are in your `gui` domain, so they run only while you are logged in (a locked screen is fine). `claude` and `gh` keep their credentials in the login keychain, which is only open in that session anyway. On macOS 13 and later, System Settings, General, Login Items lets you switch background items off, which unloads the agents; `board doctor` reports an agent launchd has not loaded.
-- **Self-update.** `board self-update` replaces the binary by a rename (a write in place would invalidate the code signature of a running file) and restarts the listener with `launchctl kickstart -k` when launchd has it loaded.
+#### Logs
+
+launchd writes each agent's output to `~/.local/state/agent-board/logs/launchd.<agent>.log`, next to the task logs. `AGENT_BOARD_STATE_DIR` or `XDG_STATE_HOME` moves them. They are not rotated.
+
+#### Runs
+
+A run is a detached `board internal worker <task>` process in its own session, not a transient unit.
+
+- The run directory is `~/.local/state/agent-board/run` (mode 700). `XDG_RUNTIME_DIR` or `AGENT_BOARD_RUN_DIR` override it. It holds each run's `<task>.pid` and the agent's process group (`<task>.agent`).
+- Nothing clears the run directory at reboot. The dispatcher trusts a `.pid` only when the pid is alive and its command line ends in `internal worker <task>`, and removes a stale one.
+- A stop signals the worker's process group and the agent's with SIGTERM, then SIGKILL after 10 s. The worker also ends the agent's group when the run ends.
+- A process that a run started in a session of its own (a daemon, `setsid`) is not reached. macOS has no cgroup to clean up after a run as Linux does.
+
+#### Where checkouts can be
+
+A background job may not read `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive (`~/Library/Mobile Documents`) without your consent, and nobody is there to give it. Keep checkouts, `dirs`, `defaultCwd` and lane `cwd`s elsewhere, such as `~/code`. `board doctor` warns about a path under them.
+
+Do not rely on Full Disk Access as a way out. macOS may attribute a background job's access to a binary other than `board`. The dispatch agent's program is `/usr/bin/lockf`, which then starts `board`, so a grant to `board` alone may not cover runs the timer starts.
+
+#### Sleep
+
+A sleeping Mac runs nothing. While a run goes on, the worker holds `caffeinate -i`, which turns idle sleep off. Closing the lid or a low battery still sleeps the machine.
+
+After a sleep, the worker's 15-second check sees the clock jump and starts the idle time over, so a night's sleep does not count as hours without a tool call. The next dispatch tick sees a gap of more than 10 minutes since the last one and does not count quiet time against the runs either. The 6-hour limit counts wall-clock time, sleep included.
+
+#### Login
+
+The agents are in your `gui` domain, so they run only while you are logged in. A locked screen is fine. `claude` and `gh` keep their credentials in the login keychain, which is only open in that session.
+
+On macOS 13 and later, System Settings, General, Login Items lets you switch background items off, which unloads the agents. `board doctor` reports an agent that launchd has not loaded.
+
+#### Self-update
+
+`board self-update` replaces the binary by a rename, because a write in place would invalidate the code signature of a running file. It restarts the listener with `launchctl kickstart -k` when launchd has it loaded.
 
 ## Upgrading
 
-**`board config` and `board task` (CLI 0.20.0, no contract change).** Two new commands: `board config` shows and changes this machine's `config.json`, and `board task` shows a task's settings and changes its priority, model and working directory (the task page has the same for model and directory). `board config` needs nothing from the server. Changing a task needs a new server feature, `task.configure`; a CLI sends the call only to a server that lists it and says so otherwise. Update in any order: workers read a task's model and directory as before, so a machine on an older CLI runs a changed task correctly.
+The CLI checks the server's API range once per process (see [Version handshake](machine-api.md#version-handshake)). Two kinds of change follow from that:
 
-**Usage limits (CLI 0.18.0, no contract change).** The CLI alone changes: a machine with `usageLimits` in its `config.json` leaves Todo tasks below a priority unclaimed while its Claude usage is at or over a threshold (see [Usage limits](workers.md#usage-limits)). Nothing changes without the key. Run `board self-update` on each machine that should use it; an older CLI ignores the key with a warning.
+- **An additive change** adds a [feature](machine-api.md#features) name and no version number: a new command, a new optional field. Deploy the server and release the CLI in any order. An older CLI keeps working, and a command that needs a feature the server lacks refuses with a message that says so. A CLI that is newer than the server skips its dispatch ticks quietly until the server catches up.
+- **A change that raises `MIN_CLIENT`** makes the server refuse older CLIs. The server and every machine's CLI update together, in the order under [A raised MIN_CLIENT](#a-raised-min_client). A machine left on an older CLI fails each dispatch tick with a version error until it is updated.
 
-**Usage status on the board (CLI 0.19.0, no contract change).** A new server feature, `machine.usage`: the server stores the sealed usage status each machine sends (a migration adds three columns to `machine`), and the CLI sends it at the end of every dispatch tick, whether or not the machine has `usageLimits`. Update the server first; a CLI sends nothing to a server without the feature. Restart the listener after updating the CLI (`systemctl --user restart agent-board-listen`). The board then shows a badge on held Todo cards and a usage line in Settings; see [Usage limits](workers.md#usage-limits). No worker reads the status.
+Every note below is additive unless it says otherwise. After updating the CLI on a machine, restart its listener (see [Restarting the listener](#restarting-the-listener)).
 
-**Watches (CLI 0.17.0, no contract change).** The CLI alone changes: `board watch`, `board watches` and `board unwatch`, a new unit `agent-board-watch.service` (a launchd agent on macOS) that polls them, and new rules text for runs (see [Waiting](usage.md#waiting)). The server, the contract and `MIN_CLIENT` stay as they are, so update machines in any order. On each machine: update the CLI (`board self-update`, or `git pull` and `pnpm install` in a checkout), then run `board setup --enable` to install, enable and start the watch unit (plain `board setup` writes it and prints the command that starts it), and `board doctor`. Until the unit runs, the dispatch tick polls the watches at its own pace and logs `WARN … the watch unit is not running; run "board setup --enable"` on each tick. A `board wait --check` that is open during the update keeps working: the dispatch tick still runs a check stored in `<state dir>/waits/<task>.json` until it ends. Runs that started before the update keep the rule they were given and park with `board wait`, which still works.
+### A raised MIN_CLIENT
 
-**A task can hold several pull requests (CLI 0.15.0, no contract change).** A new server feature, `task.prs`: `board pr` adds a PR instead of replacing the earlier one, and the dispatcher writes the state of each PR. The migration moves each task's reported PR into the new `task_pr` table and keeps its state. What becomes unknown until the next dispatcher tick (within about 10 minutes) is the state of the PR the prompt names, on a task that also had a reported PR: the old `prState` described the reported PR, so the migration clears the task's own state.
-
-Update the server first. A CLI 0.15.0 against a server without `task.prs` falls back to the old behaviour (one reported PR, the last wins). `board pr --remove` needs the server feature `task.pr-remove`, which this server has, and refuses on an older one. A CLI up to 0.14.0 still works against the new server, but its `board pr` sends `set-pr`, which replaces every PR of the task, including the ones a newer CLI added, so update every machine: `board self-update`, then `systemctl --user restart agent-board-listen`.
-
-`board tasks --json` and `board show --json` carry `prs` and `promptPrState` in place of `pr` and `prState`; a script that reads the old keys needs changing.
-
-**Runs are told apart by a run id (CLI 0.14.0, no contract change).** A new server feature, `task.run`: every claim gets a run id, and a worker and its agent send it with their calls for the task, so an agent left over from a run that was taken back and claimed again on the same machine can no longer pause, fail, wait, ask on or move the new run (see [Machine API](machine-api.md#runs)). Update in any order: the server checks calls without the id as before, and a CLI sends it only to a server that lists `task.run`. Until a machine runs `board self-update` and its listener restarts (`systemctl --user restart agent-board-listen`), its runs keep the old check by machine only; runs already going when it updates get the id from their next claim.
-
-**Tasks that run as an agent (no contract change).** A new server feature, `task.agent`: the server stores the sealed `agent` of a task and of a schedule and copies a schedule's into its occurrences (a migration adds the column `agent` to `task` and `schedule`), and the CLI and the browser send it. Nothing changes for a task without an agent: its prompt keeps the context it always had, and the server leaves the key out. The order matters, because **a CLI that does not know the field cannot run such a task, only skip it**:
-
-1. Update the server first. A CLI refuses `--agent` against a server without `task.agent` before sending anything, and the New task form needs the new server anyway.
-2. Update every machine's CLI to the release that runs tasks as an agent (`board self-update`; the listener restarts with `systemctl --user restart agent-board-listen`) **before anyone sets an agent**, and define the `agents` the tasks will name in each machine's `config.json` (see [Agents](workers.md#agents)); `board doctor` checks them.
-3. Then use `--agent` or the form's Agent field.
-
-What an older CLI does with such a task: it does not read `agent`, so it computes the context of the prompt without the name, which is not the one the prompt was sealed under (see [Encryption](encryption.md#encryption)). It cannot open the prompt, lists the task as unreadable, and its dispatcher skips it (`SKIP <id> cannot decrypt its input`) and its worker, if started on it, fails it without running claude. This holds for every CLI the server still accepts (0.7.0 and newer: contract 9, `MIN_CLIENT` 9, which already treat an unreadable prompt that way), so an older CLI can leave an agent task waiting in Todo but never run it with the user's permissions. A task that nobody can run waits in Todo.
-
-**The built-in intake is removed (CLI 0.13.0, no contract change).** The CLI alone changes; the server and the contract stay as they are, so update machines in any order, except that every machine must be updated before the script below runs: a CLI that still has the intake would requeue the script's tasks sealed for the creator `intake`, which makes them unreadable. the intake timer and service, the `intake` key of `config.json` and the intake checks of `board doctor` are gone; `apps/cli/examples/github-reviews.sh` (`board example github-reviews.sh`) makes the review tasks instead. On each machine:
-
-1. Update the CLI (`board self-update`) and run `board setup`: it disables and stops `agent-board-intake.timer`, deletes the intake service and timer and says so. Until then the installed timer fires `board internal intake`, which only prints that the intake was removed and exits 0, so nothing fails. Restart the listener afterwards (`systemctl --user restart agent-board-listen`).
-2. Delete the `intake` key from `config.json`. Until then the CLI ignores it with a warning on each dispatch tick and `board doctor` fails; nothing stops. Move its lists into `agents.<name>` (`apps/cli/examples/config.reviews.json` shows the `reviewer` agent).
-3. Install the script and run it on a timer: [Review requests from GitHub](usage.md#review-requests-from-github) has the unit and the cron line.
-4. Tasks the intake made with an agent (every one since `intake.agent`) run as that agent, and the script requeues them like its own. Tasks it made without one ran under the lists of an intake block that no longer exists, so they never run: a worker that claims one fails it with a note. Close them, or create them again with `board schedule --agent <name>`. They share the key of the script (the bare PR URL), so for their PRs the script answers `exists (other-agent)` and never reviews them again, and closing them does not help, because a closed key stays closed. `KEY_PREFIX=github-review:` makes the script use new keys; then every PR that is open reviews once more, as a duplicate.
-5. A task of the intake that has an agent is now pinned like any task: once a machine has run it (it has a `workdir` and a machine), it stays on that machine, where the intake let any machine with the checkout take it. **Re-run fresh** unpins it.
-
-**The `dirs` list is enforced (no contract change).** The CLI alone changes; the server and the contract stay as they are, so update machines in any order. Nothing changes on a machine until its `config.json` has a `dirs` key, and the first `board dirs add` creates it. Before that, on each machine: run `board dirs add --from-config` (it lists `defaultCwd`, the lane `cwd`s and the `repos` checkouts that exist), add the directories you schedule from, then `board doctor`, which fails for a route the list does not cover. Restart the listener afterwards (`systemctl --user restart agent-board-listen`). Existing tasks meet the list at their next start: a task in Todo, or a resume, whose directory is not listed goes to Needs me with the reason (list the directory, then **Re-run fresh** or **Send & continue**); a running task finishes; a waiting task is woken as before and then checked like any resume; `board schedule` refuses in an unlisted directory.
-
-**Directory lists on the board (no contract change).** A new server feature, `machine.dirs`: the server stores the sealed list each machine sends (a migration adds three columns to `machine`), and the CLI sends it. Update the server first; a CLI sends nothing to a server without the feature, and `board doctor` warns about it. Nothing changes for a machine without a `dirs` key. One with it sends its list from the next dispatch tick (restart the listener after updating the CLI) or its next `board dirs add` or `rm`. The New task form offers these directories in its Working directory field; the copy is advice and no worker reads it.
-
-**Skills and models on the board (CLI 0.16.0, no contract change).** A new server feature, `machine.catalog`: the server stores the sealed catalogue each machine sends (a migration adds three columns to `machine`), and the CLI asks `claude` for it and sends it. Update the server first; a CLI sends nothing to a server without the feature, and `board doctor` warns about it. A machine updated to this CLI starts `claude` without a prompt, in one of its directories per dispatch tick, from its next tick (restart the listener after updating the CLI); see [Skills and models on the board](workers.md#skills-and-models-on-the-board) for what that does and costs. The browser uses it to complete `/skill` in a prompt or reply and to fill the New task form's Model field. No worker reads the catalogue.
-
-**Directory settings (no contract change).** The CLI alone changes: `board dirs set` and `unset`, and four settings in the `dirs` entries of `config.json` (see [Config](#config)). Nothing changes on a machine that does not use them. The board server needs no update and no migration: a label travels inside the sealed directory list, which only clients read, so a browser that does not know labels shows the path alone and a CLI that does not send them sends none. Update the CLI on a machine to use `set`; its next list sent to the board carries the labels, and the New task form shows them once the web app is deployed too.
-
-**Machine names.** A name is 1 to 64 characters of letters, digits, `.`, `-` and `_`, starting with a letter or digit (the CLI states this when it refuses a name). The 64 is what the CLIs before accepted, and the character set, which keeps a name from being a sentence, is what protects the fixed event text and the agent's log lines; a shorter cap would add nothing but break names that worked. A machine token made earlier through the Settings page could carry any name of 1 to 64 characters. Such a token keeps working for what the machine API allows, and the Settings page shows its name as `(invalid)` (never as text) and still offers **Revoke**, which sends the raw name; to use the machine again, issue it a token under a name of the shape and set `machine` to it in its config.json.
-
-The CLI checks the server's API range once per process (see [Version handshake](machine-api.md#version-handshake)). Only a change that raises `MIN_CLIENT` makes the server refuse older CLIs, so only that change needs the server and every machine's CLI updated together; a machine left on an older CLI then fails each dispatch run with a version error until it is updated. An additive change (a new endpoint, a new optional key) adds a [feature](machine-api.md#features) name and no number: deploy the server and release the CLI in any order, and an older CLI keeps working. A new enum value is additive only once every machine runs CLI 0.8.0 or newer: 0.7.0 fails its tick on the 422 for a task it cannot read and drops the stored check of a waiting task, so until then the value comes with a raised `MIN_CLIENT`. A CLI that is newer than the server (a release that went out first) skips its dispatch ticks quietly until the server catches up, and a command that needs a feature the server lacks refuses with that message alone. For a change that raises `MIN_CLIENT`, in this order:
-
-**The Slack webhook is gone (no contract change).** `board notify`, `slackWebhookFile` and every message the CLI posted to Slack (a question asked, a run that failed or ended without reporting) were removed, which is CLI-only: the wire is unchanged, so the contract stays at 9 and no bump or order is needed. An existing `slackWebhookFile` is ignored; remove it from `config.json`, and revoke the old incoming webhook in Slack, because a CLI that was not updated keeps posting through it, in clear text. Slack now only takes text in, through the separate [Slack app](operations.md#the-slack-app) (`/board <text>`); there are no notifications.
-
-**Contract 9 (Waiting) needs no cutover but the general order below.** It adds the status `waiting` and the task columns `wake_at`, `wait_check` and `woken_at` (migration 0017), the task fields `wakeAt`, `waitCheck` and `woken`, and the machine commands `wait` and `wake`: a CLI of contract 8 cannot read those fields, so server and machines update together. `board wait` and the **Waiting** column come with it.
-
-**Contract 8 (`polish` notes) needs no cutover but the general order below.** It adds the note kind `polish` (migration 0016, which adds the enum value): a CLI of contract 7 cannot read a thread that holds one, and a server of contract 7 would store one as an unreadable comment, so the contract number moves and server and machines update together. `board polish` and the **Polish prompt** button come with it.
-
-**Contract 6 (encryption) moved data and had its own sequence, done once; see [Cutover to encryption](operations.md#cutover-to-encryption).** The list below is the order for a raised `MIN_CLIENT`:
+For a change that raises `MIN_CLIENT`, in this order:
 
 1. Stop the dispatch timer and the listener on every worker machine: `systemctl --user stop agent-board-dispatch.timer agent-board-listen.service`.
-2. Take a dump of the database, your way back if a migration has to be undone.
-3. Deploy or restart the server; migrations run on start.
-4. The CLI is released by itself: once the change is on `main`, CI publishes `cli-v<version>` (the version in `apps/cli/package.json`) before it builds the images. (`cli-v0.3.0` is the contract-5 build, `0.4.0` is contract 6, `0.5.0` is contract 7, `0.6.0` is contract 8, `0.7.0` is contract 9, `0.8.0` is the first with the API range check.) CI fails a pull request, and a push to `main`, that raises `MIN_CLIENT` without a CLI version above the newest `cli-v*` tag, so the release is never forgotten. The binaries are published before the images, so `board self-update` has something to fetch before any machine is switched. `board self-update --check` on a machine shows it.
-5. On each machine: update the CLI: `board self-update` for a release binary (it needs `gh`; `--check` only reports), or for a checkout `git pull`, `pnpm install` and `apps/cli/install.sh`. A checkout that only pulls cannot resolve new dependencies, and then `board`, dispatch and every run's hook fail. Then `board setup` once if the units were written by an older version, and `board doctor`.
-6. The old `backend` key of an existing `config.json` is ignored; remove it if you like.
-7. Start the timer and the listener again: `systemctl --user start agent-board-dispatch.timer agent-board-listen.service`.
+2. Take a dump of the database. It is your way back if a migration has to be undone.
+3. Deploy or restart the server. Migrations run on start.
+4. Wait for the CLI release. Once the change is on `main`, CI publishes `cli-v<version>` before it builds the images, so `board self-update` has something to fetch before any machine is switched. `board self-update --check` on a machine shows it.
+5. Update the CLI on each machine, then run `board doctor`.
+   - A release binary: `board self-update`. It needs `gh`.
+   - A checkout: `git pull`, `pnpm install` and `apps/cli/install.sh`. A checkout that only pulls cannot resolve new dependencies, and then `board`, dispatch and every run's hook fail.
+   - Run `board setup` once if an older version wrote the units.
+6. Start the timer and the listener again: `systemctl --user start agent-board-dispatch.timer agent-board-listen.service`.
 
-The listener checks the API range each time it connects. When the server no longer serves this CLI it logs that and exits, and systemd restarts it every 10 seconds until the CLI matches, so a machine updated late needs no hand. When the server is older than the CLI it logs that once and keeps reconnecting with its usual backoff. A running listener does not load new code by itself: it is one process that keeps the code it started with, across reconnects. `board setup` restarts it when it wrote a changed unit file (`systemctl --user try-restart`, which leaves a stopped listener alone), and so does `board self-update` after it replaced the binary (it prints a line saying so; a machine without `systemctl` has no listener to restart). After a plain `git pull` in a checkout, run `systemctl --user restart agent-board-listen` yourself. Stopping it waits for a dispatch tick that is running: the unit's `TimeoutStopSec` is 130 s, a tick's 110 s limit plus its 10 s grace and a margin. Contract 7 was a plain bump: it added the event stream and moved no data. It is CLI version 0.5.0 (`cli-v0.5.0`); a CLI up to 0.7.0 compares `contract` exactly, which is why the server still answers `contract: 9`. CLI 0.8.0 is the first with the range check.
+CI fails a pull request, and a push to `main`, that raises `MIN_CLIENT` without a CLI version above the newest `cli-v*` tag.
+
+### Restarting the listener
+
+The listener is one process that keeps the code it started with, across reconnects. It needs a restart to run a new CLI.
+
+- `board self-update` restarts it after it replaced the binary, and prints a line saying so.
+- `board setup` restarts it when it wrote a changed unit file. It uses `systemctl --user try-restart`, which leaves a stopped listener alone.
+- After a plain `git pull` in a checkout, run `systemctl --user restart agent-board-listen` yourself.
+
+Stopping the listener waits for a dispatch tick that is running. The unit's `TimeoutStopSec` is 130 s: a tick's 110 s limit, its 10 s grace and a margin.
+
+The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
+
+### `board config` and `board task` (CLI 0.20.0)
+
+Two new commands. `board config` shows and changes this machine's `config.json`. `board task` shows a task's settings and changes its priority, model and working directory. The task page has the same controls for model and directory.
+
+`board config` needs nothing from the server. Changing a task needs the server feature `task.configure`. Update in any order: a machine on an older CLI still runs a changed task correctly.
+
+### Usage status on the board (CLI 0.19.0)
+
+A new server feature, `machine.usage`. The CLI sends a sealed usage status at the end of every dispatch tick, whether or not the machine has `usageLimits`. The board shows a badge on held Todo cards and a usage line in Settings (see [Usage limits](workers.md#usage-limits)). No worker reads the status.
+
+Update the server first. A migration adds three columns to `machine`.
+
+### Usage limits (CLI 0.18.0)
+
+The CLI alone changes. A machine with `usageLimits` in its `config.json` leaves Todo tasks below a priority unclaimed while its Claude usage is at or over a threshold (see [Usage limits](workers.md#usage-limits)). Nothing changes without the key. Run `board self-update` on each machine that should use it.
+
+### Watches (CLI 0.17.0)
+
+The CLI alone changes: `board watch`, `board watches` and `board unwatch`, a new unit that polls them, and new rules text for runs (see [Waiting](usage.md#waiting)). Update machines in any order. On each machine:
+
+1. Update the CLI.
+2. Run `board setup --enable` to install, enable and start the watch unit. Plain `board setup` writes it and prints the command that starts it.
+3. Run `board doctor`.
+
+Until the unit runs, the dispatch tick polls the watches at its own pace and logs `WARN … the watch unit is not running; run "board setup --enable"` on each tick.
+
+A `board wait --check` that is open during the update keeps working. Runs that started before the update keep the rule they were given and park with `board wait`, which still works.
+
+### Skills and models on the board (CLI 0.16.0)
+
+A new server feature, `machine.catalog`. The CLI asks `claude` which skills and models the machine has and sends the answer sealed. The browser uses it to complete `/skill` in a prompt or reply and to fill the New task form's Model field. No worker reads it.
+
+Update the server first. A migration adds three columns to `machine`. An updated machine then starts `claude` without a prompt, in one of its directories per dispatch tick. [Skills and models on the board](workers.md#skills-and-models-on-the-board) says what that does and costs.
+
+### A task can hold several pull requests (CLI 0.15.0)
+
+A new server feature, `task.prs`. `board pr` adds a PR instead of replacing the earlier one, and the dispatcher writes the state of each PR. `board pr --remove` needs the server feature `task.pr-remove`.
+
+Update the server first, then every machine. A CLI up to 0.14.0 still works against the new server, but its `board pr` replaces every PR of the task, including the ones a newer CLI added.
+
+The migration moves each task's reported PR into the new `task_pr` table and keeps its state. On a task that also had a reported PR, the state of the PR the prompt names is unknown until the next dispatcher tick, within about 10 minutes.
+
+`board tasks --json` and `board show --json` carry `prs` and `promptPrState` in place of `pr` and `prState`. A script that reads the old keys needs changing.
+
+### Runs are told apart by a run id (CLI 0.14.0)
+
+A new server feature, `task.run`. Every claim gets a run id, and a worker and its agent send it with their calls for the task. An agent left over from a run that was taken back and claimed again on the same machine can then not pause, fail, wait, ask on or move the new run (see [Runs](machine-api.md#runs)).
+
+Update in any order. Until a machine is updated and its listener restarted, its runs are checked by machine only. Runs already going when it updates get the id from their next claim.
+
+### The built-in intake is removed (CLI 0.13.0)
+
+The CLI alone changes. The intake timer and service, the `intake` key of `config.json` and the intake checks of `board doctor` are gone. The `github-reviews` script makes the review tasks instead (`board example github-reviews.sh`).
+
+Update every machine before the script runs anywhere. A CLI that still has the intake would requeue the script's tasks sealed for the creator `intake`, which makes them unreadable.
+
+On each machine that used the intake:
+
+1. Update the CLI and run `board setup`. It stops and deletes the intake timer and service, and says so. Restart the listener.
+2. Delete the `intake` key from `config.json` and move its lists into `agents.<name>`. `apps/cli/examples/config.reviews.json` shows the `reviewer` agent. Until then the CLI ignores the key with a warning on each dispatch tick and `board doctor` fails. Nothing stops.
+3. Install the script and run it on a timer. [Review requests from GitHub](usage.md#review-requests-from-github) has the unit and the cron line.
+
+What happens to tasks the intake made:
+
+- A task with an agent runs as that agent, and the script requeues it like its own. Once a machine has run it, it stays on that machine like any task. **Re-run fresh** unpins it.
+- A task without an agent never runs. A worker that claims one fails it with a note. Close it, or create it again with `board schedule --agent <name>`.
+- Such a task shares the script's key, the bare PR URL. For its PR the script answers `exists (other-agent)` and never reviews it again. Closing the task does not help, because a closed key stays closed. `KEY_PREFIX=github-review:` makes the script use new keys. Every open PR is then reviewed once more, as a duplicate.
+
+### Directory settings
+
+The CLI alone changes: `board dirs set` and `unset`, and four settings in the `dirs` entries of `config.json` (see [dirs](#dirs)). Nothing changes on a machine that does not use them, and the server needs no update.
+
+A label travels inside the sealed directory list. The New task form shows it once the web app is deployed too.
+
+### Directory lists on the board
+
+A new server feature, `machine.dirs`. A machine with a `dirs` key sends its list sealed, from its next dispatch tick or its next `board dirs` change. The New task form offers these directories in its Working directory field. The copy is advice and no worker reads it.
+
+Update the server first. A migration adds three columns to `machine`. `board doctor` warns about a server without the feature.
+
+### The `dirs` list is enforced
+
+The CLI alone changes. Nothing changes on a machine until its `config.json` has a `dirs` key, and the first `board dirs add` creates it. Before that, on each machine:
+
+1. Run `board dirs add --from-config`. It lists `defaultCwd`, the lane `cwd`s and the `repos` checkouts that exist.
+2. Add the directories you schedule from.
+3. Run `board doctor`, which fails for a route the list does not cover.
+
+Existing tasks meet the list at their next start:
+
+- A task in Todo, or a resume, whose directory is not listed goes to Needs me with the reason. List the directory, then press **Re-run fresh** or **Send & continue**.
+- A running task finishes.
+- A waiting task is woken and then checked like any resume.
+- `board schedule` refuses in an unlisted directory.
+
+### Tasks that run as an agent
+
+A new server feature, `task.agent`. The server stores the sealed `agent` of a task and of a schedule, and a migration adds the column to both. Nothing changes for a task without an agent.
+
+The order matters, because a CLI that does not know the field cannot run such a task, only skip it:
+
+1. Update the server.
+2. Update every machine's CLI, and define the `agents` the tasks will name in each machine's `config.json` (see [Agents](workers.md#agents)). `board doctor` checks them. Do this before anyone sets an agent.
+3. Then use `--agent` or the form's Agent field.
+
+An older CLI cannot open the prompt of such a task, because the prompt is sealed under a context that includes the agent's name (see [Encryption](encryption.md#encryption)). Its dispatcher logs `SKIP <id> cannot decrypt its input` and its worker fails the task without running `claude`. So an older CLI can leave an agent task waiting in Todo, but it never runs one with your permissions.
+
+### Removed
+
+- **Slack.** The Slack integration is gone, including `board notify` and the `slackWebhookFile` key. Remove the key from `config.json` and revoke the old incoming webhook in Slack. A CLI that was not updated keeps posting through it, in clear text.
 
 ### Updating the CLI
 
-The board server knows the newest CLI release (`CLI_VERSION`, see [The board server](operations.md#the-board-server)) and every CLI reports its own version, so both sides can tell when a machine is behind.
+The board server knows the newest CLI release (`CLI_VERSION`, see [The board server](operations.md#the-board-server)), and every CLI reports its own version. So both sides can tell when a machine is behind.
 
-- **Settings** lists each machine's CLI as the machine last reported it: `0.7.0` (current), `0.5.0 · update available` (older than the newest release), `0.4.0 · incompatible — run board self-update` (its API break level is below the server's `minClient`: its dispatcher fails until it is updated) and `version unknown` (the machine has not called since the board learned to ask, or runs a CLI from before). A checkout's `x.y.z-dev` compares as `x.y.z`. The **board page** shows a banner naming every machine that is incompatible, was seen in the last 24 hours and whose token is not revoked.
-- **The hint.** When a command that reached the board learns of a newer release than the CLI you run, it prints one line on stderr after its output: `board 0.7.0 is available (this is 0.6.0); run "board self-update"` (a checkout is told to `git pull` instead; a `-dev` checkout counts as its base version). At most once per 24 hours from when it was printed (the time is kept in `update.json` of the state directory, `~/.local/state/agent-board`, and a file that cannot be read or written never fails the command), only when stderr is a terminal, never inside a board run (`AGENT_BOARD_TASK`) and never from `board internal`, which the dispatcher, listener, worker and hook run.
-- **`autoUpdate`** (in `config.json`) lets the dispatcher fetch the CLI itself. When a tick fails because this CLI is too old for the board (the `cli-older` mismatch) and the mode is not `never`, it runs `board self-update` in-process, asks systemd to restart the listener without waiting (`systemctl --user --no-block try-restart agent-board-listen`), logs what happened and ends the tick with success; the next tick runs the new binary. With `always` it does the same at the start of a tick when the board advertises a newer release than the binary and no worker unit runs, and otherwise logs `UPDATE-WAIT` and goes on. Workers run as their own transient units, so restarting the listener does not stop them, and the restart is requested only after the new binary is in place, the tick then ending at once. The attempt is recorded in `update.json` (`retryAfter`) before it starts, so a tick that its time limit kills does not start the download over on every tick; each `gh` call is limited to 90 s, and download directories left behind in the temp directory are removed once they are an hour old. If the update fails (`gh` missing or not logged in, a cut-off download) the reason is logged and the dispatcher does not try again for one hour; if the advertised release is not published yet it tries again after 5 minutes. In that time a too-old dispatcher skips its ticks with one `UPDATE-SKIPPED` line each and exit code 0. A checkout never updates itself: it logs `UPDATE-NEEDED` with the `git pull` hint on each tick, and a too-old checkout's tick still fails.
-- **The listener** of a machine whose CLI is too old exits on the mismatch and starts no ticks, so the update on such a machine comes from the 2-minute dispatch timer.
+#### On the board
+
+**Settings** lists each machine's CLI as the machine last reported it:
+
+| Shown                                          | Meaning                                                                                    |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `0.7.0`                                        | Current.                                                                                   |
+| `0.5.0 · update available`                     | Older than the newest release.                                                             |
+| `0.4.0 · incompatible — run board self-update` | Its API level is below the server's `minClient`. Its dispatcher fails until it is updated. |
+| `version unknown`                              | The machine has not reported a version.                                                    |
+
+A checkout's `x.y.z-dev` compares as `x.y.z`. The board page shows a banner naming every machine that is incompatible, was seen in the last 24 hours and whose token is not revoked.
+
+#### The hint
+
+When a command that reached the board learns of a newer release, it prints one line on stderr after its output:
+
+```text
+board 0.7.0 is available (this is 0.6.0); run "board self-update"
+```
+
+A checkout is told to `git pull` instead. The hint appears at most once per 24 hours and only when stderr is a terminal. It never appears inside a board run or from `board internal`.
+
+#### `autoUpdate`
+
+The `autoUpdate` key of `config.json` lets the dispatcher fetch the CLI itself.
+
+| Value                    | What the dispatcher does                                                                                                                                 |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `incompatible` (default) | Updates when a tick fails because the board refuses this CLI as too old.                                                                                 |
+| `always`                 | Also updates at the start of a tick when the board advertises a newer release and no worker runs. While a worker runs it logs `UPDATE-WAIT` and goes on. |
+| `never`                  | Leaves it to you.                                                                                                                                        |
+
+An update runs `board self-update` in-process and asks systemd to restart the listener without waiting. The tick logs what happened and ends with success, and the next tick runs the new binary. Workers run as their own transient units, so the listener restart does not stop them.
+
+When it does not work:
+
+- If the update fails, for example because `gh` is missing or not logged in, the dispatcher logs the reason and does not try again for one hour.
+- If the advertised release is not published yet, it tries again after 5 minutes.
+- In that time a too-old dispatcher skips its ticks with one `UPDATE-SKIPPED` line each and exit code 0.
+- A checkout never updates itself. It logs `UPDATE-NEEDED` with the `git pull` hint on each tick, and a too-old checkout's tick still fails.
+
+The dispatcher records the attempt in `update.json` before it starts, so a tick that its time limit kills does not start the download over on every tick. Each `gh` call is limited to 90 s.
+
+The listener of a machine whose CLI is too old exits on the mismatch and starts no ticks. The update on such a machine comes from the 2-minute dispatch timer.
 
 ## Config
 
-`~/.config/agent-board/config.json` (`AGENT_BOARD_CONFIG_DIR` changes the directory). `board config` shows it and changes one key (`board config set maxRunHours 4`) or the whole file (`board config edit`) with a check before anything is written (see [usage](usage.md)); a text editor works as well:
+Machine settings are in `~/.config/agent-board/config.json`. `AGENT_BOARD_CONFIG_DIR` changes the directory.
 
-| Key                 | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `machine`           | This machine's name on the board. Default: the host name up to the first dot. Must match the name of its token.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `lanes`             | Lane name to `{ "skills": [...], "slots": n }`, see [Lanes](workers.md#lanes). Default: `general` with `*` and 3 slots.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `defaultCwd`        | Where a task without a directory of its own runs. Default `~`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `pauseAfterMinutes` | A borrowed run is paused for its lane's own work only after this long. Default 5.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `inactivityMinutes` | A run with no tool call for this long is stopped. Default 15.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `maxRunHours`       | A run is stopped after this long, however busy. Default 6.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `autoUpdate`        | What the dispatcher does when this CLI is behind the board, see [Updating the CLI](setup.md#updating-the-cli): `incompatible` (default) updates when the board refuses this CLI as too old, `always` also updates when the board advertises a newer release and no worker runs, `never` leaves it to you. Any other value is a config error.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `intake`            | Removed with the built-in intake. The key is ignored with a warning, and `board doctor` fails on it: see [Upgrading](#upgrading).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `agents`            | Absent by default. Named agents a task can run as, each with `description`, `tools`, optional `prompt`, `allowedTools`, `disallowedTools`, `mcpServers`, `env` and `model`; an unknown key inside one makes that agent unusable. An agent can also be a file in the `agents` directory beside `config.json`, which `board agents add` writes. A task names one with a sealed `agent` field (`board schedule --agent`, the New task form). See [Agents](workers.md#agents).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `repos`             | `owner/name` to local checkout: a task whose prompt names a PR of that repository runs there.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `usageLimits`       | Absent by default. Holds Todo tasks back while this machine's last known Claude subscription usage is at or over a threshold: `{ "fiveHour": 80, "sevenDay": 90, "priority": "urgent" }`. `fiveHour` and `sevenDay` are whole percents from 1 to 100, each optional (a window without a number is not limited). `priority` is the lowest priority that still starts: `urgent` (default), `high` or `normal`; `low` is refused, since it would hold nothing. See [Usage limits](workers.md#usage-limits).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `dirs`              | Absent by default. The directories workers may run in, as an object keyed by path (`~/` works) whose values hold the directory's settings, `{}` for none: `"dirs": { "~/workspace/agent-board": { "label": "Board", "repo": "acme/board" } }`. Manage it with `board dirs add`, `rm`, `set`, `unset` and `list`, which rewrite only this key. The settings: `label` (a short name of 1 to 64 characters, no control characters, no space around it) is shown with the path in the New task form and is the only one the board is sent; `repo` (`owner/name`) makes the directory the checkout of that repository, like a `repos` entry; `default` (only `true`, leave the key out otherwise) makes it where tasks without a directory run, like `defaultCwd`, for at most one entry; `lane` (a lane of this config) makes it where that lane's tasks without a directory run, like the lane's `cwd`, for at most one entry per lane. A setting wins over the old key it stands for (`repos`, `defaultCwd`, a lane's `cwd`), which all keep working; `board doctor` and the dispatch log warn when one overrides a different path. The config is refused for an unknown setting, a bad value, two entries with the same `repo`, `default` or `lane`, and a `lane` that is not one of `lanes`. The list is enforced from this file: an absent key keeps the old behaviour (workers run anywhere), a present one, even `{}`, allows only what it names and what lies below it. The listed directories that exist are also sent to the board as a sealed copy for the New task form's Working directory field, which is never read back by a worker. At most 200 entries; `board doctor` warns about a listed directory that is gone and fails for a `defaultCwd`, lane `cwd` or `repos` checkout it does not cover (a directory with `repo`, `default` or `lane` is listed by construction). |
+`board config` shows the file. `board config set maxRunHours 4` changes one key and `board config edit` the whole file, both with a check before anything is written (see [Using the board](usage.md)). A text editor works as well.
 
-`web.json` next to it holds the board's `url`; plain `http` is refused except for localhost. Every link to a task that the CLI prints is `<url>/t/<id>`, built here: the board's own answers carry no link. The token comes from `env`. The CLI reads them on its first call to the board, so a command that fails on a usage error needs neither.
+| Key                 | Meaning                                                                                                            | Default                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| `machine`           | This machine's name on the board. It must match the name of its token. See [Machine names](#machine-names).        | The host name up to the first dot. |
+| `lanes`             | Lane name to `{ "skills": [...], "slots": n, "cwd": "<path>" }`. `cwd` is optional. See [Lanes](workers.md#lanes). | `general` with `*` and 3 slots.    |
+| `defaultCwd`        | Where a task without a directory of its own runs.                                                                  | `~`                                |
+| `repos`             | `owner/name` to local checkout. A task whose prompt names a PR of that repository runs there.                      | None.                              |
+| `pauseAfterMinutes` | A borrowed run is paused for its lane's own work only after this long.                                             | 5                                  |
+| `inactivityMinutes` | A run with no tool call for this long is stopped.                                                                  | 15                                 |
+| `maxRunHours`       | A run is stopped after this long, however busy.                                                                    | 6                                  |
+| `autoUpdate`        | What the dispatcher does when this CLI is behind the board. See [`autoUpdate`](#autoupdate).                       | `incompatible`                     |
+| `usageLimits`       | Holds Todo tasks back while Claude usage is high. See [usageLimits](#usagelimits).                                 | Absent.                            |
+| `agents`            | Named agents a task can run as. See [agents](#agents).                                                             | Absent.                            |
+| `dirs`              | The directories workers may run in. See [dirs](#dirs).                                                             | Absent.                            |
 
-Logs: `~/.local/state/agent-board/logs/<task>.log`, one per task, emptied when a worker starts. The worker's own fatal errors are appended to it. The record of the Claude session the machine started for each task is `~/.local/state/agent-board/sessions/<task>`. The dispatcher deletes both once the task is done, closed or deleted and the file has not changed for 14 days; a task in any other column keeps them, so it can still be resumed. A done task brought back after that cannot resume its session and needs Re-run fresh. The checks of waiting tasks are in `~/.local/state/agent-board/waits/<task>.json` (see [Waiting](usage.md#waiting)). The usage that this machine's runs reported is in `~/.local/state/agent-board/usage.json`, one entry per window (see [Usage limits](workers.md#usage-limits)).
+An `intake` key is ignored with a warning, and `board doctor` fails on it. See [The built-in intake is removed](#the-built-in-intake-is-removed-cli-0130).
+
+### Machine names
+
+A name is 1 to 64 characters of letters, digits, `.`, `-` and `_`, starting with a letter or digit. The CLI states this when it refuses a name.
+
+An older token may carry a name outside that shape. It keeps working for what the machine API allows. The Settings page shows its name as `(invalid)` and still offers **Revoke**. To use the machine again, issue it a token under a valid name and set `machine` to it.
+
+### usageLimits
+
+```json
+"usageLimits": { "fiveHour": 80, "sevenDay": 90, "priority": "urgent" }
+```
+
+- `fiveHour` and `sevenDay` are whole percents from 1 to 100. Each is optional, and a window without a number is not limited.
+- `priority` is the lowest priority that still starts: `urgent` (the default), `high` or `normal`. `low` is refused, since it would hold nothing.
+
+[Usage limits](workers.md#usage-limits) describes what is held and when.
+
+### agents
+
+Each agent has `description` and `tools`, and optionally `prompt`, `allowedTools`, `disallowedTools`, `mcpServers`, `env` and `model`. An unknown key inside an agent makes that agent unusable.
+
+An agent can also be a file in the `agents` directory beside `config.json`, which `board agents add` writes. A task names an agent with `board schedule --agent` or the New task form. [Agents](workers.md#agents) has the details.
+
+### dirs
+
+An object keyed by path, where `~/` works. Each value holds the directory's settings, or `{}` for none:
+
+```json
+"dirs": { "~/workspace/acme/app": { "label": "App", "repo": "acme/app" } }
+```
+
+Manage it with `board dirs add`, `rm`, `set`, `unset` and `list`, which rewrite only this key.
+
+| Setting   | Meaning                                                                                                                                                |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `label`   | A short name the New task form shows with the path. 1 to 64 characters, no control characters, no space around it. The only setting the board is sent. |
+| `repo`    | `owner/name`. The directory is that repository's checkout, like a `repos` entry.                                                                       |
+| `default` | Only `true`. Tasks without a directory run here, like `defaultCwd`. At most one entry.                                                                 |
+| `lane`    | A lane of this config. That lane's tasks without a directory run here, like the lane's `cwd`. At most one entry per lane.                              |
+
+A setting wins over the key it stands for (`repos`, `defaultCwd`, a lane's `cwd`). Those keys keep working, and `board doctor` and the dispatch log warn when a setting overrides a different path.
+
+The CLI refuses a config with an unknown setting, a bad value, two entries with the same `repo`, `default` or `lane`, or a `lane` that is not one of `lanes`. The list holds at most 200 entries.
+
+**The list is enforced from this file.** Without the key, workers run anywhere. With it, even as `{}`, a run starts only in a listed directory or below one. [Where a task runs](workers.md#where-a-task-runs) has the rules.
+
+`board doctor` warns about a listed directory that is gone. It fails for a `defaultCwd`, lane `cwd` or `repos` checkout that the list does not cover.
+
+The CLI also sends the listed directories that exist to the board as a sealed copy, for the New task form's Working directory field. No worker reads that copy back.
+
+### Files
+
+The config directory is `~/.config/agent-board` (`AGENT_BOARD_CONFIG_DIR`):
+
+| Path          | Purpose                                                          |
+| ------------- | ---------------------------------------------------------------- |
+| `config.json` | The machine settings above.                                      |
+| `web.json`    | The board's `url`. Plain `http` is refused except for localhost. |
+| `env`         | The token and the data key.                                      |
+| `agents/`     | Agent definitions as files, one per agent.                       |
+
+The CLI builds every task link it prints as `<url>/t/<id>` from `web.json`. The board's own answers carry no link. The CLI reads `web.json` and `env` on its first call to the board, so a command that fails on a usage error needs neither.
+
+The state directory is `~/.local/state/agent-board` (`AGENT_BOARD_STATE_DIR`, or `XDG_STATE_HOME`):
+
+| Path                         | Purpose                                                                                                     |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `logs/<task>.log`            | The task's log, emptied when a worker starts. The worker's own fatal errors are appended to it.             |
+| `sessions/<task>`            | The Claude session this machine started for the task.                                                       |
+| `watches/<task>/`            | The task's watches and their events (see [Watches](workers.md#watches)).                                    |
+| `waits/<task>.json`          | A check stored by `board wait --check` (see [Waiting](usage.md#waiting)).                                   |
+| `worktree-locks/<task>.json` | The worktrees the task locked (see [Where a task runs](workers.md#where-a-task-runs)).                      |
+| `catalog/`                   | What `claude` reported as skills and models, one file per directory.                                        |
+| `usage.json`                 | The usage this machine's runs reported, one entry per window (see [Usage limits](workers.md#usage-limits)). |
+| `pr-refresh.json`            | The time of the last PR state lookup.                                                                       |
+| `update.json`                | The last update hint and the last self-update attempt.                                                      |
+
+The dispatcher deletes a task's log and session record once the task is done, closed or deleted and the file has not changed for 14 days. A task in any other column keeps them, so it can still be resumed. A done task brought back after that cannot resume its session and needs **Re-run fresh**.
+
+The run directory holds what lives only while runs go on: heartbeats, pause flags and the dispatch lock. It is `$XDG_RUNTIME_DIR/agent-board` on Linux and `~/.local/state/agent-board/run` on macOS. `AGENT_BOARD_RUN_DIR` overrides it.
