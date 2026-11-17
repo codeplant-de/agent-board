@@ -6,6 +6,7 @@ import {
   isSafeNoteId,
   isSessionId,
   openFields,
+  openMachineCatalog,
   openMachineDirs,
   openNote,
   openPrs,
@@ -17,6 +18,7 @@ import {
   type Answer,
   type Binding,
   type Keys,
+  type MachineCatalog,
   type MachineDir,
   type NoteKind,
   type Opener,
@@ -123,6 +125,9 @@ export type Machine = Omit<RouterOutputs['machines']['list'][number], 'dirs'> & 
   // The machine has a list that does not open under its name or is not of its shape, so it offers nothing.
   dirsUnreadable: boolean;
 };
+// The skills and models a machine listed, as advice for what the forms offer; null when it has none to offer: one that does not
+// open under its name, is not of its shape, or belongs to a name that does not pass the shape check.
+export type OpenedCatalog = { name: string; catalog: MachineCatalog | null };
 
 // One envelope always opens to the same text, so the 5 s polls of every task's prompt decrypt only what is new. Transcript
 // values are large and opened once on demand, so they are not kept.
@@ -299,6 +304,18 @@ export async function openMachines(keys: Keys, wire: RouterOutputs['machines']['
         dirsUnreadable: offers && opened === undefined,
       };
     }),
+  );
+}
+
+export async function openCatalogs(keys: Keys, wire: RouterOutputs['machines']['catalogs']): Promise<OpenedCatalog[]> {
+  return Promise.all(
+    wire.map(async ({ name, catalog: sealed }) => ({
+      name,
+      catalog:
+        shownName(name) === INVALID_VALUE || sealed === null
+          ? null
+          : ((await openMachineCatalog(openerFor(keys), name, sealed)) ?? null),
+    })),
   );
 }
 

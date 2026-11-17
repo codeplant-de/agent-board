@@ -112,6 +112,8 @@ export interface Paths {
   sessionDir: string;
   // The checks of waiting tasks this machine runs (see waits.mts).
   waitDir: string;
+  // What the machine learned of each directory's skills and models (see catalog/cache.mts).
+  catalogDir: string;
   // Small state files of the CLI itself, such as when it last offered an update.
   stateDir: string;
 }
@@ -126,6 +128,7 @@ export function getPaths(env: NodeJS.ProcessEnv = process.env): Paths {
     logDir: join(stateDir, 'logs'),
     sessionDir: join(stateDir, 'sessions'),
     waitDir: join(stateDir, 'waits'),
+    catalogDir: join(stateDir, 'catalog'),
     stateDir,
   };
 }

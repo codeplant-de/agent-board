@@ -4,13 +4,17 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MachineDir } from '@agent-board/shared';
+import type { MachineCatalog, MachineDir } from '@agent-board/shared';
 import type { Machine } from '../lib/opening';
 import { NewTaskModal } from './NewTaskModal';
 
 const create = vi.hoisted(() => vi.fn(async (_: unknown) => ({ id: 'new1' })));
 
-const listed = vi.hoisted(() => ({ machines: [] as unknown[], failure: null as Error | null }));
+const listed = vi.hoisted(() => ({
+  machines: [] as unknown[],
+  catalogs: [] as unknown[],
+  failure: null as Error | null,
+}));
 
 vi.mock('../lib/trpc', () => ({
   useTRPC: () => ({
@@ -25,14 +29,26 @@ vi.mock('../lib/trpc', () => ({
           },
         }),
       },
+      catalogs: { queryOptions: () => ({ queryKey: ['machines.catalogs'], queryFn: async () => listed.catalogs }) },
     },
   }),
   errorMessage: (error: unknown) => String(error),
 }));
 
 vi.mock('./MarkdownEditor', () => ({
-  MarkdownEditor: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => (
-    <textarea aria-label="Prompt" value={value} onChange={(event) => onChange(event.currentTarget.value)} />
+  MarkdownEditor: ({
+    value,
+    onChange,
+    skills = [],
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    skills?: readonly { name: string }[];
+  }) => (
+    <>
+      <textarea aria-label="Prompt" value={value} onChange={(event) => onChange(event.currentTarget.value)} />
+      <output aria-label="Offered skills">{skills.map(({ name }) => name).join(',')}</output>
+    </>
   ),
 }));
 
@@ -61,6 +77,7 @@ const sent = () => create.mock.calls[0]?.[0];
 beforeEach(() => {
   create.mockClear();
   listed.machines = [];
+  listed.catalogs = [];
   listed.failure = null;
 });
 
@@ -329,5 +346,91 @@ describe('NewTaskModal working directory', () => {
     await userEvent.click(createButton());
     await waitFor(() => expect(create).toHaveBeenCalled());
     expect(sent()).toMatchObject({ when: { every: 7_200_000 }, place: { machine: 'laptop', workdir: '/work/a' } });
+  });
+});
+
+const skill = (name: string) => ({ name });
+const catalogOf = (parts: Partial<MachineCatalog>): MachineCatalog => ({ models: [], skills: [], dirs: {}, ...parts });
+const offeredSkills = () => screen.getByLabelText('Offered skills').textContent;
+const modelField = () => screen.getByRole('combobox', { name: 'Model' });
+
+describe('NewTaskModal skills and models of the machines', () => {
+  beforeEach(() => {
+    listed.machines = [machine('laptop', ['/work/a', '/work/b']), machine('desktop', ['/srv/c'])];
+    listed.catalogs = [
+      {
+        name: 'laptop',
+        catalog: catalogOf({
+          models: [{ value: 'claude-opus-9', label: 'Opus 9' }],
+          skills: [skill('review')],
+          dirs: { '/work/a': [skill('deploy')], '/work/b': [skill('lint')] },
+        }),
+      },
+      {
+        name: 'desktop',
+        catalog: catalogOf({
+          models: [
+            { value: 'claude-opus-9', label: 'Other label' },
+            { value: 'claude-haiku-9', label: 'Haiku 9' },
+          ],
+          skills: [skill('sweep')],
+        }),
+      },
+    ];
+  });
+
+  it('offers the skills of every machine until a directory is chosen', async () => {
+    await open();
+    await waitFor(() => expect(offeredSkills()).toBe('deploy,lint,review,sweep'));
+  });
+
+  it('offers the skills of the machine and directory that was picked', async () => {
+    await open();
+    await waitFor(() => expect(directory()).toBeEnabled());
+    await pick('/work/a');
+    expect(offeredSkills()).toBe('deploy,review');
+    await pick('/work/b');
+    expect(offeredSkills()).toBe('lint,review');
+  });
+
+  it('offers the models of every machine, then of the chosen one, labelled as the catalogue says', async () => {
+    await open();
+    await waitFor(() => expect(directory()).toBeEnabled());
+    await userEvent.click(modelField());
+    expect(await screen.findByRole('option', { name: 'Haiku 9', hidden: true })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Opus 9', hidden: true })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Opus', hidden: true })).not.toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    await pick('/work/a');
+    await userEvent.click(modelField());
+    await waitFor(() =>
+      expect(screen.queryByRole('option', { name: 'Haiku 9', hidden: true })).not.toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getByRole('option', { name: 'Opus 9', hidden: true }));
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ model: 'claude-opus-9', place: { machine: 'laptop', workdir: '/work/a' } });
+  });
+
+  it('keeps the model that was picked when the new machine does not list it', async () => {
+    await open();
+    await waitFor(() => expect(directory()).toBeEnabled());
+    await userEvent.click(modelField());
+    await userEvent.click(await screen.findByRole('option', { name: 'Haiku 9', hidden: true }));
+    await pick('/work/a');
+    expect(modelField()).toHaveValue('Haiku 9');
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ model: 'claude-haiku-9' });
+  });
+
+  it('falls back to the aliases and offers no skills when no machine sent a catalogue', async () => {
+    listed.machines = [machine('laptop', ['/work/a'])];
+    listed.catalogs = [{ name: 'laptop', catalog: null }];
+    await open();
+    await waitFor(() => expect(directory()).toBeEnabled());
+    expect(offeredSkills()).toBe('');
+    await userEvent.click(modelField());
+    expect(await screen.findByRole('option', { name: 'Opus', hidden: true })).toBeInTheDocument();
   });
 });

@@ -1,3 +1,4 @@
+import type { CatalogEntry, CatalogStore, InitRecord } from '../../catalog/cache.mts';
 import type { Config } from '../../config/config.mts';
 import type { RunFiles, RunRecord } from '../../worker/runtime.mts';
 import type { WorktreeLocks } from '../../worker/worktree-lock.mts';
@@ -9,6 +10,7 @@ import { BackendError } from '../../backend/backend.mts';
 import {
   API_VERSION,
   LEGACY_CONTRACT,
+  machineCatalogJson,
   machineDirsJson,
   MIN_CLIENT,
   deriveKeys,
@@ -21,7 +23,16 @@ import {
   taskLabels,
 } from '@agent-board/shared';
 import type { Sealer } from '@agent-board/shared';
-import type { Backend, MachineDir, Note, Schedule, Task, WireSchedule, WireTask } from '@agent-board/shared';
+import type {
+  Backend,
+  MachineCatalog,
+  MachineDir,
+  Note,
+  Schedule,
+  Task,
+  WireSchedule,
+  WireTask,
+} from '@agent-board/shared';
 
 export function task(overrides: Partial<Task> & { id: string }): Task {
   return {
@@ -107,6 +118,8 @@ export interface FakeBackend extends Backend {
   keys: Map<string, string>;
   // The directory list the board holds for this machine, and what its server does with a new one.
   boardDirs: { supported: boolean; held: MachineDir[] | undefined; failure: Error | undefined };
+  // The same for the catalogue of skills and models.
+  boardCatalog: { supported: boolean; held: MachineCatalog | undefined; failure: Error | undefined };
 }
 
 function parseFirstLine(input: string): string {
@@ -137,6 +150,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     lostClaims: [],
     keys: new Map(),
     boardDirs: { supported: true, held: undefined, failure: undefined },
+    boardCatalog: { supported: true, held: undefined, failure: undefined },
     async listTasks({ all = false } = {}) {
       return state.tasks.filter((t) => all || !t.closed).map(asBoardShows);
     },
@@ -267,6 +281,19 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         `dirs ${machine}: ${dirs.map(({ path, label }) => (label === undefined ? path : `${path}=${label}`)).join(',')}`,
       );
       state.boardDirs.held = dirs.map((entry) => ({ ...entry }));
+    },
+    async checkCatalog(_machine, catalog) {
+      if (state.boardCatalog.failure) throw state.boardCatalog.failure;
+      if (!state.boardCatalog.supported) return 'unsupported';
+      const { held } = state.boardCatalog;
+      return held !== undefined && machineCatalogJson(held) === machineCatalogJson(catalog) ? 'current' : 'stale';
+    },
+    async setCatalog(machine, catalog) {
+      if (state.boardCatalog.failure) throw state.boardCatalog.failure;
+      state.writes.push(
+        `catalog ${machine}: ${catalog.skills.length} skills, ${Object.keys(catalog.dirs).length} directories, ${catalog.models.length} models`,
+      );
+      state.boardCatalog.held = structuredClone(catalog);
     },
     async heartbeat(id, beat) {
       state.writes.push(`heartbeat ${id} ${beat.lane}${beat.borrowed ? ' borrowed' : ''}`);
@@ -575,6 +602,24 @@ export const OTHER_SESSION = '22222222-2222-4222-8222-222222222222';
 
 // A task's link as the CLI builds it from the board URL of its own web.json.
 export const linkTo = (id: string): string => `https://board.test/t/${id}`;
+
+// What the machine learned of its directories' skills and models, in memory.
+export function fakeCatalogStore(): CatalogStore & {
+  entries: Map<string, CatalogEntry>;
+  inits: Map<string, InitRecord>;
+} {
+  const entries = new Map<string, CatalogEntry>();
+  const inits = new Map<string, InitRecord>();
+  return {
+    entries,
+    inits,
+    read: (dir) => entries.get(dir),
+    write: (entry) => void entries.set(entry.path, structuredClone(entry)),
+    readInit: (dir) => inits.get(dir),
+    writeInit: (dir, record) => void inits.set(dir, structuredClone(record)),
+    initSkills: () => new Set([...inits.values()].flatMap(({ skills }) => skills)),
+  };
+}
 
 // The checks of waiting tasks, in memory.
 export function fakeWaitStore(initial: Record<string, WaitCheck> = {}): WaitStore & { checks: Map<string, WaitCheck> } {

@@ -20,7 +20,7 @@ import type { DbOrTx } from '../db/client';
 import { tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { getKeys, replaceSlots, setupKeys } from '../services/keys';
 import { getLink, listInbox, peekLinkCode, redeemLinkCode, removeInboxItem, removeLink } from '../services/slack';
-import { issueToken, listMachines, revokeMachine } from '../services/machines';
+import { issueToken, listMachineCatalogs, listMachines, revokeMachine } from '../services/machines';
 import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from '../services/schedules';
 import { eventOutput, listEvents, listRuns } from '../services/transcripts';
 import {
@@ -374,6 +374,8 @@ const schedulesRouter = router({
 
 const machinesRouter = router({
   list: procedure.query(({ ctx }) => listMachines(ctx.db, ctx.config.cliVersion)),
+  /** The sealed skills and models each machine sent, for the forms that complete `/skill` and offer models; not polled. */
+  catalogs: procedure.query(({ ctx }) => listMachineCatalogs(ctx.db)),
   /** The newest CLI release this server knows of, x.y.z, or null. */
   advertisedCli: procedure.query(({ ctx }) => ctx.config.cliVersion),
   /** Returns the token once; only its hash is stored. */

@@ -673,3 +673,33 @@ describe('ActionPanel of a waiting task', () => {
     ).toBeInTheDocument();
   });
 });
+
+describe('ActionPanel skill completion', () => {
+  const skills = [{ name: 'review' }];
+  const renderWith = (task: BoardTask) =>
+    render(
+      <MemoryRouter>
+        <MantineProvider>
+          <ModalsProvider>
+            <QueryClientProvider client={new QueryClient()}>
+              <ActionPanel task={task} thread={[]} followUps={[]} skills={skills} />
+            </QueryClientProvider>
+          </ModalsProvider>
+        </MantineProvider>
+      </MemoryRouter>,
+    );
+
+  it('offers the skills in the reply to a task that waits for you', async () => {
+    renderWith(running({ status: 'needs-me' }));
+    await userEvent.type(screen.getByRole('textbox'), '/re');
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveAttribute('data-expanded', 'true'));
+    await userEvent.keyboard('{Enter}');
+    expect(screen.getByRole('textbox')).toHaveValue('/review ');
+  });
+
+  it('offers none in the message to a running agent, which is not a prompt that starts a skill', async () => {
+    renderWith(running({}));
+    await userEvent.type(screen.getByRole('textbox'), '/re');
+    expect(screen.getByRole('textbox')).not.toHaveAttribute('data-expanded');
+  });
+});

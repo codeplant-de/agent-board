@@ -19,12 +19,16 @@ import { plainLine } from '../output/terminal.mts';
 import {
   API_VERSION,
   decodeDataKey,
+  machineCatalogIndex,
   machineDirsIndex,
   SERVER_FEATURE_LABELS,
   SERVER_FEATURES,
 } from '@agent-board/shared';
 import type { Keys } from '@agent-board/shared';
 import { pluginPlaceholders } from '../worker/plan.mts';
+import { catalogDirs, composeCatalog } from '../catalog/catalog.mts';
+import { createCatalogStore } from '../catalog/cache.mts';
+import type { CatalogStore } from '../catalog/cache.mts';
 import { dirsToSend, isAllowedDir, isDirectory, routedDirs, UNCOVERED_HINT } from '../config/dirs.mts';
 import { parseEnv } from '../config/env-file.mts';
 import { runDir } from '../worker/runtime.mts';
@@ -76,6 +80,8 @@ export interface DoctorDeps {
   // A read-only systemctl call: its exit code.
   systemctl: (args: string[]) => Promise<number>;
   verifyServer: (config: Pick<WebConfig, 'url' | 'token'>) => Promise<ServerIdentity>;
+  // What this machine learned of its directories' skills and models.
+  catalogStore: CatalogStore;
 }
 
 // What the macOS worker checks touch.
@@ -162,6 +168,7 @@ export function realDoctorDeps(
     which,
     systemctl,
     verifyServer: (config) => verifyContract(config),
+    catalogStore: createCatalogStore(),
   };
 }
 
@@ -305,17 +312,21 @@ const missingFeatureChecks = (features: ReadonlySet<string>): CheckResult[] => {
       ];
 };
 
+// The config of this machine, or undefined when it is missing or does not parse (the config.json check says why).
+function readParsedConfig(deps: DoctorDeps): Config | undefined {
+  const text = deps.readText(join(deps.configDir, 'config.json'));
+  try {
+    return parseConfig(text === undefined ? undefined : JSON.parse(text));
+  } catch {
+    return undefined;
+  }
+}
+
 // Whether the board holds the current directory list of this machine, for a machine with a `dirs` key and a server that can hold one.
 async function dirsOnBoardChecks(deps: DoctorDeps, identity: ServerIdentity, keys: Keys): Promise<CheckResult[]> {
   if (!identity.features.has('machine.dirs')) return [];
-  const text = deps.readText(join(deps.configDir, 'config.json'));
-  let config: Config;
-  try {
-    config = parseConfig(text === undefined ? undefined : JSON.parse(text));
-  } catch {
-    return [];
-  }
-  if (config.dirs === undefined) return [];
+  const config = readParsedConfig(deps);
+  if (config?.dirs === undefined) return [];
   const index = await machineDirsIndex(keys, config.machine, dirsToSend(config.dirs, deps.isDirectory));
   return [
     index === identity.dirsIndex
@@ -325,6 +336,33 @@ async function dirsOnBoardChecks(deps: DoctorDeps, identity: ServerIdentity, key
           'warn',
           'the board does not have the current list yet',
           'the next dispatch tick sends it; "board dirs add" or "board dirs rm" send it at once',
+        ),
+  ];
+}
+
+// Whether the board holds the current catalogue of skills and models, as far as this machine has probed: the dispatcher asks
+// claude in one directory per tick, so a machine with several directories is complete after as many ticks.
+async function catalogOnBoardChecks(deps: DoctorDeps, identity: ServerIdentity, keys: Keys): Promise<CheckResult[]> {
+  if (!identity.features.has('machine.catalog')) return [];
+  const config = readParsedConfig(deps);
+  if (config === undefined) return [];
+  const entries = catalogDirs(config, deps.isDirectory).flatMap((dir) => {
+    const entry = deps.catalogStore.read(dir);
+    return entry?.result ? [{ ...entry, result: entry.result }] : [];
+  });
+  let trimmed = false;
+  const catalog = composeCatalog(entries, deps.catalogStore.initSkills(), () => (trimmed = true));
+  if (catalog === undefined)
+    return [ok('catalog on board', 'nothing probed yet: the next dispatch tick asks claude for its skills and models')];
+  const count = `${catalog.skills.length + Object.values(catalog.dirs).reduce((sum, list) => sum + list.length, 0)} skills, ${catalog.models.length} models${trimmed ? ', cut to fit the size limit' : ''}`;
+  return [
+    (await machineCatalogIndex(keys, config.machine, catalog)) === identity.catalogIndex
+      ? ok('catalog on board', `the board has the current catalogue (${count})`)
+      : problem(
+          'catalog on board',
+          'warn',
+          `the board does not have the current catalogue yet (${count})`,
+          'the next dispatch tick sends it',
         ),
   ];
 }
@@ -361,6 +399,7 @@ const checkServer: Check = async (deps) => {
         ...results,
         ok('board key', `the board's data key is id ${checked.keys.keyId}, and this machine holds it`),
         ...(await dirsOnBoardChecks(deps, identity, checked.keys)),
+        ...(await catalogOnBoardChecks(deps, identity, checked.keys)),
       ];
     return [
       ...results,

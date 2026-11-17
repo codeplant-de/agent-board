@@ -13,6 +13,7 @@ import {
   openBoardTask,
   openEvents,
   openListedTasks,
+  openCatalogs,
   openMachines,
   openOutput,
   openRuns,
@@ -136,6 +137,14 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
             queryKey: plainKey(raw.machines.list.queryKey()),
             queryFn: async ({ signal }) =>
               openMachines(need(), await client.machines.list.query(undefined, { signal })),
+          }),
+      },
+      catalogs: {
+        queryOptions: () =>
+          queryOptions({
+            queryKey: plainKey(raw.machines.catalogs.queryKey()),
+            queryFn: async ({ signal }) =>
+              openCatalogs(need(), await client.machines.catalogs.query(undefined, { signal })),
           }),
       },
     },

@@ -687,6 +687,52 @@ test('the directory list: the server must name machine.dirs, its index comes fro
   assert.deepEqual(lacking.seen, ['version']);
 });
 
+test('the catalogue: the server must name machine.catalog, its index comes from the version answer, and a junk index is none', async () => {
+  const make = (features: string[], catalogIndex?: unknown) => {
+    const seen: string[] = [];
+    const fetcher: Fetch = async (url) => {
+      const command = url.slice(`${config.url}/api/machine/`.length);
+      seen.push(command);
+      const result = command === 'version' ? { ...VERSION_ANSWER, features, catalogIndex } : null;
+      return new Response(JSON.stringify({ result }));
+    };
+    return { seen, backend: createWebBackend({ loadConfig: () => config, fetch: fetcher }) };
+  };
+  const index = await blindIndex(KEYS, 'catalog:here:{}');
+  const having = make(['machine.catalog'], index);
+  assert.deepEqual(await having.backend.catalogState(), { supported: true, index });
+  await having.backend.setCatalog({ catalog: 'abe1.x', index });
+  assert.deepEqual(having.seen, ['version', 'set-catalog']);
+  for (const junk of [undefined, null, 7, 'abh1.short', 'abe1.x']) {
+    assert.deepEqual(await make(['machine.catalog'], junk).backend.catalogState(), { supported: true, index: null });
+  }
+  const lacking = make(['machine.dirs'], index);
+  assert.deepEqual(await lacking.backend.catalogState(), { supported: false, index });
+  await assert.rejects(
+    lacking.backend.setCatalog({ catalog: 'abe1.x', index }),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'machine.catalog' &&
+      /does not support machine catalogues yet/.test(error.message),
+  );
+  assert.deepEqual(lacking.seen, ['version']);
+});
+
+test('a dry run prints the catalogue it would send and sends nothing', async () => {
+  const { seen, fetcher } = board({});
+  const lines: string[] = [];
+  const dry = dryRunBackend(createSealedBackend({ loadConfig: () => config, fetch: fetcher }), (line) =>
+    lines.push(line),
+  );
+  await dry.setCatalog('here', {
+    models: [{ value: 'opus', label: 'Opus' }],
+    skills: [{ name: 'a' }, { name: 'b' }],
+    dirs: { '/a': [{ name: 'c' }] },
+  });
+  assert.deepEqual(lines, ['DRY set-catalog 2 skills, 1 directories with their own, 1 models']);
+  assert.deepEqual(seen, []);
+});
+
 test('a dry run prints the directory list it would send and sends nothing', async () => {
   const { seen, fetcher } = board({});
   const lines: string[] = [];
