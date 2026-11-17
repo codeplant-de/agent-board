@@ -1,8 +1,9 @@
-import { ActionIcon, AppShell, Button, Group, Text, Tooltip, useMantineColorScheme } from '@mantine/core';
+import { ActionIcon, AppShell, Box, Button, Group, Menu, Text, Tooltip, useMantineColorScheme } from '@mantine/core';
 import { useHotkeys } from '@mantine/hooks';
 import {
   IconArchive,
   IconLayoutKanban,
+  IconDots,
   IconLock,
   IconMoon,
   IconPlus,
@@ -32,15 +33,22 @@ export function AppLayout() {
   const { pathname } = useLocation();
   const active = (to: string) =>
     to === '/' ? pathname === '/' || pathname.startsWith('/t/') : pathname.startsWith(to);
+  const themeLabel = colorScheme === 'dark' ? 'Light mode' : 'Dark mode';
   useHotkeys([['c', () => setCreating(true)]]);
   useDesktopNotifications();
 
   return (
-    <AppShell header={{ height: 56 }} padding="md">
+    <AppShell header={{ height: 56 }} padding={{ base: 'xs', sm: 'md' }}>
       <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between" wrap="nowrap">
-          <Group gap="lg" wrap="nowrap">
-            <Group gap={8} wrap="nowrap" style={{ cursor: 'pointer' }} onClick={() => navigate('/')}>
+        <Group h="100%" px={{ base: 'xs', sm: 'md' }} justify="space-between" wrap="nowrap">
+          <Group gap="xs" wrap="nowrap">
+            <Group
+              gap={8}
+              wrap="nowrap"
+              mr={{ base: 0, sm: 10 }}
+              style={{ cursor: 'pointer' }}
+              onClick={() => navigate('/')}
+            >
               <img src="/favicon.svg" alt="" width={24} height={24} />
               <Text fw={700} visibleFrom="xs">
                 Agent Board
@@ -55,6 +63,8 @@ export function AppLayout() {
                   end
                   variant={active(item.to) ? 'light' : 'subtle'}
                   size="compact-sm"
+                  aria-label={item.label}
+                  classNames={{ root: 'header-button', section: 'header-button-section' }}
                   leftSection={<item.icon size={16} />}
                   styles={{ root: { fontWeight: 500 } }}
                 >
@@ -66,21 +76,50 @@ export function AppLayout() {
             </Group>
           </Group>
           <Group gap="xs" wrap="nowrap">
-            <Tooltip label={colorScheme === 'dark' ? 'Light mode' : 'Dark mode'}>
-              <ActionIcon variant="default" size="lg" onClick={toggleColorScheme} aria-label="Toggle color scheme">
-                {colorScheme === 'dark' ? <IconSun size={18} /> : <IconMoon size={18} />}
-              </ActionIcon>
-            </Tooltip>
-            {lock && (
-              <Tooltip label="Lock">
-                <ActionIcon variant="default" size="lg" onClick={() => void lock()} aria-label="Lock">
-                  <IconLock size={18} />
+            <Group gap="xs" wrap="nowrap" visibleFrom="sm">
+              <Tooltip label={themeLabel}>
+                <ActionIcon variant="default" size="lg" onClick={toggleColorScheme} aria-label="Toggle color scheme">
+                  {colorScheme === 'dark' ? <IconSun size={18} /> : <IconMoon size={18} />}
                 </ActionIcon>
               </Tooltip>
-            )}
+              {lock && (
+                <Tooltip label="Lock">
+                  <ActionIcon variant="default" size="lg" onClick={() => void lock()} aria-label="Lock">
+                    <IconLock size={18} />
+                  </ActionIcon>
+                </Tooltip>
+              )}
+            </Group>
+            <Menu position="bottom-end" withinPortal>
+              <Menu.Target>
+                <ActionIcon variant="default" size="lg" hiddenFrom="sm" aria-label="More">
+                  <IconDots size={18} />
+                </ActionIcon>
+              </Menu.Target>
+              <Menu.Dropdown>
+                <Menu.Item
+                  leftSection={colorScheme === 'dark' ? <IconSun size={16} /> : <IconMoon size={16} />}
+                  onClick={toggleColorScheme}
+                >
+                  {themeLabel}
+                </Menu.Item>
+                {lock && (
+                  <Menu.Item leftSection={<IconLock size={16} />} onClick={() => void lock()}>
+                    Lock
+                  </Menu.Item>
+                )}
+              </Menu.Dropdown>
+            </Menu>
             <Tooltip label="New task (c)">
-              <Button leftSection={<IconPlus size={16} />} onClick={() => setCreating(true)}>
-                New task
+              <Button
+                aria-label="New task"
+                classNames={{ root: 'header-button', section: 'header-button-section' }}
+                leftSection={<IconPlus size={16} />}
+                onClick={() => setCreating(true)}
+              >
+                <Box component="span" visibleFrom="sm">
+                  New task
+                </Box>
               </Button>
             </Tooltip>
           </Group>

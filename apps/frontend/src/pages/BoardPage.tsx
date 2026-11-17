@@ -111,8 +111,8 @@ export function BoardPage() {
         }}
       >
         <div className="board-column-content">
-          <Group justify="space-between" mb="sm">
-            <Group gap={6}>
+          <Group justify="space-between" mb="sm" wrap="nowrap">
+            <Group gap={6} wrap="nowrap" style={{ flexShrink: 0 }}>
               <Badge color={STATUS_COLOR[status]} variant="light">
                 {STATUS_LABEL[status]}
               </Badge>
@@ -120,7 +120,7 @@ export function BoardPage() {
                 {column.length}
               </Text>
             </Group>
-            <Text size="xs" c="dimmed">
+            <Text size="xs" c="dimmed" ta="right" className="wrap-anywhere">
               {HINT[status]}
             </Text>
           </Group>

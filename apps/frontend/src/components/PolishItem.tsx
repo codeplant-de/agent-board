@@ -31,7 +31,7 @@ export function PolishItem({ note, task, parent }: { note: ThreadNote; task: Boa
       </Group>
       {state.usable ? (
         <Stack gap="xs">
-          <Text size="sm" fw={500}>
+          <Text size="sm" fw={500} className="wrap-anywhere">
             {state.rewrite.title}
           </Text>
           <Spoiler maxHeight={200} showLabel="Show all" hideLabel="Show less">
@@ -43,6 +43,7 @@ export function PolishItem({ note, task, parent }: { note: ThreadNote; task: Boa
             <Button
               size="xs"
               color="grape"
+              className="truncate-flex"
               leftSection={<IconWand size={14} />}
               loading={apply.isPending}
               onClick={() =>

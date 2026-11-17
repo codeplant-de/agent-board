@@ -2,6 +2,29 @@ body {
   background: var(--mantine-color-body);
 }
 
+/* For user and agent text that can hold one long unbroken token: it wraps instead of widening its box. */
+.wrap-anywhere {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* A truncating link or button label inside a flex row. */
+.truncate-flex {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Header buttons shrink to square icon targets on a phone; the label is hidden there. */
+@media (max-width: 47.99em) {
+  .header-button {
+    width: 2.125rem;
+    height: 2.125rem;
+    padding: 0;
+  }
+  .header-button .header-button-section {
+    margin: 0;
+  }
+}
+
 /* Markdown written by agents: readable widths, quiet code, tables that scroll. */
 .md {
   font-size: var(--mantine-font-size-sm);

@@ -82,22 +82,24 @@ function TaskView({ id }: { id: string }) {
   return (
     <Container size="md" px={0}>
       <Stack gap="md" pb="xl">
-        <Breadcrumbs>
+        <Breadcrumbs styles={{ root: { flexWrap: 'nowrap', minWidth: 0 }, separator: { flexShrink: 0 } }}>
           <Anchor component={Link} to="/" size="sm">
             Board
           </Anchor>
           {parent && (
-            <Anchor component={Link} to={`/t/${parent.id}`} size="sm">
+            <Anchor component={Link} to={`/t/${parent.id}`} size="sm" truncate>
               {parent.title}
             </Anchor>
           )}
-          <Text size="sm" c="dimmed">
+          <Text size="sm" c="dimmed" style={{ flexShrink: 0 }}>
             {task.id}
           </Text>
         </Breadcrumbs>
 
         <Stack gap="xs">
-          <Title order={3}>{task.title}</Title>
+          <Title order={3} className="wrap-anywhere">
+            {task.title}
+          </Title>
           <Group gap="xs">
             <Badge color={STATUS_COLOR[task.status]}>{task.closed ? 'Closed' : STATUS_LABEL[task.status]}</Badge>
             <PriorityPicker
@@ -124,6 +126,7 @@ function TaskView({ id }: { id: string }) {
               size="xs"
               c="dimmed"
               ff="monospace"
+              className="wrap-anywhere"
               title="Where the task's session last worked; a resume starts here"
             >
               {task.machine ? `${task.machine}:` : ''}
@@ -152,6 +155,7 @@ function TaskView({ id }: { id: string }) {
                   rel="noopener noreferrer"
                   variant="default"
                   size="xs"
+                  className="truncate-flex"
                   leftSection={<PrStateIcon state={pr === statePrOf(task) ? task.prState : null} size={14} />}
                 >
                   {pr.replace('https://github.com/', '')}
@@ -207,9 +211,9 @@ function TaskView({ id }: { id: string }) {
             </Text>
             <Stack gap={4}>
               {followUps.map((f) => (
-                <Group key={f.id} gap="xs">
-                  <IconCornerDownRight size={14} />
-                  <Anchor component={Link} to={`/t/${f.id}`} size="sm">
+                <Group key={f.id} gap="xs" wrap="nowrap" align="flex-start">
+                  <IconCornerDownRight size={14} style={{ flexShrink: 0, marginTop: 4 }} />
+                  <Anchor component={Link} to={`/t/${f.id}`} size="sm" className="wrap-anywhere">
                     {f.title}
                   </Anchor>
                   <Badge size="xs" color={STATUS_COLOR[f.status]} variant="light">

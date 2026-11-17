@@ -27,13 +27,14 @@ export function ClosedPage() {
           <Group
             key={task.id}
             justify="space-between"
+            wrap="nowrap"
             p="sm"
             style={{ borderTop: index ? '1px solid var(--mantine-color-default-border)' : undefined }}
           >
-            <Anchor component={Link} to={`/t/${task.id}`} size="sm">
+            <Anchor component={Link} to={`/t/${task.id}`} size="sm" className="wrap-anywhere">
               {task.title}
             </Anchor>
-            <Group gap="xs">
+            <Group gap="xs" wrap="nowrap" style={{ flexShrink: 0 }}>
               <Badge size="sm" variant="light" color={STATUS_COLOR[task.status]}>
                 {STATUS_LABEL[task.status]}
               </Badge>
