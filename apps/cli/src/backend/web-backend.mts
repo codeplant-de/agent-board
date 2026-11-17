@@ -110,6 +110,10 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
         usageIndex: identity.usageIndex ?? null,
       };
     })();
+    // A failed first call (a server restarting) must not fail every later one of a long-running command.
+    ready.catch(() => {
+      ready = undefined;
+    });
     return ready;
   };
 

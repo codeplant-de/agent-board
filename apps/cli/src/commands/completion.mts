@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { MODEL_ALIASES, PRIORITIES, STATUSES } from '@agent-board/shared';
+import { EVENT_TYPES } from '../events/diff.mts';
 import { DIR_SETTINGS } from '../config/config.mts';
 import { shellQuote } from '../output/text.mts';
 
@@ -41,6 +42,7 @@ const FLAG_VALUES: Record<string, string[]> = {
   '--status': [...STATUSES],
   '--priority': [...PRIORITIES],
   '--model': MODEL_ALIASES.map((alias) => alias.value),
+  '--type': [...EVENT_TYPES],
 };
 
 function positionalsOf(command: Command): CommandModel['positionals'] {
@@ -78,7 +80,7 @@ export function completionModel(program: Command): CompletionModel {
       ),
     ),
   ];
-  const taskFlags: string[] = valueFlags.filter((flag) => flag === '--parent');
+  const taskFlags: string[] = valueFlags.filter((flag) => flag === '--parent' || flag === '--task');
   const fileFlags: string[] = valueFlags.filter(
     (flag) => flag === '--file' || flag === '--token-file' || flag === '--data-key-file',
   );

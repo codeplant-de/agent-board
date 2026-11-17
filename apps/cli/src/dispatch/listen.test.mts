@@ -7,40 +7,9 @@ import { API_VERSION, CLIENT_FEATURES_HEADER, MIN_SERVER } from '@agent-board/sh
 import { requireFeature } from '../backend/backend.mts';
 import type { Fetch } from '../backend/backend.mts';
 import { verifyContract } from '../backend/contract-check.mts';
-import { backoffMs, createTicker, LISTENER_OPTIONS, runLimited, runListener, tickCommand } from './listen.mts';
-import type { Timers } from './listen.mts';
-
-// A clock that only moves when the test says so.
-class FakeClock implements Timers {
-  time = 0;
-  private timers: { at: number; fn: () => void; cancelled: boolean }[] = [];
-
-  now = (): number => this.time;
-  after = (ms: number, fn: () => void): (() => void) => {
-    const timer = { at: this.time + ms, fn, cancelled: false };
-    this.timers.push(timer);
-    return () => {
-      timer.cancelled = true;
-    };
-  };
-
-  // Runs everything that falls due in the next `ms`, in order, letting promises settle after each.
-  async advance(ms: number): Promise<void> {
-    const end = this.time + ms;
-    await settle();
-    for (;;) {
-      const due = this.timers.filter((timer) => !timer.cancelled && timer.at <= end).sort((a, b) => a.at - b.at)[0];
-      if (due === undefined) break;
-      this.timers = this.timers.filter((timer) => timer !== due);
-      this.time = due.at;
-      due.fn();
-      await settle();
-    }
-    this.time = end;
-  }
-}
-
-const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+import { backoffMs } from '../backend/event-stream.mts';
+import { FakeClock, openStream } from '../__tests__/helpers/stream.mts';
+import { createTicker, LISTENER_OPTIONS, runLimited, runListener, tickCommand } from './listen.mts';
 
 // `due.at` stands for the run directory's next due time, which a tick writes.
 function ticker(codes: number[] = [], due: { at?: number } = {}) {
@@ -236,22 +205,6 @@ test('the backoff doubles from a second to a minute and is cut by jitter', () =>
   assert.deepEqual(seconds(1), [1, 2, 4, 8, 16, 32, 60, 60, 60]);
   assert.deepEqual(seconds(0), [0.5, 1, 2, 4, 8, 16, 30, 30, 30]);
 });
-
-// A stream the test writes to.
-function openStream() {
-  let controller!: ReadableStreamDefaultController<Uint8Array>;
-  const body = new ReadableStream<Uint8Array>({
-    start: (c) => {
-      controller = c;
-    },
-  });
-  const encoder = new TextEncoder();
-  return {
-    response: new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
-    push: (text: string) => controller.enqueue(encoder.encode(text)),
-    end: () => controller.close(),
-  };
-}
 
 type Plan = ReturnType<typeof openStream> | Response | Error;
 

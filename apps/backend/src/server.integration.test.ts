@@ -283,6 +283,26 @@ describe('machine API', () => {
     ]);
   });
 
+  it('counts the notes of a task in list-tasks, get-task and the answer of a write', async () => {
+    const quiet = (await ctx.call('laptop', 'add-task', { body: { title: 'quiet', input: 'a' } })).json.result.task;
+    const busy = (await ctx.call('laptop', 'add-task', { body: { title: 'busy', input: 'b' } })).json.result.task;
+    expect(quiet.noteCount).toBe(0);
+    await ctx.call('laptop', 'add-note', { id: busy.id, body: 'one' });
+    await ctx.call('laptop', 'add-note', { id: busy.id, author: 'system', body: 'two' });
+    const counts = async () =>
+      Object.fromEntries(
+        (await ctx.call('laptop', 'list-tasks')).json.result.map((t: { id: string; noteCount: number }) => [
+          t.id,
+          t.noteCount,
+        ]),
+      );
+    expect(await counts()).toEqual({ [quiet.id]: 0, [busy.id]: 2 });
+    expect((await ctx.call('laptop', 'get-task', { id: busy.id })).json.result.noteCount).toBe(2);
+    const moved = await ctx.call('laptop', 'update-task', { id: busy.id, body: { priority: 'high' } });
+    const thread = (await ctx.call('laptop', 'read-notes', { id: busy.id })).json.result;
+    expect(moved.json.result.noteCount).toBe(thread.length);
+  });
+
   it('refuses bad input with the parser reason', async () => {
     const bad = await ctx.call('laptop', 'update-task', { id: 'abcdefgh', body: { title: 'x' } });
     expect(bad).toMatchObject({ status: 400, json: { error: 'patch has an unknown key "title"' } });
