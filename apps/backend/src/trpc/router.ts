@@ -21,13 +21,15 @@ import type { DbOrTx } from '../db/client';
 import { tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { getKeys, replaceSlots, setupKeys } from '../services/keys';
 import { issueToken, listMachineCatalogs, listMachines, revokeMachine } from '../services/machines';
-import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from '../services/schedules';
+import { addSchedule, editSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from '../services/schedules';
+import { hasStarted } from '../services/taskRows';
 import { eventOutput, listEvents, listRuns } from '../services/transcripts';
 import {
   addTask,
   answer,
   applyPolish,
   configureTask,
+  editPrompt,
   getTask,
   listTasksWithLastNote,
   type LastNote,
@@ -97,6 +99,8 @@ const createStatus = { now: 'todo', backlog: 'backlog', hold: 'needs-me' } as co
 /** What the board needs of a task beyond the contract's fields. `title`, `input` and `workdir` are still sealed. */
 export interface WireBoardTask extends WireTask {
   proposed: boolean;
+  /** A worker claimed the task at some point; until then its prompt can still be edited. */
+  started: boolean;
   parentId: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -113,6 +117,7 @@ function toBoardTask(row: TaskRow, prs: Parameters<typeof toTask>[1]): WireBoard
   return {
     ...toTask(row, prs),
     proposed: row.proposed,
+    started: hasStarted(row),
     parentId: row.parentId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -296,6 +301,25 @@ const tasksRouter = router({
       ),
     ),
 
+  /**
+   * A new title and prompt (sealed as the user's) for a task of the user's that has not started, in Todo or Backlog; the
+   * old text stays in a note of the user's (`previous`).
+   */
+  edit: procedure
+    .input(z.object({ id, title: sealed('title', 'title'), input: sealed('input', 'prompt'), previous: noteInput }))
+    .mutation(async ({ ctx, input }) =>
+      boardTask(
+        ctx.db,
+        await editPrompt(ctx.db, {
+          taskId: input.id,
+          title: input.title,
+          input: input.input,
+          previous: input.previous,
+          by: ctx.username,
+        }),
+      ),
+    ),
+
   done: procedure
     .input(z.object({ id }))
     .mutation(async ({ ctx, input }) => boardTask(ctx.db, await markDone(ctx.db, input.id, ctx.username))),
@@ -400,6 +424,13 @@ const schedulesRouter = router({
   setPaused: procedure
     .input(z.object({ id, paused: z.boolean() }))
     .mutation(async ({ ctx, input }) => toSchedule(await setPaused(ctx.db, input.id, input.paused))),
+  /** A new title and prompt (sealed under the schedule); the pending card takes them too while it has not started. */
+  edit: procedure
+    .input(z.object({ id, title: sealed('title', 'title'), input: sealed('input', 'prompt') }))
+    .mutation(async ({ ctx, input }) => {
+      const { schedule, pending } = await editSchedule(ctx.db, input);
+      return { schedule: toSchedule(schedule), pending };
+    }),
   remove: procedure.input(z.object({ id })).mutation(({ ctx, input }) => removeSchedule(ctx.db, input.id)),
 });
 

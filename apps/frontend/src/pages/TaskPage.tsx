@@ -22,6 +22,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ActionPanel } from '../components/ActionPanel';
+import { EditTaskPrompt } from '../components/EditPrompt';
 import { WatchList } from '../components/WatchList';
 import { Markdown } from '../components/Markdown';
 import { PriorityPicker } from '../components/PriorityPicker';
@@ -220,9 +221,21 @@ function TaskView({ id }: { id: string }) {
 
         {task.input && (
           <Paper withBorder p="sm">
-            <Text size="xs" c="dimmed" fw={600} mb={4} tt="uppercase">
-              Prompt
-            </Text>
+            <Group justify="space-between" mb={4} wrap="nowrap">
+              <Text size="xs" c="dimmed" fw={600} tt="uppercase">
+                Prompt
+              </Text>
+              <EditTaskPrompt task={task} skills={skills} />
+            </Group>
+            {task.scheduleId !== null && (
+              <Text size="xs" c="dimmed" mb={4}>
+                This card is the next run of a schedule.{' '}
+                <Anchor component={Link} to="/schedules" size="xs">
+                  Edit the prompt on the Schedules page
+                </Anchor>
+                ; the change applies to this card too while it has not started.
+              </Text>
+            )}
             <Spoiler maxHeight={180} showLabel="Show all" hideLabel="Show less">
               <Markdown>{task.input}</Markdown>
             </Spoiler>

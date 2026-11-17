@@ -38,6 +38,7 @@ vi.mock('../lib/trpc', () => ({
         }),
       },
       configure: { mutationOptions: () => ({ mutationFn: async () => null }) },
+      edit: { mutationOptions: () => ({ mutationFn: async () => null }) },
       removePr: {
         mutationOptions: () => ({
           mutationFn: async (input: unknown) => {
@@ -89,6 +90,7 @@ const task = (overrides: Partial<BoardTask>): BoardTask =>
     woken: false,
     parentId: null,
     proposed: false,
+    started: true,
     paused: false,
     notBefore: null,
     lastActiveAt: null,
