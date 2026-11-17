@@ -6,7 +6,6 @@ import { Fragment, useState, type DragEvent } from 'react';
 import { moveConfirmed } from '../components/confirmStart';
 import { IncompatibleMachinesBanner } from '../components/IncompatibleMachinesBanner';
 import { QueryStatus } from '../components/QueryStatus';
-import { SlackInbox } from '../components/SlackInbox';
 import { TaskCard } from '../components/TaskCard';
 import { usePolish } from '../components/usePolish';
 import { beforeIdOver, dropNeighbors } from '../lib/dropPosition';
@@ -185,7 +184,6 @@ function BoardColumns({ only }: { only?: Status }) {
   return (
     <Stack gap="md">
       <IncompatibleMachinesBanner />
-      {only === undefined && <SlackInbox />}
       <QueryStatus query={tasks} what="the board" />
       {only !== undefined ? (
         <Box maw={640} w="100%" mx="auto">

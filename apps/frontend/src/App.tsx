@@ -9,7 +9,6 @@ import { BacklogPage, BoardPage } from './pages/BoardPage';
 import { ClosedPage } from './pages/ClosedPage';
 import { SchedulesPage } from './pages/SchedulesPage';
 import { SettingsPage } from './pages/SettingsPage';
-import { SlackLinkPage } from './pages/SlackLinkPage';
 import { TaskPage } from './pages/TaskPage';
 
 export function App() {
@@ -60,7 +59,6 @@ export function App() {
               <Route path="schedules" element={<SchedulesPage />} />
               <Route path="closed" element={<ClosedPage />} />
               <Route path="settings" element={<SettingsPage />} />
-              <Route path="slack/link" element={<SlackLinkPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>
