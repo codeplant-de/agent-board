@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { HEAD, OTHER_HEAD, PR } from '../__tests__/helpers/watch.mts';
 import { decideCi, NO_CHECKS_GRACE_MS } from './ci.mts';
-import type { CiInput, CiSource, GhOutput } from './ci.mts';
+import type { CiDecision, CiInput, CiSource, GhOutput } from './ci.mts';
 
 const NOW = new Date('2026-01-01T12:10:00Z');
 const source: CiSource = {
@@ -62,15 +62,24 @@ test('a cancelled check alone fails the watch too, and the counts leave out skip
   ]);
 });
 
-test('all checks passing ends the watch; skipped ones are counted apart', () => {
-  const passed = decide({
-    checks: checks([
-      { name: 'a', bucket: 'pass' },
-      { name: 'b', bucket: 'pass' },
-    ]),
-  });
+// Two looks: the first that finds every check done stores what it found, the next reports when it finds the same.
+const settle = (input: Partial<CiInput>): CiDecision => {
+  const first = decide(input);
+  assert.equal(first.kind, 'pending');
+  return decide({ ...input, source: first.kind === 'pending' ? first.source : source });
+};
+
+test('all checks passing ends the watch on the second look that finds the same checks; skipped ones are counted apart', () => {
+  const two = checks([
+    { name: 'a', bucket: 'pass' },
+    { name: 'b', bucket: 'pass' },
+  ]);
+  const first = decide({ checks: two });
+  assert.equal(first.kind === 'pending' && first.summary, '2 checks passed, looking once more before reporting');
+  assert.match(first.kind === 'pending' ? (first.source.settled ?? '') : '', /^[0-9a-f]{16}$/);
+  const passed = settle({ checks: two });
   assert.equal(passed.kind === 'event' && passed.text, `CI on ${PR} at aaaaaaa passed: 2 checks passed.`);
-  const one = decide({
+  const one = settle({
     checks: checks([
       { name: 'a', bucket: 'pass' },
       { name: 'b', bucket: 'skipping' },
@@ -79,9 +88,38 @@ test('all checks passing ends the watch; skipped ones are counted apart', () => 
   assert.equal(one.kind === 'event' && one.text, `CI on ${PR} at aaaaaaa passed: 1 check passed, 1 skipped.`);
 });
 
-test('only skipped checks end the watch with their own text', () => {
-  const decision = decide({ checks: checks([{ name: 'a', bucket: 'skipping' }]) });
+test('only skipped checks end the watch with their own text, on the second look too', () => {
+  const list = checks([{ name: 'a', bucket: 'skipping' }]);
+  const first = decide({ checks: list });
+  assert.equal(first.kind === 'pending' && first.summary, 'all 1 check skipped, looking once more before reporting');
+  const decision = settle({ checks: list });
   assert.equal(decision.kind === 'event' && decision.text, `CI on ${PR} at aaaaaaa: every check was skipped.`);
+});
+
+test('a second look that finds other checks, or a check running again, does not report and forgets the first', () => {
+  const few = checks([{ name: 'a', bucket: 'pass' }]);
+  const first = decide({ checks: few });
+  const settledSource = first.kind === 'pending' ? first.source : source;
+  const more = decide({
+    source: settledSource,
+    checks: checks([
+      { name: 'a', bucket: 'pass' },
+      { name: 'b', bucket: 'pass' },
+    ]),
+  });
+  assert.equal(more.kind, 'pending');
+  assert.notEqual(more.kind === 'pending' && more.source.settled, settledSource.settled);
+  const running = decide({
+    source: settledSource,
+    checks: checks([
+      { name: 'a', bucket: 'pass' },
+      { name: 'b', bucket: 'pending' },
+    ]),
+  });
+  assert.deepEqual(running, { kind: 'pending', summary: '1 of 2 passed, 1 running', source: source });
+  // A new head with the very same checks is a first look again.
+  const moved = decide({ source: settledSource, view: view('OPEN', OTHER_HEAD), checks: few });
+  assert.equal(moved.kind, 'pending');
 });
 
 test('a check still pending keeps the watch going, and says how far it is', () => {
@@ -117,7 +155,7 @@ test('a new head restarts the watch on it: the checks of the new commit count, a
   assert.equal(pending.kind, 'pending');
   assert.equal(pending.kind === 'pending' && pending.source.head, OTHER_HEAD);
   assert.equal(pending.kind === 'pending' && pending.source.headSince, NOW.toISOString());
-  const passed = decide({ view: view('OPEN', OTHER_HEAD), checks: checks([{ name: 'a', bucket: 'pass' }]) });
+  const passed = settle({ view: view('OPEN', OTHER_HEAD), checks: checks([{ name: 'a', bucket: 'pass' }]) });
   assert.equal(passed.kind === 'event' && passed.text, `CI on ${PR} at bbbbbbb passed: 1 check passed.`);
 });
 

@@ -364,7 +364,8 @@ and the task waits without holding a slot. A task may have several watches.
 Give exactly one source. --ci watches the checks of a pull request (the PR is
 the argument, or the newest open one you reported with "board pr"; --required
 looks at the required checks only; a new commit restarts it) and reports when
-they have passed, one failed, or the PR was merged or closed. --pr-review
+one failed, the PR was merged or closed, or two looks 30 seconds apart found the
+same checks all passed (so a passed answer never comes at once). --pr-review
 watches the reviews and comments of a pull request (the same default) every
 minute and reports the first one that someone other than the PR's author and
 this machine's gh user writes after the watch started, with who wrote it, the

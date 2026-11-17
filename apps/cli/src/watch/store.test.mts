@@ -77,7 +77,7 @@ test('parsing is tolerant: what is not the shape this CLI writes is skipped and 
   assert.deepEqual(store.list('../etc'), { defs: [], unreadable: [] });
 });
 
-test('a watch definition is shape-checked: the PR, the directories, the commit and the times', () => {
+test('a watch definition is shape-checked: the PR, the directories, the commit, the settled digest and the times', () => {
   const good = watchDef();
   assert.deepEqual(parseWatchDef(good), good);
   const bad = (change: object) => parseWatchDef({ ...good, ...change });
@@ -98,10 +98,13 @@ test('a watch definition is shape-checked: the PR, the directories, the commit a
   assert.equal(parseWatchDef({ ...stream, source: { ...stream.source, cwd: 'relative' } }), undefined);
   const noisy = parseWatchDef({
     ...good,
-    source: { ...good.source, head: 'not-a-commit', settingsDir: 'rel' },
+    source: { ...good.source, head: 'not-a-commit', settled: 'build passed', settingsDir: 'rel' },
     last: { at: 'x' },
   });
   assert.equal(noisy?.source.kind === 'ci' && noisy.source.head, undefined);
+  assert.equal(noisy?.source.kind === 'ci' && noisy.source.settled, undefined);
+  const settled = { ...good, source: { ...good.source, settled: '0123456789abcdef' } };
+  assert.deepEqual(parseWatchDef(settled), settled);
   assert.equal(noisy?.last, undefined);
 });
 

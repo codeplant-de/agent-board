@@ -24,3 +24,8 @@ export function isReviewItemId(id: string): boolean {
 
 // How many ids of reviews and comments a pr-review watch remembers.
 export const MAX_SEEN_IDS = 200;
+
+/** A ci watch's `settled` digest (see decideCi). */
+export function isSettledDigest(digest: string): boolean {
+  return /^[0-9a-f]{16}$/.test(digest);
+}

@@ -28,7 +28,7 @@ import { isRecord, isSafeTaskId, isSafeWorkdir } from '@agent-board/shared';
 import { getPaths } from '../config/config.mts';
 import { requireTaskId } from '../task-id.mts';
 import { sanitizeEventText } from './fence.mts';
-import { isGhLogin, isPrUrl, isReviewItemId, isWatchName, MAX_SEEN_IDS } from './shapes.mts';
+import { isGhLogin, isPrUrl, isReviewItemId, isSettledDigest, isWatchName, MAX_SEEN_IDS } from './shapes.mts';
 
 export { isPrUrl, isWatchName } from './shapes.mts';
 
@@ -52,6 +52,9 @@ export type WatchSource =
       // The commit being watched, and when this commit was first seen (or the watch registered).
       head?: string;
       headSince?: string;
+      // A digest of the checks the last look found all passed or skipped on this head; the next look reports only when it
+      // finds the same (see decideCi).
+      settled?: string;
       cwd: string;
       settingsDir?: string;
     }
@@ -209,7 +212,7 @@ function parseSource(raw: unknown): WatchSource | undefined {
     return { kind, command, cwd, starts, events, ...optionalSettingsDir(raw) };
   }
   if (kind === 'ci') {
-    const { pr, required, head, headSince } = raw;
+    const { pr, required, head, headSince, settled } = raw;
     if (typeof pr !== 'string' || !isPrUrl(pr) || typeof required !== 'boolean') return undefined;
     return {
       kind,
@@ -218,6 +221,7 @@ function parseSource(raw: unknown): WatchSource | undefined {
       cwd,
       ...(typeof head === 'string' && COMMIT.test(head) ? { head } : {}),
       ...(isIso(headSince) ? { headSince } : {}),
+      ...(typeof settled === 'string' && isSettledDigest(settled) ? { settled } : {}),
       ...optionalSettingsDir(raw),
     };
   }

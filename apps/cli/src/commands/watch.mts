@@ -280,7 +280,8 @@ async function ghLogin(deps: WatchDeps): Promise<string | undefined> {
 
 /**
  * Starts a watch on a task of this machine. A stream is stored for the watch unit, which starts its command. A ci, pr-review, pr-merged or command watch is looked at once first, in the environment the watch unit uses:
- * a command that cannot run here fails the call, and one that already has its event reports it and stores nothing.
+ * a command that cannot run here fails the call, and one that already has its event reports it and stores nothing. A ci watch
+ * whose checks all passed is the exception: it needs a second look (see decideCi).
  */
 export async function watch(
   context: Context,
