@@ -618,7 +618,7 @@ test('a note of the agent’s, served back as the user’s or the system’s, is
   );
 });
 
-test('a task whose creator the server changed is unreadable, so intake’s narrow permissions cannot be lifted (permission-mode downgrade)', async () => {
+test('a task whose creator the server changed is unreadable, so a task of the removed intake cannot be run as the user’s (permission-mode downgrade)', async () => {
   const wire = fakeWire();
   const board = sealingBackend(wire, KEYS);
   const { task: intake } = await board.addTask({
@@ -643,7 +643,7 @@ test('a task whose creator the server changed is unreadable, so intake’s narro
   assert.deepEqual((await board.getTask(own.id)).unreadable, ['input']);
 });
 
-test('the creator of a new prompt is the writer’s, not the board’s (intake seals as intake)', async () => {
+test('the creator of a new prompt is the writer’s, not the board’s (a writer sealing as intake stays intake)', async () => {
   const wire = fakeWire();
   wire.tasks.push(await wireTask({ id: 'i1', createdBy: 'intake' }));
   const board = sealingBackend(wire, KEYS);

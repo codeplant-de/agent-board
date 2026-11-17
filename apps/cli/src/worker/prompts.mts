@@ -120,10 +120,9 @@ export function buildResumePrompt(task: Task, notes: Note[]): string | undefined
   ].join('\n');
 }
 
-// What every run is told about the board, on top of its prompt. `asAgent`: the run is an agent's, which gets the reduced rules
-// of an intake review whoever made the task.
+// What every run is told about the board, on top of its prompt. `asAgent`: the run is an agent's, which gets the reduced rules.
 export function boardRules(task: Task, options: { asAgent?: boolean } = {}): string {
-  const restricted = task.createdBy === 'intake' || options.asAgent === true;
+  const restricted = options.asAgent === true;
   return [
     `You are running headless as agent-board task ${task.id}. Nobody watches this terminal; the user reads the task's thread on the board.`,
     `- Report progress and results with \`board comment ${task.id} "<text>"\` (markdown; \`--file <path>\` for long text in /tmp, or \`-\` for stdin).`,

@@ -153,91 +153,6 @@ test('exit 0 with the task already moved to Todo by a quick answer writes nothin
   );
 });
 
-test('an unresolvable pr-review plugin sends the task to Needs me with the reason', async () => {
-  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, allowedTools: ['Bash({pr-review}/skills/x.sh *)'] } };
-  Object.assign(backend.tasks[0]!, {
-    createdBy: 'intake',
-    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-  });
-  deps.pluginPath = () => {
-    throw new Error('plugin pr-review@ccc is not installed');
-  };
-  await runWorker(deps, 'w1');
-  assert.ok(
-    backend.writes.some((w) =>
-      w.includes('Cannot resolve the pr-review plugin: plugin pr-review@ccc is not installed'),
-    ),
-  );
-  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:')));
-  assert.ok(calls.some((c) => c.startsWith('append w1:')));
-});
-
-test('a worker refuses an intake task on a machine without an intake block', async () => {
-  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, intakeEnabled: false };
-  Object.assign(backend.tasks[0]!, {
-    createdBy: 'intake',
-    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-  });
-  await runWorker(deps, 'w1');
-  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('no intake block')));
-  assert.ok(calls.some((c) => c.startsWith('append w1:')));
-});
-
-test('an agentless intake task on a machine whose intake runs as an agent runs as that agent', async () => {
-  const { deps, backend, seen } = setupAgent({
-    createdBy: 'intake',
-    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-    machine: null,
-    workdir: null,
-  });
-  deps.pluginPath = () => '/plugins/pr';
-  deps.config = { ...deps.config, intake: { ...CONFIG.intake, agent: 'reviewer' } };
-  await runWorker(deps, 'w1');
-  const args = seen.invocation?.args ?? [];
-  assert.ok(args.includes('--agent=reviewer'));
-  assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
-  assert.ok(args.some((arg) => arg.startsWith('--tools=')) && args.some((arg) => arg.startsWith('--agents=')));
-  assert.ok(args.includes('Read'), 'the agent allowedTools');
-  assert.ok(
-    args.some((arg) => arg.includes('git push')),
-    'the agent disallowedTools',
-  );
-  assert.equal(seen.env?.['AGENT_BOARD_RESTRICTED'], '1');
-  assert.ok(seen.agentsFile?.includes('Reviews') || seen.agentsFile?.includes('You review'));
-  assert.ok(!backend.writes.some((w) => w.startsWith('fail w1:')));
-});
-
-test('a task with its own agent runs as it, whatever intake here names', async () => {
-  const { deps, seen } = setupAgent({
-    agent: 'reviewer',
-    createdBy: 'intake',
-    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-    machine: null,
-    workdir: null,
-  });
-  deps.pluginPath = () => '/plugins/pr';
-  deps.config = {
-    ...deps.config,
-    intake: { ...CONFIG.intake, agent: 'other' },
-    agents: { reviewer: REVIEWER, other: { ...REVIEWER, description: 'Other.' } },
-  };
-  await runWorker(deps, 'w1');
-  assert.ok(seen.invocation?.args.includes('--agent=reviewer'));
-});
-
-test('an agentless intake task on a machine with neither lists nor an intake agent still fails closed', async () => {
-  const { deps, backend, seen } = setupAgent({
-    createdBy: 'intake',
-    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-  });
-  deps.config = { ...deps.config, intakeEnabled: false };
-  await runWorker(deps, 'w1');
-  assert.equal(seen.invocation, undefined);
-  assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('no intake block')));
-});
-
 test('a missing working directory is named in the error', async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
   deps.dirExists = () => false;
@@ -570,16 +485,11 @@ test('a gone worktree whose checkout is not a listed directory is refused, namin
   );
 });
 
-test('a fresh run in a gone directory and an intake resume in one still fail as before', async () => {
+test('a fresh run in a gone directory still fails', async () => {
   const fresh = goneWorktree({ next: 'fresh', sessionId: null });
   await runWorker(fresh.deps, 'w1');
   assert.equal(fresh.runs.length, 0);
   assert.ok(fresh.backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('Recreate it to run there')));
-
-  const intake = goneWorktree({ createdBy: 'intake' });
-  await runWorker(intake.deps, 'w1');
-  assert.equal(intake.runs.length, 0);
-  assert.ok(intake.backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('Recreate it to run there')));
 });
 
 test("the run's stream becomes readable log lines and a transcript sent with each check and at the end", async () => {
@@ -636,41 +546,8 @@ test('a transcript batch the board refused is sent again with the next one', asy
   assert.deepEqual(sent, ['text,text']);
 });
 
-test("an intake run gets the variables intake names from the checkout's settings, and nothing else", async () => {
-  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, env: ['CIRCLECI_TOKEN', 'SHORTCUT_API_TOKEN'] } };
-  Object.assign(backend.tasks[0]!, {
-    createdBy: 'intake',
-    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-    machine: null,
-    workdir: null,
-  });
-  const read: string[] = [];
-  deps.settingsEnv = (dir) => {
-    read.push(dir);
-    return { CIRCLECI_TOKEN: 'ci-secret', OTHER: 'not asked for' };
-  };
-  let env: Record<string, string> = {};
-  deps.run = async (_invocation, _taskId, runEnv) => {
-    env = runEnv;
-    backend.tasks[0]!.status = 'needs-me';
-    return { exitCode: 0, signal: null };
-  };
-  await runWorker(deps, 'w1');
-  assert.deepEqual(read, ['/work/cosuno']);
-  assert.deepEqual(env, {
-    CIRCLECI_TOKEN: 'ci-secret',
-    AGENT_BOARD_TASK: 'w1',
-    AGENT_BOARD_START_DIR: '/work/cosuno',
-    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
-  });
-  assert.ok(calls.some((c) => c.includes("not in the checkout's settings: SHORTCUT_API_TOKEN")));
-  assert.ok(!calls.some((c) => c.includes('ci-secret')), 'values never reach the log');
-});
-
 test("a scheduled run loads the checkout's settings itself: no variables are copied", async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, env: ['CIRCLECI_TOKEN'] } };
   let env: Record<string, string> = { unset: 'x' };
   deps.settingsEnv = () => ({ CIRCLECI_TOKEN: 'ci-secret' });
   deps.run = async (_invocation, _taskId, runEnv) => {
@@ -684,34 +561,6 @@ test("a scheduled run loads the checkout's settings itself: no variables are cop
     AGENT_BOARD_START_DIR: '/tmp',
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
   });
-});
-
-test("an intake run gets the MCP servers intake names from the checkout's .mcp.json", async () => {
-  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
-  deps.config = { ...CONFIG, intake: { ...CONFIG.intake, mcpServers: ['shortcut', 'gone'] } };
-  Object.assign(backend.tasks[0]!, {
-    createdBy: 'intake',
-    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-    machine: null,
-    workdir: null,
-  });
-  deps.mcpServers = (dir, names) => {
-    assert.equal(dir, '/work/cosuno');
-    assert.deepEqual(names, ['shortcut', 'gone']);
-    return { config: { mcpServers: { shortcut: { type: 'http', url: 'https://mcp.example' } } }, missing: ['gone'] };
-  };
-  let args: string[] = [];
-  deps.run = async (invocation) => {
-    args = invocation.args;
-    backend.tasks[0]!.status = 'needs-me';
-    return { exitCode: 0, signal: null };
-  };
-  await runWorker(deps, 'w1');
-  assert.equal(
-    args[args.indexOf('--mcp-config') + 1],
-    '{"mcpServers":{"shortcut":{"type":"http","url":"https://mcp.example"}}}',
-  );
-  assert.ok(calls.some((c) => c.includes("not in the checkout's .mcp.json: gone")));
 });
 
 test('a run that failed before it started leaves no session behind, and one that could not be spawned gives it back', async () => {
@@ -746,18 +595,24 @@ test("the agent's environment names the task, so `board schedule` can refuse ins
 });
 
 test('every run waits for background work: print mode would otherwise stop it 10 minutes after the last turn', async () => {
-  for (const intake of [false, true]) {
+  for (const asAgent of [false, true]) {
     const { deps, backend } = setup({ exitCode: 0, signal: null });
-    if (intake) {
+    if (asAgent) {
       deps.config = {
         ...CONFIG,
-        intake: { ...CONFIG.intake, env: ['CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', 'AGENT_BOARD_TASK'] },
+        agents: {
+          reviewer: {
+            description: 'd',
+            tools: ['Read'],
+            allowedTools: [],
+            disallowedTools: [],
+            env: ['CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', 'AGENT_BOARD_TASK'],
+            mcpServers: [],
+          },
+        },
       };
       deps.settingsEnv = () => ({ CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '600000', AGENT_BOARD_TASK: 'other' });
-      Object.assign(backend.tasks[0]!, {
-        createdBy: 'intake',
-        input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-      });
+      backend.tasks[0]!.agent = 'reviewer';
     }
     let env: Record<string, string> = {};
     deps.run = async (_invocation, _taskId, runEnv) => {
@@ -1635,24 +1490,6 @@ test('a resume in a workdir that left the list is refused, not started', async (
   assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('feat-x is not a listed directory')));
 });
 
-test('an intake review whose checkout is not listed is refused, and the message names the repos checkout', async () => {
-  const { deps, backend } = setup({ exitCode: 0, signal: null });
-  withDirs(deps, '/srv/app');
-  deps.config = { ...deps.config, repos: { 'cosuno/cosuno': '/srv/cosuno' } };
-  Object.assign(backend.tasks[0]!, {
-    createdBy: 'intake',
-    machine: null,
-    workdir: null,
-    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-  });
-  await runWorker(deps, 'w1');
-  assert.ok(
-    backend.writes.some(
-      (w) => w.startsWith('fail w1:') && w.includes('/srv/cosuno is not a listed directory') && w.includes('repos'),
-    ),
-  );
-});
-
 test('a run that ends outside the list keeps its directory and leaves a system note', async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
   withDirs(deps, '/tmp');
@@ -1782,21 +1619,48 @@ test("the agent's own variables cannot override the restricted marker or the tas
   assert.equal(seen.env?.['AGENT_BOARD_TASK'], 'w1');
 });
 
-test('only an agent run gets the restricted marker: intake and user runs do not', async () => {
-  for (const overrides of [
-    {},
-    {
-      createdBy: 'intake' as const,
-      input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-      machine: null,
-      workdir: null,
-    },
-  ]) {
-    const { deps, seen } = setupAgent(overrides);
+test('only an agent run gets the restricted marker: a user run does not', async () => {
+  const { deps, seen } = setupAgent({});
+  await runWorker(deps, 'w1');
+  assert.ok(seen.env !== undefined && !('AGENT_BOARD_RESTRICTED' in seen.env));
+  assert.equal(seen.agentsFile, undefined);
+});
+
+const OLD_INTAKE = {
+  createdBy: 'intake' as const,
+  input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
+  machine: null,
+  workdir: null,
+};
+
+test('a task of the removed intake that names no agent fails closed with the reason, whatever the config holds, a resume included', async () => {
+  for (const resume of [false, true]) {
+    const { deps, backend, seen } = setupAgent({
+      ...OLD_INTAKE,
+      ...(resume ? { next: 'resume' as const, sessionId: SESSION } : {}),
+    });
     await runWorker(deps, 'w1');
-    assert.ok(seen.env !== undefined && !('AGENT_BOARD_RESTRICTED' in seen.env), JSON.stringify(overrides));
-    assert.equal(seen.agentsFile, undefined);
+    assert.equal(seen.invocation, undefined, 'nothing starts, in auto mode or any other');
+    assert.ok(
+      backend.writes.some(
+        (w) => w.startsWith('fail w1:') && w.includes('built-in intake') && w.includes('board schedule --agent'),
+      ),
+      `resume ${resume}`,
+    );
+    assert.ok(!backend.writes.some((w) => w.startsWith('session w1')), 'no session is started');
   }
+});
+
+test('a task of the removed intake that names an agent runs as that agent, like any other task', async () => {
+  const { deps, backend, seen } = setupAgent({ ...OLD_INTAKE, agent: 'reviewer' });
+  deps.pluginPath = () => '/plugins/pr';
+  await runWorker(deps, 'w1');
+  const args = seen.invocation?.args ?? [];
+  assert.ok(args.includes('--agent=reviewer'));
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'dontAsk');
+  assert.ok(!args.includes('auto'));
+  assert.equal(seen.env?.['AGENT_BOARD_RESTRICTED'], '1');
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail ')));
 });
 
 test('a task naming an agent this machine lacks fails closed with the reason, and nothing starts, a resume included', async () => {
@@ -1866,21 +1730,6 @@ test("an agent run's settings and servers are read only once its directory is a 
   assert.equal(seen.invocation, undefined);
   assert.equal(touched, false);
   assert.ok(backend.writes.some((w) => w.startsWith('fail w1:') && w.includes('not a listed directory')));
-});
-
-test('an agent run with an intake task as its creator needs no intake block', async () => {
-  const { deps, backend, seen } = setupAgent({
-    agent: 'reviewer',
-    createdBy: 'intake',
-    input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto',
-    machine: null,
-    workdir: null,
-  });
-  deps.config = { ...deps.config, intakeEnabled: false };
-  deps.pluginPath = () => '/plugins/pr';
-  await runWorker(deps, 'w1');
-  assert.ok(seen.invocation?.args.includes('--agent=reviewer'));
-  assert.ok(!backend.writes.some((w) => w.startsWith('fail ')));
 });
 
 // The task as the board hands it over: sealed with the test key, taken through the CLI's own opening, as the worker gets it.

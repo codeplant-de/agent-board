@@ -41,7 +41,7 @@ export interface InitResult {
   backedUp: string[];
 }
 
-// Clack is loaded only when a person is asked, so the hook, dispatch and intake never pay for it.
+// Clack is loaded only when a person is asked, so the hook and dispatch never pay for it.
 export function clackPrompts(): Prompts {
   const answer = (value: string | symbol): string => {
     if (typeof value !== 'string') throw new UsageError('cancelled; nothing was written');

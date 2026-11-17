@@ -64,15 +64,6 @@ export const CONFIG: Config = {
   inactivityMinutes: 15,
   maxRunHours: 6,
   autoUpdate: 'incompatible',
-  intake: {
-    prompt: '/review-pr {url} --auto',
-    priority: 'normal',
-    allowedTools: ['Read', 'Bash(board comment *)'],
-    disallowedTools: ['Bash(git push *)'],
-    env: [],
-    mcpServers: [],
-  },
-  intakeEnabled: true,
   agents: {},
   agentErrors: {},
   repos: { 'cosuno/cosuno': '/work/cosuno' },
@@ -112,7 +103,7 @@ export interface FakeBackend extends Backend {
   // Claims of these ids are lost, as if another machine got there first.
   lostClaims: string[];
   // The dedupe key of tasks by id. A task listed here is found by exactly that key; any other matches a key that its prompt's
-  // first line contains, which is how intake's tasks (key: the PR URL) are found.
+  // first line contains, which is how a task made by a script (key: the PR URL) is found.
   keys: Map<string, string>;
   // The directory list the board holds for this machine, and what its server does with a new one.
   boardDirs: { supported: boolean; held: MachineDir[] | undefined; failure: Error | undefined };

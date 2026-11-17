@@ -93,7 +93,7 @@ function Machines() {
           title: `New token for ${target}?`,
           children: (
             <Text size="sm">
-              The old token stops working at once; put the new one on {target} or its dispatcher and intake fail.
+              The old token stops working at once; put the new one on {target} or its dispatcher fails.
             </Text>
           ),
           labels: { confirm: 'New token', cancel: 'Cancel' },
@@ -108,8 +108,8 @@ function Machines() {
         <div>
           <Title order={5}>Worker machines</Title>
           <Text size="sm" c="dimmed">
-            Each machine that runs <Code>dispatch</Code> and <Code>intake</Code> gets a token. Its name must match{' '}
-            <Code>machine</Code> in its config.json (default: the host name).
+            Each machine that runs <Code>dispatch</Code> gets a token. Its name must match <Code>machine</Code> in its
+            config.json (default: the host name).
             {advertised.data ? <> The newest CLI is {advertised.data}.</> : null}
           </Text>
         </div>
@@ -210,9 +210,7 @@ function Machines() {
                         onClick={() =>
                           modals.openConfirmModal({
                             title: m.shown === INVALID_VALUE ? 'Revoke this machine’s token?' : `Revoke ${m.shown}?`,
-                            children: (
-                              <Text size="sm">Its dispatcher and intake stop working until it gets a new token.</Text>
-                            ),
+                            children: <Text size="sm">Its dispatcher stops working until it gets a new token.</Text>,
                             labels: { confirm: 'Revoke', cancel: 'Cancel' },
                             confirmProps: { color: 'red' },
                             onConfirm: () => revoke.mutate({ name: m.name }),

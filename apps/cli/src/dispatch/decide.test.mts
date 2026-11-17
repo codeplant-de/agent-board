@@ -2,59 +2,32 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { decideStale, decideWake, notServableHere, planPauses, planStarts } from './decide.mts';
 import type { LaneRun } from './decide.mts';
-import { CONFIG, SESSION, task } from '../__tests__/helpers/fakes.mts';
+import { SESSION, task } from '../__tests__/helpers/fakes.mts';
 
 const PR = 'https://github.com/cosuno/cosuno/pull/17741';
 
-test('a machine without an intake block leaves intake-created tasks to another machine', () => {
-  const intakeTask = task({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
-  assert.equal(
-    notServableHere(intakeTask, 'here', CONFIG.repos, {
-      intakeEnabled: false,
-      intake: {},
-      agents: {},
-      agentErrors: {},
-    }),
-    'no intake block in config.json here',
-  );
-  assert.equal(
-    notServableHere(intakeTask, 'here', CONFIG.repos, { intakeEnabled: true, intake: {}, agents: {}, agentErrors: {} }),
-    undefined,
-  );
-  assert.equal(
-    notServableHere(task({ id: 'b', input: 'Find out X' }), 'here', CONFIG.repos, {
-      intakeEnabled: false,
-      intake: {},
-      agents: {},
-      agentErrors: {},
-    }),
-    undefined,
-  );
+const NO_AGENTS = { agents: {}, agentErrors: {} };
+
+test('a machine leaves a task to another when it names an agent this machine lacks', () => {
+  const agent = { description: 'd', tools: ['Read'], allowedTools: [], disallowedTools: [], env: [], mcpServers: [] };
+  const named = task({ id: 'a', input: `/review-pr ${PR} --auto`, agent: 'reviewer', createdBy: 'intake' });
+  assert.equal(notServableHere(named, 'here', { agents: { reviewer: agent }, agentErrors: {} }), undefined);
+  assert.equal(notServableHere(named, 'here', NO_AGENTS), 'no agents.reviewer in config.json here');
 });
 
-test("a machine leaves a task to another when it is pinned there or lacks the PR's checkout", () => {
-  const here = (overrides: Parameters<typeof task>[0]) =>
-    notServableHere(task(overrides), 'here', CONFIG.repos, {
-      intakeEnabled: true,
-      intake: {},
-      agents: {},
-      agentErrors: {},
-    });
+test('an intake task without an agent is claimed by any machine, so that its worker fails it with the reason', () => {
+  const old = task({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
+  assert.equal(notServableHere(old, 'here', NO_AGENTS), undefined);
+});
+
+test('a machine leaves a task to another when it is pinned there', () => {
+  const here = (overrides: Parameters<typeof task>[0]) => notServableHere(task(overrides), 'here', NO_AGENTS);
   assert.equal(here({ id: 'a', input: 'Find out X' }), undefined);
   assert.match(here({ id: 'a', input: '/grill', machine: 'there', workdir: '/x' }) ?? '', /pinned to there/);
   assert.equal(here({ id: 'a', input: '/grill', machine: 'here', workdir: '/x' }), undefined);
   assert.match(
     here({ id: 'a', input: '/grill', next: 'resume', sessionId: SESSION, machine: 'there' }) ?? '',
     /pinned to there/,
-  );
-  assert.equal(
-    here({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake', machine: 'there', workdir: '/w' }),
-    undefined,
-    'an intake task runs on any machine with the checkout',
-  );
-  assert.match(
-    here({ id: 'a', input: '/review-pr https://github.com/other/repo/pull/2 --auto', createdBy: 'intake' }) ?? '',
-    /no checkout of other\/repo/,
   );
 });
 
@@ -185,19 +158,4 @@ test('decideWake: a timer wakes at its end; a check runs when due, wakes on time
   );
   assert.equal(decideWake({ ...base, task: { wakeAt: at(29), waitCheck: true }, check }).kind, 'timeout');
   assert.equal(decideWake({ ...base, task: { wakeAt: at(50), waitCheck: true }, check: undefined }).kind, 'wake');
-});
-
-test('an agentless intake task is served by a machine whose intake runs as an agent, and by none without that or lists', () => {
-  const agent = { description: 'd', tools: ['Read'], allowedTools: [], disallowedTools: [], env: [], mcpServers: [] };
-  const config = { intakeEnabled: true, intake: { agent: 'reviewer' }, agents: { reviewer: agent }, agentErrors: {} };
-  const old = task({ id: 'a', input: `/review-pr ${PR} --auto`, createdBy: 'intake' });
-  assert.equal(notServableHere(old, 'here', CONFIG.repos, config), undefined);
-  assert.equal(
-    notServableHere(old, 'here', CONFIG.repos, { ...config, agents: {} }),
-    'no agents.reviewer in config.json here',
-  );
-  assert.equal(
-    notServableHere(old, 'here', CONFIG.repos, { ...config, intakeEnabled: false, intake: {}, agents: {} }),
-    'no intake block in config.json here',
-  );
 });

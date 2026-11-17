@@ -114,12 +114,11 @@ test('a typo or an extra argument on an internal command is refused before its a
   try {
     for (const args of [
       ['internal', 'dispatch', '--dryrun'],
-      ['internal', 'intake', 'extra'],
       ['internal', 'dispatch', 'extra'],
     ]) {
       const result = await run('board', args, dir);
       assert.equal(result.code, 2, args.join(' '));
-      assert.doesNotMatch(result.stderr, /config file missing|intake is not enabled/, args.join(' '));
+      assert.doesNotMatch(result.stderr, /config file missing/, args.join(' '));
       assert.match(result.stderr, /^agent-board: /);
     }
   } finally {
@@ -127,12 +126,11 @@ test('a typo or an extra argument on an internal command is refused before its a
   }
 });
 
-test('internal dispatch, intake and worker are refused inside a run', async () => {
+test('internal dispatch and worker are refused inside a run', async () => {
   const dir = emptyConfigDir();
   try {
     for (const args of [
       ['internal', 'dispatch'],
-      ['internal', 'intake'],
       ['internal', 'worker', 'Zt0Test1'],
     ]) {
       const result = await run('board', args, dir, { AGENT_BOARD_TASK: 'Zt0Test1' });

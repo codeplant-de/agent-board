@@ -43,7 +43,6 @@ import { DATA_KEY, ENV_FILE, KEYS, OWNER, wireTask } from '../src/__tests__/help
 const cliDir = fileURLToPath(new URL('..', import.meta.url));
 const version = (JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')) as { version: string }).version;
 const target = `${process.platform}-${process.arch}`;
-const onLinux = process.platform === 'linux';
 const onMac = process.platform === 'darwin';
 
 if (!['linux-x64', 'linux-arm64', 'darwin-arm64'].includes(target)) throw new Error(`no binary is built for ${target}`);
@@ -78,33 +77,8 @@ writeFileSync(
   '#!/bin/sh\ncase "$*" in *is-active*) echo inactive; exit 3 ;; esac\nexit 0\n',
   { mode: 0o755 },
 );
-// A `gh` that lists one review request, so that an intake run reaches the call that computes the blind index.
 const PR_URL = 'https://github.com/o/r/pull/1';
-const searchAnswer = JSON.stringify({
-  data: {
-    search: {
-      pageInfo: { hasNextPage: false },
-      nodes: [
-        {
-          url: PR_URL,
-          title: 'Fix it',
-          number: 1,
-          isDraft: false,
-          headRefOid: 'abc123',
-          author: { login: 'someone' },
-          commits: { nodes: [{ commit: { committedDate: '2026-11-14T10:00:00Z' } }] },
-        },
-      ],
-    },
-  },
-});
-writeFileSync(
-  join(toolBin, 'gh'),
-  `#!/bin/sh\ncase "$1 $2" in "api graphql") cat <<'JSON'\n${searchAnswer}\nJSON\n;; *) exit 1 ;; esac\n`,
-  {
-    mode: 0o755,
-  },
-);
+writeFileSync(join(toolBin, 'gh'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
 writeFileSync(join(toolBin, 'systemd-run'), `#!/bin/sh\necho "$*" >> '${systemdRuns}'\n`, { mode: 0o755 });
 const path = `${toolBin}:/usr/bin:/bin`;
 for (const dir of path.split(':'))
@@ -229,7 +203,7 @@ function config(
     config?: boolean;
     dataKey?: Uint8Array;
     noKey?: boolean;
-    repos?: boolean;
+    intake?: boolean;
   } = {},
 ): string {
   const dir = join(root, `cfg${(configCount += 1)}`);
@@ -245,7 +219,7 @@ function config(
   if (options.config)
     writeFileSync(
       join(dir, 'config.json'),
-      JSON.stringify({ machine: 'smoke', ...(options.repos ? { repos: { 'o/r': '/tmp' }, intake: {} } : {}) }),
+      JSON.stringify({ machine: 'smoke', ...(options.intake ? { intake: {} } : {}) }),
     );
   return dir;
 }
@@ -387,37 +361,24 @@ await check('a machine without a data key in env is refused, saying where to get
     /the credentials file needs AGENT_BOARD_DATA_KEY \(copy it from the board's Settings page, then run "board init"\)/,
   );
 });
-await check('internal intake is refused on macOS', async () => {
-  if (!onMac) return;
-  const result = await board(['internal', 'intake'], config({ config: true, repos: true }));
-  assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /intake is not supported on macOS/);
-});
-await check('the binary computes the same blind index for a dedupe key as node does', async () => {
-  // Intake is Linux only.
-  if (!onLinux) return;
-  // Both machines must create a PR's task once: the key is a keyed hash that Bun and Node have to agree on.
-  requests.length = 0;
-  const result = await board(['internal', 'intake'], config({ config: true, repos: true }));
-  assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /INTAKE prs=1 created=1/);
-  const added = requests.find((request) => request.command === 'add-task');
-  assert.ok(added, 'intake sent no add-task');
-  const draft = (
-    JSON.parse(added.body) as { body: { dedupeKey: string; head: string; id: string; title: string; input: string } }
-  ).body;
-  const sent = draft.dedupeKey;
-  assert.equal(sent, await dedupeKeyIndex(KEYS, PR_URL));
-  assert.equal(draft.head, await headIndex(KEYS, 'abc123'), 'the PR head is a blind index too');
-  assert.match(draft.id, /^[A-Za-z0-9]{12}$/, 'the client chooses the task id');
-  assert.ok(
-    draft.title.startsWith('abe1.') && draft.input.startsWith('abe1.'),
-    'title and prompt reach the server sealed',
-  );
-  assert.ok(!sent.includes('github.com'), 'the PR URL must not reach the server');
-});
 await check(
-  'board schedule --key sends the blind index intake sends for the same PR URL, and --version the head index',
+  'a config with the removed intake key fails doctor with the replacement and stops nothing else',
+  async () => {
+    const dir = config({ config: true, intake: true });
+    const doctor = await board(['doctor', '--json'], dir);
+    assert.equal(doctor.code, 1);
+    const failed = (JSON.parse(doctor.stdout) as { name: string; level: string; message: string }[]).filter(
+      (result) => result.name === 'config.json' && result.level === 'fail',
+    );
+    assert.match(failed[0]?.message ?? '', /the built-in intake was removed: run the github-reviews script/);
+    assert.equal((await board(['tasks'], dir)).code, 0, 'the key is a warning, not a config error');
+    const stub = await board(['internal', 'intake'], dir);
+    assert.equal(stub.code, 0, 'a leftover timer must not fail');
+    assert.match(stub.stdout, /the built-in intake was removed.*run "board setup" to delete this timer/);
+  },
+);
+await check(
+  'board schedule --key sends a blind index of the PR URL, and --version one of the head: the binary computes them as node does',
   async () => {
     requests.length = 0;
     const result = await board(

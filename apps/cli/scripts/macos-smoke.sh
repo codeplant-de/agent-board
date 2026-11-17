@@ -19,7 +19,7 @@ export AGENT_BOARD_CONFIG_DIR="$work/config"
 export AGENT_BOARD_STATE_DIR="$work/state"
 mkdir -p "$HOME" "$AGENT_BOARD_CONFIG_DIR"
 
-# setup writes the two agents (no --enable: nothing is loaded), the log and run directories, and no intake agent.
+# setup writes the two agents (no --enable: nothing is loaded), the log and run directories.
 "$binary" setup --force
 agents="$HOME/Library/LaunchAgents"
 [ "$(ls "$agents" | wc -l | tr -d ' ')" = 2 ] || { echo "expected two launch agents in $agents" >&2; ls "$agents" >&2; exit 1; }

@@ -3,10 +3,8 @@ import { homedir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   AGENT_NAME_RULE,
-  DEFAULT_PRIORITY,
   DIR_LABEL_RULE,
   isAgentName,
-  isPriority,
   isModelName,
   isRecord,
   isSafeDirLabel,
@@ -14,29 +12,10 @@ import {
   MACHINE_NAME_RULE,
   isSafeWorkdir,
   isStringList,
-  PRIORITIES,
   shortSkill,
 } from '@agent-board/shared';
-import type { Priority } from '@agent-board/shared';
 
 export class ConfigError extends Error {}
-
-// How intake's tasks run: unattended, on PR text nobody chose to read, so with a narrow allow list instead of the user's
-// own settings.
-export interface IntakeConfig {
-  // The task's prompt; {url} is the PR's URL.
-  prompt: string;
-  priority: Priority;
-  // The agent (a key of `agents`) intake's tasks run as. Without it the tasks run under the lists below, which are deprecated.
-  agent?: string;
-  allowedTools: string[];
-  disallowedTools: string[];
-  // Variables the worker copies from the checkout's .claude/settings.json and settings.local.json into the run:
-  // intake loads only the user's settings, so tokens and endpoints kept in the checkout would be missing.
-  env: string[];
-  // MCP servers of the checkout's .mcp.json that intake runs get (with `--mcp-config`), such as "shortcut".
-  mcpServers: string[];
-}
 
 // A task that runs as this agent (Claude Code's `--agents` and `--agent`), unattended: only its tools, and only what its
 // lists allow. Everything in it is checked when the config loads, since a typo in a deny list must not fail open.
@@ -106,9 +85,6 @@ export interface Config {
   // A run is stopped after this long however busy it is: a guard against runaways.
   maxRunHours: number;
   autoUpdate: AutoUpdate;
-  intake: IntakeConfig;
-  // Whether config.json has an `intake` key: the intake timer and `board internal intake` exist only then.
-  intakeEnabled: boolean;
   // By name; empty when config.json has no `agents` key.
   agents: Record<string, AgentConfig>;
   // Why an `agents` entry could not be read, by name. One bad agent must not stop the machine's other work, so it is not a
@@ -286,45 +262,6 @@ function envNames(obj: Record<string, unknown>, where: string): string[] {
   return env;
 }
 
-function parseIntake(raw: unknown): IntakeConfig {
-  const obj = raw === undefined ? {} : raw;
-  if (!isRecord(obj)) throw new ConfigError('config: intake must be an object');
-  const prompt = obj['prompt'] ?? '/review-pr {url} --auto';
-  if (typeof prompt !== 'string' || !prompt.includes('{url}'))
-    throw new ConfigError('config: intake.prompt must be a prompt with {url} in it');
-  const priority = obj['priority'] ?? DEFAULT_PRIORITY;
-  if (!isPriority(priority)) throw new ConfigError(`config: intake.priority must be one of ${PRIORITIES.join(', ')}`);
-  const agent = obj['agent'];
-  if (agent !== undefined && (typeof agent !== 'string' || !isAgentName(agent)))
-    throw new ConfigError(`config: intake.agent must be an agent name of ${AGENT_NAME_RULE}`);
-  const lists = {
-    allowedTools: stringList(obj, 'allowedTools', 'intake.'),
-    disallowedTools: stringList(obj, 'disallowedTools', 'intake.'),
-    env: envNames(obj, 'intake.'),
-    mcpServers: stringList(obj, 'mcpServers', 'intake.'),
-  };
-  if (agent !== undefined && hasIntakeLists(lists))
-    throw new ConfigError(
-      'config: intake sets both agent and the deprecated allowedTools, disallowedTools, env or mcpServers; keep the agent and move the lists into agents.<name>',
-    );
-  return { prompt, priority, ...(agent === undefined ? {} : { agent }), ...lists };
-}
-
-/** Whether intake still has the deprecated lists of its own. */
-export function hasIntakeLists(intake: Omit<IntakeConfig, 'prompt' | 'priority' | 'agent'>): boolean {
-  return [intake.allowedTools, intake.disallowedTools, intake.env, intake.mcpServers].some((list) => list.length > 0);
-}
-
-/** Why intake's agent cannot run its tasks on this machine, or undefined when none is set or it is usable. */
-export function intakeAgentProblem(config: Pick<Config, 'intake' | 'agents' | 'agentErrors'>): string | undefined {
-  const { agent } = config.intake;
-  if (agent === undefined || Object.hasOwn(config.agents, agent)) return undefined;
-  const unreadable = Object.hasOwn(config.agentErrors, agent) ? config.agentErrors[agent] : undefined;
-  return unreadable === undefined
-    ? `intake.agent names "${agent}", which agents in config.json does not define`
-    : `intake.agent names "${agent}", which cannot be used (${unreadable})`;
-}
-
 // The keys of one `agents` entry. Unlike the rest of config.json an unknown one is an error: a misspelt deny list would
 // leave the agent with no deny list.
 const AGENT_KEYS = [
@@ -448,8 +385,6 @@ export function parseConfig(raw: unknown): Config {
     inactivityMinutes: positiveInt(raw, 'inactivityMinutes', '', 15),
     maxRunHours: positiveInt(raw, 'maxRunHours', '', 6),
     autoUpdate,
-    intake: parseIntake(raw['intake']),
-    intakeEnabled: 'intake' in raw,
     ...parseAgents(raw['agents']),
     repos,
     ...(dirs === undefined ? {} : { dirs }),
@@ -465,13 +400,11 @@ const TOP_KEYS = [
   'inactivityMinutes',
   'maxRunHours',
   'autoUpdate',
-  'intake',
   'agents',
   'repos',
   'dirs',
 ] as const;
 const LANE_KEYS = ['skills', 'slots', 'cwd'] as const;
-const INTAKE_KEYS = ['prompt', 'priority', 'agent', 'allowedTools', 'disallowedTools', 'env', 'mcpServers'] as const;
 
 function editDistance(a: string, b: string): number {
   let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
@@ -507,6 +440,13 @@ function unknownKeys(obj: Record<string, unknown>, known: readonly string[], whe
         : `unknown key ${shown}, ignored; did you mean "${where}${near}"?`;
     });
 }
+
+/**
+ * What a config that still has an `intake` key is told. The key is ignored and only warns (doctor fails it): an error here would
+ * stop dispatch on every machine whose config was written for the old CLI.
+ */
+export const REMOVED_INTAKE =
+  "the built-in intake was removed: run the github-reviews script (board example github-reviews.sh) with your own timer; move intake's lists to agents.<name>";
 
 const OVERRIDDEN = ' is overridden by ';
 
@@ -546,13 +486,13 @@ function overrideWarnings(raw: Record<string, unknown>): string[] {
 // different path under an old key is listed too.
 export function configWarnings(raw: unknown): string[] {
   if (!isRecord(raw)) return [];
-  const warnings = unknownKeys(raw, TOP_KEYS, '');
+  const { intake: _removed, ...rest } = raw;
+  const warnings = unknownKeys(rest, TOP_KEYS, '');
   const lanes = raw['lanes'];
   if (isRecord(lanes))
     for (const [name, entry] of Object.entries(lanes))
       if (isRecord(entry)) warnings.push(...unknownKeys(entry, LANE_KEYS, `lanes.${name.slice(0, 40)}.`));
-  const intake = raw['intake'];
-  if (isRecord(intake)) warnings.push(...unknownKeys(intake, INTAKE_KEYS, 'intake.'));
+  if ('intake' in raw) warnings.push(REMOVED_INTAKE);
   warnings.push(...overrideWarnings(raw));
   return warnings;
 }

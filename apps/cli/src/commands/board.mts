@@ -508,9 +508,10 @@ export async function wait(
   if (plan.check !== undefined) {
     const task = await context.backend.getTask(id);
     if (task.status !== 'running') throw new UsageError(`${id} is ${task.status}: only a running task can wait`);
-    // An intake review and an agent's run allow a fixed list of commands; a check would run any command.
+    // An agent's run allows a fixed list of commands; a check would run any command.
+    // A run an older CLI started for the removed intake has its narrow list but no AGENT_BOARD_RESTRICTED.
     if (task.createdBy === 'intake')
-      throw new UsageError(`${id} is an intake review: it may wait with --in or --at only`);
+      throw new UsageError(`${id} is a task of the removed intake: it may wait with --in or --at only`);
     if (deps.restricted === true)
       throw new UsageError(`${id} runs as an agent with a fixed list of commands: it may wait with --in or --at only`);
     if (task.machine !== context.config.machine)

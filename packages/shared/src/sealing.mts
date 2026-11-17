@@ -18,7 +18,7 @@
 // has the context it always had.
 //
 // <origin> is task:<id> for a task, schedule:<id> for a schedule and for a task that is an occurrence of one (the server
-// copies the schedule's ciphertext into it); <creator> is who made the task: intake, user or agent.
+// copies the schedule's ciphertext into it); <creator> is who made the task: user, agent, or intake (a task of the removed built-in intake).
 //
 // The plumbing stays with the callers: `Sealer` and `Opener` seal and open one value (the browser memoises opening), and
 // everything here is the rules around them. A value that does not open under exactly its binding is unreadable, and an
@@ -212,10 +212,10 @@ export async function sealChecked(seal: Sealer, binding: Binding, plaintext: str
   return seal(binding, plaintext);
 }
 
-/** A task's `dedupeKey` as the board stores it: the blind index of the key itself (the PR URL, for intake). */
+/** A task's `dedupeKey` as the board stores it: the blind index of the key itself (the PR URL, for a review task). */
 export const dedupeKeyIndex = (keys: Keys, key: string): Promise<string> => blindIndex(keys, key);
 
-/** A task's `head` as the board stores it: the blind index of `head:<sha>`, which is what intake compares with. */
+/** A task's `head` as the board stores it: the blind index of `head:<sha>`, which is what a script compares with. */
 export const headIndex = (keys: Keys, sha: string): Promise<string> => blindIndex(keys, `head:${sha}`);
 
 export interface SealedFields {

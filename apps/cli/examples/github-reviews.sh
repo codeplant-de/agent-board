@@ -1,5 +1,5 @@
 #!/bin/sh
-# Review requests to board tasks: the built-in intake as a script you run yourself, on a timer.
+# Review requests to board tasks: a script you run yourself, on a timer (it replaces the removed built-in intake).
 #
 #   github-reviews.sh owner/name=dir [owner/name=dir ...]
 #
@@ -17,12 +17,11 @@
 # The task of every PR it scheduled is remembered in ${XDG_STATE_HOME:-~/.local/state}/agent-board/github-reviews.tsv (PR URL,
 # task id), because the board's keys cannot be read back: that file is how it finds the Todo tasks to close.
 #
-# Moving from the built-in intake: it must be off on every machine, so remove the `intake` key from config.json there (stopping
-# its timer is not enough: `board setup` turns it on again, and intake would requeue this script's tasks sealed as its own,
-# which makes them unreadable); intake tasks made without an agent then no longer run on that machine. Tasks intake made with
-# `intake.agent` requeue like this script's own. Tasks it made without an agent have the same key (the bare URL), so this
-# script answers `exists (other-agent)` for their PRs and never reviews them again, and closing them does not help (a closed
-# key stays closed): set KEY_PREFIX=github-review: to start with new keys, which reviews every PR that is open now once more.
+# Moving from the built-in intake, which was removed: delete the `intake` key from config.json (doctor fails on it). Tasks it made
+# without an agent no longer run (they fail with a note): close them. They have the same key (the bare URL) as this script
+# uses, so it answers `exists (other-agent)` for their PRs and never reviews them again, and closing them does not help (a
+# closed key stays closed): set KEY_PREFIX=github-review: to start with new keys, which reviews every PR that is open now once
+# more. Tasks it made with `intake.agent` requeue like this script's own.
 set -u
 
 agent=${BOARD_AGENT:-reviewer}

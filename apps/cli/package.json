@@ -1,8 +1,8 @@
 {
   "name": "@agent-board/cli",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "private": true,
-  "description": "Dispatcher, worker, intake and the board command: run headless Claude Code tasks from the board",
+  "description": "Dispatcher, worker and the board command: run headless Claude Code tasks from the board",
   "type": "module",
   "engines": {
     "node": ">=24"

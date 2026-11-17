@@ -3,14 +3,14 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { isRecord } from '@agent-board/shared';
 import { buildInvocation, expandRule } from '../worker/plan.mts';
-import { configWarnings, hasIntakeLists, intakeAgentProblem, parseConfig } from '../config/config.mts';
+import { configWarnings, parseConfig } from '../config/config.mts';
 import { task } from './helpers/fakes.mts';
 
 const FRESH = { kind: 'fresh', sessionId: '11111111-1111-4111-8111-111111111111' } as const;
 
 const raw: unknown = JSON.parse(readFileSync(new URL('../../examples/config.reviews.json', import.meta.url), 'utf8'));
 const config = parseConfig(raw);
-// Intake reviews run unattended on PR text, as this agent: these are the only rules with a job to do.
+// Reviews run unattended on PR text, as this agent: these are the only rules with a job to do.
 const reviewer = config.agents['reviewer'];
 assert.ok(reviewer);
 const entry = reviewer;
@@ -19,21 +19,19 @@ const neutral = parseConfig(
   JSON.parse(readFileSync(new URL('../../config.example.json', import.meta.url), 'utf8')) as unknown,
 );
 
-test('the config board init copies is neutral: one general lane, no repos, no intake', () => {
+test('the config board init copies is neutral: one general lane, no repos', () => {
   assert.deepEqual(
     neutral.lanes.map((lane) => [lane.name, lane.skills, lane.slots]),
     [['general', ['*'], 3]],
   );
   assert.deepEqual(neutral.repos, {});
-  assert.equal(neutral.intakeEnabled, false);
   assert.ok(!readFileSync(new URL('../../config.example.json', import.meta.url), 'utf8').includes('cosuno'));
 });
 
-test('the reviews example has an intake block that runs as the reviewer agent, with no lists of its own', () => {
-  assert.equal(config.intakeEnabled, true);
-  assert.equal(config.intake.agent, 'reviewer');
-  assert.equal(intakeAgentProblem(config), undefined);
-  assert.equal(hasIntakeLists(config.intake), false);
+test('the reviews example has no intake key, and defines the reviewer agent the github-reviews script runs as', () => {
+  assert.ok(!(isRecord(raw) && 'intake' in raw));
+  assert.ok(config.agents['reviewer']);
+  assert.deepEqual(config.agentErrors, {});
 });
 
 test('the example has no backend entry: the CLI talks to the board directly', () => {
@@ -85,7 +83,6 @@ test('the plugin placeholder resolves in every shipped script rule', () => {
     }),
     repos: config.repos,
     defaultCwd: '/',
-    intake: config.intake,
     agents: config.agents,
     agentErrors: config.agentErrors,
     agentsPath: '/run/ab.agents',
@@ -118,7 +115,6 @@ test('the shipped lanes give reviews their own slots and everything else three',
       ['general', ['*'], 3],
     ],
   );
-  assert.equal(config.intake.prompt, '/review-pr {url} --auto');
 });
 
 // Claude Code's Bash rule matching as far as the shipped rules need it: `*` is any run of characters.
@@ -136,7 +132,7 @@ const allows = (command: string): boolean =>
     );
   });
 
-test('an intake run may report and propose through board, but never schedule or start work', () => {
+test('the reviewer may report and propose through board, but never schedule or start work', () => {
   for (const command of [
     'board schedule /review-pr 1 --auto',
     'board schedule',
@@ -186,7 +182,6 @@ test("the reviewer agent's run resolves every placeholder and reads no rule as a
     task: task({ id: 'a', input: '/review-pr https://github.com/cosuno/cosuno/pull/1 --auto', agent: 'reviewer' }),
     repos: config.repos,
     defaultCwd: '/',
-    intake: config.intake,
     agents: config.agents,
     agentErrors: config.agentErrors,
     agentsPath: '/run/a.agents',

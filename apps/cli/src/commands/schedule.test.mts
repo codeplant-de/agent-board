@@ -595,13 +595,13 @@ test('--key and --version are checked, and refuse what they cannot go with', () 
     assert.throws(() => parseScheduleArgs(['--key', 'k', ...flags, 'x'], NOW), /--key makes or finds one task in Todo/);
 });
 
-test('the key reaches the board as the blind index intake sends for a PR URL', async () => {
+test('the key reaches the board as the blind index of the PR URL', async () => {
   const sent: (string | undefined)[] = [];
   const { deps, backend } = keyedSetup();
   const addTask = backend.addTask.bind(backend);
   backend.addTask = async (draft) => (sent.push(draft.dedupeKey), addTask(draft));
   await schedule(deps, parseScheduleArgs(KEYED));
-  assert.deepEqual(sent, [PR], 'the sealing backend turns the key into the index intake uses');
+  assert.deepEqual(sent, [PR], 'the sealing backend turns the key into the index the board holds for it');
   assert.equal(await dedupeKeyIndex(KEYS, sent[0] ?? ''), await dedupeKeyIndex(KEYS, PR));
   assert.match(await headIndex(KEYS, 'sha2'), /^abh1\./);
 });

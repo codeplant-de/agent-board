@@ -615,7 +615,7 @@ function closeOrReopen(tx: DbOrTx, task: TaskRow, closed: boolean): Promise<Task
 
 /**
  * Closes what has sat untouched in Done for the archive period. Returns how many tasks it closed.
- * Intake's tasks and tasks with a dedupe key stay open: a closed task reads as "never again" to whoever asks for that key,
+ * Tasks of the removed intake and tasks with a dedupe key stay open: a closed task reads as "never again" to whoever asks for that key,
  * which would block a re-requested review.
  */
 export async function archiveStaleDone(db: DbOrTx, now: Date = new Date()): Promise<number> {
@@ -829,7 +829,7 @@ export async function setPr(db: DbOrTx, taskId: string, pr: string): Promise<voi
   await db.update(tasks).set({ pr, prState: null, updatedAt: new Date() }).where(eq(tasks.id, taskId));
 }
 
-/** GitHub's state of the task's PR, from a worker's intake. */
+/** GitHub's state of the task's PR, from a worker's dispatcher. */
 export async function setPrState(db: DbOrTx, taskId: string, prState: PrState): Promise<void> {
   await getTask(db, taskId);
   await db.update(tasks).set({ prState }).where(eq(tasks.id, taskId));

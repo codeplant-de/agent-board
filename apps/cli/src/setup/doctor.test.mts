@@ -49,15 +49,15 @@ function machine(
 const GOOD = {
   [`${CONFIG_DIR}/web.json`]: { text: '{"url": "https://board.example.com"}' },
   [`${CONFIG_DIR}/env`]: { text: `AGENT_BOARD_TOKEN=${TOKEN}\nAGENT_BOARD_DATA_KEY=${KEY_TEXT}\n`, mode: 0o100600 },
-  [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box", "intake": {}}' },
+  [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box"}' },
 };
 
 const levels = (results: CheckResult[]): Record<string, string> =>
   Object.fromEntries(results.map((result) => [result.name, result.level]));
 
-function unitFiles(command: string[], intake = true): Record<string, { text: string }> {
+function unitFiles(command: string[]): Record<string, { text: string }> {
   return Object.fromEntries(
-    renderUnits({ flock: '/usr/bin/flock', command: () => command, intake }).map((unit) => [
+    renderUnits({ flock: '/usr/bin/flock', command: () => command }).map((unit) => [
       `${UNIT_DIR}/${unit.file}`,
       { text: unit.text },
     ]),
@@ -69,7 +69,7 @@ test('a worker machine in order passes every check', async () => {
     machine(
       { ...GOOD, ...unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch']) },
       {
-        exists: () => true,
+        exists: (path) => !path.includes('intake'),
       },
     ),
   );
@@ -246,9 +246,9 @@ test('with units installed a missing tool or a vanished program fails; a disable
 
 test('a missing unit file of an installed pair is a failure', async () => {
   const units = unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch']);
-  delete units[`${UNIT_DIR}/agent-board-intake.timer`];
+  delete units[`${UNIT_DIR}/agent-board-dispatch.timer`];
   const results = await runChecks(machine({ ...GOOD, ...units }));
-  const missing = results.find((result) => result.name === 'unit agent-board-intake.timer');
+  const missing = results.find((result) => result.name === 'unit agent-board-dispatch.timer');
   assert.equal(missing?.level, 'fail');
 });
 
@@ -438,36 +438,47 @@ test('a board with no key yet says so even when env has no key either, and the h
   );
 });
 
-test('an installed intake timer on a machine without an intake key warns with how to stop it', async () => {
-  const noIntake = { ...GOOD, [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box"}' } };
-  const files = { ...noIntake, ...unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch'], true) };
+const WORKER = ['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch'];
+
+test('installed units of the removed intake warn that board setup deletes them, and are not checked as units', async () => {
+  const files = { ...GOOD, ...unitFiles(WORKER) };
   const results = await runChecks(machine(files, { exists: () => true }));
-  const found = results.find((result) => result.name === 'unit agent-board-intake.timer');
+  const found = results.find((result) => result.name === 'unit agent-board-intake');
   assert.equal(found?.level, 'warn');
-  assert.match(found?.hint ?? '', /systemctl --user disable --now agent-board-intake\.timer/);
+  assert.match(found?.message ?? '', /agent-board-intake\.service and agent-board-intake\.timer are installed/);
+  assert.match(found?.hint ?? '', /board setup/);
   assert.equal(hasFailure(results), false);
-});
-
-test('an unrelated config error does not drop the intake checks of an intake machine', async () => {
-  const broken = {
-    ...GOOD,
-    [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box", "intake": {}, "slots": "x", "lanes": 3}' },
-  };
-  const results = await runChecks(
-    machine(
-      { ...broken, ...unitFiles(['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch']) },
-      { exists: () => true },
-    ),
+  assert.ok(
+    results.every((result) => !result.name.includes('intake.timer') && !result.name.includes('intake.service')),
   );
-  assert.ok(results.some((result) => result.name === 'unit agent-board-intake.timer'));
+  const clean = await runChecks(
+    machine({ ...GOOD, ...unitFiles(WORKER) }, { exists: (path) => !path.includes('intake') }),
+  );
+  assert.ok(clean.every((result) => !result.name.includes('intake')));
 });
 
-test('without an intake key, doctor checks gh but no intake unit', async () => {
-  const noIntake = { ...GOOD, [`${CONFIG_DIR}/config.json`]: { text: '{"machine": "box"}' } };
-  const worker = ['/usr/bin/node', '/opt/board/main.mts', 'internal', 'dispatch'];
+test('an intake key in config.json fails the check and names the replacement, whatever it holds', async () => {
+  for (const intake of [{}, { agent: 'reviewer' }, { prompt: 'no url' }, 3]) {
+    const results = await runChecks(
+      machine({ ...GOOD, [`${CONFIG_DIR}/config.json`]: { text: JSON.stringify({ machine: 'box', intake }) } }),
+    );
+    const failed = results.filter((result) => result.name === 'config.json' && result.level === 'fail');
+    assert.equal(failed.length, 1, JSON.stringify(intake));
+    assert.equal(
+      failed[0]?.message,
+      "the built-in intake was removed: run the github-reviews script (board example github-reviews.sh) with your own timer; move intake's lists to agents.<name>",
+    );
+    assert.match(failed[0]?.hint ?? '', /delete the intake key/);
+    assert.ok(hasFailure(results));
+  }
+  const clean = await runChecks(machine({ ...GOOD }));
+  assert.ok(!hasFailure(clean) || clean.every((result) => result.name !== 'config.json' || result.level === 'ok'));
+});
+
+test('doctor checks gh on a worker machine', async () => {
   const results = await runChecks(
     machine(
-      { ...noIntake, ...unitFiles(worker, false) },
+      { ...GOOD, ...unitFiles(WORKER) },
       {
         exists: (path) => !path.includes('intake'),
         whichInUnits: (program) => (program === 'gh' ? undefined : `/usr/bin/${program}`),
@@ -475,9 +486,6 @@ test('without an intake key, doctor checks gh but no intake unit', async () => {
     ),
   );
   assert.equal(levels(results)['tool gh'], 'fail');
-  assert.ok(results.every((result) => !result.name.includes('intake')));
-  const withIntake = await runChecks(machine({ ...GOOD, ...unitFiles(worker) }, { exists: () => true }));
-  assert.ok(Object.keys(levels(withIntake)).some((name) => name.includes('intake.timer')));
 });
 
 const withConfig = (config: unknown): Record<string, { text: string; mode?: number }> => ({
@@ -627,24 +635,6 @@ test('an agent that cannot be read is a failure naming it and its key, and the r
   assert.equal(hasFailure(results), true);
 });
 
-test("intake's plugin placeholders are checked too on a machine with an intake block", async () => {
-  const intake = { allowedTools: ['Bash({pr-review}/x.sh *)'] };
-  const text = (withIntake: boolean) => JSON.stringify({ machine: 'box', ...(withIntake ? { intake } : {}) });
-  const files = (withIntake: boolean, plugins: unknown) => ({
-    ...GOOD,
-    [`${CONFIG_DIR}/config.json`]: { text: text(withIntake) },
-    [`${PLUGINS}/installed_plugins.json`]: { text: JSON.stringify(plugins) },
-  });
-  const warned = async (withIntake: boolean, plugins: unknown) =>
-    (await runChecks(machine(files(withIntake, plugins)))).filter((result) => result.name === 'config.json intake');
-  assert.deepEqual(await warned(true, { plugins: { 'pr-review@ccc': [{ installPath: '/p' }] } }), []);
-  const several = await warned(true, {
-    plugins: { 'pr-review@a': [{ installPath: '/a' }], 'pr-review@b': [{ installPath: '/b' }] },
-  });
-  assert.match(several[0]?.message ?? '', /several marketplaces/);
-  assert.deepEqual(await warned(false, { plugins: {} }), []);
-});
-
 test('an allow rule for a tool the agent does not have is a warning naming the tool', async () => {
   const results = await agentResults(
     agentsConfig({
@@ -686,42 +676,6 @@ test("an agent's plugin placeholder that does not resolve is a warning: unreadab
   );
 });
 
-const intakeResults = async (config: unknown) =>
-  (
-    await runChecks(
-      machine({
-        ...GOOD,
-        [`${CONFIG_DIR}/config.json`]: { text: JSON.stringify({ machine: 'box', ...(config as object) }) },
-      }),
-    )
-  ).filter((result) => result.name === 'intake agent' || (result.name === 'config.json' && result.level === 'fail'));
-
-test('doctor says intake runs as its agent, and fails when the agent is not defined', async () => {
-  const good = await intakeResults({ agents: { reviewer: agent() }, intake: { agent: 'reviewer' } });
-  assert.deepEqual(
-    good.map((r) => [r.name, r.level, r.message]),
-    [['intake agent', 'ok', 'tasks run as reviewer']],
-  );
-  const missing = await intakeResults({ intake: { agent: 'reviewer' } });
-  assert.equal(missing[0]?.level, 'fail');
-  assert.match(missing[0]?.message ?? '', /does not define.*intake creates no tasks/);
-});
-
-test('doctor warns that intake lists are deprecated, and not about an intake without lists', async () => {
-  const legacy = await intakeResults({ intake: { allowedTools: ['Read'] } });
-  assert.equal(legacy[0]?.level, 'warn');
-  assert.equal(legacy[0]?.hint, 'move them into agents.<name> and set intake.agent');
-  assert.deepEqual(await intakeResults({ intake: {} }), []);
-});
-
-test('doctor fails a config with both intake.agent and the lists', async () => {
-  const both = await intakeResults({ agents: { reviewer: agent() }, intake: { agent: 'reviewer', env: ['X'] } });
-  assert.ok(
-    both.some((r) => r.level === 'fail' && r.message.includes('both agent')),
-    JSON.stringify(both),
-  );
-});
-
 const MAC_HOME = '/Users/me';
 const MAC_CONFIG = `${MAC_HOME}/.config/agent-board`;
 const RUN_DIR = `${MAC_HOME}/.local/state/agent-board/run`;
@@ -749,7 +703,7 @@ const macLaunchd = (overrides: Partial<DoctorDeps['launchd']> = {}): DoctorDeps[
   ...overrides,
 });
 
-// A macOS machine with web.json, env and a config.json (without an intake key) in its home, and the programs of the agents.
+// A macOS machine with web.json, env and a config.json in its home, and the programs of the agents.
 function mac(
   agents: Record<string, { text: string }>,
   config: object = { machine: 'mac' },
@@ -835,10 +789,9 @@ test('a macOS agent that launchd has not loaded warns with the bootstrap line; a
   assert.equal(levels(results)['run directory'], 'fail');
 });
 
-test('on macOS an intake key and checkouts under the protected folders are warned about', async () => {
+test('on macOS checkouts under the protected folders are warned about', async () => {
   const config = {
     machine: 'mac',
-    intake: {},
     defaultCwd: `${MAC_HOME}/code`,
     dirs: { [`${MAC_HOME}/Documents/work`]: {}, [`${MAC_HOME}/Library/Mobile Documents/x`]: {} },
     repos: { 'acme/app': `${MAC_HOME}/Downloads/app` },
@@ -848,10 +801,9 @@ test('on macOS an intake key and checkouts under the protected folders are warne
   const folders = results.filter((result) => result.name === 'folders');
   assert.equal(folders.length, 4, folders.map(formatResult).join('\n'));
   assert.ok(folders.every((result) => result.level === 'warn'));
-  assert.equal(levels(results)['launchd intake'], 'warn');
   const fine = await runChecks(mac(agentFiles()));
   assert.equal(
-    fine.some((result) => result.name === 'folders' || result.name === 'launchd intake'),
+    fine.some((result) => result.name === 'folders'),
     false,
   );
 });

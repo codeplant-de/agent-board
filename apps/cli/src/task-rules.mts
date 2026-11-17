@@ -34,6 +34,16 @@ export function neverRun(task: Task): string | undefined {
     : undefined;
 }
 
+/**
+ * Why a task of the removed built-in intake that names no agent is never run, or undefined. It used to run under intake's own
+ * rules, which no longer exist, so it must not run as the user either.
+ */
+export function removedIntakeProblem(task: Task): string | undefined {
+  return task.createdBy === 'intake' && (task.agent ?? null) === null
+    ? 'The built-in intake that made this task was removed, and the task names no agent, so it has no rules to run under. Close it, or create it again with `board schedule --agent <name>`.'
+    : undefined;
+}
+
 // The agent a task runs as. `none`: it names none and runs by its creator's rules. `missing`: it names one this machine does
 // not define or could not read, so it must not run here at all: its restrictions would be missing.
 export type AgentLookup =
@@ -45,13 +55,11 @@ const agentLabel = (name: string): string => (isAgentName(name) ? name : JSON.st
 export function agentFor(
   task: Task,
   config: {
-    intake: { agent?: string };
     agents: Record<string, AgentConfig>;
     agentErrors: Record<string, string>;
   },
 ): AgentLookup {
-  // An intake task that names no agent runs as the one this machine's intake names, as it did under intake's own lists.
-  const name = task.agent ?? (task.createdBy === 'intake' ? (config.intake.agent ?? null) : null);
+  const name = task.agent ?? null;
   if (name === null) return { kind: 'none' };
   const agent = Object.hasOwn(config.agents, name) ? config.agents[name] : undefined;
   if (agent === undefined) {

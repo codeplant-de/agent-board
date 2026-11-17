@@ -126,7 +126,7 @@ export const tasks = pgTable(
     agent: text('agent'),
     /** The sealed URL of the pull request the task's agent opened for it (`board pr`). */
     pr: text('pr'),
-    /** GitHub's state of that PR or of the one the prompt names, as a worker's intake last saw it. Clear on purpose: it says only that some PR of the task merged. */
+    /** GitHub's state of that PR or of the one the prompt names, as a worker's dispatcher last saw it. Clear on purpose: it says only that some PR of the task merged. */
     prState: prState('pr_state'),
     next: nextRun('next').notNull().default('fresh'),
     /** Reported by the worker while the task runs; stale once it stops running. */
@@ -151,7 +151,7 @@ export const tasks = pgTable(
     inboxRead: boolean('inbox_read').notNull().default(false),
     /** With a stop request: the pending note that goes with it (Stop & send); null for a plain stop. */
     stopMessageId: text('stop_message_id'),
-    /** The blind index (abh1.…) of the PR head sha an intake review was made for. */
+    /** The blind index (abh1.…) of the PR head sha a review task was made for. */
     head: text('head'),
     /** The question note waiting for an answer, if any. */
     openQuestionNoteId: text('open_question_note_id'),
