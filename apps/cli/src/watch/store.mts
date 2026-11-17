@@ -26,7 +26,7 @@ import { isRecord, isSafeTaskId, isSafeWorkdir } from '@agent-board/shared';
 import { getPaths } from '../config/config.mts';
 import { requireTaskId } from '../task-id.mts';
 import { sanitizeEventText } from './fence.mts';
-import { isPrUrl, isWatchName } from './shapes.mts';
+import { isGhLogin, isPrUrl, isReviewItemId, isWatchName, MAX_SEEN_IDS } from './shapes.mts';
 
 export { isPrUrl, isWatchName } from './shapes.mts';
 
@@ -36,6 +36,8 @@ export const MAX_COMMAND_CHARS = 8000;
 
 export const DEFAULT_TIMEOUT_MS = 2 * 60 * 60_000;
 export const CI_EVERY_MS = 30_000;
+export const PR_REVIEW_EVERY_MS = 60_000;
+export const PR_REVIEW_TIMEOUT_MS = 24 * 60 * 60_000;
 export const MIN_COMMAND_EVERY_MS = 15_000;
 
 export type WatchSource =
@@ -47,6 +49,19 @@ export type WatchSource =
       // The commit being watched, and when this commit was first seen (or the watch registered).
       head?: string;
       headSince?: string;
+      cwd: string;
+      settingsDir?: string;
+    }
+  | {
+      kind: 'pr-review';
+      // The PR URL as gh prints it.
+      pr: string;
+      // The login gh uses on this machine, when it could be read: its reviews and comments are not an event.
+      self?: string;
+      // The ids of the newest reviews and comments the watch has seen; absent until its first look. When the PR has more
+      // than the watch keeps, everything older than `seenBefore` counts as seen too.
+      seen?: string[];
+      seenBefore?: string;
       cwd: string;
       settingsDir?: string;
     }
@@ -71,7 +86,8 @@ export interface WatchDef {
   createdAt: string;
   // A timer's end; any other watch's timeout.
   deadline: string;
-  // The last attempt: when it ended and a one-line state (ci: "3 of 7 passed, 4 running", command: exit code and the end of its output).
+  // The last attempt: when it ended and a one-line state (ci: "3 of 7 passed, 4 running", pr-review: how many
+  // reviews and comments it has seen, command: exit code and the end of its output).
   last?: { at: string; summary: string };
 }
 
@@ -169,6 +185,24 @@ function parseSource(raw: unknown): WatchSource | undefined {
       cwd,
       ...(typeof head === 'string' && COMMIT.test(head) ? { head } : {}),
       ...(isIso(headSince) ? { headSince } : {}),
+      ...optionalSettingsDir(raw),
+    };
+  }
+  if (kind === 'pr-review') {
+    const { pr, self, seen, seenBefore } = raw;
+    if (typeof pr !== 'string' || !isPrUrl(pr)) return undefined;
+    const isSeen =
+      Array.isArray(seen) &&
+      seen.length <= MAX_SEEN_IDS &&
+      seen.every((id): id is string => typeof id === 'string' && isReviewItemId(id));
+    if (seen !== undefined && !isSeen) return undefined;
+    return {
+      kind,
+      pr,
+      cwd,
+      ...(typeof self === 'string' && isGhLogin(self) ? { self } : {}),
+      ...(isSeen ? { seen } : {}),
+      ...(isSeen && isIso(seenBefore) ? { seenBefore } : {}),
       ...optionalSettingsDir(raw),
     };
   }

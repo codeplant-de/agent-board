@@ -7,16 +7,25 @@ import { oneLine, shellQuote } from '../output/text.mts';
 import { attempt, UNIT_ATTEMPT_LIMIT_MS } from '../watch/attempt.mts';
 import type { AttemptResult, WatchRunner } from '../watch/attempt.mts';
 import { describeEvery, eventsMessage, sanitizeEventText } from '../watch/fence.mts';
-import { CI_EVERY_MS, MAX_COMMAND_CHARS, MIN_COMMAND_EVERY_MS, newWatchId } from '../watch/store.mts';
+import {
+  CI_EVERY_MS,
+  MAX_COMMAND_CHARS,
+  MIN_COMMAND_EVERY_MS,
+  newWatchId,
+  PR_REVIEW_EVERY_MS,
+  PR_REVIEW_TIMEOUT_MS,
+} from '../watch/store.mts';
 import type { WatchDef, WatchStore } from '../watch/store.mts';
 import { publishWatches } from '../watch/publish.mts';
-import { isPrUrl, isWatchName } from '../watch/shapes.mts';
+import { isGhLogin, isPrUrl, isWatchName } from '../watch/shapes.mts';
 import { confirm } from './board.mts';
 import { localTime, parseStart } from './schedule.mts';
 
 export interface WatchFlags {
   // `--ci` alone is true; `--ci <pr>` carries the PR.
   ci?: string | true;
+  // `--pr-review` alone is true; `--pr-review <pr>` carries the PR.
+  prReview?: string | true;
   required?: boolean;
   name?: string;
   every?: string;
@@ -27,6 +36,7 @@ export interface WatchFlags {
 
 export const DEFAULT_WATCH_EVERY = '30s';
 export const DEFAULT_WATCH_TIMEOUT = '2h';
+export const DEFAULT_REVIEW_TIMEOUT = formatDuration(PR_REVIEW_TIMEOUT_MS);
 export const KEEP_WORKING =
   'Keep working if there is work; end your turn when there is none: the task waits and resumes with the event.';
 
@@ -38,6 +48,7 @@ export type WatchPlan = {
   deadline: Date;
 } & (
   | { kind: 'ci'; pr: string | undefined; required: boolean }
+  | { kind: 'pr-review'; pr: string | undefined }
   | { kind: 'command'; command: string; everyMs: number }
   | { kind: 'timer' }
 );
@@ -63,20 +74,25 @@ function checkedName(name: string): string {
 }
 
 /**
- * What the flags and the words after `--` ask for. Exactly one source: `--ci`, a command, or `--in`/`--at`. Reads nothing: the
+ * What the flags and the words after `--` ask for. Exactly one source: `--ci`, `--pr-review`, a command, or `--in`/`--at`. Reads nothing: the
  * task and the PR are looked at afterwards.
  */
 export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = new Date()): WatchPlan {
-  const { ci, required, name, every, timeout, in: inText, at } = flags;
+  const { ci, prReview, required, name, every, timeout, in: inText, at } = flags;
   if (inText !== undefined && at !== undefined) throw new UsageError('give --in or --at, not both');
-  const sources = [ci !== undefined, words.length > 0, inText !== undefined || at !== undefined].filter(Boolean).length;
+  const sources = [
+    ci !== undefined,
+    prReview !== undefined,
+    words.length > 0,
+    inText !== undefined || at !== undefined,
+  ].filter(Boolean).length;
   if (sources !== 1)
     throw new UsageError(
-      `give exactly one source: --ci for the CI of a PR, a command after -- (with --name), or --in/--at for a timer`,
+      `give exactly one source: --ci for the CI of a PR, --pr-review for its reviews and comments, a command after -- (with --name), or --in/--at for a timer`,
     );
   if (required === true && ci === undefined) throw new UsageError('--required goes with --ci');
-  const timeoutMs = (): number => {
-    const ms = duration(timeout ?? DEFAULT_WATCH_TIMEOUT, '--timeout');
+  const timeoutMs = (fallback: string = DEFAULT_WATCH_TIMEOUT): number => {
+    const ms = duration(timeout ?? fallback, '--timeout');
     if (ms > MAX_WAIT_MS) throw new UsageError(`--timeout may be at most ${formatDuration(MAX_WAIT_MS)}`);
     return ms;
   };
@@ -89,6 +105,18 @@ export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = 
       pr: ci === true ? undefined : ci,
       required: required === true,
       deadline: new Date(now.getTime() + timeoutMs()),
+    };
+  }
+  if (prReview !== undefined) {
+    if (every !== undefined)
+      throw new UsageError(
+        `--every goes with a command; a review watch looks every ${describeEvery(PR_REVIEW_EVERY_MS)}`,
+      );
+    return {
+      kind: 'pr-review',
+      name: checkedName(name ?? 'review'),
+      pr: prReview === true ? undefined : prReview,
+      deadline: new Date(now.getTime() + timeoutMs(DEFAULT_REVIEW_TIMEOUT)),
     };
   }
   if (words.length > 0) {
@@ -110,7 +138,7 @@ export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = 
     };
   }
   if (every !== undefined || timeout !== undefined)
-    throw new UsageError('--every and --timeout go with --ci or a command; a timer ends at its time');
+    throw new UsageError('--every and --timeout go with --ci, --pr-review or a command; a timer ends at its time');
   const deadline = parseStart(inText === undefined ? { at } : { delay: inText }, now);
   if (deadline === undefined) throw new UsageError('give --in or --at');
   if (deadline.getTime() - now.getTime() > MAX_WAIT_MS)
@@ -170,14 +198,15 @@ export function reportedPr(prs: readonly TaskPr[]): string | null {
 // The PR as gh prints it, and its head commit, from a URL or number (or the task's PR) read in the agent's directory.
 async function resolvePr(
   id: string,
+  flag: '--ci' | '--pr-review',
   given: string | undefined,
   taskPr: string | null,
   deps: WatchDeps,
 ): Promise<{ url: string; head: string }> {
   const arg = (given ?? taskPr)?.trim();
-  if (arg === undefined || arg === '') throw new UsageError(`give the PR: board watch ${id} --ci <url>`);
+  if (arg === undefined || arg === '') throw new UsageError(`give the PR: board watch ${id} ${flag} <url>`);
   if (!isPrUrl(arg) && !PR_NUMBER.test(arg))
-    throw new UsageError(`--ci takes a PR URL or number; got "${oneLine(arg, 60)}"`);
+    throw new UsageError(`${flag} takes a PR URL or number; got "${oneLine(arg, 60)}"`);
   const result = await deps.run({
     command: `gh pr view ${shellQuote(arg)} --json url,headRefOid`,
     cwd: deps.cwd,
@@ -205,8 +234,20 @@ async function resolvePr(
   return { url, head };
 }
 
+// The login gh uses on this machine, or undefined when gh does not say: then only the PR's author is left out.
+async function ghLogin(deps: WatchDeps): Promise<string | undefined> {
+  const result = await deps.run({
+    command: 'gh api user --jq .login',
+    cwd: deps.cwd,
+    timeLimitMs: PR_RESOLVE_LIMIT_MS,
+    ...settingsDirOf(deps),
+  });
+  const login = result.stdout.trim();
+  return result.exitCode === 0 && isGhLogin(login) ? login : undefined;
+}
+
 /**
- * Starts a watch on a task of this machine. A ci or command watch is looked at once first, in the environment the watch unit uses:
+ * Starts a watch on a task of this machine. A ci, pr-review or command watch is looked at once first, in the environment the watch unit uses:
  * a command that cannot run here fails the call, and one that already has its event reports it and stores nothing.
  */
 export async function watch(
@@ -226,10 +267,12 @@ export async function watch(
     // An agent's run allows a fixed list of commands; a command watch would run any command.
     // A run an older CLI started for the removed intake has its narrow list but no AGENT_BOARD_RESTRICTED.
     if (task.createdBy === 'intake')
-      throw new UsageError(`${id} is a task of the removed intake: it may watch with --ci or --in/--at only`);
+      throw new UsageError(
+        `${id} is a task of the removed intake: it may watch with --ci, --pr-review or --in/--at only`,
+      );
     if (deps.restricted === true)
       throw new UsageError(
-        `${id} runs as an agent with a fixed list of commands: it may watch with --ci or --in/--at only`,
+        `${id} runs as an agent with a fixed list of commands: it may watch with --ci, --pr-review or --in/--at only`,
       );
   }
   const base = {
@@ -242,7 +285,7 @@ export async function watch(
   const { cwd } = deps;
   let def: WatchDef;
   if (plan.kind === 'ci') {
-    const { url, head } = await resolvePr(id, plan.pr, reportedPr(task.prs), deps);
+    const { url, head } = await resolvePr(id, '--ci', plan.pr, reportedPr(task.prs), deps);
     def = {
       ...base,
       source: {
@@ -255,6 +298,14 @@ export async function watch(
         ...settingsDirOf(deps),
       },
       everyMs: CI_EVERY_MS,
+    };
+  } else if (plan.kind === 'pr-review') {
+    const { url } = await resolvePr(id, '--pr-review', plan.pr, reportedPr(task.prs), deps);
+    const self = await ghLogin(deps);
+    def = {
+      ...base,
+      source: { kind: 'pr-review', pr: url, ...(self === undefined ? {} : { self }), cwd, ...settingsDirOf(deps) },
+      everyMs: PR_REVIEW_EVERY_MS,
     };
   } else if (plan.kind === 'command') {
     def = {
@@ -300,6 +351,7 @@ function describeSource(def: WatchDef): string {
   const { source } = def;
   if (source.kind === 'timer') return 'timer';
   if (source.kind === 'ci') return `ci ${source.pr}${source.required ? ' (required checks)' : ''}`;
+  if (source.kind === 'pr-review') return `reviews and comments of ${source.pr}`;
   return `every ${describeEvery(def.everyMs)}: ${oneLine(source.command, 80)}`;
 }
 
@@ -312,7 +364,9 @@ function watchJson(def: WatchDef): Record<string, unknown> {
         ? { kind: 'timer' }
         : source.kind === 'ci'
           ? { kind: 'ci', pr: source.pr, required: source.required }
-          : { kind: 'command', command: source.command },
+          : source.kind === 'pr-review'
+            ? { kind: 'pr-review', pr: source.pr }
+            : { kind: 'command', command: source.command },
     everyMs: def.everyMs,
     createdAt: def.createdAt,
     deadline: def.deadline,

@@ -151,3 +151,48 @@ test('the next attempt is due one period after the last, or after registration, 
     Date.parse('2026-01-01T12:06:00Z'),
   );
 });
+
+test('a pr-review watch asks gh once, remembers what it saw, and ends on the first entry by someone else', async () => {
+  const view = (comments: object[]) =>
+    commandResult(0, JSON.stringify({ url: PR, state: 'OPEN', author: { login: 'octo-dev' }, reviews: [], comments }));
+  const comment = (id: string, login: string) => ({
+    id,
+    author: { login },
+    body: 'Please add a test.',
+    createdAt: '2026-01-01T12:00:30Z',
+  });
+  const def = watchDef({
+    name: 'review',
+    source: { kind: 'pr-review', pr: PR, self: 'board-machine', seen: [], cwd: '/w', settingsDir: '/s' },
+    everyMs: 60_000,
+  });
+  const own = runner(() => view([comment('IC_own', 'board-machine')]));
+  const pending = await attempt(def, NOW, { run: own, timeLimitMs: 120_000 });
+  assert.deepEqual(own.jobs, [
+    {
+      command: `gh pr view '${PR}' --json url,state,author,reviews,comments`,
+      cwd: '/w',
+      settingsDir: '/s',
+      timeLimitMs: 60_000,
+    },
+  ]);
+  assert.equal(pending.kind, 'pending');
+  assert.deepEqual(pending.kind === 'pending' && pending.def?.source, { ...def.source, seen: ['IC_own'] });
+  const event = await attempt(def, NOW, {
+    run: runner(() => view([comment('IC_own', 'board-machine'), comment('IC_other', 'reviewer-one')])),
+    timeLimitMs: 120_000,
+  });
+  assert.deepEqual(event, {
+    kind: 'event',
+    text: `New on ${PR}:\nreviewer-one commented:\nPlease add a test.`,
+  });
+  const failing = runner(() => commandResult(1, 'HTTP 502'));
+  assert.deepEqual(await attempt(def, NOW, { run: failing, timeLimitMs: 1000 }), {
+    kind: 'pending',
+    summary: 'HTTP 502',
+  });
+  assert.deepEqual(await attempt(def, NOW, { run: failing, timeLimitMs: 1000, registration: true }), {
+    kind: 'broken',
+    reason: 'HTTP 502',
+  });
+});

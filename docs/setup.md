@@ -209,6 +209,14 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
+### `board watch --pr-review` (CLI 0.22.0)
+
+A new watch source: the first review or comment someone else leaves on a pull request (see [Sources](usage.md#sources)). Nothing changes on the server, and no feature name is added.
+
+- The watch unit polls it, so restart the unit after updating the CLI on a checkout install: `board restart watch`. `board self-update` restarts it. A unit that still runs the older CLI skips the watch file with a warning in its log until then.
+- On the board, a review watch shows once the web app is the version that knows the `pr-review` kind. An older one leaves the entry out of the list and shows the task's other watches.
+- The shipped `reviewer` agent's allow list is unchanged. An agent that should wait for reviews needs `Bash(board watch * --pr-review)` and `Bash(board watch * --pr-review *)` in its `allowedTools`.
+
 ### Watches on the board (CLI 0.21.0)
 
 A new server feature, `task.watches`. The CLI publishes the sealed list of a task's watches, and the server stores it with the stop requests of the user. The board shows a badge on the card and a **Watches** list on the task page (see [What the board shows of watches](usage.md#what-the-board-shows-of-watches)). A migration adds the columns `watches` and `watch_stops` to `task`.

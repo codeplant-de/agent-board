@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { commandDef, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
+import { commandDef, PR, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
 import { createWatchStore, isWatchName, parseWatchDef, parseWatchEvent } from './store.mts';
 import type { WatchEvent } from './store.mts';
 
@@ -97,6 +97,29 @@ test('a watch definition is shape-checked: the PR, the directories, the commit a
   });
   assert.equal(noisy?.source.kind === 'ci' && noisy.source.head, undefined);
   assert.equal(noisy?.last, undefined);
+});
+
+test('a pr-review watch is shape-checked: the PR, the ids it has seen and the gh user', () => {
+  const source = { kind: 'pr-review', pr: PR, self: 'board-machine', seen: ['PRR_kwDO1', 'IC_kwDO2'], cwd: '/work' };
+  const good = { ...watchDef(), name: 'review', source, everyMs: 60_000 };
+  assert.deepEqual(parseWatchDef(good)?.source, source);
+  const withSource = (change: object) => parseWatchDef({ ...good, source: { ...source, ...change } })?.source;
+  assert.equal(withSource({ pr: 'https://evil.test/acme/app/pull/7' }), undefined);
+  assert.equal(withSource({ seen: ['ok', 'not an id\n'] }), undefined);
+  assert.equal(withSource({ seen: 'IC_1' }), undefined);
+  assert.equal(withSource({ seen: Array.from({ length: 201 }, (_, n) => `IC_${n}`) }), undefined);
+  // A login that is not one is dropped: then only the PR's author is left out.
+  assert.deepEqual(withSource({ self: 'eve; rm -rf /' }), {
+    kind: 'pr-review',
+    pr: PR,
+    seen: source.seen,
+    cwd: '/work',
+  });
+  const { seen: _seen, ...unseen } = source;
+  assert.deepEqual(
+    parseWatchDef({ ...good, source: { ...unseen, seenBefore: '2026-01-01T00:00:00Z' } })?.source,
+    unseen,
+  );
 });
 
 test('an update only rewrites a watch that is still there under the same id', () => {

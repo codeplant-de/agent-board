@@ -49,6 +49,15 @@ test('the list holds a label and a state per kind, the deadline, and never the c
   );
   store.write(commandDef(SECRET, { id: '2222222222222222', name: 'fresh', everyMs: 60_000 }));
   store.write(timerDef({ id: '3333333333333333', deadline: '2026-01-01T14:20:00.000Z' }));
+  store.write(
+    watchDef({
+      id: '4444444444444444',
+      name: 'review',
+      source: { kind: 'pr-review', pr: PR, self: 'board-machine', seen: ['IC_1'], cwd: '/work' },
+      everyMs: 60_000,
+      last: { at: '2026-01-01T11:59:30.000Z', summary: 'no new review or comment by someone else, 1 seen' },
+    }),
+  );
   store.writeEvent({
     id: newWatchId(),
     task: TASK,
@@ -67,6 +76,10 @@ test('the list holds a label and a state per kind, the deadline, and never the c
   assert.match(by['health']?.status ?? '', /^exit 1 at \d\d:\d\d$/);
   assert.equal(by['fresh']?.status, 'not run yet');
   assert.equal(by['fresh']?.label, 'command, every 1m');
+  assert.equal(by['review']?.kind, 'pr-review');
+  assert.equal(by['review']?.label, 'review #7');
+  assert.equal(by['review']?.status, 'no new review or comment by someone else, 1 seen');
+  assert.equal(by['review']?.lastAttemptAt, '2026-01-01T11:59:30.000Z');
   assert.equal(by['timer']?.label, 'timer');
   assert.match(by['timer']?.status ?? '', /^fires at /);
   assert.equal(by['timer']?.lastAttemptAt, undefined);

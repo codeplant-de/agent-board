@@ -707,6 +707,7 @@ An agent that has to wait for something outside the run, such as CI, a deploy or
 ```sh
 board watch <task> --ci                                  # the newest open PR the task reported with board pr
 board watch <task> --ci https://github.com/o/r/pull/7 --required
+board watch <task> --pr-review                           # the first review or comment someone else leaves on that PR
 board watch <task> --name health --every 30s -- 'curl -fsS https://staging.example.com/health'
 board watch <task> --in 20m --name settle
 board watches <task>
@@ -735,7 +736,7 @@ still running: 4, passed: 2
 No watch is open any more.
 ```
 
-An event's text can come from text you did not write, such as job names from a PR's workflow files or a command's output. So the CLI marks it as a watch's output, caps it at 2000 characters and 500 per line, removes control characters and defuses a closing tag inside it.
+An event's text can come from text you did not write, such as job names from a PR's workflow files, a reviewer's comment or a command's output. So the CLI marks it as a watch's output, caps it at 2000 characters and 500 per line, removes control characters and defuses a closing tag inside it.
 
 ### Sources
 
@@ -749,6 +750,25 @@ An event's text can come from text you did not write, such as job names from a P
 - A new head commit restarts the watch on that commit.
 
 The watch ends with its event. After a red build the agent fixes, pushes and starts a new `--ci` watch.
+
+**Reviews and comments** (`--pr-review [pr]`). The watch follows the PR given, or the same default as `--ci`. Its name is `review` unless you give one.
+
+- Every 60 seconds the machine reads `gh pr view <pr> --json url,state,author,reviews,comments`.
+- The first look only remembers what is on the PR. After it, the watch reports the first review or comment by someone other than the PR's author and the machine's own gh user (`gh api user`). A review that was not submitted yet does not count.
+- A comment on a line of the diff arrives as its review, since GitHub files it under one.
+- The event names who wrote it, the review's state (approved, requested changes, reviewed with comments) or the comment's link, and the first four lines of the text, at most 400 characters. Several entries found in one look are told oldest first, three at the most.
+- It reports a PR that was merged or closed.
+- It times out after 24 hours unless `--timeout` says otherwise.
+
+```text
+<watch-event name="review" at="2026-11-17T09:02:11.000Z">
+New on https://github.com/o/r/pull/7:
+octocat requested changes:
+The migration drops the index before the backfill has run.
+</watch-event>
+```
+
+The watch ends with its event. The text is written by someone else: it is a report of what they wrote, inside the block, and the agent reads the review itself before it acts on it. The watch file keeps the ids of the newest 200 reviews and comments it has seen, so a restart of the watch unit reports nothing twice.
 
 **A command** (`--name <name> --every <dur> -- '<command>'`). A shell command that exits 0 once the wait is over.
 
@@ -818,7 +838,7 @@ On the task's machine, `board watches <task>` lists its watches with their last 
 
 ### Watches in an agent's run
 
-A run that is restricted to an [agent](workers.md#agents) may use `--ci` and timers, which run no command of its choosing. A command watch is a usage error there, since it would bypass the run's fixed command list.
+A run that is restricted to an [agent](workers.md#agents) may use `--ci`, `--pr-review` and timers, which run no command of its choosing. A command watch is a usage error there, since it would bypass the run's fixed command list.
 
 ### `board wait`
 
