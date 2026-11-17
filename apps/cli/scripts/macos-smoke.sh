@@ -22,7 +22,7 @@ mkdir -p "$HOME" "$AGENT_BOARD_CONFIG_DIR"
 # setup writes the two agents (no --enable: nothing is loaded), the log and run directories.
 "$binary" setup --force
 agents="$HOME/Library/LaunchAgents"
-[ "$(ls "$agents" | wc -l | tr -d ' ')" = 2 ] || { echo "expected two launch agents in $agents" >&2; ls "$agents" >&2; exit 1; }
+[ "$(find "$agents" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 2 ] || { echo "expected two launch agents in $agents" >&2; ls "$agents" >&2; exit 1; }
 for plist in "$agents"/*.plist; do
   plutil -lint "$plist"
 done

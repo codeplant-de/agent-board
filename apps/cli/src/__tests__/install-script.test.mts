@@ -140,11 +140,17 @@ test('a missing entry in SHA256SUMS, no release, a missing gh and a gh that is n
   }
 });
 
-test('the scripts pass shellcheck when it is installed', (context) => {
+// Every tracked shell script, so a new one is checked without being listed here. Among them is check-cli-release.sh,
+// which decides in CI whether a merge releases the CLI.
+test('the shell scripts pass shellcheck when it is installed', (context) => {
   const found = spawnSync('shellcheck', ['--version']);
   if (found.status !== 0) return context.skip('shellcheck is not installed');
   const root = fileURLToPath(new URL('../../../../', import.meta.url));
-  const result = spawnSync('shellcheck', ['scripts/install.sh', 'apps/cli/build.sh'], { cwd: root, encoding: 'utf8' });
+  const listed = spawnSync('git', ['ls-files', '*.sh', 'apps/cli/bin/*'], { cwd: root, encoding: 'utf8' });
+  if (listed.status !== 0) return context.skip('not a git checkout');
+  const scripts = listed.stdout.split('\n').filter(Boolean);
+  assert.ok(scripts.includes('scripts/check-cli-release.sh'), scripts.join(' '));
+  const result = spawnSync('shellcheck', scripts, { cwd: root, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stdout);
 });
 
