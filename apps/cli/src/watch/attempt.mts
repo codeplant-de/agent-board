@@ -5,6 +5,7 @@ import { localTime } from '../commands/schedule.mts';
 import type { CommandResult } from '../dispatch/waits.mts';
 import { ciChecksCommand, ciViewCommand, decideCi, isViewOpen } from './ci.mts';
 import type { CiSource } from './ci.mts';
+import { deadlineTime } from './fence.mts';
 import type { WatchDef } from './store.mts';
 
 export const UNIT_ATTEMPT_LIMIT_MS = 120_000;
@@ -111,7 +112,7 @@ export async function attempt(def: WatchDef, now: Date, deps: AttemptDeps): Prom
   if (source.kind === 'timer')
     return now.getTime() >= Date.parse(def.deadline)
       ? { kind: 'event', text: timerText(def) }
-      : { kind: 'pending', summary: `waiting until ${localTime(new Date(def.deadline))}` };
+      : { kind: 'pending', summary: `waiting until ${deadlineTime(new Date(def.deadline), now)}` };
   if (source.kind === 'command') return attemptCommand({ ...def, source }, deps);
   return attemptCi({ ...def, source }, now, deps);
 }

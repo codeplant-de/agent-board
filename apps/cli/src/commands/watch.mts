@@ -6,7 +6,7 @@ import type { Context } from '../cli.mts';
 import { oneLine, shellQuote } from '../output/text.mts';
 import { attempt, UNIT_ATTEMPT_LIMIT_MS } from '../watch/attempt.mts';
 import type { AttemptResult, WatchRunner } from '../watch/attempt.mts';
-import { describeEvery, eventsMessage, sanitizeEventText } from '../watch/fence.mts';
+import { deadlineTime, describeEvery, eventsMessage, sanitizeEventText } from '../watch/fence.mts';
 import { CI_EVERY_MS, MAX_COMMAND_CHARS, MIN_COMMAND_EVERY_MS, newWatchId } from '../watch/store.mts';
 import type { WatchDef, WatchStore } from '../watch/store.mts';
 import { publishWatches } from '../watch/publish.mts';
@@ -265,14 +265,14 @@ export async function watch(
   } else def = { ...base, source: { kind: 'timer' }, everyMs: 0 };
 
   if (context.dryRun) {
-    context.print(`DRY store watch "${def.name}" for ${id} until ${localTime(plan.deadline)}`);
+    context.print(`DRY store watch "${def.name}" for ${id} until ${deadlineTime(plan.deadline, now)}`);
     return;
   }
   const others = deps.watches.list(id).defs.filter((open) => open.name !== def.name);
   const replaced = deps.watches.read(id, def.name) !== undefined;
   const result: AttemptResult =
     def.source.kind === 'timer'
-      ? { kind: 'pending', summary: `waiting until ${localTime(plan.deadline)}` }
+      ? { kind: 'pending', summary: `waiting until ${deadlineTime(plan.deadline, now)}` }
       : await attempt(def, now, { run: deps.run, timeLimitMs: UNIT_ATTEMPT_LIMIT_MS, registration: true });
   if (result.kind === 'broken') throw new UsageError(`cannot watch "${def.name}": ${result.reason}`);
   if (result.kind === 'event') {
@@ -291,7 +291,9 @@ export async function watch(
   };
   deps.watches.write(stored);
   await publish(context, deps.watches, id, now);
-  confirm(context, `watching "${def.name}" on ${id}: ${result.summary}; until ${localTime(plan.deadline)}`);
+  // A timer's state is its end, so the time is said once.
+  const until = def.source.kind === 'timer' ? '' : `; until ${deadlineTime(plan.deadline, now)}`;
+  confirm(context, `watching "${def.name}" on ${id}: ${result.summary}${until}`);
   if (replaced) confirm(context, `it replaced the open watch "${def.name}"`);
   confirm(context, KEEP_WORKING);
 }
@@ -344,13 +346,17 @@ export function watchesJson({ defs }: OpenWatches): Record<string, unknown>[] {
   return defs.map(watchJson);
 }
 
-export function formatWatches(id: string, { defs, undelivered, unreadable }: OpenWatches): string[] {
+export function formatWatches(
+  id: string,
+  { defs, undelivered, unreadable }: OpenWatches,
+  now: Date = new Date(),
+): string[] {
   const lines =
     defs.length === 0
       ? [`${id} has no open watch`]
       : defs.flatMap((def) => [
           `${def.name}  ${describeSource(def)}`,
-          `  until ${localTime(new Date(def.deadline))}; ${
+          `  until ${deadlineTime(new Date(def.deadline), now)}; ${
             def.last === undefined
               ? 'not looked at yet'
               : `last looked at ${localTime(new Date(def.last.at))}: ${oneLine(def.last.summary, 200)}`
