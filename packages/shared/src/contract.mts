@@ -427,6 +427,11 @@ export interface Backend {
   removePr(id: string, prId: string): Promise<void>;
   // A worker's dispatcher records GitHub's state of the PR the prompt names and of reported ones, by the id the task lists them with.
   setPrStates(id: string, states: PrStates): Promise<void>;
+  // A machine publishes what the watches of a task on it look at and say, for the board to show; null clears the list. The list
+  // never holds a command or its output. Against a server without `task.watches` it throws an error that names the feature.
+  setWatches(id: string, watches: readonly TaskWatch[] | null): Promise<void>;
+  // The machine acted on these stop requests (`Task.watchStops`); the board forgets them.
+  ackWatchStops(id: string, ids: readonly string[]): Promise<void>;
   // Whether the board holds `dirs` as this machine's directory list, by comparing blind indexes; 'unsupported' for a server without the feature.
   checkDirs(machine: string, dirs: readonly MachineDir[]): Promise<DirsOnBoard>;
   // Replaces the board's copy of this machine's directory list. The copy is advice for the New task form and is never read back by a CLI.
@@ -654,6 +659,8 @@ export interface WireBackend {
   addPr(id: string, body: WirePr): Promise<void>;
   removePr(id: string, body: WirePrRemoval): Promise<void>;
   setPrStates(id: string, body: WirePrStates): Promise<void>;
+  setWatches(id: string, body: WireWatches): Promise<void>;
+  ackWatchStops(id: string, body: WireWatchStopAck): Promise<void>;
   setDirs(body: WireDirs): Promise<void>;
   dirsState(): Promise<WireDirsState>;
   setCatalog(body: WireCatalog): Promise<void>;

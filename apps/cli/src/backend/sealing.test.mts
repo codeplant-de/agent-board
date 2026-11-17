@@ -17,6 +17,7 @@ import {
   parseWireTranscriptBatch,
   parsePolish,
   parseWireWait,
+  parseWireWatches,
   seal,
   serializePolish,
   UNREADABLE_TITLE,
@@ -147,6 +148,14 @@ function fakeWire(): FakeWire {
       if (states.prompt !== undefined) found.promptPrState = states.prompt;
       for (const row of found.prs ?? [])
         row.state = states.prs?.find((entry) => entry.id === row.id)?.state ?? row.state;
+    },
+    async setWatches(id, body) {
+      const sent = parseWireWatches(JSON.parse(record(state, body)));
+      state.tasks.find((t) => t.id === id)!.watches = sent.watches;
+    },
+    async ackWatchStops(id, body) {
+      const found = state.tasks.find((t) => t.id === id)!;
+      found.watchStops = (found.watchStops ?? []).filter((stop) => !body.ids.includes(stop));
     },
     async setDirs(body) {
       state.dirs = parseWireDirs(JSON.parse(record(state, body)));
@@ -962,6 +971,33 @@ test('the states of PRs go to the board in clear, as they are', async () => {
   const opened = await board.getTask('t1');
   assert.equal(opened.promptPrState, 'open');
   assert.equal(opened.prs[0]!.state, 'merged');
+});
+
+test('the watches go to the board sealed, open as the same list, and null clears them; a stop is acknowledged by id', async () => {
+  const wire = fakeWire();
+  wire.tasks.push(await wireTask({ id: 't1', watchStops: ['0123456789abcdef', 'fedcba9876543210'] }));
+  const board = sealingBackend(wire, KEYS);
+  const watch = {
+    id: '0123456789abcdef',
+    name: 'ci',
+    kind: 'ci' as const,
+    label: 'CI #17 · required',
+    status: '4 of 7 passed, 3 running',
+    deadline: '2027-01-01T10:00:00.000Z',
+    lastAttemptAt: '2027-01-01T09:00:00.000Z',
+    pendingEvents: 1,
+  };
+  await board.setWatches('t1', [watch]);
+  const sent = wire.tasks[0]!.watches!;
+  assert.ok(sent.startsWith('abe1.'));
+  assert.equal(sent.includes('CI #17'), false);
+  assert.equal(await open(KEYS, 'watches', 'task:t1:agent', sent), JSON.stringify({ watches: [watch] }));
+  assert.deepEqual((await board.getTask('t1')).watches, [watch]);
+  await board.ackWatchStops('t1', ['0123456789abcdef']);
+  assert.deepEqual((await board.getTask('t1')).watchStops, ['fedcba9876543210']);
+  await board.setWatches('t1', null);
+  assert.equal(wire.tasks[0]!.watches, null);
+  await assert.rejects(board.setWatches('t1', [{ ...watch, label: 'x'.repeat(121) }]), /set-watches/);
 });
 
 test('the directory list is sealed for this machine with an index of the same document, and the board tells whether it holds it', async () => {

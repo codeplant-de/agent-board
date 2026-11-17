@@ -1491,6 +1491,64 @@ test('a watch the tick polls that ends wakes its waiting task in the same tick',
   assert.equal(watches.events('w1').length, 1);
 });
 
+const WATCH_ID = 'a1b2c3d4e5f60718';
+
+test('a stop the user asked for ends that watch with a stopped event, acknowledges it, publishes the rest and wakes the parked task', async () => {
+  const { deps, watches, backend, logs } = setup([
+    waitingTask('w1', { wakeAt: at(90 * MIN), waitCheck: true, watchStops: [WATCH_ID] }),
+  ]);
+  watches.touchHeartbeat(NOW);
+  watches.write(probe({ id: WATCH_ID }));
+  await runDispatch(deps);
+  assert.deepEqual(watches.list('w1').defs, []);
+  assert.deepEqual(
+    watches.events('w1').map(({ event }) => [event.name, event.kind, event.text]),
+    [['health', 'stopped', 'Watch "health" was stopped by you.']],
+  );
+  assert.ok(logs.includes('STOP-WATCH w1 health'));
+  assert.ok(backend.writes.some((write) => write.startsWith('note w1: agent-board: watch "health" reported.')));
+  assert.deepEqual(
+    backend.writes.filter((write) => write.startsWith('ackWatchStops') || write.startsWith('watches ')),
+    [`ackWatchStops w1 ${WATCH_ID}`, 'watches w1 null'],
+  );
+  assert.deepEqual(wakes(backend.writes), ['wake w1: agent-board: wait over: watch "health" reported.']);
+});
+
+test('a stop for a watch that is gone is acknowledged and writes no event, and a task of another machine is left alone', async () => {
+  const { deps, watches, backend, logs } = setup([
+    waitingTask('w1', { wakeAt: at(90 * MIN), watchStops: ['0000000000000000'] }),
+    waitingTask('w2', { wakeAt: at(90 * MIN), watchStops: [WATCH_ID], machine: 'elsewhere' }),
+  ]);
+  watches.touchHeartbeat(NOW);
+  watches.write(probe({ id: WATCH_ID, task: 'w2' }));
+  await runDispatch(deps);
+  assert.deepEqual(watches.events('w1'), []);
+  assert.ok(logs.includes('STOP-WATCH w1 0000000000000000 no such watch'));
+  assert.ok(backend.writes.includes('ackWatchStops w1 0000000000000000'));
+  assert.equal(
+    backend.writes.some((write) => write.includes('w2') && write.startsWith('ackWatchStops')),
+    false,
+  );
+  assert.equal(watches.list('w2').defs.length, 1);
+});
+
+test('a dry run says which watch it would stop and changes nothing', async () => {
+  const { deps, watches, backend, logs } = setup([
+    task({ id: 'r1', status: 'running', machine: 'here', watchStops: [WATCH_ID] }),
+  ]);
+  deps.dryRun = true;
+  watches.touchHeartbeat(NOW);
+  watches.write(probe({ id: WATCH_ID, task: 'r1' }));
+  await runDispatch(deps);
+  assert.ok(logs.includes('DRY STOP-WATCH r1 health'));
+  assert.equal(watches.list('r1').defs.length, 1);
+  assert.deepEqual(watches.events('r1'), []);
+  assert.deepEqual(
+    backend.writes.filter((write) => write.includes('atch')),
+    [],
+  );
+});
+
 test('the tick polls a watch no earlier than its period, and not at all after its deadline', async () => {
   const { deps, watches, ranWatches } = setup([waitingTask('w1', { wakeAt: at(90 * MIN), waitCheck: true })]);
   watches.write(probe({ last: { at: at(-5_000).toISOString(), summary: 'x' } }));
@@ -1594,7 +1652,7 @@ test('the tick wakes a waiting task with an event nobody was handed, unless a wo
 });
 
 test('the watches of a task that is done, closed, in Backlog or gone are dropped; the others keep theirs', async () => {
-  const { deps, watches, logs } = setup(
+  const { deps, watches, logs, backend } = setup(
     [
       task({ id: 'd1', status: 'done' }),
       task({ id: 'b1', status: 'backlog' }),
@@ -1623,6 +1681,12 @@ test('the watches of a task that is done, closed, in Backlog or gone are dropped
     ['gone', 'gone'],
   ])
     assert.ok(logs.includes(`DROP-WATCHES ${id} its task is ${why}`), id);
+  // The board hears of the empty list for the tasks it still has, and has nothing to hear for a task that is gone.
+  assert.deepEqual(backend.writes.filter((write) => write.startsWith('watches ')).sort(), [
+    'watches b1 null',
+    'watches c1 null',
+    'watches d1 null',
+  ]);
 });
 
 test('a task the board cannot be asked about keeps its watches; a dry run drops nothing', async () => {

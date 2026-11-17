@@ -5,3 +5,4 @@ dayjs.extend(relativeTime);
 
 export const ago = (date: Date | string): string => dayjs(date).fromNow();
 export const stamp = (date: Date | string): string => dayjs(date).format('D MMM YYYY, HH:mm');
+export const clock = (date: Date | string): string => dayjs(date).format('HH:mm');

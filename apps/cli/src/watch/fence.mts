@@ -15,7 +15,7 @@ function isControl(code: number): boolean {
   return (code < 0x20 && code !== 0x0a) || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029;
 }
 
-const withoutControls = (text: string): string =>
+export const withoutControls = (text: string): string =>
   Array.from(text)
     .filter((char) => !isControl(char.charCodeAt(0)))
     .join('');

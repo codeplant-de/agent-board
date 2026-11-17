@@ -47,6 +47,7 @@ import { keepAwake } from './awake.mts';
 import { runProcess } from './process.mts';
 import type { RunChannel, RunResult, Watch } from './process.mts';
 import { clockTime, eventsMessage } from '../watch/fence.mts';
+import { publishWatches } from '../watch/publish.mts';
 import { createWatchStore } from '../watch/store.mts';
 import type { StoredEvent, WatchDef, WatchStore } from '../watch/store.mts';
 
@@ -339,6 +340,13 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
     return beating;
   };
   let firstOutput = oldestEvent === undefined;
+  // Events handed over change how many wait; publishing is best effort and does not hold the run.
+  const publishWatchState = (): void => {
+    void publishWatches(
+      { store: watches, backend, now: deps.now, log: (line) => deps.appendLog(taskId, line) },
+      task.id,
+    );
+  };
   // An agent's run lists the skills of the user's settings only (`--setting-sources user`), which the directory's catalogue is not.
   let skillsReported = restricted !== undefined;
   let lastUsage: RateLimitReading | undefined;
@@ -368,6 +376,7 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
         task.id,
         inPrompt.map(({ file }) => file),
       );
+      publishWatchState();
       logTiming(
         `first agent output after ${at - workerStartedAt.getTime()} ms from worker start, ${at - Date.parse(oldestEvent)} ms from the oldest event`,
       );
@@ -481,6 +490,7 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
       task.id,
       stored.map(({ file }) => file),
     );
+    publishWatchState();
     const names = [...new Set(stored.map(({ event }) => event.name))].join(', ');
     deps.appendLog(taskId, `handed the agent ${stored.length} watch event(s) (${names})`);
   };

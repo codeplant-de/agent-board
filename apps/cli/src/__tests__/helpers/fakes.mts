@@ -272,6 +272,18 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         if (row) row.state = prState;
       }
     },
+    async setWatches(id, watches) {
+      state.writes.push(`watches ${id} ${watches === null ? 'null' : JSON.stringify(watches)}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`set-watches: no task ${id}`, 404, true);
+      found.watches = watches === null ? null : [...watches];
+    },
+    async ackWatchStops(id, ids) {
+      state.writes.push(`ackWatchStops ${id} ${ids.join(',')}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`ack-watch-stops: no task ${id}`, 404, true);
+      found.watchStops = found.watchStops.filter((stop) => !ids.includes(stop));
+    },
     async checkDirs(_machine, dirs) {
       if (state.boardDirs.failure) throw state.boardDirs.failure;
       if (!state.boardDirs.supported) return 'unsupported';

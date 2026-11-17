@@ -22,6 +22,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ActionPanel } from '../components/ActionPanel';
+import { WatchList } from '../components/WatchList';
 import { Markdown } from '../components/Markdown';
 import { PriorityPicker } from '../components/PriorityPicker';
 import { PrStateIcon } from '../components/PrStateIcon';
@@ -51,6 +52,7 @@ function TaskView({ id }: { id: string }) {
   const query = useQuery({ ...trpc.tasks.get.queryOptions({ id }), refetchInterval: POLL_MS });
   const setPriority = useMutation(trpc.tasks.setPriority.mutationOptions());
   const removePr = useMutation(trpc.tasks.removePr.mutationOptions());
+  const stopWatch = useMutation(trpc.tasks.stopWatch.mutationOptions());
   const machines = useQuery(trpc.machines.list.queryOptions());
   const catalogs = useQuery(trpc.machines.catalogs.queryOptions());
   const bottom = useRef<HTMLDivElement>(null);
@@ -223,7 +225,8 @@ function TaskView({ id }: { id: string }) {
           >
             <Text size="sm">
               This browser could not decrypt the task&apos;s {task.unreadable.map(UNREADABLE_LABEL).join(', ')}. It was
-              not written with your key, or it is damaged, so it is not shown. Workers will not run the task.
+              not written with your key, or it is damaged, so it is not shown.
+              {task.unreadable.some((field) => field !== 'watches') && ' Workers will not run the task.'}
             </Text>
           </Alert>
         )}
@@ -237,6 +240,14 @@ function TaskView({ id }: { id: string }) {
               <Markdown>{task.input}</Markdown>
             </Spoiler>
           </Paper>
+        )}
+
+        {((task.watches?.length ?? 0) > 0 || task.watchStops.length > 0) && (
+          <WatchList
+            watches={task.watches ?? []}
+            stopping={task.watchStops}
+            onStop={(watchId) => stopWatch.mutate({ id: task.id, watchId })}
+          />
         )}
 
         {followUps.length > 0 && (

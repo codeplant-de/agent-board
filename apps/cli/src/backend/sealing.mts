@@ -25,6 +25,7 @@ import {
   sealNote,
   sealPr,
   sealQuestions,
+  sealWatches,
   sealWorkdir,
   taskLabels,
   transcriptBinding,
@@ -302,6 +303,12 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     },
     removePr: (id, prId) => inner.removePr(id, { pr: prId }),
     setPrStates: (id, states) => inner.setPrStates(id, states),
+    async setWatches(id, watches) {
+      await inner.setWatches(id, {
+        watches: watches === null ? null : await checked('set-watches', () => sealWatches(sealer, id, watches)),
+      });
+    },
+    ackWatchStops: (id, ids) => inner.ackWatchStops(id, { ids: [...ids] }),
     async checkDirs(machine, dirs) {
       const { supported, index } = await inner.dirsState();
       if (!supported) return 'unsupported';

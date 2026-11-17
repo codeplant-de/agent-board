@@ -12,6 +12,7 @@ const shown = vi.hoisted(() => ({
   task: undefined as unknown,
   machines: [] as unknown[],
   removed: [] as unknown[],
+  stopped: [] as unknown[],
   catalogs: [] as unknown[],
   skills: [] as readonly { name: string }[],
 }));
@@ -28,6 +29,14 @@ vi.mock('../lib/trpc', () => ({
         }),
       },
       setPriority: { mutationOptions: () => ({ mutationFn: async () => null }) },
+      stopWatch: {
+        mutationOptions: () => ({
+          mutationFn: async (input: unknown) => {
+            shown.stopped.push(input);
+            return null;
+          },
+        }),
+      },
       removePr: {
         mutationOptions: () => ({
           mutationFn: async (input: unknown) => {
@@ -57,6 +66,8 @@ const task = (overrides: Partial<BoardTask>): BoardTask =>
     title: 'A task',
     input: 'Fix the bug',
     prs: [],
+    watches: null,
+    watchStops: [],
     model: null,
     promptPrState: null,
     status: 'needs-me',
@@ -205,6 +216,58 @@ describe('TaskPage pull request removal', () => {
     renderPage({ input: '/review-pr https://github.com/acme/app/pull/1 --auto' });
     await screen.findByRole('link', { name: 'acme/app/pull/1' });
     expect(screen.queryByRole('button', { name: /^Remove/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('TaskPage watches', () => {
+  const watch = {
+    id: '0123456789abcdef',
+    name: 'ci',
+    kind: 'ci',
+    label: 'CI #116',
+    status: '4 of 7 passed, 3 running',
+    deadline: new Date(Date.now() + 3_600_000).toISOString(),
+    lastAttemptAt: new Date(Date.now() - 60_000).toISOString(),
+    pendingEvents: 2,
+  } as const;
+
+  beforeEach(() => {
+    shown.stopped = [];
+  });
+
+  it('lists each watch with what it watches, its status, until when, when it looked and its waiting events', async () => {
+    renderPage({ status: 'running', watches: [watch] });
+    const section = within((await screen.findByText('Watches')).parentElement!);
+    expect(section.getByText('ci')).toBeInTheDocument();
+    expect(section.getByText(/CI #116/)).toBeInTheDocument();
+    expect(section.getByText('4 of 7 passed, 3 running')).toBeInTheDocument();
+    expect(section.getByText(/until /)).toBeInTheDocument();
+    expect(section.getByText(/looked a minute ago/)).toBeInTheDocument();
+    expect(section.getByText(/2 events waiting/)).toBeInTheDocument();
+  });
+
+  it('stops a watch with the id of its entry, without a confirmation', async () => {
+    renderPage({ status: 'running', watches: [watch] });
+    await userEvent.click(await screen.findByRole('button', { name: 'Stop ci' }));
+    await waitFor(() => expect(shown.stopped).toEqual([{ id: 't1', watchId: watch.id }]));
+  });
+
+  it('says Stopping… and offers no second click while the machine has not acknowledged the stop', async () => {
+    renderPage({ status: 'running', watches: [watch], watchStops: [watch.id] });
+    expect(await screen.findByRole('button', { name: 'Stopping ci' })).toBeDisabled();
+    expect(screen.getByText('Stopping…')).toBeInTheDocument();
+  });
+
+  it('shows no section for a task without watches', async () => {
+    renderPage({ status: 'running' });
+    await screen.findByText('A task');
+    expect(screen.queryByText('Watches')).not.toBeInTheDocument();
+  });
+
+  it('shows watch text as plain text', async () => {
+    renderPage({ status: 'running', watches: [{ ...watch, status: '**bold** [x](https://evil.example)' }] });
+    expect(await screen.findByText('**bold** [x](https://evil.example)')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'x' })).not.toBeInTheDocument();
   });
 });
 
