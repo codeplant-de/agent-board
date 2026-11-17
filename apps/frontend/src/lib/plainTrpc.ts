@@ -26,13 +26,17 @@ import {
   sealAnswer,
   sealApply,
   sealConfigure,
+  sealEdit,
   sealNewTask,
   sealReply,
+  sealScheduleEdit,
   sealStart,
   startsProposal,
   type Configuration,
   type ConfigureTarget,
+  type EditTarget,
   type NewTask,
+  type ScheduleEditTarget,
   type PolishTarget,
   type Proposal,
 } from './sealing';
@@ -83,6 +87,19 @@ export interface ApplyVariables {
   // The task the polished prompt is for, as the page shows it; what it says now is kept in a note.
   target: PolishTarget;
   rewrite: Pick<Polish, 'title' | 'prompt'>;
+}
+
+export interface EditVariables {
+  // The task as the page shows it; what it says now is kept in a note.
+  target: EditTarget;
+  title: string;
+  input: string;
+}
+
+export interface EditScheduleVariables {
+  schedule: ScheduleEditTarget;
+  title: string;
+  input: string;
 }
 
 export type ConfigureVariables = Configuration & {
@@ -210,6 +227,14 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
               openBoardTask(need(), await client.tasks.applyPolish.mutate(await sealApply(need(), variables))),
           }),
       },
+      edit: {
+        mutationOptions: () =>
+          mutationOptions({
+            mutationKey: raw.tasks.edit.mutationKey(),
+            mutationFn: async (variables: EditVariables) =>
+              openBoardTask(need(), await client.tasks.edit.mutate(await sealEdit(need(), variables))),
+          }),
+      },
       reply: {
         mutationOptions: () =>
           mutationOptions({
@@ -263,6 +288,18 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
             queryKey: plainKey(raw.schedules.list.queryKey()),
             queryFn: async ({ signal }) =>
               openSchedules(need(), await client.schedules.list.query(undefined, { signal })),
+          }),
+      },
+      edit: {
+        mutationOptions: () =>
+          mutationOptions({
+            mutationKey: raw.schedules.edit.mutationKey(),
+            mutationFn: async (variables: EditScheduleVariables) => {
+              const { schedule, pending } = await client.schedules.edit.mutate(
+                await sealScheduleEdit(need(), variables),
+              );
+              return { schedule: await openSchedule(need(), schedule), pending };
+            },
           }),
       },
       setPaused: {

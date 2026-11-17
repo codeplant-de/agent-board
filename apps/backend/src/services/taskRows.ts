@@ -70,6 +70,14 @@ export async function insertTask(
   return { row: existing, created: false };
 }
 
+/**
+ * Whether a worker ever claimed the task. A claim sets `lastActiveAt` (kept after the run, unlike the run's own columns),
+ * and a session means a run reported back, so the board's transcript rows and a re-run fresh cannot hide a run.
+ */
+export function hasStarted(row: Pick<TaskRow, 'lastActiveAt' | 'sessionId'>): boolean {
+  return row.lastActiveAt !== null || row.sessionId !== null;
+}
+
 export async function lockTask(tx: DbOrTx, id: string): Promise<TaskRow> {
   const [row] = await tx.select().from(tasks).where(eq(tasks.id, id)).for('update');
   if (!row) throw new AppError('NOT_FOUND', `no task ${id.slice(0, 64)}`);
