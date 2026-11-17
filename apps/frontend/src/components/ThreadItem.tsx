@@ -79,7 +79,9 @@ function QuestionList({ questions, answered }: { questions: Question[]; answered
               <Badge variant="light" tt="none" style={{ flexShrink: 0 }}>
                 {question.header}
               </Badge>
-              <Text size="sm">{question.question}</Text>
+              <Text size="sm" className="wrap-anywhere">
+                {question.question}
+              </Text>
             </Group>
             <Group gap={6} pl="xs">
               {question.options.map((option) => {
@@ -229,13 +231,13 @@ export function ThreadItem({ note, thread }: Props) {
         {fromUser && <DeliveryState note={note} />}
       </Group>
       {note.kind === 'answer' && note.answers && (
-        <Text size="sm" style={{ whiteSpace: 'pre-wrap' }} mb={note.text.trim() ? 6 : 0}>
+        <Text size="sm" className="wrap-anywhere" style={{ whiteSpace: 'pre-wrap' }} mb={note.text.trim() ? 6 : 0}>
           {formatAnswers(questions, note.answers)}
         </Text>
       )}
       {note.text.trim() && <Folded text={note.text} />}
       {note.suggestion && (
-        <Text size="xs" c="dimmed" fs="italic" mt={6} style={{ whiteSpace: 'pre-wrap' }}>
+        <Text size="xs" c="dimmed" fs="italic" mt={6} className="wrap-anywhere" style={{ whiteSpace: 'pre-wrap' }}>
           Suggested reply: {note.suggestion}
         </Text>
       )}

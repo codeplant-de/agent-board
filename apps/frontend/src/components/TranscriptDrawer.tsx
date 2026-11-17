@@ -155,7 +155,14 @@ function EventRow({
           </UnstyledButton>
           {event.text !== '' && (
             <Collapse expanded={thinkingOpen}>
-              <Text size="xs" c="dimmed" fs="italic" pl={20} style={{ whiteSpace: 'pre-wrap' }}>
+              <Text
+                size="xs"
+                c="dimmed"
+                fs="italic"
+                pl={20}
+                className="wrap-anywhere"
+                style={{ whiteSpace: 'pre-wrap' }}
+              >
                 {event.text}
               </Text>
             </Collapse>

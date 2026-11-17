@@ -161,7 +161,7 @@ function QuestionForm({ questions, submitting, onSubmit }: FormProps) {
                 <Badge variant="light" tt="none" style={{ flexShrink: 0 }}>
                   {question.header}
                 </Badge>
-                <Text size="sm" fw={500}>
+                <Text size="sm" fw={500} className="wrap-anywhere">
                   {question.question}
                   {question.multiSelect && (
                     <Text span size="xs" c="dimmed">
@@ -197,9 +197,9 @@ function QuestionForm({ questions, submitting, onSubmit }: FormProps) {
                         ) : (
                           <Radio.Indicator checked={chosen} />
                         )}
-                        <div style={{ flex: 1 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
                           <Group gap={6} justify="space-between" wrap="nowrap">
-                            <Text size="sm" fw={500}>
+                            <Text size="sm" fw={500} className="wrap-anywhere">
                               {option.label}
                             </Text>
                             <Group gap={4} wrap="nowrap">
@@ -212,7 +212,7 @@ function QuestionForm({ questions, submitting, onSubmit }: FormProps) {
                             </Group>
                           </Group>
                           {option.description && (
-                            <Text size="xs" c="dimmed" mt={2}>
+                            <Text size="xs" c="dimmed" mt={2} className="wrap-anywhere">
                               {option.description}
                             </Text>
                           )}

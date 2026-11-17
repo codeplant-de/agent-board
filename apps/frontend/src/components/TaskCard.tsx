@@ -75,7 +75,7 @@ export function TaskCard({
               <PrStateIcon state={statePrOf(task) === undefined ? null : task.prState} />
             </span>
           )}
-          <Text size="sm" fw={500} lineClamp={2} style={{ flex: 1 }}>
+          <Text size="sm" fw={500} lineClamp={2} className="wrap-anywhere" style={{ flex: 1 }}>
             {task.title}
           </Text>
           {onPolish && (
@@ -117,7 +117,7 @@ export function TaskCard({
         </Group>
         <TaskBadges task={task} />
         {task.status === 'running' && <LivenessText size="xs" lastActiveAt={task.lastActiveAt} />}
-        <Text size="xs" c="dimmed" lineClamp={1}>
+        <Text size="xs" c="dimmed" lineClamp={1} className="wrap-anywhere">
           {lastNoteLine(task.lastNote, task)}
         </Text>
       </Stack>
