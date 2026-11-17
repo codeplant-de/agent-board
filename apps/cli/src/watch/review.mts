@@ -100,12 +100,16 @@ const REVIEW_STATES: Record<string, string> = {
   DISMISSED: 'left a review that was dismissed',
 };
 
-// The first lines of a body: blank lines and lines that are only an HTML comment (a bot's marker) are passed over.
+// A line that is one whole HTML comment, such as a bot's marker. This shortens the excerpt and filters nothing: what the
+// excerpt keeps is sanitized like any event text.
+const isMarkerLine = (line: string): boolean => line.length >= 7 && line.startsWith('<!--') && line.endsWith('-->');
+
+// The first lines of a body: blank lines and marker lines are passed over.
 function excerpt(body: string): string[] {
   const lines = body
     .split('\n')
     .map((line) => line.trim())
-    .filter((line) => line !== '' && !/^<!--.*-->$/.test(line));
+    .filter((line) => line !== '' && !isMarkerLine(line));
   const kept: string[] = [];
   let room = MAX_BODY_CHARS;
   for (const line of lines.slice(0, MAX_BODY_LINES)) {
