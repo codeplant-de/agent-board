@@ -6,6 +6,7 @@ import type { UpdateState } from '../self/update-state.mts';
 import type { DoctorDeps } from '../setup/doctor.mts';
 import type { Prompts } from '../setup/init.mts';
 import type { SetupDeps } from '../setup/setup.mts';
+import type { RunInherited } from '../setup/units.mts';
 import type { EventsDeps } from '../events/run.mts';
 import type { Spawner } from './board.mts';
 import type { WatchRunner } from '../watch/attempt.mts';
@@ -32,6 +33,8 @@ export interface ProgramOptions {
   runSystem?: SetupDeps['run'];
   // The exit code of a read-only systemctl call.
   systemctlCode?: DoctorDeps['systemctl'];
+  // Runs journalctl or tail on the terminal for `board logs`: its argv, resolving with the exit code (undefined when it did not start).
+  runInherited?: RunInherited;
   verifyServer?: DoctorDeps['verifyServer'];
   // Whether launchd has loaded an agent (macOS).
   agentLoaded?: DoctorDeps['launchd']['loaded'];

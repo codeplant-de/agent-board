@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
-import { Argument } from 'commander';
+import { Argument, Option } from 'commander';
 import { ReportedFailure, UsageError } from '../cli.mts';
 import { verifyContract } from '../backend/contract-check.mts';
 import { completionModel, renderCompletion, SHELLS } from './completion.mts';
@@ -15,6 +15,8 @@ import { realGh, realListenerRestart, selfUpdate } from '../self/self-update.mts
 import type { SelfUpdateFlags } from '../self/self-update.mts';
 import { releaseVersion } from '../self/version.mts';
 import { realSetupDeps, setup, unitDirectory, whichOnPath } from '../setup/setup.mts';
+import { DEFAULT_LINES, restartUnits, runInherited, showLogs, WORKER_UNITS } from '../setup/units.mts';
+import type { LogsFlags, WorkerUnit } from '../setup/units.mts';
 import type { SetupDeps, SetupFlags } from '../setup/setup.mts';
 import { plainLine } from '../output/terminal.mts';
 import { exampleNames, exampleText } from './example.mts';
@@ -156,6 +158,59 @@ export function registerSetupCommands(shared: ProgramShared): void {
     .action(async (flags: SetupFlags) => {
       notInRun('board setup is not available inside a board run');
       await setup(setupDeps(), flags);
+    });
+
+  program
+    .command('restart')
+    .helpGroup(SETUP)
+    .summary('restart the dispatch timer, the listener and the watch unit')
+    .description(
+      paragraphs(
+        'Restart the worker units of this machine, all three or the ones named: `systemctl --user restart` on the dispatch timer (which starts its schedule again; a tick that runs is not stopped), the listener and the watch unit, or on macOS `launchctl kickstart` of the launchd agents (-k for the listener and the watch unit; the dispatch agent starts a tick now). Only installed units are restarted (on macOS, agents launchd has loaded); the others are named with the line that installs them. Exit 1 when a restart failed or nothing could be restarted.',
+        'Running workers are their own transient units and keep running. Stopping the listener waits for a dispatch tick that is running, up to 130 s.',
+        'Not available inside a board run.',
+      ),
+    )
+    .addArgument(new Argument('[unit...]', 'dispatch, listen or watch (default: all three)').choices(WORKER_UNITS))
+    .addHelpText('after', examples('board restart', 'board restart listen watch'))
+    .action(async (units: WorkerUnit[]) => {
+      notInRun('board restart is not available inside a board run');
+      await restartUnits(setupDeps(), units);
+    });
+
+  program
+    .command('logs')
+    .helpGroup(SETUP)
+    .summary('show the log of a unit or a task on this machine')
+    .description(
+      paragraphs(
+        'Show the end of the log of the dispatch timer, the listener or the watch unit (all three together, in time order, when none is named), or of a task. On Linux the units are read with `journalctl --user`; on macOS with `tail` on launchd.<unit>.log in the log directory. A task id shows its log file in the log directory, which exists on the machine that ran the task only; it needs no network.',
+        '--follow keeps printing until Ctrl-C. --lines is how many lines to show from the end. --since limits the units to a time as journalctl reads it, such as "1 hour ago" or "2026-01-31 10:00"; it is not available on macOS or for a task log. Exit status is that of journalctl or tail. Allowed inside a board run.',
+      ),
+    )
+    .argument('[target]', 'dispatch, listen, watch or a task id (default: the three units)')
+    .option('-f, --follow', 'keep printing new lines until Ctrl-C')
+    .addOption(new Option('-n, --lines <n>', 'how many lines to show from the end').default(DEFAULT_LINES))
+    .option('--since <time>', 'only the units, from this time on (Linux only), such as "1 hour ago"')
+    .addHelpText(
+      'after',
+      examples(
+        'board logs',
+        'board logs listen -f',
+        'board logs dispatch --since "1 hour ago"',
+        'board logs <task id> -n 50',
+      ),
+    )
+    .action(async (target: string | undefined, flags: LogsFlags) => {
+      await showLogs(
+        {
+          platform: options.platform ?? process.platform,
+          logDir: getPaths(env).logDir,
+          run: options.runInherited ?? runInherited,
+        },
+        target,
+        flags,
+      );
     });
 
   program

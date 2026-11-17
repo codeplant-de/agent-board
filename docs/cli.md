@@ -57,6 +57,9 @@ Setup:
                              tools and units
   setup                      install the dispatch timer and the listener:
                              systemd user units, or launchd agents on macOS
+  restart [unit...]          restart the dispatch timer, the listener and the
+                             watch unit
+  logs [target]              show the log of a unit or a task on this machine
   self-update                replace this binary with the newest release
   completion <shell>         print a shell completion script
   example [name]             list or print the example files that ship with the
@@ -1121,6 +1124,72 @@ Examples:
   board setup
   board setup --print
   board setup --enable
+```
+
+### board restart
+
+```
+Usage: board restart [options] [unit...]
+
+Restart the worker units of this machine, all three or the ones named:
+`systemctl --user restart` on the dispatch timer (which starts its schedule
+again; a tick that runs is not stopped), the listener and the watch unit, or on
+macOS `launchctl kickstart` of the launchd agents (-k for the listener and the
+watch unit; the dispatch agent starts a tick now). Only installed units are
+restarted (on macOS, agents launchd has loaded); the others are named with the
+line that installs them. Exit 1 when a restart failed or nothing could be
+restarted.
+
+Running workers are their own transient units and keep running. Stopping the
+listener waits for a dispatch tick that is running, up to 130 s.
+
+Not available inside a board run.
+
+Arguments:
+  unit        dispatch, listen or watch (default: all three) (choices:
+              "dispatch", "listen", "watch")
+
+Options:
+  -h, --help  display help for command
+
+Examples:
+  board restart
+  board restart listen watch
+```
+
+### board logs
+
+```
+Usage: board logs [options] [target]
+
+Show the end of the log of the dispatch timer, the listener or the watch unit
+(all three together, in time order, when none is named), or of a task. On Linux
+the units are read with `journalctl --user`; on macOS with `tail` on
+launchd.<unit>.log in the log directory. A task id shows its log file in the log
+directory, which exists on the machine that ran the task only; it needs no
+network.
+
+--follow keeps printing until Ctrl-C. --lines is how many lines to show from the
+end. --since limits the units to a time as journalctl reads it, such as "1 hour
+ago" or "2026-01-31 10:00"; it is not available on macOS or for a task log. Exit
+status is that of journalctl or tail. Allowed inside a board run.
+
+Arguments:
+  target           dispatch, listen, watch or a task id (default: the three
+                   units)
+
+Options:
+  -f, --follow     keep printing new lines until Ctrl-C
+  -n, --lines <n>  how many lines to show from the end (default: "100")
+  --since <time>   only the units, from this time on (Linux only), such as "1
+                   hour ago"
+  -h, --help       display help for command
+
+Examples:
+  board logs
+  board logs listen -f
+  board logs dispatch --since "1 hour ago"
+  board logs <task id> -n 50
 ```
 
 ### board self-update

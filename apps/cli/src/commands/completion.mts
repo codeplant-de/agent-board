@@ -3,6 +3,7 @@ import { MODEL_ALIASES, PRIORITIES, STATUSES } from '@agent-board/shared';
 import { EVENT_TYPES } from '../events/diff.mts';
 import { DIR_SETTINGS, TOP_KEYS } from '../config/config.mts';
 import { shellQuote } from '../output/text.mts';
+import { WORKER_UNITS } from '../setup/units.mts';
 
 export const SHELLS = ['bash', 'zsh', 'fish'] as const;
 export type Shell = (typeof SHELLS)[number];
@@ -26,6 +27,8 @@ interface CommandModel {
     | 'agents-action'
     | 'command'
     | 'shell'
+    | 'unit'
+    | 'log-target'
   )[];
 }
 
@@ -56,6 +59,8 @@ function positionalsOf(command: Command): CommandModel['positionals'] {
   if (command.name() === 'dirs') return ['dirs-action', 'dirs-key'];
   if (command.name() === 'config') return ['config-action', 'config-key'];
   if (command.name() === 'agents') return ['agents-action'];
+  if (command.name() === 'restart') return ['unit'];
+  if (command.name() === 'logs') return ['log-target'];
   if (command.name() === 'move') return ['task', 'status'];
   if (command.name() === 'task') return ['task', 'task-action', 'task-key'];
   return command.registeredArguments[0]?.name() === 'task' ? ['task'] : [];
@@ -133,6 +138,9 @@ function positionalWords(kind: Kind, model: CompletionModel): string | undefined
       return words(model.commands.map((command) => command.name));
     case 'shell':
       return words(SHELLS);
+    case 'unit':
+    case 'log-target':
+      return words(WORKER_UNITS);
     default:
       return undefined;
   }
@@ -169,7 +177,9 @@ function bash(model: CompletionModel): string {
             ? '$(__board_ids tasks)'
             : kind === 'schedule'
               ? '$(__board_ids schedules)'
-              : positionalWords(kind, model);
+              : kind === 'log-target'
+                ? `${positionalWords(kind, model)} $(__board_ids tasks)`
+                : positionalWords(kind, model);
         return `        if (( pos == ${index} ))${guard}; then __board_reply < <(compgen -W "${candidates}" -- "$cur"); fi`;
       });
       return `      ${command.name})\n${lines.join('\n')} ;;`;
@@ -272,7 +282,9 @@ function zsh(model: CompletionModel): string {
             ? '__board_ids tasks'
             : kind === 'schedule'
               ? '__board_ids schedules'
-              : `compadd -- ${positionalWords(kind, model)}`;
+              : kind === 'log-target'
+                ? `compadd -- ${positionalWords(kind, model)}; __board_ids tasks`
+                : `compadd -- ${positionalWords(kind, model)}`;
         return `        if (( pos == ${index} ))${guard}; then ${offer}; fi`;
       });
       return `      (${command.name})\n${lines.join('\n')} ;;`;
@@ -407,6 +419,8 @@ function fish(model: CompletionModel): string {
     }
   }
   lines.push(`complete -c board -n '__board_at 1 ${taskCommands.join(' ')}' -a '(__board_ids tasks)'`);
+  lines.push(`complete -c board -n '__board_at 1 restart logs' -a ${fishQuote(words(WORKER_UNITS))}`);
+  lines.push(`complete -c board -n '__board_at 1 logs' -a '(__board_ids tasks)'`);
   lines.push(`complete -c board -n '__board_at 2 move' -a ${fishQuote(words(STATUSES))}`);
   lines.push(`complete -c board -n '__board_at 1 schedules' -a 'pause resume rm'`);
   lines.push(`complete -c board -n '__board_schedule_id' -a '(__board_ids schedules)'`);

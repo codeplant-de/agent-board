@@ -38,6 +38,8 @@ const VISIBLE = [
   'init',
   'doctor',
   'setup',
+  'restart',
+  'logs',
   'self-update',
   'completion',
   'example',
@@ -65,6 +67,16 @@ test('the model lists the visible commands only, with their flags', () => {
   assert.deepEqual(model.flagValues['--model'], ['fable', 'opus', 'sonnet', 'haiku']);
   assert.deepEqual(model.flagValues['--type'], ['created', 'moved', 'changed', 'closed', 'removed', 'note']);
   assert.ok(model.taskFlags.includes('--task') && model.taskFlags.includes('--parent'));
+});
+
+test('restart completes the unit names, and logs the units and then the task ids', () => {
+  const positionals = (name: string) => model.commands.find((command) => command.name === name)?.positionals;
+  assert.deepEqual(positionals('restart'), ['unit']);
+  assert.deepEqual(positionals('logs'), ['log-target']);
+  assert.ok(script('bash').includes('compgen -W "dispatch listen watch $(__board_ids tasks)"'));
+  assert.ok(script('zsh').includes('compadd -- dispatch listen watch; __board_ids tasks'));
+  assert.ok(script('fish').includes("'__board_at 1 restart logs' -a 'dispatch listen watch'"));
+  assert.ok(script('fish').includes("'__board_at 1 logs' -a '(__board_ids tasks)'"));
 });
 
 test('task completes its id, then set or unset, then the setting', () => {
