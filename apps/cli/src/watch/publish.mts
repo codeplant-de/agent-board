@@ -30,6 +30,7 @@ function labelOf(def: WatchDef): string {
   if (source.kind === 'stream') return 'stream';
   if (source.kind === 'pr-review') return `review #${source.pr.slice(source.pr.lastIndexOf('/') + 1)}`;
   const number = source.pr.slice(source.pr.lastIndexOf('/') + 1);
+  if (source.kind === 'pr-merged') return `merge of #${number}`;
   return `CI #${number}${source.required ? ' · required' : ''}`;
 }
 

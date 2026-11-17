@@ -6,13 +6,15 @@ import type { CommandResult } from '../dispatch/waits.mts';
 import { ciChecksCommand, ciViewCommand, decideCi, isViewOpen } from './ci.mts';
 import type { CiSource } from './ci.mts';
 import { deadlineTime } from './fence.mts';
+import { decideMerged, mergedViewCommand } from './merged.mts';
+import type { MergedSource } from './merged.mts';
 import { decideReview, reviewViewCommand } from './review.mts';
 import type { ReviewSource } from './review.mts';
 import type { WatchDef } from './store.mts';
 
 export const UNIT_ATTEMPT_LIMIT_MS = 120_000;
 export const TICK_ATTEMPT_LIMIT_MS = 45_000;
-// gh is asked twice per ci attempt and once per pr-review attempt, each call with this at the most.
+// gh is asked twice per ci attempt and once per pr-review or pr-merged attempt, each call with this at the most.
 const CI_CALL_LIMIT_MS = 60_000;
 const OUTPUT_SUMMARY_CHARS = 2000;
 
@@ -129,6 +131,21 @@ async function attemptReview(def: WatchDef & { source: ReviewSource }, deps: Att
   return { kind: 'pending', summary: decision.reason };
 }
 
+async function attemptMerged({ source }: { source: MergedSource }, deps: AttemptDeps): Promise<AttemptResult> {
+  const view = await deps.run({
+    command: mergedViewCommand(source.pr),
+    cwd: source.cwd,
+    timeLimitMs: Math.min(CI_CALL_LIMIT_MS, deps.timeLimitMs),
+    ...(source.settingsDir === undefined ? {} : { settingsDir: source.settingsDir }),
+    ...(deps.signal === undefined ? {} : { signal: deps.signal }),
+  });
+  const decision = decideMerged(source, view);
+  if (decision.kind === 'event') return { kind: 'event', text: decision.text };
+  if (decision.kind === 'pending') return { kind: 'pending', summary: decision.summary };
+  if (deps.registration === true) return { kind: 'broken', reason: decision.reason };
+  return { kind: 'pending', summary: decision.reason };
+}
+
 /**
  * Looks at one watch. A timer is never polled: its end is its event. A stream is never polled either. Every other source returns
  * its event, or its state.
@@ -144,6 +161,7 @@ export async function attempt(def: WatchDef, now: Date, deps: AttemptDeps): Prom
     return { kind: 'pending', summary: source.starts === 0 ? 'not started yet' : 'streaming' };
   if (source.kind === 'command') return attemptCommand({ ...def, source }, deps);
   if (source.kind === 'pr-review') return attemptReview({ ...def, source }, deps);
+  if (source.kind === 'pr-merged') return attemptMerged({ source }, deps);
   return attemptCi({ ...def, source }, now, deps);
 }
 

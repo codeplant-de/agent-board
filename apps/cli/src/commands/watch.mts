@@ -12,6 +12,7 @@ import {
   MAX_COMMAND_CHARS,
   MIN_COMMAND_EVERY_MS,
   newWatchId,
+  PR_MERGED_EVERY_MS,
   PR_REVIEW_EVERY_MS,
   PR_REVIEW_TIMEOUT_MS,
 } from '../watch/store.mts';
@@ -27,6 +28,8 @@ export interface WatchFlags {
   ci?: string | true;
   // `--pr-review` alone is true; `--pr-review <pr>` carries the PR.
   prReview?: string | true;
+  // `--pr-merged` alone is true; `--pr-merged <pr>` carries the PR.
+  prMerged?: string | true;
   required?: boolean;
   name?: string;
   // With a command: keep it running and report its output lines.
@@ -40,6 +43,8 @@ export interface WatchFlags {
 export const DEFAULT_WATCH_EVERY = '30s';
 export const DEFAULT_WATCH_TIMEOUT = '2h';
 export const DEFAULT_REVIEW_TIMEOUT = formatDuration(PR_REVIEW_TIMEOUT_MS);
+// A merge waits for people, so a watch for it looks as long as a watch may.
+export const DEFAULT_PR_MERGED_TIMEOUT = '7d';
 export const KEEP_WORKING =
   'Keep working if there is work; end your turn when there is none: the task waits and resumes with the event.';
 
@@ -52,6 +57,7 @@ export type WatchPlan = {
 } & (
   | { kind: 'ci'; pr: string | undefined; required: boolean }
   | { kind: 'pr-review'; pr: string | undefined }
+  | { kind: 'pr-merged'; pr: string | undefined }
   | { kind: 'command'; command: string; everyMs: number }
   | { kind: 'stream'; command: string }
   | { kind: 'timer' }
@@ -78,11 +84,11 @@ function checkedName(name: string): string {
 }
 
 /**
- * What the flags and the words after `--` ask for. Exactly one source: `--ci`, `--pr-review`, a command, or `--in`/`--at`. Reads nothing: the
+ * What the flags and the words after `--` ask for. Exactly one source: `--ci`, `--pr-review`, `--pr-merged`, a command, or `--in`/`--at`. Reads nothing: the
  * task and the PR are looked at afterwards.
  */
 export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = new Date()): WatchPlan {
-  const { ci, prReview, required, name, stream, every, timeout, in: inText, at } = flags;
+  const { ci, prReview, prMerged, required, name, stream, every, timeout, in: inText, at } = flags;
   if (inText !== undefined && at !== undefined) throw new UsageError('give --in or --at, not both');
   if (stream === true && words.length === 0) throw new UsageError('--stream goes with a command after --');
   if (stream === true && every !== undefined)
@@ -92,12 +98,13 @@ export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = 
   const sources = [
     ci !== undefined,
     prReview !== undefined,
+    prMerged !== undefined,
     words.length > 0,
     inText !== undefined || at !== undefined,
   ].filter(Boolean).length;
   if (sources !== 1)
     throw new UsageError(
-      `give exactly one source: --ci for the CI of a PR, --pr-review for its reviews and comments, a command after -- (with --name; --stream to follow its output), or --in/--at for a timer`,
+      `give exactly one source: --ci for the CI of a PR, --pr-review for its reviews and comments, --pr-merged for its merge, a command after -- (with --name; --stream to follow its output), or --in/--at for a timer`,
     );
   if (required === true && ci === undefined) throw new UsageError('--required goes with --ci');
   const timeoutMs = (fallback: string = DEFAULT_WATCH_TIMEOUT): number => {
@@ -128,6 +135,18 @@ export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = 
       deadline: new Date(now.getTime() + timeoutMs(DEFAULT_REVIEW_TIMEOUT)),
     };
   }
+  if (prMerged !== undefined) {
+    if (every !== undefined)
+      throw new UsageError(
+        `--every goes with a command; a --pr-merged watch looks every ${describeEvery(PR_MERGED_EVERY_MS)}`,
+      );
+    return {
+      kind: 'pr-merged',
+      name: checkedName(name ?? 'pr-merged'),
+      pr: prMerged === true ? undefined : prMerged,
+      deadline: new Date(now.getTime() + timeoutMs(DEFAULT_PR_MERGED_TIMEOUT)),
+    };
+  }
   if (words.length > 0) {
     if (name === undefined) throw new UsageError('a command watch needs --name <name>: it tells the events apart');
     // One word is the shell command as written; several are the words of one command, quoted so they stay what was typed.
@@ -149,7 +168,9 @@ export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = 
     };
   }
   if (every !== undefined || timeout !== undefined)
-    throw new UsageError('--every and --timeout go with --ci, --pr-review or a command; a timer ends at its time');
+    throw new UsageError(
+      '--every and --timeout go with --ci, --pr-review, --pr-merged or a command; a timer ends at its time',
+    );
   const deadline = parseStart(inText === undefined ? { at } : { delay: inText }, now);
   if (deadline === undefined) throw new UsageError('give --in or --at');
   if (deadline.getTime() - now.getTime() > MAX_WAIT_MS)
@@ -209,7 +230,7 @@ export function reportedPr(prs: readonly TaskPr[]): string | null {
 // The PR as gh prints it, and its head commit, from a URL or number (or the task's PR) read in the agent's directory.
 async function resolvePr(
   id: string,
-  flag: '--ci' | '--pr-review',
+  flag: '--ci' | '--pr-review' | '--pr-merged',
   given: string | undefined,
   taskPr: string | null,
   deps: WatchDeps,
@@ -258,7 +279,7 @@ async function ghLogin(deps: WatchDeps): Promise<string | undefined> {
 }
 
 /**
- * Starts a watch on a task of this machine. A stream is stored for the watch unit, which starts its command. A ci, pr-review or command watch is looked at once first, in the environment the watch unit uses:
+ * Starts a watch on a task of this machine. A stream is stored for the watch unit, which starts its command. A ci, pr-review, pr-merged or command watch is looked at once first, in the environment the watch unit uses:
  * a command that cannot run here fails the call, and one that already has its event reports it and stores nothing.
  */
 export async function watch(
@@ -279,11 +300,11 @@ export async function watch(
     // A run an older CLI started for the removed intake has its narrow list but no AGENT_BOARD_RESTRICTED.
     if (task.createdBy === 'intake')
       throw new UsageError(
-        `${id} is a task of the removed intake: it may watch with --ci, --pr-review or --in/--at only`,
+        `${id} is a task of the removed intake: it may watch with --ci, --pr-review, --pr-merged or --in/--at only`,
       );
     if (deps.restricted === true)
       throw new UsageError(
-        `${id} runs as an agent with a fixed list of commands: it may watch with --ci, --pr-review or --in/--at only`,
+        `${id} runs as an agent with a fixed list of commands: it may watch with --ci, --pr-review, --pr-merged or --in/--at only`,
       );
   }
   const base = {
@@ -317,6 +338,13 @@ export async function watch(
       ...base,
       source: { kind: 'pr-review', pr: url, ...(self === undefined ? {} : { self }), cwd, ...settingsDirOf(deps) },
       everyMs: PR_REVIEW_EVERY_MS,
+    };
+  } else if (plan.kind === 'pr-merged') {
+    const { url } = await resolvePr(id, '--pr-merged', plan.pr, reportedPr(task.prs), deps);
+    def = {
+      ...base,
+      source: { kind: 'pr-merged', pr: url, cwd, ...settingsDirOf(deps) },
+      everyMs: PR_MERGED_EVERY_MS,
     };
   } else if (plan.kind === 'command') {
     def = {
@@ -381,6 +409,7 @@ function describeSource(def: WatchDef): string {
   if (source.kind === 'ci') return `ci ${source.pr}${source.required ? ' (required checks)' : ''}`;
   if (source.kind === 'stream') return `stream: ${oneLine(source.command, 80)}`;
   if (source.kind === 'pr-review') return `reviews and comments of ${source.pr}`;
+  if (source.kind === 'pr-merged') return `merge of ${source.pr}`;
   return `every ${describeEvery(def.everyMs)}: ${oneLine(source.command, 80)}`;
 }
 
@@ -397,7 +426,9 @@ function watchJson(def: WatchDef): Record<string, unknown> {
             ? { kind: 'stream', command: source.command, starts: source.starts, events: source.events }
             : source.kind === 'pr-review'
               ? { kind: 'pr-review', pr: source.pr }
-              : { kind: 'command', command: source.command },
+              : source.kind === 'pr-merged'
+                ? { kind: 'pr-merged', pr: source.pr }
+                : { kind: 'command', command: source.command },
     everyMs: def.everyMs,
     createdAt: def.createdAt,
     deadline: def.deadline,

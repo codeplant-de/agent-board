@@ -708,6 +708,7 @@ An agent that has to wait for something outside the run, such as CI, a deploy or
 board watch <task> --ci                                  # the newest open PR the task reported with board pr
 board watch <task> --ci https://github.com/o/r/pull/7 --required
 board watch <task> --pr-review                           # the first review or comment someone else leaves on that PR
+board watch <task> --pr-merged                           # once that PR is merged or closed
 board watch <task> --name health --every 30s -- 'curl -fsS https://staging.example.com/health'
 board watch <task> --name rollout --stream -- 'kubectl rollout status deploy/api --watch'
 board watch <task> --in 20m --name settle
@@ -770,6 +771,13 @@ The migration drops the index before the backfill has run.
 ```
 
 The watch ends with its event. The text is written by someone else: it is a report of what they wrote, inside the block, and the agent reads the review itself before it acts on it. The watch file keeps the ids of the newest 200 reviews and comments it has seen, so a restart of the watch unit reports nothing twice.
+
+**A merge** (`--pr-merged [pr]`). The watch follows the PR given, or the same default as `--ci`. Its name is `pr-merged` unless you give one.
+
+- Every 60 seconds the machine reads `gh pr view <pr> --json state,mergedAt,closedAt,mergeCommit`.
+- It reports `PR <url> was merged as <sha7>.` with the merge commit, or `PR <url> was closed without merging.`
+- A PR that is merged or closed when the watch is started is reported at once, and no watch is stored.
+- It times out after 7 days, the longest a watch may look, unless `--timeout` says otherwise. A merge waits for people.
 
 **A command** (`--name <name> --every <dur> -- '<command>'`). A shell command that exits 0 once the wait is over.
 
@@ -850,7 +858,7 @@ On the task's machine, `board watches <task>` lists its watches with their last 
 
 ### Watches in an agent's run
 
-A run that is restricted to an [agent](workers.md#agents) may use `--ci`, `--pr-review` and timers, which run no command of its choosing. A command watch is a usage error there, polled or streamed, since it would bypass the run's fixed command list.
+A run that is restricted to an [agent](workers.md#agents) may use `--ci`, `--pr-review`, `--pr-merged` and timers, which run no command of its choosing. A command watch is a usage error there, polled or streamed, since it would bypass the run's fixed command list.
 
 ### `board wait`
 

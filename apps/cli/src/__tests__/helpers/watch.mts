@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { after } from 'node:test';
 import type { CommandResult } from '../../dispatch/waits.mts';
 import type { WatchRunner } from '../../watch/attempt.mts';
@@ -70,6 +70,13 @@ export function fakeStreams(): FakeStreams {
   };
 }
 
+export const mergedDef = (overrides: Partial<WatchDef> = {}): WatchDef =>
+  watchDef({ name: 'pr-merged', source: { kind: 'pr-merged', pr: PR, cwd: '/work' }, everyMs: 60_000, ...overrides });
+
+// What `gh pr view <pr> --json state,mergedAt,closedAt,mergeCommit` printed for a merged, a closed and an open PR.
+export const mergedFixture = (state: 'merged' | 'closed' | 'open'): string =>
+  readFileSync(new URL(`../fixtures/pr-merged-${state}.json`, import.meta.url), 'utf8');
+
 export const timerDef = (overrides: Partial<WatchDef> = {}): WatchDef =>
   watchDef({ name: 'timer', source: { kind: 'timer' }, everyMs: 0, ...overrides });
 
@@ -99,7 +106,7 @@ export interface FakeRunner extends WatchRunner {
 
 /**
  * A runner that starts no process: `gh pr view` finds the open PR at HEAD (asked for its reviews and comments: none, by
- * octo-dev), `gh pr checks` has one check still running, and any other command exits 1 with "not yet". `answer` overrides a command by a prefix it starts with.
+ * octo-dev; asked for its merge: still open), `gh pr checks` has one check still running, and any other command exits 1 with "not yet". `answer` overrides a command by a prefix it starts with.
  */
 export function fakeRunner(answer: Record<string, CommandResult> = {}): FakeRunner {
   const calls: string[] = [];
@@ -107,6 +114,8 @@ export function fakeRunner(answer: Record<string, CommandResult> = {}): FakeRunn
     calls.push(command);
     const given = Object.entries(answer).find(([prefix]) => command.startsWith(prefix));
     if (given !== undefined) return given[1];
+    if (command.startsWith('gh pr view') && command.includes('--json state,'))
+      return commandResult(0, mergedFixture('open'));
     if (command.startsWith('gh pr view') && command.includes('reviews,comments'))
       return commandResult(
         0,

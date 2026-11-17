@@ -32,7 +32,12 @@ const PR_STATES_PER_QUERY = 50;
 // GraphQL's Int is 32-bit: a larger PR number would fail the whole query.
 const MAX_GRAPHQL_INT = 2 ** 31 - 1;
 
-const GRAPHQL_STATES: Record<string, PrState> = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' };
+const GH_STATES: Record<string, PrState> = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' };
+
+/** The state GitHub names (`OPEN`, `MERGED`, `CLOSED`, as GraphQL and `gh pr view --json state` print it), or undefined. */
+export function prStateOf(state: unknown): PrState | undefined {
+  return typeof state === 'string' && Object.hasOwn(GH_STATES, state) ? GH_STATES[state] : undefined;
+}
 
 const alias = (index: number): string => `p${index}`;
 
@@ -75,8 +80,7 @@ export function parsePrStates(value: unknown, urls: string[]): PrStateLookup {
   for (const [index, url] of urls.entries()) {
     const repository = data[alias(index)];
     const pullRequest = isRecord(repository) ? repository['pullRequest'] : undefined;
-    const state = isRecord(pullRequest) ? pullRequest['state'] : undefined;
-    const known = typeof state === 'string' && Object.hasOwn(GRAPHQL_STATES, state) ? GRAPHQL_STATES[state] : undefined;
+    const known = prStateOf(isRecord(pullRequest) ? pullRequest['state'] : undefined);
     if (known === undefined) lookup.unreadable.push(url);
     else lookup.states.set(url, known);
   }

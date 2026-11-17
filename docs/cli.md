@@ -368,22 +368,24 @@ they have passed, one failed, or the PR was merged or closed. --pr-review
 watches the reviews and comments of a pull request (the same default) every
 minute and reports the first one that someone other than the PR's author and
 this machine's gh user writes after the watch started, with who wrote it, the
-review's state and the first lines of its text. A command after -- is run every
---every (default 30s, at least 15s) in this directory, with the env of your
-Claude Code settings, and reports once it exits 0; it needs --name, and it is
-run once right away. With --stream the command is started once and kept running:
-the lines it prints reach you as events (the lines of about 2 seconds together),
-and its exit, with the exit code, is the last event. A stream that prints more
-than 50 events or 20 KB in 10 minutes is stopped, so filter the output down to
-the lines that matter (grep --line-buffered). After a restart of the watch unit
-or a reboot the command starts again from the beginning, and the next event says
-so. --in or --at is a timer.
+review's state and the first lines of its text. --pr-merged watches the PR
+itself (the same default) every minute and reports once it was merged, with the
+merge commit, or closed without merging. A command after -- is run every --every
+(default 30s, at least 15s) in this directory, with the env of your Claude Code
+settings, and reports once it exits 0; it needs --name, and it is run once right
+away. With --stream the command is started once and kept running: the lines it
+prints reach you as events (the lines of about 2 seconds together), and its
+exit, with the exit code, is the last event. A stream that prints more than 50
+events or 20 KB in 10 minutes is stopped, so filter the output down to the lines
+that matter (grep --line-buffered). After a restart of the watch unit or a
+reboot the command starts again from the beginning, and the next event says so.
+--in or --at is a timer.
 
---timeout (default 2h, for --pr-review 1d, at most 7 days) is how long a ci,
-pr-review or command watch looks, or a stream runs, before it reports that it
-timed out. The command stays on this machine. The same name again replaces the
-open watch. If the answer is there at once, it is printed and no watch is
-stored; a command that cannot run here is refused.
+--timeout (default 2h, for --pr-review 1d, for --pr-merged 7d, at most 7 days)
+is how long a ci, pr-review, pr-merged or command watch looks, or a stream runs,
+before it reports that it timed out. The command stays on this machine. The same
+name again replaces the open watch. If the answer is there at once, it is
+printed and no watch is stored; a command that cannot run here is refused.
 
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
@@ -404,14 +406,16 @@ Options:
   --required            with --ci: the required checks only
   --pr-review [pr]      watch the reviews and comments of a PR (URL or number;
                         default: the newest open PR reported for this task)
-  --name <name>         the watch's name (default: ci, review or timer); a
-                        command needs one
+  --pr-merged [pr]      watch for the merge or close of a PR (URL or number;
+                        default: the newest open PR reported for this task)
+  --name <name>         the watch's name (default: ci, review, pr-merged or
+                        timer); a command needs one
   --stream              with a command: keep it running and report the lines it
                         prints, until it exits
   --every <duration>    with a command: how often it runs (default 30s, at least
                         15s)
   --timeout <duration>  report a timeout after this long (default 2h, with
-                        --pr-review 1d; at most 7d)
+                        --pr-review 1d, with --pr-merged 7d; at most 7d)
   --in <duration>       a timer: report after this long (30m, 2h, 1d, 1h30m)
   --at <time>           a timer: report then (2027-01-01T12:00, 2027-01-01,
                         09:30)
@@ -422,6 +426,7 @@ Examples:
   board watch Ab3dEf9x --ci
   board watch Ab3dEf9x --ci 17741 --required --timeout 1h
   board watch Ab3dEf9x --pr-review
+  board watch Ab3dEf9x --pr-merged
   board watch Ab3dEf9x --name health --every 1m -- 'curl -fsS https://staging.example.com/health'
   board watch Ab3dEf9x --name deploy-log --stream -- 'kubectl logs -f deploy/api | grep --line-buffered -E "ERROR|rollout complete"'
   board watch Ab3dEf9x --in 30m --name deploy

@@ -209,6 +209,14 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
+### `board watch --pr-merged` (CLI 0.24.0)
+
+A new watch source: one event when a pull request is merged or closed (see [Sources](usage.md#sources)). Nothing changes on the server, and no feature name is added.
+
+- The watch unit polls it, so restart the unit after updating the CLI on a checkout install: `board restart watch`. `board self-update` restarts it. A unit that still runs the older CLI skips the watch file with a warning in its log until then.
+- On the board, the watch shows as `merge of #<n>` once the web app is the version that knows the `pr-merged` kind. An older one leaves the entry out of the list and shows the task's other watches.
+- The shipped `reviewer` agent's allow list is unchanged. An agent that should wait for a merge needs `Bash(board watch * --pr-merged)` and `Bash(board watch * --pr-merged *)` in its `allowedTools`.
+
 ### Stream watches (CLI 0.23.0)
 
 The CLI alone changes: `board watch <task> --name <name> --stream -- '<command>'` keeps a command running in the watch unit and reports its output lines as events (see [Sources](usage.md#sources) and [Streams](workers.md#streams)). The server and the contract stay as they are. Update machines in any order.

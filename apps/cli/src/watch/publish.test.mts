@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { TaskWatch } from '@agent-board/shared';
 import { BackendError } from '../backend/backend.mts';
-import { commandDef, PR, streamDef, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
+import { commandDef, PR, streamDef, tempDir, timerDef, watchDef, mergedDef } from '../__tests__/helpers/watch.mts';
 import { isBoardStale, publishWatches, taskWatchesOf } from './publish.mts';
 import { createWatchStore, newWatchId } from './store.mts';
 
@@ -81,11 +81,23 @@ test('the list holds a label and a state per kind, the deadline, and never the c
     kind: 'event',
     text: 'SECRET-OUTPUT',
   });
+  store.write(mergedDef({ id: '4444444444444444', last: { at: '2026-01-01T11:59:30.000Z', summary: 'still open' } }));
+  store.write(mergedDef({ id: '5555555555555555', name: 'landed' }));
   const watches = taskWatchesOf(store, TASK, NOW);
   const by = Object.fromEntries(watches.map((watch) => [watch.name, watch]));
   assert.equal(by['ci']?.label, 'CI #7 · required');
   assert.equal(by['ci']?.status, '4 of 7 passed, 3 running');
   assert.equal(by['ci']?.lastAttemptAt, '2026-01-01T11:59:00.000Z');
+  assert.deepEqual(by['pr-merged'], {
+    id: '4444444444444444',
+    name: 'pr-merged',
+    kind: 'pr-merged',
+    label: 'merge of #7',
+    status: 'still open',
+    deadline: '2026-01-01T14:00:00.000Z',
+    lastAttemptAt: '2026-01-01T11:59:30.000Z',
+  });
+  assert.equal(by['landed']?.status, 'not looked at yet');
   assert.equal(by['health']?.kind, 'command');
   assert.equal(by['health']?.label, 'command, every 30s');
   assert.match(by['health']?.status ?? '', /^exit 1 at \d\d:\d\d$/);

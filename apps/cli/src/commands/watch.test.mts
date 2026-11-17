@@ -9,6 +9,8 @@ import {
   commandResult,
   fakeRunner,
   HEAD,
+  mergedDef,
+  mergedFixture,
   PR,
   streamDef,
   tempDir,
@@ -16,6 +18,7 @@ import {
   watchDef,
 } from '../__tests__/helpers/watch.mts';
 import type { FakeRunner } from '../__tests__/helpers/watch.mts';
+import { mergedViewCommand } from '../watch/merged.mts';
 import { createWatchStore } from '../watch/store.mts';
 import { parseWatchFlags, reportedPr } from './watch.mts';
 import { runBoard } from './program.mts';
@@ -66,6 +69,18 @@ test('flags: one source, with its defaults', () => {
     deadline: new Date(NOW.getTime() + 2 * HOUR),
   });
   assert.equal(parseWatchFlags({ ci: '17', required: true, name: 'build', timeout: '1h' }, [], NOW).kind, 'ci');
+  assert.deepEqual(parseWatchFlags({ prMerged: true }, [], NOW), {
+    kind: 'pr-merged',
+    name: 'pr-merged',
+    pr: undefined,
+    deadline: new Date(NOW.getTime() + 7 * 24 * HOUR),
+  });
+  assert.deepEqual(parseWatchFlags({ prMerged: '17', name: 'landed', timeout: '1h' }, [], NOW), {
+    kind: 'pr-merged',
+    name: 'landed',
+    pr: '17',
+    deadline: new Date(NOW.getTime() + HOUR),
+  });
   const command = parseWatchFlags({ name: 'health' }, ['curl -fsS x'], NOW);
   assert.deepEqual(command, {
     kind: 'command',
@@ -93,6 +108,14 @@ test('flags: every mistake is a usage error that names the fix', () => {
     [{ ci: true }, ['true'], /exactly one source/],
     [{ ci: true, in: '5m' }, [], /exactly one source/],
     [{ in: '5m' }, ['true'], /exactly one source/],
+    [{ ci: true, prMerged: true }, [], /exactly one source/],
+    [{ prReview: true, prMerged: true }, [], /exactly one source/],
+    [{ prMerged: true }, ['true'], /exactly one source/],
+    [{ prMerged: true, in: '5m' }, [], /exactly one source/],
+    [{ prMerged: true, required: true }, [], /--required goes with --ci/],
+    [{ prMerged: true, every: '5m' }, [], /--every goes with a command; a --pr-merged watch looks every 1m/],
+    [{ prMerged: true, timeout: '8d' }, [], /at most 1w/],
+    [{ prMerged: true, name: 'Bad Name' }, [], /--name must be/],
     [{ in: '5m', at: '14:00' }, [], /--in or --at, not both/],
     [{ in: '5m', required: true }, [], /--required goes with --ci/],
     [{ name: 'x', required: true }, ['true'], /--required goes with --ci/],
@@ -105,8 +128,8 @@ test('flags: every mistake is a usage error that names the fix', () => {
     [{ ci: true, timeout: '8d' }, [], /at most 1w/],
     [{ ci: true, timeout: 'x' }, [], /--timeout/],
     [{ ci: true, every: '1m' }, [], /--every goes with a command/],
-    [{ in: '5m', every: '1m' }, [], /go with --ci, --pr-review or a command/],
-    [{ in: '5m', timeout: '1h' }, [], /go with --ci, --pr-review or a command/],
+    [{ in: '5m', every: '1m' }, [], /go with --ci, --pr-review, --pr-merged or a command/],
+    [{ in: '5m', timeout: '1h' }, [], /go with --ci, --pr-review, --pr-merged or a command/],
     [{ in: '8d' }, [], /at most 1w/],
     [{ name: 'Bad Name' }, ['true'], /--name must be/],
     [{ ci: true, name: '-x' }, [], /--name must be/],
@@ -311,6 +334,82 @@ test('watches lists a pr-review watch, and --json leaves out what it has seen', 
   assert.deepEqual(listed?.source, { kind: 'pr-review', pr: PR });
 });
 
+test('a pr-merged watch resolves the PR, stores its URL and looks every minute for up to seven days', async () => {
+  const { go, watches, run, printed } = setup({ prs: [taskPr(PR)] });
+  await go(['watch', ID, '--pr-merged'], { env: { AGENT_BOARD_START_DIR: '/start' } });
+  const [def] = watches.list(ID).defs;
+  assert.equal(def?.name, 'pr-merged');
+  assert.equal(def?.everyMs, 60_000);
+  assert.deepEqual(def?.source, { kind: 'pr-merged', pr: PR, cwd: '/work', settingsDir: '/start' });
+  assert.equal(def?.deadline, '2026-01-08T12:00:00.000Z');
+  assert.deepEqual(def?.last, { at: NOW.toISOString(), summary: 'still open' });
+  assert.deepEqual(run.runner.calls, [`gh pr view '${PR}' --json url,headRefOid`, mergedViewCommand(PR)]);
+  assert.match(printed[0] ?? '', /^watching "pr-merged" on Zt0Test1: still open; until /);
+  assert.ok(printed.some((line) => line.startsWith('Keep working if there is work')));
+});
+
+test("a pr-merged watch takes a PR number or URL over the task's PR, and checks the shape before argv", async () => {
+  const { go, run, watches } = setup({ prs: [taskPr(PR)] });
+  await go(['watch', ID, '--pr-merged', '17', '--timeout', '1h']);
+  assert.equal(run.runner.calls[0], `gh pr view '17' --json url,headRefOid`);
+  // The watch follows the URL gh printed for the number.
+  assert.equal(run.runner.calls[1], mergedViewCommand(PR));
+  assert.equal(watches.list(ID).defs[0]?.deadline, '2026-01-01T13:00:00.000Z');
+  for (const bad of ['17; rm -rf ~', '$(id)', '0', 'https://example.com/a/b/pull/1', '-1'])
+    await assert.rejects(go(['watch', ID, '--pr-merged', bad]), /--pr-merged takes a PR URL or number/, bad);
+  const hostile = setup({ prs: [taskPr("https://github.com/a/b/pull/1'; id #")] });
+  await assert.rejects(hostile.go(['watch', ID, '--pr-merged']), /--pr-merged takes a PR URL or number/);
+  assert.deepEqual(hostile.run.runner.calls, []);
+  const none = setup();
+  await assert.rejects(
+    none.go(['watch', ID, '--pr-merged']),
+    new RegExp(`give the PR: board watch ${ID} --pr-merged <url>`),
+  );
+});
+
+test('a pr-merged watch on a PR that is merged or closed already prints the event and stores nothing', async () => {
+  for (const [state, text] of [
+    ['merged', `PR ${PR} was merged as de9922b.`],
+    ['closed', `PR ${PR} was closed without merging.`],
+  ] as const) {
+    const { go, run, watches, printed, backend } = setup({ prs: [taskPr(PR, state)] });
+    run.runner = fakeRunner({ [mergedViewCommand(PR)]: commandResult(0, mergedFixture(state)) });
+    await go(['watch', ID, '--pr-merged']);
+    assert.deepEqual(watches.list(ID).defs, [], state);
+    assert.deepEqual(watches.events(ID), [], state);
+    assert.ok(
+      printed.join('\n').includes(`<watch-event name="pr-merged" at="${NOW.toISOString()}">\n${text}\n`),
+      state,
+    );
+    assert.deepEqual(
+      backend.writes.filter((write) => write.startsWith('watches ')),
+      [],
+      state,
+    );
+  }
+});
+
+test('a pr-merged watch that has its answer already ends an open watch of that name without a late report', async () => {
+  const { go, run, watches, backend } = setup({ prs: [taskPr(PR)] });
+  watches.write(mergedDef({ task: ID }));
+  run.runner = fakeRunner({ [mergedViewCommand(PR)]: commandResult(0, mergedFixture('merged')) });
+  await go(['watch', ID, '--pr-merged']);
+  assert.deepEqual(watches.list(ID).defs, []);
+  assert.deepEqual(
+    backend.writes.filter((write) => write.startsWith('watches ')),
+    [`watches ${ID} null`],
+  );
+});
+
+test('a pr-merged watch whose PR gh cannot read fails the call, at the resolve and at the first look', async () => {
+  const { go, run, watches } = setup({ prs: [taskPr(PR)] });
+  run.runner = fakeRunner({ 'gh pr view': commandResult(1, 'no pull requests found') });
+  await assert.rejects(go(['watch', ID, '--pr-merged']), /cannot read the PR .*no pull requests found/);
+  run.runner = fakeRunner({ [mergedViewCommand(PR)]: commandResult(1, 'HTTP 502: Bad Gateway') });
+  await assert.rejects(go(['watch', ID, '--pr-merged']), /cannot watch "pr-merged": HTTP 502: Bad Gateway/);
+  assert.deepEqual(watches.list(ID).defs, []);
+});
+
 test('a timer is stored without an attempt, and the same name replaces the open watch', async () => {
   const { go, watches, run, printed } = setup();
   await go(['watch', ID, '--in', '20m']);
@@ -360,17 +459,18 @@ test('an agent run and a task of the removed intake may watch a ci, a review or 
   const restricted = setup({ prs: [taskPr(PR)] });
   await assert.rejects(
     restricted.go(['watch', ID, '--name', 'x', '--', 'true'], { env: { AGENT_BOARD_RESTRICTED: '1' } }),
-    /fixed list of commands.*--ci, --pr-review or --in\/--at only/,
+    /fixed list of commands.*--ci, --pr-review, --pr-merged or --in\/--at only/,
   );
   await restricted.go(['watch', ID, '--ci'], { env: { AGENT_BOARD_RESTRICTED: '1' } });
   await restricted.go(['watch', ID, '--pr-review'], { env: { AGENT_BOARD_RESTRICTED: '1' } });
+  await restricted.go(['watch', ID, '--pr-merged'], { env: { AGENT_BOARD_RESTRICTED: '1' } });
   await restricted.go(['watch', ID, '--in', '5m'], { env: { AGENT_BOARD_RESTRICTED: '1' } });
   assert.deepEqual(
     restricted.watches
       .list(ID)
       .defs.map((def) => def.name)
       .sort(),
-    ['ci', 'review', 'timer'],
+    ['ci', 'pr-merged', 'review', 'timer'],
   );
   assert.deepEqual(
     restricted.run.runner.calls.filter((call) => call.includes('true')),
@@ -438,7 +538,8 @@ test('an agent run and a task of the removed intake are refused a stream like an
       env: { AGENT_BOARD_RESTRICTED: '1' },
     }),
     (error) =>
-      error instanceof UsageError && /fixed list of commands.*--ci, --pr-review or --in\/--at only/.test(error.message),
+      error instanceof UsageError &&
+      /fixed list of commands.*--ci, --pr-review, --pr-merged or --in\/--at only/.test(error.message),
   );
   const intake = setup({ createdBy: 'intake' });
   intake.watches.touchHeartbeat(NOW);
@@ -552,6 +653,7 @@ test('watches lists name, source, until, last attempt and undelivered events, or
     everyMs: 60_000,
   });
   watches.write(timerDef({ task: ID }));
+  watches.write(mergedDef({ task: ID, id: 'b1b2c3d4e5f60718' }));
   watches.writeEvent({
     id: 'e1e1e1e1e1',
     task: ID,
@@ -569,6 +671,10 @@ test('watches lists name, source, until, last attempt and undelivered events, or
   );
   assert.match(text, /health {2}every 1m: curl -fsS https:\/\/x\n {2}until .*; not looked at yet/);
   assert.match(text, /timer {2}timer\n/);
+  assert.match(
+    text,
+    /pr-merged {2}merge of https:\/\/github\.com\/acme\/app\/pull\/7\n {2}until .*; not looked at yet/,
+  );
   assert.match(text, /1 event not handed to the agent yet$/);
   await go(['watches', ID, '--json']);
   const list: unknown = JSON.parse(out.join(''));
@@ -577,6 +683,7 @@ test('watches lists name, source, until, last attempt and undelivered events, or
     [
       ['ci', 'ci'],
       ['health', 'command'],
+      ['pr-merged', 'pr-merged'],
       ['timer', 'timer'],
     ],
   );

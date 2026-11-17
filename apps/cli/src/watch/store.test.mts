@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { commandDef, PR, streamDef, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
+import { commandDef, PR, streamDef, tempDir, timerDef, watchDef, mergedDef } from '../__tests__/helpers/watch.mts';
 import { createWatchStore, isWatchName, parseWatchDef, parseWatchEvent } from './store.mts';
 import type { WatchEvent } from './store.mts';
 
@@ -103,6 +103,22 @@ test('a watch definition is shape-checked: the PR, the directories, the commit a
   });
   assert.equal(noisy?.source.kind === 'ci' && noisy.source.head, undefined);
   assert.equal(noisy?.last, undefined);
+});
+
+test('a pr-merged watch is shape-checked: it keeps its PR, its directories and nothing else', () => {
+  const merged = mergedDef({ source: { kind: 'pr-merged', pr: PR, cwd: '/work', settingsDir: '/start' } });
+  assert.deepEqual(parseWatchDef(merged), merged);
+  assert.deepEqual(
+    parseWatchDef({ ...merged, source: { ...merged.source, settingsDir: 'rel', required: true } })?.source,
+    { kind: 'pr-merged', pr: PR, cwd: '/work' },
+  );
+  assert.equal(
+    parseWatchDef({ ...merged, source: { ...merged.source, pr: 'https://evil.test/a/b/pull/7' } }),
+    undefined,
+  );
+  assert.equal(parseWatchDef({ ...merged, source: { ...merged.source, pr: 7 } }), undefined);
+  assert.equal(parseWatchDef({ ...merged, source: { kind: 'pr-merged', pr: PR } }), undefined);
+  assert.equal(parseWatchDef({ ...merged, everyMs: 0 }), undefined);
 });
 
 test('a pr-review watch is shape-checked: the PR, the ids it has seen and the gh user', () => {

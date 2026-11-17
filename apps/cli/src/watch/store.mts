@@ -39,6 +39,7 @@ export const MAX_COMMAND_CHARS = 8000;
 export const DEFAULT_TIMEOUT_MS = 2 * 60 * 60_000;
 export const CI_EVERY_MS = 30_000;
 export const PR_REVIEW_EVERY_MS = 60_000;
+export const PR_MERGED_EVERY_MS = 60_000;
 export const PR_REVIEW_TIMEOUT_MS = 24 * 60 * 60_000;
 export const MIN_COMMAND_EVERY_MS = 15_000;
 
@@ -85,6 +86,14 @@ export type WatchSource =
       starts: number;
       // How many events the watch has reported.
       events: number;
+    }
+  | {
+      // The merge or close of a PR (`--pr-merged`).
+      kind: 'pr-merged';
+      // The PR URL as gh prints it.
+      pr: string;
+      cwd: string;
+      settingsDir?: string;
     }
   | { kind: 'timer' };
 
@@ -211,6 +220,11 @@ function parseSource(raw: unknown): WatchSource | undefined {
       ...(isIso(headSince) ? { headSince } : {}),
       ...optionalSettingsDir(raw),
     };
+  }
+  if (kind === 'pr-merged') {
+    const { pr } = raw;
+    if (typeof pr !== 'string' || !isPrUrl(pr)) return undefined;
+    return { kind, pr, cwd, ...optionalSettingsDir(raw) };
   }
   if (kind === 'pr-review') {
     const { pr, self, seen, seenBefore } = raw;
