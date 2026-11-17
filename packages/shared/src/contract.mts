@@ -414,6 +414,9 @@ export interface Backend {
   // The agent of a task reports a PR it opened or works on for it, which the task holds besides the ones it has. `url` must be a
   // GitHub PR URL. Against a server without `task.prs` it replaces the earlier one.
   addPr(id: string, url: string): Promise<void>;
+  // Takes a reported PR off the task, by the id of its row in `Task.prs`; an id the task does not list changes nothing. The PR the
+  // prompt names is not a row and cannot be removed.
+  removePr(id: string, prId: string): Promise<void>;
   // A worker's dispatcher records GitHub's state of the PR the prompt names and of reported ones, by the id the task lists them with.
   setPrStates(id: string, states: PrStates): Promise<void>;
   // Whether the board holds `dirs` as this machine's directory list, by comparing blind indexes; 'unsupported' for a server without the feature.
@@ -519,6 +522,11 @@ export interface WirePr {
   pr: string;
 }
 
+// Body of remove-pr: the id of the reported PR's row.
+export interface WirePrRemoval {
+  pr: string;
+}
+
 // Body of set-pr-states.
 export type WirePrStates = PrStates;
 
@@ -603,6 +611,7 @@ export interface WireBackend {
   updateSchedule(id: string, patch: SchedulePatch): Promise<WireSchedule>;
   removeSchedule(id: string): Promise<void>;
   addPr(id: string, body: WirePr): Promise<void>;
+  removePr(id: string, body: WirePrRemoval): Promise<void>;
   setPrStates(id: string, body: WirePrStates): Promise<void>;
   setDirs(body: WireDirs): Promise<void>;
   dirsState(): Promise<WireDirsState>;
@@ -1241,6 +1250,13 @@ export function parseWirePr(value: unknown): WirePr {
   const obj = record(value, 'pr');
   rejectUnknownKeys(obj, ['pr'], 'pr');
   return { pr: sealedField(obj, 'pr', 'pr', 'pr') };
+}
+
+// Body of remove-pr: the id a task lists a reported PR with.
+export function parseWirePrRemoval(value: unknown): WirePrRemoval {
+  const obj = record(value, 'prRemoval');
+  rejectUnknownKeys(obj, ['pr'], 'prRemoval');
+  return { pr: safeId(string(obj, 'pr', 'prRemoval'), 'prRemoval.pr') };
 }
 
 // Body of set-pr-states: the state of the prompt's PR and/or of named rows, at least one of them.

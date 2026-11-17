@@ -83,6 +83,50 @@ test('board pr adds another pull request, and the same URL twice changes nothing
   assert.equal(printed.filter((line) => line.startsWith(`reported ${first} for ${ID}`)).length, 2);
 });
 
+test('board pr --remove takes a reported pull request off the task', async () => {
+  const { backend, printed, go } = setup();
+  const first = 'https://github.com/acme/app/pull/1';
+  const second = 'https://github.com/acme/app/pull/2';
+  await go(['pr', ID, first]);
+  await go(['pr', ID, second]);
+  await go(['pr', '--remove', ID, first]);
+  assert.deepEqual(backend.writes, [`pr ${ID} ${first}`, `pr ${ID} ${second}`, `remove-pr ${ID} pr1`]);
+  assert.match(printed.join('\n'), new RegExp(`removed ${first} from ${ID}`));
+  assert.deepEqual(
+    (await backend.getTask(ID)).prs.map((pr) => pr.url),
+    [second],
+  );
+});
+
+test('board pr --remove of a URL the task does not list changes nothing and says so', async () => {
+  const { backend, printed, go } = setup();
+  await go(['pr', '--remove', ID, 'https://github.com/acme/app/pull/9']);
+  assert.deepEqual(backend.writes, []);
+  assert.match(printed.join('\n'), /pull\/9 was not reported for .*nothing changed/);
+  await assert.rejects(go(['pr', '--remove', ID, 'x']), UsageError);
+});
+
+test('board pr --remove refuses the pull request the prompt names, but removes a reported copy of it', async () => {
+  const url = 'https://github.com/acme/app/pull/5';
+  const backend = fakeBackend([task({ id: ID, input: `/review-pr ${url} --auto` })]);
+  const printed: string[] = [];
+  const go = (argv: string[]) =>
+    runBoard(argv, {
+      env: {},
+      context: (dryRun) => ({ config: CONFIG, backend, dryRun, taskLink: linkTo, print: (line) => printed.push(line) }),
+      writeOut: () => {},
+      writeErr: () => {},
+    });
+  await assert.rejects(
+    go(['pr', '--remove', ID, url]),
+    /is the pull request the prompt of .* names, not a reported one/,
+  );
+  assert.deepEqual(backend.writes, []);
+  await go(['pr', ID, url]);
+  await go(['pr', '--remove', ID, url]);
+  assert.deepEqual(backend.writes, [`pr ${ID} ${url}`, `remove-pr ${ID} pr1`]);
+});
+
 test('a suggested reply can come from a file in /tmp, and not from both', async () => {
   const dir = mkdtempSync('/tmp/board-commands-test-');
   try {

@@ -34,7 +34,9 @@ test('prsOf lists the PR of the prompt first, then the reported ones in order', 
   const third = 'https://github.com/a/b/pull/3';
   const none = { input: 'Fix the bug', prs: [], promptPrState: null } as const;
   assert.deepEqual(prsOf(none), []);
-  assert.deepEqual(prsOf({ ...none, input: `/review-pr ${PR}`, promptPrState: 'open' }), [{ url: PR, state: 'open' }]);
+  assert.deepEqual(prsOf({ ...none, input: `/review-pr ${PR}`, promptPrState: 'open' }), [
+    { url: PR, state: 'open', prompt: true },
+  ]);
   assert.deepEqual(
     prsOf({
       ...none,
@@ -45,15 +47,15 @@ test('prsOf lists the PR of the prompt first, then the reported ones in order', 
       promptPrState: 'closed',
     }),
     [
-      { url: second, state: 'merged', id: 'r1' },
-      { url: third, state: null, id: 'r2' },
+      { url: second, state: 'merged', id: 'r1', prompt: false },
+      { url: third, state: null, id: 'r2', prompt: false },
     ],
   );
   assert.deepEqual(
     prsOf({ input: `/review-pr ${PR}`, prs: [{ id: 'r1', url: second, state: 'merged' }], promptPrState: 'closed' }),
     [
-      { url: PR, state: 'closed' },
-      { url: second, state: 'merged', id: 'r1' },
+      { url: PR, state: 'closed', prompt: true },
+      { url: second, state: 'merged', id: 'r1', prompt: false },
     ],
   );
 });
@@ -61,10 +63,10 @@ test('prsOf lists the PR of the prompt first, then the reported ones in order', 
 test('prsOf shows a PR of the prompt that was also reported once, with the reported row and its state', () => {
   const input = `/review-pr ${PR}`;
   assert.deepEqual(prsOf({ input, prs: [{ id: 'r1', url: PR, state: 'merged' }], promptPrState: 'open' }), [
-    { url: PR, state: 'merged', id: 'r1' },
+    { url: PR, state: 'merged', id: 'r1', prompt: true },
   ]);
   assert.deepEqual(prsOf({ input, prs: [{ id: 'r1', url: PR, state: null }], promptPrState: 'open' }), [
-    { url: PR, state: 'open', id: 'r1' },
+    { url: PR, state: 'open', id: 'r1', prompt: true },
   ]);
 });
 
@@ -77,11 +79,11 @@ test('prsOf shows a URL once however often it was reported, from its first row',
     { id: 'r4', url: PR, state: 'closed' as const },
   ];
   assert.deepEqual(prsOf({ input: 'Fix the bug', prs, promptPrState: null }), [
-    { url: second, state: 'open', id: 'r1' },
-    { url: PR, state: null, id: 'r2' },
+    { url: second, state: 'open', id: 'r1', prompt: false },
+    { url: PR, state: null, id: 'r2', prompt: false },
   ]);
   assert.deepEqual(prsOf({ input: `/review-pr ${PR}`, prs, promptPrState: null }), [
-    { url: PR, state: null, id: 'r2' },
-    { url: second, state: 'open', id: 'r1' },
+    { url: PR, state: null, id: 'r2', prompt: true },
+    { url: second, state: 'open', id: 'r1', prompt: false },
   ]);
 });

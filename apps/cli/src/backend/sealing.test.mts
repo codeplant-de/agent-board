@@ -131,6 +131,10 @@ function fakeWire(): FakeWire {
       const found = state.tasks.find((t) => t.id === id)!;
       found.prs = [...(found.prs ?? []), { id: `row${(found.prs?.length ?? 0) + 1}`, pr: sent.pr, state: null }];
     },
+    async removePr(id, body) {
+      const found = state.tasks.find((t) => t.id === id)!;
+      found.prs = (found.prs ?? []).filter((row) => row.id !== body.pr);
+    },
     async setPrStates(id, states) {
       const found = state.tasks.find((t) => t.id === id)!;
       if (states.prompt !== undefined) found.promptPrState = states.prompt;
@@ -890,6 +894,20 @@ test('the PRs an agent reports are sealed for its task and agent, and open on th
   ];
   assert.deepEqual((await board.getTask('t1')).prs, [{ id: 'c', url: OTHER_PR_URL, state: 'merged' }]);
   noMarkers(wire);
+});
+
+test('removing a PR passes the row id through, with nothing sealed', async () => {
+  const wire = fakeWire();
+  wire.tasks.push(await wireTask({ id: 't1' }));
+  const board = sealingBackend(wire, KEYS);
+  await board.addPr('t1', PR_URL);
+  await board.addPr('t1', OTHER_PR_URL);
+  const [first] = wire.tasks[0]!.prs!;
+  await board.removePr('t1', first!.id);
+  assert.deepEqual(
+    (await board.getTask('t1')).prs.map(({ url }) => url),
+    [OTHER_PR_URL],
+  );
 });
 
 test('a task from a server without task.prs shows its one PR and the state it states', async () => {

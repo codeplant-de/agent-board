@@ -21,11 +21,15 @@ export function isPrUrl(value: string): boolean {
   return new RegExp(`^${PR_URL}$`).test(value);
 }
 
-/** A pull request of a task as it is shown and refreshed: `id` is the row of a reported one, absent for one only the prompt names. */
+/**
+ * A pull request of a task as it is shown and refreshed: `id` is the row of a reported one, absent for one only the prompt names.
+ * `prompt` is true for the PR the prompt names, also when the agent reported it too and `id` is set.
+ */
 export interface ShownPr {
   url: string;
   state: PrState | null;
   id?: string;
+  prompt: boolean;
 }
 
 /**
@@ -35,10 +39,10 @@ export interface ShownPr {
 export function prsOf(task: { input: string; prs: readonly TaskPr[]; promptPrState: PrState | null }): ShownPr[] {
   const shown: ShownPr[] = [];
   const promptUrl = prUrlIn(task.input);
-  if (promptUrl !== undefined) shown.push({ url: promptUrl, state: task.promptPrState });
+  if (promptUrl !== undefined) shown.push({ url: promptUrl, state: task.promptPrState, prompt: true });
   for (const { id, url, state } of task.prs) {
     const same = shown.find((pr) => pr.url === url);
-    if (same === undefined) shown.push({ url, state, id });
+    if (same === undefined) shown.push({ url, state, id, prompt: false });
     else if (same.id === undefined) {
       same.id = id;
       same.state = state ?? same.state;

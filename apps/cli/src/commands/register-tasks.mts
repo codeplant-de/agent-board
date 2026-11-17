@@ -7,6 +7,7 @@ import {
   comment,
   move,
   MoveRefused,
+  removePr,
   reportPr,
   parseStatus,
   readNoteFile,
@@ -150,20 +151,30 @@ export function registerTaskCommands(shared: ProgramShared): void {
     program
       .command('pr')
       .helpGroup(TASKS)
-      .summary('report a pull request you opened for a task')
+      .summary('report a pull request for a task, or remove one')
       .description(
         paragraphs(
           "Inside a run: after you open a pull request for this task, report its URL. The board then shows it on the task's card and page, like the pull request of a review task. A later call adds another pull request to the task; the same URL twice changes nothing.",
+          "--remove takes a reported pull request off the task again, for a URL reported by mistake. The pull request a review task's prompt names is not a reported one and stays; a URL the task does not list changes nothing.",
           'The URL must be a GitHub pull request, https://github.com/<owner>/<repo>/pull/<number>, and nothing else.',
           ID_NOTE,
         ),
       )
       .argument('<task>', TASK_ARGUMENT)
       .argument('<url>', 'the pull request URL')
-      .addHelpText('after', examples('board pr Ab3dEf9x https://github.com/acme/app/pull/17741')),
-  ).action(async (arg: string, url: string, _options, command: Command) => {
+      .option('--remove', 'take the reported pull request off the task instead of adding it')
+      .addHelpText(
+        'after',
+        examples(
+          'board pr Ab3dEf9x https://github.com/acme/app/pull/17741',
+          'board pr --remove Ab3dEf9x https://github.com/acme/app/pull/17741',
+        ),
+      ),
+  ).action(async (arg: string, url: string, flags: { remove?: boolean }, command: Command) => {
     const context = contextOf(command);
-    await reportPr(context, await taskIdOf(context, arg), url);
+    const id = await taskIdOf(context, arg);
+    if (flags.remove === true) await removePr(context, id, url);
+    else await reportPr(context, id, url);
   });
 
   dryRunOption(

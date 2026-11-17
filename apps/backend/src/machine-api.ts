@@ -25,6 +25,7 @@ import {
   parseWireDirs,
   parseWireNoteInput,
   parseWirePr,
+  parseWirePrRemoval,
   parseWirePrState,
   parseWirePrStates,
   parseWireScheduleDraft,
@@ -63,6 +64,7 @@ import {
   readNotes,
   runInbox,
   addPr,
+  removePr,
   listTaskPrs,
   setPr,
   setPrState,
@@ -222,6 +224,11 @@ async function handleMachineCall(
       await addPr(db, idOf(body, 'task'), pr);
       return null;
     }
+    case 'remove-pr': {
+      const { pr } = parsed(() => parseWirePrRemoval(body['body']));
+      await removePr(db, idOf(body, 'task'), pr);
+      return null;
+    }
     case 'set-pr-states': {
       const states = parsed(() => parseWirePrStates(body['body']));
       await setPrStates(db, idOf(body, 'task'), states);
@@ -325,6 +332,7 @@ const DISPATCH_WRITES = new Set([
   'add-note',
   'set-pr',
   'add-pr',
+  'remove-pr',
   'ask',
   'pause',
   'stopped',

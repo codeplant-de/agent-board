@@ -569,6 +569,29 @@ test('a PR is added with add-pr on a server with task.prs, and replaces the earl
   assert.deepEqual(older.seen[1]?.body, { id: 'abc', body: { pr: 'abe1.pr' } });
 });
 
+test('removing a PR needs task.pr-remove, and an older server refuses before anything is sent', async () => {
+  const withIt = boardWith(['task.prs', 'task.pr-remove'], { 'remove-pr': { body: { result: null } } });
+  await withIt.backend.removePr('abc', { pr: 'row1' });
+  assert.deepEqual(
+    withIt.seen.map((request) => request.command),
+    ['version', 'remove-pr'],
+  );
+  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { pr: 'row1' } });
+  const older = boardWith(['task.prs'], {});
+  await assert.rejects(
+    older.backend.removePr('abc', { pr: 'row1' }),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'task.pr-remove' &&
+      error.message ===
+        'the board server does not support removing a reported pull request yet; update the board server',
+  );
+  assert.deepEqual(
+    older.seen.map((request) => request.command),
+    ['version'],
+  );
+});
+
 test('reporting a PR on a server with neither task.prs nor task.pr is refused, before anything is sent', async () => {
   const without = boardWith(['events'], {});
   await assert.rejects(

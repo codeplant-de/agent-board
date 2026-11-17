@@ -486,6 +486,52 @@ describe('the pull requests of a task', () => {
     expect(await openPr(sealed.open, first.id, served.prs?.[0]?.pr)).toBe(PR_URL);
   });
 
+  it('can be removed one at a time, by the CLI or the browser, and a repeat or another task’s row changes nothing', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    const other = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    for (const url of [PR_URL, OTHER_URL])
+      await ctx.raw('add-pr', { id: task.id, body: { pr: await sealPr(sealed.seal, task.id, url) } });
+    await ctx.raw('add-pr', { id: other.id, body: { pr: await sealPr(sealed.seal, other.id, PR_URL) } });
+    const [first, second] = await pullRequests(task.id);
+    const [foreign] = await pullRequests(other.id);
+    const stamp = async () => (await ctx.ui.tasks.get({ id: task.id })).task.updatedAt;
+    const before = await stamp();
+    expect((await ctx.raw('remove-pr', { id: task.id, body: { pr: foreign!.id } })).status).toBe(200);
+    expect(await pullRequests(other.id)).toHaveLength(1);
+    expect(await pullRequests(task.id)).toHaveLength(2);
+    expect(await stamp()).toEqual(before);
+    expect((await ctx.raw('remove-pr', { id: task.id, body: { pr: first!.id } })).status).toBe(200);
+    expect((await pullRequests(task.id)).map((row) => row.id)).toEqual([second!.id]);
+    expect(new Date(await stamp()).getTime()).toBeGreaterThan(new Date(before).getTime());
+    expect((await ctx.raw('remove-pr', { id: task.id, body: { pr: first!.id } })).json.result).toBeNull();
+    const shown = await ctx.ui.tasks.removePr({ id: task.id, prId: second!.id });
+    expect(shown.prs).toEqual([]);
+    expect(await pullRequests(task.id)).toEqual([]);
+    expect(await pullRequests(other.id)).toHaveLength(1);
+    expect((await ctx.ui.tasks.removePr({ id: task.id, prId: second!.id })).prs).toEqual([]);
+  });
+
+  it('removing one leaves the old CLI’s view on the newest PR left, or none', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    const first = await sealPr(sealed.seal, task.id, PR_URL);
+    const second = await sealPr(sealed.seal, task.id, OTHER_URL);
+    await ctx.raw('add-pr', { id: task.id, body: { pr: first } });
+    await ctx.raw('add-pr', { id: task.id, body: { pr: second } });
+    const [firstRow, secondRow] = await pullRequests(task.id);
+    expect(await wireOf(task.id)).toMatchObject({ pr: second });
+    await ctx.raw('remove-pr', { id: task.id, body: { pr: secondRow!.id } });
+    expect(await wireOf(task.id)).toMatchObject({ pr: first, prState: null });
+    await ctx.raw('remove-pr', { id: task.id, body: { pr: firstRow!.id } });
+    expect(await wireOf(task.id)).toMatchObject({ pr: null, prs: [] });
+  });
+
+  it('remove-pr is refused for a bad body and an unknown task', async () => {
+    const { id } = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    for (const body of [{}, { pr: 5 }, { pr: 'a b' }, { pr: 'abc12345', extra: 1 }, 'abc12345'])
+      expect((await ctx.raw('remove-pr', { id, body })).status, JSON.stringify(body)).toBe(400);
+    expect((await ctx.raw('remove-pr', { id: 'Nope1234', body: { pr: 'abc12345' } })).status).toBe(404);
+  });
+
   it('are refused in plain text, with another key, for an unknown task, and when too long', async () => {
     const { id } = await ctx.ui.tasks.create({ title: 't', input: 'i' });
     for (const command of ['add-pr', 'set-pr']) {

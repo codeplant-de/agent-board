@@ -235,6 +235,12 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       if (!found) throw new BackendError(`add-pr: no task ${id}`, 404, true);
       found.prs.push({ id: `pr${found.prs.length + 1}`, url, state: null });
     },
+    async removePr(id, prId) {
+      state.writes.push(`remove-pr ${id} ${prId}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`remove-pr: no task ${id}`, 404, true);
+      found.prs = found.prs.filter((pr) => pr.id !== prId);
+    },
     async setPrStates(id, { prompt, prs = [] }) {
       const written = [
         ...(prompt === undefined ? [] : [`prompt=${prompt}`]),

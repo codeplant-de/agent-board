@@ -17,6 +17,7 @@ import {
   formatQuestions,
   isPriority,
   isPrUrl,
+  prUrlIn,
   isSafeTaskId,
   isSafeWorkdir,
   isStatus,
@@ -115,6 +116,23 @@ export async function reportPr(context: LinkingContext, id: string, url: string)
   const known = (await context.backend.getTask(id)).prs.some((pr) => pr.url === url);
   if (!known) await context.backend.addPr(id, url);
   confirm(context, `reported ${url} for ${id}  ${context.taskLink(id)}`);
+}
+
+export async function removePr(context: LinkingContext, id: string, url: string): Promise<void> {
+  if (!isPrUrl(url))
+    throw new UsageError(
+      `"${url.slice(0, 80)}" is not a pull request URL: use https://github.com/<owner>/<repo>/pull/<number>`,
+    );
+  const task = await context.backend.getTask(id);
+  const reported = task.prs.find((pr) => pr.url === url);
+  if (reported !== undefined) {
+    await context.backend.removePr(id, reported.id);
+    confirm(context, `removed ${url} from ${id}  ${context.taskLink(id)}`);
+  } else if (prUrlIn(task.input) === url)
+    throw new UsageError(
+      `${url} is the pull request the prompt of ${id} names, not a reported one, and cannot be removed`,
+    );
+  else confirm(context, `${url} was not reported for ${id}; nothing changed  ${context.taskLink(id)}`);
 }
 
 export interface CommentFlags {

@@ -25,7 +25,7 @@ Tasks:
   show <task>               a task and its thread as markdown
   attach <task>             open a task's Claude session in the terminal
   comment <task> [text...]  add a note to a task
-  pr <task> <url>           report a pull request you opened for a task
+  pr <task> <url>           report a pull request for a task, or remove one
   move <task> <status...>   move a task to the bottom of a status
   ask <task>                ask the user 1-4 questions
   wait <task>               park a running task in Waiting until a time or a
@@ -200,6 +200,10 @@ board then shows it on the task's card and page, like the pull request of a
 review task. A later call adds another pull request to the task; the same URL
 twice changes nothing.
 
+--remove takes a reported pull request off the task again, for a URL reported by
+mistake. The pull request a review task's prompt names is not a reported one and
+stays; a URL the task does not list changes nothing.
+
 The URL must be a GitHub pull request,
 https://github.com/<owner>/<repo>/pull/<number>, and nothing else.
 
@@ -214,11 +218,13 @@ Arguments:
   url         the pull request URL
 
 Options:
+  --remove    take the reported pull request off the task instead of adding it
   --dry-run   read everything, print every write instead of doing it
   -h, --help  display help for command
 
 Examples:
   board pr Ab3dEf9x https://github.com/acme/app/pull/17741
+  board pr --remove Ab3dEf9x https://github.com/acme/app/pull/17741
 ```
 
 ### board move
