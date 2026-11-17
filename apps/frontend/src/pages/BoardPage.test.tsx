@@ -265,12 +265,20 @@ describe('BoardPage move merged to Done', () => {
 
 describe('BoardPage layout', () => {
   it('stacks Waiting above Todo in one board cell', async () => {
-    listed.tasks = [];
+    listed.tasks = [task({ id: 'w1', title: 'on CI', status: 'waiting' })];
     renderBoard();
-    await screen.findAllByText('Empty');
+    await screen.findByText('on CI');
     const cell = column('Waiting').closest('.board-cell') as HTMLElement;
     expect(cell).toBe(column('Todo').closest('.board-cell'));
     expect(column('Waiting').compareDocumentPosition(column('Todo')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('leaves Waiting out while no task waits', async () => {
+    listed.tasks = [];
+    renderBoard();
+    await screen.findAllByText('Empty');
+    expect(screen.queryByText('Waiting')).not.toBeInTheDocument();
+    expect(column('Todo')).toBeInTheDocument();
   });
 });
 
