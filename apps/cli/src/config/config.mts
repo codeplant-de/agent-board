@@ -6,14 +6,17 @@ import {
   DIR_LABEL_RULE,
   isAgentName,
   isModelName,
+  isPriority,
   isRecord,
   isSafeDirLabel,
   isSafeMachineName,
   MACHINE_NAME_RULE,
+  PRIORITIES,
   isSafeWorkdir,
   isStringList,
   shortSkill,
 } from '@agent-board/shared';
+import type { Priority } from '@agent-board/shared';
 
 import { ConfigError } from './config-error.mts';
 import { parseAgentDocument } from './agent-document.mts';
@@ -77,6 +80,19 @@ export type DirSetting = (typeof DIR_SETTINGS)[number];
 
 export const MAX_DIRS = 200;
 
+// Thresholds on the Claude subscription's usage. While a window is at or over its threshold, Todo tasks below `priority` are
+// not started here. A window without a number is not limited.
+export interface UsageLimits {
+  fiveHour?: number;
+  sevenDay?: number;
+  // The lowest priority that still starts while a threshold is reached.
+  priority: Priority;
+}
+
+export const USAGE_LIMIT_KEYS = ['fiveHour', 'sevenDay', 'priority'] as const;
+// `low` is the lowest priority, so holding everything below it would hold nothing.
+const HOLD_PRIORITIES: readonly Priority[] = PRIORITIES.filter((priority) => priority !== 'low');
+
 export interface Config {
   // This machine's name on the board: it claims tasks under it, and a resume runs only on the machine that ran the session.
   machine: string;
@@ -99,6 +115,8 @@ export interface Config {
   // The agents that come from a file of the agents/ directory, by name: the file's path. The rest are from config.json.
   agentFiles?: Record<string, string>;
   repos: Record<string, string>;
+  // Undefined when config.json has no `usageLimits` key: nothing is held back for usage.
+  usageLimits?: UsageLimits;
   // The directories workers may run in, in config order; undefined when config.json has no `dirs` key, which is not the
   // same as an empty list: a list that is present will allow only what it names.
   dirs?: DirEntry[];
@@ -221,6 +239,32 @@ function positiveInt(obj: Record<string, unknown>, key: string, where: string, f
     throw new ConfigError(`config: ${where}${key} must be a positive integer`);
   }
   return value;
+}
+
+function parseUsageLimits(raw: unknown): UsageLimits | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) throw new ConfigError('config: usageLimits must be an object');
+  const percent = (key: 'fiveHour' | 'sevenDay'): number | undefined => {
+    const value = raw[key];
+    if (value === undefined) return undefined;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 100)
+      throw new ConfigError(`config: usageLimits.${key} must be a whole percent from 1 to 100`);
+    return value;
+  };
+  const priority = raw['priority'] ?? 'urgent';
+  if (priority === 'low')
+    throw new ConfigError(
+      'config: usageLimits.priority must not be low: low is the lowest priority, so nothing would be held. Use urgent, high or normal',
+    );
+  if (typeof priority !== 'string' || !isPriority(priority) || !HOLD_PRIORITIES.includes(priority))
+    throw new ConfigError(`config: usageLimits.priority must be one of ${HOLD_PRIORITIES.join(', ')}`);
+  const fiveHour = percent('fiveHour');
+  const sevenDay = percent('sevenDay');
+  return {
+    ...(fiveHour === undefined ? {} : { fiveHour }),
+    ...(sevenDay === undefined ? {} : { sevenDay }),
+    priority,
+  };
 }
 
 export const DEFAULT_LANES: Lane[] = [{ name: 'general', skills: ['*'], slots: 3 }];
@@ -483,6 +527,7 @@ export function parseConfig(raw: unknown): Config {
   );
   // A setting of a directory wins over the old key it stands for, which every other module goes on reading.
   for (const { path, repo } of dirs ?? []) if (repo !== undefined) repos[repo] = path;
+  const usageLimits = parseUsageLimits(raw['usageLimits']);
   const defaultDir = dirs?.find((entry) => entry.default === true);
   return {
     machine,
@@ -497,6 +542,7 @@ export function parseConfig(raw: unknown): Config {
     autoUpdate,
     ...parseAgents(raw['agents']),
     repos,
+    ...(usageLimits === undefined ? {} : { usageLimits }),
     ...(dirs === undefined ? {} : { dirs }),
   };
 }
@@ -513,6 +559,7 @@ const TOP_KEYS = [
   'agents',
   'repos',
   'dirs',
+  'usageLimits',
 ] as const;
 const LANE_KEYS = ['skills', 'slots', 'cwd'] as const;
 
@@ -602,6 +649,8 @@ export function configWarnings(raw: unknown): string[] {
   if (isRecord(lanes))
     for (const [name, entry] of Object.entries(lanes))
       if (isRecord(entry)) warnings.push(...unknownKeys(entry, LANE_KEYS, `lanes.${name.slice(0, 40)}.`));
+  const usageLimits = raw['usageLimits'];
+  if (isRecord(usageLimits)) warnings.push(...unknownKeys(usageLimits, USAGE_LIMIT_KEYS, 'usageLimits.'));
   if ('intake' in raw) warnings.push(REMOVED_INTAKE);
   warnings.push(...overrideWarnings(raw));
   return warnings;

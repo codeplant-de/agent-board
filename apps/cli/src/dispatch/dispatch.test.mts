@@ -1276,3 +1276,102 @@ test('the PR refresh time is kept in a small file in the state directory, and a 
     rmSync(dir, { recursive: true });
   }
 });
+
+const USAGE_RESET = new Date(NOW.getTime() + 3 * 60 * 60_000);
+const usageAt = (utilization: number, resetsAt: Date = USAGE_RESET) => ({
+  read: () => ({ fiveHour: { utilization, resetsAt: resetsAt.toISOString(), seenAt: NOW.toISOString() } }),
+});
+const urgent = (id: string) => task({ id, input: '/selftest go', priority: 'urgent' });
+const lowPriority = (id: string, priority: 'high' | 'normal' | 'low' = 'normal') =>
+  task({ id, input: '/selftest go', priority });
+
+function limitedSetup(tasks: ReturnType<typeof task>[], utilization = 0.85) {
+  const result = setup(tasks);
+  result.deps.config = { ...CONFIG, usageLimits: { fiveHour: 80, priority: 'urgent' } };
+  result.deps.usage = usageAt(utilization);
+  return result;
+}
+
+test('over a usage threshold only urgent tasks start, one HOLD line names the window, and the reset is the next time', async () => {
+  const { deps, started, logs, files } = limitedSetup([urgent('u1'), lowPriority('n1'), lowPriority('n2', 'high')]);
+  await runDispatch(deps);
+  assert.deepEqual(started, ['u1']);
+  assert.deepEqual(
+    logs.filter((line) => line.startsWith('HOLD')),
+    [`HOLD 2 task(s) below urgent: 5-hour usage 85% (limit 80%, resets ${USAGE_RESET.toISOString()})`],
+  );
+  assert.ok(logs.includes(`TICK started=1 general=1/2 held=2 next=${USAGE_RESET.toISOString()}`), logs.join('\n'));
+  assert.equal(files.next?.getTime(), USAGE_RESET.getTime());
+});
+
+test('a resume of a held task is held too', async () => {
+  const resume = task({ id: 'r1', input: '/selftest go', next: 'resume', sessionId: 's1', machine: 'here' });
+  const { deps, started, logs } = limitedSetup([resume]);
+  await runDispatch(deps);
+  assert.deepEqual(started, []);
+  assert.ok(logs.some((line) => line.startsWith('HOLD 1 task(s) below urgent')));
+});
+
+test('the priority of the limit decides what is held, and a window can name its own reset', async () => {
+  const { deps, started, logs } = limitedSetup([
+    lowPriority('h1', 'high'),
+    lowPriority('n1'),
+    lowPriority('l1', 'low'),
+  ]);
+  deps.config = { ...CONFIG, usageLimits: { fiveHour: 80, sevenDay: 50, priority: 'high' } };
+  const later = new Date(NOW.getTime() + 24 * 60 * 60_000);
+  deps.usage = {
+    read: () => ({
+      fiveHour: { utilization: 0.9, resetsAt: USAGE_RESET.toISOString(), seenAt: NOW.toISOString() },
+      sevenDay: { utilization: 0.6, resetsAt: later.toISOString(), seenAt: NOW.toISOString() },
+    }),
+  };
+  await runDispatch(deps);
+  assert.deepEqual(started, ['h1']);
+  const hold = logs.filter((line) => line.startsWith('HOLD'));
+  assert.equal(hold.length, 1);
+  assert.match(hold[0] ?? '', /^HOLD 2 task\(s\) below high: 5-hour usage 90% .*; 7-day usage 60% \(limit 50%/);
+  assert.ok(logs.some((line) => line.includes(`held=2 next=${USAGE_RESET.toISOString()}`)));
+});
+
+test('held work does not make a lane pause a borrowed run', async () => {
+  const borrowed = task({ id: 'b1', status: 'running', input: '/selftest go', machine: 'here' });
+  // Both lanes are full, so without the limit i1 would wait for its lane and b1 would be asked to pause.
+  const own = task({ id: 'r0', status: 'running', input: '/selftest go', machine: 'here' });
+  const { deps, files, logs } = setup([borrowed, own, impl('i1')], ['agent-board-b1', 'agent-board-r0']);
+  deps.config = { ...LANED, usageLimits: { fiveHour: 80, priority: 'urgent' } };
+  deps.usage = usageAt(0.85);
+  files.runs.set('b1', { lane: 'implement', borrowed: true, startedAt: new Date(NOW.getTime() - 10 * 60_000) });
+  files.alive.set('b1', NOW);
+  files.runs.set('r0', { lane: 'reviews', borrowed: false, startedAt: NOW });
+  files.alive.set('r0', NOW);
+  await runDispatch(deps);
+  assert.equal(files.pauses.size, 0);
+  assert.ok(!logs.some((line) => line.startsWith('PAUSE')));
+  assert.ok(logs.some((line) => line.startsWith('HOLD 1')));
+});
+
+test('under the threshold, without limits, without a reading or after the reset nothing is held or logged', async () => {
+  const cases: [string, (deps: DispatchDeps) => void][] = [
+    ['under', (deps) => void (deps.usage = usageAt(0.79))],
+    ['no limits', (deps) => void (deps.config = CONFIG)],
+    ['no reading', (deps) => void (deps.usage = { read: () => ({}) })],
+    ['reset', (deps) => void (deps.usage = usageAt(0.95, NOW))],
+    ['no reader', (deps) => void (deps.usage = undefined)],
+  ];
+  for (const [name, change] of cases) {
+    const { deps, started, logs } = limitedSetup([lowPriority('n1')]);
+    change(deps);
+    await runDispatch(deps);
+    assert.deepEqual(started, ['n1'], name);
+    assert.ok(!logs.some((line) => line.startsWith('HOLD') || line.includes('held=')), name);
+  }
+});
+
+test('a reached threshold with nothing below the priority to hold logs nothing and adds no time', async () => {
+  const { deps, started, logs, files } = limitedSetup([urgent('u1')]);
+  await runDispatch(deps);
+  assert.deepEqual(started, ['u1']);
+  assert.ok(!logs.some((line) => line.startsWith('HOLD') || line.includes('held=')));
+  assert.equal(files.next, undefined);
+});

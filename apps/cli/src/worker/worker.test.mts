@@ -570,6 +570,46 @@ test('recording the skills of a run can fail without touching the run, and is lo
   assert.ok(!backend.writes.some((w) => w.startsWith('fail w1')));
 });
 
+const USAGE_LINE = (utilization: number) =>
+  JSON.stringify({
+    type: 'rate_limit_event',
+    rate_limit_info: { unifiedWindows: { five_hour: { utilization, resetsAt: 1794925200 } } },
+  });
+
+test('a rate limit event is handed over when its numbers changed', async () => {
+  const { deps } = setup({ exitCode: 0, signal: null });
+  const recorded: unknown[] = [];
+  deps.recordUsage = (reading) => void recorded.push(reading);
+  deps.run = async (_invocation, _taskId, _env, _watch, onLine) => {
+    onLine(USAGE_LINE(0.3));
+    onLine(USAGE_LINE(0.3));
+    onLine(USAGE_LINE(0.4));
+    onLine('{"type":"assistant"}');
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.deepEqual(recorded, [
+    { fiveHour: { utilization: 0.3, resetsAt: new Date(1794925200 * 1000) } },
+    { fiveHour: { utilization: 0.4, resetsAt: new Date(1794925200 * 1000) } },
+  ]);
+});
+
+test('recording the usage can fail without touching the run, and is logged', async () => {
+  const { deps, backend, calls } = setup({ exitCode: 0, signal: null });
+  deps.recordUsage = () => {
+    throw new Error('disk full');
+  };
+  deps.run = async (_invocation, _taskId, _env, _watch, onLine) => {
+    onLine(USAGE_LINE(0.3));
+    onLine(JSON.stringify({ type: 'result', result: 'All done', is_error: false }));
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  await runWorker(deps, 'w1');
+  assert.ok(calls.includes("append w1: the run's usage was not recorded: disk full"));
+  assert.ok(!backend.writes.some((w) => w.startsWith('fail w1')));
+});
+
 test('a transcript batch the board refused is sent again with the next one', async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
   let failures = 1;

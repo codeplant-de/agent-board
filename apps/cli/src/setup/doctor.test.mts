@@ -43,6 +43,8 @@ function machine(
     systemctl: async () => 0,
     verifyServer: async () => ({ owner: OWNER, keyId: KEYS.keyId, api: SERVER_API, features: SERVER_HAS }),
     catalogStore: fakeCatalogStore(),
+    usageStore: { read: () => ({}) },
+    now: () => new Date('2026-11-17T12:00:00Z'),
     ...overrides,
   };
 }
@@ -863,5 +865,46 @@ test('on macOS checkouts under the protected folders are warned about', async ()
   assert.equal(
     fine.some((result) => result.name === 'folders'),
     false,
+  );
+});
+
+const usageResults = (results: CheckResult[]): CheckResult[] =>
+  results.filter((result) => result.name === 'usage limits');
+
+test('doctor says nothing about usage limits unless the config sets them', async () => {
+  assert.deepEqual(usageResults(await runChecks(machine(GOOD))), []);
+});
+
+test('doctor shows the thresholds, that no run has reported usage yet, and that nothing is held', async () => {
+  const files = withConfig({ machine: 'box', usageLimits: { fiveHour: 80 } });
+  const [result, ...rest] = usageResults(await runChecks(machine(files)));
+  assert.deepEqual(rest, []);
+  assert.equal(result?.level, 'ok');
+  assert.equal(
+    result?.message,
+    '5-hour limit 80%, no reading yet (the first run here reports one); tasks below urgent are not held now',
+  );
+});
+
+test('doctor shows the last reading with its time, and what is held until when', async () => {
+  const files = withConfig({ machine: 'box', usageLimits: { fiveHour: 80, sevenDay: 90, priority: 'high' } });
+  const results = usageResults(
+    await runChecks(
+      machine(files, {
+        usageStore: {
+          read: () => ({
+            fiveHour: { utilization: 0.85, resetsAt: '2026-11-17T15:00:00.000Z', seenAt: '2026-11-17T11:30:00.000Z' },
+            sevenDay: { utilization: 0.95, resetsAt: '2026-11-17T09:00:00.000Z', seenAt: '2026-11-16T20:00:00.000Z' },
+          }),
+        },
+      }),
+    ),
+  );
+  assert.equal(
+    results[0]?.message,
+    '5-hour limit 80%, last reading 85% seen 2026-11-17T11:30:00.000Z; ' +
+      '7-day limit 90%, last reading 95% seen 2026-11-16T20:00:00.000Z, window since reset, so void; ' +
+      'tasks below high are held now until 2026-11-17T15:00:00.000Z ' +
+      '(5-hour usage 85% (limit 80%, resets 2026-11-17T15:00:00.000Z))',
   );
 });

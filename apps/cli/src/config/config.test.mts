@@ -300,7 +300,7 @@ test('a misspelt key at any level is a warning naming the nearest known key, not
 
 test('an unknown key close to no known one lists the keys of its level', () => {
   assert.deepEqual(configWarnings({ backend: { command: ['/x'] } }), [
-    'unknown key "backend", ignored; known here: machine, lanes, defaultCwd, pauseAfterMinutes, inactivityMinutes, maxRunHours, autoUpdate, agents, repos, dirs',
+    'unknown key "backend", ignored; known here: machine, lanes, defaultCwd, pauseAfterMinutes, inactivityMinutes, maxRunHours, autoUpdate, agents, repos, dirs, usageLimits',
   ]);
 });
 
@@ -435,4 +435,44 @@ test('an intake key is ignored with a warning that names the replacement, whatev
   }
   assert.match(REMOVED_INTAKE, /board example github-reviews.*agents\.<name>/);
   assert.equal('intake' in parseConfig({ ...valid, intake: {} }), false);
+});
+
+const limited = (usageLimits: unknown) => parseConfig({ ...valid, usageLimits });
+
+test('usageLimits is absent by default, and a limit without a priority holds all but urgent', () => {
+  assert.equal(parseConfig(valid).usageLimits, undefined);
+  assert.equal('usageLimits' in parseConfig(valid), false);
+  assert.deepEqual(limited({ fiveHour: 80 }).usageLimits, { fiveHour: 80, priority: 'urgent' });
+  assert.deepEqual(limited({}).usageLimits, { priority: 'urgent' });
+  assert.deepEqual(limited({ fiveHour: 1, sevenDay: 100, priority: 'normal' }).usageLimits, {
+    fiveHour: 1,
+    sevenDay: 100,
+    priority: 'normal',
+  });
+});
+
+test('usageLimits refuses wrong types and ranges, and says why low is refused', () => {
+  for (const [input, message] of [
+    ['80', /usageLimits must be an object/],
+    [{ fiveHour: 0 }, /usageLimits.fiveHour must be a whole percent from 1 to 100/],
+    [{ fiveHour: 101 }, /usageLimits.fiveHour/],
+    [{ sevenDay: 80.5 }, /usageLimits.sevenDay/],
+    [{ sevenDay: '80' }, /usageLimits.sevenDay/],
+    [{ priority: 'low' }, /priority must not be low.*nothing would be held/],
+    [{ priority: 'soon' }, /priority must be one of urgent, high, normal/],
+    [{ priority: 3 }, /priority must be one of/],
+  ] as const) {
+    assert.throws(
+      () => limited(input),
+      (error) => error instanceof ConfigError && message.test(error.message),
+      JSON.stringify(input),
+    );
+  }
+});
+
+test('an unknown key inside usageLimits is a warning, and usageLimits itself is known', () => {
+  assert.deepEqual(configWarnings({ ...valid, usageLimits: { fiveHour: 80 } }), []);
+  const warnings = configWarnings({ ...valid, usageLimits: { fivehour: 80 } });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0] ?? '', /usageLimits\.fivehour.*fiveHour/);
 });

@@ -25,6 +25,8 @@ import type { Invocation } from './plan.mts';
 import { goneDirNotice, inboxMessageText, pauseMessageText } from './prompts.mts';
 import { createCatalogStore } from '../catalog/cache.mts';
 import { initSkillsIn, recordRunSkills } from '../catalog/catalog.mts';
+import { createUsageStore, rateLimitIn, sameReading, usageFile } from '../usage/usage.mts';
+import type { RateLimitReading } from '../usage/usage.mts';
 import { getPaths } from '../config/config.mts';
 import { checkoutAbove, isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import { selfCommand } from '../self/self.mts';
@@ -97,6 +99,9 @@ export interface WorkerDeps extends Context {
   // The run reported the skills it has in its start event: remembers them for the directory that covers `cwd`. Best effort,
   // and what it throws goes in the log.
   recordSkills?: (cwd: string, skills: unknown[]) => void;
+  // The run reported the subscription's usage in a rate limit event: remembers it for the dispatcher. Called only when the
+  // numbers differ from the last call of this run. Best effort, and what it throws goes in the log.
+  recordUsage?: (reading: RateLimitReading) => void;
   // Makes the backend's calls for the task name this run, so the board refuses them once a later run holds the task.
   bindRun?: (scope: RunScope) => void;
 }
@@ -291,6 +296,7 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   };
   // An agent's run lists the skills of the user's settings only (`--setting-sources user`), which the directory's catalogue is not.
   let skillsReported = restricted !== undefined;
+  let lastUsage: RateLimitReading | undefined;
   const onLine = (line: string): string | undefined => {
     const skills = skillsReported || deps.recordSkills === undefined ? undefined : initSkillsIn(line);
     if (skills !== undefined) {
@@ -299,6 +305,15 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
         deps.recordSkills?.(plan.invocation.cwd, skills);
       } catch (error) {
         deps.appendLog(taskId, `the run's skills were not recorded: ${errorText(error)}`);
+      }
+    }
+    const usage = deps.recordUsage === undefined ? undefined : rateLimitIn(line);
+    if (usage !== undefined && (lastUsage === undefined || !sameReading(usage, lastUsage))) {
+      lastUsage = usage;
+      try {
+        deps.recordUsage?.(usage);
+      } catch (error) {
+        deps.appendLog(taskId, `the run's usage was not recorded: ${errorText(error)}`);
       }
     }
     const events = condenser.line(line);
@@ -595,6 +610,7 @@ export async function workerMain(taskId: string): Promise<void> {
     ...(process.platform === 'darwin' ? { keepAwake: () => keepAwake() } : {}),
     recordSkills: (cwd, skills) =>
       recordRunSkills({ store: createCatalogStore(), config: context.config }, cwd, skills),
+    recordUsage: (reading) => createUsageStore(usageFile(getPaths().stateDir)).record(reading, new Date()),
     bindRun: (scope) => {
       run = scope;
     },
