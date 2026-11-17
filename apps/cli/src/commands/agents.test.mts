@@ -206,7 +206,7 @@ test('the summary before writing lists every tool, allow rule, deny rule, env na
   for (const value of [...wide.tools, ...wide.allowedTools, ...wide.env, ...wide.mcpServers])
     assert.ok(text.includes(value), value);
   for (const flagged of ['Bash(*)', 'Bash(* --help)', 'Bash(curl *)', 'Bash(board *)', 'Edit', 'Read(~/**)'])
-    assert.match(text, new RegExp(`! allow rule ${flagged.replace(/[()*~/]/g, '\\$&')}:`), flagged);
+    assert.ok(text.includes(`! allow rule ${flagged}:`), flagged);
   assert.doesNotMatch(text, /! allow rule Bash\(git log \*\)/);
   assert.match(text, /! env GITHUB_TOKEN looks like a secret/);
   assert.doesNotMatch(text, /! env REGION/);
