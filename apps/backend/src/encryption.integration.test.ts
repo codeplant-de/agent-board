@@ -1,6 +1,7 @@
 import {
   isBlindIndex,
   isEnvelope,
+  MAX_TASK_PRS,
   newTaskId,
   openPr,
   sealAnswers,
@@ -11,9 +12,9 @@ import {
   transcriptBinding,
   type RowRef,
 } from '@agent-board/shared';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { notes, schedules, tasks } from './db/schema';
+import { notes, schedules, taskPrs, tasks } from './db/schema';
 import { buildServer } from './server';
 import { plainMachine, plainUi, type MachineAnswer } from './test/client';
 import { caller, question, SESSION, testConfig, useTestDb } from './test/helpers';
@@ -445,78 +446,268 @@ describe('suggested replies', () => {
   });
 });
 
-describe('the pull request of a task', () => {
+describe('the pull requests of a task', () => {
   const PR_URL = 'https://github.com/acme/app/pull/17';
+  const OTHER_URL = 'https://github.com/acme/app/pull/18';
+  const pullRequests = (id: string) =>
+    admin.select().from(taskPrs).where(eq(taskPrs.taskId, id)).orderBy(taskPrs.createdAt);
+  const wireOf = async (id: string) => (await ctx.raw('get-task', { id })).json.result;
 
-  it('is kept sealed, served to the browser and the CLI, and the last one wins', async () => {
+  it('are kept sealed, served to the browser and the CLI, oldest first', async () => {
     const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
-    const pr = await sealPr(sealed.seal, task.id, PR_URL);
-    expect((await ctx.raw('set-pr', { id: task.id, body: { pr } })).status).toBe(200);
-    const [row] = await admin.select().from(tasks);
-    expect(isEnvelope(row?.pr ?? '')).toBe(true);
-    expect(JSON.stringify(row)).not.toContain('acme');
-    const served = (await ctx.ui.tasks.get({ id: task.id })).task;
-    expect(await openPr(sealed.open, task.id, served.pr)).toBe(PR_URL);
-    expect((await ctx.raw('get-task', { id: task.id })).json.result.pr).toBe(pr);
-    expect((await ctx.ui.tasks.list()).find(({ id }) => id === task.id)?.pr).toBe(pr);
-    const second = await sealPr(sealed.seal, task.id, 'https://github.com/acme/app/pull/18');
-    await ctx.raw('set-pr', { id: task.id, body: { pr: second } });
-    expect((await ctx.raw('get-task', { id: task.id })).json.result.pr).toBe(second);
+    const first = await sealPr(sealed.seal, task.id, PR_URL);
+    const second = await sealPr(sealed.seal, task.id, OTHER_URL);
+    expect((await ctx.raw('add-pr', { id: task.id, body: { pr: first } })).status).toBe(200);
+    expect((await ctx.raw('add-pr', { id: task.id, body: { pr: second } })).status).toBe(200);
+    const rows = await pullRequests(task.id);
+    expect(rows.map((row) => row.pr)).toEqual([first, second]);
+    expect(rows.every((row) => isEnvelope(row.pr) && row.state === null)).toBe(true);
+    expect(JSON.stringify(rows)).not.toContain('acme');
+    for (const served of [
+      (await ctx.ui.tasks.get({ id: task.id })).task,
+      (await ctx.ui.tasks.list()).find(({ id }) => id === task.id)!,
+      await wireOf(task.id),
+    ]) {
+      expect(served.prs.map((pr: { pr: string }) => pr.pr)).toEqual([first, second]);
+      expect(await openPr(sealed.open, task.id, served.prs[0].pr)).toBe(PR_URL);
+      expect(await openPr(sealed.open, task.id, served.prs[1].pr)).toBe(OTHER_URL);
+    }
   });
 
-  it('is null until one is reported, and opens only for the task it was sealed for', async () => {
+  it('are none until one is reported, and one opens only for the task it was sealed for', async () => {
     const first = await ctx.ui.tasks.create({ title: 't', input: 'i' });
     const other = await ctx.ui.tasks.create({ title: 't', input: 'i' });
-    expect((await ctx.raw('get-task', { id: first.id })).json.result.pr).toBeNull();
+    expect((await wireOf(first.id)).prs).toEqual([]);
     const pr = await sealPr(sealed.seal, first.id, PR_URL);
     // The server cannot tell, so it stores another task's ciphertext; no client opens it there.
-    expect((await ctx.raw('set-pr', { id: other.id, body: { pr } })).status).toBe(200);
+    expect((await ctx.raw('add-pr', { id: other.id, body: { pr } })).status).toBe(200);
     const served = (await ctx.ui.tasks.get({ id: other.id })).task;
-    expect(await openPr(sealed.open, other.id, served.pr)).toBeNull();
-    expect(await openPr(sealed.open, first.id, served.pr)).toBe(PR_URL);
+    expect(await openPr(sealed.open, other.id, served.prs?.[0]?.pr)).toBeNull();
+    expect(await openPr(sealed.open, first.id, served.prs?.[0]?.pr)).toBe(PR_URL);
   });
 
-  it('is refused in plain text, with another key, for an unknown task, and when too long', async () => {
+  it('are refused in plain text, with another key, for an unknown task, and when too long', async () => {
     const { id } = await ctx.ui.tasks.create({ title: 't', input: 'i' });
-    expect((await ctx.raw('set-pr', { id, body: { pr: PR_URL } })).status).toBe(400);
-    expect((await ctx.raw('set-pr', { id, body: {} })).status).toBe(400);
-    expect(
-      (await ctx.raw('set-pr', { id, body: { pr: await sealPr(sealed.seal, id, PR_URL), extra: 1 } })).status,
-    ).toBe(400);
-    expect(
-      (await ctx.raw('set-pr', { id: 'Nope1234', body: { pr: await sealPr(sealed.seal, id, PR_URL) } })).status,
-    ).toBe(404);
-    const huge = `abe1.${'A'.repeat(20_000)}`;
-    expect((await ctx.raw('set-pr', { id, body: { pr: huge } })).json.error).toMatch(/too long/);
-    expect((await admin.select().from(tasks))[0]?.pr).toBeNull();
+    for (const command of ['add-pr', 'set-pr']) {
+      expect((await ctx.raw(command, { id, body: { pr: PR_URL } })).status, command).toBe(400);
+      expect((await ctx.raw(command, { id, body: {} })).status, command).toBe(400);
+      expect(
+        (await ctx.raw(command, { id, body: { pr: await sealPr(sealed.seal, id, PR_URL), extra: 1 } })).status,
+        command,
+      ).toBe(400);
+      expect(
+        (await ctx.raw(command, { id: 'Nope1234', body: { pr: await sealPr(sealed.seal, id, PR_URL) } })).status,
+        command,
+      ).toBe(404);
+      const huge = `abe1.${'A'.repeat(20_000)}`;
+      expect((await ctx.raw(command, { id, body: { pr: huge } })).json.error, command).toMatch(/too long/);
+    }
+    expect(await pullRequests(id)).toEqual([]);
   });
 
-  it('is not taken from the browser: a reply that carries one stores none', async () => {
+  it('are at most twenty for a task, and the twenty-first is refused', async () => {
+    const { id } = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    const other = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    for (let n = 1; n <= MAX_TASK_PRS; n += 1)
+      expect(
+        (await ctx.raw('add-pr', { id, body: { pr: await sealPr(sealed.seal, id, `${PR_URL}${n}`) } })).status,
+      ).toBe(200);
+    const refused = await ctx.raw('add-pr', { id, body: { pr: await sealPr(sealed.seal, id, OTHER_URL) } });
+    expect(refused.status).toBe(400);
+    expect(refused.json.error).toMatch(/at most|the most/);
+    expect(await pullRequests(id)).toHaveLength(MAX_TASK_PRS);
+    // The cap is per task.
+    expect(
+      (await ctx.raw('add-pr', { id: other.id, body: { pr: await sealPr(sealed.seal, other.id, PR_URL) } })).status,
+    ).toBe(200);
+    // `set-pr` replaces, so it still works at the cap.
+    expect((await ctx.raw('set-pr', { id, body: { pr: await sealPr(sealed.seal, id, OTHER_URL) } })).status).toBe(200);
+    expect(await pullRequests(id)).toHaveLength(1);
+  });
+
+  it('are not taken from the browser: a reply that carries one stores none', async () => {
     const { id } = await ctx.ui.tasks.create({ title: 't', input: 'i' });
     const pr = await sealPr(sealed.seal, id, PR_URL);
-    await ctx.rawUi.tasks.reply({ id, message: { body: pr, pr } as never, resume: false });
-    expect((await admin.select().from(tasks))[0]?.pr).toBeNull();
+    await ctx.rawUi.tasks.reply({ id, message: { body: pr, pr, prs: [{ id: 'x', pr }] } as never, resume: false });
+    expect(await pullRequests(id)).toEqual([]);
+  });
+
+  it('go with the task when it is deleted', async () => {
+    const { id } = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    await ctx.raw('add-pr', { id, body: { pr: await sealPr(sealed.seal, id, PR_URL) } });
+    await admin.delete(tasks).where(eq(tasks.id, id));
+    expect(await admin.select().from(taskPrs)).toEqual([]);
+  });
+
+  it('are added like a report was: the card moves up, a waiting dispatcher is woken, and a run is not disturbed', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    await ctx.call('claim-task', { id: task.id, machine: 'laptop' });
+    const before = (await admin.select().from(tasks))[0]!;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await ctx.raw('add-pr', { id: task.id, body: { pr: await sealPr(sealed.seal, task.id, PR_URL) } });
+    const after = (await admin.select().from(tasks))[0]!;
+    expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
+    expect(after).toMatchObject({ status: 'running', machine: 'laptop' });
   });
 });
 
-describe('the PR state of a task', () => {
+describe('the PR states of a task', () => {
   const PR_URL = 'https://github.com/acme/app/pull/17';
-
-  it('is null until intake writes it, is served in clear to the browser and the CLI, and a new PR resets it', async () => {
+  const OTHER_URL = 'https://github.com/acme/app/pull/18';
+  const withPrs = async (urls: string[] = [PR_URL, OTHER_URL]) => {
     const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
-    expect((await ctx.raw('get-task', { id: task.id })).json.result.prState).toBeNull();
-    await ctx.raw('set-pr', { id: task.id, body: { pr: await sealPr(sealed.seal, task.id, PR_URL) } });
-    expect((await ctx.raw('set-pr-state', { id: task.id, body: { prState: 'merged' } })).status).toBe(200);
-    expect((await admin.select().from(tasks))[0]?.prState).toBe('merged');
-    expect((await ctx.raw('get-task', { id: task.id })).json.result.prState).toBe('merged');
-    expect((await ctx.ui.tasks.get({ id: task.id })).task.prState).toBe('merged');
-    expect((await ctx.ui.tasks.list()).find(({ id }) => id === task.id)?.prState).toBe('merged');
-    const second = await sealPr(sealed.seal, task.id, 'https://github.com/acme/app/pull/18');
-    await ctx.raw('set-pr', { id: task.id, body: { pr: second } });
-    expect((await ctx.raw('get-task', { id: task.id })).json.result.prState).toBeNull();
+    for (const url of urls)
+      await ctx.raw('add-pr', { id: task.id, body: { pr: await sealPr(sealed.seal, task.id, url) } });
+    const rows = await admin.select().from(taskPrs).where(eq(taskPrs.taskId, task.id)).orderBy(taskPrs.createdAt);
+    return { id: task.id, rows };
+  };
+  const wireOf = async (id: string) => (await ctx.raw('get-task', { id })).json.result;
+
+  it('are set for the prompt’s PR and for rows, in clear, and served to the browser and the CLI', async () => {
+    const { id, rows } = await withPrs();
+    const [first, second] = rows;
+    const answer = await ctx.raw('set-pr-states', {
+      id,
+      body: { prompt: 'open', prs: [{ id: first!.id, state: 'merged' }] },
+    });
+    expect(answer.status).toBe(200);
+    expect((await admin.select().from(tasks))[0]?.prState).toBe('open');
+    expect((await admin.select().from(taskPrs).orderBy(taskPrs.createdAt)).map((row) => row.state)).toEqual([
+      'merged',
+      null,
+    ]);
+    for (const served of [
+      (await ctx.ui.tasks.get({ id })).task,
+      (await ctx.ui.tasks.list()).find((task) => task.id === id)!,
+      await wireOf(id),
+    ]) {
+      expect(served.promptPrState).toBe('open');
+      expect(served.prs.map((pr: { id: string; state: string | null }) => [pr.id, pr.state])).toEqual([
+        [first!.id, 'merged'],
+        [second!.id, null],
+      ]);
+    }
   });
 
-  it('is written without moving the task or touching a running task’s pause', async () => {
+  it('can name only the prompt’s PR or only rows, and leave the rest as it is', async () => {
+    const { id, rows } = await withPrs();
+    await ctx.raw('set-pr-states', { id, body: { prompt: 'closed' } });
+    await ctx.raw('set-pr-states', { id, body: { prs: [{ id: rows[1]!.id, state: 'open' }] } });
+    expect((await admin.select().from(tasks))[0]?.prState).toBe('closed');
+    expect((await admin.select().from(taskPrs).orderBy(taskPrs.createdAt)).map((row) => row.state)).toEqual([
+      null,
+      'open',
+    ]);
+  });
+
+  it('ignore a row that is not the task’s, even another task’s', async () => {
+    const mine = await withPrs([PR_URL]);
+    const theirs = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    await ctx.raw('add-pr', { id: theirs.id, body: { pr: await sealPr(sealed.seal, theirs.id, OTHER_URL) } });
+    const foreign = (await admin.select().from(taskPrs).where(eq(taskPrs.taskId, theirs.id)))[0]!;
+    const answer = await ctx.raw('set-pr-states', {
+      id: mine.id,
+      body: {
+        prs: [
+          { id: foreign.id, state: 'merged' },
+          { id: 'Nope1234', state: 'merged' },
+        ],
+      },
+    });
+    expect(answer.status).toBe(200);
+    expect((await admin.select().from(taskPrs)).map((row) => row.state)).toEqual([null, null]);
+  });
+
+  it('change nothing else: not the status, updatedAt or a running task’s pause', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    await ctx.call('claim-task', { id: task.id, machine: 'laptop' });
+    await ctx.raw('add-pr', { id: task.id, body: { pr: await sealPr(sealed.seal, task.id, PR_URL) } });
+    const before = (await admin.select().from(tasks))[0]!;
+    const [row] = await admin.select().from(taskPrs);
+    await ctx.raw('set-pr-states', {
+      id: task.id,
+      body: { prompt: 'closed', prs: [{ id: row!.id, state: 'merged' }] },
+    });
+    const after = (await admin.select().from(tasks))[0]!;
+    expect(after).toMatchObject({ status: 'running', prState: 'closed', updatedAt: before.updatedAt });
+  });
+
+  it('refuse anything but states, extra keys, too long a list and an unknown task', async () => {
+    const { id, rows } = await withPrs([PR_URL]);
+    const row = rows[0]!.id;
+    const many = Array.from({ length: MAX_TASK_PRS + 1 }, () => ({ id: row, state: 'open' }));
+    for (const body of [
+      {},
+      { prompt: 'draft' },
+      { prompt: null },
+      { prompt: 'merged', extra: 1 },
+      { prs: [{ id: row, state: null }] },
+      { prs: [{ id: row, state: 'merged', extra: 1 }] },
+      { prs: [{ id: '../x', state: 'merged' }] },
+      { prs: many },
+    ])
+      expect((await ctx.raw('set-pr-states', { id, body })).status, JSON.stringify(body).slice(0, 60)).toBe(400);
+    expect((await ctx.raw('set-pr-states', { id: 'Nope1234', body: { prompt: 'merged' } })).status).toBe(404);
+    expect((await admin.select().from(tasks))[0]?.prState).toBeNull();
+    expect((await admin.select().from(taskPrs))[0]?.state).toBeNull();
+  });
+});
+
+describe('the legacy view of a task’s PRs, for a CLI without task.prs', () => {
+  const PR_URL = 'https://github.com/acme/app/pull/17';
+  const OTHER_URL = 'https://github.com/acme/app/pull/18';
+  const wireOf = async (id: string) => (await ctx.raw('get-task', { id })).json.result;
+
+  it('shows pr and prState as null until a PR is reported, and the prompt PR’s state as prState', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    expect(await wireOf(task.id)).toMatchObject({ pr: null, prState: null, prs: [], promptPrState: null });
+    await ctx.raw('set-pr-state', { id: task.id, body: { prState: 'merged' } });
+    expect(await wireOf(task.id)).toMatchObject({ pr: null, prState: 'merged', promptPrState: 'merged' });
+    expect((await admin.select().from(tasks))[0]?.prState).toBe('merged');
+    expect(await admin.select().from(taskPrs)).toEqual([]);
+  });
+
+  it('shows the newest PR as pr and its state as prState', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    const first = await sealPr(sealed.seal, task.id, PR_URL);
+    const second = await sealPr(sealed.seal, task.id, OTHER_URL);
+    await ctx.raw('add-pr', { id: task.id, body: { pr: first } });
+    await ctx.raw('add-pr', { id: task.id, body: { pr: second } });
+    await ctx.raw('set-pr-state', { id: task.id, body: { prState: 'closed' } });
+    const wire = await wireOf(task.id);
+    expect(wire).toMatchObject({ pr: second, prState: 'closed', promptPrState: null });
+    expect(wire.prs.map((pr: { state: string | null }) => pr.state)).toEqual([null, 'closed']);
+  });
+
+  it('set-pr replaces the task’s PRs with the one, whose state is unknown, and leaves the prompt PR’s state', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    const first = await sealPr(sealed.seal, task.id, PR_URL);
+    const second = await sealPr(sealed.seal, task.id, OTHER_URL);
+    await ctx.raw('add-pr', { id: task.id, body: { pr: first } });
+    await ctx.raw('add-pr', { id: task.id, body: { pr: first } });
+    await ctx.raw('set-pr-states', { id: task.id, body: { prompt: 'open' } });
+    await ctx.raw('set-pr-state', { id: task.id, body: { prState: 'merged' } });
+    expect((await ctx.raw('set-pr', { id: task.id, body: { pr: second } })).status).toBe(200);
+    const wire = await wireOf(task.id);
+    expect(wire).toMatchObject({ pr: second, prState: null, promptPrState: 'open' });
+    expect(wire.prs).toHaveLength(1);
+    expect((await admin.select().from(taskPrs)).map((row) => [row.pr, row.state])).toEqual([[second, null]]);
+  });
+
+  it('set-pr-state writes the newest row when the task has rows, else the prompt’s state', async () => {
+    const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
+    await ctx.raw('set-pr-state', { id: task.id, body: { prState: 'open' } });
+    await ctx.raw('add-pr', { id: task.id, body: { pr: await sealPr(sealed.seal, task.id, PR_URL) } });
+    await ctx.raw('add-pr', { id: task.id, body: { pr: await sealPr(sealed.seal, task.id, OTHER_URL) } });
+    await ctx.raw('set-pr-state', { id: task.id, body: { prState: 'merged' } });
+    expect((await admin.select().from(tasks))[0]?.prState).toBe('open');
+    expect((await admin.select().from(taskPrs).orderBy(taskPrs.createdAt)).map((row) => row.state)).toEqual([
+      null,
+      'merged',
+    ]);
+  });
+
+  it('set-pr-state is written without moving the task or touching a running task’s pause', async () => {
     const task = await ctx.ui.tasks.create({ title: 't', input: 'i' });
     await ctx.call('claim-task', { id: task.id, machine: 'laptop' });
     const before = (await admin.select().from(tasks))[0]!;
@@ -525,7 +716,7 @@ describe('the PR state of a task', () => {
     expect(after).toMatchObject({ status: 'running', prState: 'closed', updatedAt: before.updatedAt });
   });
 
-  it('refuses anything but a state, extra keys and an unknown task', async () => {
+  it('set-pr-state refuses anything but a state, extra keys and an unknown task', async () => {
     const { id } = await ctx.ui.tasks.create({ title: 't', input: 'i' });
     for (const body of [{}, { prState: 'draft' }, { prState: null }, { prState: 'merged', extra: 1 }])
       expect((await ctx.raw('set-pr-state', { id, body })).status).toBe(400);

@@ -4,6 +4,7 @@ import {
   ContractError,
   isModelName,
   MAX_INTERVAL_MS,
+  MAX_TASK_PRS,
   notePreview,
   NOTE_KINDS,
   parseAckMessages,
@@ -23,6 +24,7 @@ import {
   parseWireNoteInput,
   parseWirePr,
   parseWirePrState,
+  parseWirePrStates,
   parseWireSchedule,
   parseWireScheduleDraft,
   parseWireNotes,
@@ -134,6 +136,50 @@ test('a task has a sealed PR or none, and a server that does not know the field 
   assert.throws(() => parseWirePrState({ prState: null }), /prState.prState must be one of/);
   assert.throws(() => parseWirePrState({ prState: 'open', extra: 1 }), /unknown key "extra"/);
   assert.equal(SEALED_LIMITS.pr, 1024);
+});
+
+test('a task lists its reported PRs with their states, and a server without task.prs leaves the keys out', async () => {
+  const PR = await sealed('pr');
+  const older = parseWireTask(task);
+  assert.equal(older.prs, undefined);
+  assert.equal(older.promptPrState, undefined);
+  const listed = parseWireTask({
+    ...task,
+    prs: [
+      { id: 'abc123', pr: PR, state: 'merged' },
+      { id: 'def456', pr: PR, state: 'unheard-of' },
+      { id: 'ghi789', pr: PR, state: null },
+    ],
+    promptPrState: 'closed',
+  });
+  assert.deepEqual(listed.prs, [
+    { id: 'abc123', pr: PR, state: 'merged' },
+    { id: 'def456', pr: PR, state: null },
+    { id: 'ghi789', pr: PR, state: null },
+  ]);
+  assert.equal(listed.promptPrState, 'closed');
+  assert.equal(parseWireTask({ ...task, prs: [], promptPrState: 'draft' }).promptPrState, null);
+  assert.throws(() => parseWireTask({ ...task, prs: 'x' }), /prs must be a list/);
+  assert.throws(() => parseWireTask({ ...task, prs: [{ id: '../x', pr: PR, state: null }] }), /id "..\/x" is not safe/);
+  assert.throws(() => parseWireTask({ ...task, prs: [{ id: 'abc123', pr: 5, state: null }] }), /pr must be a string/);
+});
+
+test('set-pr-states names the prompt PR and/or rows, with a bounded list and no other key', () => {
+  assert.deepEqual(parseWirePrStates({ prompt: 'open' }), { prompt: 'open' });
+  assert.deepEqual(parseWirePrStates({ prs: [{ id: 'abc123', state: 'merged' }] }), {
+    prs: [{ id: 'abc123', state: 'merged' }],
+  });
+  assert.deepEqual(parseWirePrStates({ prompt: 'closed', prs: [] }), { prompt: 'closed', prs: [] });
+  assert.throws(() => parseWirePrStates({}), /needs prompt or prs/);
+  assert.throws(() => parseWirePrStates({ prompt: null }), /prStates.prompt must be one of/);
+  assert.throws(() => parseWirePrStates({ prompt: 'open', extra: 1 }), /unknown key "extra"/);
+  assert.throws(() => parseWirePrStates({ prs: [{ id: 'abc123', state: 'merged', extra: 1 }] }), /unknown key "extra"/);
+  assert.throws(() => parseWirePrStates({ prs: [{ id: 'abc123', state: null }] }), /state must be one of/);
+  assert.throws(() => parseWirePrStates({ prs: [{ id: 'a b', state: 'open' }] }), /id "a b" is not safe/);
+  assert.throws(() => parseWirePrStates({ prs: 'x' }), /list of at most/);
+  const many = Array.from({ length: MAX_TASK_PRS + 1 }, (_, i) => ({ id: `r${i}`, state: 'open' }));
+  assert.throws(() => parseWirePrStates({ prs: many }), /at most 20/);
+  assert.equal(parseWirePrStates({ prs: many.slice(0, MAX_TASK_PRS) }).prs?.length, MAX_TASK_PRS);
 });
 
 test('a running task carries its lane, liveness and start', () => {

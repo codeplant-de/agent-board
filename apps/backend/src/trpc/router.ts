@@ -16,6 +16,7 @@ import {
 } from '@agent-board/shared';
 import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
+import type { DbOrTx } from '../db/client';
 import { tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { getKeys, replaceSlots, setupKeys } from '../services/keys';
 import { getLink, listInbox, peekLinkCode, redeemLinkCode, removeInboxItem, removeLink } from '../services/slack';
@@ -41,6 +42,7 @@ import {
   stop,
   takeBack,
   toNote,
+  listTaskPrs,
   toTask,
   wakeNow,
 } from '../services/tasks';
@@ -105,14 +107,26 @@ export interface WireThreadNote extends WireNote {
 
 export type { LastNote };
 
-function boardTask(row: TaskRow): WireBoardTask {
+function toBoardTask(row: TaskRow, prs: Parameters<typeof toTask>[1]): WireBoardTask {
   return {
-    ...toTask(row),
+    ...toTask(row, prs),
     proposed: row.proposed,
     parentId: row.parentId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+async function boardTasks(db: DbOrTx, rows: TaskRow[]): Promise<WireBoardTask[]> {
+  const prs = await listTaskPrs(
+    db,
+    rows.map(({ id }) => id),
+  );
+  return rows.map((row) => toBoardTask(row, prs.get(row.id)));
+}
+
+async function boardTask(db: DbOrTx, row: TaskRow): Promise<WireBoardTask> {
+  return toBoardTask(row, (await listTaskPrs(db, [row.id])).get(row.id));
 }
 
 const threadNote = (row: NoteRow): WireThreadNote => ({ ...toNote(row), by: row.by });
@@ -123,7 +137,11 @@ const tasksRouter = router({
     .input(z.object({ closed: z.boolean().default(false) }).default({ closed: false }))
     .query(async ({ ctx, input }) => {
       const rows = await listTasksWithLastNote(ctx.db, { closed: input.closed });
-      return rows.map(({ row, lastNote }) => ({ ...boardTask(row), lastNote }));
+      const prs = await listTaskPrs(
+        ctx.db,
+        rows.map(({ row }) => row.id),
+      );
+      return rows.map(({ row, lastNote }) => ({ ...toBoardTask(row, prs.get(row.id)), lastNote }));
     }),
 
   get: procedure.input(z.object({ id })).query(async ({ ctx, input }) => {
@@ -132,10 +150,10 @@ const tasksRouter = router({
     const related = await ctx.db.select().from(tasks).where(eq(tasks.parentId, input.id)).orderBy(asc(tasks.createdAt));
     const parent = row.parentId ? await getTask(ctx.db, row.parentId) : null;
     return {
-      task: boardTask(row),
+      task: await boardTask(ctx.db, row),
       thread,
-      followUps: related.map((r) => boardTask(r)),
-      parent: parent ? boardTask(parent) : null,
+      followUps: await boardTasks(ctx.db, related),
+      parent: parent ? await boardTask(ctx.db, parent) : null,
     };
   }),
 
@@ -179,7 +197,7 @@ const tasksRouter = router({
           ...(when.times ? { times: when.times } : {}),
           ...(when.until ? { until: when.until } : {}),
         });
-        return boardTask(task);
+        return boardTask(ctx.db, task);
       }
       const { row } = await addTask(ctx.db, {
         id: input.id,
@@ -194,7 +212,7 @@ const tasksRouter = router({
         ...(place === undefined ? {} : { machine: place.machine, workdir: place.workdir }),
         ...(agent === undefined ? {} : { agent }),
       });
-      return boardTask(row);
+      return boardTask(ctx.db, row);
     }),
 
   answer: procedure
@@ -208,6 +226,7 @@ const tasksRouter = router({
     )
     .mutation(async ({ ctx, input }) =>
       boardTask(
+        ctx.db,
         await answer(ctx.db, {
           taskId: input.id,
           questionNoteId: input.questionNoteId,
@@ -222,6 +241,7 @@ const tasksRouter = router({
     .input(z.object({ id, message: noteInput, resume: z.boolean() }))
     .mutation(async ({ ctx, input }) =>
       boardTask(
+        ctx.db,
         await reply(ctx.db, { taskId: input.id, message: input.message, resume: input.resume, by: ctx.username }),
       ),
     ),
@@ -233,7 +253,7 @@ const tasksRouter = router({
   send: procedure
     .input(z.object({ id, message: noteInput }))
     .mutation(async ({ ctx, input }) =>
-      boardTask(await send(ctx.db, { taskId: input.id, message: input.message, by: ctx.username })),
+      boardTask(ctx.db, await send(ctx.db, { taskId: input.id, message: input.message, by: ctx.username })),
     ),
 
   /**
@@ -243,7 +263,7 @@ const tasksRouter = router({
   stop: procedure
     .input(z.object({ id, message: noteInput.optional() }))
     .mutation(async ({ ctx, input }) =>
-      boardTask(await stop(ctx.db, { taskId: input.id, message: input.message, by: ctx.username })),
+      boardTask(ctx.db, await stop(ctx.db, { taskId: input.id, message: input.message, by: ctx.username })),
     ),
 
   /**
@@ -262,6 +282,7 @@ const tasksRouter = router({
     )
     .mutation(async ({ ctx, input }) =>
       boardTask(
+        ctx.db,
         await applyPolish(ctx.db, {
           taskId: input.id,
           polishId: input.polishId,
@@ -275,34 +296,40 @@ const tasksRouter = router({
 
   done: procedure
     .input(z.object({ id }))
-    .mutation(async ({ ctx, input }) => boardTask(await markDone(ctx.db, input.id, ctx.username))),
+    .mutation(async ({ ctx, input }) => boardTask(ctx.db, await markDone(ctx.db, input.id, ctx.username))),
 
   rerun: procedure
     .input(z.object({ id }))
-    .mutation(async ({ ctx, input }) => boardTask(await rerunFresh(ctx.db, input.id, ctx.username))),
+    .mutation(async ({ ctx, input }) => boardTask(ctx.db, await rerunFresh(ctx.db, input.id, ctx.username))),
 
   setPriority: procedure
     .input(z.object({ id, priority }))
-    .mutation(async ({ ctx, input }) => boardTask(await setPriority(ctx.db, input.id, input.priority, ctx.username))),
+    .mutation(async ({ ctx, input }) =>
+      boardTask(ctx.db, await setPriority(ctx.db, input.id, input.priority, ctx.username)),
+    ),
 
   /** Delays a Todo task until `notBefore`; null makes it claimable now. */
   setNotBefore: procedure
     .input(z.object({ id, notBefore: z.coerce.date().nullable() }))
-    .mutation(async ({ ctx, input }) => boardTask(await setNotBefore(ctx.db, input.id, input.notBefore, ctx.username))),
+    .mutation(async ({ ctx, input }) =>
+      boardTask(ctx.db, await setNotBefore(ctx.db, input.id, input.notBefore, ctx.username)),
+    ),
 
   /** Ends a wait early: the task resumes next in its session. */
   wakeNow: procedure
     .input(z.object({ id }))
-    .mutation(async ({ ctx, input }) => boardTask(await wakeNow(ctx.db, input.id, ctx.username))),
+    .mutation(async ({ ctx, input }) => boardTask(ctx.db, await wakeNow(ctx.db, input.id, ctx.username))),
 
   /** A running task whose agent has been quiet too long: its worker is gone, so the task goes to Needs me. */
   takeBack: procedure
     .input(z.object({ id }))
-    .mutation(async ({ ctx, input }) => boardTask(await takeBack(ctx.db, input.id, ctx.username))),
+    .mutation(async ({ ctx, input }) => boardTask(ctx.db, await takeBack(ctx.db, input.id, ctx.username))),
 
   setClosed: procedure
     .input(z.object({ id, closed: z.boolean() }))
-    .mutation(async ({ ctx, input }) => boardTask(await setClosed(ctx.db, input.id, input.closed, ctx.username))),
+    .mutation(async ({ ctx, input }) =>
+      boardTask(ctx.db, await setClosed(ctx.db, input.id, input.closed, ctx.username)),
+    ),
 
   move: procedure
     .input(
@@ -317,6 +344,7 @@ const tasksRouter = router({
     )
     .mutation(async ({ ctx, input }) =>
       boardTask(
+        ctx.db,
         await moveTask(ctx.db, {
           taskId: input.id,
           status: input.status,

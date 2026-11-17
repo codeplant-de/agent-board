@@ -10,7 +10,7 @@ import {
   open,
   openFields,
   openNote,
-  openPr,
+  openPrs,
   headIndex,
   parsePolish,
   QuestionError,
@@ -31,6 +31,7 @@ import type {
   Keys,
   Note,
   Opener,
+  PrState,
   Question,
   RowRef,
   Schedule,
@@ -46,6 +47,7 @@ import type {
   WireSchedule,
   WireTask,
   WireTaskDraft,
+  WireTaskPr,
   WireTaskPatch,
   WireTranscriptEvent,
 } from '@agent-board/shared';
@@ -93,19 +95,36 @@ const taskRef = (task: Pick<WireTask, 'id' | 'createdBy' | 'scheduleId'>): RowRe
   scheduleId: task.scheduleId,
 });
 
+// A server without `task.prs` holds one reported PR per task and gives it no id.
+const LEGACY_PR_ID = 'legacy';
+
+// The reported PRs of a task; a server without `task.prs` answers the newest one as `pr` and its state as `prState`.
+function reportedPrs(wire: WireTask): WireTaskPr[] {
+  if (wire.prs !== undefined) return wire.prs;
+  return wire.pr === null ? [] : [{ id: LEGACY_PR_ID, pr: wire.pr, state: wire.prState }];
+}
+
+// The state of the PR the prompt names; a server without `task.prs` states the prompt's PR only while there is no reported one.
+function promptPrState(wire: WireTask): PrState | null {
+  if (wire.prs !== undefined) return wire.promptPrState ?? null;
+  return wire.pr === null ? wire.prState : null;
+}
+
 async function openTask(keys: Keys, wire: WireTask): Promise<Task> {
   const opener = openerFor(keys);
-  const [{ title, input, workdir, agent, unreadable }, pr] = await Promise.all([
+  const [{ title, input, workdir, agent, unreadable }, prs] = await Promise.all([
     openFields(opener, taskRef(wire), wire),
-    openPr(opener, wire.id, wire.pr),
+    openPrs(opener, wire.id, reportedPrs(wire)),
   ]);
+  const { pr: _pr, prState: _prState, prs: _prs, ...rest } = wire;
   return {
-    ...wire,
+    ...rest,
     title,
     input,
     workdir,
     agent,
-    pr,
+    prs,
+    promptPrState: promptPrState(wire),
     labels: taskLabels({ input, createdBy: wire.createdBy }),
     unreadable,
   };
@@ -272,10 +291,10 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       await inner.ask(id, await checked('ask', () => sealQuestions(sealer, id, questions)));
     },
     heartbeat: (id, beat) => inner.heartbeat(id, beat),
-    async setPr(id, url) {
-      await inner.setPr(id, { pr: await checked('set-pr', () => sealPr(sealer, id, url)) });
+    async addPr(id, url) {
+      await inner.addPr(id, { pr: await checked('add-pr', () => sealPr(sealer, id, url)) });
     },
-    setPrState: (id, prState) => inner.setPrState(id, { prState }),
+    setPrStates: (id, states) => inner.setPrStates(id, states),
     async checkDirs(machine, dirs) {
       const { supported, index } = await inner.dirsState();
       if (!supported) return 'unsupported';

@@ -1,4 +1,5 @@
 // What a task's prompt says: the PR it names and the title it gets by default.
+import type { PrState, TaskPr } from './contract.mts';
 
 export function parsePrUrl(url: string): { repo: string; number: number } | undefined {
   const match = /^https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)\/?$/.exec(url);
@@ -20,14 +21,30 @@ export function isPrUrl(value: string): boolean {
   return new RegExp(`^${PR_URL}$`).test(value);
 }
 
-// The PR to show for a task: the one its prompt names, else the one its agent reported (`board pr`).
-export function prOf(task: { input: string; pr: string | null }): string | undefined {
-  return prUrlIn(task.input) ?? task.pr ?? undefined;
+/** A pull request of a task as it is shown and refreshed: `id` is the row of a reported one, absent for one only the prompt names. */
+export interface ShownPr {
+  url: string;
+  state: PrState | null;
+  id?: string;
 }
 
-// The PR whose state a task shows: the one its agent reported, else the one its prompt names.
-export function statePrOf(task: { input: string; pr: string | null }): string | undefined {
-  return task.pr ?? prUrlIn(task.input);
+/**
+ * The PRs to show for a task: the one its prompt names first, then the ones its agent reported (`board pr`) in order, each URL
+ * once. A prompt PR that was also reported is the reported row, with its state, else the one the prompt PR has.
+ */
+export function prsOf(task: { input: string; prs: readonly TaskPr[]; promptPrState: PrState | null }): ShownPr[] {
+  const shown: ShownPr[] = [];
+  const promptUrl = prUrlIn(task.input);
+  if (promptUrl !== undefined) shown.push({ url: promptUrl, state: task.promptPrState });
+  for (const { id, url, state } of task.prs) {
+    const same = shown.find((pr) => pr.url === url);
+    if (same === undefined) shown.push({ url, state, id });
+    else if (same.id === undefined) {
+      same.id = id;
+      same.state = state ?? same.state;
+    }
+  }
+  return shown;
 }
 
 // The first line of a prompt, shortened.

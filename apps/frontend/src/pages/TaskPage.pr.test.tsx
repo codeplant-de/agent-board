@@ -34,9 +34,9 @@ const task = (overrides: Partial<BoardTask>): BoardTask =>
     id: 't1',
     title: 'A task',
     input: 'Fix the bug',
-    pr: null,
+    prs: [],
     model: null,
-    prState: null,
+    promptPrState: null,
     status: 'needs-me',
     priority: 'normal',
     createdBy: 'user',
@@ -89,7 +89,7 @@ describe('TaskPage pull request link', () => {
   });
 
   it('links the PR the agent reported', async () => {
-    renderPage({ pr: 'https://github.com/acme/app/pull/2' });
+    renderPage({ prs: [{ id: 'r1', url: 'https://github.com/acme/app/pull/2', state: null }] });
     const link = await screen.findByRole('link', { name: 'acme/app/pull/2' });
     expect(link).toHaveAttribute('href', 'https://github.com/acme/app/pull/2');
   });
@@ -97,10 +97,10 @@ describe('TaskPage pull request link', () => {
   it('shows the PR the prompt names first and the reported one beside it', async () => {
     renderPage({
       input: '/review-pr https://github.com/acme/app/pull/1 --auto',
-      pr: 'https://github.com/acme/app/pull/2',
+      prs: [{ id: 'r1', url: 'https://github.com/acme/app/pull/2', state: null }],
     });
     expect(await screen.findByRole('link', { name: 'acme/app/pull/1' })).toBeInTheDocument();
-    const links = screen.getAllByRole('link', { name: /^acme\/app\/pull\/\d+$/ });
+    const links = screen.getAllByRole('link', { name: /^(PR (merged|closed) )?acme\/app\/pull\/\d+$/ });
     expect(links.map((link) => link.textContent)).toEqual(['acme/app/pull/1', 'acme/app/pull/2']);
   });
 
@@ -110,19 +110,34 @@ describe('TaskPage pull request link', () => {
     expect(screen.queryByRole('link', { name: /acme/ })).not.toBeInTheDocument();
   });
 
-  it('shows the state next to the link of the agent’s reported PR, not the prompt’s', async () => {
+  it('shows each PR with its own state', async () => {
     renderPage({
       input: '/review-pr https://github.com/acme/app/pull/1 --auto',
-      pr: 'https://github.com/acme/app/pull/2',
-      prState: 'merged',
+      promptPrState: 'closed',
+      prs: [
+        { id: 'r1', url: 'https://github.com/acme/app/pull/2', state: 'merged' },
+        { id: 'r2', url: 'https://github.com/acme/app/pull/3', state: null },
+      ],
     });
-    const [first, second] = await screen.findAllByRole('link', { name: /acme\/app\/pull\/\d+$/ });
-    expect(within(first!).queryByLabelText('PR merged')).not.toBeInTheDocument();
+    const [first, second, third] = await screen.findAllByRole('link', { name: /acme\/app\/pull\/\d+$/ });
+    expect(within(first!).getByLabelText('PR closed')).toBeInTheDocument();
     expect(within(second!).getByLabelText('PR merged')).toBeInTheDocument();
+    expect(within(third!).queryByLabelText(/^PR (merged|closed)$/)).not.toBeInTheDocument();
+  });
+
+  it('shows a PR of the prompt that was also reported once, with the reported state', async () => {
+    renderPage({
+      input: '/review-pr https://github.com/acme/app/pull/1 --auto',
+      prs: [{ id: 'r1', url: 'https://github.com/acme/app/pull/1', state: 'merged' }],
+    });
+    await screen.findByLabelText('PR merged');
+    const links = document.querySelectorAll('a.truncate-flex');
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute('href', 'https://github.com/acme/app/pull/1');
   });
 
   it('shows a closed PR as closed', async () => {
-    renderPage({ pr: 'https://github.com/acme/app/pull/2', prState: 'closed' });
+    renderPage({ prs: [{ id: 'r1', url: 'https://github.com/acme/app/pull/2', state: 'closed' }] });
     expect(await screen.findByLabelText('PR closed')).toBeInTheDocument();
   });
 });

@@ -156,8 +156,8 @@ function dryTask(draft: TaskDraft): Task {
     machine: machine ?? null,
     sessionId: null,
     workdir: workdir ?? null,
-    pr: null,
-    prState: null,
+    prs: [],
+    promptPrState: null,
     next: 'fresh',
     head: head ?? null,
     openQuestion: false,
@@ -247,11 +247,15 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         `DRY add-note ${id}${options?.author === 'system' ? ' --author system' : ''}${kind}${suggested} ${oneLine(text, 160)}`,
       );
     },
-    async setPr(id, url) {
-      print(`DRY set-pr ${id} ${url}`);
+    async addPr(id, url) {
+      print(`DRY add-pr ${id} ${url}`);
     },
-    async setPrState(id, prState) {
-      print(`DRY set-pr-state ${id} ${prState}`);
+    async setPrStates(id, { prompt, prs = [] }) {
+      const states = [
+        ...(prompt === undefined ? [] : [`prompt=${prompt}`]),
+        ...prs.map((pr) => `${pr.id}=${pr.state}`),
+      ];
+      print(`DRY set-pr-states ${id} ${states.join(' ')}`);
     },
     async setDirs(_machine, dirs) {
       print(`DRY set-dirs ${dirs.length} directories`);

@@ -65,6 +65,8 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   wake: 'wait',
   'set-pr': 'task.pr',
   'set-pr-state': 'task.pr-state',
+  'add-pr': 'task.prs',
+  'set-pr-states': 'task.prs',
   'run-inbox': 'run-inbox',
   'ack-messages': 'run-inbox',
   stopped: 'run-inbox',
@@ -217,8 +219,20 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     },
     ask: async (id, asked) => send('ask', { id: taskId(id), body: asked }),
     heartbeat: async (id, beat) => send('heartbeat', { id: taskId(id), body: beat }),
-    setPr: async (id, body) => send('set-pr', { id: taskId(id), body }),
-    setPrState: async (id, body) => send('set-pr-state', { id: taskId(id), body }),
+    async addPr(id, body) {
+      const checkedId = taskId(id);
+      // A server without `task.prs` holds one reported PR, and `set-pr` replaces it.
+      const command = (await connect()).features.has('task.prs') ? 'add-pr' : 'set-pr';
+      await send(command, { id: checkedId, body });
+    },
+    async setPrStates(id, body) {
+      const checkedId = taskId(id);
+      if ((await connect()).features.has('task.prs')) return send('set-pr-states', { id: checkedId, body });
+      // Such a server states one PR per task: the newest reported one, else the prompt's.
+      const { pr } = await call('get-task', { id: checkedId }, parseWireTask);
+      const prState = pr === null ? body.prompt : body.prs?.at(-1)?.state;
+      if (prState !== undefined) await send('set-pr-state', { id: checkedId, body: { prState } });
+    },
     setDirs: async (body) => send('set-dirs', { body }),
     dirsState: async () => {
       const { features, dirsIndex } = await connect();
