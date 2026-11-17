@@ -1,9 +1,10 @@
 // What the dispatcher's tick does for watches. The watch unit normally polls and finishes them; the tick takes the polling over
 // when the unit's heartbeat is stale (the unit is not installed or not running), finishes the deadlines of a task it is about
 // to wake, and drops the watches of tasks that are over. Both go through the same engine and the same claim, so a watch is never
-// finished twice.
+// finished twice. A stream watch is the exception: only the unit runs its command, so without the unit it reports nothing until
+// its timeout.
 import type { Backend } from '@agent-board/shared';
-import { attempt, deadlineReport, nextAttemptAt, TICK_ATTEMPT_LIMIT_MS } from './attempt.mts';
+import { attempt, deadlineReport, isPolled, nextAttemptAt, TICK_ATTEMPT_LIMIT_MS } from './attempt.mts';
 import type { WatchRunner } from './attempt.mts';
 import { finishWatch } from './finish.mts';
 import type { WatchDef, WatchEvent, WatchStore } from './store.mts';
@@ -76,7 +77,7 @@ export async function pollWatches(
   }
   const at = deps.now().getTime();
   const due = defs.filter(
-    (def) => def.source.kind !== 'timer' && at < Date.parse(def.deadline) && at + DUE_SLACK_MS >= nextAttemptAt(def),
+    (def) => isPolled(def) && at < Date.parse(def.deadline) && at + DUE_SLACK_MS >= nextAttemptAt(def),
   );
   if (due.length === 0) return [...woken];
   if (timeLeftMs < TICK_ATTEMPT_LIMIT_MS) {
@@ -109,9 +110,7 @@ export async function pollWatches(
 export function nextWatchDue(defs: WatchDef[]): Date[] {
   return defs.flatMap((def) => {
     const deadline = new Date(def.deadline);
-    return def.source.kind === 'timer'
-      ? [deadline]
-      : [deadline, new Date(Math.min(nextAttemptAt(def), deadline.getTime()))];
+    return isPolled(def) ? [deadline, new Date(Math.min(nextAttemptAt(def), deadline.getTime()))] : [deadline];
   });
 }
 

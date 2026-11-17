@@ -23,14 +23,14 @@ const CLOSING_TAG = /<\/watch-event/gi;
 
 /**
  * Text of an event as it may be stored and shown: control characters gone (a tab becomes a space), lines cut to 500 characters, the
- * last 2000 characters kept, and a closing `</watch-event` made harmless.
+ * last 2000 characters (or `max`) kept, and a closing `</watch-event` made harmless.
  */
-export function sanitizeEventText(text: string): string {
+export function sanitizeEventText(text: string, max: number = EVENT_TEXT_MAX_CHARS): string {
   const plain = withoutControls(text.replaceAll('\t', ' ')).replace(CLOSING_TAG, '<\\/watch-event');
   const lines = plain
     .split('\n')
     .map((line) => (line.length > EVENT_LINE_MAX_CHARS ? `${line.slice(0, EVENT_LINE_MAX_CHARS - 1)}…` : line));
-  return tail(lines.join('\n'), EVENT_TEXT_MAX_CHARS);
+  return tail(lines.join('\n'), Math.max(1, Math.min(max, EVENT_TEXT_MAX_CHARS)));
 }
 
 // "30s", "2m", "1h 30m".
@@ -51,9 +51,9 @@ export function openWatchesLine(open: OpenWatch[], now: Date = new Date()): stri
   if (open.length === 0) return 'No watch is open any more.';
   const parts = open.map(({ name, source, everyMs, deadline }) => {
     const until = clockTime(new Date(deadline), now);
-    return source.kind === 'timer'
-      ? `"${name}" (at ${until})`
-      : `"${name}" (every ${describeEvery(everyMs)}, until ${until})`;
+    if (source.kind === 'timer') return `"${name}" (at ${until})`;
+    if (source.kind === 'stream') return `"${name}" (stream, until ${until})`;
+    return `"${name}" (every ${describeEvery(everyMs)}, until ${until})`;
   });
   return `Still open: ${parts.join(', ')}.`;
 }

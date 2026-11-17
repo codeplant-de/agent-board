@@ -367,12 +367,19 @@ looks at the required checks only; a new commit restarts it) and reports when
 they have passed, one failed, or the PR was merged or closed. A command after --
 is run every --every (default 30s, at least 15s) in this directory, with the env
 of your Claude Code settings, and reports once it exits 0; it needs --name, and
-it is run once right away. --in or --at is a timer.
+it is run once right away. With --stream the command is started once and kept
+running: the lines it prints reach you as events (the lines of about 2 seconds
+together), and its exit, with the exit code, is the last event. A stream that
+prints more than 50 events or 20 KB in 10 minutes is stopped, so filter the
+output down to the lines that matter (grep --line-buffered). After a restart of
+the watch unit or a reboot the command starts again from the beginning, and the
+next event says so. --in or --at is a timer.
 
---timeout (default 2h, at most 7 days) is how long a ci or command watch looks
-before it reports that it timed out. The command stays on this machine. The same
-name again replaces the open watch. If the answer is there at once, it is
-printed and no watch is stored; a command that cannot run here is refused.
+--timeout (default 2h, at most 7 days) is how long a ci or command watch looks,
+or a stream runs, before it reports that it timed out. The command stays on this
+machine. The same name again replaces the open watch. If the answer is there at
+once, it is printed and no watch is stored; a command that cannot run here is
+refused.
 
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
@@ -384,7 +391,8 @@ Arguments:
   task                  the task: its id, a board task link or the start of its
                         id
   command               after --: the shell command that exits 0 once the wait
-                        is over
+                        is over, or with --stream the command whose output is
+                        reported
 
 Options:
   --ci [pr]             watch the checks of a PR (URL or number; default: the
@@ -392,6 +400,8 @@ Options:
   --required            with --ci: the required checks only
   --name <name>         the watch's name (default: ci, or timer); a command
                         needs one
+  --stream              with a command: keep it running and report the lines it
+                        prints, until it exits
   --every <duration>    with a command: how often it runs (default 30s, at least
                         15s)
   --timeout <duration>  report a timeout after this long (default 2h, at most
@@ -406,6 +416,7 @@ Examples:
   board watch Ab3dEf9x --ci
   board watch Ab3dEf9x --ci 17741 --required --timeout 1h
   board watch Ab3dEf9x --name health --every 1m -- 'curl -fsS https://staging.example.com/health'
+  board watch Ab3dEf9x --name deploy-log --stream -- 'kubectl logs -f deploy/api | grep --line-buffered -E "ERROR|rollout complete"'
   board watch Ab3dEf9x --in 30m --name deploy
 ```
 

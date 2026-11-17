@@ -1,17 +1,20 @@
 // The watch unit (`board internal watch`): one long-running process per machine that looks at every watch on its own timer,
 // ends the ones whose time has come, and wakes a task whose event nobody is running to receive. Its state is on disk only
-// (see store.mts), so a restart loses nothing but the attempts in flight. The dispatcher's tick takes the polling over when
+// (see store.mts), so a restart loses nothing but the attempts in flight and the commands of stream watches, which it starts again
+// from the beginning (see stream.mts). The dispatcher's tick takes the polling over when
 // the heartbeat this unit touches goes stale (see tick.mts).
 import { isProcessAlive } from '../worker/process.mts';
 import { buildContext, print } from '../cli.mts';
 import { errorText } from '../output/text.mts';
 import { runCommand } from '../dispatch/waits.mts';
 import type { Backend } from '@agent-board/shared';
-import { attempt, deadlineReport, nextAttemptAt, UNIT_ATTEMPT_LIMIT_MS } from './attempt.mts';
+import { attempt, deadlineReport, isPolled, nextAttemptAt, UNIT_ATTEMPT_LIMIT_MS } from './attempt.mts';
 import type { WatchRunner } from './attempt.mts';
-import { finishWatch } from './finish.mts';
+import { finishWatch, reportEvent } from './finish.mts';
+import { createStreamSession, startStream } from './stream.mts';
+import type { StreamSession, StreamStarter } from './stream.mts';
 import { createWatchStore } from './store.mts';
-import type { WatchDef, WatchStore } from './store.mts';
+import type { WatchDef, WatchEvent, WatchStore } from './store.mts';
 import { publishWatches, PUBLISH_EVERY_MS, REFRESH_MS } from './publish.mts';
 import { forgetWakeTries, isRunLive, tryWake } from './wake.mts';
 
@@ -21,6 +24,8 @@ export interface UnitDeps {
   store: WatchStore;
   backend: Pick<Backend, 'addNote' | 'wake' | 'setWatches'>;
   run: WatchRunner;
+  // Starts the command of a stream watch.
+  stream: StreamStarter;
   now: () => Date;
   isAlive: (pid: number) => boolean;
   log: (line: string) => void;
@@ -32,7 +37,7 @@ export interface WatchUnit {
   scan: () => void;
   // Resolves when everything `scan` started has ended.
   settled: () => Promise<void>;
-  // Kills the attempts in flight.
+  // Kills the attempts in flight and the commands of the stream watches, which report nothing more.
   stop: () => void;
 }
 
@@ -46,6 +51,8 @@ export function createWatchUnit(deps: UnitDeps): WatchUnit {
   // Tasks whose published state is behind the store, and when each was last published.
   const stale = new Set<string>();
   const publishedAt = new Map<string, number>();
+  // The running commands of the stream watches, by the key of their watch.
+  const streams = new Map<string, { task: string; name: string; id: string; session: StreamSession }>();
 
   const publish = async (task: string): Promise<void> => {
     stale.delete(task);
@@ -67,7 +74,7 @@ export function createWatchUnit(deps: UnitDeps): WatchUnit {
   const wake = (task: string): Promise<void> =>
     tryWake({ store, backend, now, log, isAlive }, task).then(() => undefined);
 
-  const finish = async (def: WatchDef, report: { kind: 'event' | 'timeout'; text: string }): Promise<void> => {
+  const finish = async (def: WatchDef, report: { kind: WatchEvent['kind']; text: string }): Promise<void> => {
     if ((await finishWatch({ store, backend, now, log }, def, report)) === undefined) return;
     await publish(def.task);
     await wake(def.task);
@@ -91,6 +98,72 @@ export function createWatchUnit(deps: UnitDeps): WatchUnit {
     if (isPublishDue(def.task)) await publish(def.task);
   };
 
+  type StreamDef = WatchDef & { source: { kind: 'stream' } };
+
+  // Starts the command of a stream watch that has none in this process: a new watch, or one from before this unit started.
+  const startStreamOf = (def: StreamDef, key: string): void => {
+    const { source } = def;
+    const restarted = source.starts > 0;
+    const started: WatchDef = {
+      ...def,
+      source: { ...source, starts: source.starts + 1 },
+      last: { at: now().toISOString(), summary: restarted ? 'started again' : 'started' },
+    };
+    if (!store.update(started)) return;
+    const session = createStreamSession({ now, restarted });
+    streams.set(key, { task: def.task, name: def.name, id: def.id, session });
+    session.attach(
+      deps.stream(
+        {
+          command: source.command,
+          cwd: source.cwd,
+          ...(source.settingsDir === undefined ? {} : { settingsDir: source.settingsDir }),
+        },
+        session,
+      ),
+    );
+    log(`STREAM ${def.task} ${def.name} started${restarted ? ' again from the beginning' : ''}`);
+    stale.add(def.task);
+  };
+
+  // An event of a stream whose command runs on.
+  const reportLines = async (def: StreamDef, text: string): Promise<void> => {
+    const counted: WatchDef = {
+      ...def,
+      source: { ...def.source, events: def.source.events + 1 },
+      last: { at: now().toISOString(), summary: 'streaming' },
+    };
+    // Gone or replaced meanwhile: the next scan kills the command.
+    if (!store.update(counted)) return;
+    await reportEvent({ store, backend, now, log }, counted, text);
+    stale.add(def.task);
+    if (isPublishDue(def.task)) await publish(def.task);
+    await wake(def.task);
+  };
+
+  const scanStream = (def: StreamDef, key: string): void => {
+    // A stopped unit starts nothing. And while the event before this one is on its way to the board, the lines wait.
+    if (abort.signal.aborted || flights.has(key)) return;
+    const running = streams.get(key);
+    if (running === undefined) return startStreamOf(def, key);
+    const report = running.session.step();
+    if (report === undefined) return;
+    const { end } = report;
+    if (end === undefined) return launch(key, () => reportLines(def, report.text));
+    streams.delete(key);
+    launch(key, () => finish(def, { kind: end, text: report.text }));
+  };
+
+  // Kills the commands whose watch is gone: stopped, timed out, replaced, or dropped with its task.
+  const reapStreams = (): void => {
+    for (const [key, { task, name, id, session }] of streams) {
+      if (store.read(task, name)?.id === id) continue;
+      session.kill();
+      streams.delete(key);
+      log(`STREAM ${task} ${name} stopped: its watch is gone`);
+    }
+  };
+
   const scanTask = (task: string): void => {
     const { defs, unreadable } = store.list(task);
     for (const file of unreadable) {
@@ -102,7 +175,8 @@ export function createWatchUnit(deps: UnitDeps): WatchUnit {
     for (const def of defs) {
       const key = `${task}/${def.name}/${def.id}`;
       if (at >= Date.parse(def.deadline)) launch(key, () => finish(def, deadlineReport(def)));
-      else if (def.source.kind !== 'timer' && at >= nextAttemptAt(def)) launch(key, () => look(def));
+      else if (def.source.kind === 'stream') scanStream({ ...def, source: def.source }, key);
+      else if (isPolled(def) && at >= nextAttemptAt(def)) launch(key, () => look(def));
     }
     if (isPublishDue(task)) launch(`${task}/publish`, () => publish(task));
     if (isRunLive(store, task, isAlive)) {
@@ -118,6 +192,7 @@ export function createWatchUnit(deps: UnitDeps): WatchUnit {
   return {
     scan() {
       store.touchHeartbeat(now());
+      reapStreams();
       for (const task of store.tasks()) scanTask(task);
     },
     async settled() {
@@ -125,6 +200,8 @@ export function createWatchUnit(deps: UnitDeps): WatchUnit {
     },
     stop() {
       abort.abort();
+      for (const { session } of streams.values()) session.kill();
+      streams.clear();
     },
   };
 }
@@ -176,6 +253,7 @@ export async function watchUnitMain(): Promise<void> {
       store: createWatchStore(),
       backend,
       run: (job) => runCommand(job),
+      stream: (job, sink) => startStream(job, sink),
       now: () => new Date(),
       isAlive: isProcessAlive,
       log: print,

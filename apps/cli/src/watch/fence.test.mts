@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { localTime } from '../commands/schedule.mts';
-import { commandDef, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
+import { commandDef, streamDef, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
 import { eventsMessage, openWatchesLine, sanitizeEventText } from './fence.mts';
 
 test('control characters go, a tab becomes a space, a carriage return is dropped and newlines stay', () => {
@@ -71,10 +71,11 @@ test('the open line names every watch with its rhythm and end, a timer by the ti
     commandDef('true', { name: 'health', everyMs: 30_000, deadline: '2026-01-01T13:00:00Z' }),
     timerDef({ name: 'settle', deadline: '2026-01-01T13:20:00Z' }),
     watchDef({ everyMs: 120_000, deadline: '2026-01-03T13:00:00Z' }),
+    streamDef('tail -f log', { deadline: '2026-01-01T13:30:00Z' }),
   ];
   assert.equal(
     openWatchesLine(open, now),
-    `Still open: "health" (every 30s, until ${clock('2026-01-01T13:00:00Z')}), "settle" (at ${clock('2026-01-01T13:20:00Z')}), "ci" (every 2m, until ${localTime(new Date('2026-01-03T13:00:00Z'))}).`,
+    `Still open: "health" (every 30s, until ${clock('2026-01-01T13:00:00Z')}), "settle" (at ${clock('2026-01-01T13:20:00Z')}), "ci" (every 2m, until ${localTime(new Date('2026-01-03T13:00:00Z'))}), "log" (stream, until ${clock('2026-01-01T13:30:00Z')}).`,
   );
   assert.equal(openWatchesLine([], now), 'No watch is open any more.');
 });

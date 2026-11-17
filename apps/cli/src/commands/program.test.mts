@@ -452,6 +452,8 @@ test('every board command in the run rules, the hook messages and the selftest s
         });
       // `unwatch` needs something to stop; the runner answers the gh calls of a ci watch and fails every other command.
       watches.write(watchDef({ task: ID, name: 'x', source: { kind: 'timer' }, everyMs: 0 }));
+      // A stream is only taken while the watch unit runs.
+      watches.touchHeartbeat(NOW);
       const inRun = { env: { AGENT_BOARD_TASK: ID }, cwd: '/work/cosuno', now: () => NOW };
       verbs.add(argv[0] ?? '');
       await go(argv, inRun).catch((error: unknown) => {

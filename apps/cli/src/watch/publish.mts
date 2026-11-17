@@ -1,9 +1,10 @@
 // What the board shows of a task's watches: a list of names, what each looks at and its state, and how many events wait for the agent. It is built
-// from the local store and never holds a command or its output. Publishing is best effort and never throws into its caller.
+// from the local store and never holds a command or its output (a stream shows how many events it reported). Publishing is best effort and never throws into its caller.
 import { isWatchId, MAX_TASK_WATCHES, MAX_WATCH_LABEL_CHARS, MAX_WATCH_STATUS_CHARS } from '@agent-board/shared';
 import type { Backend, TaskWatch } from '@agent-board/shared';
 import { BackendError } from '../backend/backend.mts';
 import { errorText, oneLine } from '../output/text.mts';
+import { countEvents } from './attempt.mts';
 import { clockTime, describeEvery, withoutControls } from './fence.mts';
 import type { WatchDef, WatchStore } from './store.mts';
 
@@ -26,6 +27,7 @@ function labelOf(def: WatchDef): string {
   const { source } = def;
   if (source.kind === 'timer') return 'timer';
   if (source.kind === 'command') return `command, every ${describeEvery(def.everyMs)}`;
+  if (source.kind === 'stream') return 'stream';
   const number = source.pr.slice(source.pr.lastIndexOf('/') + 1);
   return `CI #${number}${source.required ? ' · required' : ''}`;
 }
@@ -33,6 +35,8 @@ function labelOf(def: WatchDef): string {
 function statusOf(def: WatchDef, now: Date): string {
   const { source, last } = def;
   if (source.kind === 'timer') return `fires at ${clockTime(new Date(def.deadline), now)}`;
+  // Never a line the command printed: the count only.
+  if (source.kind === 'stream') return source.starts === 0 ? 'starting' : `streaming, ${countEvents(source.events)}`;
   if (last === undefined) return source.kind === 'command' ? 'not run yet' : 'not looked at yet';
   if (source.kind === 'ci') return withoutControls(oneLine(last.summary, MAX_WATCH_STATUS_CHARS));
   const result = COMMAND_RESULT.exec(last.summary)?.[1] ?? 'ran';

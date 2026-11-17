@@ -131,7 +131,7 @@ A watch (`board watch`, see [Waiting](usage.md#waiting)) is a file on the task's
 - It rescans the directory every 2 seconds, so `board watch` only has to write a file. It attempts each watch on the watch's own timer (`--every`, or 30 seconds for `--ci`). An attempt may take 2 minutes.
 - It writes an event to `<state dir>/watches/<task>/event-<time>-<name>.json` and posts it to the thread as an agent comment.
 - It wakes the task when an event is not handed over and the task has no live run. A worker marks its task as live with `<task>/live` while it runs. When the wake does not apply, because the task is in Needs me, paused in Todo or still running, the event stays for the next resume. If the worker's run goes away while an event waits, the unit tries the wake once more. That covers an event that fires between the worker's decision to park and its exit.
-- It keeps all state on disk. `board self-update` restarts it as it restarts the listener, and a reboot loses nothing.
+- It keeps all state on disk. `board self-update` restarts it as it restarts the listener, and a reboot loses nothing but the output of running [streams](#streams).
 - Finishing a watch is a rename of its file. Whichever process renames it first (the unit, the dispatch tick or `board unwatch`) writes the event, so no event is written twice.
 
 ### The worker's side
@@ -147,7 +147,7 @@ A watch (`board watch`, see [Waiting](usage.md#waiting)) is a file on the task's
 
 The board shows a task's watches and lets the user stop one (see [What the board shows of watches](usage.md#what-the-board-shows-of-watches)). The CLI publishes the list with `set-watches`, sealed as the task's `watches` (see [Encryption](encryption.md)).
 
-- **What is published.** For each watch its name, kind, a label (`CI #116 · required`, `command, every 30s`, `timer`), a one-line status, its deadline and the time of its last look. The status is the CI summary, `exit 1 at 10:47` or `not run yet` for a command, or `fires at 14:20` for a timer. The document also holds how many undelivered events of the task wait in the spool, once. The command and what it printed are never in it. An empty list is sent as `null`.
+- **What is published.** For each watch its name, kind, a label (`CI #116 · required`, `command, every 30s`, `timer`), a one-line status, its deadline and the time of its last look. The status is the CI summary, `exit 1 at 10:47` or `not run yet` for a command, `streaming, 3 events` or `starting` for a stream (label `stream`), or `fires at 14:20` for a timer. The document also holds how many undelivered events of the task wait in the spool, once. The command and what it printed are never in it. An empty list is sent as `null`.
 - **When.**
   - `board watch`, `board unwatch` and `board wait --check` publish after they changed the store.
   - The watch unit publishes at once when an event or a finished watch changes the list. For a changed status it publishes at most every 15 seconds per task. An unchanged state goes again after 5 minutes, so the time of the last look does not freeze.
@@ -162,6 +162,20 @@ The board shows a task's watches and lets the user stop one (see [What the board
   The event follows the rules of any other: a worker hands it to the agent, and a parked task wakes, also when other watches stay open. An id with no local watch (already finished or removed) is acknowledged without an event.
 
 - **Acknowledgement.** The tick sends `ack-watch-stops` with every id it handled, so none comes back, then publishes the list. If the acknowledgement fails, the next tick sends it again and writes no second event, because the watch is gone.
+
+### Streams
+
+A stream watch (`board watch --stream`) is the one watch that is not polled. The unit keeps its command running and reports what it prints.
+
+- **Start.** The scan that finds a stream without a process in this unit starts its command with `bash -c`, in a process group of its own, with the directory and `env` of a command watch. It logs `STREAM <task> <name> started`. The watch file counts the starts and the events (`starts`, `events`).
+- **Events.** Each scan (every 2 seconds) writes the lines that arrived since the last one as one event: a spool file, a thread note and a wake, as for any event. The watch stays open. While the note of one event is still on its way to the board, the next lines wait, so a slow board makes larger events and not a queue.
+- **Exit.** The command's exit is the last event, with the lines not yet reported and the exit code or signal, and ends the watch by the usual claim.
+- **Flood.** The unit counts events and bytes over 10 minutes. From 25 events on it collects lines for 10 seconds per event. At more than 50 events, or the moment the output passes 20 KB, it kills the process group and ends the watch with a `stopped` event that carries the notice and the last lines.
+- **Restart.** A running command lives only in the unit's memory. A unit that starts finds the watch with `starts` above 0 and no process, starts the command again from the beginning and logs `started again from the beginning`. The next event of that watch starts with a line that says so. Stopping the unit kills the commands and writes no event.
+- **End from outside.** `board unwatch`, Stop on the board, the timeout, a replaced watch and a dropped task take the watch file away. The next scan kills the command of a watch that is gone and logs `STREAM <task> <name> stopped: its watch is gone`.
+- **On the board.** The status is `streaming, N events`. No line of output is published.
+
+The dispatch tick cannot run a stream. Without the unit it only ends a stream at its timeout, and `board watch --stream` refuses to start one while the unit's heartbeat is stale.
 
 ### Without the watch unit
 
@@ -381,9 +395,9 @@ A config that allows `Bash(board *)` covers `board schedule` and `board move <ta
 
 ### Command watches
 
-A command watch (`board watch <task> --name <name> -- '<command>'`, and `board wait --check`) runs later, from the watch unit or the dispatcher, outside Claude Code. Claude Code's permission rules and the auto-mode classifier see the command only as part of the `board watch` or `board wait` call.
+A command watch (`board watch <task> --name <name> -- '<command>'`, with `--every` or `--stream`, and `board wait --check`) runs later, from the watch unit or the dispatcher, outside Claude Code. Claude Code's permission rules and the auto-mode classifier see the command only as part of the `board watch` or `board wait` call.
 
-So do not allow `Bash(board watch *)` or `Bash(board wait *)` by rule in a run that is not an agent's, or the command skips the classifier. An agent's run may allow `board watch`: the CLI refuses a command watch there, and `--ci` and timers run no command of the agent's choosing.
+So do not allow `Bash(board watch *)` or `Bash(board wait *)` by rule in a run that is not an agent's, or the command skips the classifier. An agent's run may allow `board watch`: the CLI refuses a command watch there, polled or streamed, and `--ci` and timers run no command of the agent's choosing.
 
 ### Not a security boundary
 
