@@ -1901,6 +1901,151 @@ describe('a run taken back and claimed by another machine', () => {
   });
 });
 
+describe('a run taken back and claimed again by the same machine', () => {
+  /** The laptop's first run, taken back after it went quiet, and the laptop's second run of the task. */
+  async function claimedAgain() {
+    const ui = plainUi(db);
+    const task = await ui.tasks.create({ title: 't', input: 'do it' });
+    const first = (await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' })).json.result
+      .run as string;
+    await admin
+      .update(tasks)
+      .set({ lastActiveAt: new Date(Date.now() - TAKE_BACK_AFTER_MS - 60_000) })
+      .where(eq(tasks.id, task.id));
+    await ui.tasks.takeBack({ id: task.id });
+    await ui.tasks.move({ id: task.id, status: 'todo' });
+    const second = (await ctx.call('laptop', 'claim-task', { id: task.id, machine: 'laptop' })).json.result
+      .run as string;
+    return { id: task.id, first, second };
+  }
+  const get = async (id: string) => (await ctx.call('laptop', 'get-task', { id })).json.result;
+  const wakeAt = () => new Date(Date.now() + 30 * 60_000).toISOString();
+  const later = 'the task is running in a later run, not in this one';
+
+  it('gives each claim its own run id, which the task shows only while it runs', async () => {
+    const { id, first, second } = await claimedAgain();
+    expect(first).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(second).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(second).not.toBe(first);
+    expect((await get(id)).run).toBe(second);
+    await ctx.call('laptop', 'update-task', { id, run: second, body: { status: 'needs-me' } });
+    expect((await get(id)).run).toBeUndefined();
+  });
+
+  it('ignores the old run’s heartbeats, and keeps the new run’s', async () => {
+    const { id, first, second } = await claimedAgain();
+    await ctx.call('laptop', 'heartbeat', { id, run: second, body: { lane: 'reviews', borrowed: false } });
+    const before = await get(id);
+    await ctx.call('laptop', 'heartbeat', { id, run: first, body: { lane: 'implement', borrowed: true } });
+    expect(await get(id)).toMatchObject({ lane: 'reviews', borrowed: false, lastActiveAt: before.lastActiveAt });
+  });
+
+  it('refuses a pause, wait, fail, question or stop from the old run as if the task had stopped running', async () => {
+    const { id, first, second } = await claimedAgain();
+    expect(await ctx.call('laptop', 'pause', { id, run: first, body: 'Paused on laptop.' })).toMatchObject({
+      status: 409,
+      json: { error: later },
+    });
+    expect(
+      await ctx.call('laptop', 'wait', { id, run: first, body: { text: 'CI', wakeAt: wakeAt(), check: false } }),
+    ).toMatchObject({ status: 409, json: { error: later } });
+    expect(await ctx.call('laptop', 'ask', { id, run: first, body: { questions: [question] } })).toMatchObject({
+      status: 409,
+      json: { error: later },
+    });
+    expect(await ctx.call('laptop', 'stopped', { id, run: first, body: 'Stopped by you.' })).toMatchObject({
+      status: 409,
+      json: { error: later },
+    });
+    expect((await ctx.call('laptop', 'fail', { id, run: first, body: 'exit 1' })).json.result).toMatchObject({
+      applied: false,
+      task: { status: 'running', run: second },
+    });
+    const { task, thread } = await plainUi(db).tasks.get({ id });
+    expect(task).toMatchObject({ status: 'running', openQuestion: false });
+    expect(thread.some((n) => ['Paused on laptop.', 'CI', 'Stopped by you.', 'exit 1'].includes(n.text))).toBe(false);
+    expect((await ctx.call('laptop', 'fail', { id, run: second, body: 'exit 1' })).json.result.applied).toBe(true);
+  });
+
+  it('keeps the new run’s inbox from the old run', async () => {
+    const { id, first, second } = await claimedAgain();
+    await plainUi(db).tasks.send({ id, message: 'hello' });
+    expect(await ctx.call('laptop', 'run-inbox', { id, run: first })).toMatchObject({
+      status: 409,
+      json: { error: later },
+    });
+    expect((await ctx.call('laptop', 'ack-messages', { id, run: first, body: { ids: [], stop: true } })).status).toBe(
+      409,
+    );
+    const inbox = await ctx.call('laptop', 'run-inbox', { id, run: second });
+    expect(inbox.json.result.messages).toMatchObject([{ text: 'hello', pending: true }]);
+  });
+
+  it('refuses any change from the old run, and a move from the new run only once it no longer holds the task', async () => {
+    const { id, first, second } = await claimedAgain();
+    expect(await ctx.call('laptop', 'update-task', { id, run: first, body: { status: 'done' } })).toMatchObject({
+      status: 409,
+      json: { error: later },
+    });
+    expect((await ctx.call('laptop', 'update-task', { id, run: first, body: { sessionId: SESSION } })).status).toBe(
+      409,
+    );
+    expect(await get(id)).toMatchObject({ status: 'running', run: second, sessionId: null });
+
+    expect((await ctx.call('laptop', 'update-task', { id, run: second, body: { sessionId: SESSION } })).status).toBe(
+      200,
+    );
+    await ctx.call('laptop', 'ask', { id, run: second, body: { questions: [question] } });
+    // The run's own bookkeeping after the agent reported still goes through; a move does not.
+    expect((await ctx.call('laptop', 'update-task', { id, run: second, body: { next: 'fresh' } })).status).toBe(200);
+    expect(await ctx.call('laptop', 'update-task', { id, run: second, body: { status: 'done' } })).toMatchObject({
+      status: 409,
+      json: { error: 'the task is needs-me, no longer running in this run' },
+    });
+    expect(await get(id)).toMatchObject({ status: 'needs-me', openQuestion: true });
+  });
+
+  it('acts as before for a call that names no run', async () => {
+    const { id } = await claimedAgain();
+    expect((await ctx.call('laptop', 'pause', { id, body: 'Paused on laptop.' })).status).toBe(200);
+    expect((await ctx.call('laptop', 'update-task', { id, body: { status: 'done' } })).status).toBe(200);
+  });
+
+  it('refuses a run that is not a run id', async () => {
+    const { id } = await claimedAgain();
+    expect(await ctx.call('laptop', 'heartbeat', { id, run: 'x', body: { lane: 'a', borrowed: false } })).toMatchObject(
+      { status: 400, json: { error: 'run must be a run id' } },
+    );
+  });
+});
+
+describe('a run on another machine, named by its run id', () => {
+  it('still answers the old machine with the machine it runs on, and takes the new machine’s run', async () => {
+    const ui = plainUi(db);
+    const task = await ui.tasks.create({ title: 't', input: 'do it' });
+    const id = task.id;
+    const first = (await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' })).json.result.run as string;
+    await admin
+      .update(tasks)
+      .set({ lastActiveAt: new Date(Date.now() - TAKE_BACK_AFTER_MS - 60_000) })
+      .where(eq(tasks.id, id));
+    await ui.tasks.takeBack({ id });
+    await ui.tasks.move({ id, status: 'todo' });
+    const second = (await ctx.call('workstation', 'claim-task', { id, machine: 'workstation' })).json.result
+      .run as string;
+    expect(await ctx.call('laptop', 'pause', { id, run: first, body: 'x' })).toMatchObject({
+      status: 409,
+      json: { error: 'the task is running on workstation, not on laptop' },
+    });
+    // The machine is checked before the run: a run id alone does not let another machine in.
+    expect((await ctx.call('laptop', 'run-inbox', { id, run: second })).status).toBe(403);
+    expect((await ctx.call('laptop', 'fail', { id, run: second, body: 'x' })).json.result.applied).toBe(false);
+    expect((await ctx.call('workstation', 'ask', { id, run: second, body: { questions: [question] } })).status).toBe(
+      200,
+    );
+  });
+});
+
 describe('messages and stop requests for a running task', () => {
   /** A run whose worker has looked at its inbox, as every worker of CLI 0.9 does once its process started. */
   async function running(withSession = true, readsInbox = true) {

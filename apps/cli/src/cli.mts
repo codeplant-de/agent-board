@@ -7,7 +7,9 @@ import { ConfigError, getPaths, loadConfig } from './config/config.mts';
 import type { Config } from './config/config.mts';
 import { taskLink } from './output/links.mts';
 import { createSealedBackend } from './backend/sealing.mts';
+import { isSafeRunId, isSafeTaskId } from '@agent-board/shared';
 import type { Backend, SkippedItem } from '@agent-board/shared';
+import type { RunScope } from './backend/web-backend.mts';
 import { wantsColor } from './output/style.mts';
 import { errorText } from './output/text.mts';
 
@@ -38,6 +40,16 @@ export interface ContextOptions {
   print?: (line: string) => void;
   // Per request to the board, for commands that must answer quickly.
   timeoutMs?: number;
+  // The run the process acts for: its calls for that task name the run (see `RunScope`).
+  run?: () => RunScope | undefined;
+}
+
+/** The run an agent's `board` acts for: the task and run its worker put in the environment, when both are well formed. */
+export function runScopeFromEnv(env: Record<string, string | undefined>): RunScope | undefined {
+  const task = env['AGENT_BOARD_TASK'];
+  const run = env['AGENT_BOARD_RUN'];
+  if (task === undefined || run === undefined || !isSafeTaskId(task) || !isSafeRunId(run)) return undefined;
+  return { task, run };
 }
 
 // Warns on stderr, once per field and value, that a list answer left an item out for a value this CLI does not know.
@@ -79,6 +91,7 @@ export function buildContext(dryRun: boolean, options: ContextOptions = {}): Lin
     onSkip: warnSkippedOnce(),
     warn: (line) => console.error(`board: ${line}`),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.run === undefined ? {} : { run: options.run }),
   });
   let config: Config | undefined;
   let boardUrl: string | undefined;

@@ -1,7 +1,7 @@
 import { Command, CommanderError } from 'commander';
 import { API_VERSION } from '@agent-board/shared';
 import { readNoteFile } from './board.mts';
-import { buildContext, readStdin, UsageError } from '../cli.mts';
+import { buildContext, readStdin, runScopeFromEnv, UsageError } from '../cli.mts';
 import type { Context, LinkingContext } from '../cli.mts';
 import { getPaths } from '../config/config.mts';
 import { resolveTaskId } from './ids.mts';
@@ -32,8 +32,10 @@ export function buildProgram(options: ProgramOptions = {}): Command {
   const buildContextOf = options.context ?? buildContext;
   // The context of the command that runs: it knows what the board advertised.
   let lastContext: Context | undefined;
+  // Inside a board run, the calls for the run's own task name the run.
+  const run = runScopeFromEnv(env);
   const makeContext: typeof buildContextOf = (dryRun, contextOptions) =>
-    (lastContext = buildContextOf(dryRun, contextOptions));
+    (lastContext = buildContextOf(dryRun, run === undefined ? contextOptions : { run: () => run, ...contextOptions }));
   const writeOut = options.writeOut ?? ((text: string) => void process.stdout.write(text));
   const writeErr = options.writeErr ?? ((text: string) => void process.stderr.write(text));
 

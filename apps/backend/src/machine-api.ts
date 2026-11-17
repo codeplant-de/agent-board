@@ -11,6 +11,7 @@ import {
   findUnknownVocabulary,
   isRecord,
   isSafeMachineName,
+  isSafeRunId,
   isSafeTaskId,
   LEGACY_CONTRACT,
   MIN_CLIENT,
@@ -74,6 +75,14 @@ function idOf(body: Record<string, unknown>, what: 'task' | 'schedule'): string 
   const id = body['id'];
   if (typeof id !== 'string' || !isSafeTaskId(id)) throw new AppError('BAD_REQUEST', `a valid ${what} id is required`);
   return id;
+}
+
+/** The run a call comes from, when it names one: a worker or agent on a server with `task.run`. */
+function runOf(body: Record<string, unknown>): string | undefined {
+  const run = body['run'];
+  if (run === undefined) return undefined;
+  if (!isSafeRunId(run)) throw new AppError('BAD_REQUEST', 'run must be a run id');
+  return run;
 }
 
 /** Contract and transcript errors are the caller's fault: 400 with the parser's reason. */
@@ -161,6 +170,7 @@ async function handleMachineCall(
           db,
           idOf(body, 'task'),
           parsed(() => parseWireTaskPatch(body['body'])),
+          runOf(body),
         ),
       );
     case 'claim-task': {
@@ -210,7 +220,7 @@ async function handleMachineCall(
       return null;
     case 'ask': {
       const asked = parsed(() => parseWireAsk(body['body']));
-      await ask(db, idOf(body, 'task'), asked, machine);
+      await ask(db, idOf(body, 'task'), asked, machine, runOf(body));
       return null;
     }
     case 'heartbeat':
@@ -219,20 +229,21 @@ async function handleMachineCall(
         idOf(body, 'task'),
         parsed(() => parseHeartbeat(body['body'])),
         machine,
+        runOf(body),
       );
       return null;
     case 'pause': {
       const note = parsed(() => parseWireNoteInput(body['body'], 'pause note'));
-      return task(await pause(db, idOf(body, 'task'), note, machine));
+      return task(await pause(db, idOf(body, 'task'), note, machine, runOf(body)));
     }
     case 'fail': {
       const note = parsed(() => parseWireNoteInput(body['body'], 'fail note'));
-      const { applied, row } = await failTask(db, idOf(body, 'task'), note, machine);
+      const { applied, row } = await failTask(db, idOf(body, 'task'), note, machine, runOf(body));
       return { applied, task: task(row) };
     }
     case 'wait': {
       const request = parsed(() => parseWireWait(body['body']));
-      return task(await wait(db, idOf(body, 'task'), request, machine));
+      return task(await wait(db, idOf(body, 'task'), request, machine, { run: runOf(body) }));
     }
     case 'wake': {
       const note = parsed(() => parseWireNoteInput(body['body'], 'wake note'));
@@ -240,7 +251,7 @@ async function handleMachineCall(
       return { applied, task: task(row) };
     }
     case 'run-inbox': {
-      const inbox = await runInbox(db, idOf(body, 'task'), machine);
+      const inbox = await runInbox(db, idOf(body, 'task'), machine, runOf(body));
       return {
         stop: inbox.stop,
         ...(inbox.stopMessage === undefined ? {} : { stopMessage: inbox.stopMessage }),
@@ -249,12 +260,12 @@ async function handleMachineCall(
     }
     case 'ack-messages': {
       const ack = parsed(() => parseAckMessages(body['body']));
-      await ackMessages(db, idOf(body, 'task'), { ids: ack.ids, stop: ack.stop === true }, machine);
+      await ackMessages(db, idOf(body, 'task'), { ids: ack.ids, stop: ack.stop === true }, machine, runOf(body));
       return null;
     }
     case 'stopped': {
       const note = parsed(() => parseWireNoteInput(body['body'], 'stopped note'));
-      return task(await stopped(db, idOf(body, 'task'), note, machine));
+      return task(await stopped(db, idOf(body, 'task'), note, machine, runOf(body)));
     }
     case 'transcript':
       await appendTranscript(

@@ -123,6 +123,10 @@ export interface Task {
   lastActiveAt: Date | null;
   // While it runs: when the worker claimed it; otherwise null.
   runStartedAt: Date | null;
+  // While it runs: the id of the run, new with every claim (`isSafeRunId`). A worker and its agent send it with their calls
+  // for the task so the server can tell their run from a later one on the same machine. Absent when the task is not
+  // running and from a server without the `task.run` feature.
+  run?: string;
   // The last run gave up its slot (`pause`) and the task has not run since. Set by `pause`, kept through the claim so the
   // worker that resumes it can see it, and cleared by that worker's first `update-task` of the run or by the task leaving
   // Running another way. A worker that reads `paused: true` on its claimed task tells the agent it was paused.
@@ -616,6 +620,16 @@ export function isSafeTaskId(id: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id) && !RESERVED_TASK_IDS.includes(id);
 }
 
+// A run id goes into the agent's environment and back to the server; the server makes it from 16 random bytes.
+export function isSafeRunId(id: unknown): id is string {
+  return typeof id === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(id);
+}
+
+function runId(value: unknown, what: string): string {
+  if (!isSafeRunId(value)) throw new ContractError(`${what} run is not a run id`);
+  return value;
+}
+
 const ID_ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 /** A new task or schedule id: 12 random characters, never a reserved one. The client chooses it, because its sealed fields are bound to it. */
@@ -908,6 +922,7 @@ export function parseWireTask(value: unknown): WireTask {
     borrowed: boolean(obj, 'borrowed', 'task'),
     lastActiveAt: nullableDate(obj, 'lastActiveAt', 'task'),
     runStartedAt: nullableDate(obj, 'runStartedAt', 'task'),
+    ...(obj['run'] == null ? {} : { run: runId(obj['run'], 'task') }),
     paused: boolean(obj, 'paused', 'task'),
     notBefore: nullableDate(obj, 'notBefore', 'task'),
     scheduleId: obj['scheduleId'] === null ? null : safeId(string(obj, 'scheduleId', 'task'), 'task scheduleId'),

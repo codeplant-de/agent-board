@@ -76,6 +76,8 @@ export interface MachineRequest {
   all?: boolean;
   machine?: string;
   author?: string;
+  // The server's id of the run the call comes from (`task.run`), for the commands in RUN_COMMANDS on the run's own task.
+  run?: string;
   // The command's payload, JSON: sealed values for add-task, update-task, add-schedule, add-note, ask, pause, stopped, fail, wait, wake and transcript; ack-messages takes plain ids.
   body?: unknown;
 }

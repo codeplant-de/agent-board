@@ -277,6 +277,16 @@ test('a run is over for its worker when the task closed or runs again from anoth
   assert.equal(isRunOver({ runStartedAt: null }, { ...running, runStartedAt: null }), false);
 });
 
+test('a board that names runs tells them apart by the run id, not by their start', () => {
+  const at = new Date('2026-01-01T10:00:00Z');
+  const started = { runStartedAt: at, run: 'a'.repeat(22) };
+  const running = { closed: false, status: 'running' as const, runStartedAt: at };
+  assert.equal(isRunOver(started, { ...running, run: 'a'.repeat(22) }), false);
+  assert.equal(isRunOver(started, { ...running, run: 'b'.repeat(22) }), true);
+  assert.equal(isRunOver(started, running), true);
+  assert.equal(isRunOver(started, { closed: false, status: 'needs-me', runStartedAt: null }), false);
+});
+
 test('a run whose task left Running is still its own: the board drops runStartedAt with the move', () => {
   const started = { runStartedAt: new Date('2026-01-01T10:00:00Z') };
   for (const status of ['needs-me', 'todo', 'waiting'] as const)
