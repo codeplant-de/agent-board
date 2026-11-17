@@ -1,4 +1,5 @@
 // The ci source: a PR's checks, read with `gh pr view` and `gh pr checks`. What to make of what gh said is a pure function.
+import { createHash } from 'node:crypto';
 import { isRecord } from '@agent-board/shared';
 import { shellQuote } from '../output/text.mts';
 import type { WatchSource } from './store.mts';
@@ -82,14 +83,24 @@ function parseChecks(stdout: string): Check[] | undefined {
 
 const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;
 
+// The checks a look found, as a short digest: names come from the repository, so the watch file keeps no names.
+function settledDigest(list: Check[]): string {
+  const entries = list.map(({ name, bucket }) => `${bucket}\t${name}`).sort();
+  return createHash('sha256').update(JSON.stringify(entries)).digest('hex').slice(0, 16);
+}
+
 function describeCheck(label: string, { name, link }: Check): string {
   return `${label}: ${name}${link === '' ? '' : ` ${link}`}`;
 }
 
 /**
  * What a PR's checks say. A merged or closed PR ends the watch; a new head commit starts it over on that commit; any failed or
- * cancelled check ends it at once; every check passing ends it; anything else keeps it pending. A PR without checks is given
- * three minutes after its head was first seen, then the watch ends. Names and links in the text are the repository's own and
+ * cancelled check ends it at once; every check passing ends it once two looks in a row found the same checks; anything else
+ * keeps it pending. A PR without checks is given three minutes after its head was first seen, then the watch ends.
+ *
+ * Why two looks: for some seconds after `gh run rerun`, `gh pr checks` lists only the checks outside the re-queued run, so one
+ * look can find a few checks, all passed, while the rest are about to run again. The first all-green look stores a digest of
+ * the checks in `settled`; the next one reports only when it finds the same checks. Names and links in the text are the repository's own and
  * not to be trusted: the caller sanitizes the text.
  */
 export function decideCi({ source, now, view, checks }: CiInput): CiDecision {
@@ -114,8 +125,9 @@ export function decideCi({ source, now, view, checks }: CiInput): CiDecision {
 
   const nowIso = now.toISOString();
   const headChanged = source.head !== headRefOid;
+  const { settled: _settled, ...unsettled } = source;
   const watched: CiSource = {
-    ...source,
+    ...unsettled,
     head: headRefOid,
     headSince: headChanged && source.head !== undefined ? nowIso : (source.headSince ?? nowIso),
   };
@@ -152,7 +164,14 @@ export function decideCi({ source, now, view, checks }: CiInput): CiDecision {
   }
   if (running > 0)
     return { kind: 'pending', summary: `${passed} of ${list.length} passed, ${running} running`, source: watched };
-  if (passed === 0) return { kind: 'event', text: `${base}: every check was skipped.`, source: watched };
   const skippedNote = skipped > 0 ? `, ${skipped} skipped` : '';
+  const settled = settledDigest(list);
+  if (headChanged || source.settled !== settled)
+    return {
+      kind: 'pending',
+      summary: `${passed === 0 ? `all ${plural(skipped, 'check')} skipped` : `${plural(passed, 'check')} passed${skippedNote}`}, looking once more before reporting`,
+      source: { ...watched, settled },
+    };
+  if (passed === 0) return { kind: 'event', text: `${base}: every check was skipped.`, source: watched };
   return { kind: 'event', text: `${base} passed: ${plural(passed, 'check')} passed${skippedNote}.`, source: watched };
 }

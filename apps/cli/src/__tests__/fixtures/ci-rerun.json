@@ -1,0 +1,1242 @@
+{
+  "pr": "https://github.com/codeplant-de/agent-board/pull/135",
+  "head": "2b07243",
+  "rerun": "gh run rerun 44163940363 (full) at 2026-11-17 ~20:05 UTC",
+  "looks": [
+    {
+      "afterSeconds": 2.2,
+      "checks": [
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 4.1,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 6.3,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 8.4,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 10.5,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 12.5,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 14.7,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 16.7,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 18.7,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 20.9,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 22.9,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 24.9,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 26.9,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 29.1,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 31.2,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 33.3,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 35.2,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 37.2,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 39.3,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    },
+    {
+      "afterSeconds": 41.1,
+      "checks": [
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327152488",
+          "name": "cli-macos"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080432",
+          "name": "test"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080494",
+          "name": "binary"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080633",
+          "name": "macos-changes"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080561",
+          "name": "cli-release-check"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080527",
+          "name": "previous-cli"
+        },
+        {
+          "bucket": "pending",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080232",
+          "name": "images (agent-board-backend, apps/backend/Dockerfile)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327080642",
+          "name": "images (agent-board-web, apps/frontend/Dockerfile)"
+        },
+        {
+          "bucket": "skipping",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163940363/job/134327082301",
+          "name": "cli-release-plan"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/runs/134325146526",
+          "name": "CodeQL"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324808019",
+          "name": "Analyze (actions)"
+        },
+        {
+          "bucket": "pass",
+          "link": "https://github.com/codeplant-de/agent-board/actions/runs/44163929687/job/134324807264",
+          "name": "Analyze (javascript-typescript)"
+        }
+      ]
+    }
+  ]
+}

@@ -746,7 +746,7 @@ An event's text can come from text you did not write, such as job names from a P
 
 - Every 30 seconds the machine reads `gh pr checks <pr> --json name,bucket,link`. It looks at all checks, or with `--required` at the required ones.
 - It reports at the first failed or cancelled check, with the failed checks' names and links and how many are still running or passed.
-- It reports once every check has passed or been skipped.
+- It reports once every check has passed or been skipped, and the next look 30 seconds later finds the same checks. For some seconds after `gh run rerun`, `gh pr checks` lists only the checks outside the re-queued run, all passed; one look would take that for a green build. So a green build is never reported at registration: the watch is stored and reports on its second look.
 - It reports a PR that was merged or closed.
 - Right after a push, "no checks reported" counts as running for 3 minutes. Then the watch reports "no checks appeared".
 - A new head commit restarts the watch on that commit.

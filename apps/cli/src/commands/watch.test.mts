@@ -249,14 +249,16 @@ test('a ci watch whose PR gh cannot read fails the call', async () => {
   assert.deepEqual(watches.list(ID).defs, []);
 });
 
-test('a ci watch whose checks have all passed reports at once and stores nothing', async () => {
+test('a ci watch whose checks have all passed does not report at once: a re-run may be about to list more', async () => {
   const { go, run, watches, printed } = setup({ prs: [taskPr(PR)] });
   run.runner = fakeRunner({
     'gh pr checks': commandResult(0, JSON.stringify([{ name: 'build', bucket: 'pass', link: 'https://ci/1' }])),
   });
   await go(['watch', ID, '--ci']);
-  assert.deepEqual(watches.list(ID).defs, []);
-  assert.match(printed.join('\n'), /CI on .* passed: 1 check passed/);
+  const [def] = watches.list(ID).defs;
+  assert.match(def?.source.kind === 'ci' ? (def.source.settled ?? '') : '', /^[0-9a-f]{16}$/);
+  assert.equal(def?.last?.summary, '1 check passed, looking once more before reporting');
+  assert.doesNotMatch(printed.join('\n'), /CI on .* passed/);
 });
 
 const reviewView = (comments: object[]) =>
