@@ -3,7 +3,15 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { Task, TaskWatch } from '@agent-board/shared';
-import { commandDef, commandResult, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
+import {
+  commandDef,
+  commandResult,
+  fakeStreams,
+  streamDef,
+  tempDir,
+  timerDef,
+  watchDef,
+} from '../__tests__/helpers/watch.mts';
 import { task as makeTask } from '../__tests__/helpers/fakes.mts';
 import { WAKE_MARKER, WATCH_MARKER } from '../task-rules.mts';
 import type { RunJob } from './attempt.mts';
@@ -25,6 +33,7 @@ function setup({ wakeApplies = true }: { wakeApplies?: boolean } = {}) {
   const alive = new Set<number>();
   const answers = new Map<string, (job: RunJob) => ReturnType<typeof commandResult>>();
   const state = { wakeApplies, failWake: false, failNote: false };
+  const streams = fakeStreams();
   const deps: UnitDeps = {
     store,
     backend: {
@@ -42,6 +51,7 @@ function setup({ wakeApplies = true }: { wakeApplies?: boolean } = {}) {
       },
     },
     run: async (job) => (answers.get(job.command) ?? (() => commandResult(1, 'down')))(job),
+    stream: streams.start,
     now: () => new Date(clock.ms),
     isAlive: (pid) => alive.has(pid),
     log: (line) => logs.push(line),
@@ -54,7 +64,7 @@ function setup({ wakeApplies = true }: { wakeApplies?: boolean } = {}) {
   const advance = (ms: number): void => {
     clock.ms += ms;
   };
-  return { dir, store, unit, deps, calls, logs, published, alive, answers, state, pass, advance };
+  return { dir, store, unit, deps, calls, logs, published, alive, answers, state, streams, pass, advance };
 }
 
 const wakes = (calls: string[]): string[] => calls.filter((call) => call.startsWith('wake'));
@@ -383,4 +393,266 @@ test('the main loop scans every period and stops on its signal, waiting for what
   });
   assert.equal(scans, 3);
   assert.deepEqual(logs, ['watch unit started', 'watch unit stopped']);
+});
+
+// A unit over the same store, as after a restart of the unit or a reboot.
+function secondUnit(first: ReturnType<typeof setup>) {
+  const streams = fakeStreams();
+  const unit = createWatchUnit({ ...first.deps, stream: streams.start });
+  const pass = async (): Promise<void> => {
+    unit.scan();
+    await unit.settled();
+  };
+  return { unit, streams, pass };
+}
+
+const eventTexts = (store: ReturnType<typeof setup>['store']): string[] =>
+  store.events(TASK).map(({ event }) => `${event.kind}: ${event.text}`);
+
+test('a stream: the unit starts the command once, and the lines between two passes are one event while the watch stays open', async () => {
+  const { store, pass, advance, streams, calls, logs, published } = setup();
+  store.write(
+    streamDef('tail -f log', {
+      source: { kind: 'stream', command: 'tail -f log', cwd: '/work', starts: 0, events: 0, settingsDir: '/start' },
+    }),
+  );
+  await pass();
+  assert.deepEqual(
+    streams.started.map(({ job }) => job),
+    [{ command: 'tail -f log', cwd: '/work', settingsDir: '/start' }],
+  );
+  assert.deepEqual(store.read(TASK, 'log')?.source, {
+    kind: 'stream',
+    command: 'tail -f log',
+    cwd: '/work',
+    settingsDir: '/start',
+    starts: 1,
+    events: 0,
+  });
+  assert.ok(logs.includes(`STREAM ${TASK} log started`));
+  assert.equal(published.at(-1)?.[0]?.status, 'streaming, 0 events');
+  const { sink } = streams.started[0] ?? assert.fail('no stream');
+  advance(2000);
+  await pass();
+  assert.deepEqual(eventTexts(store), []);
+
+  sink.line('first');
+  advance(500);
+  sink.line('second');
+  advance(1500);
+  await pass();
+  sink.line('third');
+  advance(2000);
+  await pass();
+  await pass();
+  assert.deepEqual(eventTexts(store), ['event: first\nsecond', 'event: third']);
+  assert.equal(streams.started.length, 1);
+  assert.equal(streams.started[0]?.killed, false);
+  const open = store.read(TASK, 'log');
+  assert.equal(open?.source.kind === 'stream' && open.source.events, 2);
+  assert.equal(open?.last?.summary, 'streaming');
+  assert.deepEqual(
+    calls.filter((call) => call.startsWith('note')),
+    [
+      `note ${TASK}: ${WATCH_MARKER} "log" reported.\n\n\`\`\`\nfirst\nsecond\n\`\`\``,
+      `note ${TASK}: ${WATCH_MARKER} "log" reported.\n\n\`\`\`\nthird\n\`\`\``,
+    ],
+  );
+  // The first event woke the task; the second came before a worker was there and asks again.
+  assert.equal(wakes(calls).length, 2);
+});
+
+test('a stream: the board is told the count of events, at most every 15 seconds, and never a line', async () => {
+  const { store, pass, advance, streams, published } = setup();
+  store.write(streamDef('tail -f SECRET'));
+  await pass();
+  const { sink } = streams.started[0] ?? assert.fail('no stream');
+  for (let index = 0; index < 4; index += 1) {
+    sink.line(`SECRET-OUTPUT ${index}`);
+    advance(5000);
+    await pass();
+  }
+  const statuses = published.map((list) => list?.[0]?.status);
+  assert.deepEqual(statuses, ['streaming, 0 events', 'streaming, 3 events']);
+  advance(15_000);
+  await pass();
+  assert.equal(published.at(-1)?.[0]?.status, 'streaming, 4 events');
+  assert.equal(JSON.stringify(published).includes('SECRET'), false);
+});
+
+test('a stream: a live run is not woken for its events, and gets every one of them', async () => {
+  const { store, pass, advance, streams, alive, calls } = setup();
+  store.markLive(TASK, 4242);
+  alive.add(4242);
+  store.write(streamDef('tail -f log'));
+  await pass();
+  const { sink } = streams.started[0] ?? assert.fail('no stream');
+  sink.line('one');
+  await pass();
+  advance(2000);
+  sink.line('two');
+  await pass();
+  assert.deepEqual(eventTexts(store), ['event: one', 'event: two']);
+  assert.deepEqual(wakes(calls), []);
+});
+
+test('a stream: the exit of the command is the last event, with its exit code, and ends the watch', async () => {
+  const { store, pass, advance, streams, published, logs } = setup();
+  store.write(streamDef('deploy --follow'));
+  await pass();
+  const { sink } = streams.started[0] ?? assert.fail('no stream');
+  sink.line('rolling out');
+  advance(2000);
+  await pass();
+  sink.line('rolled out');
+  sink.exit({ exitCode: 0 });
+  advance(2000);
+  await pass();
+  assert.deepEqual(eventTexts(store), [
+    'event: rolling out',
+    'event: rolled out\nThe command exited with code 0. The watch is over.',
+  ]);
+  assert.equal(store.read(TASK, 'log'), undefined);
+  assert.equal(published.at(-1), null);
+  await pass();
+  assert.equal(streams.started.length, 1);
+  assert.equal(
+    logs.some((line) => line.includes('its watch is gone')),
+    false,
+  );
+});
+
+test('a stream: a command that floods is killed and the watch ends with a notice', async () => {
+  const { store, pass, advance, streams } = setup();
+  store.write(streamDef('yes'));
+  await pass();
+  const stream = streams.started[0] ?? assert.fail('no stream');
+  for (let index = 0; index < 30; index += 1) stream.sink.line('y'.repeat(999));
+  assert.equal(stream.killed, true);
+  advance(2000);
+  await pass();
+  const texts = eventTexts(store);
+  assert.equal(texts.length, 1);
+  assert.match(
+    texts[0] ?? '',
+    /^stopped: \(\d+ earlier lines left out\)\n[y…\n]+\nThe command printed too much: more than 50 events or 20 KB in 10 minutes\. It was stopped and the watch is over\.$/,
+  );
+  assert.equal(store.read(TASK, 'log'), undefined);
+  await pass();
+  assert.equal(streams.started.length, 1);
+});
+
+test('a stream: after a restart of the unit the command starts again from the beginning, and its next event says so', async () => {
+  const first = setup();
+  const { store, advance } = first;
+  store.write(streamDef('tail -f log'));
+  await first.pass();
+  first.streams.started[0]?.sink.line('before');
+  advance(2000);
+  await first.pass();
+  first.unit.stop();
+  await first.unit.settled();
+  assert.equal(first.streams.started[0]?.killed, true);
+  // What the killed command still says is not an event.
+  first.streams.started[0]?.sink.exit({ exitCode: null, signal: 'SIGKILL' });
+  await first.pass();
+  assert.deepEqual(eventTexts(store), ['event: before']);
+  assert.ok(store.read(TASK, 'log') !== undefined);
+
+  advance(60_000);
+  const second = secondUnit(first);
+  await second.pass();
+  assert.equal(second.streams.started.length, 1);
+  assert.ok(first.logs.includes(`STREAM ${TASK} log started again from the beginning`));
+  const restarted = store.read(TASK, 'log');
+  assert.equal(restarted?.source.kind === 'stream' && restarted.source.starts, 2);
+  assert.equal(restarted?.last?.summary, 'started again');
+  // No event for the restart alone: a parked task is not woken for it.
+  assert.equal(eventTexts(store).length, 1);
+  second.streams.started[0]?.sink.line('before');
+  second.streams.started[0]?.sink.line('after');
+  advance(2000);
+  await second.pass();
+  second.streams.started[0]?.sink.line('later');
+  advance(2000);
+  await second.pass();
+  const texts = eventTexts(store);
+  assert.match(
+    texts[1] ?? '',
+    /^event: The watch unit was restarted \(or the machine rebooted\): the command was started again from the beginning at .+\. Lines it printed before may come again\.\nbefore\nafter$/,
+  );
+  assert.equal(texts[2], 'event: later');
+  const counted = store.read(TASK, 'log');
+  assert.equal(counted?.source.kind === 'stream' && counted.source.events, 3);
+});
+
+test('a stream: a watch that is stopped, replaced or dropped has its command killed and reports nothing more', async () => {
+  const { store, pass, advance, streams, logs } = setup();
+  store.write(streamDef('tail -f log'));
+  await pass();
+  const stream = streams.started[0] ?? assert.fail('no stream');
+  stream.sink.line('unreported');
+  store.claim(TASK, 'log')?.done();
+  advance(2000);
+  await pass();
+  assert.equal(stream.killed, true);
+  assert.deepEqual(eventTexts(store), []);
+  assert.ok(logs.includes(`STREAM ${TASK} log stopped: its watch is gone`));
+
+  store.write(streamDef('tail -f log'));
+  await pass();
+  store.write(streamDef('tail -f other', { id: 'c1b2c3d4e5f60718' }));
+  await pass();
+  assert.deepEqual(
+    streams.started.map(({ job, killed }) => `${job.command} ${killed}`),
+    ['tail -f log true', 'tail -f log true', 'tail -f other false'],
+  );
+});
+
+test('a stream: its deadline ends it with a timeout event and kills the command', async () => {
+  const { store, pass, advance, streams } = setup();
+  store.write(streamDef('tail -f log'));
+  await pass();
+  streams.started[0]?.sink.line('a line');
+  advance(2000);
+  await pass();
+  advance(2 * 60 * 60_000);
+  await pass();
+  await pass();
+  assert.equal(streams.started[0]?.killed, true);
+  const texts = eventTexts(store);
+  assert.match(texts[1] ?? '', /^timeout: Watch "log" timed out after 2h .+ Its command was stopped after 1 event\.$/);
+  assert.equal(store.read(TASK, 'log'), undefined);
+});
+
+test('a stream: lines wait while the event before them is still on its way to the board', async () => {
+  const { store, deps, advance } = setup();
+  const streams = fakeStreams();
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const unit = createWatchUnit({
+    ...deps,
+    stream: streams.start,
+    backend: { ...deps.backend, addNote: () => held },
+  });
+  store.write(streamDef('tail -f log'));
+  unit.scan();
+  const { sink } = streams.started[0] ?? assert.fail('no stream');
+  sink.line('one');
+  unit.scan();
+  sink.line('two');
+  advance(2000);
+  unit.scan();
+  sink.line('three');
+  advance(2000);
+  unit.scan();
+  assert.deepEqual(eventTexts(store), ['event: one']);
+  release();
+  await unit.settled();
+  advance(2000);
+  unit.scan();
+  await unit.settled();
+  assert.deepEqual(eventTexts(store), ['event: one', 'event: two\nthree']);
 });

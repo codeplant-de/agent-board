@@ -44,6 +44,11 @@ export type AttemptResult =
   | { kind: 'pending'; summary: string; def?: WatchDef }
   | { kind: 'broken'; reason: string };
 
+/** Whether the watch is looked at on a timer (ci, pr-review, command). A timer only ends, and a stream's command runs on in the watch unit. */
+export function isPolled(def: Pick<WatchDef, 'source'>): boolean {
+  return def.source.kind !== 'timer' && def.source.kind !== 'stream';
+}
+
 /** When a polled watch is next due: `everyMs` after its last attempt, or after it was registered (which ran the first one). */
 export function nextAttemptAt(def: Pick<WatchDef, 'last' | 'createdAt' | 'everyMs'>): number {
   return Date.parse(def.last?.at ?? def.createdAt) + def.everyMs;
@@ -125,7 +130,8 @@ async function attemptReview(def: WatchDef & { source: ReviewSource }, deps: Att
 }
 
 /**
- * Looks at one watch. A timer is never polled: its end is its event. Every other source returns its event, or its state.
+ * Looks at one watch. A timer is never polled: its end is its event. A stream is never polled either. Every other source returns
+ * its event, or its state.
  */
 export async function attempt(def: WatchDef, now: Date, deps: AttemptDeps): Promise<AttemptResult> {
   const { source } = def;
@@ -133,18 +139,29 @@ export async function attempt(def: WatchDef, now: Date, deps: AttemptDeps): Prom
     return now.getTime() >= Date.parse(def.deadline)
       ? { kind: 'event', text: timerText(def) }
       : { kind: 'pending', summary: `waiting until ${deadlineTime(new Date(def.deadline), now)}` };
+  // A stream is not looked at: the watch unit runs its command and reports what it prints (see stream.mts).
+  if (source.kind === 'stream')
+    return { kind: 'pending', summary: source.starts === 0 ? 'not started yet' : 'streaming' };
   if (source.kind === 'command') return attemptCommand({ ...def, source }, deps);
   if (source.kind === 'pr-review') return attemptReview({ ...def, source }, deps);
   return attemptCi({ ...def, source }, now, deps);
 }
+
+// "1 event", "3 events".
+export const countEvents = (count: number): string => `${count} event${count === 1 ? '' : 's'}`;
 
 export function timerText(def: Pick<WatchDef, 'createdAt'>): string {
   return `Time is up (set ${localTime(new Date(def.createdAt))}).`;
 }
 
 /** What the watch reports when its deadline passed without an event. */
-export function timeoutText(def: Pick<WatchDef, 'name' | 'createdAt' | 'deadline' | 'last'>): string {
+export function timeoutText(def: Pick<WatchDef, 'name' | 'createdAt' | 'deadline' | 'last' | 'source'>): string {
   const after = formatDuration(Date.parse(def.deadline) - Date.parse(def.createdAt));
+  if (def.source.kind === 'stream') {
+    const { starts, events } = def.source;
+    const ran = starts === 0 ? 'Its command never started.' : `Its command was stopped after ${countEvents(events)}.`;
+    return `Watch "${def.name}" timed out after ${after} (${localTime(new Date(def.deadline))}). ${ran}`;
+  }
   const last =
     def.last === undefined ? 'It never ran.' : `Last attempt ${localTime(new Date(def.last.at))}: ${def.last.summary}`;
   return `Watch "${def.name}" timed out after ${after} (${localTime(new Date(def.deadline))}). ${last}`;

@@ -209,6 +209,14 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
+### Stream watches (CLI 0.23.0)
+
+The CLI alone changes: `board watch <task> --name <name> --stream -- '<command>'` keeps a command running in the watch unit and reports its output lines as events (see [Sources](usage.md#sources) and [Streams](workers.md#streams)). The server and the contract stay as they are. Update machines in any order.
+
+- On a checkout install, restart the watch unit after updating: `board restart watch`. `board self-update` restarts it. A unit that still runs the older code skips a stream watch and logs that it cannot read its file.
+- A stream needs the watch unit. On a machine without it, `board watch --stream` is refused; run `board setup --enable`.
+- The board shows a stream once the server of this version is deployed. An older page leaves the watch out of its list.
+
 ### `board watch --pr-review` (CLI 0.22.0)
 
 A new watch source: the first review or comment someone else leaves on a pull request (see [Sources](usage.md#sources)). Nothing changes on the server, and no feature name is added.

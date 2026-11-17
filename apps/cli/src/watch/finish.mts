@@ -14,6 +14,33 @@ export interface FinishDeps {
   log: (line: string) => void;
 }
 
+async function note(deps: FinishDeps, event: WatchEvent): Promise<void> {
+  deps.log(`EVENT ${event.task} ${event.name} ${event.kind} at=${event.at}`);
+  try {
+    await deps.backend.addNote(event.task, `${WATCH_MARKER} "${event.name}" reported.\n\n${fence(event.text)}`);
+  } catch (error) {
+    deps.log(`WARN note for watch ${event.name} on ${event.task} failed: ${errorText(error)}`);
+  }
+}
+
+/**
+ * Reports an event of a watch that stays open (a stream's lines): writes it into the spool and leaves a note in the task's thread.
+ * The caller made sure the watch is still its own (`store.update`).
+ */
+export async function reportEvent(deps: FinishDeps, def: WatchDef, text: string): Promise<WatchEvent> {
+  const event: WatchEvent = {
+    id: newWatchId(),
+    task: def.task,
+    name: def.name,
+    at: deps.now().toISOString(),
+    kind: 'event',
+    text: sanitizeEventText(text),
+  };
+  deps.store.writeEvent(event);
+  await note(deps, event);
+  return event;
+}
+
 /**
  * Ends `def` with an event or a timeout: claims the watch, writes the event into the spool, and leaves a note in the task's thread.
  * Undefined when someone else finished or removed the watch first; then nothing was written. A note that fails is logged and not
@@ -39,11 +66,6 @@ export async function finishWatch(
   } finally {
     claim.done();
   }
-  deps.log(`EVENT ${event.task} ${event.name} ${event.kind} at=${event.at}`);
-  try {
-    await deps.backend.addNote(def.task, `${WATCH_MARKER} "${def.name}" reported.\n\n${fence(event.text)}`);
-  } catch (error) {
-    deps.log(`WARN note for watch ${def.name} on ${def.task} failed: ${errorText(error)}`);
-  }
+  await note(deps, event);
   return event;
 }

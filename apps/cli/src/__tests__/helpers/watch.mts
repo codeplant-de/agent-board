@@ -3,6 +3,7 @@ import { after } from 'node:test';
 import type { CommandResult } from '../../dispatch/waits.mts';
 import type { WatchRunner } from '../../watch/attempt.mts';
 import type { WatchDef } from '../../watch/store.mts';
+import type { StreamJob, StreamSink, StreamStarter } from '../../watch/stream.mts';
 
 export const PR = 'https://github.com/acme/app/pull/7';
 export const HEAD = 'a'.repeat(40);
@@ -29,6 +30,44 @@ export function commandDef(command: string, overrides: Partial<WatchDef> = {}): 
     everyMs: 60_000,
     ...overrides,
   });
+}
+
+export function streamDef(command: string, overrides: Partial<WatchDef> = {}): WatchDef {
+  return watchDef({
+    name: 'log',
+    source: { kind: 'stream', command, cwd: '/work', starts: 0, events: 0 },
+    everyMs: 0,
+    ...overrides,
+  });
+}
+
+export interface FakeStream {
+  job: StreamJob;
+  sink: StreamSink;
+  killed: boolean;
+}
+
+export interface FakeStreams {
+  start: StreamStarter;
+  // Every command that was started, in order; a test prints lines and exits through its `sink`.
+  started: FakeStream[];
+}
+
+/** A stream starter that starts no process: the test plays the command. */
+export function fakeStreams(): FakeStreams {
+  const started: FakeStream[] = [];
+  return {
+    started,
+    start(job, sink) {
+      const stream: FakeStream = { job, sink, killed: false };
+      started.push(stream);
+      return {
+        kill() {
+          stream.killed = true;
+        },
+      };
+    },
+  };
 }
 
 export const timerDef = (overrides: Partial<WatchDef> = {}): WatchDef =>

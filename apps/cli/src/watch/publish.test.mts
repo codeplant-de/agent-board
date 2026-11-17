@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { TaskWatch } from '@agent-board/shared';
 import { BackendError } from '../backend/backend.mts';
-import { commandDef, PR, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
+import { commandDef, PR, streamDef, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
 import { isBoardStale, publishWatches, taskWatchesOf } from './publish.mts';
 import { createWatchStore, newWatchId } from './store.mts';
 
@@ -49,6 +49,21 @@ test('the list holds a label and a state per kind, the deadline, and never the c
   );
   store.write(commandDef(SECRET, { id: '2222222222222222', name: 'fresh', everyMs: 60_000 }));
   store.write(timerDef({ id: '3333333333333333', deadline: '2026-01-01T14:20:00.000Z' }));
+  store.write(streamDef(SECRET, { id: '7777777777777777', name: 'new-stream' }));
+  store.write(
+    streamDef(SECRET, {
+      id: '5555555555555555',
+      source: { kind: 'stream', command: SECRET, cwd: '/work', starts: 1, events: 3 },
+      last: { at: '2026-01-01T11:57:00.000Z', summary: 'streaming' },
+    }),
+  );
+  store.write(
+    streamDef(SECRET, {
+      id: '6666666666666666',
+      name: 'one',
+      source: { kind: 'stream', command: SECRET, cwd: '/work', starts: 2, events: 1 },
+    }),
+  );
   store.write(
     watchDef({
       id: '4444444444444444',
@@ -84,6 +99,12 @@ test('the list holds a label and a state per kind, the deadline, and never the c
   assert.match(by['timer']?.status ?? '', /^fires at /);
   assert.equal(by['timer']?.lastAttemptAt, undefined);
   assert.equal(by['timer']?.deadline, '2026-01-01T14:20:00.000Z');
+  assert.equal(by['new-stream']?.kind, 'stream');
+  assert.equal(by['new-stream']?.label, 'stream');
+  assert.equal(by['new-stream']?.status, 'starting');
+  assert.equal(by['log']?.status, 'streaming, 3 events');
+  assert.equal(by['log']?.lastAttemptAt, '2026-01-01T11:57:00.000Z');
+  assert.equal(by['one']?.status, 'streaming, 1 event');
   const json = JSON.stringify(watches);
   for (const secret of ['SECRET', 'curl', 'internal.example']) assert.equal(json.includes(secret), false, secret);
 });

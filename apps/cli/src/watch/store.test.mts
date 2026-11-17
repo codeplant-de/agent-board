@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { commandDef, PR, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
+import { commandDef, PR, streamDef, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
 import { createWatchStore, isWatchName, parseWatchDef, parseWatchEvent } from './store.mts';
 import type { WatchEvent } from './store.mts';
 
@@ -90,6 +90,12 @@ test('a watch definition is shape-checked: the PR, the directories, the commit a
   assert.equal(bad({ deadline: 'soon' }), undefined);
   assert.equal(bad({ everyMs: 0 }), undefined);
   assert.equal(parseWatchDef(timerDef())?.everyMs, 0);
+  const stream = streamDef('tail -f log');
+  assert.deepEqual(parseWatchDef(stream), stream);
+  assert.equal(parseWatchDef({ ...stream, source: { ...stream.source, starts: -1 } }), undefined);
+  assert.equal(parseWatchDef({ ...stream, source: { ...stream.source, events: '3' } }), undefined);
+  assert.equal(parseWatchDef({ ...stream, source: { ...stream.source, command: ' ' } }), undefined);
+  assert.equal(parseWatchDef({ ...stream, source: { ...stream.source, cwd: 'relative' } }), undefined);
   const noisy = parseWatchDef({
     ...good,
     source: { ...good.source, head: 'not-a-commit', settingsDir: 'rel' },
@@ -188,6 +194,16 @@ test('events are spooled oldest first, rewritten in place, and deleted by file n
   store.updateEvent(TASK, first);
   assert.equal(store.events(TASK).length, 1);
   store.deleteEvents(TASK, ['../watch-ci.json', 'live']);
+});
+
+test('events of one watch in the same millisecond each keep their own file, in order', () => {
+  const store = newStore();
+  const files = ['one', 'two', 'three'].map((text) => store.writeEvent(event({ name: 'log', text })));
+  assert.equal(new Set(files).size, 3);
+  assert.deepEqual(
+    store.events(TASK).map(({ event: found }) => found.text),
+    ['one', 'two', 'three'],
+  );
 });
 
 test('an event is sanitized again when it is read, and one of another shape is skipped', () => {

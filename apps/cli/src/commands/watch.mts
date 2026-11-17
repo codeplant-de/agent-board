@@ -4,7 +4,7 @@ import type { Task, TaskPr } from '@agent-board/shared';
 import { UsageError } from '../cli.mts';
 import type { Context } from '../cli.mts';
 import { oneLine, shellQuote } from '../output/text.mts';
-import { attempt, UNIT_ATTEMPT_LIMIT_MS } from '../watch/attempt.mts';
+import { attempt, countEvents, UNIT_ATTEMPT_LIMIT_MS } from '../watch/attempt.mts';
 import type { AttemptResult, WatchRunner } from '../watch/attempt.mts';
 import { deadlineTime, describeEvery, eventsMessage, sanitizeEventText } from '../watch/fence.mts';
 import {
@@ -18,6 +18,7 @@ import {
 import type { WatchDef, WatchStore } from '../watch/store.mts';
 import { publishWatches } from '../watch/publish.mts';
 import { isGhLogin, isPrUrl, isWatchName } from '../watch/shapes.mts';
+import { isUnitRunning } from '../watch/tick.mts';
 import { confirm } from './board.mts';
 import { localTime, parseStart } from './schedule.mts';
 
@@ -28,6 +29,8 @@ export interface WatchFlags {
   prReview?: string | true;
   required?: boolean;
   name?: string;
+  // With a command: keep it running and report its output lines.
+  stream?: boolean;
   every?: string;
   timeout?: string;
   in?: string;
@@ -50,6 +53,7 @@ export type WatchPlan = {
   | { kind: 'ci'; pr: string | undefined; required: boolean }
   | { kind: 'pr-review'; pr: string | undefined }
   | { kind: 'command'; command: string; everyMs: number }
+  | { kind: 'stream'; command: string }
   | { kind: 'timer' }
 );
 
@@ -78,8 +82,13 @@ function checkedName(name: string): string {
  * task and the PR are looked at afterwards.
  */
 export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = new Date()): WatchPlan {
-  const { ci, prReview, required, name, every, timeout, in: inText, at } = flags;
+  const { ci, prReview, required, name, stream, every, timeout, in: inText, at } = flags;
   if (inText !== undefined && at !== undefined) throw new UsageError('give --in or --at, not both');
+  if (stream === true && words.length === 0) throw new UsageError('--stream goes with a command after --');
+  if (stream === true && every !== undefined)
+    throw new UsageError(
+      'give --stream or --every, not both: a stream runs its command once and reports what it prints',
+    );
   const sources = [
     ci !== undefined,
     prReview !== undefined,
@@ -88,7 +97,7 @@ export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = 
   ].filter(Boolean).length;
   if (sources !== 1)
     throw new UsageError(
-      `give exactly one source: --ci for the CI of a PR, --pr-review for its reviews and comments, a command after -- (with --name), or --in/--at for a timer`,
+      `give exactly one source: --ci for the CI of a PR, --pr-review for its reviews and comments, a command after -- (with --name; --stream to follow its output), or --in/--at for a timer`,
     );
   if (required === true && ci === undefined) throw new UsageError('--required goes with --ci');
   const timeoutMs = (fallback: string = DEFAULT_WATCH_TIMEOUT): number => {
@@ -126,6 +135,8 @@ export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = 
     if (command.trim() === '') throw new UsageError('the command after -- is empty');
     if (command.length > MAX_COMMAND_CHARS)
       throw new UsageError(`the command is longer than ${MAX_COMMAND_CHARS} characters; put it in a script`);
+    if (stream === true)
+      return { kind: 'stream', name: checkedName(name), command, deadline: new Date(now.getTime() + timeoutMs()) };
     const everyMs = duration(every ?? DEFAULT_WATCH_EVERY, '--every');
     if (everyMs < MIN_COMMAND_EVERY_MS)
       throw new UsageError(`--every must be at least ${describeEvery(MIN_COMMAND_EVERY_MS)}`);
@@ -247,7 +258,7 @@ async function ghLogin(deps: WatchDeps): Promise<string | undefined> {
 }
 
 /**
- * Starts a watch on a task of this machine. A ci, pr-review or command watch is looked at once first, in the environment the watch unit uses:
+ * Starts a watch on a task of this machine. A stream is stored for the watch unit, which starts its command. A ci, pr-review or command watch is looked at once first, in the environment the watch unit uses:
  * a command that cannot run here fails the call, and one that already has its event reports it and stores nothing.
  */
 export async function watch(
@@ -263,7 +274,7 @@ export async function watch(
   const task = await openTask(context, id, 'a watch');
   if (task.status !== 'running' && task.status !== 'waiting')
     throw new UsageError(`${id} is ${task.status}: only a running or waiting task can have a watch`);
-  if (plan.kind === 'command') {
+  if (plan.kind === 'command' || plan.kind === 'stream') {
     // An agent's run allows a fixed list of commands; a command watch would run any command.
     // A run an older CLI started for the removed intake has its narrow list but no AGENT_BOARD_RESTRICTED.
     if (task.createdBy === 'intake')
@@ -313,18 +324,31 @@ export async function watch(
       source: { kind: 'command', command: plan.command, cwd, ...settingsDirOf(deps) },
       everyMs: plan.everyMs,
     };
+  } else if (plan.kind === 'stream') {
+    def = {
+      ...base,
+      source: { kind: 'stream', command: plan.command, cwd, starts: 0, events: 0, ...settingsDirOf(deps) },
+      everyMs: 0,
+    };
   } else def = { ...base, source: { kind: 'timer' }, everyMs: 0 };
 
   if (context.dryRun) {
     context.print(`DRY store watch "${def.name}" for ${id} until ${deadlineTime(plan.deadline, now)}`);
     return;
   }
+  // Only the watch unit runs a stream's command; the dispatch tick, which polls in its place, cannot.
+  if (def.source.kind === 'stream' && !isUnitRunning(deps.watches, now))
+    throw new UsageError(
+      `cannot watch "${def.name}": a stream needs the watch unit, which is not running on this machine; run "board setup --enable", or poll with --every`,
+    );
   const others = deps.watches.list(id).defs.filter((open) => open.name !== def.name);
   const replaced = deps.watches.read(id, def.name) !== undefined;
   const result: AttemptResult =
     def.source.kind === 'timer'
       ? { kind: 'pending', summary: `waiting until ${deadlineTime(plan.deadline, now)}` }
-      : await attempt(def, now, { run: deps.run, timeLimitMs: UNIT_ATTEMPT_LIMIT_MS, registration: true });
+      : def.source.kind === 'stream'
+        ? { kind: 'pending', summary: 'the watch unit starts the command within seconds and reports what it prints' }
+        : await attempt(def, now, { run: deps.run, timeLimitMs: UNIT_ATTEMPT_LIMIT_MS, registration: true });
   if (result.kind === 'broken') throw new UsageError(`cannot watch "${def.name}": ${result.reason}`);
   if (result.kind === 'event') {
     // The answer is here already: nothing to wait for, and an older watch of that name must not report later.
@@ -338,7 +362,9 @@ export async function watch(
   }
   const stored: WatchDef = {
     ...(result.def ?? def),
-    ...(def.source.kind === 'timer' ? {} : { last: { at: now.toISOString(), summary: result.summary } }),
+    ...(def.source.kind === 'timer' || def.source.kind === 'stream'
+      ? {}
+      : { last: { at: now.toISOString(), summary: result.summary } }),
   };
   deps.watches.write(stored);
   await publish(context, deps.watches, id, now);
@@ -353,6 +379,7 @@ function describeSource(def: WatchDef): string {
   const { source } = def;
   if (source.kind === 'timer') return 'timer';
   if (source.kind === 'ci') return `ci ${source.pr}${source.required ? ' (required checks)' : ''}`;
+  if (source.kind === 'stream') return `stream: ${oneLine(source.command, 80)}`;
   if (source.kind === 'pr-review') return `reviews and comments of ${source.pr}`;
   return `every ${describeEvery(def.everyMs)}: ${oneLine(source.command, 80)}`;
 }
@@ -366,9 +393,11 @@ function watchJson(def: WatchDef): Record<string, unknown> {
         ? { kind: 'timer' }
         : source.kind === 'ci'
           ? { kind: 'ci', pr: source.pr, required: source.required }
-          : source.kind === 'pr-review'
-            ? { kind: 'pr-review', pr: source.pr }
-            : { kind: 'command', command: source.command },
+          : source.kind === 'stream'
+            ? { kind: 'stream', command: source.command, starts: source.starts, events: source.events }
+            : source.kind === 'pr-review'
+              ? { kind: 'pr-review', pr: source.pr }
+              : { kind: 'command', command: source.command },
     everyMs: def.everyMs,
     createdAt: def.createdAt,
     deadline: def.deadline,
@@ -400,6 +429,17 @@ export function watchesJson({ defs }: OpenWatches): Record<string, unknown>[] {
   return defs.map(watchJson);
 }
 
+function lastLine(def: WatchDef): string {
+  const { source, last } = def;
+  if (source.kind === 'stream')
+    return last === undefined || source.starts === 0
+      ? 'not started yet'
+      : `${countEvents(source.events)}, ${last.summary} ${localTime(new Date(last.at))}`;
+  return last === undefined
+    ? 'not looked at yet'
+    : `last looked at ${localTime(new Date(last.at))}: ${oneLine(last.summary, 200)}`;
+}
+
 export function formatWatches(
   id: string,
   { defs, undelivered, unreadable }: OpenWatches,
@@ -410,11 +450,7 @@ export function formatWatches(
       ? [`${id} has no open watch`]
       : defs.flatMap((def) => [
           `${def.name}  ${describeSource(def)}`,
-          `  until ${deadlineTime(new Date(def.deadline), now)}; ${
-            def.last === undefined
-              ? 'not looked at yet'
-              : `last looked at ${localTime(new Date(def.last.at))}: ${oneLine(def.last.summary, 200)}`
-          }`,
+          `  until ${deadlineTime(new Date(def.deadline), now)}; ${lastLine(def)}`,
         ]);
   if (undelivered > 0) lines.push(`${undelivered} event${undelivered > 1 ? 's' : ''} not handed to the agent yet`);
   if (unreadable > 0) lines.push(`${unreadable} watch file${unreadable > 1 ? 's' : ''} could not be read`);

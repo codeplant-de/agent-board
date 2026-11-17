@@ -329,13 +329,16 @@ export function registerTaskCommands(shared: ProgramShared): void {
       .description(
         paragraphs(
           'Inside a run: start a watch instead of sleeping or polling. A watch belongs to the task, lives on its machine, and reports an event that reaches you as a message: in this run if it is still going, otherwise when the task resumes in its session. Keep working if there is work; end your turn when there is none, and the task waits without holding a slot. A task may have several watches.',
-          `Give exactly one source. --ci watches the checks of a pull request (the PR is the argument, or the newest open one you reported with "board pr"; --required looks at the required checks only; a new commit restarts it) and reports when they have passed, one failed, or the PR was merged or closed. --pr-review watches the reviews and comments of a pull request (the same default) every minute and reports the first one that someone other than the PR's author and this machine's gh user writes after the watch started, with who wrote it, the review's state and the first lines of its text. A command after -- is run every --every (default ${DEFAULT_WATCH_EVERY}, at least 15s) in this directory, with the env of your Claude Code settings, and reports once it exits 0; it needs --name, and it is run once right away. --in or --at is a timer.`,
-          `--timeout (default ${DEFAULT_WATCH_TIMEOUT}, for --pr-review ${DEFAULT_REVIEW_TIMEOUT}, at most 7 days) is how long a ci, pr-review or command watch looks before it reports that it timed out. The command stays on this machine. The same name again replaces the open watch. If the answer is there at once, it is printed and no watch is stored; a command that cannot run here is refused.`,
+          `Give exactly one source. --ci watches the checks of a pull request (the PR is the argument, or the newest open one you reported with "board pr"; --required looks at the required checks only; a new commit restarts it) and reports when they have passed, one failed, or the PR was merged or closed. --pr-review watches the reviews and comments of a pull request (the same default) every minute and reports the first one that someone other than the PR's author and this machine's gh user writes after the watch started, with who wrote it, the review's state and the first lines of its text. A command after -- is run every --every (default ${DEFAULT_WATCH_EVERY}, at least 15s) in this directory, with the env of your Claude Code settings, and reports once it exits 0; it needs --name, and it is run once right away. With --stream the command is started once and kept running: the lines it prints reach you as events (the lines of about 2 seconds together), and its exit, with the exit code, is the last event. A stream that prints more than 50 events or 20 KB in 10 minutes is stopped, so filter the output down to the lines that matter (grep --line-buffered). After a restart of the watch unit or a reboot the command starts again from the beginning, and the next event says so. --in or --at is a timer.`,
+          `--timeout (default ${DEFAULT_WATCH_TIMEOUT}, for --pr-review ${DEFAULT_REVIEW_TIMEOUT}, at most 7 days) is how long a ci, pr-review or command watch looks, or a stream runs, before it reports that it timed out. The command stays on this machine. The same name again replaces the open watch. If the answer is there at once, it is printed and no watch is stored; a command that cannot run here is refused.`,
           ID_NOTE,
         ),
       )
       .argument('<task>', TASK_ARGUMENT)
-      .argument('[command...]', 'after --: the shell command that exits 0 once the wait is over')
+      .argument(
+        '[command...]',
+        'after --: the shell command that exits 0 once the wait is over, or with --stream the command whose output is reported',
+      )
       .option(
         '--ci [pr]',
         'watch the checks of a PR (URL or number; default: the newest open PR reported for this task)',
@@ -346,6 +349,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
         'watch the reviews and comments of a PR (URL or number; default: the newest open PR reported for this task)',
       )
       .option('--name <name>', "the watch's name (default: ci, review or timer); a command needs one")
+      .option('--stream', 'with a command: keep it running and report the lines it prints, until it exits')
       .option('--every <duration>', `with a command: how often it runs (default ${DEFAULT_WATCH_EVERY}, at least 15s)`)
       .option(
         '--timeout <duration>',
@@ -360,6 +364,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
           'board watch Ab3dEf9x --ci 17741 --required --timeout 1h',
           'board watch Ab3dEf9x --pr-review',
           `board watch Ab3dEf9x --name health --every 1m -- 'curl -fsS https://staging.example.com/health'`,
+          `board watch Ab3dEf9x --name deploy-log --stream -- 'kubectl logs -f deploy/api | grep --line-buffered -E "ERROR|rollout complete"'`,
           'board watch Ab3dEf9x --in 30m --name deploy',
         ),
       ),
