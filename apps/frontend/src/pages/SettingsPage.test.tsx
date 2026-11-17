@@ -249,8 +249,11 @@ describe('what the machines list says about usage', () => {
     const readings = await screen.findByText('Usage 5-hour 85% · 7-day 40%');
     expect(readings).toHaveAttribute('title', expect.stringMatching(/^5-hour resets .*; 7-day resets /));
     expect(screen.getByText('Limits 5-hour 80% · holds below urgent')).toBeInTheDocument();
+    // The reset is 125 minutes away, so late in the day it falls on the next one and the time carries its date.
     expect(
-      screen.getByText(/Holding tasks below urgent until \d{2}:\d{2}: 5-hour usage 85% \(limit 80%\) · 2 tasks held$/),
+      screen.getByText(
+        /Holding tasks below urgent until (\d{1,2} \w{3}, )?\d{2}:\d{2}: 5-hour usage 85% \(limit 80%\) · 2 tasks held$/,
+      ),
     ).toBeInTheDocument();
   });
 

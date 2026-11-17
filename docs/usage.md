@@ -315,7 +315,7 @@ A run already going keeps the settings it started with, except `maxRunHours`, `i
 A script that creates tasks runs `board schedule` again and again. It needs a call that is safe to repeat: no Haiku check, no terminal, and a result it can read.
 
 ```text
-board schedule --key <key> [--version <v>] [--agent a] [--title t] [--json] [--] <prompt...>
+board schedule --key <key> [--version <v>] [--in d | --at t] [--agent a] [--title t] [--json] [--] <prompt...>
 ```
 
 This makes the task of the key once. The board keeps one task per key, whoever made it and on whichever machine. The CLI hashes the key with your data key before it leaves the machine, so the board never sees it.
@@ -323,7 +323,8 @@ This makes the task of the key once. The board keeps one task per key, whoever m
 - `--version` is what the task is made for, such as a PR's head sha for a review. The board holds only a hash of it too. It needs `--key`.
 - The key and the version are used as given. They hold at most 500 and 200 characters and no control characters.
 - `--key` skips the duplicate check.
-- `--key` cannot be combined with `--every`, `--cron`, `--polish`, `--hold`, `--backlog`, `--in` or `--at`. It makes or finds a task in Todo, and it requeues into Todo.
+- `--key` cannot be combined with `--every`, `--cron`, `--polish`, `--hold` or `--backlog`. It makes or finds a task in Todo, and it requeues into Todo.
+- `--in` or `--at` makes the task wait in Todo until then, and a call with the same key moves the wait to the new time (see `rescheduled` below).
 
 ### Results
 
@@ -331,20 +332,22 @@ The line the command prints says what happened. `--json` prints the same as `"re
 
 Every outcome exits 0, so a script tells them apart by the result. A usage error exits 2 and any other failure 1.
 
-| Line                               | Meaning                                                                                         |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `created <id> <url>`               | The board had no task of this key. This one is made, with the version if `--version` was given. |
-| `requeued <id> <url>`              | The task was in Needs me or Done and its version differs. It is back in Todo.                   |
-| `exists <id> <url> (closed)`       | The task was closed. A closed task is never made again, whatever the version.                   |
-| `exists <id> <url> (same-version)` | It already holds this version.                                                                  |
-| `exists <id> <url> (no-version)`   | The call gave no `--version`, so there is nothing to compare.                                   |
-| `exists <id> <url> (busy)`         | The version differs, but the task is in Todo, Running, Waiting or Backlog.                      |
-| `exists <id> <url> (other-agent)`  | The version differs, but the task runs as another agent than `--agent` names, or as none.       |
-| `exists <id> <url> (changed)`      | The task moved between the call reading it and writing it. Nothing was written.                 |
+| Line                                    | Meaning                                                                                                         |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `created <id> <url>`                    | The board had no task of this key. This one is made, with the version if `--version` was given.                 |
+| `requeued <id> <url>`                   | The task was in Needs me or Done and its version differs. It is back in Todo.                                   |
+| `rescheduled <id> <url>, starts <time>` | The call gave `--in` or `--at` and the task waits in Todo for a fresh start. Its start time is now the new one. |
+| `exists <id> <url> (closed)`            | The task was closed. A closed task is never made again, whatever the version.                                   |
+| `exists <id> <url> (same-version)`      | It already holds this version.                                                                                  |
+| `exists <id> <url> (no-version)`        | The call gave no `--version`, so there is nothing to compare.                                                   |
+| `exists <id> <url> (busy)`              | The version differs, but the task is in Todo, Running, Waiting or Backlog.                                      |
+| `exists <id> <url> (other-agent)`       | The version differs, but the task runs as another agent than `--agent` names, or as none.                       |
+| `exists <id> <url> (changed)`           | The task moved between the call reading it and writing it. Nothing was written.                                 |
 
 Some of these need more words:
 
 - **`requeued`.** A task that holds no version counts as differing. One update puts the task back in Todo with the new version and a fresh session, and adds the note "New version <v>. Queued again."
+- **`rescheduled`.** Needs `--in` or `--at`, and a task in Todo that has not started (not an answered or paused run waiting to resume) and runs as the same agent. Whether `--version` is missing, the same or new does not matter. One update sets the start time, and the new version too when it differs, with the note "New version <v>. Starts <time>." The same `--at` again changes nothing; `--in` starts the wait over from now. A `created` or `requeued` call with `--in`/`--at` also prints `, starts <time>`.
 - **`busy`.** The task is left as it is. A later call requeues it once it sits in Needs me or Done.
 - **`other-agent`.** An agent is written once and cannot change, so a requeue would run the new version under the old rules. The task is left as it is.
 - **`changed`.** A worker claimed the task or you moved it. The next call looks again.
