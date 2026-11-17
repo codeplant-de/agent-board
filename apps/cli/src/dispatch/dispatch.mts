@@ -52,6 +52,15 @@ import type { GitHub } from './github.mts';
 import { createPrRefreshState, prRefreshFile, refreshPrStatesIfDue } from './pr-states.mts';
 import type { PrRefreshState } from './pr-states.mts';
 import { TICK_LIMIT_S } from './tick.mts';
+import {
+  createUsageStore,
+  describeReached,
+  earliestReset,
+  isBelowPriority,
+  reachedWindows,
+  usageFile,
+} from '../usage/usage.mts';
+import type { UsageStore } from '../usage/usage.mts';
 import type { WatchRunner } from '../watch/attempt.mts';
 import type { WatchStore } from '../watch/store.mts';
 import { createWatchStore } from '../watch/store.mts';
@@ -92,6 +101,8 @@ export interface DispatchDeps extends Context {
   prRefresh: { github: GitHub | undefined; state: PrRefreshState };
   // Where the machine catalogue of skills and models is kept and asked for; undefined: the tick leaves it alone.
   catalog?: Pick<CatalogSyncDeps, 'store' | 'probe' | 'fingerprintDeps'>;
+  // The subscription usage this machine's runs reported; undefined: nothing is held back for usage.
+  usage?: Pick<UsageStore, 'read'>;
 }
 
 // Ends a wait on the board: the woken task, or undefined when it no longer waited or the call failed.
@@ -474,7 +485,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     }),
   );
 
-  const candidates: Task[] = [];
+  const eligible: Task[] = [];
   // When the delayed Todo tasks this machine could serve come due.
   const delayed: Date[] = [];
   // The backend lists Todo with resumes first, then by priority.
@@ -507,8 +518,20 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
       log(`SKIP ${task.id} ${elsewhere}`);
       continue;
     }
-    candidates.push(task);
+    eligible.push(task);
   }
+
+  // While a configured threshold is reached, work below the limit's priority does not start, resumes included: they use quota
+  // too. Held tasks are out of `candidates` for good, so they do not make a lane pause a borrowed run either.
+  const reached =
+    config.usageLimits === undefined || deps.usage === undefined
+      ? []
+      : reachedWindows({ limits: config.usageLimits, usage: deps.usage.read(), now: deps.now() });
+  const lowest = config.usageLimits?.priority ?? 'urgent';
+  const isHeld = (task: Task): boolean => reached.length > 0 && isBelowPriority(task.priority, lowest);
+  const held = eligible.filter(isHeld);
+  const candidates = eligible.filter((task) => !isHeld(task));
+  if (held.length > 0) log(`HOLD ${held.length} task(s) below ${lowest}: ${describeReached(reached)}`);
 
   const ownLaneOf = (task: Task) => ownLane(task, config.lanes);
   const started = new Set<string>();
@@ -606,15 +629,17 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     running: runs.map((run) => (paused.has(run.taskId) ? { ...run, pauseRequested: true } : run)),
     now: deps.now(),
   });
+  const usageReset = held.length > 0 ? earliestReset(reached) : undefined;
   const next = earliest([
     ...delayed,
     ...nextWaitDue(deps, tasks),
     ...(polled ? nextWatchDue(deps.watches.all()) : []),
     ...(pauseAt === undefined ? [] : [pauseAt]),
+    ...(usageReset === undefined ? [] : [usageReset]),
   ]);
   if (!deps.dryRun) files.writeNextDue(next);
   log(
-    `TICK started=${started.size} ${summary}${checks.length > 0 ? ` checks=${checks.length}` : ''}${next === undefined ? '' : ` next=${next.toISOString()}`}`,
+    `TICK started=${started.size} ${summary}${checks.length > 0 ? ` checks=${checks.length}` : ''}${held.length > 0 ? ` held=${held.length}` : ''}${next === undefined ? '' : ` next=${next.toISOString()}`}`,
   );
   // After the starts and the checks, so a probe never holds one back.
   await sendCatalog(deps, tickStart);
@@ -673,6 +698,7 @@ export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<voi
           probe: (dir) => probeClaude(dir),
           fingerprintDeps: () => realFingerprintDeps(),
         },
+        usage: createUsageStore(usageFile(getPaths().stateDir)),
         prRefresh: {
           github:
             whichOnPath('gh') === undefined

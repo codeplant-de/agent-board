@@ -8,6 +8,7 @@ import type { WebConfig } from '../backend/web-config.mts';
 import {
   ConfigError,
   configWarnings,
+  getPaths,
   isOverrideWarning,
   isSafeMode,
   parseConfig,
@@ -32,6 +33,16 @@ import type { CatalogStore } from '../catalog/cache.mts';
 import { dirsToSend, isAllowedDir, isDirectory, routedDirs, UNCOVERED_HINT } from '../config/dirs.mts';
 import { parseEnv } from '../config/env-file.mts';
 import { runDir } from '../worker/runtime.mts';
+import {
+  createUsageStore,
+  describeReached,
+  earliestReset,
+  reachedWindows,
+  usageFile,
+  USAGE_WINDOWS,
+  WINDOW_LABELS,
+} from '../usage/usage.mts';
+import type { UsageStore } from '../usage/usage.mts';
 import {
   LISTEN_SERVICE,
   WATCH_SERVICE,
@@ -90,6 +101,9 @@ export interface DoctorDeps {
   verifyServer: (config: Pick<WebConfig, 'url' | 'token'>) => Promise<ServerIdentity>;
   // What this machine learned of its directories' skills and models.
   catalogStore: CatalogStore;
+  // The subscription usage this machine's runs reported.
+  usageStore: Pick<UsageStore, 'read'>;
+  now: () => Date;
 }
 
 // What the macOS worker checks touch.
@@ -177,6 +191,8 @@ export function realDoctorDeps(
     systemctl,
     verifyServer: (config) => verifyContract(config),
     catalogStore: createCatalogStore(),
+    usageStore: createUsageStore(usageFile(getPaths().stateDir)),
+    now: () => new Date(),
   };
 }
 
@@ -617,6 +633,31 @@ const checkDirs: Check = (deps) => {
   return results;
 };
 
+// The usage thresholds, the last reading of each limited window and whether work is held back right now. Nothing here can
+// fail: a missing reading only means no run here has reported one yet.
+const checkUsageLimits: Check = (deps) => {
+  const limits = readParsedConfig(deps)?.usageLimits;
+  if (limits === undefined) return [];
+  const usage = deps.usageStore.read();
+  const now = deps.now();
+  const limited = USAGE_WINDOWS.filter((window) => limits[window] !== undefined);
+  const parts = limited.map((window) => {
+    const label = `${WINDOW_LABELS[window]} limit ${limits[window]}%`;
+    const stored = usage[window];
+    if (stored === undefined) return `${label}, no reading yet (the first run here reports one)`;
+    const percent = Math.round(stored.utilization * 100);
+    const over = new Date(stored.resetsAt) <= now ? ', window since reset, so void' : '';
+    return `${label}, last reading ${percent}% seen ${stored.seenAt}${over}`;
+  });
+  const reached = reachedWindows({ limits, usage, now });
+  const reset = earliestReset(reached);
+  const held =
+    reset === undefined
+      ? `tasks below ${limits.priority} are not held now`
+      : `tasks below ${limits.priority} are held now until ${reset.toISOString()} (${describeReached(reached)})`;
+  return [ok('usage limits', `${parts.length === 0 ? 'no window limited' : parts.join('; ')}; ${held}`)];
+};
+
 // Absolute paths in a unit's ExecStart that are not systemd specifiers must still exist: a moved checkout or a removed Node breaks the unit quietly.
 function checkCommand(deps: DoctorDeps, service: string): CheckResult[] {
   const text = deps.readText(join(deps.unitDir, service));
@@ -901,6 +942,7 @@ const CHECKS: Check[] = [
   checkServer,
   checkConfig,
   checkDirs,
+  checkUsageLimits,
   checkWorker,
 ];
 

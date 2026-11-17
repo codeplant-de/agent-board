@@ -33,6 +33,27 @@ A lane may also name a `cwd`: where its tasks run when they have no directory of
 
 Without `lanes`, a machine runs one lane, `general`, with `*` and three slots.
 
+## Usage limits
+
+A machine can stop starting low-priority work while its Claude subscription is nearly used up. The `usageLimits` key of its config.json (see [Config](setup.md#config)) sets thresholds on the 5-hour and the 7-day usage:
+
+```json
+"usageLimits": { "fiveHour": 80, "sevenDay": 90, "priority": "urgent" }
+```
+
+While the last known usage of a window is at or over its threshold, the dispatcher does not claim Todo tasks below `priority` (default `urgent`, so only urgent tasks still start). Without the key nothing is held, and a window without a number is not limited.
+
+- **What is held.** Todo tasks below `priority`, including resumes (answered, replied to, paused or woken) of such tasks: they use quota too. They stay in Todo with no marker on the board. To run one anyway, raise it to the priority.
+- **What is not held.** Runs that are going go on; nothing is stopped or paused. Held tasks do not count as waiting work, so a lane does not pause a borrowed run for a task that will not start.
+- **When it ends.** A reading is void once its window has reset (and one whose reset is more than 8 days off is not believed), and the dispatcher starts a tick at the earliest reset of the windows that held something (see `next` in [How it decides](#how-it-decides)).
+- **Where to see it.** The dispatcher logs one `HOLD <n> task(s) below <priority>: 5-hour usage 85% (limit 80%, resets <time>)` line per tick, naming every reached window, and adds `held=<n>` to the `TICK` line. `board doctor` shows the thresholds, the last reading per window with the time it was seen, and whether work is held now.
+
+The number comes from the `rate_limit_event` lines that `claude -p --output-format stream-json` prints in every run on this machine. The worker keeps the newest reading per window in `usage.json` of the state directory. This is not a documented interface (checked against Claude Code 2.1.326), and a line of any other shape counts as no reading. That has limits:
+
+- Usage from outside the board (your own terminal sessions, another machine on the same account) is only seen when the next run here reports it, so the next tick may still fill every free slot past the threshold.
+- A machine that runs on an API key gets no such events and is never held.
+- Before the first run reports a reading there is nothing to compare, so nothing is held.
+
 ## Liveness and limits
 
 The hook also touches a heartbeat file on every tool call. The worker checks it every 15 seconds:
@@ -227,10 +248,10 @@ Dispatcher, per tick:
 
 1. For each task in `running` claimed by this machine, ask whether its worker is running: `systemctl --user is-active agent-board-<task>` on Linux; on macOS whether the pid in the run directory's `<task>.pid` is alive and its command line ends in `internal worker <task>`. A task whose unit is gone moves to `needs-me` with the log tail, timed from the unit's own start (else the task's `runStartedAt`). So does one whose worker failed to enforce the [limits](#liveness-and-limits) for five minutes past them; its unit is stopped. If `systemctl` gives no known state, or the backend fails, the tick stops before starting anything and exits non-zero.
 2. For each task in `waiting` that this machine ran: a wait whose `wakeAt` has passed (a timer, or a check past its timeout) or whose check is not stored here is woken with the reason (`wake`), so it can start in this tick. A check whose task is neither waiting nor running here any more is deleted.
-3. A task this machine cannot serve is skipped (see [Two machines](#two-machines)). The rest are planned into [lanes](#lanes): own work first, then borrowing. Each start is claimed, its lane written to the run directory, then the worker starts (`systemd-run --user --collect --unit agent-board-<task>` on Linux, a detached `board internal worker <task>` process with its output in the task log on macOS) and a start note names the machine, lane and PID. A lost claim hands its slot to the next task; the first failed start ends the tick's starting.
+3. A task this machine cannot serve is skipped (see [Two machines](#two-machines)). The rest are planned into [lanes](#lanes): own work first, then borrowing. Each start is claimed, its lane written to the run directory, then the worker starts (`systemd-run --user --collect --unit agent-board-<task>` on Linux, a detached `board internal worker <task>` process with its output in the task log on macOS) and a start note names the machine, lane and PID. A lost claim hands its slot to the next task; the first failed start ends the tick's starting. While a [usage limit](#usage-limits) is reached, tasks below its priority are left out of this plan.
 4. Lanes whose own work still waits ask one borrowed run each to pause.
 5. The checks that are due run side by side (45 s each at most). One that exits 0 wakes its task with the end of its output; for any other the result is kept with the check for the timeout message.
-6. The tick writes when this machine next has something to do that no event announces to `dispatch.next` in the run directory, next to `dispatch.tick`, and logs it as `next=<time>` on its `TICK` line: the earliest of the `notBefore` of a delayed Todo task this machine could serve, the `wakeAt` of a wait here, the next attempt of each check here (its last attempt plus `--every`; one that never ran or was put off is due at once), and the moment a borrowed run reaches `pauseAfterMinutes` in a full lane whose own work waits. Nothing due removes the file, and so does the start of every tick, so a tick that stops early leaves no stale time behind.
+6. The tick writes when this machine next has something to do that no event announces to `dispatch.next` in the run directory, next to `dispatch.tick`, and logs it as `next=<time>` on its `TICK` line: the earliest of the `notBefore` of a delayed Todo task this machine could serve, the `wakeAt` of a wait here, the next attempt of each check here (its last attempt plus `--every`; one that never ran or was put off is due at once), the moment a borrowed run reaches `pauseAfterMinutes` in a full lane whose own work waits, and the earliest reset of the windows that held a task back for [usage](#usage-limits). Nothing due removes the file, and so does the start of every tick, so a tick that stops early leaves no stale time behind.
 7. Last, at most every 10 minutes and only where `gh` is installed, the [PR state](#pr-state) of the open tasks is refreshed. It never fails the tick: a problem is one `WARN PR states not refreshed` line.
 
 The listener reads `dispatch.next` after each of its ticks and arms a one-shot timer for it, so a delayed task, the end of a wait, a check or a take-back starts its tick on time instead of up to 2 minutes late. Each tick cancels the timer and arms it again. When it fires it reads the file again, because a tick the timer unit started rewrites it too: a later time arms the timer again, anything else starts a tick. The timer waits at least 5 seconds, so a time that stays in the past (a check put off, say) cannot start tick after tick, and at most an hour, after which it reads the file again. The 2-minute timer unit stays as the fallback for a listener that is down. A change on the board that moves one of these times (a new or delayed task, a wait, a wake, a schedule) sends the `tasks` event, and the tick that follows arms the timer again.
