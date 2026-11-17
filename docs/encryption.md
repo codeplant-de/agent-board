@@ -12,6 +12,7 @@ The operator of the server and database sees:
 - timestamps, activity timing and schedule rules
 - the state of each of a task's pull requests (open, merged or closed), without which PR it is
 - field lengths
+- for a task's watches: that its machine published a list, the size of its ciphertext, and which watch ids you asked to stop
 - which sealed values are equal, through blind indexes of a script's key (a PR URL, say) and of the PR head. The same key or head gives the same value, but neither can be searched for.
 - for each machine's directory list, catalogue and usage status: that the machine sent one, the size of its ciphertext, when it last changed, and whether a new one differs from the old (a blind index)
 
@@ -37,6 +38,7 @@ The operator can read, swap, replay and forge anything in the database and in AP
 | `workdir`                    | `<origin>`, for an occurrence also `task:<id>:schedule:<scheduleId>`  | the same client, and the worker when it rewrites an occurrence's directory                                                                      |
 | `workdir` (home)             | none of its own                                                       | the server copies the `workdir` envelope, see [A task keeps the directory it was created with](#a-task-keeps-the-directory-it-was-created-with) |
 | `pr`                         | `task:<id>:agent`                                                     | the agent's CLI (`board pr`), once for each PR                                                                                                  |
+| `watches`                    | `task:<id>:agent`                                                     | the machine's CLI (`board watch`, the watch unit, dispatch), one document for all the task's watches                                            |
 | `machine.dirs`               | `machine:<name>`                                                      | the machine's CLI (`board dirs`, dispatch)                                                                                                      |
 | `machine.catalog`            | `machine:<name>`                                                      | the machine's CLI (dispatch)                                                                                                                    |
 | `machine.usage`              | `machine:<name>`                                                      | the machine's CLI (dispatch)                                                                                                                    |
@@ -49,7 +51,7 @@ The operator can read, swap, replay and forge anything in the database and in AP
 
 - `<origin>` is `task:<id>` for a task. It is `schedule:<id>` for a schedule and for a task that is an occurrence of one. The server copies the schedule's ciphertext into each occurrence, so the occurrence opens against its schedule's id.
 - `<creator>` is `user`, `agent` or `intake`. `intake` exists only on tasks of the removed built-in intake. An occurrence's creator is `user`.
-- In `pr` and in a polish note, `<id>` and `<taskId>` are the task the agent runs. The sealed text of a polish note is `{"target", "title", "prompt"}`, where `target` is the task it polishes.
+- In `pr`, `watches` and in a polish note, `<id>` and `<taskId>` are the task the agent runs. The sealed text of a polish note is `{"target", "title", "prompt"}`, where `target` is the task it polishes.
 - The three machine documents are one JSON document each:
   - `machine.dirs` is `{"dirs":[{"path":…,"label":…}]}`, with `label` only when the directory has one.
   - `machine.catalog` is `{"claude":…,"models":[…],"skills":[…],"dirs":{…}}`.
@@ -337,11 +339,20 @@ The CLI refuses anything but `https://github.com/<owner>/<repo>/pull/<number>` b
 
 The prompt's own PR (a review task) comes first when both exist.
 
+## The watches of a task
+
+The CLI of the machine that runs a task's watches seals what the board shows of them as `watches`, bound to the task and to the agent like a PR. It is one JSON document, `{"watches":[…],"pendingEvents":n}`. Each entry has a `name`, a `kind`, a `label` such as `CI #116`, a one-line `status`, the `deadline` and the last look. `pendingEvents` is how many events wait for the agent.
+
+- The command a watch runs and its output are never in it. They stay on the machine.
+- A client shows an entry only when it has exactly that shape and drops one that does not. A list that does not open or parse is unreadable (`watches` in `unreadable`), which never keeps a task from running.
+- The server can drop, repeat or serve a stale list, or serve one sealed for the same task again. It cannot make one up.
+- What the user asks to stop (`watchStops`) is a list of watch ids in clear. The server learns which of a task's watches the user stopped, not what they are, and the machine acts only on an id it has a watch for.
+
 ## Unreadable values
 
 The CLI never crashes a listing on a value it cannot open, and never treats one as a prompt. The cause can be plain text, another key, another row or damage.
 
-- **Tasks and schedules** get `unreadable`: the names of the fields that failed (`title`, `input`, `workdir`, `agent`). A workdir that opens to a relative path counts. An unreadable title shows as a placeholder, an unreadable input is empty, an unreadable workdir is `null`.
+- **Tasks and schedules** get `unreadable`: the names of the fields that failed (`title`, `input`, `workdir`, `agent`, `watches`). A workdir that opens to a relative path counts. An unreadable title shows as a placeholder, an unreadable input is empty, an unreadable workdir is `null`.
 - **Dispatch** skips a task whose input or workdir is unreadable. The worker refuses to run it and reports why on the task. An unreadable title alone does not stop a run.
 - **Notes** that cannot be opened, or whose questions or answers do not parse, are `unreadable` with no text.
 - **A run is refused** when it would hand the agent an unreadable note of the user's: the reply a resume carries, or what a fresh run is told the user wrote since the previous run started. Older notes do not matter, so Re-run fresh, which starts after the refused attempt, gets past it.

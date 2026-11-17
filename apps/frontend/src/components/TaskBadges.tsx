@@ -3,6 +3,7 @@ import {
   IconArrowsExchange,
   IconClock,
   IconDeviceDesktop,
+  IconEye,
   IconGauge,
   IconHourglass,
   IconMessageQuestion,
@@ -15,6 +16,7 @@ import {
 import { startsIn, wakesIn } from '../lib/startsIn';
 import { isStopping } from '../lib/stopping';
 import { clock, stamp } from '../lib/time';
+import { watchBadgeText } from '../lib/watches';
 import type { BoardTask } from '../lib/trpc';
 import { describeHolding } from '../lib/usageHold';
 import type { TaskHold } from '../lib/usageHold';
@@ -40,6 +42,7 @@ export function TaskBadges({
   const now = useNow(30_000);
   const waiting = task.status === 'todo' && task.notBefore !== null ? startsIn(task.notBefore, now) : undefined;
   const wakes = task.status === 'waiting' ? wakesIn(task.wakeAt, task.waitCheck, now) : undefined;
+  const watching = watchBadgeText(task);
   return (
     <Group gap={4}>
       {withPriority && task.priority !== 'normal' && <PriorityBadge priority={task.priority} />}
@@ -65,7 +68,25 @@ export function TaskBadges({
           {waiting}
         </Badge>
       )}
-      {wakes !== undefined && task.wakeAt !== null && (
+      {watching !== undefined && (
+        <Badge
+          size="sm"
+          color="cyan"
+          variant="light"
+          tt="none"
+          maw="100%"
+          leftSection={<IconEye size={12} />}
+          title={[
+            ...(task.watches ?? []).map(({ name, label, status }) => `${name}: ${label} · ${status}`),
+            wakes === undefined || task.wakeAt === null ? undefined : `${wakes} (${stamp(task.wakeAt)})`,
+          ]
+            .filter((line) => line !== undefined)
+            .join('\n')}
+        >
+          {watching}
+        </Badge>
+      )}
+      {wakes !== undefined && task.wakeAt !== null && !(watching !== undefined && task.waitCheck) && (
         <Badge
           size="sm"
           color="cyan"

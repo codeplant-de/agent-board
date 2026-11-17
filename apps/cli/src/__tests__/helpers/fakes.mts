@@ -21,6 +21,7 @@ import {
   SERVER_FEATURES,
   sealFields,
   sealPr,
+  sealWatches,
   taskLabels,
 } from '@agent-board/shared';
 import type { Sealer } from '@agent-board/shared';
@@ -50,6 +51,9 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     workdir: null,
     prs: [],
     promptPrState: null,
+    watches: null,
+    watchEvents: 0,
+    watchStops: [],
     next: 'fresh',
     head: null,
     openQuestion: false,
@@ -305,6 +309,19 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         if (row) row.state = prState;
       }
     },
+    async setWatches(id, watches, pendingEvents) {
+      state.writes.push(`watches ${id} ${watches === null ? 'null' : JSON.stringify(watches)}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`set-watches: no task ${id}`, 404, true);
+      found.watches = watches === null ? null : [...watches];
+      found.watchEvents = pendingEvents;
+    },
+    async ackWatchStops(id, ids) {
+      state.writes.push(`ackWatchStops ${id} ${ids.join(',')}`);
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`ack-watch-stops: no task ${id}`, 404, true);
+      found.watchStops = found.watchStops.filter((stop) => !ids.includes(stop));
+    },
     async checkDirs(_machine, dirs) {
       if (state.boardDirs.failure) throw state.boardDirs.failure;
       if (!state.boardDirs.supported) return 'unsupported';
@@ -537,7 +554,18 @@ const seals: Sealer = async ({ field, context }, text) => seal(KEYS, field, cont
 // A task as the server stores it: title, input and workdir sealed with the test key, for the task's own row (an occurrence's
 // for its schedule).
 export async function wireTask(overrides: Partial<Task> & { id: string }): Promise<WireTask> {
-  const { labels: _labels, unreadable: _unreadable, title, input, workdir, agent, prs, ...rest } = task(overrides);
+  const {
+    labels: _labels,
+    unreadable: _unreadable,
+    title,
+    input,
+    workdir,
+    agent,
+    prs,
+    watches,
+    watchEvents,
+    ...rest
+  } = task(overrides);
   const sealed = await sealFields(
     seals,
     { kind: 'task', id: rest.id, createdBy: rest.createdBy, scheduleId: rest.scheduleId, agent: agent ?? null },
@@ -556,6 +584,7 @@ export async function wireTask(overrides: Partial<Task> & { id: string }): Promi
     prState: newest === undefined ? promptPrState : newest.state,
     prs: wirePrs,
     promptPrState,
+    watches: watches === null ? null : await sealWatches(seals, rest.id, watches, watchEvents),
   };
 }
 

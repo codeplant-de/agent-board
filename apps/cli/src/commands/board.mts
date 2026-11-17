@@ -37,6 +37,7 @@ import { plainLine, plainText } from '../output/terminal.mts';
 import type { Style } from '../output/style.mts';
 import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
 import type { Choice, Scheduled, ScheduleFlags } from './schedule.mts';
+import { publishWatches } from '../watch/publish.mts';
 import { newWatchId } from '../watch/store.mts';
 import type { WatchStore } from '../watch/store.mts';
 
@@ -581,6 +582,8 @@ export async function wait(
       throw new UsageError(`${id} cannot wait: ${error.message}`);
     throw error;
   }
+  if (plan.check !== undefined && !context.dryRun)
+    await publishWatches({ store: deps.watches, backend: context.backend, now: () => now, log: context.print }, id);
   confirm(
     context,
     plan.check

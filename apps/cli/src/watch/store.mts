@@ -81,7 +81,7 @@ export interface WatchEvent {
   name: string;
   // ISO time.
   at: string;
-  kind: 'event' | 'timeout';
+  kind: 'event' | 'timeout' | 'stopped';
   // Already sanitized (see fence.mts).
   text: string;
   // ISO time of the last wake the unit tried for this event.
@@ -200,7 +200,8 @@ export function parseWatchEvent(raw: unknown): WatchEvent | undefined {
   if (typeof id !== 'string' || !WATCH_ID.test(id)) return undefined;
   if (typeof task !== 'string' || !isSafeTaskId(task)) return undefined;
   if (typeof name !== 'string' || !isWatchName(name)) return undefined;
-  if (!isIso(at) || (kind !== 'event' && kind !== 'timeout') || typeof text !== 'string') return undefined;
+  if (!isIso(at) || (kind !== 'event' && kind !== 'timeout' && kind !== 'stopped') || typeof text !== 'string')
+    return undefined;
   return {
     id,
     task,

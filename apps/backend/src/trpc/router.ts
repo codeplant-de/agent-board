@@ -3,6 +3,7 @@ import {
   isModelName,
   isSafeMachineName,
   isSafeTaskId,
+  isWatchId,
   parseKeyId,
   parseKeySlots,
   parseSealed,
@@ -41,6 +42,7 @@ import {
   setNotBefore,
   setPriority,
   stop,
+  stopWatch,
   takeBack,
   toNote,
   listTaskPrs,
@@ -355,6 +357,11 @@ const tasksRouter = router({
     await removePr(ctx.db, input.id, input.prId);
     return boardTask(ctx.db, await getTask(ctx.db, input.id));
   }),
+
+  /** Asks the task's machine to stop one of its watches; it acts on the next tick and tells the agent. Sends nothing sealed. */
+  stopWatch: procedure
+    .input(z.object({ id, watchId: z.string().refine(isWatchId, 'not a watch id') }))
+    .mutation(async ({ ctx, input }) => boardTask(ctx.db, await stopWatch(ctx.db, input.id, input.watchId))),
 
   setClosed: procedure
     .input(z.object({ id, closed: z.boolean() }))

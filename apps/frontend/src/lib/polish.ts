@@ -20,7 +20,7 @@ export function canPolish(task: Polishable): boolean {
     !task.closed &&
     task.createdBy === 'user' &&
     task.scheduleId === null &&
-    task.unreadable.length === 0
+    task.unreadable.every((field) => field === 'watches')
   );
 }
 
@@ -61,7 +61,7 @@ export function polishState(polish: BoardTask, parent: BoardTask | null, note: T
     return { usable: false, reason: `“${parent.title}” is no longer in Backlog or Needs me.` };
   if (parent.createdBy !== 'user' || parent.scheduleId !== null)
     return { usable: false, reason: `“${parent.title}” is not a task you wrote, so a prompt cannot be applied to it.` };
-  if (parent.unreadable.length > 0)
+  if (parent.unreadable.some((field) => field !== 'watches'))
     return { usable: false, reason: `“${parent.title}” cannot be read, so what it says now could not be kept.` };
   return { usable: true, rewrite, target: parent };
 }

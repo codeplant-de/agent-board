@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { Task } from '@agent-board/shared';
+import type { Task, TaskWatch } from '@agent-board/shared';
 import { commandDef, commandResult, tempDir, timerDef, watchDef } from '../__tests__/helpers/watch.mts';
 import { task as makeTask } from '../__tests__/helpers/fakes.mts';
 import { WAKE_MARKER, WATCH_MARKER } from '../task-rules.mts';
 import type { RunJob } from './attempt.mts';
+import { REFRESH_MS } from './publish.mts';
 import { createWatchStore } from './store.mts';
 import { createWatchUnit, runWatchUnit } from './unit.mts';
 import type { UnitDeps } from './unit.mts';
@@ -20,6 +21,7 @@ function setup({ wakeApplies = true }: { wakeApplies?: boolean } = {}) {
   const clock = { ms: START };
   const calls: string[] = [];
   const logs: string[] = [];
+  const published: (TaskWatch[] | null)[] = [];
   const alive = new Set<number>();
   const answers = new Map<string, (job: RunJob) => ReturnType<typeof commandResult>>();
   const state = { wakeApplies, failWake: false, failNote: false };
@@ -35,6 +37,9 @@ function setup({ wakeApplies = true }: { wakeApplies?: boolean } = {}) {
         calls.push(`wake ${id}: ${text}`);
         return { applied: state.wakeApplies, task: makeTask({ id }) as Task };
       },
+      async setWatches(_id, watches) {
+        published.push(watches === null ? null : [...watches]);
+      },
     },
     run: async (job) => (answers.get(job.command) ?? (() => commandResult(1, 'down')))(job),
     now: () => new Date(clock.ms),
@@ -49,7 +54,7 @@ function setup({ wakeApplies = true }: { wakeApplies?: boolean } = {}) {
   const advance = (ms: number): void => {
     clock.ms += ms;
   };
-  return { dir, store, unit, deps, calls, logs, alive, answers, state, pass, advance };
+  return { dir, store, unit, deps, calls, logs, published, alive, answers, state, pass, advance };
 }
 
 const wakes = (calls: string[]): string[] => calls.filter((call) => call.startsWith('wake'));
@@ -119,6 +124,77 @@ test('a deadline that passed ends the watch with a timeout event, and a timer en
     ],
   );
   assert.equal(calls.filter((call) => call.startsWith('note')).length, 2);
+});
+
+test('an event and a finished watch are published at once, with the event waiting', async () => {
+  const { store, pass, advance, answers, published } = setup();
+  store.write(commandDef('probe', { everyMs: 30_000 }));
+  store.write(timerDef({ deadline: new Date(START + 3_600_000).toISOString() }));
+  answers.set('probe', () => commandResult(0, 'secret output'));
+  advance(30_000);
+  await pass();
+  assert.equal(published.length, 1);
+  const [list] = published;
+  assert.deepEqual(
+    list?.map(({ name, kind, label }) => [name, kind, label]),
+    [['timer', 'timer', 'timer']],
+  );
+  assert.equal(JSON.stringify(list).includes('probe'), false);
+  assert.equal(JSON.stringify(list).includes('secret output'), false);
+});
+
+test('a changed state is published at most every 15 seconds per task', async () => {
+  const { store, pass, advance, answers, published } = setup();
+  store.write(commandDef('probe', { everyMs: 5_000 }));
+  let runs = 0;
+  answers.set('probe', () => {
+    runs += 1;
+    return commandResult(1, `try ${runs}`);
+  });
+  advance(5_000);
+  await pass();
+  assert.equal(published.length, 1);
+  assert.match(published[0]?.[0]?.status ?? '', /^exit 1 at \d\d:\d\d$/);
+  for (const _ of [1, 2]) {
+    advance(5_000);
+    await pass();
+  }
+  assert.equal(published.length, 1);
+  advance(5_000);
+  await pass();
+  assert.equal(published.length, 2);
+});
+
+test('an unchanged state is not published again', async () => {
+  const { store, pass, advance, answers, published } = setup();
+  store.write(commandDef('probe', { everyMs: 15_000 }));
+  answers.set('probe', () => commandResult(1, 'same'));
+  for (let pass_ = 0; pass_ < 4; pass_ += 1) {
+    advance(15_000);
+    await pass();
+  }
+  assert.equal(published.length, 1);
+});
+
+test('an unchanged state is published again after five minutes, so the last look does not freeze', async () => {
+  const { store, pass, advance, answers, published } = setup();
+  store.write(commandDef('probe', { everyMs: 15_000 }));
+  answers.set('probe', () => commandResult(1, 'same'));
+  advance(15_000);
+  await pass();
+  assert.equal(published.length, 1);
+  advance(REFRESH_MS - 30_000);
+  await pass();
+  assert.equal(published.length, 1);
+  advance(30_000);
+  await pass();
+  assert.equal(published.length, 2);
+  advance(REFRESH_MS - 15_000);
+  await pass();
+  assert.equal(published.length, 2);
+  advance(15_000);
+  await pass();
+  assert.equal(published.length, 3);
 });
 
 test('a task with a live run is not woken: its worker hands the event over', async () => {

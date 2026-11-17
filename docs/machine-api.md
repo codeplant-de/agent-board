@@ -128,6 +128,7 @@ Capabilities and vocabulary have names. An additive change then needs no version
 | `task.run`        | The task's `run` field and the `run` key of a request, see [Runs](#runs).                                                      |          |
 | `task.configure`  | The `configure-task` command.                                                                                                  |          |
 | `task.note-count` | The task's `noteCount` field.                                                                                                  |          |
+| `task.watches`    | The `set-watches` and `ack-watch-stops` commands, and the `watches` and `watchStops` fields.                                   |          |
 
 - The baseline (`BASELINE_SERVER_FEATURES`) is what the server of contract 9 has. A server that answers no `features` key is taken to have exactly the baseline.
 - A new server capability appends its name to `ADDED_SERVER_FEATURES` in the same commit that implements it.
@@ -303,7 +304,8 @@ The machine is checked first, so another machine still gets its own answer. That
   "scheduleId": null,
   "wakeAt": null,
   "waitCheck": false,
-  "woken": false
+  "woken": false,
+  "watchStops": []
 }
 ```
 
@@ -319,6 +321,8 @@ The fields of the example are required, with these exceptions:
 | `run`                  | the task is not running, or no `task.run` | no run                          |
 | `stopRequested`        | the server lacks `run-inbox`              | `false`                         |
 | `noteCount`            | the server lacks `task.note-count`        | unknown                         |
+| `watches`              | the task has none, or no `task.watches`   | `null`                          |
+| `watchStops`           | the server lacks `task.watches`           | `[]`                            |
 
 The CLI's plaintext `Task` adds `labels` and `unreadable`.
 
@@ -403,6 +407,26 @@ An entry of `prs`:
 A state is GitHub's state as a worker's dispatcher last saw it, and `null` while unknown. It is clear, not sealed (see [Encryption](encryption.md)).
 
 `pr` and `prState` are what a CLI without `task.prs` reads as the task's one PR and its state. A client with `task.prs` ignores them.
+
+### Watches
+
+| Field        | Meaning                                                                                                                      |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `watches`    | Optional. Sealed, or `null`: the watches the task's machine runs for it, as it last published them with `set-watches`.       |
+| `watchStops` | The ids of the watches the user asked to stop that the machine has not acknowledged with `ack-watch-stops` yet. Often empty. |
+
+The sealed `watches` is one envelope for the task and its agent (`task:<id>:agent`). It holds `{"watches": [{"id", "name", "kind", "label", "status", "deadline", "lastAttemptAt"?}], "pendingEvents": n}`:
+
+- `id` is 16 lowercase hex digits and `name` a watch name (`^[a-z0-9][a-z0-9-]{0,31}$`).
+- `kind` is `ci`, `command` or `timer`.
+- `label` is what it watches and `status` its state. Each is one line, at most 120 and 200 characters.
+- `deadline` and `lastAttemptAt` are ISO 8601.
+- At most 32 entries.
+- `pendingEvents` is the number of undelivered events of the whole task, a non-negative integer, and absent counts as 0. A watch is claimed when its event fires, so the count belongs to the task and not to a watch.
+
+A client shows an entry only when it has that shape. A list that does not open is unreadable (`watches` in `unreadable`). The command a watch runs and its output are never in it.
+
+`watchStops` is clear: at most 32 ids of 16 lowercase hex digits. The server clears it with `watches` when the task goes to Done or Backlog, is closed or is re-run fresh.
 
 ### Pickup order
 
@@ -535,6 +559,8 @@ A resume prompt is built from the `user` notes after the last `agent` note. Two 
 | `set-pr-states`   | `id`, `body`: `{"prompt"?, "prs"?: [{"id", "state"}]}`                                                                                                                 | `null`                                                       |
 | `set-pr`          | Legacy. `id`, `body`: `{"pr"}`, the sealed PR URL                                                                                                                      | `null`                                                       |
 | `set-pr-state`    | Legacy. `id`, `body`: `{"prState"}`                                                                                                                                    | `null`                                                       |
+| `set-watches`     | `id`, `body`: `{"watches"}`, the sealed document, or `null` to clear                                                                                                   | `null`                                                       |
+| `ack-watch-stops` | `id`, `body`: `{"ids"}`, watch ids, at most 32                                                                                                                         | `null`                                                       |
 | `set-dirs`        | `body`: `{"dirs", "index"}`                                                                                                                                            | `null`                                                       |
 | `set-catalog`     | `body`: `{"catalog", "index"}`                                                                                                                                         | `null`                                                       |
 | `set-usage`       | `body`: `{"usage", "index"}`                                                                                                                                           | `null`                                                       |
@@ -753,6 +779,27 @@ A CLI without `task.prs` sends these two. A current CLI sends them only to a ser
 
 - **`set-pr`** needs the `task.pr` feature. It makes the sealed `pr` the task's only entry in `prs`, with an unknown state, and replaces the entries the task had. `promptPrState` stays. It has the errors and the `updatedAt` of `add-pr`.
 - **`set-pr-state`** needs the `task.pr-state` feature. The body is `{"prState": "open" | "merged" | "closed"}`. It sets the `state` of the newest entry of `prs` when the task has entries, else `promptPrState`. Like `set-pr-states` it changes nothing else, and there is no way to clear the state.
+
+### Watch commands
+
+Both need the `task.watches` feature. The CLI sends nothing to a server without it. Only the task's own machine may call either (`machine` is the token's machine), else 409. Neither changes `updatedAt` or sends the `tasks` event, so a machine can publish as often as its watches change without waking every listener.
+
+#### `set-watches`
+
+Body `{"watches": string | null}`: the sealed `watches` document of the task (see [Watches](#watches)), or `null` to clear it.
+
+- It works in any status of the task and stores or clears the column. Nothing else changes.
+- 400 for a value that is not an envelope or is over `SEALED_LIMITS.watches` (32 KiB), and for any other key. 404 for an unknown task.
+- The server cannot read the document. The browser and the CLI check its shape when they open it.
+
+#### `ack-watch-stops`
+
+Body `{"ids": string[]}`, at most 32 watch ids. They leave the task's `watchStops`.
+
+- An id that is not pending changes nothing, and an empty list is fine, so a retry is safe.
+- 400 for an id that is not a watch id, for more than 32 ids and for any other key. 404 for an unknown task.
+
+The user's Stop adds an id to `watchStops` through the browser (`tasks.stopWatch`, only for a task that has a machine and is not done or closed, at most 32 waiting). That sends the `tasks` event, so the machine's listener ticks within a second, ends the watch, tells the agent and acknowledges (see [Publishing and stops](workers.md#publishing-and-stops)).
 
 ### Machine documents
 

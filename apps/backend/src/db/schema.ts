@@ -124,6 +124,13 @@ export const tasks = pgTable(
     homeWorkdir: text('home_workdir'),
     /** The sealed name of the agent the task runs as; null runs as the user's config says. Written once, at creation. */
     agent: text('agent'),
+    /** The sealed watches the task's machine runs for it (one JSON document); null for none. Cleared when the task goes to Done or Backlog, is closed or re-run fresh. */
+    watches: text('watches'),
+    /** Ids of watches the user asked to stop that the machine has not acknowledged; clear text, ids only. */
+    watchStops: text('watch_stops')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     /** GitHub's state of the PR the prompt names, as a worker's dispatcher last saw it. Clear on purpose: it says only that some PR of the task merged. */
     prState: prState('pr_state'),
     next: nextRun('next').notNull().default('fresh'),
@@ -175,6 +182,7 @@ export const tasks = pgTable(
     check('task_workdir_sealed', isEnvelope(t.workdir)),
     check('task_home_workdir_sealed', isEnvelope(t.homeWorkdir)),
     check('task_agent_sealed', isEnvelope(t.agent)),
+    check('task_watches_sealed', isEnvelope(t.watches)),
     check('task_dedupe_key_blind', isBlindIndex(t.dedupeKey)),
     check('task_head_blind', isBlindIndex(t.head)),
     unique('task_owner_dedupe_key_unique').on(t.owner, t.dedupeKey),

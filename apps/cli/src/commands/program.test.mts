@@ -470,6 +470,8 @@ test('every board command in the run rules, the hook messages and the selftest s
         ask: /^ask Zt0Test1: Color$/,
         add: /^create .* \| do the thing \| $/,
         wait: /^wait Zt0Test1 until \S+( check)?: x/,
+        watch: /^watches Zt0Test1 /,
+        unwatch: /^watches Zt0Test1 /,
       };
       const verb = argv[0] ?? '';
       if (verb in expected) assert.match(action, expected[verb] as RegExp, command);
@@ -567,9 +569,15 @@ test('wait --check stores a command watch named wait on this machine, keeps the 
       deadline: '2026-01-01T14:00:00.000Z',
     },
   );
-  assert.equal(backend.writes.length, 1);
+  assert.equal(backend.writes.length, 2);
   assert.match(backend.writes[0] ?? '', /^wait Zt0Test1 until 2026-01-01T14:00:00.000Z check: Waiting for a check\./);
   assert.ok(!(backend.writes[0] ?? '').includes('gh pr checks'));
+  // The board is told the check as a command watch, without the command.
+  assert.match(
+    backend.writes[1] ?? '',
+    /^watches Zt0Test1 \[\{.*"name":"wait","kind":"command","label":"command, every 2m"/,
+  );
+  assert.ok(!(backend.writes[1] ?? '').includes('gh pr checks'));
 });
 
 test('wait --check is refused in an agent run (AGENT_BOARD_RESTRICTED), and a timer is not', async () => {

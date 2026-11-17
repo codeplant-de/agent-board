@@ -108,6 +108,17 @@ test('without a duplicate the task is created, pinned to this machine and direct
   assert.ok(printed.some((line) => line.startsWith('scheduled new')));
 });
 
+test('the duplicate check sees a task whose watches could not be read, and not one whose title could not be', async () => {
+  const hidden = setup(undefined);
+  hidden.backend.tasks[0]!.unreadable = ['title'];
+  await schedule(hidden.deps, { ...parseScheduleArgs(['/grill', 'x']), forceNew: false });
+  assert.deepEqual(hidden.asked, ['']);
+  const watches = setup(undefined);
+  watches.backend.tasks[0]!.unreadable = ['watches'];
+  await schedule(watches.deps, { ...parseScheduleArgs(['/grill', 'x']), forceNew: false });
+  assert.deepEqual(watches.asked, ['old']);
+});
+
 test('a likely duplicate can be requeued, created anyway, or dropped', async () => {
   const dup = { taskId: 'old', reason: 'same PR' };
   const requeue = setup(dup, 'requeue');

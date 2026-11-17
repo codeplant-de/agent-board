@@ -235,7 +235,18 @@ test('a url the server sends is never used (server-chosen task.url)', () => {
   });
   assert.equal('url' in wire, false);
   const shown = renderThread(
-    { ...wire, title: 'Fix the build', input: '/fix', labels: [], unreadable: [], prs: [], promptPrState: null },
+    {
+      ...wire,
+      title: 'Fix the build',
+      input: '/fix',
+      labels: [],
+      unreadable: [],
+      prs: [],
+      promptPrState: null,
+      watches: null,
+      watchEvents: 0,
+      watchStops: [],
+    },
     [],
   );
   assert.equal(shown.includes('NOTE_FROM_THE_USER'), false);

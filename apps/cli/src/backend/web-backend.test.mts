@@ -702,6 +702,31 @@ test('recording a PR state on a server with neither task.prs nor task.pr-state i
   );
 });
 
+test('watches and the acknowledged stops go to their commands on a server with task.watches, and are refused before anything is sent without it', async () => {
+  const body = { watches: 'abe1.watches' };
+  const withIt = boardWith(['task.watches'], {
+    'set-watches': { body: { result: null } },
+    'ack-watch-stops': { body: { result: null } },
+  });
+  await withIt.backend.setWatches('abc', body);
+  await withIt.backend.ackWatchStops('abc', { ids: ['0123456789abcdef'] });
+  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body });
+  assert.deepEqual(withIt.seen[2]?.body, { id: 'abc', body: { ids: ['0123456789abcdef'] } });
+  const without = boardWith(['task.prs'], {});
+  for (const send of [
+    () => without.backend.setWatches('abc', { watches: null }),
+    () => without.backend.ackWatchStops('abc', { ids: [] }),
+  ])
+    await assert.rejects(
+      send(),
+      (error: unknown) => error instanceof BackendError && error.missingFeature === 'task.watches',
+    );
+  assert.deepEqual(
+    without.seen.map((request) => request.command),
+    ['version'],
+  );
+});
+
 test('the directory list: the server must name machine.dirs, its index comes from the version answer, and a junk index is none', async () => {
   const make = (features: string[], dirsIndex?: unknown) => {
     const seen: string[] = [];

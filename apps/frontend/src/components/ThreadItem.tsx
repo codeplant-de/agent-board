@@ -1,9 +1,18 @@
 import { formatAnswers, UNREADABLE_TEXT, type Question } from '@agent-board/shared';
 import { Badge, Group, Paper, Spoiler, Stack, Text, ThemeIcon } from '@mantine/core';
-import { IconCircleDot, IconLockOff, IconMessageQuestion, IconRobot, IconServer, IconUser } from '@tabler/icons-react';
+import {
+  IconCircleDot,
+  IconEye,
+  IconLockOff,
+  IconMessageQuestion,
+  IconRobot,
+  IconServer,
+  IconUser,
+} from '@tabler/icons-react';
 import { answerTo } from '../lib/answers';
-import { ago, stamp } from '../lib/time';
+import { ago, clock, stamp } from '../lib/time';
 import type { ThreadNote } from '../lib/trpc';
+import { isWatchNote, splitWatchNote } from '../lib/watches';
 import { Markdown } from './Markdown';
 
 /** Where a message to a running agent stands: not yet handed over, or delivered. */
@@ -145,10 +154,39 @@ function BoardEvent({ note }: { note: ThreadNote }) {
   );
 }
 
+/** What the CLI writes when a watch reports: a compact row, the fenced text behind a disclosure. Plain text, not markdown. */
+function WatchEvent({ note }: { note: ThreadNote }) {
+  const at = new Date(note.createdAt);
+  const { title, body } = splitWatchNote(note.text);
+  return (
+    <Group gap="xs" wrap="nowrap" align="flex-start" px="xs" data-testid="watch-event">
+      <IconEye size={14} color="var(--mantine-color-dimmed)" style={{ marginTop: 3, flexShrink: 0 }} />
+      <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
+        <Text size="xs" c="dimmed">
+          {title}{' '}
+          <Text span size="xs" c="dimmed" title={stamp(at)}>
+            · {clock(at)}
+          </Text>
+        </Text>
+        {body && (
+          <Spoiler maxHeight={0} showLabel="Details" hideLabel="Hide" styles={{ control: { fontSize: 12 } }}>
+            <Paper withBorder p="xs">
+              <Text size="xs" ff="monospace" className="wrap-anywhere" style={{ whiteSpace: 'pre-wrap' }}>
+                {body}
+              </Text>
+            </Paper>
+          </Spoiler>
+        )}
+      </Stack>
+    </Group>
+  );
+}
+
 export function ThreadItem({ note, thread }: Props) {
   const at = new Date(note.createdAt);
   if (note.unreadable) return <UnreadableNote note={note} />;
   if (note.author === 'server') return <BoardEvent note={note} />;
+  if (isWatchNote(note)) return <WatchEvent note={note} />;
   if (note.author === 'system') {
     const [raw = '', ...rest] = note.text.trim().split('\n');
     const more = rest.join('\n').trim();

@@ -158,6 +158,7 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
       wakeNow: raw.tasks.wakeNow,
       setClosed: raw.tasks.setClosed,
       removePr: raw.tasks.removePr,
+      stopWatch: raw.tasks.stopWatch,
       move: {
         mutationOptions: () =>
           mutationOptions({

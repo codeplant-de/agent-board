@@ -70,6 +70,8 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   'add-pr': 'task.prs',
   'remove-pr': 'task.pr-remove',
   'set-pr-states': 'task.prs',
+  'set-watches': 'task.watches',
+  'ack-watch-stops': 'task.watches',
   'run-inbox': 'run-inbox',
   'ack-messages': 'run-inbox',
   stopped: 'run-inbox',
@@ -252,6 +254,8 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       const prState = pr === null ? body.prompt : body.prs?.at(-1)?.state;
       if (prState !== undefined) await send('set-pr-state', { id: checkedId, body: { prState } });
     },
+    setWatches: async (id, body) => send('set-watches', { id: taskId(id), body }),
+    ackWatchStops: async (id, body) => send('ack-watch-stops', { id: taskId(id), body }),
     setDirs: async (body) => send('set-dirs', { body }),
     dirsState: async () => {
       const { features, dirsIndex } = await connect();

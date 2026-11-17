@@ -143,6 +143,26 @@ A watch (`board watch`, see [Waiting](usage.md#waiting)) is a file on the task's
 - A resume builds its prompt from the event files and deletes them at the agent's first output. The task log records how long the resume took from the event, from the wake and from the worker's start.
 - A fresh run (**Re-run fresh**) drops the task's watches first.
 
+### Publishing and stops
+
+The board shows a task's watches and lets the user stop one (see [What the board shows of watches](usage.md#what-the-board-shows-of-watches)). The CLI publishes the list with `set-watches`, sealed as the task's `watches` (see [Encryption](encryption.md)).
+
+- **What is published.** For each watch its name, kind, a label (`CI #116 · required`, `command, every 30s`, `timer`), a one-line status, its deadline and the time of its last look. The status is the CI summary, `exit 1 at 10:47` or `not run yet` for a command, or `fires at 14:20` for a timer. The document also holds how many undelivered events of the task wait in the spool, once. The command and what it printed are never in it. An empty list is sent as `null`.
+- **When.**
+  - `board watch`, `board unwatch` and `board wait --check` publish after they changed the store.
+  - The watch unit publishes at once when an event or a finished watch changes the list. For a changed status it publishes at most every 15 seconds per task. An unchanged state goes again after 5 minutes, so the time of the last look does not freeze.
+  - The dispatch tick publishes `null` when it drops the watches of a finished task, and after it acted on stops.
+  - The worker publishes when it hands events over, which changes how many wait.
+- **Failures.** A server without the `task.watches` feature gets nothing: the CLI logs one line per process and goes on. Any other failure is logged, and the next publish sends the whole list again.
+- **Stop.** The board lists the ids the user stopped in `watchStops` of the task, and its event stream wakes the listener, so the tick acts within seconds. For each id of a task on this machine the tick:
+  1. claims the matching watch, so no event comes from its source,
+  2. writes a spool event of kind `stopped` with the text `Watch "<name>" was stopped by the user.`,
+  3. posts the usual thread note and logs `STOP-WATCH <task> <name>`.
+
+  The event follows the rules of any other: a worker hands it to the agent, and a parked task wakes, also when other watches stay open. An id with no local watch (already finished or removed) is acknowledged without an event.
+
+- **Acknowledgement.** The tick sends `ack-watch-stops` with every id it handled, so none comes back, then publishes the list. If the acknowledgement fails, the next tick sends it again and writes no second event, because the watch is gone.
+
 ### Without the watch unit
 
 On a machine where the unit does not run, usually because `board setup` was not rerun after an update, the dispatch tick polls the due watches with 45 seconds per attempt. It logs `WARN watches on this machine are polled by the dispatch tick: the watch unit is not running; run "board setup --enable"`.

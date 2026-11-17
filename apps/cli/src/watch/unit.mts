@@ -12,13 +12,14 @@ import type { WatchRunner } from './attempt.mts';
 import { finishWatch } from './finish.mts';
 import { createWatchStore } from './store.mts';
 import type { WatchDef, WatchStore } from './store.mts';
+import { publishWatches, PUBLISH_EVERY_MS, REFRESH_MS } from './publish.mts';
 import { forgetWakeTries, isRunLive, tryWake } from './wake.mts';
 
 export const SCAN_MS = 2000;
 
 export interface UnitDeps {
   store: WatchStore;
-  backend: Pick<Backend, 'addNote' | 'wake'>;
+  backend: Pick<Backend, 'addNote' | 'wake' | 'setWatches'>;
   run: WatchRunner;
   now: () => Date;
   isAlive: (pid: number) => boolean;
@@ -42,6 +43,18 @@ export function createWatchUnit(deps: UnitDeps): WatchUnit {
   // Tasks whose worker was running at the last scan.
   const wasLive = new Set<string>();
   const reported = new Set<string>();
+  // Tasks whose published state is behind the store, and when each was last published.
+  const stale = new Set<string>();
+  const publishedAt = new Map<string, number>();
+
+  const publish = async (task: string): Promise<void> => {
+    stale.delete(task);
+    publishedAt.set(task, now().getTime());
+    await publishWatches({ store, backend, now, log }, task);
+  };
+
+  const isPublishDue = (task: string): boolean =>
+    stale.has(task) && now().getTime() - (publishedAt.get(task) ?? 0) >= PUBLISH_EVERY_MS;
 
   const launch = (key: string, job: () => Promise<void>): void => {
     if (flights.has(key)) return;
@@ -55,7 +68,9 @@ export function createWatchUnit(deps: UnitDeps): WatchUnit {
     tryWake({ store, backend, now, log, isAlive }, task).then(() => undefined);
 
   const finish = async (def: WatchDef, report: { kind: 'event' | 'timeout'; text: string }): Promise<void> => {
-    if ((await finishWatch({ store, backend, now, log }, def, report)) !== undefined) await wake(def.task);
+    if ((await finishWatch({ store, backend, now, log }, def, report)) === undefined) return;
+    await publish(def.task);
+    await wake(def.task);
   };
 
   const look = async (def: WatchDef): Promise<void> => {
@@ -67,10 +82,13 @@ export function createWatchUnit(deps: UnitDeps): WatchUnit {
     if (abort.signal.aborted) return;
     if (result.kind === 'event') return finish(def, { kind: 'event', text: result.text });
     const summary = result.kind === 'pending' ? result.summary : result.reason;
+    if (summary !== def.last?.summary || now().getTime() - (publishedAt.get(def.task) ?? 0) >= REFRESH_MS)
+      stale.add(def.task);
     store.update({
       ...(result.kind === 'pending' && result.def ? result.def : def),
       last: { at: now().toISOString(), summary },
     });
+    if (isPublishDue(def.task)) await publish(def.task);
   };
 
   const scanTask = (task: string): void => {
@@ -86,6 +104,7 @@ export function createWatchUnit(deps: UnitDeps): WatchUnit {
       if (at >= Date.parse(def.deadline)) launch(key, () => finish(def, deadlineReport(def)));
       else if (def.source.kind !== 'timer' && at >= nextAttemptAt(def)) launch(key, () => look(def));
     }
+    if (isPublishDue(task)) launch(`${task}/publish`, () => publish(task));
     if (isRunLive(store, task, isAlive)) {
       wasLive.add(task);
       return;

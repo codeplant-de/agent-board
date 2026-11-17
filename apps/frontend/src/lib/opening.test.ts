@@ -8,10 +8,12 @@ import {
   prBinding,
   seal,
   sealPr,
+  sealWatches,
+  watchesBinding,
   transcriptBinding,
   UNREADABLE_TEXT,
 } from '@agent-board/shared';
-import type { PrState } from '@agent-board/shared';
+import type { PrState, TaskWatch } from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
 import { openBoardTask, openCatalogs, openEvent, openMachines } from './opening';
 import { sealerFor } from './contexts';
@@ -111,6 +113,53 @@ describe('the PRs of a task, as the browser opens it', () => {
   it('come with the state of the prompt’s PR', async () => {
     const task = await openBoardTask(keys, await wireTask([], 'closed'));
     expect(task.promptPrState).toBe('closed');
+  });
+});
+
+describe('the watches of a task, as the browser opens it', () => {
+  const watch: TaskWatch = {
+    id: '0123456789abcdef',
+    name: 'ci',
+    kind: 'ci',
+    label: 'CI #116',
+    status: '4 of 7 passed',
+    deadline: '2026-11-17T14:20:00.000Z',
+  };
+  const open = async (watches: string | null | undefined, watchStops?: string[]) =>
+    openBoardTask(keys, { ...(await wireTask([])), watches, watchStops } as RouterOutputs['tasks']['get']['task']);
+
+  it('are the list the agent of the task sealed, with the stops waiting for the machine', async () => {
+    const task = await open(await sealWatches(sealerFor(keys), 'task0001', [watch], 3), ['fedcba9876543210']);
+    expect(task.watches).toEqual([watch]);
+    expect(task.watchEvents).toBe(3);
+    expect(task.watchStops).toEqual(['fedcba9876543210']);
+    expect(task.unreadable).toEqual([]);
+  });
+
+  it('are none, and no stops, when the board sent neither key', async () => {
+    const task = await open(undefined);
+    expect(task.watches).toBeNull();
+    expect(task.watchEvents).toBe(0);
+    expect(task.watchStops).toEqual([]);
+    expect(task.unreadable).toEqual([]);
+  });
+
+  it('keeps only well-formed stop ids, and none when the board sent no list', async () => {
+    const task = await open(null, ['fedcba9876543210', 'junk', 7, '0123456789ABCDEF'] as unknown as string[]);
+    expect(task.watchStops).toEqual(['fedcba9876543210']);
+    expect((await open(null, 'fedcba9876543210' as unknown as string[])).watchStops).toEqual([]);
+  });
+
+  it('are none and unreadable when sealed for another task, not sealed, or not a list', async () => {
+    for (const value of [
+      await sealWatches(sealerFor(keys), 'other001', [watch], 0),
+      JSON.stringify({ watches: [watch] }),
+      await seal(keys, 'watches', watchesBinding('task0001').context, 'not json'),
+    ]) {
+      const task = await open(value);
+      expect(task.watches).toBeNull();
+      expect(task.unreadable).toContain('watches');
+    }
   });
 });
 

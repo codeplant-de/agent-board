@@ -1905,6 +1905,8 @@ test('a fresh run drops the watches of its task, a resume keeps them', async () 
   await runWorker(fresh.deps, 'w1');
   assert.deepEqual(fresh.deps.watches.list('w1').defs, []);
   assert.deepEqual(fresh.deps.watches.events('w1'), []);
+  await settle();
+  assert.ok(fresh.backend.writes.includes('watches w1 null'), 'the board’s list is cleared too');
 
   const resumed = setup({ exitCode: 0, signal: null }, true);
   Object.assign(resumed.backend.tasks[0]!, { next: 'resume', sessionId: SESSION, woken: true });
@@ -1912,6 +1914,8 @@ test('a fresh run drops the watches of its task, a resume keeps them', async () 
   resumed.deps.watches.write(timerDef({ ...W1 }));
   await runWorker(resumed.deps, 'w1');
   assert.equal(resumed.deps.watches.list('w1').defs.length, 1);
+  await settle();
+  assert.ok(!resumed.backend.writes.some((write) => write.startsWith('watches w1 null')));
 });
 
 test('events that arrive while the agent works are sent over the channel, and exactly those files go', async () => {

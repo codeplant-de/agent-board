@@ -9,6 +9,7 @@ import type { AttemptResult, WatchRunner } from '../watch/attempt.mts';
 import { describeEvery, eventsMessage, sanitizeEventText } from '../watch/fence.mts';
 import { CI_EVERY_MS, MAX_COMMAND_CHARS, MIN_COMMAND_EVERY_MS, newWatchId } from '../watch/store.mts';
 import type { WatchDef, WatchStore } from '../watch/store.mts';
+import { publishWatches } from '../watch/publish.mts';
 import { isPrUrl, isWatchName } from '../watch/shapes.mts';
 import { confirm } from './board.mts';
 import { localTime, parseStart } from './schedule.mts';
@@ -129,6 +130,11 @@ export interface WatchDeps {
   // The task of the run (AGENT_BOARD_TASK); outside a run, absent.
   ownTask?: string;
   now?: Date;
+}
+
+// Tells the board the task's watches after this command changed the store.
+function publish(context: Context, store: WatchStore, id: string, now: Date): Promise<void> {
+  return publishWatches({ store, backend: context.backend, now: () => now, log: context.print }, id);
 }
 
 function requireHere(context: Context, task: Task, what: string): void {
@@ -271,10 +277,12 @@ export async function watch(
   if (result.kind === 'broken') throw new UsageError(`cannot watch "${def.name}": ${result.reason}`);
   if (result.kind === 'event') {
     // The answer is here already: nothing to wait for, and an older watch of that name must not report later.
-    deps.watches.claim(id, def.name)?.done();
+    const older = deps.watches.claim(id, def.name);
+    older?.done();
     context.print(
       eventsMessage(id, [{ name: def.name, at: now.toISOString(), text: sanitizeEventText(result.text) }], others, now),
     );
+    if (older !== undefined) await publish(context, deps.watches, id, now);
     return;
   }
   const stored: WatchDef = {
@@ -282,6 +290,7 @@ export async function watch(
     ...(def.source.kind === 'timer' ? {} : { last: { at: now.toISOString(), summary: result.summary } }),
   };
   deps.watches.write(stored);
+  await publish(context, deps.watches, id, now);
   confirm(context, `watching "${def.name}" on ${id}: ${result.summary}; until ${localTime(plan.deadline)}`);
   if (replaced) confirm(context, `it replaced the open watch "${def.name}"`);
   confirm(context, KEEP_WORKING);
@@ -374,5 +383,6 @@ export async function unwatch(
     );
   }
   claim.done();
+  await publish(context, deps.watches, id, new Date());
   confirm(context, `stopped watch "${name}" on ${id}`);
 }

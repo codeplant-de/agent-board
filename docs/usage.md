@@ -720,7 +720,7 @@ A watch belongs to its task, has a name, and lives on the machine that runs the 
 The agent may keep working after it starts a watch. The board's rules tell it to keep working while there is work and to end its turn when there is none.
 
 - **The run is alive.** An event reaches the agent over stdin within a few seconds, the way **Send** does. A turn that ends with an event not yet handed over gets it as the next message, so the run goes on without a resume.
-- **The turn ends with watches open and no event pending.** The worker parks the task: it moves it to **Waiting** until the earliest timeout. The slot goes to the next task, and the card shows "Checking · up to 1h 50m". The agent calls nothing for this.
+- **The turn ends with watches open and no event pending.** The worker parks the task: it moves it to **Waiting** until the earliest timeout. The slot goes to the next task, and the card shows "Checking · up to 1h 50m" until the machine has told the board about its watches, then [the badge below](#what-the-board-shows-of-watches). The agent calls nothing for this.
 - **An event arrives for a parked task.** The task wakes: it goes to the top of Todo, like a pause, and waits for a slot of its lane like any resume. The next run resumes the session on the same machine and in the same directory.
 
 The prompt of that resume carries every event since the last run, each in a fenced block, and the watches still open:
@@ -775,9 +775,23 @@ The command and its output stay on the machine, in `<state dir>/watches/<task>/`
 
 The machine writes each event to the same directory and deletes it only once the agent has it. It builds the agent's prompt from that file, never from the board.
 
-The thread gets a note per event, an agent comment that starts with `agent-board: watch`. So you see what the agent will see.
+The thread gets a note per event, an agent comment that starts with `agent-board: watch`. So you see what the agent will see. The task page draws it as a compact row (`Watch "ci" reported · 10:47`) with the fenced text behind **Details**.
 
 Watches run on the machine that ran the task, since the session lives there. A watch on a machine that is off goes on when the machine comes back. After a reboot the machine reads the watches from disk and polls again.
+
+### What the board shows of watches
+
+The machine publishes what it watches as a sealed list: for each watch its name, what it watches, a one-line status, the deadline and the last look, and once for the task how many events wait for the agent. Never the command or its output. All of this text comes from the agent, so the board shows it as plain text.
+
+- **The card.** A Running or Waiting task with watches shows `Watching CI #116 · 4/7` in place of "Checking · up to …". It names the first watch. A CI status such as "4 of 7 passed" is shortened to `4/7`, and `+1` counts each further watch. The countdown stays in the badge's tooltip.
+- **The task page.** A **Watches** list with a row per watch and a **Stop** button.
+- **Older server or CLI.** Without the feature the card keeps the old badge.
+
+**Stop** ends one watch within seconds, with no confirmation. The button reads "Stopping…" until the machine acknowledges.
+
+- The machine stops the watch on its next tick. The agent is told `Watch "ci" was stopped by the user.`, like an event.
+- A Stop wakes a parked task like any other event, the usual way, also when other watches stay open.
+- Stop works only while the task's machine is reachable. If the machine is off, the stop waits there too.
 
 ### Lifecycle
 

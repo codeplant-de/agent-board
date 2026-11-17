@@ -75,6 +75,8 @@ import {
   watchesToPoll,
 } from '../watch/tick.mts';
 import type { DropReason, TickWatchDeps } from '../watch/tick.mts';
+import { publishWatches } from '../watch/publish.mts';
+import { handleWatchStops } from '../watch/stops.mts';
 import { isRunLive, wakeReason } from '../watch/wake.mts';
 import { isProcessAlive } from '../worker/process.mts';
 
@@ -145,6 +147,13 @@ const watchDepsOf = (deps: DispatchDeps): TickWatchDeps => ({
   dryRun: deps.dryRun,
 });
 
+const publishDepsOf = (deps: DispatchDeps): Parameters<typeof publishWatches>[0] => ({
+  store: deps.watches,
+  backend: deps.backend,
+  now: deps.now,
+  log: deps.print,
+});
+
 // Why the watches of a task that the list does not show are dropped, or undefined when they stay: only the board's 404, or a
 // task that is done or closed, lets them go; a task that cannot be read now keeps them.
 async function unlistedDropReason(deps: DispatchDeps, id: string): Promise<DropReason | undefined> {
@@ -173,7 +182,18 @@ async function dropFinishedWatches(deps: DispatchDeps, listed: Task[]): Promise<
     const reason = task === undefined ? await unlistedDropReason(deps, id) : dropReason(task);
     if (reason === undefined) continue;
     deps.print(`DROP-WATCHES ${id} its task is ${reason}`);
-    if (!deps.dryRun) deps.watches.dropTask(id);
+    if (deps.dryRun) continue;
+    deps.watches.dropTask(id);
+    // The board clears them itself for a task that left; this keeps its copy right when it did not.
+    if (reason !== 'gone') await publishWatches(publishDepsOf(deps), id);
+  }
+}
+
+// The stop requests of the user for the tasks on this machine, after the watches of finished tasks are dropped.
+async function stopWatches(deps: DispatchDeps, tasks: Task[]): Promise<void> {
+  for (const task of tasks) {
+    if (task.machine !== deps.config.machine || task.watchStops.length === 0) continue;
+    await handleWatchStops({ ...watchDepsOf(deps), backend: deps.backend }, task);
   }
 }
 
@@ -201,13 +221,16 @@ async function wakeDue(deps: DispatchDeps, tasks: Task[]): Promise<{ tasks: Task
   } catch (error) {
     deps.print(`WARN dropping the watches of finished tasks failed: ${errorText(error)}`);
   }
+  await stopWatches(deps, tasks);
   const checks: Task[] = [];
   const replaced = new Map<string, Task>();
   for (const task of waiting) {
     const held = deps.watches.list(task.id).defs.length > 0 || deps.watches.events(task.id).length > 0;
     // A timeout is an event the resume prompt carries, so a task whose time ran out gets it before it is woken.
-    if (held && task.wakeAt !== null && task.wakeAt.getTime() <= deps.now().getTime())
-      await finishDeadlines(watchDepsOf(deps), task.id);
+    if (held && task.wakeAt !== null && task.wakeAt.getTime() <= deps.now().getTime()) {
+      const ended = await finishDeadlines(watchDepsOf(deps), task.id);
+      if (ended.length > 0) await publishWatches(publishDepsOf(deps), task.id);
+    }
     const event = isRunLive(deps.watches, task.id, deps.isAlive) ? undefined : undeliveredEvent(deps.watches, task.id);
     const decision = decideWake({
       task,
@@ -344,6 +367,7 @@ async function pollWatchesInstead(deps: DispatchDeps, tasks: Task[], tickStart: 
   const timeLeftMs = TICK_LIMIT_MS - TICK_MARGIN_MS - (deps.now().getTime() - tickStart.getTime());
   const got = await pollWatches(watchDepsOf(deps), defs, { timeLeftMs });
   for (const id of got) {
+    await publishWatches(publishDepsOf(deps), id);
     const task = tasks.find((candidate) => candidate.id === id);
     const name = undeliveredEvent(deps.watches, id);
     if (task?.status !== 'waiting' || task.machine !== deps.config.machine || name === undefined) continue;

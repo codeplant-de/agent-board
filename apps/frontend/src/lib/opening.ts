@@ -12,6 +12,8 @@ import {
   openNote,
   openPrs,
   openPreview,
+  isWatchId,
+  openWatches,
   parseTranscriptEvent,
   taskLabels,
   transcriptBinding,
@@ -27,6 +29,7 @@ import {
   type PrState,
   type Question,
   type TaskPr,
+  type TaskWatch,
   type TranscriptEvent,
   type TranscriptEventView,
   type UnreadableField,
@@ -57,11 +60,20 @@ interface SealedFields {
   workdir: string | null;
 }
 
-export type BoardTask = Omit<WireBoardTask, keyof SealedFields | 'pr' | 'prState' | 'prs' | 'promptPrState'> &
+export type BoardTask = Omit<
+  WireBoardTask,
+  keyof SealedFields | 'pr' | 'prState' | 'prs' | 'promptPrState' | 'watches' | 'watchStops'
+> &
   SealedFields & {
     // The PRs its agent reported, those that open under their binding as a GitHub PR URL; see `prsOf`.
     prs: TaskPr[];
     promptPrState: PrState | null;
+    // What the task's machine watches for it, when the list opens under its binding; null when there is none or it does not open.
+    watches: TaskWatch[] | null;
+    // How many events of the task wait for its agent, as the machine published it.
+    watchEvents: number;
+    // The watches you asked to stop that the machine has not acknowledged yet.
+    watchStops: string[];
     labels: string[];
     unreadable: UnreadableField[];
     // The clear fields the board sent in a shape it does not promise; they are shown as neutral values.
@@ -165,16 +177,21 @@ export const openerFor =
 export async function openBoardTask(keys: Keys, wire: WireBoardTask): Promise<BoardTask> {
   const { invalid, ...shapes } = checkTaskShapes(wire);
   const row = { kind: 'task', id: wire.id, createdBy: shapes.createdBy, scheduleId: shapes.scheduleId } as const;
-  const [fields, prs] = await Promise.all([
+  const [fields, prs, watches] = await Promise.all([
     openFields(openerFor(keys), row, wire),
     openPrs(openerFor(keys), wire.id, wire.prs ?? []),
+    openWatches(openerFor(keys), wire.id, wire.watches),
   ]);
-  const { pr: _pr, prState: _prState, prs: _prs, ...rest } = wire;
+  const { pr: _pr, prState: _prState, prs: _prs, watches: _watches, watchStops, ...rest } = wire;
   return {
     ...rest,
     ...shapes,
     ...fields,
+    unreadable: watches.unreadable ? [...fields.unreadable, 'watches'] : fields.unreadable,
     prs,
+    watches: watches.watches,
+    watchEvents: watches.pendingEvents,
+    watchStops: Array.isArray(watchStops) ? watchStops.filter(isWatchId) : [],
     promptPrState: wire.promptPrState ?? null,
     labels: taskLabels({ input: fields.input, createdBy: shapes.createdBy }),
     invalid,

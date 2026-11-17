@@ -158,6 +158,9 @@ function dryTask(draft: TaskDraft): Task {
     workdir: workdir ?? null,
     prs: [],
     promptPrState: null,
+    watches: null,
+    watchEvents: 0,
+    watchStops: [],
     next: 'fresh',
     head: head ?? null,
     openQuestion: false,
@@ -271,6 +274,12 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         ...prs.map((pr) => `${pr.id}=${pr.state}`),
       ];
       print(`DRY set-pr-states ${id} ${states.join(' ')}`);
+    },
+    async setWatches(id, watches) {
+      print(`DRY set-watches ${id} ${watches === null ? 'none' : `${watches.length} watches`}`);
+    },
+    async ackWatchStops(id, ids) {
+      print(`DRY ack-watch-stops ${id} ${ids.join(',')}`);
     },
     async setDirs(_machine, dirs) {
       print(`DRY set-dirs ${dirs.length} directories`);

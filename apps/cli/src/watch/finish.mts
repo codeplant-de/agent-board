@@ -22,7 +22,7 @@ export interface FinishDeps {
 export async function finishWatch(
   deps: FinishDeps,
   def: WatchDef,
-  report: { kind: 'event' | 'timeout'; text: string },
+  report: { kind: WatchEvent['kind']; text: string },
 ): Promise<WatchEvent | undefined> {
   const claim = deps.store.claim(def.task, def.name, def.id);
   if (claim === undefined) return undefined;

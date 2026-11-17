@@ -13,6 +13,7 @@ import {
   openFields,
   openNote,
   openPrs,
+  openWatches,
   headIndex,
   parsePolish,
   QuestionError,
@@ -26,6 +27,7 @@ import {
   sealNote,
   sealPr,
   sealQuestions,
+  sealWatches,
   sealWorkdir,
   taskLabels,
   transcriptBinding,
@@ -116,11 +118,12 @@ function promptPrState(wire: WireTask): PrState | null {
 
 async function openTask(keys: Keys, wire: WireTask): Promise<Task> {
   const opener = openerFor(keys);
-  const [{ title, input, workdir, agent, unreadable }, prs] = await Promise.all([
+  const [{ title, input, workdir, agent, unreadable }, prs, opened] = await Promise.all([
     openFields(opener, taskRef(wire), wire),
     openPrs(opener, wire.id, reportedPrs(wire)),
+    openWatches(opener, wire.id, wire.watches),
   ]);
-  const { pr: _pr, prState: _prState, prs: _prs, ...rest } = wire;
+  const { pr: _pr, prState: _prState, prs: _prs, watches: _watches, watchStops, ...rest } = wire;
   return {
     ...rest,
     title,
@@ -129,8 +132,11 @@ async function openTask(keys: Keys, wire: WireTask): Promise<Task> {
     agent,
     prs,
     promptPrState: promptPrState(wire),
+    watches: opened.watches,
+    watchEvents: opened.pendingEvents,
+    watchStops: watchStops ?? [],
     labels: taskLabels({ input, createdBy: wire.createdBy }),
-    unreadable,
+    unreadable: opened.unreadable ? [...unreadable, 'watches'] : unreadable,
   };
 }
 
@@ -311,6 +317,13 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     },
     removePr: (id, prId) => inner.removePr(id, { pr: prId }),
     setPrStates: (id, states) => inner.setPrStates(id, states),
+    async setWatches(id, watches, pendingEvents) {
+      await inner.setWatches(id, {
+        watches:
+          watches === null ? null : await checked('set-watches', () => sealWatches(sealer, id, watches, pendingEvents)),
+      });
+    },
+    ackWatchStops: (id, ids) => inner.ackWatchStops(id, { ids: [...ids] }),
     async checkDirs(machine, dirs) {
       const { supported, index } = await inner.dirsState();
       if (!supported) return 'unsupported';

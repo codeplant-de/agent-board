@@ -319,6 +319,30 @@ test('unwatch removes the watch by claim and says nothing to the agent; an unkno
   await assert.rejects(go(['unwatch', ID, 'ci']), /has no open watch/);
 });
 
+test('watch and unwatch tell the board the list after they changed the store, and a board without the feature changes nothing for them', async () => {
+  const { go, backend, watches } = setup();
+  await go(['watch', ID, '--name', 'health', '--', 'curl -fsS secret.example']);
+  await go(['watch', ID, '--in', '30m', '--name', 'deploy']);
+  const published = (): string[] => backend.writes.filter((write) => write.startsWith('watches '));
+  assert.equal(published().length, 2);
+  assert.match(published()[1] ?? '', /"name":"deploy".*"name":"health"/);
+  assert.equal((published()[1] ?? '').includes('secret.example'), false);
+  await go(['unwatch', ID, 'deploy']);
+  assert.match(published()[2] ?? '', /^watches Zt0Test1 \[\{"id":"[0-9a-f]{16}","name":"health"/);
+  await go(['unwatch', ID, 'health']);
+  assert.equal(published()[3], 'watches Zt0Test1 null');
+  assert.deepEqual(watches.list(ID).defs, []);
+
+  const missing = setup();
+  missing.backend.setWatches = async () => {
+    const error = new BackendError('the board server does not support showing a task’s watches yet');
+    error.missingFeature = 'task.watches';
+    throw error;
+  };
+  await missing.go(['watch', ID, '--in', '30m', '--name', 'deploy']);
+  assert.equal(missing.watches.list(ID).defs.length, 1);
+});
+
 test('watches lists name, source, until, last attempt and undelivered events, or JSON', async () => {
   const { go, watches, printed, out } = setup();
   await go(['watches', ID]);
@@ -383,11 +407,13 @@ test("move to needs-me from inside the run for its own task drops its watches; a
   await mine.go(['move', ID, 'needs-me'], { env: { AGENT_BOARD_TASK: ID } });
   assert.deepEqual(mine.watches.list(ID).defs, []);
   assert.deepEqual(mine.watches.events(ID), []);
+  assert.ok(mine.backend.writes.includes(`watches ${ID} null`), 'the board’s list is cleared too');
 
   const user = setup();
   user.watches.write(timerDef({ task: ID }));
   await user.go(['move', ID, 'needs-me']);
   assert.equal(user.watches.list(ID).defs.length, 1);
+  assert.ok(!user.backend.writes.some((write) => write.startsWith('watches ')));
 
   // Another task's run, a move to another status and a move the board refuses leave the watches.
   const other = setup();

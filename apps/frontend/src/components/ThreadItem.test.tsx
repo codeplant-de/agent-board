@@ -72,4 +72,31 @@ describe('ThreadItem', () => {
     renderNote(note({ author: 'user', text: 'plain' }));
     expect(screen.queryByText(/Delivered|Waiting for the agent/)).not.toBeInTheDocument();
   });
+
+  it('draws a watch event note as a compact row with the fenced text behind a disclosure', () => {
+    renderNote(note({ text: 'agent-board: watch "ci" reported.\n\n```\n4 of 7 passed\n```' }));
+    const row = screen.getByTestId('watch-event');
+    expect(row).toHaveTextContent('Watch "ci" reported');
+    expect(row).toHaveTextContent(/· \d\d:\d\d/);
+    expect(screen.getByText(/4 of 7 passed/)).toBeInTheDocument();
+  });
+
+  it('gives a watch note with an odd first line a plain title', () => {
+    renderNote(note({ text: 'agent-board: watch "<img src=x>" reported.\n\nbody' }));
+    expect(screen.getByTestId('watch-event')).toHaveTextContent('Watch reported');
+    expect(screen.queryByText(/img/)).not.toBeInTheDocument();
+  });
+
+  it('does not draw a note of the user, or an ordinary agent comment, as a watch event', () => {
+    renderNote(note({ author: 'user', text: 'agent-board: watch "ci" reported.' }));
+    expect(screen.queryByTestId('watch-event')).not.toBeInTheDocument();
+    renderNote(note({ text: 'Ready.' }));
+    expect(screen.queryByTestId('watch-event')).not.toBeInTheDocument();
+  });
+
+  it('draws an agent comment with a suggestion as a normal comment even when it starts with the marker', () => {
+    renderNote(note({ text: 'agent-board: watch "ci" reported.\n\nbody', suggestion: 'Reply with this' }));
+    expect(screen.queryByTestId('watch-event')).not.toBeInTheDocument();
+    expect(screen.getByText(/Suggested reply: Reply with this/)).toBeInTheDocument();
+  });
 });
