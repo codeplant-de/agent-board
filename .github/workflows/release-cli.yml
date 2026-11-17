@@ -4,60 +4,35 @@ name: Release CLI
 # releases apps/cli/package.json's version at the checked-out commit, and only from main.
 on:
   workflow_call:
+    outputs:
+      # true once the version is published, by this run or an earlier one. A cancelled first macOS attempt can mark the
+      # whole call failed even when the retry released, so ci.yml waits on this instead of the call's result.
+      published:
+        value: ${{ jobs.release.outputs.published }}
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  # The macOS binary is built where it runs, and the smoke tests run on that very file before it is published.
+  # The macOS binary is built where it runs, and the smoke tests run on that very file before it is published. GitHub's macOS
+  # runners are sometimes short: a job no runner picks up within about 15 minutes is cancelled before its first step, which
+  # held back two releases. So a first attempt that does not succeed gets one more.
   macos:
-    runs-on: macos-latest
+    uses: ./.github/workflows/macos-binary.yml
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        with:
-          version: 11.28.9
-
-      - name: Setup Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.4
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build the macOS binary
-        run: pnpm --filter @agent-board/cli build darwin-arm64
-
-      - name: Binary smoke test
-        run: BOARD_BINARY="$PWD/apps/cli/dist/board-darwin-arm64" pnpm --filter @agent-board/cli test:binary
-
-      - name: macOS smoke test
-        run: apps/cli/scripts/macos-smoke.sh apps/cli/dist/board-darwin-arm64
-
-      - name: Hand the binary to the release job
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: board-darwin-arm64
-          path: apps/cli/dist/board-darwin-arm64
-          if-no-files-found: error
+  macos-retry:
+    needs: macos
+    if: ${{ !cancelled() && needs.macos.result != 'success' }}
+    uses: ./.github/workflows/macos-binary.yml
 
   release:
-    needs: macos
+    needs: [macos, macos-retry]
+    if: >-
+      !cancelled() && (needs.macos.result == 'success' || needs.macos-retry.result == 'success')
     runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.done.outputs.published }}
     # Two pushes to main never publish at once: the second run then finds the release published and skips.
     concurrency:
       group: cli-release
@@ -189,3 +164,7 @@ jobs:
             apps/cli/dist/SHA256SUMS \
             scripts/install.sh
           gh release edit "$tag" --draft=false
+
+      - name: Done
+        id: done
+        run: echo "published=true" >> "$GITHUB_OUTPUT"

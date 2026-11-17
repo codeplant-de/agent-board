@@ -63,7 +63,7 @@ export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInpu
   const agent = task.agent ?? null;
   const row: RowRef = isRepeat(task.when)
     ? { kind: 'schedule', id, agent }
-    : { kind: 'task', id, createdBy: 'user', scheduleId: null, agent };
+    : { kind: 'task', id, createdBy: 'user', scheduleId: null, agent, forkOf: null };
   const workdir = task.place?.workdir;
   const sealed = await checked(() => sealFields(sealerFor(keys), row, { title, input, workdir }));
   return {
@@ -141,7 +141,13 @@ export async function sealStart(keys: Keys, proposal: Proposal): Promise<string>
     throw new InputError('This proposal names an agent, which a proposal never does, so it cannot be started here.');
   if (proposal.unreadable.includes('input'))
     throw new InputError('This proposal’s prompt cannot be read, so it cannot be started here.');
-  const row: RowRef = { kind: 'task', id: proposal.id, createdBy: 'user', scheduleId: proposal.scheduleId };
+  const row: RowRef = {
+    kind: 'task',
+    id: proposal.id,
+    createdBy: 'user',
+    scheduleId: proposal.scheduleId,
+    forkOf: null,
+  };
   return checked(() => sealInput(sealerFor(keys), row, proposal.input));
 }
 
@@ -165,9 +171,18 @@ function fenced(text: string): string {
   return `${fence}\n${text}\n${fence}`;
 }
 
+function keptText(label: string, target: Pick<PolishTarget, 'title' | 'input'>): string {
+  return `${label}\n\nTitle: ${target.title}\n\n${fenced(target.input)}`;
+}
+
 /** The note that keeps what a polished prompt replaces, so applying it loses nothing. */
 export function previousText(target: Pick<PolishTarget, 'title' | 'input'>): string {
-  return `Prompt before polishing\n\nTitle: ${target.title}\n\n${fenced(target.input)}`;
+  return keptText('Prompt before polishing', target);
+}
+
+/** The note that keeps what an edit of the prompt replaces. */
+export function textBeforeEdit(target: Pick<PolishTarget, 'title' | 'input'>): string {
+  return keptText('Prompt before editing', target);
 }
 
 /**
@@ -262,13 +277,25 @@ export interface ForkSource {
 }
 
 /** Whether the task page offers Fork: a task with a Claude session on a machine, that is not closed and not an agent's proposal. */
-export function canFork(task: Pick<ForkSource, 'sessionId' | 'machine' | 'closed' | 'createdBy'>): boolean {
-  return task.sessionId !== null && task.machine !== null && !task.closed && task.createdBy !== 'agent';
+export function canFork(task: Pick<ForkSource, 'sessionId' | 'machine' | 'closed' | 'createdBy' | 'agent'>): boolean {
+  return (
+    task.sessionId !== null &&
+    task.machine !== null &&
+    !task.closed &&
+    task.createdBy !== 'agent' &&
+    !isAgentlessIntake(task)
+  );
 }
+
+/** A task of the removed built-in intake that names no agent has no rules to run under, so nothing forks it. */
+const isAgentlessIntake = (task: Pick<ForkSource, 'createdBy' | 'agent'>): boolean =>
+  task.createdBy === 'intake' && (task.agent ?? null) === null;
 
 /** Why a task cannot be forked, or undefined when it can: only a task with a Claude session on a machine that is not closed or an agent's proposal. */
 export function forkProblem(task: ForkSource): string | undefined {
   if (task.createdBy === 'agent') return 'An agent proposed this task; start it first.';
+  if (isAgentlessIntake(task))
+    return 'The built-in intake that made this task was removed, and the task names no agent, so a fork would have no rules to run under.';
   if (task.closed) return 'A closed task cannot be forked.';
   if (task.sessionId === null || task.machine === null)
     return 'This task has no Claude session on a machine yet, so there is nothing to fork.';
@@ -311,5 +338,83 @@ export async function sealFork(
     input: sealed.input,
     workdir: sealed.workdir,
     ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
+  };
+}
+
+/** The task whose prompt is edited, as the page shows it; a schedule's occurrence is edited through its schedule instead. */
+export interface EditTarget {
+  id: string;
+  title: string;
+  input: string;
+  createdBy: TaskCreator;
+  scheduleId: string | null;
+  /** The agent the task runs as, null for none: its prompt is sealed under it too, so it must be stated. */
+  agent: string | null;
+  /** The task it was forked from, if it is a fork: its prompt is sealed under the link too. */
+  forkOf?: string;
+  unreadable: UnreadableField[];
+}
+
+function editedFields(title: string, input: string): { title: string; input: string } {
+  const text = input.trim();
+  if (text === '') throw new InputError('Write a prompt first');
+  return { title: title.trim() || defaultTitle(text), input: text };
+}
+
+/**
+ * Editing a task's prompt is the user's sealed act: the new title and prompt sealed under the task's row as the user's, and
+ * the old ones as a note of the user's. Throws when the old text could not be read, since it could not be kept.
+ */
+export async function sealEdit(
+  keys: Keys,
+  options: { target: EditTarget; title: string; input: string },
+): Promise<RouterInputs['tasks']['edit']> {
+  const { target } = options;
+  if (target.createdBy !== 'user') throw new InputError('Only a task you created has a prompt you can edit.');
+  if (target.scheduleId !== null)
+    throw new InputError('This card is the next run of a schedule; edit the prompt on the Schedules page.');
+  if (target.unreadable.some((field) => field !== 'watches'))
+    throw new InputError('This task cannot be read, so what it says now could not be kept.');
+  const fields = editedFields(options.title, options.input);
+  const row: RowRef = {
+    kind: 'task',
+    id: target.id,
+    createdBy: 'user',
+    scheduleId: null,
+    agent: target.agent,
+    forkOf: target.forkOf ?? null,
+  };
+  const seal = sealerFor(keys);
+  return {
+    id: target.id,
+    title: await checked(() => sealTitle(seal, row, fields.title)),
+    input: await checked(() => sealInput(seal, row, fields.input)),
+    previous: await checked(() =>
+      sealNote(seal, { taskId: target.id, author: 'user', kind: 'event' }, textBeforeEdit(target)),
+    ),
+  };
+}
+
+/** The schedule whose prompt is edited, as the page shows it. */
+export interface ScheduleEditTarget {
+  id: string;
+  agent: string | null;
+  unreadable: UnreadableField[];
+}
+
+/** A schedule's new title and prompt, sealed under the schedule as the user's; its pending card takes the same text. */
+export async function sealScheduleEdit(
+  keys: Keys,
+  options: { schedule: ScheduleEditTarget; title: string; input: string },
+): Promise<RouterInputs['schedules']['edit']> {
+  const { schedule } = options;
+  if (schedule.unreadable.length > 0) throw new InputError('This schedule cannot be read, so it is not edited here.');
+  const fields = editedFields(options.title, options.input);
+  const row: RowRef = { kind: 'schedule', id: schedule.id, agent: schedule.agent };
+  const seal = sealerFor(keys);
+  return {
+    id: schedule.id,
+    title: await checked(() => sealTitle(seal, row, fields.title)),
+    input: await checked(() => sealInput(seal, row, fields.input)),
   };
 }

@@ -117,6 +117,8 @@ The server keeps the same order for an honest board:
 - a closed task, or one that is not in Backlog or Needs me
 - a polish task that is not the task's child
 
+**Editing a prompt.** `tasks.edit` and `schedules.edit` are the same kind of act without an agent behind it: the user rewrites a prompt in the browser. The bindings are the ones in the table. A task's new title and prompt are sealed for its own row, and the prompt for the agent the row names. `tasks.edit` also stores a `user` event note with the old text. It refuses a task an agent created, a proposal, an occurrence of a schedule, a closed task, one outside Todo and Backlog, and one a worker ever claimed. `schedules.edit` stores the schedule's ciphertext as it is, and copies it into the pending card, which has the same binding. An occurrence is refused because its sealed values are bound to the schedule: an edit of one card could be replayed as the schedule's prompt for every later run, as with a polish. The server checks state and stores ciphertext; it never writes a prompt.
+
 ### Dropped or swapped agent
 
 A task that names an agent runs as that agent, under the agent's own tool lists. A task without one runs under its creator's rules. A hostile server could return `agent: null` to lift the restrictions, or give the task the name of a more permissive agent.
@@ -139,7 +141,7 @@ A CLI that does not know the field computes the prompt's context without the nam
 
 **What a writer must state.**
 
-- Whoever seals a new prompt for a task must state the agent: `patch.seal.agent` is required, with `null` for none. This applies to the browser's Polish prompt, a requeue by `board schedule --key`, and `update-task` with `seal.agent`. A prompt is never sealed without an agent by omission, and a prompt sealed under the wrong name does not open.
+- Whoever seals a new prompt for a task must state the agent: `patch.seal.agent` is required, with `null` for none. This applies to the browser's Polish prompt and Edit prompt, a requeue by `board schedule --key`, and `update-task` with `seal.agent`. A prompt is never sealed without an agent by omission, and a prompt sealed under the wrong name does not open.
 - Nothing changes the agent of an existing task or schedule. The name is written once, when the row is made.
 - An agent's proposal never carries an agent. The server refuses a draft with both `agent` and `createdBy: agent`, and the browser will not start a proposal that has one.
 

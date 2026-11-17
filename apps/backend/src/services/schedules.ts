@@ -4,7 +4,8 @@ import { asc, count, eq, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
 import { schedules, tasks, transcriptRuns, type ScheduleRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
-import { insertTask, lockTask } from './taskRows';
+import { requireSealed } from './sealed';
+import { hasStarted, insertTask, lockTask } from './taskRows';
 
 const MIN_INTERVAL_MS = 60_000;
 
@@ -305,5 +306,31 @@ export async function removeSchedule(db: DbOrTx, id: string): Promise<void> {
     const { pending } = await lockWithOccurrence(tx, id);
     await removePending(tx, pending);
     await tx.delete(schedules).where(eq(schedules.id, id));
+  });
+}
+
+/**
+ * A new title and prompt for the schedule, sealed in the browser under its binding; the next occurrences copy them. The
+ * pending card takes them too while it waits in Todo and has not started, so the next run uses them.
+ */
+export async function editSchedule(
+  db: DbOrTx,
+  input: { id: string; title: string; input: string },
+): Promise<{ schedule: ScheduleView; pending: 'updated' | 'started' | 'none' }> {
+  requireSealed(input.title, 'the title');
+  requireSealed(input.input, 'the prompt');
+  return db.transaction(async (tx) => {
+    const { schedule, pending } = await lockWithOccurrence(tx, input.id);
+    if (schedule.endedAt !== null) throw new AppError('CONFLICT', 'The schedule has ended.');
+    const now = new Date();
+    await tx.update(schedules).set({ title: input.title, input: input.input }).where(eq(schedules.id, schedule.id));
+    if (pending === undefined) return { schedule: await viewOf(tx, schedule.id), pending: 'none' };
+    const editable = pending.status === 'todo' && !pending.closed && !hasStarted(pending);
+    if (editable)
+      await tx
+        .update(tasks)
+        .set({ title: input.title, input: input.input, updatedAt: now })
+        .where(eq(tasks.id, pending.id));
+    return { schedule: await viewOf(tx, schedule.id), pending: editable ? 'updated' : 'started' };
   });
 }

@@ -397,6 +397,20 @@ export function plainUi(db: Db, owner = 'jascha') {
           }),
         );
       },
+      // As the browser does: the new title and prompt sealed under the row they land on, the old text as a note.
+      edit: async (input: { id: string; title: string; input: string; previous: string }) => {
+        const { task } = await raw.tasks.get({ id: input.id });
+        const row = { ...taskRowOf(task), agent: (await openFields(sealing.open, taskRowOf(task), task)).agent };
+        const fields = await sealFields(sealing.seal, row, { title: input.title, input: input.input });
+        return openTask(
+          await raw.tasks.edit({
+            id: input.id,
+            title: fields.title,
+            input: fields.input,
+            previous: await sealNote(sealing.seal, { taskId: input.id, author: 'user', kind: 'event' }, input.previous),
+          }),
+        );
+      },
       done: mutation(raw.tasks.done),
       rerun: mutation(raw.tasks.rerun),
       setPriority: mutation(raw.tasks.setPriority),
@@ -437,6 +451,21 @@ export function plainUi(db: Db, owner = 'jascha') {
       list: async () => Promise.all((await raw.schedules.list()).map(openSchedule)),
       setPaused: async (input: { id: string; paused: boolean }) => openSchedule(await raw.schedules.setPaused(input)),
       remove: raw.schedules.remove,
+      // As the browser does: the new title and prompt sealed under the schedule.
+      edit: async (input: { id: string; title: string; input: string }) => {
+        const found = (await raw.schedules.list()).find((schedule) => schedule.id === input.id);
+        const agent =
+          found === undefined
+            ? null
+            : (await openFields(sealing.open, { kind: 'schedule', id: input.id }, found)).agent;
+        const fields = await sealFields(sealing.seal, { kind: 'schedule', id: input.id, agent }, input);
+        const { schedule, pending } = await raw.schedules.edit({
+          id: input.id,
+          title: fields.title,
+          input: fields.input,
+        });
+        return { schedule: await openSchedule(schedule), pending };
+      },
     },
     machines: raw.machines,
     keys: raw.keys,

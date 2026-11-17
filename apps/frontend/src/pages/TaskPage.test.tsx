@@ -1,7 +1,7 @@
 import { MantineProvider } from '@mantine/core';
 import { ModalsProvider } from '@mantine/modals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -34,6 +34,7 @@ vi.mock('../lib/trpc', () => {
         wakeNow: idle,
         applyPolish: idle,
         fork: idle,
+        edit: idle,
       },
       machines: {
         list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => [] }) },
@@ -80,6 +81,7 @@ const task = (id: string, title: string): BoardTask =>
     waitCheck: false,
     woken: false,
     proposed: false,
+    started: true,
     invalid: [],
     unreadable: [],
     parentId: null,
@@ -192,5 +194,70 @@ describe('TaskPage', () => {
   it('names the parent by its id when the board has no such task any more', () => {
     page([{ ...task('ffff1111', 'The fork'), forkOf: 'gone1111' }]);
     expect(screen.getByTestId('forked-from')).toHaveTextContent('Forked from gone1111');
+  });
+});
+
+describe('TaskPage prompt editing', () => {
+  function show(overrides: Partial<BoardTask>) {
+    const shown = {
+      ...task('aaaa1111', 'Task A'),
+      sessionId: null,
+      started: false,
+      status: 'todo',
+      ...overrides,
+    } as BoardTask;
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    client.setQueryData(['tasks.get', shown.id], { task: shown, thread: [], followUps: [], parent: null });
+    render(
+      <MemoryRouter initialEntries={[`/t/${shown.id}`]}>
+        <MantineProvider>
+          <ModalsProvider>
+            <QueryClientProvider client={client}>
+              <Routes>
+                <Route path="/t/:id" element={<TaskPage />} />
+              </Routes>
+            </QueryClientProvider>
+          </ModalsProvider>
+        </MantineProvider>
+      </MemoryRouter>,
+    );
+  }
+  const editButton = () => screen.queryByRole('button', { name: 'Edit prompt' });
+
+  it('offers it on a task of yours that waits in Todo and never started', () => {
+    show({});
+    expect(editButton()).toBeInTheDocument();
+    expect(screen.queryByText(/edit it on the Schedules page/)).not.toBeInTheDocument();
+  });
+
+  it('offers it in Backlog too', () => {
+    show({ status: 'backlog' });
+    expect(editButton()).toBeInTheDocument();
+  });
+
+  it('does not offer it once the task started, is running, is closed, or is an agent’s', () => {
+    for (const overrides of [
+      { started: true },
+      { status: 'running' as const },
+      { status: 'needs-me' as const },
+      { closed: true },
+      { createdBy: 'agent' as const },
+      { proposed: true, createdBy: 'agent' as const },
+      { unreadable: ['input' as const] },
+    ]) {
+      cleanup();
+      show(overrides);
+      expect(editButton(), JSON.stringify(overrides)).not.toBeInTheDocument();
+    }
+  });
+
+  it('does not offer it on a schedule’s card, and points to the Schedules page', () => {
+    show({ scheduleId: 'sched001' });
+    expect(editButton()).not.toBeInTheDocument();
+    expect(screen.getByText(/This card is the next run of a schedule/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Edit the prompt on the Schedules page' })).toHaveAttribute(
+      'href',
+      '/schedules',
+    );
   });
 });

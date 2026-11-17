@@ -147,6 +147,19 @@ On a card of a repeating schedule, a change applies to that card only. The next 
 
 `set` and `unset` are refused inside a board run, because an agent does not move a task or pick its model. Viewing works there.
 
+#### Editing the prompt
+
+Until a worker claims a task, you can change its title and prompt on its page: **Edit prompt**, next to the prompt. The editor starts from the current text. Your browser seals the new text as yours, and the old title and prompt stay in a note on the task. The button shows only on a task that:
+
+- you created, and that is not an agent's proposal or a card of a repeating schedule,
+- is not closed,
+- waits in Todo or Backlog,
+- no worker has claimed yet.
+
+Once a worker claimed it, even if it went back to Todo, the prompt is in its thread. Reply to it instead. If a worker claims the task while the editor is open, the editor stays with your text and saving fails with "The task has started; its prompt is in its thread now. Reply to it instead." Copy your text out before you close it.
+
+A card of a repeating schedule has no **Edit prompt**: its prompt belongs to the schedule. Its page links to the Schedules page, where an edit reaches the card too while it has not started. There is no command for editing a prompt yet.
+
 ### Repeating schedules
 
 `--every <dur>` or `--cron "<expr>"` makes a schedule instead of one task. A schedule is a rule that keeps producing delayed Todo cards. Use one or the other, not both. `--in` or `--at` sets the first run. Without one it starts now.
@@ -186,7 +199,9 @@ A repeat skips the duplicate check, since a recurring prompt resembles its own e
 
 ### The Schedules page
 
-The **Schedules** page of the web board lists each schedule with its title and prompt, rule, next run, runs left (`forever` without an end), machine and a link to the pending card. You can pause, resume and delete from there. An ended schedule is dimmed and can only be deleted.
+The **Schedules** page of the web board lists each schedule with its title and prompt, rule, next run, runs left (`forever` without an end), machine and a link to the pending card. You can edit, pause, resume and delete from there. An ended schedule is dimmed and can only be deleted.
+
+**Edit** changes the schedule's title and prompt. Every later run takes them. The pending card takes them too while it waits in Todo and no worker has claimed it, and the page says which of three happened: "The pending card was updated too", "The pending card has already started; the change applies from the next run", or "The schedule has no pending card; its next run takes the change" (a paused schedule has none). Cards that already ran or moved on keep what they had. The old text is not kept: a schedule has no thread.
 
 A pending card carries a **Repeat** badge, and its page says it is the next run of a schedule.
 

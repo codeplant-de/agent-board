@@ -27,7 +27,7 @@ import { AppError } from './errors';
 import { requireSealed } from './sealed';
 import { DONE_ARCHIVE_DAYS, daysBefore } from './retention';
 import { completeOccurrence } from './schedules';
-import { edgePosition, getTask, insertTask, lockTask } from './taskRows';
+import { edgePosition, getTask, hasStarted, insertTask, lockTask } from './taskRows';
 
 export { getTask };
 
@@ -861,6 +861,46 @@ export async function applyPolish(
       by: input.by,
     });
     if (polish.status !== 'running' && polish.status !== 'done') await markDone(tx, polish.id, input.by);
+    const [row] = await tx
+      .update(tasks)
+      .set({ title: input.title, input: input.input, updatedAt: new Date() })
+      .where(eq(tasks.id, task.id))
+      .returning();
+    return row!;
+  });
+}
+
+/**
+ * A new title and prompt, sealed in the browser as the user's, for a task of the user's that no worker has claimed yet,
+ * in Todo or Backlog. The old text goes into a note of the user's (`previous`) so nothing is lost. A schedule's occurrence
+ * is refused: its prompt is sealed under the schedule, so an edit of the card could be replayed as the schedule's.
+ */
+export async function editPrompt(
+  db: DbOrTx,
+  input: { taskId: string; title: string; input: string; previous: WireNoteInput; by: string },
+): Promise<TaskRow> {
+  requireSealed(input.title, 'the title');
+  requireSealed(input.input, 'the prompt');
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    if (task.createdBy !== 'user' || task.proposed)
+      throw new AppError('FORBIDDEN', 'Only a task you created has a prompt you can edit.');
+    if (task.scheduleId !== null)
+      throw new AppError(
+        'CONFLICT',
+        'A scheduled occurrence takes its prompt from its schedule; edit it on the Schedules page.',
+      );
+    if (hasStarted(task))
+      throw new AppError('CONFLICT', 'The task has started; its prompt is in its thread now. Reply to it instead.');
+    if (task.closed || (task.status !== 'todo' && task.status !== 'backlog'))
+      throw new AppError('CONFLICT', 'The prompt can only be edited while the task waits in Todo or Backlog.');
+    await addNote(tx, task.id, {
+      author: 'user',
+      kind: 'event',
+      body: input.previous.body,
+      preview: input.previous.preview ?? null,
+      by: input.by,
+    });
     const [row] = await tx
       .update(tasks)
       .set({ title: input.title, input: input.input, updatedAt: new Date() })
