@@ -3,7 +3,6 @@ import { fastifyTRPCPlugin, type FastifyTRPCPluginOptions } from '@trpc/server/a
 import Fastify, { type FastifyRequest } from 'fastify';
 import type { Config } from './config';
 import type { Db } from './db/client';
-import { registerIntakeApi } from './intake-api';
 import { registerMachineApi, type MachineApiOptions } from './machine-api';
 import { Changes, CHANGES_DEBOUNCE_MS } from './services/changes';
 import { AppError, type AppErrorCode } from './services/errors';
@@ -25,7 +24,7 @@ const sha256 = (value: string): Buffer => createHash('sha256').update(value).dig
 
 /**
  * Who is using the UI. In production Traefik's Authelia forward-auth sets the Remote-* headers (and strips any
- * a client sends); locally DEV_AUTH_USER stands in. Any pod that reaches :4000 (the Slack companion, say) could set
+ * a client sends); locally DEV_AUTH_USER stands in. Any pod that reaches :4000 could set
  * Remote-* itself, so they count only together with PROXY_SECRET, which the web container's Caddy adds as
  * Board-Proxy-Secret. Null when the secret is missing or wrong, or the user is not in an allowed group.
  */
@@ -82,9 +81,9 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
 
   app.get('/healthz', async () => ({ ok: true }));
 
-  // The machine and intake APIs have their own tokens and are routed past the login; everything else needs a signed-in user.
+  // The machine API has its own tokens and is routed past the login; everything else needs a signed-in user.
   app.addHook('onRequest', async (req, reply) => {
-    if (req.url === '/healthz' || req.url.startsWith('/api/machine/') || req.url.startsWith('/api/intake/')) return;
+    if (req.url === '/healthz' || req.url.startsWith('/api/machine/')) return;
     req.username = userFrom(req, config);
     if (!req.username) return reply.status(403).send({ error: 'not allowed on this board' });
   });
@@ -105,7 +104,6 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
     pingMs: options.pingMs ?? 25_000,
     ...(options.vocabulary === undefined ? {} : { vocabulary: options.vocabulary }),
   });
-  if (config.intake) registerIntakeApi(app, root, config.intake);
 
   await app.register(fastifyTRPCPlugin, {
     prefix: '/trpc',

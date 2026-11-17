@@ -34,12 +34,6 @@ vi.mock('../lib/trpc', () => ({
     machines: {
       list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => listed.machines }) },
     },
-    slack: {
-      inbox: {
-        list: { queryOptions: () => ({ queryKey: ['slack.inbox.list'], queryFn: async () => [] }) },
-        remove: { mutationOptions: () => ({ mutationFn: async () => null }) },
-      },
-    },
   }),
 }));
 
