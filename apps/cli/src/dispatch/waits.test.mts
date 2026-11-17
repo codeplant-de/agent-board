@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createWaitStore, runCheck } from './waits.mts';
+import { createWaitStore, runCheck, runCommand } from './waits.mts';
 
 test('the wait store keeps a check per task, private to the user, and drops what it cannot read', () => {
   const dir = mkdtempSync('/tmp/board-waits-test-');
@@ -144,3 +144,26 @@ function isAlive(pid: number): boolean {
     return false;
   }
 }
+
+test('a command reports stdout and stderr apart as well as together, and stops at once when aborted', async () => {
+  const dir = mkdtempSync('/tmp/board-waits-test-');
+  try {
+    const both = await runCommand({ cwd: dir, command: 'echo data; echo problem >&2; exit 1' }, dir);
+    assert.deepEqual(both, {
+      exitCode: 1,
+      timedOut: false,
+      output: 'data\nproblem\n',
+      stdout: 'data\n',
+      stderr: 'problem\n',
+    });
+    const controller = new AbortController();
+    const running = runCommand({ cwd: dir, command: 'sleep 30', signal: controller.signal }, dir);
+    setTimeout(() => controller.abort(), 50);
+    const aborted = await running;
+    assert.deepEqual([aborted.exitCode, aborted.timedOut], [null, false]);
+    const before = await runCommand({ cwd: dir, command: 'sleep 30', signal: AbortSignal.abort() }, dir);
+    assert.equal(before.exitCode, null);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});

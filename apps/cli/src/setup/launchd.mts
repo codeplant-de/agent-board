@@ -1,7 +1,8 @@
 /**
- * The launchd side of `board setup` on macOS: two user agents in ~/Library/LaunchAgents.
+ * The launchd side of `board setup` on macOS: three user agents in ~/Library/LaunchAgents.
  *   de.codeplant.agent-board.dispatch  a dispatch tick every 2 minutes, under the same lock as the listener's ticks
  *   de.codeplant.agent-board.listen    the listener, kept alive
+ *   de.codeplant.agent-board.watch     the watch unit, kept alive
  */
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
@@ -13,7 +14,7 @@ import { LISTEN_STOP_TIMEOUT_S, lockFileName } from '../dispatch/tick.mts';
 const exec = promisify(execFile);
 
 export const AGENT_LABEL_PREFIX = 'de.codeplant.agent-board';
-export const AGENT_NAMES = ['dispatch', 'listen'] as const;
+export const AGENT_NAMES = ['dispatch', 'listen', 'watch'] as const;
 export type AgentName = (typeof AGENT_NAMES)[number];
 
 export const agentLabel = (name: AgentName): string => `${AGENT_LABEL_PREFIX}.${name}`;
@@ -120,7 +121,12 @@ export function renderAgents({ home, lockf, lockDir, logDir, command, env = {} }
     key('ThrottleInterval', '<integer>10</integer>'),
     key('ExitTimeOut', `<integer>${LISTEN_STOP_TIMEOUT_S}</integer>`),
   ]);
-  return [dispatch, listen];
+  const watch = render('watch', command('watch'), [
+    key('KeepAlive', '<true/>'),
+    key('RunAtLoad', '<true/>'),
+    key('ThrottleInterval', '<integer>5</integer>'),
+  ]);
+  return [dispatch, listen, watch];
 }
 
 // The ProgramArguments of a plist this module wrote, as launchd reads them.

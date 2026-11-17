@@ -6,6 +6,7 @@ import { dispatchMain } from '../dispatch/dispatch.mts';
 import { SystemError } from '../setup/system.mts';
 import { runHook } from '../worker/hook.mts';
 import { listenMain } from '../dispatch/listen.mts';
+import { watchUnitMain } from '../watch/unit.mts';
 import { workerMain } from '../worker/worker.mts';
 import type { ProgramShared } from './program-shared.mts';
 
@@ -15,7 +16,7 @@ export function registerInternalCommands(shared: ProgramShared): void {
     .command('internal', { hidden: true })
     .description('What the dispatcher, the timers and a run call; not for typing')
     .action(() => {
-      throw new UsageError('internal needs dispatch, listen, worker or hook');
+      throw new UsageError('internal needs dispatch, listen, watch, worker or hook');
     });
   const refuseInternalInRun = (): void => {
     notInRun('board internal is not available inside a board run');
@@ -42,6 +43,13 @@ export function registerInternalCommands(shared: ProgramShared): void {
     .action(() => {
       refuseInternalInRun();
       return listenMain();
+    });
+  internal
+    .command('watch')
+    .description('Run the watch unit: look at the watches of this machine and wake their tasks')
+    .action(() => {
+      refuseInternalInRun();
+      return watchUnitMain();
     });
   internal
     .command('worker')

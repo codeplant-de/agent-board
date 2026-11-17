@@ -42,6 +42,7 @@ test('the rendered units are the ones the checkout shipped, with the lock path o
     'agent-board-dispatch.service',
     'agent-board-dispatch.timer',
     'agent-board-listen.service',
+    'agent-board-watch.service',
   ]);
   assert.equal(
     units['agent-board-dispatch.service'],
@@ -90,6 +91,25 @@ RestartSec=10
 KillMode=mixed
 # Long enough for a tick to reach its limit and grace; systemd's 90 s default would kill one midway.
 TimeoutStopSec=130
+
+[Install]
+WantedBy=default.target
+`,
+  );
+  assert.equal(
+    units['agent-board-watch.service'],
+    `[Unit]
+Description=agent-board watch unit: runs the watches of this machine's tasks
+# systemd must keep restarting it, not give up.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# PATH is for the gh and the watch commands it runs.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/node/bin/node /opt/board/apps/cli/src/main.mts internal watch
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=default.target
@@ -144,7 +164,7 @@ function fixture(overrides: Partial<SetupDeps> = {}) {
   return { dir, unitDir, printed, calls, deps };
 }
 
-test('setup writes three unit copies, reloads systemd and prints the enable line', async () => {
+test('setup writes four unit copies, reloads systemd and prints the enable line', async () => {
   const { dir, unitDir, printed, calls, deps } = fixture();
   try {
     await setup(deps, {});
@@ -152,17 +172,22 @@ test('setup writes three unit copies, reloads systemd and prints the enable line
       'agent-board-dispatch.service',
       'agent-board-dispatch.timer',
       'agent-board-listen.service',
+      'agent-board-watch.service',
     ]);
     assert.deepEqual(calls, [
       'systemctl --user daemon-reload',
       'systemctl --user try-restart agent-board-listen.service',
+      'systemctl --user try-restart agent-board-watch.service',
     ]);
     assert.ok(printed.some((line) => line.includes(ENABLE_COMMAND)));
-    assert.equal(ENABLE_COMMAND, 'systemctl --user enable --now agent-board-dispatch.timer agent-board-listen.service');
+    assert.equal(
+      ENABLE_COMMAND,
+      'systemctl --user enable --now agent-board-dispatch.timer agent-board-listen.service agent-board-watch.service',
+    );
     for (const file of readdirSync(unitDir)) assert.equal(lstatSync(join(unitDir, file)).isSymbolicLink(), false);
     printed.length = 0;
     await setup(deps, {});
-    assert.equal(printed.filter((line) => line.startsWith('unchanged ')).length, 3);
+    assert.equal(printed.filter((line) => line.startsWith('unchanged ')).length, 4);
   } finally {
     rmSync(dir, { recursive: true });
   }
@@ -175,8 +200,10 @@ test('setup restarts a running listener when it wrote a changed unit, and only t
     assert.deepEqual(calls, [
       'systemctl --user daemon-reload',
       'systemctl --user try-restart agent-board-listen.service',
+      'systemctl --user try-restart agent-board-watch.service',
     ]);
     assert.ok(printed.some((line) => line.startsWith('restarted agent-board-listen.service')));
+    assert.ok(printed.some((line) => line.startsWith('restarted agent-board-watch.service')));
     calls.length = 0;
     await setup(deps, {});
     assert.deepEqual(calls, ['systemctl --user daemon-reload'], 'unchanged units restart nothing');
@@ -192,7 +219,8 @@ test('setup --enable also enables and starts the timers and the listener', async
     assert.deepEqual(calls, [
       'systemctl --user daemon-reload',
       'systemctl --user try-restart agent-board-listen.service',
-      'systemctl --user enable --now agent-board-dispatch.timer agent-board-listen.service',
+      'systemctl --user try-restart agent-board-watch.service',
+      'systemctl --user enable --now agent-board-dispatch.timer agent-board-listen.service agent-board-watch.service',
     ]);
   } finally {
     rmSync(dir, { recursive: true });
@@ -203,7 +231,7 @@ test('setup --print shows the units and changes nothing', async () => {
   const { dir, unitDir, printed, calls, deps } = fixture();
   try {
     await setup(deps, { print: true });
-    assert.equal(printed.length, 3);
+    assert.equal(printed.length, 4);
     assert.match(printed[0] ?? '', /^# .*agent-board-dispatch\.service\n\[Unit\]/);
     assert.deepEqual(calls, []);
     assert.throws(() => readdirSync(unitDir));
@@ -262,10 +290,11 @@ test('board setup goes through the command line into a temp unit dir and is refu
   };
   try {
     await runBoard(['setup'], options);
-    assert.equal(readdirSync(join(dir, 'xdg', 'systemd', 'user')).length, 3);
+    assert.equal(readdirSync(join(dir, 'xdg', 'systemd', 'user')).length, 4);
     assert.deepEqual(calls, [
       'systemctl --user daemon-reload',
       'systemctl --user try-restart agent-board-listen.service',
+      'systemctl --user try-restart agent-board-watch.service',
     ]);
     mkdirSync(join(dir, 'cfg'));
     writeFileSync(join(dir, 'cfg', 'config.json'), '{"intake": {}, "lanes": 3}');
@@ -273,7 +302,7 @@ test('board setup goes through the command line into a temp unit dir and is refu
     await runBoard(['setup'], options);
     assert.equal(
       readdirSync(join(dir, 'xdg', 'systemd', 'user')).length,
-      3,
+      4,
       'a config the CLI cannot read does not stop setup',
     );
     assert.deepEqual(calls, ['systemctl --user daemon-reload']);
@@ -292,22 +321,26 @@ test('the units run with the PATH setup exports, and doctor looks tools up on it
   assert.equal(UNIT_PATH, '%h/.local/bin:/usr/local/bin:/usr/bin:/bin');
 });
 
-test('with the timers and the listener enabled already, setup does not tell you to enable them', async () => {
+test('with the timers, the listener and the watch unit enabled already, setup does not tell you to enable them', async () => {
   const { dir, printed, deps } = fixture({ unitEnabled: async () => true });
   const partly = fixture({ unitEnabled: async (unit) => unit.includes('dispatch') });
   const noListener = fixture({ unitEnabled: async (unit) => unit.endsWith('.timer') });
+  const noWatch = fixture({ unitEnabled: async (unit) => !unit.includes('watch') });
   try {
     await setup(deps, {});
     assert.ok(!printed.some((line) => line.includes('Enable the timer')));
     assert.ok(printed.some((line) => line.includes('enabled already')));
     await setup(partly.deps, {});
-    assert.ok(partly.printed.some((line) => line.includes('Enable the timer and the listener')));
+    assert.ok(partly.printed.some((line) => line.includes('Enable the timer, the listener and the watch unit')));
     await setup(noListener.deps, {});
-    assert.ok(noListener.printed.some((line) => line.includes('Enable the timer and the listener')));
+    assert.ok(noListener.printed.some((line) => line.includes('Enable the timer, the listener and the watch unit')));
+    await setup(noWatch.deps, {});
+    assert.ok(noWatch.printed.some((line) => line.includes('Enable the timer, the listener and the watch unit')));
   } finally {
     rmSync(dir, { recursive: true });
     rmSync(partly.dir, { recursive: true });
     rmSync(noListener.dir, { recursive: true });
+    rmSync(noWatch.dir, { recursive: true });
   }
 });
 
@@ -322,7 +355,7 @@ test('setup from a tree that is not the installed one refuses without --force, a
     assert.equal(calls.length, 0, '--print changes nothing and needs no --force');
     await setup(deps, { force: true });
     assert.ok(printed.includes(`warning: ${problem}`));
-    assert.equal(readdirSync(unitDir).length, 3);
+    assert.equal(readdirSync(unitDir).length, 4);
   } finally {
     rmSync(dir, { recursive: true });
   }
@@ -357,7 +390,7 @@ test('a binary run from the temp directory is not installed without --force; one
   assert.equal(treeProblem({}, { compiled: true, execPath: '/home/me/.local/bin/board' }), undefined);
 });
 
-test('setup renders, writes and enables only dispatch and the listener', async () => {
+test('setup renders, writes and enables only dispatch, the listener and the watch unit', async () => {
   const { dir, unitDir, printed, calls, deps } = fixture();
   try {
     await setup(deps, { enable: true });
@@ -365,13 +398,15 @@ test('setup renders, writes and enables only dispatch and the listener', async (
       'agent-board-dispatch.service',
       'agent-board-dispatch.timer',
       'agent-board-listen.service',
+      'agent-board-watch.service',
     ]);
     assert.deepEqual(calls, [
       'systemctl --user daemon-reload',
       'systemctl --user try-restart agent-board-listen.service',
-      'systemctl --user enable --now agent-board-dispatch.timer agent-board-listen.service',
+      'systemctl --user try-restart agent-board-watch.service',
+      'systemctl --user enable --now agent-board-dispatch.timer agent-board-listen.service agent-board-watch.service',
     ]);
-    assert.ok(printed.includes('enabled and started the dispatch timer and the listener'));
+    assert.ok(printed.includes('enabled and started the dispatch timer, the listener and the watch unit'));
     assert.ok(printed.every((line) => !line.includes('intake')));
   } finally {
     rmSync(dir, { recursive: true });
@@ -390,6 +425,7 @@ test('setup disables and stops the timer of the removed intake, deletes its unit
       'agent-board-dispatch.service',
       'agent-board-dispatch.timer',
       'agent-board-listen.service',
+      'agent-board-watch.service',
     ]);
     assert.deepEqual(calls.slice(0, 2), [
       'systemctl --user disable --now agent-board-intake.timer',
@@ -467,13 +503,14 @@ function macFixture(overrides: Partial<SetupDeps> = {}, loaded: (name: string) =
   return { ...base, deps, calls, agentsDir: deps.launchd.agentsDir };
 }
 
-test('on macOS setup writes the two agents and the directories, and prints the bootstrap lines instead of loading', async () => {
+test('on macOS setup writes the three agents and the directories, and prints the bootstrap lines instead of loading', async () => {
   const { dir, printed, calls, deps, agentsDir } = macFixture();
   try {
     await setup(deps, {});
     assert.deepEqual(readdirSync(agentsDir).sort(), [
       'de.codeplant.agent-board.dispatch.plist',
       'de.codeplant.agent-board.listen.plist',
+      'de.codeplant.agent-board.watch.plist',
     ]);
     for (const file of readdirSync(agentsDir)) {
       assert.equal(lstatSync(join(agentsDir, file)).isSymbolicLink(), false);
@@ -494,7 +531,7 @@ test('on macOS setup writes the two agents and the directories, and prints the b
     );
     printed.length = 0;
     await setup(deps, {});
-    assert.equal(printed.filter((line) => line.startsWith('unchanged ')).length, 2);
+    assert.equal(printed.filter((line) => line.startsWith('unchanged ')).length, 3);
   } finally {
     rmSync(dir, { recursive: true });
   }
@@ -514,6 +551,8 @@ test('on macOS --enable boots each agent out (a failure is fine) and in again', 
       `launchctl bootstrap gui/501 ${join(agentsDir, 'de.codeplant.agent-board.dispatch.plist')}`,
       'launchctl bootout gui/501/de.codeplant.agent-board.listen',
       `launchctl bootstrap gui/501 ${join(agentsDir, 'de.codeplant.agent-board.listen.plist')}`,
+      'launchctl bootout gui/501/de.codeplant.agent-board.watch',
+      `launchctl bootstrap gui/501 ${join(agentsDir, 'de.codeplant.agent-board.watch.plist')}`,
     ]);
   } finally {
     rmSync(dir, { recursive: true });
@@ -524,7 +563,7 @@ test('on macOS an agent that is loaded is loaded again only when its file change
   const { dir, printed, calls, deps } = macFixture({}, () => true);
   try {
     await setup(deps, {});
-    assert.equal(calls.filter((call) => call.includes('bootstrap')).length, 2, 'new files: both reloaded');
+    assert.equal(calls.filter((call) => call.includes('bootstrap')).length, 3, 'new files: all reloaded');
     assert.ok(printed.some((line) => line.includes('loaded already')));
     calls.length = 0;
     await setup(deps, {});
@@ -568,8 +607,8 @@ test('board setup on macOS goes through the command line into a temp home', asyn
   };
   try {
     await runBoard(['setup', '--enable'], options);
-    assert.deepEqual(readdirSync(join(dir, 'home', 'Library', 'LaunchAgents')).length, 2);
-    assert.equal(calls.length, 4);
+    assert.deepEqual(readdirSync(join(dir, 'home', 'Library', 'LaunchAgents')).length, 3);
+    assert.equal(calls.length, 6);
     const plist = readFileSync(
       join(dir, 'home', 'Library', 'LaunchAgents', 'de.codeplant.agent-board.dispatch.plist'),
       'utf8',
