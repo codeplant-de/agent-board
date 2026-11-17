@@ -62,6 +62,8 @@ launchctl print gui/$(id -u)/de.codeplant.agent-board.listen     # state, last e
 
 ## Upgrading
 
+**Runs are told apart by a run id (CLI 0.14.0, no contract change).** A new server feature, `task.run`: every claim gets a run id, and a worker and its agent send it with their calls for the task, so an agent left over from a run that was taken back and claimed again on the same machine can no longer pause, fail, wait, ask on or move the new run (see [Machine API](machine-api.md#runs)). Update in any order: the server checks calls without the id as before, and a CLI sends it only to a server that lists `task.run`. Until a machine runs `board self-update` and its listener restarts (`systemctl --user restart agent-board-listen`), its runs keep the old check by machine only; runs already going when it updates get the id from their next claim.
+
 **Tasks that run as an agent (no contract change).** A new server feature, `task.agent`: the server stores the sealed `agent` of a task and of a schedule and copies a schedule's into its occurrences (a migration adds the column `agent` to `task` and `schedule`), and the CLI and the browser send it. Nothing changes for a task without an agent: its prompt keeps the context it always had, and the server leaves the key out. The order matters, because **a CLI that does not know the field cannot run such a task, only skip it**:
 
 1. Update the server first. A CLI refuses `--agent` against a server without `task.agent` before sending anything, and the New task form needs the new server anyway.
