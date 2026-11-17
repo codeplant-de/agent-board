@@ -307,7 +307,7 @@ test('a missing config fails the first call, not the construction', async () => 
 });
 
 test('a dry run reads through and prints every write instead of sending it', async () => {
-  const sealing = { createdBy: 'user' as const, scheduleId: null, agent: null };
+  const sealing = { createdBy: 'user' as const, scheduleId: null, agent: null, forkOf: null };
   const { seen, fetcher } = board({ 'get-task': { body: { result: await taskJson('a') } } });
   const lines: string[] = [];
   const dry = dryRunBackend(createSealedBackend({ loadConfig: () => config, fetch: fetcher }), (line) =>

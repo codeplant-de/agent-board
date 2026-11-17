@@ -81,8 +81,8 @@ const opensUnrecorded = opens;
 const TASK = 'Ab3dEf9x';
 const SCHEDULE = 'Sc3dEf9x';
 const OCCURRENCE = 'Oc3dEf9x';
-const userTask: RowRef = { kind: 'task', id: TASK, createdBy: 'user', scheduleId: null };
-const occurrence: RowRef = { kind: 'task', id: OCCURRENCE, createdBy: 'user', scheduleId: SCHEDULE };
+const userTask: RowRef = { kind: 'task', id: TASK, createdBy: 'user', scheduleId: null, forkOf: null };
+const occurrence: RowRef = { kind: 'task', id: OCCURRENCE, createdBy: 'user', scheduleId: SCHEDULE, forkOf: null };
 const schedule: RowRef = { kind: 'schedule', id: SCHEDULE };
 
 const questions: Question[] = [
@@ -247,6 +247,8 @@ test('known-answer: the contexts are exactly the table in docs/encryption.md', a
     [workdirOpenBindings(occurrence)[0]!, 'schedule:Sc3dEf9x'],
     [workdirOpenBindings(occurrence)[1]!, 'task:Oc3dEf9x:schedule:Sc3dEf9x'],
     [inputBinding({ ...userTask, createdBy: 'agent' }), 'task:Ab3dEf9x:agent'],
+    [inputBinding({ ...userTask, forkOf: 'Pa3dEf9x' }), 'task:Ab3dEf9x:user:fork:Pa3dEf9x'],
+    [inputBinding({ ...userTask, forkOf: 'Pa3dEf9x', agent: 'x' }), 'task:Ab3dEf9x:user:fork:Pa3dEf9x:agent:x'],
     [noteBinding('note.body', TASK, 'agent', 'comment'), 'note:Ab3dEf9x:agent:comment'],
     [noteBinding('note.answers', TASK, 'user', 'answer'), 'note:Ab3dEf9x:user:answer'],
     [noteBinding('note.body', TASK, 'agent', 'polish'), 'note:Ab3dEf9x:agent:polish'],
@@ -412,6 +414,61 @@ test('a sealed agent opens with its input, and with no other agent or none', asy
     'input',
     'agent',
   ]);
+});
+
+const PARENT = 'Pa3dEf9x';
+
+test('a fork link is written into the context of the input, before the agent; a row without one keeps its old context', () => {
+  assert.equal(inputBinding({ ...userTask, forkOf: PARENT }).context, 'task:Ab3dEf9x:user:fork:Pa3dEf9x');
+  assert.equal(
+    inputBinding({ ...userTask, forkOf: PARENT, agent: 'reviewer' }).context,
+    'task:Ab3dEf9x:user:fork:Pa3dEf9x:agent:reviewer',
+  );
+  for (const row of [{ ...userTask, forkOf: null }, userTask])
+    assert.equal(inputBinding(row).context, 'task:Ab3dEf9x:user');
+  // The title and the agent do not carry it.
+  assert.equal(titleBinding({ ...userTask, forkOf: PARENT }).context, 'task:Ab3dEf9x');
+  assert.equal(agentBinding({ ...userTask, forkOf: PARENT, agent: 'x' }).context, 'task:Ab3dEf9x');
+});
+
+test('a fork link must be a task id, and a schedule or an occurrence is never a fork', () => {
+  for (const bad of ['', 'a:b', 'dispatch', 'intake', 'x'.repeat(65), '../x'])
+    assert.throws(() => inputBinding({ ...userTask, forkOf: bad }), ContractError, bad);
+  assert.throws(() => inputBinding({ ...occurrence, forkOf: PARENT }), ContractError);
+  assert.equal(inputBinding({ kind: 'schedule', id: SCHEDULE }).context, 'schedule:Sc3dEf9x:user');
+});
+
+test('a fork opens only under the link it was sealed with: not dropped, added or swapped by the board', async () => {
+  const fork = { ...userTask, forkOf: PARENT };
+  const wire = await sealFields(seals, fork, { title: 't', input: 'do the side work' });
+  assert.deepEqual(await openFields(opens, fork, wire), {
+    title: 't',
+    input: 'do the side work',
+    workdir: null,
+    agent: null,
+    unreadable: [],
+  });
+  // Dropped: the row says it is no fork.
+  assert.deepEqual((await openFields(opens, userTask, wire)).unreadable, ['input']);
+  assert.deepEqual((await openFields(opens, { ...userTask, forkOf: null }, wire)).unreadable, ['input']);
+  // Swapped for another task's id.
+  assert.deepEqual((await openFields(opens, { ...userTask, forkOf: 'Zz9dEf9x' }, wire)).unreadable, ['input']);
+  // Added to a prompt that was sealed for no fork.
+  const plain = await sealFields(seals, userTask, { title: 't', input: 'i' });
+  assert.deepEqual((await openFields(opens, fork, plain)).unreadable, ['input']);
+  // A link that is not a task id is unreadable and does not throw.
+  assert.deepEqual((await openFields(opens, { ...userTask, forkOf: 'a:b' }, wire)).unreadable, ['input']);
+});
+
+test('a fork of an agent opens only with both the link and the agent', async () => {
+  const fork = { ...userTask, forkOf: PARENT, agent: 'reviewer' };
+  const wire = await sealFields(seals, fork, { title: 't', input: 'i' });
+  const opened = await openFields(opens, { ...userTask, forkOf: PARENT }, wire);
+  assert.deepEqual([opened.agent, opened.input, opened.unreadable], ['reviewer', 'i', []]);
+  const noLink = await openFields(opens, userTask, wire);
+  assert.deepEqual([noLink.agent, noLink.input, noLink.unreadable], ['reviewer', '', ['input']]);
+  const noAgent = await openFields(opens, { ...userTask, forkOf: PARENT }, { title: wire.title, input: wire.input });
+  assert.deepEqual([noAgent.agent, noAgent.input, noAgent.unreadable], [null, '', ['input']]);
 });
 
 test("a schedule's agent opens on its occurrences and on no other task", async () => {

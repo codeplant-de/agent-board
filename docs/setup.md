@@ -209,6 +209,16 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
+### Forking a task (CLI 0.25.0)
+
+A new server feature, `task.fork`. On the task page, **Fork** makes a new task that continues a copy of the task's Claude session (see [Forking a task](usage.md#forking-a-task)). A migration adds the column `fork_of` to `task`. Nothing changes for a task that is not a fork, and no version number is raised.
+
+Update every machine that runs tasks before you fork, in any order against the server. A CLI that does not know forks cannot open the prompt of one, because the prompt is sealed under a context that includes the parent's id (see [Forks](encryption.md#forks)). Its dispatcher logs `SKIP <id> cannot decrypt its input` and the task stays in Todo until the CLI is updated. It never runs the fork as a plain task. The board does not know which CLI a machine runs, so it does not stop you from forking a task of such a machine.
+
+- The fork runs on the machine of its parent, so only that machine needs the update.
+- `board task <id>` shows `fork of` for a fork.
+- `board doctor` warns about a server without `task.fork`. Such a server has no Fork button either.
+
 ### `board watch --pr-merged` (CLI 0.24.0)
 
 A new watch source: one event when a pull request is merged or closed (see [Sources](usage.md#sources)). Nothing changes on the server, and no feature name is added.

@@ -61,7 +61,7 @@ beforeEach(async () => {
 
 const at = (s: number) => new Date(Date.UTC(2026, 10, 13, 12, 0, s)).toISOString();
 
-const taskRef = (id: string): RowRef => ({ kind: 'task', id, createdBy: 'user', scheduleId: null });
+const taskRef = (id: string): RowRef => ({ kind: 'task', id, createdBy: 'user', scheduleId: null, forkOf: null });
 
 /** How much the database holds, so that a refused request can be shown to have written nothing. */
 async function rowCounts(): Promise<number[]> {

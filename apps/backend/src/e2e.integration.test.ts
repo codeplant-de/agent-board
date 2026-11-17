@@ -170,7 +170,7 @@ describe('what the database holds, after a scenario run by the real clients', ()
       workdir: `/${WORKDIR}/sub`,
       input: PROMPT,
       head: HEAD,
-      seal: { createdBy: 'user', scheduleId: null, agent: null },
+      seal: { createdBy: 'user', scheduleId: null, agent: null, forkOf: null },
     });
     await cli.ask(id, [{ ...question, header: 'Scope', question: QUESTION }]);
     expect(await cli.attachSession(id)).toEqual({ sessionId: SESSION, workdir: `/${WORKDIR}/sub` });
@@ -431,7 +431,7 @@ describe('an agent’s proposal', () => {
     expect(invocations).toEqual([]);
     expect(
       await sealed.open(
-        inputBinding({ kind: 'task', id: proposal.id, createdBy: 'user', scheduleId: null }),
+        inputBinding({ kind: 'task', id: proposal.id, createdBy: 'user', scheduleId: null, forkOf: null }),
         stored!.input,
       ),
     ).toBeUndefined();

@@ -18,9 +18,18 @@ import { watchBoardChanges } from './changes.mts';
 import { buildContext, print, UsageError } from '../cli.mts';
 import type { Context } from '../cli.mts';
 import { logLine, StreamCondenser } from '@agent-board/shared';
-import type { RunInbox, Task } from '@agent-board/shared';
+import type { Backend, RunInbox, Task } from '@agent-board/shared';
 import { agentFor, neverRun, ownLane, removedIntakeProblem, unreadableForRun } from '../task-rules.mts';
-import { buildInvocation, decideOutcome, isRunOver, planRun, pluginPlaceholders, supervise } from './plan.mts';
+import {
+  buildInvocation,
+  decideOutcome,
+  isRunOver,
+  planFork,
+  planRun,
+  pluginPlaceholders,
+  supervise,
+} from './plan.mts';
+import type { ForkParent } from './plan.mts';
 import type { Invocation } from './plan.mts';
 import { goneDirNotice, inboxMessageText, lastWakeNote, pauseMessageText } from './prompts.mts';
 import { createCatalogStore } from '../catalog/cache.mts';
@@ -128,6 +137,16 @@ export async function runWorker(deps: WorkerDeps, taskId: string): Promise<void>
   }
 }
 
+// The task a fork was made from; undefined when the board has no such task. Any other failure is the run's.
+async function forkParentOf(backend: Backend, id: string): Promise<ForkParent | undefined> {
+  try {
+    return await backend.getTask(id);
+  } catch (error) {
+    if (error instanceof BackendError && error.fromApi && error.status === 404) return undefined;
+    throw error;
+  }
+}
+
 async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date): Promise<void> {
   const { backend, config, watches } = deps;
   deps.resetLog(taskId);
@@ -165,7 +184,12 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
     return fail(`The task runs as an agent that is not defined on this machine: ${agent.reason}, so it was not run.`);
   const restricted = agent.kind === 'found' ? agent.agent : undefined;
   // What a new directory is sealed against: the task's own creator and schedule, as the board has them.
-  const sealing = { createdBy: task.createdBy, scheduleId: task.scheduleId, agent: task.agent ?? null };
+  const sealing = {
+    createdBy: task.createdBy,
+    scheduleId: task.scheduleId,
+    agent: task.agent ?? null,
+    forkOf: task.forkOf ?? null,
+  };
   const pluginRoots: Record<string, string> = {};
   for (const name of restricted === undefined
     ? []
@@ -178,11 +202,16 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
   }
   const notes = await backend.readNotes(task.id);
   const spooled = watches.events(task.id);
-  const run = planRun(task, notes, {
+  const planned = planRun(task, notes, {
     newSessionId: deps.newSessionId,
     isOwnSession: deps.sessions.has,
     watches: { events: spooled.map(({ event }) => event), open: watches.list(task.id).defs, now: deps.now() },
   });
+  // A fork that starts over continues a copy of its parent's session, so the parent is looked up first.
+  const run =
+    planned.kind === 'fresh' && task.forkOf !== undefined
+      ? planFork(planned, task, await forkParentOf(backend, task.forkOf), { isOwnSession: deps.sessions.has })
+      : planned;
   if (run.kind === 'blocked') return fail(run.reason);
   // Publishing is best effort and does not hold the run.
   const publishWatchState = (): void => {
@@ -192,7 +221,7 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
     );
   };
   // A run that starts over has no use for what the old one waited for; the drop takes the live marker with it.
-  if (run.kind === 'fresh') {
+  if (run.kind !== 'resume') {
     const hadWatches = watches.list(task.id).defs.length > 0;
     watches.dropTask(task.id);
     watches.markLive(task.id, process.pid);
@@ -201,7 +230,14 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
   // What the prompt carries: deleted once the agent has output, which shows that it took the prompt in.
   const inPrompt: StoredEvent[] = run.kind === 'resume' ? spooled : [];
   const oldestEvent = inPrompt[0]?.event.at;
-  deps.appendLog(taskId, run.kind === 'resume' ? `resuming session ${run.sessionId}` : `new session ${run.sessionId}`);
+  deps.appendLog(
+    taskId,
+    run.kind === 'resume'
+      ? `resuming session ${run.sessionId}`
+      : run.kind === 'fork'
+        ? `new session ${run.sessionId}, forked from session ${run.fromSessionId} of task ${run.parent.id}`
+        : `new session ${run.sessionId}`,
+  );
   const logTiming = (line: string): void => {
     deps.appendLog(taskId, line);
     deps.print(`${taskId} ${line}`);
@@ -589,7 +625,7 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
   };
 
   // Stored only now that the run is about to start: a reply to a run that never began must not resume its session.
-  if (run.kind === 'fresh') {
+  if (run.kind !== 'resume') {
     deps.sessions.record(task.id, run.sessionId);
     await backend.updateTask(task.id, { sessionId: run.sessionId });
   }
@@ -605,7 +641,7 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
     stopListening?.();
     clearInterval(spoolTimer);
     files.clear(taskId);
-    if (run.kind === 'fresh') await backend.updateTask(task.id, { sessionId: null });
+    if (run.kind !== 'resume') await backend.updateTask(task.id, { sessionId: null });
     return fail(errorText(error));
   }
   stopAwake?.();

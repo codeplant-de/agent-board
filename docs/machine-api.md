@@ -129,6 +129,7 @@ Capabilities and vocabulary have names. An additive change then needs no version
 | `task.configure`  | The `configure-task` command.                                                                                                  |          |
 | `task.note-count` | The task's `noteCount` field.                                                                                                  |          |
 | `task.watches`    | The `set-watches` and `ack-watch-stops` commands, and the `watches` and `watchStops` fields.                                   |          |
+| `task.fork`       | The task's `forkOf` field, see [Forks](#forks).                                                                                |          |
 
 - The baseline (`BASELINE_SERVER_FEATURES`) is what the server of contract 9 has. A server that answers no `features` key is taken to have exactly the baseline.
 - A new server capability appends its name to `ADDED_SERVER_FEATURES` in the same commit that implements it.
@@ -323,6 +324,7 @@ The fields of the example are required, with these exceptions:
 | `noteCount`            | the server lacks `task.note-count`        | unknown                         |
 | `watches`              | the task has none, or no `task.watches`   | `null`                          |
 | `watchStops`           | the server lacks `task.watches`           | `[]`                            |
+| `forkOf`               | the task is no fork, or no `task.fork`    | not a fork                      |
 
 The CLI's plaintext `Task` adds `labels` and `unreadable`.
 
@@ -337,11 +339,13 @@ The CLI's plaintext `Task` adds `labels` and `unreadable`.
 | `agent`     | Sealed, or absent. The name of the agent the task runs as. Needs `task.agent`.                                          |
 | `model`     | The Claude model of the task's runs, or `null` for claude's default. Clear, not sealed: it is a choice, not content.    |
 | `head`      | The blind index (`abh1.…`) of `head:<sha>` for the version a task was made for (`board schedule --version`), or `null`. |
+| `forkOf`    | The id of the task this one was forked from, or absent. Clear. Needs `task.fork`.                                       |
 
 - **`id`.** The client chooses it because the sealed fields are bound to it. It ends up in a systemd unit name, a log file name and argv. So the core refuses any id that does not match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, and the ids `dispatch` and `intake`.
 - **`createdBy`.** `agent` is a proposal the user has not started. No worker runs it, and starting it changes it to `user` with the prompt sealed again. `intake` is only on the tasks of the removed built-in intake: with an agent they run as it, and without one no worker runs them.
 - **`agent`.** The name matches `^[a-z0-9][a-z0-9-]{0,31}$` and names an agent the machine defines. It is sealed under the row's origin, which is `task:<id>`, or `schedule:<scheduleId>` for an occurrence. It is also written into the context of `input`, so a task whose agent was dropped or changed is unreadable (see [Encryption](encryption.md#encryption)). A client that opens it sets `agent` on its plaintext task. A task whose `agent` is unreadable lists `agent` in `unreadable` and is never run.
 - **`model`.** An alias such as `fable`, `opus`, `sonnet` or `haiku`, or a full name such as `claude-opus-5-5` or `claude-sonnet-5-5[1m]`. It must match `^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$`, else the CLI refuses the answer. The worker checks it again before it reaches argv as `claude --model`. A schedule's occurrences all take the schedule's model.
+- **`forkOf`.** A task id (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`), checked again by the client. Only the browser sets it, through `tasks.fork`; `add-task` has no such key and a draft that names one is 400, so an agent can never make a fork. See [Forks](#forks).
 - **`head`.** A script compares it with the blind index of the PR's head (`Backend.indexHead`) to see that the head moved. The sha itself is never stored.
 
 ### State
@@ -427,6 +431,14 @@ The sealed `watches` is one envelope for the task and its agent (`task:<id>:agen
 A client shows an entry only when it has that shape. A list that does not open is unreadable (`watches` in `unreadable`). The command a watch runs and its output are never in it.
 
 `watchStops` is clear: at most 32 ids of 16 lowercase hex digits. The server clears it with `watches` when the task goes to Done or Backlog, is closed or is re-run fresh.
+
+### Forks
+
+A fork is a task whose first run continues a copy of another task's Claude session. It has `forkOf` (the parent's id), a `parentId` of the same value that the board shows as its parent while the parent exists, the parent's `machine` and `model`, and the parent's directory as `workdir`. Its `agent` is the parent's, sealed again for it.
+
+- **The prompt is bound to the link.** `input` is sealed under `<origin>:<creator>:fork:<parentId>`, and with an agent `<origin>:<creator>:fork:<parentId>:agent:<name>`. A client opens it under the `forkOf` the board shows (see [Forks](encryption.md#forks)), so a task whose link the server dropped, added or changed is unreadable. A CLI that does not know the field cannot open the prompt, and its dispatcher skips the task.
+- **What the worker does.** A start-over of a fork reads the parent with `get-task` and requires its `sessionId` to be one this machine started for it. It then runs `claude -p --resume=<parent session> --fork-session --session-id=<new uuid>` and stores the new id on the fork with `update-task`, as a fresh run does (see [Workers](workers.md#how-a-task-runs)). A parent that is gone (404), has no session or ran on another machine blocks the run, and the worker fails the task with the reason.
+- **The patch seal.** `patch.seal` in the CLI's `update-task` states `forkOf` (`null` for none) next to `createdBy`, `scheduleId` and `agent`, so a new `input` stays readable.
 
 ### Pickup order
 

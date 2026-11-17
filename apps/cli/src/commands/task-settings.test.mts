@@ -143,6 +143,17 @@ test('control characters of the board’s values never reach the terminal, and a
   assert.match(text, /\(cannot decrypt: workdir, agent\)/);
 });
 
+test('a fork names the task it was forked from in its settings and in --json, and a task that is none says nothing', async (context) => {
+  const run = runner(context, [task({ id: 'abc12345', forkOf: 'par12345' }), task({ id: 'plain123' })]);
+  await run.go(['task', 'abc12345']);
+  assert.match(said(run), /fork of {5}par12345/);
+  await run.go(['task', 'abc12345', '--json']);
+  assert.equal((JSON.parse(run.out.join('\n')) as Record<string, unknown>)['forkOf'], 'par12345');
+  run.printed.length = 0;
+  await run.go(['task', 'plain123']);
+  assert.doesNotMatch(said(run), /fork of/);
+});
+
 test('--json prints the task as `board tasks --json` does, and takes no action', async (context) => {
   const run = runner(context, [task({ id: 'abc12345', title: 'T', unreadable: ['input'] })]);
   await run.go(['task', 'abc12345', '--json']);

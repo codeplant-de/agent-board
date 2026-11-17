@@ -171,6 +171,11 @@ export const tasks = pgTable(
      * stays when the schedule is deleted.
      */
     scheduleId: text('schedule_id'),
+    /**
+     * The task this one was forked from: its first run continues a copy of that task's session. Not a foreign key, like
+     * `schedule_id`: the task's prompt is bound to this id, so it stays when the parent is deleted. Only the browser sets it.
+     */
+    forkOf: text('fork_of'),
     /** Proposed by an agent and not started by the user yet; starting it takes this off and makes `created_by` the user, with the prompt sealed again for that creator. */
     proposed: boolean('proposed').notNull().default(false),
     createdAt: createdAt(),

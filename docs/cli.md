@@ -607,8 +607,8 @@ Usage: board task [options] <task> [set <key> <value> | unset <key>]
 
 Without an action, print a task's settings: status, priority, model, agent, who
 made it, the machine it is pinned to and its directory, when it starts, its
-schedule, whether its next run resumes a session, and its PR. With --json, print
-the task as `board tasks --json` does.
+schedule, the task it was forked from, whether its next run resumes a session,
+and its PR. With --json, print the task as `board tasks --json` does.
 
 `set priority <urgent|high|normal|low>` and `set model <alias or model id>`
 change the setting, `unset model` goes back to claude's default model. A model

@@ -37,6 +37,7 @@ const taskRowOf = (task: Json): RowRef => ({
   id: task['id'],
   createdBy: task['createdBy'],
   scheduleId: task['scheduleId'],
+  forkOf: task['forkOf'] ?? null,
 });
 
 /** Opens the title, input and directory of a row, or throws: a test that reads something it cannot open has found a bug. */
@@ -116,6 +117,7 @@ async function sealRequest(command: string, request: Json, sealing: Sealing, raw
           id: taskId,
           createdBy: body['createdBy'] ?? 'user',
           scheduleId: null,
+          forkOf: null,
         })),
       };
     case 'add-schedule':
@@ -292,7 +294,7 @@ export function plainUi(db: Db, owner = 'jascha') {
         const agent = agentName ?? null;
         const row: RowRef = repeats
           ? { kind: 'schedule', id, agent }
-          : { kind: 'task', id, createdBy: 'user', scheduleId: null, agent };
+          : { kind: 'task', id, createdBy: 'user', scheduleId: null, agent, forkOf: null };
         const { workdir, ...fields } = await sealFields(sealing.seal, row, {
           title: title ?? defaultTitle(input),
           input,
@@ -301,6 +303,33 @@ export function plainUi(db: Db, owner = 'jascha') {
         const placed =
           place === undefined || workdir === undefined ? {} : { place: { machine: place.machine, workdir } };
         return openTask(await raw.tasks.create({ id, ...fields, ...rest, ...placed }));
+      },
+      // As the browser does: the prompt sealed for the fork link, the parent's directory and agent for the new task.
+      fork: async ({
+        id: chosen,
+        parentId,
+        title,
+        input,
+      }: {
+        id?: string;
+        parentId: string;
+        title: string;
+        input: string;
+      }) => {
+        const id = chosen ?? newTaskId();
+        const parent = await openTask((await raw.tasks.get({ id: parentId })).task);
+        const row: RowRef = {
+          kind: 'task',
+          id,
+          createdBy: 'user',
+          scheduleId: null,
+          agent: parent.agent ?? null,
+          forkOf: parentId,
+        };
+        if (parent.workdir === null) throw new Error(`task ${parentId} has no directory to fork in`);
+        const { workdir, ...fields } = await sealFields(sealing.seal, row, { title, input, workdir: parent.workdir });
+        if (workdir === undefined) throw new Error('the directory was not sealed');
+        return openTask(await raw.tasks.fork({ id, parentId, ...fields, workdir }));
       },
       answer: async (input: { id: string; questionNoteId: string; answers: Answer[]; message?: string }) => {
         const { thread } = await raw.tasks.get({ id: input.id });
@@ -358,7 +387,7 @@ export function plainUi(db: Db, owner = 'jascha') {
         ),
       // As the browser does: the polished title and prompt sealed as the task's own and the user's, the old text as a note.
       applyPolish: async (input: { id: string; polishId: string; title: string; input: string; previous: string }) => {
-        const row: RowRef = { kind: 'task', id: input.id, createdBy: 'user', scheduleId: null };
+        const row: RowRef = { kind: 'task', id: input.id, createdBy: 'user', scheduleId: null, forkOf: null };
         const fields = await sealFields(sealing.seal, row, { title: input.title, input: input.input });
         return openTask(
           await raw.tasks.applyPolish({
@@ -414,7 +443,7 @@ export function plainUi(db: Db, owner = 'jascha') {
         const { task } = await raw.tasks.get({ id: input.id });
         if (task.createdBy !== 'agent' || input.status !== 'todo') return openTask(await raw.tasks.move(rest));
         const proposal = await openTask(task);
-        const row: RowRef = { kind: 'task', id: task.id, createdBy: 'user', scheduleId: task.scheduleId };
+        const row: RowRef = { kind: 'task', id: task.id, createdBy: 'user', scheduleId: task.scheduleId, forkOf: null };
         const startInput = await sealInput(sealing.seal, row, proposal.input);
         return openTask(await raw.tasks.move({ ...rest, startInput }));
       },

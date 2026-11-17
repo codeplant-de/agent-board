@@ -28,9 +28,17 @@ const opened = (row: RowRef, wire: { title: string; input: string; agent?: strin
 describe('sealEdit', () => {
   it('seals the new title and prompt so that the task’s row opens them, and no other row does', async () => {
     const sealed = await sealEdit(keys, { target: target(), title: ' New title ', input: ' New prompt\n' });
-    const row: RowRef = { kind: 'task', id: 'task0001', createdBy: 'user', scheduleId: null };
+    const row: RowRef = { kind: 'task', id: 'task0001', createdBy: 'user', scheduleId: null, forkOf: null };
     expect(await opened(row, sealed)).toMatchObject({ title: 'New title', input: 'New prompt', unreadable: [] });
     expect((await opened({ ...row, id: 'task0002' }, sealed)).unreadable).toEqual(['title', 'input']);
+  });
+
+  it('keeps the fork link of a fork: the edited prompt opens under it and under no other', async () => {
+    const sealed = await sealEdit(keys, { target: target({ forkOf: 'parent01' }), title: 'a', input: 'b' });
+    const row: RowRef = { kind: 'task', id: 'task0001', createdBy: 'user', scheduleId: null, forkOf: 'parent01' };
+    expect((await opened(row, sealed)).unreadable).toEqual([]);
+    expect((await opened({ ...row, forkOf: null }, sealed)).unreadable).toEqual(['input']);
+    expect((await opened({ ...row, forkOf: 'parent02' }, sealed)).unreadable).toEqual(['input']);
   });
 
   it('seals the old text as a note of the user’s', async () => {
@@ -47,7 +55,7 @@ describe('sealEdit', () => {
 
   it('binds the prompt to the agent the task runs as', async () => {
     const sealed = await sealEdit(keys, { target: target({ agent: 'reviewer' }), title: 'a', input: 'b' });
-    const row: RowRef = { kind: 'task', id: 'task0001', createdBy: 'user', scheduleId: null };
+    const row: RowRef = { kind: 'task', id: 'task0001', createdBy: 'user', scheduleId: null, forkOf: null };
     const { agent } = await sealFields(sealerFor(keys), { ...row, agent: 'reviewer' }, { title: '', input: '' });
     expect(await opened(row, { ...sealed, agent })).toMatchObject({ input: 'b', agent: 'reviewer', unreadable: [] });
     expect((await opened(row, sealed)).unreadable).toEqual(['input']);
@@ -55,7 +63,7 @@ describe('sealEdit', () => {
 
   it('takes a title from the prompt when the title is blank, and refuses an empty prompt', async () => {
     const sealed = await sealEdit(keys, { target: target(), title: '  ', input: 'Fix the export' });
-    const row: RowRef = { kind: 'task', id: 'task0001', createdBy: 'user', scheduleId: null };
+    const row: RowRef = { kind: 'task', id: 'task0001', createdBy: 'user', scheduleId: null, forkOf: null };
     expect((await opened(row, sealed)).title).toBe('Fix the export');
     await expect(sealEdit(keys, { target: target(), title: 't', input: '  ' })).rejects.toThrow(InputError);
   });

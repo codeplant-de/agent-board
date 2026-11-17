@@ -1016,7 +1016,10 @@ describe('proposals', () => {
     const [started] = await admin.select().from(tasks).where(eq(tasks.id, id));
     expect(started).toMatchObject({ createdBy: 'user', proposed: false, status: 'todo' });
     expect(
-      await sealed.open(inputBinding({ kind: 'task', id, createdBy: 'user', scheduleId: null }), started!.input),
+      await sealed.open(
+        inputBinding({ kind: 'task', id, createdBy: 'user', scheduleId: null, forkOf: null }),
+        started!.input,
+      ),
     ).toBeUndefined();
     // The server cannot tell, so it claims; the worker finds the prompt unreadable as a user's and refuses it.
     const claimed = await ctx.raw('laptop', 'claim-task', { id, machine: 'laptop' });
@@ -1222,7 +1225,7 @@ describe('head', () => {
       id: 'plain-head-1',
       ...(await sealFields(
         sealed.seal,
-        { kind: 'task', id: 'plain-head-1', createdBy: 'user', scheduleId: null },
+        { kind: 'task', id: 'plain-head-1', createdBy: 'user', scheduleId: null, forkOf: null },
         { title: 't', input: 'x' },
       )),
     };

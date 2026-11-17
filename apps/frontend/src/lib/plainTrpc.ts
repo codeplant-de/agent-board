@@ -26,6 +26,7 @@ import {
   sealAnswer,
   sealApply,
   sealConfigure,
+  sealFork,
   sealEdit,
   sealNewTask,
   sealReply,
@@ -34,6 +35,7 @@ import {
   startsProposal,
   type Configuration,
   type ConfigureTarget,
+  type ForkSource,
   type EditTarget,
   type NewTask,
   type ScheduleEditTarget,
@@ -106,6 +108,13 @@ export type ConfigureVariables = Configuration & {
   // The task as the page shows it: a new directory is sealed under its row.
   task: ConfigureTarget;
 };
+
+export interface ForkVariables {
+  /** The task to fork, as the page shows it: its agent and directory are sealed again for the new task. */
+  parent: ForkSource;
+  title: string;
+  input: string;
+}
 
 export type { NewTask };
 
@@ -209,6 +218,14 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
             mutationKey: raw.tasks.create.mutationKey(),
             mutationFn: async (task: NewTask) =>
               openBoardTask(need(), await client.tasks.create.mutate(await sealNewTask(need(), task))),
+          }),
+      },
+      fork: {
+        mutationOptions: () =>
+          mutationOptions({
+            mutationKey: raw.tasks.fork.mutationKey(),
+            mutationFn: async (variables: ForkVariables) =>
+              openBoardTask(need(), await client.tasks.fork.mutate(await sealFork(need(), variables))),
           }),
       },
       configure: {

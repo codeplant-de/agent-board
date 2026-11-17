@@ -568,7 +568,14 @@ export async function wireTask(overrides: Partial<Task> & { id: string }): Promi
   } = task(overrides);
   const sealed = await sealFields(
     seals,
-    { kind: 'task', id: rest.id, createdBy: rest.createdBy, scheduleId: rest.scheduleId, agent: agent ?? null },
+    {
+      kind: 'task',
+      id: rest.id,
+      createdBy: rest.createdBy,
+      scheduleId: rest.scheduleId,
+      agent: agent ?? null,
+      forkOf: rest.forkOf ?? null,
+    },
     { title, input, workdir: workdir ?? undefined },
   );
   const wirePrs = await Promise.all(

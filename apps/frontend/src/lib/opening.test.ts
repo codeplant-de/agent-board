@@ -164,7 +164,7 @@ describe('the watches of a task, as the browser opens it', () => {
 });
 
 describe('the agent of a task, as the browser opens it', () => {
-  const row = { kind: 'task', id: 'task0001', createdBy: 'user', scheduleId: null } as const;
+  const row = { kind: 'task', id: 'task0001', createdBy: 'user', scheduleId: null, forkOf: null } as const;
   const sealedFor = async (agent: string | null) => {
     const sealer = sealerFor(keys);
     const wire = await wireTask([]);

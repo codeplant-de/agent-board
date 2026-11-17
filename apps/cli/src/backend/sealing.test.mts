@@ -304,7 +304,7 @@ test('a task round-trips and the server only ever sees envelopes and a blind ind
   const patched = await board.updateTask(created.id, {
     input: `${INPUT} more`,
     workdir: '/home/me/wt',
-    seal: { createdBy: 'intake', scheduleId: null, agent: null },
+    seal: { createdBy: 'intake', scheduleId: null, agent: null, forkOf: null },
   });
   assert.deepEqual([patched.input, patched.workdir], [`${INPUT} more`, '/home/me/wt']);
   assert.deepEqual((await board.getTask(created.id)).labels, ['review-pr']);
@@ -695,7 +695,7 @@ test('the creator of a new prompt is the writer’s, not the board’s (a writer
   await assert.rejects(board.updateTask('i1', { input: 'new prompt' }), /needs the task creator/);
   const patched = await board.updateTask('i1', {
     input: 'new prompt',
-    seal: { createdBy: 'intake', scheduleId: null, agent: null },
+    seal: { createdBy: 'intake', scheduleId: null, agent: null, forkOf: null },
   });
   assert.deepEqual([patched.input, patched.unreadable], ['new prompt', []]);
   // Sealed as the user's, the same prompt would not open on an intake task.
@@ -823,7 +823,7 @@ test('an occurrence opens against its schedule, also after the schedule is gone,
   // The worker rewrites the directory for the task; that opens, and the schedule's own prompt still does.
   const updated = await board.updateTask('occ1', {
     workdir: '/srv/app/.wt',
-    seal: { createdBy: 'user', scheduleId: s.id, agent: null },
+    seal: { createdBy: 'user', scheduleId: s.id, agent: null, forkOf: null },
   });
   assert.deepEqual([updated.input, updated.workdir, updated.unreadable], ['/sweep', '/srv/app/.wt', []]);
   // Naming another schedule, or none, or a changed creator, leaves the task unreadable.
@@ -841,7 +841,7 @@ test('an occurrence opens against its schedule, also after the schedule is gone,
 test('a directory chosen for a task is sealed as its own, an occurrence’s under its schedule, and opens again', async () => {
   const wire = fakeWire();
   const board = sealingBackend(wire, KEYS);
-  const writer = { createdBy: 'user' as const, scheduleId: null, agent: null };
+  const writer = { createdBy: 'user' as const, scheduleId: null, agent: null, forkOf: null };
   wire.tasks.push(await wireTask({ id: 'plain', workdir: '/srv/old' }));
   await assert.rejects(board.configureTask('plain', { place: { workdir: '/srv/new' } }), /change\.seal/);
   await assert.rejects(board.configureTask('plain', { place: { workdir: 'rel' }, seal: writer }), /absolute path/);
@@ -859,7 +859,7 @@ test('a directory chosen for a task is sealed as its own, an occurrence’s unde
   const occurrence = await board.configureTask('occ', {
     priority: 'high',
     place: { workdir: '/srv/app' },
-    seal: { createdBy: 'user', scheduleId: 'sched', agent: null },
+    seal: { createdBy: 'user', scheduleId: 'sched', agent: null, forkOf: null },
   });
   assert.deepEqual([occurrence.workdir, occurrence.unreadable], ['/srv/app', []]);
   assert.equal(await open(KEYS, 'workdir', 'task:occ:schedule:sched', wire.tasks[1]!.workdir!), '/srv/app');
@@ -916,7 +916,10 @@ test('what the board would refuse for its size is refused before it is sent, nam
     refused(error, /the title is too long/),
   );
   await assert.rejects(
-    board.updateTask('t1', { input: 'x'.repeat(800_001), seal: { createdBy: 'user', scheduleId: null, agent: null } }),
+    board.updateTask('t1', {
+      input: 'x'.repeat(800_001),
+      seal: { createdBy: 'user', scheduleId: null, agent: null, forkOf: null },
+    }),
     (error) => refused(error, /update-task: the prompt is too long/),
   );
   const at = '2026-11-14T10:00:00.000Z';
@@ -1164,7 +1167,7 @@ test('an agent is sealed with the task, never reaches the board in clear, and op
   // The writer of a new prompt states the agent, which keeps the prompt readable.
   const patched = await board.updateTask(created.id, {
     input: 'again',
-    seal: { createdBy: 'user', scheduleId: null, agent: 'reviewer' },
+    seal: { createdBy: 'user', scheduleId: null, agent: 'reviewer', forkOf: null },
   });
   assert.deepEqual([patched.input, patched.agent, patched.unreadable], ['again', 'reviewer', []]);
   // A writer that does not state the agent is refused, so a prompt is never sealed for a task without one by mistake.
@@ -1174,7 +1177,7 @@ test('an agent is sealed with the task, never reaches the board in clear, and op
   );
   const sealedWithNone = await board.updateTask(created.id, {
     input: 'x',
-    seal: { createdBy: 'user', scheduleId: null, agent: null },
+    seal: { createdBy: 'user', scheduleId: null, agent: null, forkOf: null },
   });
   assert.deepEqual(
     [sealedWithNone.agent, sealedWithNone.input, sealedWithNone.unreadable],
@@ -1200,6 +1203,40 @@ test('a task that has lost its agent on the way, or got another, is unreadable (
   stored.agent = agent ?? null;
   assert.deepEqual((await board.getTask(created.id)).unreadable, []);
   for (const listed of await board.listTasks()) assert.deepEqual(listed.unreadable, []);
+});
+
+test('a fork opens with the link the board shows, and is unreadable when the board drops, adds or swaps it', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  wire.tasks.push(
+    await wireTask({ id: 'f1', input: 'side work', forkOf: 'par1' }),
+    await wireTask({ id: 'plain', input: 'side work' }),
+  );
+  const fork = wire.tasks.find((t) => t.id === 'f1')!;
+  const opened = await board.getTask('f1');
+  assert.deepEqual([opened.forkOf, opened.input, opened.unreadable], ['par1', 'side work', []]);
+  assert.equal((await board.getTask('plain')).forkOf, undefined);
+  // The board drops the link, or points it at another task: the prompt was sealed for exactly one.
+  delete fork.forkOf;
+  assert.deepEqual([(await board.getTask('f1')).input, (await board.getTask('f1')).unreadable], ['', ['input']]);
+  fork.forkOf = 'par2';
+  assert.deepEqual((await board.getTask('f1')).unreadable, ['input']);
+  // The board makes a task of the user's a fork.
+  wire.tasks.find((t) => t.id === 'plain')!.forkOf = 'par1';
+  assert.deepEqual((await board.getTask('plain')).unreadable, ['input']);
+  fork.forkOf = 'par1';
+  assert.deepEqual((await board.getTask('f1')).unreadable, []);
+});
+
+test('a new prompt of a fork is sealed for its link, so it stays readable', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  wire.tasks.push(await wireTask({ id: 'f1', input: 'side work', forkOf: 'par1' }));
+  const seal = { createdBy: 'user', scheduleId: null, agent: null } as const;
+  const patched = await board.updateTask('f1', { input: 'again', seal: { ...seal, forkOf: 'par1' } });
+  assert.deepEqual([patched.input, patched.unreadable], ['again', []]);
+  const forgotten = await board.updateTask('f1', { input: 'again', seal: { ...seal, forkOf: null } });
+  assert.deepEqual([forgotten.input, forgotten.unreadable], ['', ['input']]);
 });
 
 test('a schedule is sealed with its agent, and its occurrences open it', async () => {

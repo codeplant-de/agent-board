@@ -150,6 +150,10 @@ export interface Task {
   notBefore: Date | null;
   // The schedule this task is an occurrence of; set by the server, never by a draft or a patch.
   scheduleId: string | null;
+  // The task this one was forked from; absent for any other task. The first run of a fork continues a copy of that task's Claude
+  // session. A clear value from the server, so a worker shape-checks it again; it is also part of the context of `input`, so a
+  // task whose fork link the server added, dropped or changed is unreadable. Absent from a server without `task.fork`.
+  forkOf?: string;
   // Waiting only: when the wait ends at the latest (a timer's end, a check's timeout). Cleared when the task leaves Waiting.
   wakeAt: Date | null;
   // Waiting only: the wait ends early when a check on `machine` passes; false for a plain timer.
@@ -269,6 +273,8 @@ export interface PatchSealing {
   scheduleId: string | null;
   // The task's agent as the writer opened it (null for none): a new `input` is sealed under it too, so it must be stated.
   agent: string | null;
+  // The task this one was forked from (null for none): a new `input` is sealed under the fork link too, so it must be stated.
+  forkOf: string | null;
 }
 
 export interface TaskPatch {
@@ -1098,6 +1104,7 @@ export function parseWireTask(value: unknown): WireTask {
     paused: boolean(obj, 'paused', 'task'),
     notBefore: nullableDate(obj, 'notBefore', 'task'),
     scheduleId: obj['scheduleId'] === null ? null : safeId(string(obj, 'scheduleId', 'task'), 'task scheduleId'),
+    ...(obj['forkOf'] == null ? {} : { forkOf: safeId(string(obj, 'forkOf', 'task'), 'task forkOf') }),
     wakeAt: nullableDate(obj, 'wakeAt', 'task'),
     waitCheck: boolean(obj, 'waitCheck', 'task'),
     woken: boolean(obj, 'woken', 'task'),

@@ -34,6 +34,7 @@ const taskRow = (
   id,
   createdBy,
   scheduleId,
+  forkOf: null,
 });
 const bodyOf = (
   taskId: string,
@@ -1025,12 +1026,12 @@ describe('starting an agent’s proposal', () => {
     await mutate(trpc.tasks.move.mutationOptions(), { id: 'task1', status: 'todo', task: opened });
     const sent = calls.find((call) => call.path === 'tasks.move')?.input as { startInput?: string; status: string };
     expect(sent.status).toBe('todo');
-    const asUser = inputBinding({ kind: 'task', id: 'task1', createdBy: 'user', scheduleId: null });
+    const asUser = inputBinding({ kind: 'task', id: 'task1', createdBy: 'user', scheduleId: null, forkOf: null });
     expect(await openAs(keys, asUser, sent.startInput ?? '')).toBe('/review-pr 17741\n\nplease');
     await expect(
       openAs(
         keys,
-        inputBinding({ kind: 'task', id: 'task1', createdBy: 'agent', scheduleId: null }),
+        inputBinding({ kind: 'task', id: 'task1', createdBy: 'agent', scheduleId: null, forkOf: null }),
         sent.startInput ?? '',
       ),
     ).rejects.toThrow();

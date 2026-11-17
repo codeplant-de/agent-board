@@ -396,7 +396,7 @@ describe('one user cannot reach another user’s board', () => {
       id,
       ...(await sealFields(
         sealed.seal,
-        { kind: 'task', id, createdBy: 'user', scheduleId: null },
+        { kind: 'task', id, createdBy: 'user', scheduleId: null, forkOf: null },
         { title: SEALED, input: SEALED },
       )),
     });

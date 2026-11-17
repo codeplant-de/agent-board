@@ -94,11 +94,12 @@ const openerFor =
     }
   };
 
-const taskRef = (task: Pick<WireTask, 'id' | 'createdBy' | 'scheduleId'>): RowRef => ({
+const taskRef = (task: Pick<WireTask, 'id' | 'createdBy' | 'scheduleId' | 'forkOf'>): RowRef => ({
   kind: 'task',
   id: task.id,
   createdBy: task.createdBy,
   scheduleId: task.scheduleId,
+  forkOf: task.forkOf ?? null,
 });
 
 // A server without `task.prs` holds one reported PR per task and gives it no id.
@@ -198,6 +199,7 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       createdBy: draft.createdBy ?? 'user',
       scheduleId: null,
       agent: agent ?? null,
+      forkOf: null,
     };
     const sealed = await checked('add-task', () => sealFields(sealer, row, { title, input: draft.input, workdir }));
     const keysNow = await getKeys();
@@ -224,6 +226,7 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       createdBy: writer?.createdBy ?? 'user',
       scheduleId: writer?.scheduleId ?? null,
       agent: writer?.agent ?? null,
+      forkOf: writer?.forkOf ?? null,
     };
     const sealed = await checked('update-task', async () => ({
       ...(input === undefined ? {} : { input: await sealInput(sealer, row, input) }),

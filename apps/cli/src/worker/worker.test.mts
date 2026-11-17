@@ -238,6 +238,134 @@ test("a resume runs the stored session with the user's reply and uses the resume
   assert.ok(!backend.writes.some((w) => w.startsWith('session w1')));
 });
 
+// The fork w1 of the task p1, which ran on this machine in its session SESSION; a fork's own session is OTHER_SESSION.
+function forkSetup(parent: Partial<Task> | null = {}) {
+  const made = setup({ exitCode: 0, signal: null });
+  const { deps, backend } = made;
+  Object.assign(backend.tasks[0]!, { forkOf: 'p1', input: 'look into the flaky test', status: 'running' });
+  if (parent !== null)
+    backend.tasks.push(
+      task({
+        id: 'p1',
+        title: 'Parent work',
+        status: 'needs-me',
+        machine: 'here',
+        workdir: '/tmp',
+        sessionId: SESSION,
+        ...parent,
+      }),
+    );
+  deps.newSessionId = () => OTHER_SESSION;
+  deps.sessions.record('p1', SESSION);
+  const runs: Invocation[] = [];
+  deps.run = async (invocation) => {
+    runs.push(invocation);
+    backend.tasks[0]!.status = 'needs-me';
+    return { exitCode: 0, signal: null };
+  };
+  return { ...made, runs };
+}
+
+test('the first run of a fork continues a copy of the parent’s session and stores the copy as its own', async () => {
+  const { deps, backend, runs } = forkSetup();
+  await runWorker(deps, 'w1');
+  assert.deepEqual(runs[0]?.args.slice(0, 4), [
+    '-p',
+    `--resume=${SESSION}`,
+    '--fork-session',
+    `--session-id=${OTHER_SESSION}`,
+  ]);
+  assert.equal(runs[0]?.cwd, '/tmp');
+  assert.match(
+    runs[0]?.prompt ?? '',
+    /forked from board task p1 \("Parent work"\)[^]*Your task:\n\nlook into the flaky test$/,
+  );
+  assert.ok(backend.writes.includes(`session w1: ${OTHER_SESSION}`));
+  assert.ok(deps.sessions.has('w1', OTHER_SESSION));
+  assert.ok(deps.sessions.has('p1', SESSION), 'the parent’s session is untouched');
+  assert.ok(!backend.writes.some((w) => w.startsWith('session p1') || w.startsWith('fail ')));
+});
+
+test('a fork whose parent’s session this machine did not start is not run, and says why', async () => {
+  const { deps, backend, runs } = forkSetup();
+  deps.sessions = fakeSessions();
+  await runWorker(deps, 'w1');
+  assert.equal(runs.length, 0);
+  assert.ok(
+    backend.writes.some((w) => w.startsWith('fail w1:') && /this machine did not start/.test(w)),
+    backend.writes.join('\n'),
+  );
+  assert.ok(!backend.writes.some((w) => w.startsWith('session w1')));
+});
+
+test('a fork whose parent has no session, or is not on the board, is not run, and says why', async () => {
+  for (const [parent, why] of [
+    [{ sessionId: null }, /no Claude session now/],
+    [null, /not on the board any more/],
+  ] as const) {
+    const { deps, backend, runs } = forkSetup(parent);
+    await runWorker(deps, 'w1');
+    assert.equal(runs.length, 0);
+    assert.ok(
+      backend.writes.some((w) => w.startsWith('fail w1:') && why.test(w)),
+      backend.writes.join('\n'),
+    );
+  }
+});
+
+test('a fork is not run when the board answers for its parent with another task that has a recorded session', async () => {
+  const { deps, backend, runs } = forkSetup();
+  const other = task({ id: 'q1', status: 'needs-me', machine: 'here', workdir: '/tmp', sessionId: OTHER_SESSION });
+  deps.sessions.record('q1', OTHER_SESSION);
+  const getTask = backend.getTask.bind(backend);
+  backend.getTask = async (id) => (id === 'p1' ? other : getTask(id));
+  await runWorker(deps, 'w1');
+  assert.equal(runs.length, 0);
+  assert.ok(
+    backend.writes.some((w) => w.startsWith('fail w1:') && /another task/.test(w)),
+    backend.writes.join('\n'),
+  );
+});
+
+test('a fork that failed to look its parent up for another reason is not blamed on the parent', async () => {
+  const { deps, backend, runs } = forkSetup();
+  const getTask = backend.getTask.bind(backend);
+  backend.getTask = async (id) => {
+    if (id === 'p1') throw new BackendError('get-task: HTTP 503', 503, true);
+    return getTask(id);
+  };
+  await assert.rejects(runWorker(deps, 'w1'), /HTTP 503/);
+  assert.equal(runs.length, 0);
+});
+
+test('after its first run a fork resumes its own session with the reply, and does not fork again', async () => {
+  const { deps, backend, runs } = forkSetup();
+  Object.assign(backend.tasks[0]!, { next: 'resume', sessionId: OTHER_SESSION });
+  deps.sessions.record('w1', OTHER_SESSION);
+  backend.notes.set('w1', [
+    note('Done, one question', new Date('2026-11-13T10:00:00Z')),
+    note('please also check X', new Date('2026-11-13T10:05:00Z'), { author: 'user' }),
+  ]);
+  await runWorker(deps, 'w1');
+  assert.deepEqual(runs[0]?.args.slice(0, 2), ['-p', `--resume=${OTHER_SESSION}`]);
+  assert.ok(!runs[0]?.args.includes('--fork-session'));
+  assert.match(runs[0]?.prompt ?? '', /please also check X/);
+  assert.ok(!backend.writes.some((w) => w.startsWith('session w1')));
+});
+
+test('Re-run fresh forks a fork again, from the parent’s session as it is now', async () => {
+  const { deps, backend, runs } = forkSetup({ sessionId: '33333333-3333-4333-8333-333333333333' });
+  deps.sessions.record('p1', '33333333-3333-4333-8333-333333333333');
+  Object.assign(backend.tasks[0]!, { next: 'fresh', sessionId: null });
+  await runWorker(deps, 'w1');
+  assert.deepEqual(runs[0]?.args.slice(0, 4), [
+    '-p',
+    '--resume=33333333-3333-4333-8333-333333333333',
+    '--fork-session',
+    `--session-id=${OTHER_SESSION}`,
+  ]);
+});
+
 test('a run asked to pause gives its task back to Todo with a note naming the lane', async () => {
   const { deps, backend } = setup({ exitCode: 0, signal: null });
   Object.assign(backend.tasks[0]!, { sessionId: 's' });

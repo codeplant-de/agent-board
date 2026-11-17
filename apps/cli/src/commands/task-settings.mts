@@ -62,6 +62,7 @@ export function formatSettings(deps: TaskSettingsDeps, task: Task): string[] {
     ['directory', directoryLine(deps, task)],
     ['starts', task.notBefore === null ? 'when a worker is free' : localTime(task.notBefore)],
     ['schedule', task.scheduleId === null ? 'none' : plainLine(task.scheduleId)],
+    ...(task.forkOf === undefined ? [] : [['fork of', plainLine(task.forkOf)] satisfies [string, string]]),
     ['session', sessionLine(task)],
     ['pr', task.prs.length === 0 ? 'none' : task.prs.map((pr) => plainLine(pr.url)).join(', ')],
   ];
@@ -153,7 +154,12 @@ export async function setDirectory(deps: TaskSettingsDeps, id: string, path: str
     );
   await deps.backend.configureTask(id, {
     place: directory === null ? null : { workdir: directory },
-    seal: { createdBy: task.createdBy, scheduleId: task.scheduleId, agent: task.agent ?? null },
+    seal: {
+      createdBy: task.createdBy,
+      scheduleId: task.scheduleId,
+      agent: task.agent ?? null,
+      forkOf: task.forkOf ?? null,
+    },
   });
   noteSchedule(deps, task);
   confirmed(

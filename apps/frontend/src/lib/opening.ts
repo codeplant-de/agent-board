@@ -176,7 +176,13 @@ export const openerFor =
 
 export async function openBoardTask(keys: Keys, wire: WireBoardTask): Promise<BoardTask> {
   const { invalid, ...shapes } = checkTaskShapes(wire);
-  const row = { kind: 'task', id: wire.id, createdBy: shapes.createdBy, scheduleId: shapes.scheduleId } as const;
+  const row = {
+    kind: 'task',
+    id: wire.id,
+    createdBy: shapes.createdBy,
+    scheduleId: shapes.scheduleId,
+    forkOf: shapes.forkOf ?? null,
+  } as const;
   const [fields, prs, watches] = await Promise.all([
     openFields(openerFor(keys), row, wire),
     openPrs(openerFor(keys), wire.id, wire.prs ?? []),

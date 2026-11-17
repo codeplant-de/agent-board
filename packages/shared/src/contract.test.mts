@@ -438,6 +438,20 @@ test('a task carries the schedule it is an occurrence of; a draft cannot set it'
   assert.equal(serializeTask(parseWireTask({ ...task, scheduleId: 'Sc3dEf9x' }))['scheduleId'], 'Sc3dEf9x');
 });
 
+test('a task carries the task it was forked from, when it is a fork; a draft and a patch cannot set it', () => {
+  assert.equal(parseWireTask({ ...task, forkOf: 'Pa3dEf9x' }).forkOf, 'Pa3dEf9x');
+  assert.equal('forkOf' in parseWireTask(task), false);
+  assert.equal('forkOf' in parseWireTask({ ...task, forkOf: null }), false);
+  assert.throws(() => parseWireTask({ ...task, forkOf: 'bad id' }), /not safe/);
+  assert.throws(() => parseWireTask({ ...task, forkOf: 7 }), /forkOf/);
+  assert.throws(
+    () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, forkOf: 'Pa3dEf9x' }),
+    /unknown key "forkOf"/,
+  );
+  assert.throws(() => parseWireTaskPatch({ forkOf: null }), /unknown key "forkOf"/);
+  assert.equal(serializeTask(parseWireTask({ ...task, forkOf: 'Pa3dEf9x' }))['forkOf'], 'Pa3dEf9x');
+});
+
 test('a schedule round-trips through parse and serialize, for both kinds of rule', () => {
   assert.deepEqual(serializeSchedule(parseWireSchedule(schedule)), schedule);
   const cron = {

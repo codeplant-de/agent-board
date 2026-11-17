@@ -525,6 +525,24 @@ To work in a session yourself, run `board attach <task> [--fork]`. It opens the 
 
 When the task's directory was a worktree that has since been deleted, a resume continues the session in the git checkout that held it, and the agent recreates the worktree there. See [Where a task runs](workers.md#where-a-task-runs).
 
+### Forking a task
+
+Side work often comes up while you work on one task, and it would profit from what that task's conversation knows. Doing it in the same task makes the thread hard to follow. **Fork** on a task page makes a new task that continues a copy of the task's Claude session, with your instructions as its first message.
+
+The button shows on a task that has a Claude session on a machine, is not closed and is not an agent's proposal or a task of the removed intake that names no agent. The dialog asks for the **Instructions** (required) and a **Title**, which starts as `Fork of <title>`. **Fork & start** creates the task in Todo, at the top of its priority, and opens it.
+
+- **The parent stays as it was.** Its session, thread, status and directory are not touched. The task page of the fork says `Forked from <parent>` and the parent lists the fork under Follow-ups.
+- **It runs where the parent ran.** The fork is pinned to the parent's machine and starts in the parent's directory. The copy has a session of its own, so replies and answers resume it like any task.
+- **Agent and model carry over.** A fork runs as the agent of its parent, with its tool lists, and with its model. Priority is the parent's.
+- **It works while the parent runs.** The copy is the session as Claude last wrote it, so the last turn of a running parent may be missing.
+- **The directory is the parent's.** The agent is told that the directory and its branch belong to the parent task, and not to commit or change files there. For code changes it makes its own worktree and branch, as the repository says. It is also told to use its own task id for every `board` command.
+- **Re-run fresh forks again.** It forgets the fork's own session and copies the parent's session as it is now. If the parent has none any more, the run is blocked with the reason, and the task waits in Needs me.
+- **Only on a machine that knows the session.** The worker copies the parent's session only when it started it for the parent. A fork of a task another machine ran is blocked the same way.
+
+A fork needs the CLI of the parent's machine to be version 0.25.0 or newer (see [Forking a task](setup.md#forking-a-task-cli-0250)). An older one skips the task and leaves it in Todo. The board does not know a machine's CLI features, so it does not stop you.
+
+`board task <id>` and `board show <id>` print `fork of` for a fork, and `board tasks --json` has it as `forkOf`.
+
 ### Pull requests on the card
 
 A task with pull requests shows a GitHub icon for each before its title on the board, and a link to each at the top of its page.

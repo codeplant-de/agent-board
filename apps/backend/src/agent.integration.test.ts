@@ -61,7 +61,7 @@ describe('the sealed agent of a task', () => {
   it('refuses an agent that is not sealed', async () => {
     const fields = await sealFields(
       sealerFor('jascha').seal,
-      { kind: 'task', id: 'plain-agent-1', createdBy: 'user', scheduleId: null },
+      { kind: 'task', id: 'plain-agent-1', createdBy: 'user', scheduleId: null, forkOf: null },
       { title: 'x', input: 'y' },
     );
     const res = await ctx.raw('add-task', { body: { id: 'plain-agent-1', ...fields, agent: 'reviewer' } });
@@ -93,7 +93,7 @@ describe('the sealed agent of a task', () => {
     await expect(ctx.call('get-task', { id: first })).rejects.toThrow(/cannot open input/);
     const sealing = sealerFor('jascha');
     const wire = (await ctx.raw('get-task', { id: first })).json.result;
-    const row = { kind: 'task', id: first, createdBy: 'user', scheduleId: null } as const;
+    const row = { kind: 'task', id: first, createdBy: 'user', scheduleId: null, forkOf: null } as const;
     expect(await sealing.open(inputBinding({ ...row, agent: 'reviewer' }), wire.input)).toBe('go');
     expect(await sealing.open(inputBinding(row), wire.input)).toBeUndefined();
     expect(agentBinding(row).context).toBe(`task:${first}`);
