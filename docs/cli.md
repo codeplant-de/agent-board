@@ -170,7 +170,8 @@ from a regular file in /tmp, for long text.
 
 `--suggest <text>` (or `--suggest-file <path>`, a file in /tmp) attaches the
 reply you expect the user to send next, which the board offers as a one-click
-answer. Give it before the task, because everything after the task is the note.
+answer. Give it before the task, because everything after the task is the note;
+a note that starts with --suggest or --suggest-file is refused.
 
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
