@@ -141,6 +141,10 @@ jobs:
     needs: macos-changes
     if: needs.macos-changes.outputs.cli == 'true'
     runs-on: macos-latest
+    # GitHub's macOS runners are sometimes short, and a job no runner picks up within about 15 minutes is cancelled. On a
+    # pull request that must not turn the run red: the job is not a required check and a failure here shows on the job
+    # only. On main it stays blocking, since cli-release waits for it.
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
 
     steps:
       - name: Checkout
@@ -351,13 +355,15 @@ jobs:
   # them. A declared break skips previous-cli's steps and the job still succeeds, so only a red run blocks. A failed release
   # download is red too and holds the push until a rerun. On every CLI version bump the images also wait for the release, so
   # a machine told to update (the backend advertises CLI_VERSION) finds it; a failed release holds them until it is retried.
+  # They wait on the release's published output, not on the call's result: a macOS attempt that got no runner can leave the
+  # call failed even when the retry released.
   build-and-push:
     needs: [test, previous-cli, cli-release-plan, cli-release]
     if: >-
       !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
       && needs.test.result == 'success' && needs.previous-cli.result == 'success'
       && needs.cli-release-plan.result == 'success'
-      && (needs.cli-release-plan.outputs.release != 'true' || needs.cli-release.result == 'success')
+      && (needs.cli-release-plan.outputs.release != 'true' || needs.cli-release.outputs.published == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: read
