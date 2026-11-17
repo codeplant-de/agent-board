@@ -45,7 +45,7 @@ export function registerScheduleCommands(shared: ProgramShared): void {
       'after',
       examples(
         'board schedule /review-pr 17741',
-        'board schedule --priority high /review-pr cosuno/cosuno#17741 --auto',
+        'board schedule --priority high /review-pr acme/app#17741 --auto',
         'board schedule --model opus "Find out why the bidder export is slow and propose a fix"',
         'board schedule "Find out why the bidder export is slow and propose a fix"',
         'board schedule --in 2h /review-pr 17741',

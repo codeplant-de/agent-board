@@ -251,7 +251,7 @@ test('broadRule and looksSecret', () => {
     assert.equal(broadRule(rule), undefined, rule);
   for (const name of ['GITHUB_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'API_KEY', 'DB_PASSWORD', 'SESSION_COOKIE'])
     assert.ok(looksSecret(name), name);
-  for (const name of ['REGION', 'COSUNO_PROD_REPLICA_ENDPOINT', 'KEYBOARD_LAYOUT']) assert.ok(!looksSecret(name), name);
+  for (const name of ['REGION', 'APP_REPLICA_ENDPOINT', 'KEYBOARD_LAYOUT']) assert.ok(!looksSecret(name), name);
 });
 
 test('add refuses unknown keys, a bad name, a tool pattern, an existing name without --replace, and a name config.json defines', async (context) => {
