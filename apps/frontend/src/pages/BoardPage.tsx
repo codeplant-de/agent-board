@@ -2,7 +2,7 @@ import type { Status } from '@agent-board/shared';
 import { Badge, Box, Button, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
 import { IconGitMerge } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useState, type DragEvent } from 'react';
+import { Fragment, useState, type DragEvent } from 'react';
 import { moveConfirmed } from '../components/confirmStart';
 import { IncompatibleMachinesBanner } from '../components/IncompatibleMachinesBanner';
 import { QueryStatus } from '../components/QueryStatus';
@@ -34,16 +34,19 @@ interface DropTarget {
 const canDrag = (task: ListedTask) => task.status !== 'running';
 const canDrop = (status: Status) => status !== 'running' && status !== 'waiting';
 
-/** The board's cells in order; Waiting sits above Todo in one cell, so a wait never takes a column of its own. */
+/**
+ * The board's cells in order; Waiting sits above Todo in one cell, so a wait never takes a column of its own, and is left out
+ * while no task waits.
+ */
 const CELLS: Status[][] = [['backlog'], ['waiting', 'todo'], ['running'], ['needs-me'], ['done']];
 
 /**
  * How tall a column's cards may grow before it scrolls. Waiting is capped at under a third of the viewport, and Todo below it
- * gets what Waiting leaves: the rest of a full column less Waiting's box at its cap, or less only its empty box (~110px).
+ * gets the rest of a full column less Waiting's box at its cap; without Waiting, Todo is as tall as any column.
  */
-const scrollMaxHeight = (status: Status, waitingEmpty: boolean): string => {
+const scrollMaxHeight = (status: Status, waitingShown: boolean): string => {
   if (status === 'waiting') return '30vh';
-  if (status === 'todo') return waitingEmpty ? 'calc(100vh - 270px)' : 'calc(70vh - 230px)';
+  if (status === 'todo' && waitingShown) return 'calc(70vh - 230px)';
   return 'calc(100vh - 160px)';
 };
 
@@ -61,6 +64,7 @@ function BoardColumns({ only }: { only?: Status }) {
   const [over, setOver] = useState<DropTarget | null>(null);
 
   const byStatus = (status: Status) => (tasks.data ?? []).filter((t) => t.status === status);
+  const waitingShown = byStatus('waiting').length > 0;
 
   const moveMergedToDone = async () => {
     for (const { id } of byStatus('needs-me').filter(canMoveMergedToDone))
@@ -135,8 +139,8 @@ function BoardColumns({ only }: { only?: Status }) {
               Move merged to Done ({column.filter(canMoveMergedToDone).length})
             </Button>
           )}
-          <ScrollArea.Autosize mah={scrollMaxHeight(status, byStatus('waiting').length === 0)} offsetScrollbars>
-            <Stack gap="xs" mih={status === 'waiting' ? undefined : 60}>
+          <ScrollArea.Autosize mah={scrollMaxHeight(status, waitingShown)} offsetScrollbars>
+            <Stack gap="xs" mih={60}>
               {column.map((task) => (
                 <TaskCard
                   key={task.id}
@@ -167,7 +171,7 @@ function BoardColumns({ only }: { only?: Status }) {
                 />
               ))}
               {column.length === 0 && tasks.data !== undefined && (
-                <Text size="sm" c="dimmed" ta="center" py={status === 'waiting' ? 'xs' : 'lg'}>
+                <Text size="sm" c="dimmed" ta="center" py="lg">
                   {status === 'needs-me' ? 'Nothing waiting for you' : 'Empty'}
                 </Text>
               )}
@@ -189,16 +193,21 @@ function BoardColumns({ only }: { only?: Status }) {
         </Box>
       ) : (
         <div className="board">
-          {CELLS.map((statuses) => (
-            <div
-              key={statuses.join()}
-              className="board-cell"
-              data-collapsible={statuses.length === 1 && COLLAPSIBLE.has(statuses[0]!)}
-              data-status={statuses.join(' ')}
-            >
-              {statuses.map(renderColumn)}
-            </div>
-          ))}
+          {CELLS.map((cell) => {
+            const statuses = cell.filter((status) => status !== 'waiting' || waitingShown);
+            return (
+              <div
+                key={cell.join()}
+                className="board-cell"
+                data-collapsible={statuses.length === 1 && COLLAPSIBLE.has(statuses[0]!)}
+                data-status={statuses.join(' ')}
+              >
+                {statuses.map((status) => (
+                  <Fragment key={status}>{renderColumn(status)}</Fragment>
+                ))}
+              </div>
+            );
+          })}
         </div>
       )}
     </Stack>
