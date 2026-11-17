@@ -80,7 +80,7 @@ test('the listener is kept alive, restarted every 10 s, and given 120 s to end a
   assert.match(text, /<key>KeepAlive<\/key>\n\t<true\/>/);
   assert.match(text, /<key>RunAtLoad<\/key>\n\t<true\/>/);
   assert.match(text, /<key>ThrottleInterval<\/key>\n\t<integer>10<\/integer>/);
-  assert.match(text, /<key>ExitTimeOut<\/key>\n\t<integer>120<\/integer>/);
+  assert.match(text, /<key>ExitTimeOut<\/key>\n\t<integer>130<\/integer>/);
   assert.match(text, /<key>AbandonProcessGroup<\/key>\n\t<true\/>/);
   assert.deepEqual(parseProgramArguments(text), ['/Users/me/.local/bin/board', 'internal', 'listen']);
   assert.doesNotMatch(text, /StartInterval/);

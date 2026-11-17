@@ -28,6 +28,7 @@ import {
 } from './launchd.mts';
 import type { LaunchdSetupDeps } from './launchd.mts';
 import { SystemError } from './system.mts';
+import { LISTEN_STOP_TIMEOUT_S, TICK_LIMIT_S, lockFileName } from '../dispatch/tick.mts';
 
 const exec = promisify(execFile);
 
@@ -56,7 +57,7 @@ const UNITS: Record<
   dispatch: {
     description: 'agent-board dispatcher: one tick',
     timerDescription: 'agent-board dispatcher every 2 minutes',
-    timeout: 110,
+    timeout: TICK_LIMIT_S,
     boot: '2min',
     every: '2min',
     accuracy: '10s',
@@ -116,7 +117,7 @@ export function renderUnits({ flock, command, intake }: RenderInput): UnitFile[]
       '-n',
       '-E',
       '75',
-      `%t/agent-board-${name}.lock`,
+      `%t/${lockFileName(name)}`,
       ...command(name).map(quoteExecArg),
     ].join(' ');
     return [
@@ -167,6 +168,8 @@ Restart=always
 RestartSec=10
 # Stopping signals the listener only; it waits for a running tick, which systemd then no longer cuts off midway.
 KillMode=mixed
+# Long enough for a tick to reach its limit and grace; systemd's 90 s default would kill one midway.
+TimeoutStopSec=${LISTEN_STOP_TIMEOUT_S}
 
 [Install]
 WantedBy=default.target
