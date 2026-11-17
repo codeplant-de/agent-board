@@ -10,7 +10,7 @@
 set -eu
 
 binary=${1:?usage: previous-cli-smoke.sh <board binary>}
-: "${BOARD_URL:?set BOARD_URL to the board's address}"
+: "${BOARD_URL:?set BOARD_URL to the address of the board}"
 : "${BOARD_ENV_FILE:?set BOARD_ENV_FILE to a file with AGENT_BOARD_TOKEN and AGENT_BOARD_DATA_KEY}"
 
 work=$(mktemp -d)

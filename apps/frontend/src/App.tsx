@@ -5,7 +5,7 @@ import { AppLayout } from './AppLayout';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { KeyGate } from './crypto/KeyGate';
 import { errorMessage, POLL_MS, useTRPC } from './lib/trpc';
-import { BoardPage } from './pages/BoardPage';
+import { BacklogPage, BoardPage } from './pages/BoardPage';
 import { ClosedPage } from './pages/ClosedPage';
 import { SchedulesPage } from './pages/SchedulesPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -55,6 +55,7 @@ export function App() {
           <Routes>
             <Route element={<AppLayout />}>
               <Route index element={<BoardPage />} />
+              <Route path="backlog" element={<BacklogPage />} />
               <Route path="t/:id" element={<TaskPage />} />
               <Route path="schedules" element={<SchedulesPage />} />
               <Route path="closed" element={<ClosedPage />} />

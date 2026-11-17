@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ListedTask } from '../lib/trpc';
-import { BoardPage } from './BoardPage';
+import { BacklogPage, BoardPage } from './BoardPage';
 
 const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const create = vi.hoisted(() => vi.fn(async (_: unknown) => null));
@@ -353,5 +353,29 @@ describe('BoardPage banner for machines whose CLI the board refuses', () => {
     renderBoard();
     await screen.findByText('Backlog');
     expect(screen.queryByText(/A machine needs a CLI update/)).not.toBeInTheDocument();
+  });
+});
+
+describe('BacklogPage', () => {
+  it('lists the backlog tasks only, outside the board grid', async () => {
+    listed.tasks = [
+      task({ id: 'b1', title: 'parked idea', status: 'backlog', proposed: false }),
+      task({ id: 't1', title: 'ready work', status: 'todo', proposed: false }),
+    ];
+    render(
+      <MemoryRouter>
+        <MantineProvider>
+          <ModalsProvider>
+            <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+              <BacklogPage />
+            </QueryClientProvider>
+          </ModalsProvider>
+        </MantineProvider>
+      </MemoryRouter>,
+    );
+    const card = await screen.findByText('parked idea');
+    expect(card.closest('.board')).toBeNull();
+    expect(screen.queryByText('ready work')).not.toBeInTheDocument();
+    expect(screen.queryByText('Todo')).not.toBeInTheDocument();
   });
 });
