@@ -62,7 +62,7 @@ launchctl print gui/$(id -u)/de.codeplant.agent-board.listen     # state, last e
 
 ## Upgrading
 
-**A task can hold several pull requests (CLI 0.15.0, no contract change).** A new server feature, `task.prs`: `board pr` adds a PR instead of replacing the earlier one, and the dispatcher writes the state of each PR. The migration moves each task's reported PR into the new `task_pr` table and keeps its state. What becomes unknown until the next dispatcher tick (within about 10 minutes) is the state of the PR the prompt names, on a task that also had a reported PR: the old `prState` described the reported PR, so the migration clears the task's own state. The old `pr` column stays in the database, unread, until a later migration drops it.
+**A task can hold several pull requests (CLI 0.15.0, no contract change).** A new server feature, `task.prs`: `board pr` adds a PR instead of replacing the earlier one, and the dispatcher writes the state of each PR. The migration moves each task's reported PR into the new `task_pr` table and keeps its state. What becomes unknown until the next dispatcher tick (within about 10 minutes) is the state of the PR the prompt names, on a task that also had a reported PR: the old `prState` described the reported PR, so the migration clears the task's own state.
 
 Update the server first. A CLI 0.15.0 against a server without `task.prs` falls back to the old behaviour (one reported PR, the last wins). A CLI up to 0.14.0 still works against the new server, but its `board pr` sends `set-pr`, which replaces every PR of the task, including the ones a newer CLI added, so update every machine: `board self-update`, then `systemctl --user restart agent-board-listen`.
 
