@@ -62,7 +62,12 @@ export function formatSettings(deps: TaskSettingsDeps, task: Task): string[] {
     ['machine', machineLine(task)],
     ['directory', directoryLine(deps, task)],
     ['starts', task.notBefore === null ? 'when a worker is free' : localTime(task.notBefore)],
-    ['schedule', task.scheduleId === null ? 'none' : plainLine(task.scheduleId)],
+    [
+      'schedule',
+      task.scheduleId === null
+        ? 'none'
+        : `${plainLine(task.scheduleId)}${task.held ? ' (at its limit: waits for a free slot)' : ''}`,
+    ],
     ...(task.forkOf === undefined ? [] : [['fork of', plainLine(task.forkOf)] satisfies [string, string]]),
     ['session', sessionLine(task)],
     ['pr', task.prs.length === 0 ? 'none' : task.prs.map((pr) => plainLine(pr.url)).join(', ')],

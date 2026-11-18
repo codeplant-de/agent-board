@@ -253,7 +253,7 @@ test('it verifies the contract, opens the stream with the token and ticks once c
   await clock.advance(0);
   assert.equal(verified(), 1);
   assert.deepEqual(requests, [
-    { url: 'https://board.example/api/machine/events', authorization: 'Bearer abm_x', features: '' },
+    { url: 'https://board.example/api/machine/events', authorization: 'Bearer abm_x', features: 'schedule.after' },
   ]);
   assert.deepEqual(ticks, [0]);
   assert.equal(log[0], 'connected');

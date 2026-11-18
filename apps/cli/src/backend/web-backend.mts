@@ -152,6 +152,20 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     if (draft.agent !== undefined) requireFeature((await connect()).features, 'task.agent');
   };
 
+  // Refuses to send a schedule capability to a server that would not know it.
+  const requireScheduleSupport = async (
+    draft: Pick<Parameters<WireBackend['addSchedule']>[0], 'moreCrons' | 'maxConcurrent' | 'after'>,
+  ): Promise<void> => {
+    const needed = [
+      ...(draft.moreCrons === undefined ? [] : (['schedule.crons'] as const)),
+      ...(draft.maxConcurrent === undefined ? [] : (['schedule.max-concurrent'] as const)),
+      ...(draft.after === undefined ? [] : (['schedule.after'] as const)),
+    ];
+    if (needed.length === 0) return;
+    const { features } = await connect();
+    for (const feature of needed) requireFeature(features, feature);
+  };
+
   // A call of the run for its own task names the run, when the server can check it.
   const scoped = (command: string, connection: Connection, request: MachineRequest): MachineRequest => {
     const scope = options.run?.();
@@ -299,6 +313,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       await requireModelSupport(draft);
       await requireAutoDoneSupport(draft);
       await requireAgentSupport(draft);
+      await requireScheduleSupport(draft);
       return call('add-schedule', { body: draft }, parseWireAddScheduleResult);
     },
     listSchedules: async () => call('list-schedules', {}, (value) => parseWireSchedules(value, listOptions)),

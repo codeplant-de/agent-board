@@ -418,6 +418,8 @@ const schedule = {
   workdir: null,
   everyMs: 7_200_000,
   cron: null,
+  after: null,
+  maxConcurrent: null,
   timezone: null,
   anchorAt: '2027-01-01T08:00:00.000Z',
   nextRunAt: '2027-01-01T08:00:00.000Z',
@@ -480,7 +482,71 @@ test('a schedule has exactly one rule, and a cron rule a time zone', () => {
 test('add-schedule results carry the schedule and its pending task', () => {
   const result = parseWireAddScheduleResult({ schedule, task: { ...task, scheduleId: 'Sc3dEf9x' } });
   assert.equal(result.schedule.id, 'Sc3dEf9x');
-  assert.equal(result.task.scheduleId, 'Sc3dEf9x');
+  assert.equal(result.task?.scheduleId, 'Sc3dEf9x');
+});
+
+test('an add-schedule result has no task for a schedule that waits for another', () => {
+  assert.equal(parseWireAddScheduleResult({ schedule, task: null }).task, null);
+  assert.equal(parseWireAddScheduleResult({ schedule }).task, null);
+});
+
+test('a schedule carries several cron expressions, a limit and the schedule it runs after', () => {
+  const crons = {
+    ...schedule,
+    everyMs: null,
+    cron: '0 9 * * 5#1',
+    moreCrons: ['0 9 * * 5#3'],
+    timezone: 'Europe/Berlin',
+    maxConcurrent: 2,
+  };
+  assert.deepEqual(serializeSchedule(parseWireSchedule(crons)), crons);
+  const after = {
+    ...schedule,
+    everyMs: null,
+    after: { scheduleId: 'Up3dEf9x', delayMs: 600_000 },
+    nextRunAt: null,
+    occurrenceTaskId: null,
+  };
+  assert.deepEqual(serializeSchedule(parseWireSchedule(after)), after);
+});
+
+test('a schedule from a server that predates these keys has no more crons, no limit and no schedule to follow', () => {
+  const { after: _after, maxConcurrent: _limit, ...old } = schedule;
+  const parsed = parseWireSchedule(old);
+  assert.deepEqual([parsed.after, parsed.maxConcurrent, 'moreCrons' in parsed], [null, null, false]);
+  assert.equal(
+    'moreCrons' in parseWireSchedule({ ...schedule, everyMs: null, cron: '0 9 * * *', timezone: 'UTC', moreCrons: [] }),
+    false,
+  );
+});
+
+test('the new keys of a schedule are shape-checked', () => {
+  const cron = { ...schedule, everyMs: null, cron: '0 9 * * *', timezone: 'UTC' };
+  assert.throws(() => parseWireSchedule({ ...schedule, moreCrons: ['0 9 * * *'] }), /moreCrons only goes with cron/);
+  assert.throws(() => parseWireSchedule({ ...cron, moreCrons: ['rm -rf /'] }), /must hold cron expressions/);
+  assert.throws(() => parseWireSchedule({ ...cron, moreCrons: 'x' }), /must be a list/);
+  assert.equal(
+    parseWireSchedule({ ...cron, moreCrons: Array.from({ length: 12 }, () => '0 9 * * *') }).moreCrons?.length,
+    12,
+    'the limits are the server’s to enforce, not the reader’s',
+  );
+  assert.throws(() => parseWireSchedule({ ...schedule, maxConcurrent: 0 }), /positive integer/);
+  assert.equal(parseWireSchedule({ ...schedule, maxConcurrent: 500 }).maxConcurrent, 500);
+  const after = { ...schedule, everyMs: null, after: { scheduleId: 'Up3dEf9x', delayMs: 0 } };
+  assert.throws(() => parseWireSchedule({ ...after, after: { scheduleId: '../x', delayMs: 0 } }), /not safe/);
+  assert.throws(() => parseWireSchedule({ ...after, after: { scheduleId: 'Up3dEf9x', delayMs: -1 } }), /delayMs/);
+  assert.equal(
+    parseWireSchedule({ ...after, after: { scheduleId: 'Up3dEf9x', delayMs: MAX_INTERVAL_MS + 1 } }).after?.delayMs,
+    MAX_INTERVAL_MS + 1,
+  );
+  assert.throws(() => parseWireSchedule({ ...after, cron: '0 9 * * *', timezone: 'UTC' }), /exactly one/);
+  assert.throws(() => parseWireSchedule({ ...after, everyMs: 60_000 }), /exactly one/);
+});
+
+test('a task carries held only when it waits for a free slot of its schedule', () => {
+  assert.equal(parseWireTask({ ...task, held: true }).held, true);
+  assert.equal('held' in parseWireTask({ ...task, held: false }), false);
+  assert.equal('held' in parseWireTask(task), false);
 });
 
 test('a schedule draft needs sealed title and input and one rule', () => {
@@ -508,7 +574,7 @@ test('a schedule draft needs sealed title and input and one rule', () => {
   );
   assert.throws(
     () => parseWireScheduleDraft({ id: ID, title: TITLE, input: INPUT }),
-    /exactly one of everyMs and cron/,
+    /exactly one of everyMs, cron and after/,
   );
   assert.throws(() => parseWireScheduleDraft({ ...draft, cron: '* * * * *', timezone: 'UTC' }), /exactly one/);
   assert.throws(
@@ -528,6 +594,52 @@ test('a schedule draft needs sealed title and input and one rule', () => {
   );
   assert.throws(() => parseWireScheduleDraft({ ...draft, machine: 'laptop' }), /go together/);
   assert.throws(() => parseWireScheduleDraft({ ...draft, rank: 1 }), /unknown key "rank"/);
+});
+
+test('a schedule draft takes more crons, a limit and an after rule, each checked', () => {
+  const cron = { id: ID, title: TITLE, input: INPUT, cron: '0 9 * * 5#1', timezone: 'UTC' };
+  assert.deepEqual(parseWireScheduleDraft({ ...cron, moreCrons: ['0 9 * * 5#3'], maxConcurrent: 3 }), {
+    ...cron,
+    moreCrons: ['0 9 * * 5#3'],
+    maxConcurrent: 3,
+  });
+  assert.throws(
+    () => parseWireScheduleDraft({ id: ID, title: TITLE, input: INPUT, everyMs: 60_000, moreCrons: ['0 9 * * *'] }),
+    /moreCrons only goes with cron/,
+  );
+  assert.throws(() => parseWireScheduleDraft({ ...cron, moreCrons: 'x' }), /list of strings/);
+  assert.throws(
+    () => parseWireScheduleDraft({ ...cron, moreCrons: Array.from({ length: 10 }, () => '0 9 * * *') }),
+    /at most 9/,
+  );
+  assert.throws(() => parseWireScheduleDraft({ ...cron, maxConcurrent: 0 }), /positive integer/);
+  assert.throws(() => parseWireScheduleDraft({ ...cron, maxConcurrent: 101 }), /at most 100/);
+  const base = { id: ID, title: TITLE, input: INPUT };
+  assert.deepEqual(parseWireScheduleDraft({ ...base, after: { scheduleId: 'Up3dEf9x' }, times: 2 }), {
+    ...base,
+    after: { scheduleId: 'Up3dEf9x' },
+    times: 2,
+  });
+  assert.deepEqual(parseWireScheduleDraft({ ...base, after: { scheduleId: 'Up3dEf9x', delayMs: 0 } }).after, {
+    scheduleId: 'Up3dEf9x',
+    delayMs: 0,
+  });
+  const after = { ...base, after: { scheduleId: 'Up3dEf9x', delayMs: 600_000 } };
+  assert.throws(() => parseWireScheduleDraft({ ...after, everyMs: 60_000 }), /exactly one/);
+  assert.throws(() => parseWireScheduleDraft({ ...after, cron: '0 9 * * *', timezone: 'UTC' }), /exactly one/);
+  assert.throws(() => parseWireScheduleDraft({ ...after, timezone: 'UTC' }), /only goes with cron/);
+  assert.throws(() => parseWireScheduleDraft({ ...after, startAt: '2027-01-01T00:00:00Z' }), /startAt does not go/);
+  assert.throws(
+    () => parseWireScheduleDraft({ ...after, after: { scheduleId: ID } }),
+    /cannot name the schedule itself/,
+  );
+  assert.throws(() => parseWireScheduleDraft({ ...after, after: { scheduleId: '../x' } }), /not safe/);
+  assert.throws(() => parseWireScheduleDraft({ ...after, after: { scheduleId: 'Up3dEf9x', delayMs: -1 } }), /delayMs/);
+  assert.throws(
+    () => parseWireScheduleDraft({ ...after, after: { scheduleId: 'Up3dEf9x', delayMs: MAX_INTERVAL_MS + 1 } }),
+    /delayMs/,
+  );
+  assert.throws(() => parseWireScheduleDraft({ ...after, after: { scheduleId: 'Up3dEf9x', x: 1 } }), /unknown key "x"/);
 });
 
 test('a schedule patch is a paused flag', () => {

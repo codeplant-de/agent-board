@@ -43,6 +43,9 @@ board task Ab3dEf9x set dir ~/workspace/agent-board
 board task Ab3dEf9x set prompt Find out why the CSV export is slow
 board schedule --every 2h --times 5 /sweep the stale branches
 board schedule --cron "0 9 * * 1-5" /review-pr --auto
+board schedule --cron "0 9 * * 5#1" --cron "0 9 * * 5#3" /sprint report
+board schedule --every 1h --max-concurrent 2 /sweep the stale branches
+board schedule --after s1b2c3d4 --delay 10m /deploy the release
 board schedules
 ```
 
@@ -50,8 +53,8 @@ board schedules
 
 ```text
 board schedule [--priority p] [--model m] [--auto-done] [--agent a] [--title t] [--hold | --backlog]
-               [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>"]
-               [--times <n> | --until <time>] [--polish] [--new]
+               [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>" ... | --after <schedule> [--delay <dur>]]
+               [--times <n> | --until <time>] [--max-concurrent <n>] [--polish] [--new]
                [--key <key> [--version <v>]] <prompt...>
 ```
 
@@ -70,7 +73,9 @@ The board's flags come first. Everything from the first other word on is the pro
 | `--backlog`                    | Lands the task in Backlog. Cannot be combined with `--hold`.                                                                |
 | `--in`, `--at`                 | Holds the task in Todo until then. See [Delays](#delays).                                                                   |
 | `--every`, `--cron`            | Makes a repeating schedule. See [Repeating schedules](#repeating-schedules).                                                |
+| `--after`, `--delay`           | Makes a schedule that runs after another. See [After another schedule](#after-another-schedule).                            |
 | `--times`, `--until`           | Ends a repeating schedule.                                                                                                  |
+| `--max-concurrent`             | Limits how many tasks of a repeat are under way at once. See [Limiting a schedule](#limiting-a-schedule).                   |
 | `--polish`                     | Parks the task in Backlog and queues a polish task for it. See [Polishing a prompt](#polishing-a-prompt).                   |
 | `--new`                        | Skips the [duplicate check](#duplicate-check).                                                                              |
 | `--key`, `--version`, `--json` | For scripts. See [Scripts](#scripts).                                                                                       |
@@ -202,12 +207,13 @@ On a prompt that starts with dashes, put `--` before it.
 
 ### Repeating schedules
 
-`--every <dur>` or `--cron "<expr>"` makes a schedule instead of one task. A schedule is a rule that keeps producing delayed Todo cards. Use one or the other, not both. `--in` or `--at` sets the first run. Without one it starts now.
+`--every <dur>`, `--cron "<expr>"` or `--after <schedule>` makes a schedule instead of one task. A schedule is a rule that keeps producing delayed Todo cards. Use one of the three. `--in` or `--at` sets the first run of the first two. Without one it starts now.
 
 **The rule.**
 
 - `--every 2h` runs on a fixed grid from the first run, whatever time the cards actually start at. The interval is between 1 minute and 10 years.
 - `--cron "0 9 * * 1-5"` is a 5-field expression: minute, hour, day of month, month, weekday. The CLI reads it in the time zone of the machine that made the schedule and stores the zone with it, so `0 9 * * *` stays at 9:00 local across a change to summer time. Its first run is the first match at or after `--in` or `--at`, or now. A 6-field expression with seconds is refused, as is anything that does not parse.
+- `--cron` can be given up to 10 times: `--cron "0 9 * * 5#1" --cron "0 9 * * 5#3"` runs on the first and the third Friday. The schedule runs whenever any expression matches, so its next run is the earliest next match of all of them. They are all read in the one time zone. An expression given twice is refused. `board schedules` lists them joined by `|`.
 
 **The end.**
 
@@ -226,11 +232,30 @@ The board makes the next card when the pending one leaves Todo: a worker claims 
 
 A repeat skips the duplicate check, since a recurring prompt resembles its own earlier runs. The confirmation names the schedule id, its rule, the first run and the card's URL.
 
+#### Limiting a schedule
+
+`--max-concurrent <n>` (1 to 100) keeps at most `n` tasks of a repeat under way at once. A task is under way while it is Running or Waiting. Without it a schedule has no limit, and a slow run does not stop the next one from starting on its time.
+
+The board checks the limit when a worker claims a card, for a first start and for a resume. While `n` other tasks of the schedule are under way, the claim is refused. The card stays in Todo, due, and starts when a task finishes or leaves Running and Waiting. It carries a **Waits for a slot** badge, and `board tasks` and `board show` say so. The next card of the schedule is made when the waiting one is claimed, as always, so a schedule that cannot keep up still has only one pending card. It needs `--every`, `--cron` or `--after`, and cannot be changed later.
+
+#### After another schedule
+
+`--after <schedule>` makes a schedule that has no times of its own. `<schedule>` is the id of another schedule or the start of it, as for `board schedules pause`. Each time a task of that schedule finishes, the board makes a card of this one in Todo, starting `--delay <dur>` later (default: at once). It has no card until then, and `board schedules` shows `after <id> +10m` and `next -`.
+
+- A task finishes when its run hands it back as done work: it moves from Running to Needs me or Done, which is what the worker's normal end and `board move <task> needs-me` do. A question, a failure, a stop, a pause or a wait does not count, and neither does a card you move or close without it running. The rule is the command, not who typed it: any `update-task` that moves a Running task to Needs me or Done counts, so `board move <task> done` in a terminal does too. Moves and stops in the browser do not.
+- Each task triggers at most once. A task you reply to that finishes again makes no second card.
+- The schedule keeps one pending card at most. A task that finishes while the card waits in Todo makes no second one. When that card is claimed, nothing follows until the next task of the other schedule finishes.
+- A paused or ended schedule makes none, and resuming one makes none. `--times` counts the cards made, and `--until` is the last moment one may start: a card that would start later ends the schedule instead.
+- The other schedule must exist and must not have ended; it may be paused or itself run after another, so schedules chain. Deleting a schedule that others run after is refused, and the error names them: delete those first. An upstream that ended makes no new cards, so it triggers only through a task of it that is still under way and finishes later.
+- `--after` cannot be combined with `--every`, `--cron`, `--in`, `--at`, `--hold`, `--backlog`, `--key` or `--polish`. `--delay` goes only with `--after`. `--times`, `--until`, `--max-concurrent`, `--model`, `--agent` and `--priority` do.
+
+The confirmation names the schedule and says its first task is made when a task of the other one finishes; with `--json` the output is `{"scheduleId"}`, as there is no task yet.
+
 **Managing schedules.**
 
 | Command                               | Effect                                                                                                                  |
 | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `board schedules`                     | Lists id, rule, next run, runs left including the pending one, state and title.                                         |
+| `board schedules`                     | Lists id, rule, next run, runs left including the pending one, state, `max N` when limited, and title.                  |
 | `board schedules pause <id>`          | Takes the pending card off the board and stops the schedule.                                                            |
 | `board schedules resume <id>`         | Makes the next card, at the first run on the rule from now.                                                             |
 | `board schedules rm <id>`             | Deletes the schedule and its pending card. Cards that already ran stay.                                                 |
@@ -242,11 +267,13 @@ A repeat skips the duplicate check, since a recurring prompt resembles its own e
 
 ### The Schedules page
 
-The **Schedules** page of the web board lists each schedule with its title and prompt, rule, next run, runs left (`forever` without an end), machine and a link to the pending card. You can edit, pause, resume and delete from there, as `board schedules edit` does. An ended schedule is dimmed and can only be deleted.
+The **Schedules** page of the web board lists each schedule with its title and prompt, rule (every cron expression, and "At most N at once" when it is limited), next run, runs left (`forever` without an end), machine and a link to the pending card. You can edit, pause, resume and delete from there, as `board schedules edit` does. An ended schedule is dimmed and can only be deleted.
+
+A schedule that runs after another shows "after <title>" and its delay, and "waits for <title>" where the next run would be. The page shows the id when it cannot find or read the other schedule.
 
 **Edit** changes the schedule's title and prompt. Every later run takes them. The pending card takes them too while it waits in Todo and no worker has claimed it, and the page says which of three happened: "The pending card was updated too", "The pending card has already started; the change applies from the next run", or "The schedule has no pending card; its next run takes the change" (a paused schedule has none). Cards that already ran or moved on keep what they had. The old text is not kept: a schedule has no thread.
 
-A pending card carries a **Repeat** badge, and its page says it is the next run of a schedule.
+A pending card carries a **Repeat** badge, and its page says it is the next run of a schedule. A card that waits for a free slot of a limited schedule also carries **Waits for a slot**, and its page says: "Waits for a free slot: its schedule runs at most N at once".
 
 ### The New task form
 
@@ -271,7 +298,7 @@ The list is advice. A name that is not in it still runs, and a machine that has 
 
 **Agent.** See [Choosing an agent](#choosing-an-agent).
 
-**When.** The menu offers Now, Later, Repeating, Backlog and Needs me. Repeating takes an interval (`2h`) or a cron expression, an optional first run and an optional number of runs, and opens the first pending card. The form reads a cron expression in your browser's time zone and shows the server's error if the server cannot read it. With Repeating, the Working directory pins the schedule, so every occurrence runs on that machine and in that directory.
+**When.** The menu offers Now, Later, Repeating, Backlog and Needs me. Repeating takes an interval (`2h`) or cron expressions, one per line (up to 10, run whenever any matches), an optional first run, an optional number of runs and an optional **At most at once**, and opens the first pending card. Or pick **Run after** another schedule that has not ended, by title, with an optional delay such as `10m`: the first run, the interval and the cron field give way to it, no card is made yet and the form goes to the Schedules page. The form reads a cron expression in your browser's time zone and shows the server's error if the server cannot read it. With Repeating, the Working directory pins the schedule, so every occurrence runs on that machine and in that directory.
 
 ### Settings on the task page
 

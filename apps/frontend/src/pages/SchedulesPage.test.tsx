@@ -49,6 +49,8 @@ function row(overrides: Partial<Row>): Row {
     workdir: '/work',
     everyMs: 7_200_000,
     cron: null,
+    after: null,
+    maxConcurrent: null,
     timezone: null,
     anchorAt: nextRunAt,
     nextRunAt,
@@ -112,6 +114,70 @@ describe('SchedulesPage', () => {
     renderPage();
     expect(screen.getByText('Loading schedules…')).toBeInTheDocument();
     expect(screen.queryByText('No schedules yet.')).not.toBeInTheDocument();
+  });
+
+  it('shows every cron expression and the limit', async () => {
+    list.mockResolvedValue([
+      row({
+        everyMs: null,
+        cron: '0 9 * * 5#1',
+        moreCrons: ['0 9 * * 5#3'],
+        timezone: 'Europe/Berlin',
+        maxConcurrent: 2,
+      }),
+    ]);
+    renderPage();
+    const fridays = (await screen.findByText('Nightly sweep')).closest('tr')!;
+    expect(within(fridays).getByText('cron 0 9 * * 5#1 | 0 9 * * 5#3 (Europe/Berlin)')).toBeInTheDocument();
+    expect(within(fridays).getByText('At most 2 at once')).toBeInTheDocument();
+  });
+
+  it('names the schedule a schedule runs after, with the delay, and what it waits for', async () => {
+    list.mockResolvedValue([
+      row({ id: 'up1', title: 'Build' }),
+      row({
+        id: 'sch2',
+        title: 'Deploy',
+        everyMs: null,
+        after: { scheduleId: 'up1', delayMs: 600_000 },
+        nextRunAt: null,
+        occurrenceTaskId: null,
+      }),
+      row({
+        id: 'sch3',
+        title: 'Notify',
+        everyMs: null,
+        after: { scheduleId: 'gone1', delayMs: 0 },
+        nextRunAt: null,
+        occurrenceTaskId: null,
+      }),
+    ]);
+    renderPage();
+    const deploy = (await screen.findByText('Deploy')).closest('tr')!;
+    expect(within(deploy).getByText('after Build +10m')).toBeInTheDocument();
+    expect(within(deploy).getByText('waits for Build')).toBeInTheDocument();
+    const notify = screen.getByText('Notify').closest('tr')!;
+    expect(within(notify).getByText('after gone1')).toBeInTheDocument();
+    expect(within(notify).getByText('waits for gone1')).toBeInTheDocument();
+  });
+
+  it('shows the id of an upstream whose title cannot be read, and no wait for a paused schedule', async () => {
+    list.mockResolvedValue([
+      row({ id: 'up1', title: '(cannot decrypt)', unreadable: ['title'] }),
+      row({
+        id: 'sch2',
+        title: 'Deploy',
+        everyMs: null,
+        after: { scheduleId: 'up1', delayMs: 0 },
+        paused: true,
+        nextRunAt: null,
+        occurrenceTaskId: null,
+      }),
+    ]);
+    renderPage();
+    const deploy = (await screen.findByText('Deploy')).closest('tr')!;
+    expect(within(deploy).getByText('after up1')).toBeInTheDocument();
+    expect(within(deploy).queryByText(/waits for/)).not.toBeInTheDocument();
   });
 
   it('lists the rule, next run, runs left, machine and a link to the waiting card', async () => {

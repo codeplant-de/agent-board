@@ -318,7 +318,7 @@ describe('one user cannot reach another user’s board', () => {
           .returning();
         const [ownSchedule] = await tx
           .insert(schedules)
-          .values({ id: 'alice-sched', title: SEALED, input: SEALED, anchorAt: new Date() })
+          .values({ id: 'alice-sched', title: SEALED, input: SEALED, everyMs: HOUR, anchorAt: new Date() })
           .returning();
         const cases: [string, (id: string) => Promise<unknown>, string][] = [
           ['task_parent_fk', (id) => tx.update(tasks).set({ parentId: id }).where(eq(tasks.id, own!.id)), bob.idle.id],
@@ -326,6 +326,19 @@ describe('one user cannot reach another user’s board', () => {
             'schedule_occurrence_task_fk',
             (id) => tx.update(schedules).set({ occurrenceTaskId: id }).where(eq(schedules.id, ownSchedule!.id)),
             bob.idle.id,
+          ],
+          [
+            'schedule_after_fk',
+            (id) =>
+              tx.insert(schedules).values({
+                id: `s-${id}`.slice(0, 20),
+                title: SEALED,
+                input: SEALED,
+                afterScheduleId: id,
+                afterDelayMs: 0,
+                anchorAt: new Date(),
+              }),
+            bob.scheduleId,
           ],
           [
             'note_task_fk',
@@ -373,9 +386,14 @@ describe('one user cannot reach another user’s board', () => {
         const row = (id: string) => ({ id, title: SEALED, input: SEALED, position: 0 });
         await tx.insert(tasks).values(row('parent-1'));
         await tx.insert(tasks).values({ ...row('child-1'), parentId: 'parent-1' });
-        await tx
-          .insert(schedules)
-          .values({ id: 'sched-1', title: SEALED, input: SEALED, anchorAt: new Date(), occurrenceTaskId: 'parent-1' });
+        await tx.insert(schedules).values({
+          id: 'sched-1',
+          title: SEALED,
+          input: SEALED,
+          everyMs: HOUR,
+          anchorAt: new Date(),
+          occurrenceTaskId: 'parent-1',
+        });
         await tx.update(tasks).set({ scheduleId: 'sched-1' }).where(eq(tasks.id, 'child-1'));
         await tx.delete(tasks).where(eq(tasks.id, 'parent-1'));
         const [child] = await tx.select().from(tasks).where(eq(tasks.id, 'child-1'));

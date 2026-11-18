@@ -236,6 +236,12 @@ test('set dir pins the task to this machine and the directory, drops the session
   assert.deepEqual(writes(run), [`place abc12345: ${target}`]);
 });
 
+test('board task says a card waits for a free slot of its schedule', async (context) => {
+  const run = runner(context, [task({ id: 'abc12345', scheduleId: 'sch1', held: true })]);
+  await run.go(['task', 'abc12345']);
+  assert.match(said(run), /schedule {4}sch1 \(at its limit: waits for a free slot\)/);
+});
+
 test('a card of a schedule gets a note that the change is for it only, on priority, model and directory', async (context) => {
   const run = runner(context, [task({ id: 'abc12345', scheduleId: 'sched001' }), task({ id: 'def12345' })]);
   run.make('app');

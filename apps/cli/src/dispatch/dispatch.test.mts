@@ -519,6 +519,15 @@ test('a task that is not due yet is left alone: no claim, no log line', async ()
   assert.ok(!logs.some((line) => line.includes('w1') || line.includes('w2')));
 });
 
+test('a task its schedule holds for a free slot is left alone: no claim, no log line, the others start', async () => {
+  const held = task({ id: 'h1', input: '/selftest go', scheduleId: 'sch', held: true });
+  const { deps, started, backend, logs } = setup([held, todo('t1')]);
+  await runDispatch(deps);
+  assert.deepEqual(started, ['t1']);
+  assert.ok(!backend.writes.some((w) => w.includes('h1')));
+  assert.ok(!logs.some((line) => line.includes('h1')));
+});
+
 test('a task whose prompt or directory cannot be decrypted is never claimed or started; an unreadable title alone is fine', async () => {
   const { deps, started, backend, logs } = setup([
     task({ id: 'u1', input: '', unreadable: ['input'] }),

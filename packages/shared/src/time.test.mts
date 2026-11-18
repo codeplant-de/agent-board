@@ -100,6 +100,16 @@ test('describeRule names an interval or a cron rule with its time zone', () => {
   );
 });
 
+test('describeRule lists every cron expression and names the schedule a rule runs after', () => {
+  assert.equal(
+    describeRule({ everyMs: null, cron: '0 9 * * 5#1', moreCrons: ['0 9 * * 5#3'], timezone: 'Europe/Berlin' }),
+    'cron 0 9 * * 5#1 | 0 9 * * 5#3 (Europe/Berlin)',
+  );
+  const after = { everyMs: null, cron: null, timezone: null };
+  assert.equal(describeRule({ ...after, after: { scheduleId: 'Up3dEf9x', delayMs: 600_000 } }), 'after Up3dEf9x +10m');
+  assert.equal(describeRule({ ...after, after: { scheduleId: 'Up3dEf9x', delayMs: 0 } }), 'after Up3dEf9x');
+});
+
 test('runsLeft counts the pending run and is null for a schedule that repeats forever', () => {
   assert.equal(runsLeft({ remaining: null, occurrenceTaskId: 'a' }), null);
   assert.equal(runsLeft({ remaining: 2, occurrenceTaskId: 'a' }), 3);

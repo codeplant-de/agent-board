@@ -55,6 +55,9 @@ export function registerScheduleCommands(shared: ProgramShared): void {
         'board schedule --at 09:00 /grill the plan in docs/x.md',
         'board schedule --every 2h --times 5 /sweep the stale branches',
         'board schedule --cron "0 9 * * 1-5" /review-pr --auto',
+        'board schedule --cron "0 9 * * 5#1" --cron "0 9 * * 5#3" /sprint report',
+        'board schedule --every 1h --max-concurrent 2 /sweep the stale branches',
+        'board schedule --after s1b2c3d4 --delay 10m /deploy the release',
         'board schedule --polish "bidder export should include postal codes"',
         'board schedule --hold -- --weird prompt',
         'board schedule --json /review-pr 17741',
@@ -73,6 +76,7 @@ export function registerScheduleCommands(shared: ProgramShared): void {
       const scheduled = await scheduleCommand(context, flags, words, options.cwd ?? realpathSync(process.cwd()));
       if (flags.json) {
         if (scheduled === undefined) return writeJson(null);
+        if (!('task' in scheduled)) return writeJson({ scheduleId: scheduled.schedule.id });
         const { task, polish, keyed } = scheduled;
         writeJson({
           id: task.id,
@@ -94,7 +98,7 @@ export function registerScheduleCommands(shared: ProgramShared): void {
         .summary('list, edit, pause, resume or delete repeating schedules')
         .description(
           paragraphs(
-            'Without arguments, list the repeating schedules: id, rule, next run, runs left, paused or ended, title; --json prints them as JSON.',
+            'Without arguments, list the repeating schedules: id, rule, next run, runs left, paused or ended, the limit if it has one, title; --json prints them as JSON.',
             '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run.',
             "`edit <id> <text...>` changes the schedule's prompt: the text is every word after the id, `-` reads it from stdin and `--file <path>` from a regular file in /tmp, for long text. `--title <title>` sets the title too; without it the title stays. Every later run takes the new text. The waiting run takes it too while it is in Todo and no worker has claimed it, and the command says which of three happened. Runs that already started keep what they had, and the old text is not kept. An ended schedule is refused.",
             'Changing a schedule is not available inside a board run. The id can be the start of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.',

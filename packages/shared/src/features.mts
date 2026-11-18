@@ -25,6 +25,10 @@ export const ADDED_SERVER_FEATURES = [
   'task.watches',
   'task.note-count',
   'task.fork',
+  'task.held',
+  'schedule.crons',
+  'schedule.max-concurrent',
+  'schedule.after',
   'task.auto-done',
   'task.moved-by',
   'prompt.edit',
@@ -54,6 +58,10 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'task.watches': 'showing a task’s watches',
   'task.note-count': 'the number of notes of a task',
   'task.fork': 'forking a task',
+  'task.held': 'showing that a task waits for a free slot of its schedule',
+  'schedule.crons': 'several cron expressions in one schedule',
+  'schedule.max-concurrent': 'a limit on how many cards of a schedule run at once',
+  'schedule.after': 'a schedule that runs after another',
   'task.auto-done': 'letting the agent move a task to Done',
   'task.moved-by': 'who moved a task',
   'prompt.edit': 'editing a prompt',
@@ -97,6 +105,18 @@ export const VOCABULARY_FEATURES: VocabularyFeatures = {};
 /** Every client feature this build understands: what the CLI sends in `X-Board-Features`. */
 export function clientVocabulary(table: VocabularyFeatures = VOCABULARY_FEATURES): string[] {
   return [...new Set(Object.values(table).flatMap((values) => Object.values(values)))].sort();
+}
+
+// What a client can read beyond enum values: a capability of this build whose absence the server must hide from. The CLI sends
+// these with the vocabulary features. `schedule.after`: a schedule with an `after` rule, which a CLI before it cannot parse.
+export const CLIENT_CAPABILITIES = ['schedule.after'] as const;
+
+/** Every feature this build announces in `X-Board-Features`: the capabilities and the vocabulary. */
+export function announcedClientFeatures(
+  table: VocabularyFeatures = VOCABULARY_FEATURES,
+  capabilities: readonly string[] = CLIENT_CAPABILITIES,
+): string[] {
+  return [...new Set([...capabilities, ...clientVocabulary(table)])].sort();
 }
 
 export const CLIENT_FEATURES_HEADER = 'x-board-features';

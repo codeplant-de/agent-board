@@ -441,7 +441,10 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
         sealFields(sealer, { kind: 'schedule', id, agent: agent ?? null }, { title, input: draft.input, workdir }),
       );
       const { schedule, task } = await inner.addSchedule({ ...rest, id, ...sealed });
-      return { schedule: await opened(schedule, openSchedule), task: await opened(task, openTask) };
+      return {
+        schedule: await opened(schedule, openSchedule),
+        task: task === null ? null : await opened(task, openTask),
+      };
     },
     listSchedules: async () => openedAll(await inner.listSchedules(), openSchedule),
     updateSchedule: async (id, patch) => opened(await inner.updateSchedule(id, patch), openSchedule),

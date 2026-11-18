@@ -11,9 +11,12 @@ import {
   STATUSES,
   type Field,
   type WireNote,
+  type WireScheduleDraft,
   type WireTask,
   MAX_INT32,
   MAX_INTERVAL_MS,
+  MAX_SCHEDULE_CONCURRENT,
+  MAX_SCHEDULE_CRONS,
 } from '@agent-board/shared';
 import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -21,7 +24,15 @@ import type { DbOrTx } from '../db/client';
 import { tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { getKeys, replaceSlots, setupKeys } from '../services/keys';
 import { issueToken, listMachineCatalogs, listMachines, revokeMachine } from '../services/machines';
-import { addSchedule, editSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from '../services/schedules';
+import {
+  addSchedule,
+  editSchedule,
+  heldTaskIds,
+  listSchedules,
+  removeSchedule,
+  setPaused,
+  toSchedule,
+} from '../services/schedules';
 import { hasStarted } from '../services/taskRows';
 import { eventOutput, listEvents, listRuns } from '../services/transcripts';
 import {
@@ -60,15 +71,35 @@ const status = z.enum(STATUSES);
 const priority = z.enum(PRIORITIES);
 const model = z.string().refine(isModelName, 'not a model name');
 const repeatEnd = {
-  at: z.coerce.date().optional(),
   times: z.number().int().positive().max(MAX_INT32).optional(),
   until: z.coerce.date().optional(),
+  maxConcurrent: z.number().int().min(1).max(MAX_SCHEDULE_CONCURRENT).optional(),
 };
-/** A repeat: an interval in ms, or a cron expression with its time zone; `at` is the first run. */
+/**
+ * A repeat: an interval in ms, a cron expression with its time zone (and up to nine more), or a schedule to run after, with a
+ * delay; `at` is the first run of the first two.
+ */
 const repeat = z
   .union([
-    z.object({ every: z.number().int().min(60_000).max(MAX_INTERVAL_MS), ...repeatEnd }),
-    z.object({ cron: z.string().trim().min(1), timezone: z.string().trim().min(1), ...repeatEnd }),
+    z.object({
+      every: z.number().int().min(60_000).max(MAX_INTERVAL_MS),
+      at: z.coerce.date().optional(),
+      ...repeatEnd,
+    }),
+    z.object({
+      cron: z.string().trim().min(1),
+      moreCrons: z
+        .array(z.string().trim().min(1))
+        .max(MAX_SCHEDULE_CRONS - 1)
+        .optional(),
+      timezone: z.string().trim().min(1),
+      at: z.coerce.date().optional(),
+      ...repeatEnd,
+    }),
+    z.object({
+      after: z.object({ scheduleId: id, delayMs: z.number().int().min(0).max(MAX_INTERVAL_MS).default(0) }),
+      ...repeatEnd,
+    }),
   ])
   .refine(
     (when) => when.times === undefined || when.until === undefined,
@@ -96,6 +127,18 @@ const noteInput = z.object({
 });
 /** A machine name as the worker checks it: it reaches argv and unit names there, so the board takes no other shape. */
 const machineName = z.string().refine(isSafeMachineName, 'not a safe machine name');
+function ruleOf(
+  when: z.output<typeof repeat>,
+): Pick<WireScheduleDraft, 'everyMs' | 'cron' | 'moreCrons' | 'timezone' | 'after'> {
+  if ('every' in when) return { everyMs: when.every };
+  if ('cron' in when)
+    return {
+      cron: when.cron,
+      ...(when.moreCrons?.length ? { moreCrons: when.moreCrons } : {}),
+      timezone: when.timezone,
+    };
+  return { after: when.after };
+}
 const createStatus = { now: 'todo', backlog: 'backlog', hold: 'needs-me' } as const;
 
 /** What the board needs of a task beyond the contract's fields. `title`, `input` and `workdir` are still sealed. */
@@ -115,9 +158,9 @@ export interface WireThreadNote extends WireNote {
 
 export type { LastNote };
 
-function toBoardTask(row: TaskRow, prs: Parameters<typeof toTask>[1]): WireBoardTask {
+function toBoardTask(row: TaskRow, prs: Parameters<typeof toTask>[1], held = false): WireBoardTask {
   return {
-    ...toTask(row, prs),
+    ...toTask(row, prs, { held }),
     proposed: row.proposed,
     started: hasStarted(row),
     parentId: row.parentId,
@@ -131,11 +174,12 @@ async function boardTasks(db: DbOrTx, rows: TaskRow[]): Promise<WireBoardTask[]>
     db,
     rows.map(({ id }) => id),
   );
-  return rows.map((row) => toBoardTask(row, prs.get(row.id)));
+  const held = await heldTaskIds(db, rows);
+  return rows.map((row) => toBoardTask(row, prs.get(row.id), held.has(row.id)));
 }
 
 async function boardTask(db: DbOrTx, row: TaskRow): Promise<WireBoardTask> {
-  return toBoardTask(row, (await listTaskPrs(db, [row.id])).get(row.id));
+  return toBoardTask(row, (await listTaskPrs(db, [row.id])).get(row.id), (await heldTaskIds(db, [row])).has(row.id));
 }
 
 const threadNote = (row: NoteRow): WireThreadNote => ({ ...toNote(row), by: row.by });
@@ -150,7 +194,11 @@ const tasksRouter = router({
         ctx.db,
         rows.map(({ row }) => row.id),
       );
-      return rows.map(({ row, lastNote }) => ({ ...toBoardTask(row, prs.get(row.id)), lastNote }));
+      const held = await heldTaskIds(
+        ctx.db,
+        rows.map(({ row }) => row),
+      );
+      return rows.map(({ row, lastNote }) => ({ ...toBoardTask(row, prs.get(row.id), held.has(row.id)), lastNote }));
     }),
 
   get: procedure.input(z.object({ id })).query(async ({ ctx, input }) => {
@@ -194,7 +242,7 @@ const tasksRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { title, when, place, agent } = input;
-      if (typeof when === 'object' && ('every' in when || 'cron' in when)) {
+      if (typeof when === 'object' && ('every' in when || 'cron' in when || 'after' in when)) {
         const { task } = await addSchedule(ctx.db, {
           id: input.id,
           title,
@@ -204,12 +252,13 @@ const tasksRouter = router({
           ...(input.autoDone === undefined ? {} : { autoDone: input.autoDone }),
           ...(place === undefined ? {} : { machine: place.machine, workdir: place.workdir }),
           ...(agent === undefined ? {} : { agent }),
-          ...('every' in when ? { everyMs: when.every } : { cron: when.cron, timezone: when.timezone }),
-          ...(when.at ? { startAt: when.at } : {}),
+          ...ruleOf(when),
+          ...('at' in when && when.at ? { startAt: when.at } : {}),
           ...(when.times ? { times: when.times } : {}),
           ...(when.until ? { until: when.until } : {}),
+          ...(when.maxConcurrent ? { maxConcurrent: when.maxConcurrent } : {}),
         });
-        return boardTask(ctx.db, task);
+        return task === null ? null : boardTask(ctx.db, task);
       }
       const { row } = await addTask(ctx.db, {
         id: input.id,

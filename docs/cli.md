@@ -775,7 +775,16 @@ Options:
                          2027-01-01, 09:30); with a repeat, the first run
   --every <duration>     repeat on a fixed grid from the first run (2h)
   --cron <expr>          repeat by a 5-field cron expression in this machine's
-                         time zone ("0 9 * * 1-5")
+                         time zone ("0 9 * * 1-5"); give it up to 10 times to
+                         run when any matches
+  --after <schedule>     a schedule that runs after another: its task is made
+                         when a task of that schedule finishes (the schedule's
+                         id or the start of it)
+  --delay <duration>     with --after: start this long after the other
+                         schedule's task finished (10m, 2h)
+  --max-concurrent <n>   with a repeat: at most this many tasks of the schedule
+                         running or waiting at once; the next one stays in Todo
+                         until a slot is free
   --times <n>            end a repeat after this many runs, the first included
   --until <time>         end a repeat after this time
   --polish               park it in backlog and queue a task that polishes its
@@ -801,6 +810,9 @@ Examples:
   board schedule --at 09:00 /grill the plan in docs/x.md
   board schedule --every 2h --times 5 /sweep the stale branches
   board schedule --cron "0 9 * * 1-5" /review-pr --auto
+  board schedule --cron "0 9 * * 5#1" --cron "0 9 * * 5#3" /sprint report
+  board schedule --every 1h --max-concurrent 2 /sweep the stale branches
+  board schedule --after s1b2c3d4 --delay 10m /deploy the release
   board schedule --polish "bidder export should include postal codes"
   board schedule --hold -- --weird prompt
   board schedule --json /review-pr 17741
@@ -813,7 +825,7 @@ Examples:
 Usage: board schedules [options] [pause|resume|rm <id> | edit <id> <text...|-|--file <path>>]
 
 Without arguments, list the repeating schedules: id, rule, next run, runs left,
-paused or ended, title; --json prints them as JSON.
+paused or ended, the limit if it has one, title; --json prints them as JSON.
 
 `pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes
 the next run, `rm <id>` deletes the schedule and its waiting run.

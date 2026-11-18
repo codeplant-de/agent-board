@@ -324,7 +324,8 @@ export function plainUi(db: Db, owner = 'jascha') {
       },
       create: async ({ id: chosen, title, input, place, agent: agentName, ...rest }: CreateInput) => {
         const id = chosen ?? newTaskId();
-        const repeats = typeof rest.when === 'object' && ('every' in rest.when || 'cron' in rest.when);
+        const repeats =
+          typeof rest.when === 'object' && ('every' in rest.when || 'cron' in rest.when || 'after' in rest.when);
         const agent = agentName ?? null;
         const row: RowRef = repeats
           ? { kind: 'schedule', id, agent }
@@ -336,7 +337,10 @@ export function plainUi(db: Db, owner = 'jascha') {
         });
         const placed =
           place === undefined || workdir === undefined ? {} : { place: { machine: place.machine, workdir } };
-        return openTask(await raw.tasks.create({ id, ...fields, ...rest, ...placed }));
+        const created = await raw.tasks.create({ id, ...fields, ...rest, ...placed });
+        if (created === null)
+          throw new Error('this schedule has no first task: it waits for the schedule it runs after');
+        return openTask(created);
       },
       // As the browser does: the prompt sealed for the fork link, the parent's directory and agent for the new task.
       fork: async ({

@@ -27,7 +27,7 @@ import { notes, taskPrs, tasks, type NoteRow, type TaskPrRow, type TaskRow } fro
 import { AppError } from './errors';
 import { requireSealed } from './sealed';
 import { DONE_ARCHIVE_DAYS, daysBefore } from './retention';
-import { completeOccurrence } from './schedules';
+import { completeOccurrence, isScheduleFull, occurrenceFinished } from './schedules';
 import { edgePosition, getTask, hasStarted, insertTask, lockTask } from './taskRows';
 
 export { getTask };
@@ -61,9 +61,15 @@ export async function countTaskNotes(db: DbOrTx, taskIds: string[]): Promise<Map
 
 /**
  * `prs` are the task's rows, oldest first. `pr` and `prState` are what a CLI without `task.prs` reads, see `WireTask`.
- * `noteCount` is left out when the caller did not count the notes (the browser does not use it).
+ * `noteCount` is left out when the caller did not count the notes (the browser does not use it). `held` says the task waits
+ * for a free slot of its schedule (`heldTaskIds`).
  */
-export function toTask(row: TaskRow, prs: readonly TaskPrRow[] = [], noteCount?: number): WireTask {
+export function toTask(
+  row: TaskRow,
+  prs: readonly TaskPrRow[] = [],
+  extras: { noteCount?: number; held?: boolean } = {},
+): WireTask {
+  const { noteCount, held = false } = extras;
   const newest = prs.at(-1);
   return {
     id: row.id,
@@ -99,6 +105,7 @@ export function toTask(row: TaskRow, prs: readonly TaskPrRow[] = [], noteCount?:
     paused: row.pausedAt !== null,
     notBefore: row.notBefore,
     scheduleId: row.scheduleId,
+    ...(held ? { held: true as const } : {}),
     wakeAt: row.status === 'waiting' ? row.wakeAt : null,
     waitCheck: row.status === 'waiting' && row.waitCheck,
     woken: row.wokenAt !== null,
@@ -439,6 +446,9 @@ export async function updateTask(
     // Pending messages send the task back to Todo instead, and then nothing was finished.
     if (agentDone && row.status === 'done')
       await systemEvent(tx, id, { type: 'moved', from: 'running', to: 'done' }, by);
+    // A run that hands its card back as done work (not one that asks, fails or is stopped) lets the schedules after it start.
+    if (current.status === 'running' && (row.status === 'needs-me' || row.status === 'done'))
+      await occurrenceFinished(tx, current, row.updatedAt);
     return row;
   });
 }
@@ -460,8 +470,8 @@ export async function attachSession(db: DbOrTx, id: string, machine: string): Pr
 /**
  * Todo to running for `machine`; the lock lets two machines claim at once and only one win.
  * A resume is pinned to the machine that holds its session, a task with its own directory to the machine it was placed on,
- * a proposal (a task that still names an agent as its creator) is not for a worker to start, and a delayed task is not due
- * before its start time.
+ * a proposal (a task that still names an agent as its creator) is not for a worker to start, a delayed task is not due
+ * before its start time, and a card of a schedule with a limit waits while other cards of it use all the slots.
  * Undefined when the claim is lost.
  */
 export async function claimTask(db: DbOrTx, id: string, machine: string): Promise<TaskRow | undefined> {
@@ -474,7 +484,8 @@ export async function claimTask(db: DbOrTx, id: string, machine: string): Promis
       task.createdBy !== 'agent' &&
       (task.notBefore === null || task.notBefore.getTime() <= Date.now()) &&
       (task.workdir === null || task.machine === null || task.machine === machine) &&
-      (task.next === 'fresh' || task.sessionId === null || task.machine === null || task.machine === machine);
+      (task.next === 'fresh' || task.sessionId === null || task.machine === null || task.machine === machine) &&
+      (task.scheduleId === null || !(await isScheduleFull(tx, task.scheduleId, task.id)));
     return free ? transition(tx, task, { to: 'running', by: 'machine', set: { machine } }) : undefined;
   });
 }
