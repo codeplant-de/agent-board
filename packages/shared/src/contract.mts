@@ -88,6 +88,11 @@ export const MAX_INT32 = 2_147_483_647;
 // The longest interval a schedule may repeat at; far beyond it, the date arithmetic of the next run breaks.
 export const MAX_INTERVAL_MS = 10 * 365 * 24 * 60 * 60_000;
 
+// Who made a task's last status change: the user in the browser, its agent from inside its run, or a machine (the CLI
+// outside a run: a claim, a failed run, a script or a terminal).
+export const TASK_ACTORS = ['user', 'agent', 'machine'] as const;
+export type TaskActor = (typeof TASK_ACTORS)[number];
+
 export const TASK_CREATORS = ['intake', 'user', 'agent'] as const;
 export type TaskCreator = (typeof TASK_CREATORS)[number];
 
@@ -112,6 +117,9 @@ export interface Task {
   // The Claude model the runs use (`claude --model`): an alias or a full id; null is claude's default. A clear value from the
   // server, so a worker shape-checks it with `isModelName` again before it reaches argv.
   model: string | null;
+  // The agent may move the task to Done itself (`update-task` with a run and status done) once it judges every acceptance
+  // criterion met; the user can change it in any status. Absent from a server without `task.auto-done`, which reads as false.
+  autoDone: boolean;
   // The agent of the machine's config.json the task runs as, by name; null or absent for none. Sealed on the wire, and part
   // of the context of `input`, so a task whose agent the server dropped or changed is unreadable. A worker that sees one runs
   // only that agent, or not at all.
@@ -179,6 +187,9 @@ export interface Task {
   // How many notes the task's thread holds; notes are never deleted, so it only grows. Absent from a server without the
   // `task.note-count` feature.
   noteCount?: number;
+  // Who made the last status change; absent before the first change and from a server without `task.moved-by`. A client
+  // skips a value it does not know.
+  movedBy?: TaskActor;
   unreadable: UnreadableField[];
 }
 
@@ -250,6 +261,8 @@ export interface TaskDraft {
   priority?: Priority;
   // Default: claude's default model.
   model?: string;
+  // Default: false.
+  autoDone?: boolean;
   // Unique per board: a second add-task with the same key returns the first task instead of a new one. The CLI sends the
   // blind index of the key, never the key.
   dedupeKey?: string;
@@ -304,6 +317,8 @@ export interface Schedule {
   priority: Priority;
   // The model of every occurrence; null is claude's default.
   model: string | null;
+  // Whether every occurrence lets the agent move it to Done itself.
+  autoDone: boolean;
   // Pins the occurrences to a machine and the directory they run in there.
   machine: string | null;
   workdir: string | null;
@@ -337,6 +352,8 @@ export interface ScheduleDraft {
   priority?: Priority;
   // Default: claude's default model.
   model?: string;
+  // Default: false.
+  autoDone?: boolean;
   machine?: string;
   workdir?: string;
   // The agent every occurrence runs as (sealed on the wire).
@@ -561,6 +578,8 @@ export interface TaskConfigChange {
   priority?: Priority;
   // A model name, or null for claude's default. It applies from the next run on.
   model?: string | null;
+  // Whether the agent may move the task to Done itself. Takes effect at once, also while the task runs.
+  autoDone?: boolean;
   // Where the task runs from now on. An object pins it to the directory on the calling machine and drops the session (it
   // cannot be resumed from another directory); null gives the task no directory of its own.
   place?: { workdir: string } | null;
@@ -967,6 +986,12 @@ function modelOf(obj: Record<string, unknown>, what: string): string | null {
   return value;
 }
 
+/** The `movedBy` of a task: left out when the server does not send it or names an actor this client does not know. */
+function movedByOf(obj: Record<string, unknown>): { movedBy?: TaskActor } {
+  const movedBy = TASK_ACTORS.find((actor) => actor === obj['movedBy']);
+  return movedBy === undefined ? {} : { movedBy };
+}
+
 function modelName(obj: Record<string, unknown>, what: string): string {
   const value = obj['model'];
   if (typeof value !== 'string' || !isModelName(value)) throw new ContractError(`${what}.model is not a model name`);
@@ -1116,6 +1141,7 @@ export function parseWireTask(value: unknown): WireTask {
     status: member(obj, 'status', 'task', STATUSES),
     priority: member(obj, 'priority', 'task', PRIORITIES),
     model: modelOf(obj, 'task'),
+    autoDone: obj['autoDone'] === true,
     closed: boolean(obj, 'closed', 'task'),
     machine,
     sessionId: sessionId(nullableString(obj, 'sessionId', 'task'), 'task'),
@@ -1147,6 +1173,7 @@ export function parseWireTask(value: unknown): WireTask {
     woken: boolean(obj, 'woken', 'task'),
     ...(obj['stopRequested'] === undefined ? {} : { stopRequested: boolean(obj, 'stopRequested', 'task') }),
     ...(obj['noteCount'] === undefined ? {} : { noteCount: count(obj, 'noteCount', 'task') }),
+    ...movedByOf(obj),
   };
 }
 
@@ -1194,6 +1221,7 @@ export function parseWireSchedule(value: unknown): WireSchedule {
     input: string(obj, 'input', 'schedule'),
     priority: member(obj, 'priority', 'schedule', PRIORITIES),
     model: modelOf(obj, 'schedule'),
+    autoDone: obj['autoDone'] === true,
     machine,
     workdir: nullableString(obj, 'workdir', 'schedule'),
     ...(obj['agent'] == null ? {} : { agent: string(obj, 'agent', 'schedule') }),
@@ -1527,6 +1555,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
       'status',
       'priority',
       'model',
+      'autoDone',
       'dedupeKey',
       'parentId',
       'createdBy',
@@ -1546,6 +1575,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', 'draft', PRIORITIES);
   if ('model' in obj) draft.model = modelName(obj, 'draft');
+  if ('autoDone' in obj) draft.autoDone = boolean(obj, 'autoDone', 'draft');
   if ('dedupeKey' in obj) draft.dedupeKey = parseBlindIndex(obj['dedupeKey'], 'draft.dedupeKey');
   if ('parentId' in obj) draft.parentId = safeId(string(obj, 'parentId', 'draft'), 'draft.parentId');
   if ('createdBy' in obj) draft.createdBy = member(obj, 'createdBy', 'draft', TASK_CREATORS);
@@ -1580,6 +1610,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
       'input',
       'priority',
       'model',
+      'autoDone',
       'machine',
       'workdir',
       'agent',
@@ -1600,6 +1631,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', what, PRIORITIES);
   if ('model' in obj) draft.model = modelName(obj, what);
+  if ('autoDone' in obj) draft.autoDone = boolean(obj, 'autoDone', what);
   if ('machine' in obj) {
     draft.machine = string(obj, 'machine', what);
     if (!isSafeMachineName(draft.machine)) throw new ContractError('schedule draft.machine is not a safe name');
@@ -1652,12 +1684,13 @@ export function parseWireTaskPatch(value: unknown): WireTaskPatch {
 // Body of configure-task. At least one key. `place` carries the sealed directory only: the machine is the token's.
 export function parseWireTaskConfig(value: unknown): WireTaskConfig {
   const obj = record(value, 'config');
-  const keys = ['priority', 'model', 'place'];
+  const keys = ['priority', 'model', 'autoDone', 'place'];
   rejectUnknownKeys(obj, keys, 'config');
   if (!keys.some((key) => key in obj)) throw new ContractError(`config needs one of ${keys.join(', ')}`);
   const config: WireTaskConfig = {};
   if ('priority' in obj) config.priority = member(obj, 'priority', 'config', PRIORITIES);
   if ('model' in obj) config.model = obj['model'] === null ? null : modelName(obj, 'config');
+  if ('autoDone' in obj) config.autoDone = boolean(obj, 'autoDone', 'config');
   if ('place' in obj) {
     if (obj['place'] === null) config.place = null;
     else {

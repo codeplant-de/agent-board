@@ -209,7 +209,7 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
-### Editing a prompt (CLI 0.27.0)
+### Editing a prompt (CLI 0.28.0)
 
 A new server feature, `prompt.edit`. `board task <task> set prompt` and `board schedules edit` change the prompt of a task that has not started and of a schedule, as the task page and the Schedules page do (see [Editing the prompt](usage.md#editing-the-prompt)). Nothing changes in the database, and no version number is raised.
 

@@ -29,6 +29,8 @@ export const prState = pgEnum('pr_state', ['open', 'merged', 'closed']);
 export const taskCreator = pgEnum('task_creator', ['intake', 'user', 'agent']);
 /** "server" is the only author whose body is plain text: the events the server writes itself. Every other note body is sealed. */
 export const noteAuthor = pgEnum('note_author', ['agent', 'user', 'system', 'server']);
+/** Who made a task's last status change: the user in the browser, its agent from inside its run, or a machine (the CLI outside a run). */
+export const taskActor = pgEnum('task_actor', ['user', 'agent', 'machine']);
 export const noteKind = pgEnum('note_kind', ['comment', 'question', 'answer', 'event', 'polish']);
 
 /** A signed-in user; every row below belongs to one, and a request sees only its own (`app.owner`, see db/scope.ts). */
@@ -110,6 +112,10 @@ export const tasks = pgTable(
     priority: taskPriority('priority').notNull().default('normal'),
     /** The Claude model of its runs (a clear choice, not content); null is claude's default. */
     model: text('model'),
+    /** The agent may move the task to Done itself, when it judges every acceptance criterion met (a clear setting, not content). */
+    autoDone: boolean('auto_done').notNull().default(false),
+    /** Who made the last status change; null for a task that has not changed status since it was created. */
+    movedBy: taskActor('moved_by'),
     /** Order within a status and priority: lower is higher up. */
     position: doublePrecision('position').notNull(),
     closed: boolean('closed').notNull().default(false),
@@ -209,6 +215,8 @@ export const schedules = pgTable(
     priority: taskPriority('priority').notNull().default('normal'),
     /** The model of every occurrence; null is claude's default. */
     model: text('model'),
+    /** Whether every occurrence lets the agent move it to Done itself. */
+    autoDone: boolean('auto_done').notNull().default(false),
     machine: text('machine'),
     workdir: text('workdir'),
     /** The sealed name of the agent every occurrence runs as; null for none. */

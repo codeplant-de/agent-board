@@ -86,8 +86,8 @@ test('task completes its id, then set or unset, then the setting', () => {
     'task-key',
   ]);
   assert.ok(script('bash').includes('compgen -W "set unset"'));
-  assert.ok(script('bash').includes('compgen -W "priority model dir prompt"'));
-  assert.ok(script('fish').includes("'__board_at 3 task' -a 'priority model dir prompt'"));
+  assert.ok(script('bash').includes('compgen -W "priority model auto-done dir prompt"'));
+  assert.ok(script('fish').includes("'__board_at 3 task' -a 'priority model auto-done dir prompt'"));
 });
 
 for (const shell of SHELLS) {

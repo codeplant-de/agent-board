@@ -1,5 +1,5 @@
 import type { Command } from 'commander';
-import { MODEL_ALIASES, PRIORITIES, STATUSES } from '@agent-board/shared';
+import { MODEL_ALIASES, PRIORITIES, STATUSES, TASK_ACTORS } from '@agent-board/shared';
 import { EVENT_TYPES } from '../events/diff.mts';
 import { DIR_SETTINGS, TOP_KEYS } from '../config/config.mts';
 import { shellQuote } from '../output/text.mts';
@@ -50,6 +50,7 @@ const FLAG_VALUES: Record<string, string[]> = {
   '--priority': [...PRIORITIES],
   '--model': MODEL_ALIASES.map((alias) => alias.value),
   '--type': [...EVENT_TYPES],
+  '--actor': [...TASK_ACTORS],
 };
 
 function positionalsOf(command: Command): CommandModel['positionals'] {
@@ -131,7 +132,7 @@ function positionalWords(kind: Kind, model: CompletionModel): string | undefined
     case 'task-action':
       return 'set unset';
     case 'task-key':
-      return 'priority model dir prompt';
+      return 'priority model auto-done dir prompt';
     case 'agents-action':
       return 'list show export add rm';
     case 'command':
@@ -429,7 +430,7 @@ function fish(model: CompletionModel): string {
   lines.push(`complete -c board -n '__board_at 1 config' -a 'show get set unset edit path'`);
   lines.push(`complete -c board -n '__board_config_key' -a ${fishQuote(words(TOP_KEYS))}`);
   lines.push(`complete -c board -n '__board_at 2 task' -a 'set unset'`);
-  lines.push(`complete -c board -n '__board_at 3 task' -a 'priority model dir prompt'`);
+  lines.push(`complete -c board -n '__board_at 3 task' -a 'priority model auto-done dir prompt'`);
   lines.push(`complete -c board -n '__board_at 1 help' -a ${fishQuote(words(names))}`);
   lines.push(`complete -c board -n '__board_at 1 completion' -a ${fishQuote(words(SHELLS))}`);
   return `${lines.join('\n')}\n`;

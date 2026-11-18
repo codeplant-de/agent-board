@@ -29,6 +29,7 @@ import {
   answer,
   applyPolish,
   configureTask,
+  dismissQuestion,
   forkTask,
   editPrompt,
   getTask,
@@ -180,6 +181,8 @@ const tasksRouter = router({
         priority: priority.default('normal'),
         /** The Claude model of its runs; absent is claude's default. */
         model: model.optional(),
+        /** The agent may move the task, or each occurrence of its schedule, to Done itself; absent is off. */
+        autoDone: z.boolean().optional(),
         /** The task this one follows from, which must be on the board. */
         parentId: id.optional(),
         when: z.union([repeat, z.enum(['now', 'backlog', 'hold']), z.object({ at: z.coerce.date() })]).default('now'),
@@ -198,6 +201,7 @@ const tasksRouter = router({
           input: input.input,
           priority: input.priority,
           ...(input.model === undefined ? {} : { model: input.model }),
+          ...(input.autoDone === undefined ? {} : { autoDone: input.autoDone }),
           ...(place === undefined ? {} : { machine: place.machine, workdir: place.workdir }),
           ...(agent === undefined ? {} : { agent }),
           ...('every' in when ? { everyMs: when.every } : { cron: when.cron, timezone: when.timezone }),
@@ -213,6 +217,7 @@ const tasksRouter = router({
         input: input.input,
         priority: input.priority,
         ...(input.model === undefined ? {} : { model: input.model }),
+        ...(input.autoDone === undefined ? {} : { autoDone: input.autoDone }),
         status: typeof when === 'string' ? createStatus[when] : 'todo',
         notBefore: typeof when === 'string' ? undefined : when.at,
         createdBy: 'user',
@@ -273,6 +278,12 @@ const tasksRouter = router({
           by: ctx.username,
         }),
       ),
+    ),
+
+  dismissQuestion: procedure
+    .input(z.object({ id, questionNoteId: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) =>
+      boardTask(ctx.db, await dismissQuestion(ctx.db, { taskId: input.id, questionNoteId: input.questionNoteId })),
     ),
 
   reply: procedure
@@ -367,7 +378,7 @@ const tasksRouter = router({
 
   /**
    * Changes a task's settings after creation. A `place` pins it to the machine and the sealed directory (null: none) and drops
-   * its session, so the next run starts fresh there; a running or waiting task is refused with CONFLICT. A model applies from the next run on.
+   * its session, so the next run starts fresh there; a running or waiting task is refused with CONFLICT. A model applies from the next run on; `autoDone` applies at once, in any status.
    */
   configure: procedure
     .input(
@@ -376,14 +387,16 @@ const tasksRouter = router({
           id,
           priority: priority.optional(),
           model: model.nullable().optional(),
+          autoDone: z.boolean().optional(),
           place: z
             .object({ machine: machineName, workdir: sealed('workdir', 'directory') })
             .nullable()
             .optional(),
         })
         .refine(
-          ({ priority: p, model: m, place }) => p !== undefined || m !== undefined || place !== undefined,
-          'change at least one of priority, model and place',
+          ({ priority: p, model: m, autoDone, place }) =>
+            p !== undefined || m !== undefined || autoDone !== undefined || place !== undefined,
+          'change at least one of priority, model, autoDone and place',
         ),
     )
     .mutation(async ({ ctx, input: { id: taskId, ...config } }) =>

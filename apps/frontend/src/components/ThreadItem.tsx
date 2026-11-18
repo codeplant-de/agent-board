@@ -124,6 +124,8 @@ function QuestionList({ questions, answered }: { questions: Question[]; answered
 interface Props {
   note: ThreadNote;
   thread: ThreadNote[];
+  /** The id of the question note the task waits on. An unanswered question that is not this one was dropped. */
+  openQuestionId?: string | undefined;
 }
 
 /**
@@ -182,7 +184,7 @@ function WatchEvent({ note }: { note: ThreadNote }) {
   );
 }
 
-export function ThreadItem({ note, thread }: Props) {
+export function ThreadItem({ note, thread, openQuestionId }: Props) {
   const at = new Date(note.createdAt);
   if (note.unreadable) return <UnreadableNote note={note} />;
   if (note.author === 'server') return <BoardEvent note={note} />;
@@ -218,6 +220,7 @@ export function ThreadItem({ note, thread }: Props) {
 
   if (note.kind === 'question' && note.questions) {
     const answered = answerTo(thread, note);
+    const isOpen = !answered && note.id === openQuestionId;
     return (
       <Paper withBorder p="sm" style={{ borderLeft: '3px solid var(--mantine-color-orange-6)' }}>
         <Group gap="xs" mb="xs">
@@ -225,18 +228,23 @@ export function ThreadItem({ note, thread }: Props) {
             <IconMessageQuestion size={14} />
           </ThemeIcon>
           <Meta who="Agent asked" by={note.by} at={at} />
-          {!answered && (
+          {isOpen && (
             <Badge size="xs" color="orange">
               open
             </Badge>
           )}
+          {!answered && !isOpen && (
+            <Badge size="xs" color="gray" variant="light">
+              not answered
+            </Badge>
+          )}
         </Group>
-        {answered ? (
-          <QuestionList questions={note.questions} answered={answered} />
-        ) : (
+        {isOpen ? (
           <Text size="sm" c="dimmed">
             {note.questions.map((q) => q.header).join(' · ')}: answer below.
           </Text>
+        ) : (
+          <QuestionList questions={note.questions} answered={answered} />
         )}
         {note.text.trim() && (
           <div style={{ marginTop: 8 }}>

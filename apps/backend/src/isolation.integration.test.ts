@@ -101,6 +101,7 @@ describe('one user cannot reach another user’s board', () => {
     const attempts: (() => Promise<unknown>)[] = [
       () => alice.tasks.get({ id: bob.idle.id }),
       () => alice.tasks.answer({ id: bob.asked.id, questionNoteId: bob.questionId, answers: [{ selected: ['Yes'] }] }),
+      () => alice.tasks.dismissQuestion({ id: bob.asked.id, questionNoteId: bob.questionId }),
       () => alice.tasks.reply({ id: bob.idle.id, message: 'hi', resume: true }),
       () => alice.tasks.reply({ id: bob.idle.id, message: 'hi', resume: false }),
       () => alice.tasks.done({ id: bob.idle.id }),
