@@ -244,6 +244,12 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
       if (!found) throw new BackendError(`update-schedule: no schedule ${id.slice(0, 40)}`, 404);
       return { ...found, ...patch };
     },
+    async editSchedule(id, edit) {
+      print(`DRY edit-schedule ${id} ${oneLine(JSON.stringify(edit), 160)}`);
+      const found = (await inner.listSchedules()).find((schedule) => schedule.id === id);
+      if (!found) throw new BackendError(`edit-schedule: no schedule ${id.slice(0, 40)}`, 404);
+      return { schedule: { ...found, ...edit }, pending: 'none' };
+    },
     async removeSchedule(id) {
       print(`DRY remove-schedule ${id}`);
     },
@@ -264,6 +270,10 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         ...(autoDone === undefined ? {} : { autoDone }),
         ...(place === undefined ? {} : { workdir: place?.workdir ?? null, sessionId: null, next: 'fresh' as const }),
       };
+    },
+    async editPrompt(id, edit) {
+      print(`DRY edit-prompt ${id} ${oneLine(JSON.stringify(edit), 160)}`);
+      return { ...(await inner.getTask(id)), ...edit };
     },
     async claimTask(id, machine) {
       print(`DRY claim-task ${id} --machine ${machine}`);

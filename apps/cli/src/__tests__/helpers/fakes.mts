@@ -23,6 +23,7 @@ import {
   sealPr,
   sealWatches,
   taskLabels,
+  textBeforeEdit,
 } from '@agent-board/shared';
 import type { Sealer } from '@agent-board/shared';
 import type {
@@ -263,6 +264,39 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       });
       return { ...found };
     },
+    // The server's rules for the user's edit of a prompt, minus the sealing: the old text lands in a note of the user's.
+    async editPrompt(id, edit) {
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`edit-prompt: no task ${id}`, 404, true);
+      const refusal =
+        found.createdBy !== 'user'
+          ? 'only a task you created has a prompt you can edit'
+          : found.scheduleId !== null
+            ? 'a scheduled occurrence takes its prompt from its schedule'
+            : found.lastActiveAt !== null || found.sessionId !== null
+              ? 'the task has started'
+              : found.closed || (found.status !== 'todo' && found.status !== 'backlog')
+                ? 'the prompt can only be edited while the task waits in Todo or Backlog'
+                : undefined;
+      if (refusal !== undefined) {
+        state.writes.push(`edit-prompt ${id} refused: ${refusal}`);
+        throw new BackendError(refusal, 409, true);
+      }
+      state.writes.push(`edit-prompt ${id}: ${edit.title} | ${edit.input}`);
+      state.notes.set(id, [
+        ...(state.notes.get(id) ?? []),
+        {
+          id: `edit-${(state.notes.get(id) ?? []).length}`,
+          createdAt: new Date(),
+          kind: 'event',
+          author: 'user',
+          text: textBeforeEdit(found),
+          unreadable: false,
+        },
+      ]);
+      Object.assign(found, edit);
+      return { ...found };
+    },
     async claimTask(id, machine) {
       const found = state.tasks.find((t) => t.id === id);
       if (!found) throw new Error(`no task ${id}`);
@@ -486,6 +520,18 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       if (!found) throw new BackendError(`no schedule ${id}`, 404);
       Object.assign(found, patch);
       return { ...found };
+    },
+    async editSchedule(id, edit) {
+      const found = state.schedules.find((s) => s.id === id);
+      if (!found) throw new BackendError(`no schedule ${id}`, 404);
+      if (found.ended) throw new BackendError('The schedule has ended.', 409);
+      state.writes.push(`edit-schedule ${id}: ${edit.title} | ${edit.input}`);
+      Object.assign(found, edit);
+      const card = state.tasks.find((t) => t.id === found.occurrenceTaskId);
+      if (card === undefined) return { schedule: { ...found }, pending: 'none' };
+      const editable = card.status === 'todo' && !card.closed && card.lastActiveAt === null && card.sessionId === null;
+      if (editable) Object.assign(card, edit);
+      return { schedule: { ...found }, pending: editable ? 'updated' : 'started' };
     },
     async removeSchedule(id) {
       state.writes.push(`remove-schedule ${id}`);

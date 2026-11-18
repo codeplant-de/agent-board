@@ -120,7 +120,7 @@ function positionalWords(kind: Kind, model: CompletionModel): string | undefined
     case 'status':
       return words(STATUSES);
     case 'schedule-action':
-      return 'pause resume rm';
+      return 'pause resume rm edit';
     case 'dirs-action':
       return 'list add rm set unset';
     case 'dirs-key':
@@ -132,7 +132,7 @@ function positionalWords(kind: Kind, model: CompletionModel): string | undefined
     case 'task-action':
       return 'set unset';
     case 'task-key':
-      return 'priority model auto-done dir';
+      return 'priority model auto-done dir prompt';
     case 'agents-action':
       return 'list show export add rm';
     case 'command':
@@ -167,7 +167,7 @@ function bash(model: CompletionModel): string {
       const lines = command.positionals.map((kind, index) => {
         const guard =
           kind === 'schedule'
-            ? ' && [[ " pause resume rm " == *" $first "* ]]'
+            ? ' && [[ " pause resume rm edit " == *" $first "* ]]'
             : kind === 'dirs-key'
               ? ' && [[ " set unset " == *" $first "* ]]'
               : kind === 'config-key'
@@ -272,7 +272,7 @@ function zsh(model: CompletionModel): string {
       const lines = command.positionals.map((kind, index) => {
         const guard =
           kind === 'schedule'
-            ? ' && [[ $first == (pause|resume|rm) ]]'
+            ? ' && [[ $first == (pause|resume|rm|edit) ]]'
             : kind === 'dirs-key'
               ? ' && [[ $first == (set|unset) ]]'
               : kind === 'config-key'
@@ -396,7 +396,7 @@ function fish(model: CompletionModel): string {
     'function __board_schedule_id',
     '  __board_value_pending; and return 1',
     '  set -l positionals (__board_positionals)',
-    '  test (count $positionals) -eq 2; and test "$positionals[1]" = schedules; and contains -- "$positionals[2]" pause resume rm',
+    '  test (count $positionals) -eq 2; and test "$positionals[1]" = schedules; and contains -- "$positionals[2]" pause resume rm edit',
     'end',
     'complete -c board -f',
   );
@@ -423,14 +423,14 @@ function fish(model: CompletionModel): string {
   lines.push(`complete -c board -n '__board_at 1 restart logs' -a ${fishQuote(words(WORKER_UNITS))}`);
   lines.push(`complete -c board -n '__board_at 1 logs' -a '(__board_ids tasks)'`);
   lines.push(`complete -c board -n '__board_at 2 move' -a ${fishQuote(words(STATUSES))}`);
-  lines.push(`complete -c board -n '__board_at 1 schedules' -a 'pause resume rm'`);
+  lines.push(`complete -c board -n '__board_at 1 schedules' -a 'pause resume rm edit'`);
   lines.push(`complete -c board -n '__board_schedule_id' -a '(__board_ids schedules)'`);
   lines.push(`complete -c board -n '__board_at 1 dirs' -a 'list add rm set unset'`);
   lines.push(`complete -c board -n '__board_dirs_key' -a ${fishQuote(words(DIR_SETTINGS))}`);
   lines.push(`complete -c board -n '__board_at 1 config' -a 'show get set unset edit path'`);
   lines.push(`complete -c board -n '__board_config_key' -a ${fishQuote(words(TOP_KEYS))}`);
   lines.push(`complete -c board -n '__board_at 2 task' -a 'set unset'`);
-  lines.push(`complete -c board -n '__board_at 3 task' -a 'priority model auto-done dir'`);
+  lines.push(`complete -c board -n '__board_at 3 task' -a 'priority model auto-done dir prompt'`);
   lines.push(`complete -c board -n '__board_at 1 help' -a ${fishQuote(words(names))}`);
   lines.push(`complete -c board -n '__board_at 1 completion' -a ${fishQuote(words(SHELLS))}`);
   return `${lines.join('\n')}\n`;

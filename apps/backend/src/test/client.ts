@@ -10,6 +10,7 @@ import {
   sealInput,
   sealNote,
   sealQuestions,
+  sealTitle,
   sealWorkdir,
   transcriptBinding,
   type Answer,
@@ -144,6 +145,39 @@ async function sealRequest(command: string, request: Json, sealing: Sealing, raw
       if (wire === undefined) return request;
       const workdir = await sealWorkdir(sealing.seal, taskRowOf(wire), body.place.workdir);
       return { ...request, body: { ...body, place: { ...body.place, workdir } } };
+    }
+    case 'edit-prompt': {
+      // The user's edit, sealed as the CLI does it: the new text under the task's row, the old text as a note of the user's.
+      if (typeof body?.input !== 'string') return request;
+      const wire = (await raw('get-task', { id })).json.result;
+      if (wire === undefined) return request;
+      const before = await openFields(sealing.open, taskRowOf(wire), wire);
+      const row = { ...taskRowOf(wire), agent: before.agent };
+      return {
+        ...request,
+        body: {
+          title: await sealTitle(sealing.seal, row, body.title),
+          input: await sealInput(sealing.seal, row, body.input),
+          previous: await sealNote(sealing.seal, { taskId: id, author: 'user', kind: 'event' }, body.previous),
+        },
+      };
+    }
+    case 'edit-schedule': {
+      if (typeof body?.input !== 'string') return request;
+      const schedule = (await raw('list-schedules')).json.result?.find((found: Json) => found['id'] === id);
+      if (schedule === undefined) return request;
+      const row: RowRef = {
+        kind: 'schedule',
+        id,
+        agent: (await openFields(sealing.open, { kind: 'schedule', id }, schedule)).agent,
+      };
+      return {
+        ...request,
+        body: {
+          title: await sealTitle(sealing.seal, row, body.title),
+          input: await sealInput(sealing.seal, row, body.input),
+        },
+      };
     }
     case 'add-note':
       return typeof body === 'string'

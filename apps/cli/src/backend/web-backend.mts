@@ -5,6 +5,7 @@ import {
   neededServerFeature,
   parseWireAddScheduleResult,
   parseWireAddTaskResult,
+  parseWireEditScheduleResult,
   parseWireWakeResult,
   parseWireFailResult,
   parseWireNotes,
@@ -77,6 +78,8 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   stopped: 'run-inbox',
   'set-dirs': 'machine.dirs',
   'configure-task': 'task.configure',
+  'edit-prompt': 'prompt.edit',
+  'edit-schedule': 'prompt.edit',
   'set-catalog': 'machine.catalog',
   'set-usage': 'machine.usage',
 };
@@ -217,6 +220,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       await requireAutoDoneSupport(body);
       return call('configure-task', { id: checkedId, body }, parseWireTask);
     },
+    editPrompt: async (id, body) => call('edit-prompt', { id: taskId(id), body }, parseWireTask),
     async claimTask(id, machine) {
       if (!isSafeMachineName(machine))
         throw new BackendError(`"${machine.slice(0, 40)}" is not a valid machine name: use ${MACHINE_NAME_RULE}`);
@@ -300,6 +304,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     listSchedules: async () => call('list-schedules', {}, (value) => parseWireSchedules(value, listOptions)),
     updateSchedule: async (id, patch) =>
       call('update-schedule', { id: scheduleId(id), body: patch }, parseWireSchedule),
+    editSchedule: async (id, body) => call('edit-schedule', { id: scheduleId(id), body }, parseWireEditScheduleResult),
     removeSchedule: async (id) => send('remove-schedule', { id: scheduleId(id) }),
   };
 }

@@ -409,6 +409,11 @@ export interface Backend {
   // The user's edit of a task's settings. A new directory is pinned to this machine and drops the session; the server
   // refuses with 409 while the task runs or waits.
   configureTask(id: string, change: TaskConfigChange): Promise<Task>;
+  // The user's new title and prompt for a task of theirs that has not started (the board refuses with 409 otherwise); the
+  // old text stays in a note of the user's on the task. Only the user's own CLI calls this, never a run.
+  editPrompt(id: string, edit: PromptEdit): Promise<Task>;
+  // The user's new title and prompt for a schedule: every later run takes them, and the pending card too while it has not started.
+  editSchedule(id: string, edit: PromptEdit): Promise<EditScheduleResult>;
   // Moves a todo task to running for `machine`; undefined when another caller got it first or it is pinned elsewhere.
   claimTask(id: string, machine: string): Promise<Task | undefined>;
   // A `suggestion` (agent comments only) is the reply the user will most likely send next; a `polish` note is a rewritten prompt.
@@ -582,6 +587,36 @@ export interface TaskConfigChange {
   seal?: PatchSealing;
 }
 
+// A new title and prompt, as the user wrote them.
+export interface PromptEdit {
+  title: string;
+  input: string;
+}
+
+// What an edit of a schedule did to its pending card: changed too, already started, or there is none.
+export type PendingCardOutcome = 'updated' | 'started' | 'none';
+export const PENDING_CARD_OUTCOMES: readonly PendingCardOutcome[] = ['updated', 'started', 'none'];
+
+export interface EditScheduleResult {
+  schedule: Schedule;
+  pending: PendingCardOutcome;
+}
+
+// The body of edit-prompt: the title and prompt sealed under the task's row, and `previous` the user's note with the old text.
+export interface WirePromptEdit {
+  title: string;
+  input: string;
+  previous: WireNoteInput;
+}
+
+// The body of edit-schedule: the title and prompt sealed under the schedule.
+export type WireScheduleEdit = Omit<WirePromptEdit, 'previous'>;
+
+export interface WireEditScheduleResult {
+  schedule: WireSchedule;
+  pending: PendingCardOutcome;
+}
+
 // The body of configure-task: the directory is sealed.
 export type WireTaskConfig = Omit<TaskConfigChange, 'seal'>;
 
@@ -705,6 +740,8 @@ export interface WireBackend {
   addTask(draft: WireTaskDraft): Promise<WireAddTaskResult>;
   updateTask(id: string, patch: WireTaskPatch): Promise<WireTask>;
   configureTask(id: string, body: WireTaskConfig): Promise<WireTask>;
+  editPrompt(id: string, body: WirePromptEdit): Promise<WireTask>;
+  editSchedule(id: string, body: WireScheduleEdit): Promise<WireEditScheduleResult>;
   claimTask(id: string, machine: string): Promise<WireTask | undefined>;
   addNote(
     id: string,
@@ -1215,6 +1252,14 @@ export function parseWireAddScheduleResult(value: unknown): WireAddScheduleResul
   return { schedule: parseWireSchedule(obj['schedule']), task: parseWireTask(obj['task']) };
 }
 
+export function parseWireEditScheduleResult(value: unknown): WireEditScheduleResult {
+  const obj = record(value, 'edit-schedule result');
+  return {
+    schedule: parseWireSchedule(obj['schedule']),
+    pending: member(obj, 'pending', 'edit-schedule result', PENDING_CARD_OUTCOMES),
+  };
+}
+
 // The JSON form of a schedule, as the machine API sends it.
 export function serializeSchedule(schedule: WireSchedule): Record<string, unknown> {
   return {
@@ -1655,6 +1700,27 @@ export function parseWireTaskConfig(value: unknown): WireTaskConfig {
     }
   }
   return config;
+}
+
+// Body of edit-prompt: the sealed title and prompt, and the user's note that keeps the old ones.
+export function parseWirePromptEdit(value: unknown): WirePromptEdit {
+  const obj = record(value, 'prompt edit');
+  rejectUnknownKeys(obj, ['title', 'input', 'previous'], 'prompt edit');
+  return {
+    title: sealedField(obj, 'title', 'prompt edit', 'title'),
+    input: sealedField(obj, 'input', 'prompt edit', 'input'),
+    previous: parseWireNoteInput(obj['previous'], 'prompt edit.previous'),
+  };
+}
+
+// Body of edit-schedule: the sealed title and prompt.
+export function parseWireScheduleEdit(value: unknown): WireScheduleEdit {
+  const obj = record(value, 'schedule edit');
+  rejectUnknownKeys(obj, ['title', 'input'], 'schedule edit');
+  return {
+    title: sealedField(obj, 'title', 'schedule edit', 'title'),
+    input: sealedField(obj, 'input', 'schedule edit', 'input'),
+  };
 }
 
 // Body of add-note, pause and fail: a sealed text and, optionally, the sealed start of it. Only add-note takes a suggestion.

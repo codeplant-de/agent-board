@@ -1,8 +1,8 @@
-import { deriveKeys, openFields, sealFields, type RowRef } from '@agent-board/shared';
+import { deriveKeys, openFields, sealFields, textBeforeEdit, type RowRef } from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
 import { sealerFor } from './contexts';
 import { openerFor } from './opening';
-import { InputError, sealEdit, sealScheduleEdit, textBeforeEdit, type EditTarget } from './sealing';
+import { InputError, sealEdit, sealScheduleEdit, type EditTarget } from './sealing';
 
 const keys = await deriveKeys(
   Uint8Array.from({ length: 32 }, (_, i) => i),

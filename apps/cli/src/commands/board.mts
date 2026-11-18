@@ -9,6 +9,7 @@ import type { Config } from '../config/config.mts';
 import { isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import {
   ContractError,
+  defaultTitle,
   formatAnswers,
   formatDuration,
   MAX_WAIT_MS,
@@ -29,7 +30,7 @@ import {
   STATUSES,
   UNREADABLE_TEXT,
 } from '@agent-board/shared';
-import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
+import type { Note, PendingCardOutcome, Priority, Schedule, Status, Task } from '@agent-board/shared';
 import { createStyle } from '../output/style.mts';
 import { SystemError } from '../setup/system.mts';
 import { requireTaskId } from '../task-id.mts';
@@ -626,7 +627,7 @@ export async function schedules(context: Context, args: string[]): Promise<void>
     return;
   }
   if ((action !== 'pause' && action !== 'resume' && action !== 'rm') || id === undefined || extra.length > 0)
-    throw new UsageError('schedules takes nothing, or pause, resume or rm and a schedule id');
+    throw new UsageError('schedules takes nothing, or pause, resume, rm or edit and a schedule id');
   if (action === 'rm') {
     await context.backend.removeSchedule(id);
     return confirm(context, `removed ${id}`);
@@ -634,6 +635,34 @@ export async function schedules(context: Context, args: string[]): Promise<void>
   const schedule = await context.backend.updateSchedule(id, { paused: action === 'pause' });
   if (action === 'pause') return confirm(context, `paused ${id}`);
   confirm(context, `resumed ${id}${schedule.nextRunAt ? `, next run ${localTime(schedule.nextRunAt)}` : ''}`);
+}
+
+const PENDING_CARD_LINES: Record<PendingCardOutcome, string> = {
+  updated: 'The pending card was updated too',
+  started: 'The pending card has already started; the change applies from the next run',
+  none: 'The schedule has no pending card; its next run takes the change',
+};
+
+/**
+ * The user's new prompt for a schedule, and a new title (`undefined` keeps the current one; an empty one is made from the
+ * prompt). Every later run takes them; the pending card too while it has not started. The old text is not kept.
+ */
+export async function editSchedulePrompt(
+  context: Context,
+  id: string,
+  options: { text: string; title?: string | undefined },
+): Promise<void> {
+  const input = options.text.trim();
+  if (input === '') throw new UsageError('the prompt is missing');
+  const current = (await context.backend.listSchedules()).find((schedule) => schedule.id === id);
+  if (current === undefined) throw new UsageError(`no schedule ${plainLine(id).slice(0, 40)}`);
+  if (current.ended) throw new UsageError(`${id} has ended; an ended schedule can only be deleted`);
+  if (current.unreadable.length > 0) throw new UsageError(`${id} cannot be decrypted here, so it is not edited here`);
+  const title = options.title === undefined ? current.title : options.title.trim() || defaultTitle(input);
+  if (title === current.title && input === current.input)
+    return context.print(`${id} already has this title and prompt`);
+  const { pending } = await context.backend.editSchedule(id, { title, input });
+  confirm(context, `${id} prompt updated. ${PENDING_CARD_LINES[pending]}.`);
 }
 
 // The question goes to stderr, so a JSON document on stdout stays alone.
