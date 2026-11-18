@@ -352,14 +352,14 @@ The page marks a directory that its machine's list does not cover as "not listed
 
 `board dirs` keeps this machine's list of directories workers may run in. It is the `dirs` key of `config.json` (see [Config](setup.md#config)).
 
-| Command                               | Effect                                                                                                 |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `board dirs`                          | Lists the directories with their settings, marks a missing one, and says whether the list is enforced. |
-| `board dirs add [path]`               | Lists the real path of the current directory or of `path`.                                             |
-| `board dirs add --from-config`        | Lists the directories that `defaultCwd`, the lanes and `repos` already route to.                       |
-| `board dirs rm [path]`                | Unlists one, and says which of repo, default and lane go with the entry.                               |
-| `board dirs set <key> <value> [path]` | Changes one setting of a listed directory.                                                             |
-| `board dirs unset <key> [path]`       | Removes one setting.                                                                                   |
+| Command                               | Effect                                                                                                                                                       |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `board dirs`                          | Lists the directories with their settings, marks a missing one, and says whether the list is enforced.                                                       |
+| `board dirs add [path]`               | Lists the real path of the current directory or of `path`, and sets its `repo` from a GitHub checkout's remote, also when re-added (`--no-repo` skips that). |
+| `board dirs add --from-config`        | Lists the directories that `defaultCwd`, the lanes and `repos` already route to.                                                                             |
+| `board dirs rm [path]`                | Unlists one, and says which of repo, default and lane go with the entry.                                                                                     |
+| `board dirs set <key> <value> [path]` | Changes one setting of a listed directory.                                                                                                                   |
+| `board dirs unset <key> [path]`       | Removes one setting.                                                                                                                                         |
 
 Without `path` the current directory is meant. The settings:
 

@@ -533,6 +533,8 @@ An object keyed by path, where `~/` works. Each value holds the directory's sett
 
 Manage it with `board dirs add`, `rm`, `set`, `unset` and `list`, which rewrite only this key.
 
+`board dirs add` sets `repo` itself when the directory is the top level of a git checkout (not a subdirectory, not a linked worktree) whose remote is a GitHub repository. The remote is the one of the current branch's upstream, else `origin`; only `git@github.com:`, `https://github.com/` and `ssh://git@github.com/` URLs count. It sets nothing, and says why, when another entry has that repo or `repos` maps it to a different path. `--no-repo` skips it. Adding a listed directory again sets or corrects its `repo` the same way and keeps its other settings; when git gives no repo, an existing `repo` stays and `add` says it could not confirm it. The remote is read on the machine and `repo` is never sent to the board.
+
 | Setting   | Meaning                                                                                                                                                |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `label`   | A short name the New task form shows with the path. 1 to 64 characters, no control characters, no space around it. The only setting the board is sent. |

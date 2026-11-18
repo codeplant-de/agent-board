@@ -235,7 +235,7 @@ A task without a directory of its own starts in the first of these that applies:
 2. its lane's `cwd`,
 3. `defaultCwd`.
 
-Each of the three can also come from the `dirs` list. A directory with `repo` is that repository's checkout, one with `lane` is that lane's `cwd`, and the one with `default` is `defaultCwd`. A setting in `dirs` wins over the matching key.
+Each of the three can also come from the `dirs` list. A directory with `repo` is that repository's checkout, one with `lane` is that lane's `cwd`, and the one with `default` is `defaultCwd`. A setting in `dirs` wins over the matching key. `board dirs add` sets `repo` for a directory that is the top level of a GitHub checkout, so the checkouts you list serve the PRs of their repository without a `repos` entry.
 
 The directory matters beyond the files. Claude Code loads a checkout's `.claude/settings*.json` only when it starts there, and that is where a project's tokens and endpoints usually live. The task's `workdir` is set to the start directory.
 

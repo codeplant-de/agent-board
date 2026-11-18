@@ -163,7 +163,7 @@ export function dirKeyPath(key: string): string | undefined {
   return isSafeWorkdir(expanded) ? resolve(expanded) : undefined;
 }
 
-const REPO_PATTERN = /^[^/\s]+\/[^/\s]+$/;
+export const REPO_PATTERN = /^[^/\s]+\/[^/\s]+$/;
 
 /** What is wrong with `value` as the setting `key` of a directory, or undefined when it is fine. `lanes` are the names the config has. */
 export function dirSettingProblem(key: DirSetting, value: unknown, lanes: readonly string[]): string | undefined {

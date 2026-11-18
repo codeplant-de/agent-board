@@ -975,9 +975,17 @@ relative to the current directory.
 
 `add` refuses `/` and a path that is not a directory, warns about the home
 directory (it allows everything below it), and notes when a parent is already
-listed. `add --from-config` lists the directories the config already routes to:
-`defaultCwd`, every lane `cwd` and every `repos` checkout that exists, skipping
-those a listed directory covers and never listing `/` or the home directory.
+listed. When the directory is the top level of a git checkout (not a
+subdirectory, not a linked worktree) whose remote is a GitHub repository, `add`
+also sets its `repo` from the remote of the upstream of the current branch, else
+`origin`; it leaves `repo` unset, with a note, when another entry has that repo
+or `repos` maps it to another path, and `--no-repo` skips this. Adding a listed
+directory again sets or corrects its `repo` the same way (and keeps every other
+setting); when git gives no repo it leaves an existing `repo` alone and says it
+could not confirm it, and `--no-repo` leaves `repo` as it is. `add
+--from-config` lists the directories the config already routes to: `defaultCwd`,
+every lane `cwd` and every `repos` checkout that exists, skipping those a listed
+directory covers and never listing `/` or the home directory.
 
 `rm` asks the board for open tasks and schedules of this machine that run in the
 directory and in no other listed one, and refuses while there are any, and when
@@ -1013,6 +1021,7 @@ Arguments:
 
 Options:
   --from-config  add: list the directories the config already routes to
+  --no-repo      add: do not set the repo of a GitHub checkout
   --force        rm: remove although work of this machine still runs there, or
                  the board cannot be checked
   --dry-run      read everything, print every write instead of doing it
@@ -1023,6 +1032,7 @@ Examples:
   board dirs add
   board dirs add ~/workspace/agent-board
   board dirs add --from-config
+  board dirs add --no-repo ~/workspace/scratch
   board dirs rm ~/workspace/old
   board dirs rm --force ~/workspace/gone
   board dirs set label Board

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
@@ -773,4 +774,199 @@ test('rm says which of repo, default and lane go with the entry, and nothing for
   assert.ok(!said(run).includes('note:'));
   await run.go(['dirs', 'rm', '--force', '/srv/c', '--dry-run']);
   assert.match(said(run), /DRY unlist \/srv\/c[^\n]*\nnote: it no longer has its repo o\/n/);
+});
+
+// A real git checkout under the fixture whose `origin` is `url`.
+function checkout(fx: Fixture, name: string, url?: string): string {
+  const path = fx.make(name);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: path, stdio: 'ignore' });
+  if (url !== undefined) execFileSync('git', ['remote', 'add', 'origin', url], { cwd: path, stdio: 'ignore' });
+  return path;
+}
+
+const entryOf = (fx: Fixture, path: string): unknown => (fx.config()['dirs'] as Record<string, unknown>)[path];
+
+test('add sets repo of a GitHub checkout, and only of its top level', async (context) => {
+  const fx = fixture(context, {});
+  const app = checkout(fx, 'app', 'git@github.com:acme/app.git');
+  const sub = fx.make('app/sub');
+  const run = runner(fx);
+  await run.go(['dirs', 'add', app]);
+  assert.deepEqual(entryOf(fx, app), { repo: 'acme/app' });
+  assert.match(said(run), new RegExp(`set repo of ${app}: acme/app`));
+  await runner(fx).go(['dirs', 'add', sub]);
+  assert.deepEqual(entryOf(fx, sub), {}, 'a subdirectory has no repo');
+  const other = checkout(fx, 'other', 'git@gitlab.com:acme/other.git');
+  await runner(fx).go(['dirs', 'add', other]);
+  assert.deepEqual(entryOf(fx, other), {});
+  const bare = checkout(fx, 'bare');
+  await runner(fx).go(['dirs', 'add', bare]);
+  assert.deepEqual(entryOf(fx, bare), {});
+});
+
+test('add skips a linked worktree, and --no-repo skips any checkout', async (context) => {
+  const fx = fixture(context, {});
+  const app = checkout(fx, 'app', 'https://github.com/acme/app');
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@example.com',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'x',
+    ],
+    { cwd: app, stdio: 'ignore' },
+  );
+  const worktree = join(fx.root, 'wt');
+  execFileSync('git', ['worktree', 'add', '-q', worktree], { cwd: app, stdio: 'ignore' });
+  await runner(fx).go(['dirs', 'add', worktree]);
+  assert.deepEqual(entryOf(fx, worktree), {});
+  const run = runner(fx);
+  await run.go(['dirs', 'add', '--no-repo', app]);
+  assert.deepEqual(entryOf(fx, app), {});
+  assert.doesNotMatch(said(run), /set repo/);
+  await assert.rejects(runner(fx).go(['dirs', 'rm', '--no-repo', app]), /--no-repo belongs to add/);
+});
+
+test('add leaves repo unset, with a note, when another entry or repos has it', async (context) => {
+  const fx = fixture(context, {});
+  const first = checkout(fx, 'first', 'git@github.com:acme/app.git');
+  const second = checkout(fx, 'second', 'git@github.com:acme/app.git');
+  await runner(fx).go(['dirs', 'add', first]);
+  const run = runner(fx);
+  await run.go(['dirs', 'add', second]);
+  assert.deepEqual(entryOf(fx, second), {});
+  assert.match(said(run), new RegExp(`note: repo acme/app not set: ${first} has it already`));
+
+  const fx2 = fixture(context, { repos: { 'acme/app': '/srv/elsewhere' } });
+  const third = checkout(fx2, 'third', 'git@github.com:acme/app.git');
+  const run2 = runner(fx2);
+  await run2.go(['dirs', 'add', third]);
+  assert.deepEqual(entryOf(fx2, third), {});
+  assert.match(said(run2), /note: repo acme\/app not set: repos maps it to \/srv\/elsewhere/);
+
+  const fx3 = fixture(context, {});
+  const same = checkout(fx3, 'same', 'git@github.com:acme/app.git');
+  writeFileSync(fx3.configFile, JSON.stringify({ machine: 'here', defaultCwd: fx3.home, repos: { 'acme/app': same } }));
+  await runner(fx3).go(['dirs', 'add', same]);
+  assert.deepEqual(entryOf(fx3, same), { repo: 'acme/app' }, 'repos naming this very directory is no conflict');
+});
+
+test('re-adding a listed directory sets or corrects its repo and keeps its other settings', async (context) => {
+  const fx = fixture(context, {});
+  const app = checkout(fx, 'app', 'git@github.com:acme/app.git');
+  await runner(fx).go(['dirs', 'add', '--no-repo', app]);
+  await runner(fx).go(['dirs', 'set', 'label', 'App', app]);
+  await runner(fx).go(['dirs', 'set', 'default', 'true', app]);
+  const noRepo = runner(fx);
+  await noRepo.go(['dirs', 'add', '--no-repo', app]);
+  assert.match(said(noRepo), /already listed/);
+  assert.deepEqual(entryOf(fx, app), { label: 'App', default: true });
+
+  const dry = runner(fx);
+  await dry.go(['--dry-run', 'dirs', 'add', app]);
+  assert.match(said(dry), /would set repo of .*: acme\/app/);
+  assert.deepEqual(entryOf(fx, app), { label: 'App', default: true });
+
+  const set = runner(fx);
+  await set.go(['dirs', 'add', app]);
+  assert.match(said(set), new RegExp(`set repo of ${app}: acme/app`));
+  assert.deepEqual(entryOf(fx, app), { label: 'App', default: true, repo: 'acme/app' });
+
+  const same = runner(fx);
+  await same.go(['dirs', 'add', app]);
+  assert.match(said(same), /already listed/);
+  assert.doesNotMatch(said(same), /set repo|changed repo/);
+
+  await runner(fx).go(['dirs', 'set', 'repo', 'old/name', app]);
+  const changedDry = runner(fx);
+  await changedDry.go(['--dry-run', 'dirs', 'add', app]);
+  assert.match(said(changedDry), /would change repo of .*: old\/name \u2192 acme\/app/);
+  const changed = runner(fx);
+  await changed.go(['dirs', 'add', app]);
+  assert.match(said(changed), new RegExp(`changed repo of ${app}: old/name \u2192 acme/app`));
+  assert.deepEqual(entryOf(fx, app), { label: 'App', default: true, repo: 'acme/app' });
+});
+
+test('re-adding keeps the entry and says why when another entry or repos has the repo', async (context) => {
+  const fx = fixture(context, {});
+  const first = checkout(fx, 'first', 'git@github.com:acme/app.git');
+  const second = checkout(fx, 'second', 'git@github.com:acme/app.git');
+  await runner(fx).go(['dirs', 'add', first]);
+  await runner(fx).go(['dirs', 'add', second]);
+  const run = runner(fx);
+  await run.go(['dirs', 'add', second]);
+  assert.deepEqual(entryOf(fx, second), {});
+  assert.match(said(run), new RegExp(`note: repo acme/app not set: ${first} has it already`));
+
+  const fx2 = fixture(context, { repos: { 'acme/app': '/srv/elsewhere' } });
+  const third = checkout(fx2, 'third', 'git@github.com:acme/app.git');
+  await runner(fx2).go(['dirs', 'add', third]);
+  const run2 = runner(fx2);
+  await run2.go(['dirs', 'add', third]);
+  assert.deepEqual(entryOf(fx2, third), {});
+  assert.match(said(run2), /repos maps it to \/srv\/elsewhere/);
+});
+
+test('re-adding with no repo from git keeps an existing repo and says it was not confirmed', async (context) => {
+  const fx = fixture(context, {});
+  const other = checkout(fx, 'other', 'git@gitlab.com:acme/other.git');
+  await runner(fx).go(['dirs', 'add', other]);
+  await runner(fx).go(['dirs', 'set', 'repo', 'acme/kept', other]);
+  const run = runner(fx);
+  await run.go(['dirs', 'add', other]);
+  assert.deepEqual(entryOf(fx, other), { repo: 'acme/kept' });
+  assert.match(said(run), /note: could not confirm repo acme\/kept/);
+  assert.match(said(run), /already listed/);
+
+  const plain = fx.make('plain');
+  const quiet = runner(fx);
+  await quiet.go(['dirs', 'add', plain]);
+  await quiet.go(['dirs', 'add', plain]);
+  assert.doesNotMatch(said(quiet), /could not confirm/);
+});
+
+test('add --dry-run says what it would set and writes nothing', async (context) => {
+  const fx = fixture(context, {});
+  const app = checkout(fx, 'app', 'git@github.com:acme/app.git');
+  const run = runner(fx);
+  await run.go(['--dry-run', 'dirs', 'add', app]);
+  assert.match(said(run), /would set repo of .*: acme\/app/);
+  assert.equal(fx.config()['dirs'], undefined);
+});
+
+test('add --from-config sets repo of each checkout it lists, once per repo, and --no-repo skips them', async (context) => {
+  const fx = fixture(context, {});
+  const one = checkout(fx, 'one', 'git@github.com:acme/one.git');
+  const twin = checkout(fx, 'twin', 'git@github.com:acme/one.git');
+  const lane = checkout(fx, 'lane', 'git@github.com:acme/lane.git');
+  const config = {
+    machine: 'here',
+    defaultCwd: fx.home,
+    lanes: { reviews: { skills: ['/review-pr'], slots: 1, cwd: lane }, general: { skills: ['*'], slots: 1 } },
+    repos: { 'acme/one': one, 'acme/twin': twin },
+  };
+  writeFileSync(fx.configFile, JSON.stringify(config));
+  const run = runner(fx);
+  await run.go(['dirs', 'add', '--from-config']);
+  assert.deepEqual(entryOf(fx, one), { repo: 'acme/one' });
+  assert.deepEqual(entryOf(fx, lane), { repo: 'acme/lane' });
+  assert.deepEqual(entryOf(fx, twin), {}, 'the second checkout of one repo gets none');
+  assert.match(said(run), new RegExp(`note: repo acme/one not set: ${one} has it already`));
+
+  const none = fixture(context, {});
+  const solo = checkout(none, 'solo', 'git@github.com:acme/solo.git');
+  writeFileSync(
+    none.configFile,
+    JSON.stringify({ machine: 'here', defaultCwd: none.home, repos: { 'acme/solo': solo } }),
+  );
+  await runner(none).go(['dirs', 'add', '--from-config', '--no-repo']);
+  assert.deepEqual(entryOf(none, solo), {});
 });
