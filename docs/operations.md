@@ -48,12 +48,15 @@ The cluster side lives in the separate, private `codeplant-de/cloud-infra` repos
 | `DATABASE_URL`     | Postgres, as a superuser or as the schema owner with CREATEROLE. Used only at start to create the app role and run migrations, then closed. |
 | `APP_DATABASE_URL` | The same database as `board_app`, the unprivileged role that serves every request. See below.                                               |
 | `CLI_VERSION`      | The newest CLI release, `x.y.z`. See below.                                                                                                 |
+| `GIT_SHA`          | The commit the image was built from. See below.                                                                                             |
 | `PORT`             | Default 4000.                                                                                                                               |
 | `BACKFILL_OWNER`   | Only for the first start on a database from before boards were separated per user: the username that owns the existing tasks.               |
 
 **`APP_DATABASE_URL`.** The role must be `board_app`, with no superuser and no BYPASSRLS. On start the backend creates it with this URL's password, or resets the password. It refuses to start if the role is privileged.
 
 **`CLI_VERSION`.** The machine API advertises it as `cli` in its `version` answer. The backend image sets it from `apps/cli/package.json` at build time. Unset, or not `x.y.z`, means unknown: the server advertises nothing and shows no machine as outdated.
+
+**`GIT_SHA`.** The settings page shows it at the bottom as the server's revision. CI builds both images with the commit it built (`--build-arg GIT_SHA`): the backend image sets the variable, the web image bakes the commit into the bundle as its own revision. The two images roll out separately, so the page shows both. Unset, or not a hex commit, shows as unknown.
 
 **`BACKFILL_OWNER`.** The migration stops with an error naming this variable when rows exist and it is unset. A fresh database does not need it, and it is ignored afterwards.
 

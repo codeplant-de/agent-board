@@ -18,6 +18,7 @@ export const testConfig: Config = {
   backfillOwner: null,
   auth: { login: false, user: 'jascha' },
   cliVersion: null,
+  revision: null,
 };
 
 /** A board with sign-in on: passkeys, no identity provider unless a test adds one. */

@@ -136,6 +136,7 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
           queryFn: async ({ signal }) => parseMe(await client.me.query(undefined, { signal })),
         }),
     },
+    revision: raw.revision,
     auth: {
       config: raw.auth.config,
     },

@@ -181,3 +181,14 @@ describe('SAML', () => {
     ).toThrow('cannot be read');
   });
 });
+
+describe('GIT_SHA', () => {
+  const noLogin = { NO_LOGIN_USER: 'jascha' };
+  it('is the commit, lower-cased', () => {
+    expect(load({ ...noLogin, GIT_SHA: ` ${'A1'.repeat(20)} ` }).revision).toBe('a1'.repeat(20));
+  });
+
+  it.each(['', 'main', 'abc', 'g'.repeat(40), 'a'.repeat(41)])('is unknown for %j', (value) => {
+    expect(load({ ...noLogin, GIT_SHA: value }).revision).toBeNull();
+  });
+});

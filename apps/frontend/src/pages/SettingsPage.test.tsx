@@ -31,6 +31,7 @@ const stored = vi.hoisted(() => ({ current: null as unknown }));
 const authConfig = vi.hoisted(() => ({
   current: { login: false } as { login: false } | { login: true; passkeys: boolean },
 }));
+const revision = vi.hoisted(() => ({ current: null as string | null }));
 const logout = vi.hoisted(() => vi.fn(async () => undefined));
 const lock = vi.hoisted(() => vi.fn(async () => undefined));
 
@@ -74,6 +75,7 @@ vi.mock('../lib/trpc', () => ({
         queryFn: async () => ({ username: 'jascha', keyId: (stored.current as KeySetup).keyId }),
       }),
     },
+    revision: { queryOptions: () => ({ queryKey: ['revision'], queryFn: async () => revision.current }) },
     keys: {
       get: { queryOptions: () => ({ queryKey: ['keys'], queryFn: async () => stored.current }) },
       replaceSlots: { mutationOptions: () => ({ mutationFn: async () => null }) },
@@ -134,6 +136,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   authConfig.current = { login: false };
+  revision.current = null;
   logout.mockClear();
   lock.mockClear();
   issue.mockClear();
@@ -432,5 +435,20 @@ describe('your data', () => {
     await userEvent.click(await screen.findByRole('button', { name: /Delete account/ }));
     expect(await screen.findByText('1 task')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete everything' })).toBeDisabled();
+  });
+});
+
+describe('revision', () => {
+  it('shows the server commit short, with the full one on hover, and the web build as unknown without one', async () => {
+    revision.current = 'a1b2c3d4'.repeat(5);
+    renderPage();
+    const footer = screen.getByTestId('revision');
+    await waitFor(() => expect(within(footer).getByTitle('a1b2c3d4'.repeat(5))).toHaveTextContent(/^a1b2c3d$/));
+    expect(footer).toHaveTextContent('Web unknown · Server a1b2c3d');
+  });
+
+  it('says unknown for a server built without a commit', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('revision')).toHaveTextContent('Server unknown'));
   });
 });

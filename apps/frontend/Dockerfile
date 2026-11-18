@@ -29,7 +29,9 @@ COPY tsconfig.base.json ./
 COPY packages/shared packages/shared
 COPY apps/backend/src apps/backend/src
 COPY apps/frontend apps/frontend
-RUN pnpm --filter @agent-board/frontend build
+# The commit, shown at the bottom of the settings page; CI passes it, empty means unknown.
+ARG GIT_SHA=
+RUN VITE_GIT_SHA="$GIT_SHA" pnpm --filter @agent-board/frontend build
 
 ########################################
 # Runtime: static SPA + reverse proxy to the backend service
