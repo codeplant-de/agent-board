@@ -308,6 +308,7 @@ export async function openSchedule(keys: Keys, wire: WireSchedule): Promise<Sche
     id,
     priority: isPriority(wire.priority) ? wire.priority : 'normal',
     machine: shownName(wire.machine),
+    requestedLane: shownName(wire.requestedLane),
     ...shownRule(wire),
     remaining: remainingOk ? wire.remaining : null,
     everyMs: everyOk ? wire.everyMs : null,

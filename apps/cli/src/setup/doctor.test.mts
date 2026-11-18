@@ -202,6 +202,29 @@ test('a dirs setting over a different old path is a warning that says the settin
   assert.match(warned[0]?.hint ?? '', /the directory setting is the one that counts/);
 });
 
+test('a lane that still has skills is a warning that says to set default instead, and the config still loads', async () => {
+  const text =
+    '{"machine": "box", "lanes": {"reviews": {"skills": ["review-pr"], "slots": 2}, "general": {"skills": ["*"]}}}';
+  const results = await runChecks(machine({ ...GOOD, [`${CONFIG_DIR}/config.json`]: { text } }));
+  const config = results.filter((result) => result.name === 'config.json');
+  assert.deepEqual(
+    config.map((result) => [result.level, result.message]),
+    [
+      ['ok', 'machine box'],
+      [
+        'warn',
+        'lanes.reviews.skills is ignored: a task\'s lane is set with --lane, and the lane for every other task is the one marked "default": true',
+      ],
+      [
+        'warn',
+        'lanes.general.skills is ignored: a task\'s lane is set with --lane, and the lane for every other task is the one marked "default": true',
+      ],
+    ],
+  );
+  assert.match(config[1]?.hint ?? '', /set "default": true/);
+  assert.equal(hasFailure(results), false);
+});
+
 test('on a system that is neither Linux nor macOS the worker checks are left out and one line says so', async () => {
   const results = await runChecks(
     machine(GOOD, { platform: 'freebsd', whichInUnits: () => undefined, exists: (path) => path in GOOD }),
@@ -540,7 +563,7 @@ test('the dirs list is counted, and a listed directory that is gone or a route n
   const files = withConfig({
     machine: 'box',
     defaultCwd: '/work/app/sub',
-    lanes: { general: { skills: ['*'], cwd: '/work/lane' } },
+    lanes: { general: { default: true, cwd: '/work/lane' } },
     repos: { 'a/b': '/work/repo', 'a/c': '/work/appx' },
     dirs: { '/work/app': {}, '/work/gone': {} },
   });
@@ -898,7 +921,7 @@ test('on macOS checkouts under the protected folders are warned about', async ()
     defaultCwd: `${MAC_HOME}/code`,
     dirs: { [`${MAC_HOME}/Documents/work`]: {}, [`${MAC_HOME}/Library/Mobile Documents/x`]: {} },
     repos: { 'acme/app': `${MAC_HOME}/Downloads/app` },
-    lanes: { desk: { skills: ['*'], slots: 1, cwd: `${MAC_HOME}/Desktop` } },
+    lanes: { desk: { default: true, slots: 1, cwd: `${MAC_HOME}/Desktop` } },
   };
   const results = await runChecks(mac(agentFiles(), config));
   const folders = results.filter((result) => result.name === 'folders');

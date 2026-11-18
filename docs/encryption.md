@@ -7,7 +7,7 @@ Board content is end-to-end encrypted. The server stores and returns ciphertext 
 The operator of the server and database sees:
 
 - ids, statuses, priorities and positions
-- the model a task names
+- the model and the lane a task names
 - machine and lane names, session ids and usernames
 - timestamps, activity timing and schedule rules
 - the state of each of a task's pull requests (open, merged or closed), without which PR it is
@@ -56,7 +56,7 @@ The operator can read, swap, replay and forge anything in the database and in AP
 - In `pr`, `watches` and in a polish note, `<id>` and `<taskId>` are the task the agent runs. The sealed text of a polish note is `{"target", "title", "prompt"}`, where `target` is the task it polishes.
 - The three machine documents are one JSON document each:
   - `machine.dirs` is `{"dirs":[{"path":…,"label":…}]}`, with `label` only when the directory has one.
-  - `machine.catalog` is `{"claude":…,"models":[…],"skills":[…],"dirs":{…}}`.
+  - `machine.catalog` is `{"claude":…,"models":[…],"skills":[…],"dirs":{…},"lanes":[…]}`, with `lanes` only when the machine has some: the names of its lanes.
   - `machine.usage` is `{"limits":…,"windows":{…},"reached":[…],"held":[…],"open":[…]}`.
 - `agents.shared` is `{"version":…,"agents":{"<name>":{…}}}`, see [The agents on the board](#the-agents-on-the-board). Its `<version>` is the clear version the server keeps beside it, and the document says the same version inside.
 
@@ -119,7 +119,7 @@ The server keeps the same order for an honest board:
 - a closed task, or one that is not in Backlog or Needs me
 - a polish task that is not the task's child
 
-**Editing a prompt.** `tasks.edit` and `schedules.edit` are the same kind of act without an agent behind it: the user rewrites a prompt in the browser, or with `board task set prompt` and `board schedules edit` on a machine. The bindings are the ones in the table. A task's new title and prompt are sealed for its own row, and the prompt for the agent the row names. `tasks.edit` also stores a `user` event note with the old text. It refuses a task an agent created, a proposal, an occurrence of a schedule, a closed task, one outside Todo and Backlog, and one a worker ever claimed. `schedules.edit` stores the schedule's ciphertext as it is, and copies it into the pending card, which has the same binding. An occurrence is refused because its sealed values are bound to the schedule: an edit of one card could be replayed as the schedule's prompt for every later run, as with a polish. The CLI seals the same way, outside a board run only (both commands are refused inside one), and the machine API takes the commands `edit-prompt` and `edit-schedule`. `edit-prompt` is the only place where the machine API accepts a `user` note: `add-note` still refuses that author. The server cannot tell the user's CLI from a process that holds the machine's token, so keeping a run's agent out of it is the CLI's refusal, not the server's (an agent that reads the data key can seal as any creator, as listed under [What the server can still do](#what-the-server-can-still-do)). The server checks state and stores ciphertext; it never writes a prompt.
+**Editing a prompt.** `tasks.edit` and `schedules.update` are the same kind of act without an agent behind it: the user rewrites a prompt in the browser, or with `board task set prompt` and `board schedules edit` on a machine. The bindings are the ones in the table. A task's new title and prompt are sealed for its own row, and the prompt for the agent the row names. `tasks.edit` also stores a `user` event note with the old text. It refuses a task an agent created, a proposal, an occurrence of a schedule, a closed task, one outside Todo and Backlog, and one a worker ever claimed. `schedules.update` (the browser's Edit schedule, which sets every property of a schedule, not only the text) stores the schedule's ciphertext as it is, and copies it into the pending card, which has the same binding. The browser seals the title, prompt, directory and agent together under the schedule, since a new agent changes the context of the title and prompt; the machine API's `edit-schedule` keeps the agent when it takes only a title and prompt, and with `settings` (the CLI's `board schedules edit` with a setting flag) seals all four together under the new agent, as the browser does. An occurrence is refused because its sealed values are bound to the schedule: an edit of one card could be replayed as the schedule's prompt for every later run, as with a polish. The CLI seals the same way, outside a board run only (both commands are refused inside one), and the machine API takes the commands `edit-prompt` and `edit-schedule`. `edit-prompt` is the only place where the machine API accepts a `user` note: `add-note` still refuses that author. The server cannot tell the user's CLI from a process that holds the machine's token, so keeping a run's agent out of it is the CLI's refusal, not the server's (an agent that reads the data key can seal as any creator, as listed under [What the server can still do](#what-the-server-can-still-do)). The server checks state and stores ciphertext; it never writes a prompt.
 
 ### Dropped or swapped agent
 
@@ -295,7 +295,7 @@ Each machine sends the board three sealed documents: its directory list, its cat
 | Document          | What it holds                                                                                       | Used for                                      | Blind index of                 | Index in `version` |
 | ----------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------ | ------------------ |
 | `machine.dirs`    | the listed directories that exist, each with its label                                              | the New task form's Working directory field   | `dirs:<machine>:<document>`    | `dirsIndex`        |
-| `machine.catalog` | the skills and models `claude` reports on the machine                                               | completing `/skill` and offering models       | `catalog:<machine>:<document>` | `catalogIndex`     |
+| `machine.catalog` | the skills and models `claude` reports on the machine, and the names of its lanes                   | completing `/skill` and offering models       | `catalog:<machine>:<document>` | `catalogIndex`     |
 | `machine.usage`   | the usage limits, the last readings, and the ids of Todo tasks the machine held back or could serve | a badge on a task card and a line in Settings | `usage:<machine>:<document>`   | `usageIndex`       |
 
 **The directory list.** `board dirs` keeps the list that is enforced in the machine's own `config.json`. The copy is for the form to offer (see [Scheduling](usage.md#scheduling)).
@@ -309,7 +309,7 @@ Each machine sends the board three sealed documents: its directory list, its cat
 **The catalogue.** The CLI asks `claude` on the machine which skills and models it has (see [Skills and models on the board](workers.md#skills-and-models-on-the-board)).
 
 - Everything in it is text from a program's output on the user's machine. It can come from a plugin or a checkout the user does not control. So the CLI cleans it before sealing: one line, no control characters, cut to a length.
-- A reader checks it again with `parseMachineCatalog`. A skill name is letters, digits and `_ . : -`. A model name passes `isModelName`. A path is a safe absolute one. An entry that fails is dropped and the rest opens. A list over its cap makes the document unreadable.
+- A reader checks it again with `parseMachineCatalog`. A skill name is letters, digits and `_ . : -`. A model name passes `isModelName`. A lane name passes `isSafeLane`, and there are at most 20. A path is a safe absolute one. An entry that fails is dropped and the rest opens. A list over its cap makes the document unreadable.
 - The browser shows it as plain text. Picking a skill or a model puts text in a field the user then reviews and seals as their own.
 
 **The usage status.** At the end of a dispatch tick the CLI seals its `usageLimits`, its last usage readings and the task ids (see [Usage limits](workers.md#usage-limits)).
@@ -449,7 +449,7 @@ The data key is read from `AGENT_BOARD_DATA_KEY`. It is never printed or put int
 The server relays what the user does, and the user's actions are not signed. A hostile server, or a stolen database login, can therefore:
 
 - decide **when** a task starts, resumes, re-runs, is paused or closed
-- decide **on which of the user's machines** it runs (any machine that holds a token) and **in which lane**
+- decide **on which of the user's machines** it runs (any machine that holds a token) and **in which lane**, by dropping or changing the lane a task asks for (`requestedLane`)
 - change a task's priority or position
 - choose the model of any run: a review of untrusted PR text on a weaker model, or every task on the most expensive one
 - withhold, delay or reorder anything, notes and answers included

@@ -37,11 +37,11 @@ The checksum catches a broken or partial download. It is not a signature. Anyone
 
 It writes three files into `~/.config/agent-board`:
 
-| File          | Contents                                                                                                                |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `web.json`    | The board's URL.                                                                                                        |
-| `env`         | The token and the data key, mode 600. The CLI refuses a file with any other mode.                                       |
-| `config.json` | Written only if missing, from `apps/cli/config.example.json`: one `general` lane and no `repos`. See [Config](#config). |
+| File          | Contents                                                                                                                              |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `web.json`    | The board's URL.                                                                                                                      |
+| `env`         | The token and the data key, mode 600. The CLI refuses a file with any other mode.                                                     |
+| `config.json` | Written only if missing, from `apps/cli/config.example.json`: one `general` lane, the default, and no `repos`. See [Config](#config). |
 
 `env` holds two lines, `AGENT_BOARD_TOKEN=abm_...` and `AGENT_BOARD_DATA_KEY=abk1_...`. The data key is the same on every machine and never leaves your machines and browser. The CLI refuses to start without it, with a different key than the board's, or before the board has a key. `board doctor` checks all three.
 
@@ -218,6 +218,44 @@ Update the server first; against an older one `push` and `rm --board` refuse wit
 - A machine on an older CLI ignores the board's agents and runs only its own. A task that names a board agent waits in Todo for a machine that has it.
 - The first apply on a machine moves its own definition of each board name (an `agents/` file or a `config.json` entry) to `agents.replaced/`. Push one agent at a time and check `board agents` on the other machines.
 - Read the accepted limit under [Agents on the board](workers.md#agents-on-the-board) before you push: a run that reads the data key can push a definition every machine applies.
+
+### Changing every setting of a schedule (CLI 0.30.0)
+
+A new server feature, `schedule.update`. `board schedules edit` takes the settings of the Edit schedule dialog as flags: `--priority`, `--model`, `--lane`, `--auto-done`, `--agent`, `--dir`, the repeat (`--every`, `--cron`, `--after` with `--delay`), the first run (`--in`, `--at`), the end (`--times`, `--until`, `--forever`) and `--max-concurrent` (see [Managing schedules](usage.md#repeating-schedules)). The text became optional. Nothing changes in the database, and no version number is raised.
+
+`--lane` also needs `task.lane`. Update the server first. A server without `schedule.update` makes a setting flag refuse with "the board server does not support changing every setting of a schedule yet; update the board server", and nothing else changes: a title or prompt alone still works with `prompt.edit`. A machine on an older CLI has no such flags and runs everything as before.
+
+### A task names its lane
+
+A new server feature, `task.lane`. A task and a schedule take a lane, and a task no longer gets its lane from the skill its prompt starts with. `board schedule --lane`, `board add --lane` and `board task <task> set lane` set it, and the New task form, the task page and the schedule editor have a **Lane** select (see [Lane](usage.md#lane)). A migration adds a `requested_lane` column to `task` and `schedule`. Nothing changes for the tasks you have, and no version number is raised.
+
+Update the server first. A server without `task.lane` makes the flags refuse with "the board server does not support choosing the lane a task runs in yet; update the board server", and nothing else changes.
+
+**Rewrite `lanes` in `config.json`.** Mark one lane `"default": true` and drop the `skills` lists: the lane for every task that names none, or one this machine lacks. Before:
+
+```json
+"lanes": {
+  "reviews": { "skills": ["review-pr"], "slots": 2 },
+  "general": { "skills": ["*"], "slots": 3 }
+}
+```
+
+After:
+
+```json
+"lanes": {
+  "reviews": { "slots": 2 },
+  "general": { "slots": 3, "default": true }
+}
+```
+
+A config with `skills` keeps loading for this release: the `skills` lists are ignored, and the lane whose list had `*` is the default (the first lane when none had it). `board doctor` and the dispatch log warn about each one. A config that marks no lane takes the first lane as the default, and one with two marked is refused. To move the mark, run `board config set lanes.general.default false`, then `board config set lanes.reviews.default true`.
+
+**Pass `--lane` from scripts.** A task that used to land in `reviews` because its prompt began with `/review-pr` now lands in the default lane, since a prompt picks nothing. Add `--lane reviews` to the `board schedule` calls of your scripts. The `github-reviews.sh` example does, with `BOARD_LANE` to change the name; run `board example github-reviews.sh` for the new copy. A task that is already on the board has no lane either, and `board task <task> set lane reviews` sets one.
+
+- A machine on an older CLI ignores the field: its tasks keep their lane from their skill, and its config keeps working.
+- A newer CLI on a server without `task.lane` runs every task in the default lane of the machine.
+- Restart the listener after updating (see [Restarting the listener](#restarting-the-listener)); it keeps the old dispatch code until then.
 
 ### Schedule rules and limits (CLI 0.29.0)
 
@@ -456,19 +494,19 @@ Machine settings are in `~/.config/agent-board/config.json`. `AGENT_BOARD_CONFIG
 
 `board config` shows the file. `board config set maxRunHours 4` changes one key and `board config edit` the whole file, both with a check before anything is written (see [Using the board](usage.md)). A text editor works as well.
 
-| Key                 | Meaning                                                                                                            | Default                            |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
-| `machine`           | This machine's name on the board. It must match the name of its token. See [Machine names](#machine-names).        | The host name up to the first dot. |
-| `lanes`             | Lane name to `{ "skills": [...], "slots": n, "cwd": "<path>" }`. `cwd` is optional. See [Lanes](workers.md#lanes). | `general` with `*` and 3 slots.    |
-| `defaultCwd`        | Where a task without a directory of its own runs.                                                                  | `~`                                |
-| `repos`             | `owner/name` to local checkout. A task whose prompt names a PR of that repository runs there.                      | None.                              |
-| `pauseAfterMinutes` | A borrowed run is paused for its lane's own work only after this long.                                             | 5                                  |
-| `inactivityMinutes` | A run with no tool call for this long is stopped.                                                                  | 15                                 |
-| `maxRunHours`       | A run is stopped after this long, however busy.                                                                    | 6                                  |
-| `autoUpdate`        | What the dispatcher does when this CLI is behind the board. See [`autoUpdate`](#autoupdate).                       | `incompatible`                     |
-| `usageLimits`       | Holds Todo tasks back while Claude usage is high. See [usageLimits](#usagelimits).                                 | Absent.                            |
-| `agents`            | Named agents a task can run as. See [agents](#agents).                                                             | Absent.                            |
-| `dirs`              | The directories workers may run in. See [dirs](#dirs).                                                             | Absent.                            |
+| Key                 | Meaning                                                                                                                                                                                          | Default                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| `machine`           | This machine's name on the board. It must match the name of its token. See [Machine names](#machine-names).                                                                                      | The host name up to the first dot. |
+| `lanes`             | Lane name to `{ "slots": n, "cwd": "<path>", "default": true }`. `cwd` is optional, and at most one lane is marked `default` (without a mark, the first lane is). See [Lanes](workers.md#lanes). | `general`, 3 slots, the default.   |
+| `defaultCwd`        | Where a task without a directory of its own runs.                                                                                                                                                | `~`                                |
+| `repos`             | `owner/name` to local checkout. A task whose prompt names a PR of that repository runs there.                                                                                                    | None.                              |
+| `pauseAfterMinutes` | A borrowed run is paused for its lane's own work only after this long.                                                                                                                           | 5                                  |
+| `inactivityMinutes` | A run with no tool call for this long is stopped.                                                                                                                                                | 15                                 |
+| `maxRunHours`       | A run is stopped after this long, however busy.                                                                                                                                                  | 6                                  |
+| `autoUpdate`        | What the dispatcher does when this CLI is behind the board. See [`autoUpdate`](#autoupdate).                                                                                                     | `incompatible`                     |
+| `usageLimits`       | Holds Todo tasks back while Claude usage is high. See [usageLimits](#usagelimits).                                                                                                               | Absent.                            |
+| `agents`            | Named agents a task can run as. See [agents](#agents).                                                                                                                                           | Absent.                            |
+| `dirs`              | The directories workers may run in. See [dirs](#dirs).                                                                                                                                           | Absent.                            |
 
 An `intake` key is ignored with a warning, and `board doctor` fails on it. See [The built-in intake is removed](#the-built-in-intake-is-removed-cli-0130).
 
@@ -504,6 +542,8 @@ An object keyed by path, where `~/` works. Each value holds the directory's sett
 ```
 
 Manage it with `board dirs add`, `rm`, `set`, `unset` and `list`, which rewrite only this key.
+
+`board dirs add` sets `repo` itself when the directory is the top level of a git checkout (not a subdirectory, not a linked worktree) whose remote is a GitHub repository. The remote is the one of the current branch's upstream, else `origin`; only `git@github.com:`, `https://github.com/` and `ssh://git@github.com/` URLs count. It sets nothing, and says why, when another entry has that repo or `repos` maps it to a different path. `--no-repo` skips it. Adding a listed directory again sets or corrects its `repo` the same way and keeps its other settings; when git gives no repo, an existing `repo` stays and `add` says it could not confirm it. The remote is read on the machine and `repo` is never sent to the board.
 
 | Setting   | Meaning                                                                                                                                                |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |

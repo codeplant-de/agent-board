@@ -1,6 +1,8 @@
 import {
+  AGENT_NAME_RULE,
   ContractError,
   defaultTitle,
+  isAgentName,
   newTaskId,
   previousText,
   QuestionError,
@@ -35,6 +37,8 @@ export interface NewTask {
   priority?: Priority;
   /** An alias or full name; absent is claude's default. */
   model?: string;
+  /** The lane of the machine that runs it; absent is the machine's default lane. */
+  lane?: string;
   /** The agent may move the task, or each occurrence of a repeat, to Done itself; absent is off. */
   autoDone?: boolean;
   when?: CreateInput['when'];
@@ -77,6 +81,7 @@ export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInpu
     ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
     ...(task.priority === undefined ? {} : { priority: task.priority }),
     ...(task.model === undefined ? {} : { model: task.model }),
+    ...(task.lane === undefined ? {} : { lane: task.lane }),
     ...(task.autoDone === undefined ? {} : { autoDone: task.autoDone }),
     ...(task.when === undefined ? {} : { when: task.when }),
     ...(task.parentId === undefined ? {} : { parentId: task.parentId }),
@@ -213,6 +218,8 @@ export interface ConfigureTarget {
 /** The settings to change; absent leaves one alone. A null model is claude's default, a null place is no directory and no machine. */
 export interface Configuration {
   model?: string | null;
+  /** A lane name, or null for the machine's default lane. */
+  lane?: string | null;
   autoDone?: boolean;
   place?: { machine: string; workdir: string } | null;
 }
@@ -222,7 +229,7 @@ export async function sealConfigure(
   keys: Keys,
   options: { task: ConfigureTarget } & Configuration,
 ): Promise<RouterInputs['tasks']['configure']> {
-  const { task, model, autoDone, place } = options;
+  const { task, model, lane, autoDone, place } = options;
   const row: RowRef = {
     kind: 'task',
     id: task.id,
@@ -233,6 +240,7 @@ export async function sealConfigure(
   return {
     id: task.id,
     ...(model === undefined ? {} : { model }),
+    ...(lane === undefined ? {} : { lane }),
     ...(autoDone === undefined ? {} : { autoDone }),
     ...(place === undefined
       ? {}
@@ -381,26 +389,37 @@ export async function sealEdit(
   };
 }
 
-/** The schedule whose prompt is edited, as the page shows it. */
-export interface ScheduleEditTarget {
-  id: string;
-  agent: string | null;
-  unreadable: UnreadableField[];
-}
+type ScheduleUpdateInput = RouterInputs['schedules']['update'];
 
-/** A schedule's new title and prompt, sealed under the schedule as the user's; its pending card takes the same text. */
-export async function sealScheduleEdit(
-  keys: Keys,
-  options: { schedule: ScheduleEditTarget; title: string; input: string },
-): Promise<RouterInputs['schedules']['edit']> {
-  const { schedule } = options;
-  if (schedule.unreadable.length > 0) throw new InputError('This schedule cannot be read, so it is not edited here.');
-  const fields = editedFields(options.title, options.input);
-  const row: RowRef = { kind: 'schedule', id: schedule.id, agent: schedule.agent };
-  const seal = sealerFor(keys);
+/** The schedule's settings as the Edit schedule form holds them: everything the board stores clear is as `schedules.update` takes it. */
+export type ScheduleUpdate = Omit<ScheduleUpdateInput, 'title' | 'input' | 'agent' | 'place'> & {
+  title: string;
+  input: string;
+  /** The name of the agent of the machine's config.json; null for none. */
+  agent: string | null;
+  /** The machine and the directory on it; null for neither. */
+  place: { machine: string; workdir: string } | null;
+  /** The unreadable fields of the schedule as the page shows it: an edit would overwrite them unseen. */
+  unreadable: UnreadableField[];
+};
+
+/**
+ * Editing a schedule is the user's sealed act: the title, prompt, directory and agent sealed together under the schedule, since
+ * the title and prompt are bound to the agent and must be sealed again whenever it changes. The pending card copies them.
+ */
+export async function sealScheduleUpdate(keys: Keys, update: ScheduleUpdate): Promise<ScheduleUpdateInput> {
+  const { title, input, agent, place, unreadable, ...clear } = update;
+  if (unreadable.length > 0) throw new InputError('This schedule cannot be read, so it is not edited here.');
+  const fields = editedFields(title, input);
+  const agentName = agent?.trim() ?? '';
+  if (agentName !== '' && !isAgentName(agentName)) throw new InputError(`The agent name must be ${AGENT_NAME_RULE}.`);
+  const row: RowRef = { kind: 'schedule', id: update.id, agent: agentName === '' ? null : agentName };
+  const sealed = await checked(() => sealFields(sealerFor(keys), row, { ...fields, workdir: place?.workdir }));
   return {
-    id: schedule.id,
-    title: await checked(() => sealTitle(seal, row, fields.title)),
-    input: await checked(() => sealInput(seal, row, fields.input)),
+    ...clear,
+    title: sealed.title,
+    input: sealed.input,
+    ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
+    place: place === null || sealed.workdir === undefined ? null : { machine: place.machine, workdir: sealed.workdir },
   };
 }

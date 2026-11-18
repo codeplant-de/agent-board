@@ -54,6 +54,21 @@ test('a catalogue document parses back to the catalogue', () => {
   assert.deepEqual(parseMachineCatalog({}), { models: [], skills: [], dirs: {} });
 });
 
+test('the lane names of a machine are part of the document, in order, and are checked when it is read', () => {
+  const withLanes = { ...CATALOG, lanes: ['general', 'reviews'] };
+  assert.ok(machineCatalogJson(withLanes).endsWith(',"lanes":["general","reviews"]}'));
+  assert.deepEqual(parseMachineCatalog(JSON.parse(machineCatalogJson(withLanes))), withLanes);
+  assert.equal(machineCatalogJson({ ...CATALOG, lanes: [] }), machineCatalogJson(CATALOG), 'none leaves the key out');
+  assert.deepEqual(parseMachineCatalog({ lanes: ['ok', 'not a lane', 3, 'x;y', 'fine-2'] })?.lanes, ['ok', 'fine-2']);
+  assert.equal(parseMachineCatalog({ lanes: 'general' }), undefined);
+  assert.equal(parseMachineCatalog({ lanes: Array.from({ length: 21 }, (_, i) => `l${i}`) }), undefined);
+  assert.equal(
+    catalogProblem({ ...CATALOG, lanes: Array.from({ length: 21 }, (_, i) => `l${i}`) }),
+    'more than 20 lanes',
+  );
+  assert.match(catalogProblem({ ...CATALOG, lanes: ['not a lane'] }) ?? '', /not of its shape/);
+});
+
 test('a document of another shape or over a cap is unreadable', () => {
   for (const bad of [
     null,

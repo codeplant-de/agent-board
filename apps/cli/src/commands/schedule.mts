@@ -1,4 +1,4 @@
-// `board schedule [--priority p] [--model m] [--auto-done] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
+// `board schedule [--priority p] [--model m] [--lane l] [--auto-done] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
 // [--times <n> | --until <time>] [--polish] [--new] [--key <k> [--version <v>]] <prompt...>`: a task from a prompt, written as you
 // would type it into Claude Code, bound to this machine and the directory it was scheduled from. Before it creates one, a quick
 // Haiku call checks whether an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead.
@@ -15,7 +15,9 @@ import {
   isModelName,
   isPriority,
   isRecord,
+  isSafeLane,
   isSafeTaskId,
+  MACHINE_NAME_RULE,
   MAX_SCHEDULE_CONCURRENT,
   MAX_SCHEDULE_CRONS,
   MODEL_ALIASES,
@@ -35,6 +37,8 @@ export interface ScheduleArgs {
   priority: Priority | undefined;
   // The Claude model of the run; undefined is claude's default.
   model: string | undefined;
+  // The lane the task asks for; undefined is the default lane of the machine that takes it.
+  lane: string | undefined;
   // The agent may move the task to Done itself; false leaves it unset.
   autoDone: boolean;
   // The agent of this machine's config.json the task runs as; undefined runs it by its creator's rules.
@@ -71,6 +75,7 @@ export interface ScheduleArgs {
 export interface ScheduleFlags {
   priority?: string;
   model?: string;
+  lane?: string;
   autoDone?: boolean;
   agent?: string;
   title?: string;
@@ -101,6 +106,10 @@ export function addScheduleOptions(command: Command): Command {
     .option(
       '--model <model>',
       `claude model alias or full name, e.g. ${MODEL_ALIASES.map((alias) => alias.value).join(', ')} (default: claude's default)`,
+    )
+    .option(
+      '--lane <name>',
+      "the lane of the machine that runs the task (default: that machine's default lane; a machine without the lane uses its default one)",
     )
     .option(
       '--auto-done',
@@ -192,6 +201,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     prompt: '',
     priority: undefined,
     model: undefined,
+    lane: undefined,
     autoDone: flags.autoDone === true,
     agent: undefined,
     title: flags.title?.trim(),
@@ -211,23 +221,10 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     key: undefined,
     version: undefined,
   };
-  if (flags.priority !== undefined) {
-    if (!isPriority(flags.priority))
-      throw new UsageError(`unknown priority "${flags.priority.slice(0, 20)}"; use one of ${PRIORITIES.join(', ')}`);
-    result.priority = flags.priority;
-  }
-  if (flags.model !== undefined) {
-    if (!isModelName(flags.model))
-      throw new UsageError(
-        `"${flags.model.slice(0, 70)}" is not a model name (a claude alias such as opus, or a full name such as claude-opus-5-5)`,
-      );
-    result.model = flags.model;
-  }
-  if (flags.agent !== undefined) {
-    if (!isAgentName(flags.agent))
-      throw new UsageError(`"${flags.agent.slice(0, 40)}" is not an agent name (${AGENT_NAME_RULE})`);
-    result.agent = flags.agent;
-  }
+  if (flags.priority !== undefined) result.priority = checkedPriority(flags.priority);
+  if (flags.model !== undefined) result.model = checkedModel(flags.model);
+  if (flags.lane !== undefined) result.lane = checkedLane(flags.lane);
+  if (flags.agent !== undefined) result.agent = checkedAgent(flags.agent);
   if (hold && backlog) throw new UsageError('--hold and --backlog cannot be combined');
   if (delay !== undefined && at !== undefined) throw new UsageError('--in and --at cannot be combined');
   if ((delay !== undefined || at !== undefined) && (hold || backlog))
@@ -243,6 +240,46 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
   if (times !== undefined && until !== undefined) throw new UsageError('--times and --until cannot be combined');
   result.notBefore = parseStart({ delay, at }, now);
   if (every !== undefined) result.every = parseInterval(every);
+  checkCrons(crons);
+  if (flags.after !== undefined) result.after = checkedAfter(flags.after);
+  if (flags.delay !== undefined) result.delay = parseInterval(flags.delay);
+  if (flags.maxConcurrent !== undefined) result.maxConcurrent = parseMaxConcurrent(flags.maxConcurrent);
+  if (times !== undefined) result.times = parseTimes(times);
+  result.until = parseStart({ at: until }, now);
+  if (result.until !== undefined && result.until.getTime() < (result.notBefore ?? now).getTime())
+    throw new UsageError('--until is before the first run');
+  parseKeyFlags(flags, result, { hold, backlog });
+  result.prompt = words.join(' ').trim();
+  if (result.prompt === '') throw new UsageError('a prompt is required');
+  return result;
+}
+
+export function checkedPriority(value: string): Priority {
+  if (!isPriority(value))
+    throw new UsageError(`unknown priority "${value.slice(0, 20)}"; use one of ${PRIORITIES.join(', ')}`);
+  return value;
+}
+
+export function checkedModel(value: string): string {
+  if (!isModelName(value))
+    throw new UsageError(
+      `"${value.slice(0, 70)}" is not a model name (a claude alias such as opus, or a full name such as claude-opus-5-5)`,
+    );
+  return value;
+}
+
+export function checkedLane(value: string): string {
+  if (!isSafeLane(value)) throw new UsageError(`"${value.slice(0, 40)}" is not a lane name (${MACHINE_NAME_RULE})`);
+  return value;
+}
+
+export function checkedAgent(value: string): string {
+  if (!isAgentName(value)) throw new UsageError(`"${value.slice(0, 40)}" is not an agent name (${AGENT_NAME_RULE})`);
+  return value;
+}
+
+// The `--cron` expressions (trimmed): each of 5 fields, at most the schedule's limit, none twice.
+export function checkCrons(crons: string[]): void {
   for (const expression of crons)
     if (expression.split(/\s+/).length !== 5)
       throw new UsageError(
@@ -253,32 +290,28 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
   const normalized = crons.map((expression) => expression.split(/\s+/).join(' '));
   const repeated = normalized.find((expression, index) => normalized.indexOf(expression) !== index);
   if (repeated !== undefined) throw new UsageError(`--cron "${repeated.slice(0, 60)}" is given twice`);
-  if (flags.after !== undefined) {
-    if (!/^[A-Za-z0-9_-]{3,64}$/.test(flags.after))
-      throw new UsageError(`--after takes the id of a schedule or the start of it; got "${flags.after.slice(0, 40)}"`);
-    result.after = flags.after;
-  }
-  if (flags.delay !== undefined) result.delay = parseInterval(flags.delay);
-  if (flags.maxConcurrent !== undefined) {
-    const limit = Number(flags.maxConcurrent);
-    if (!/^[1-9]\d{0,2}$/.test(flags.maxConcurrent) || limit > MAX_SCHEDULE_CONCURRENT)
-      throw new UsageError(
-        `--max-concurrent takes a whole number from 1 to ${MAX_SCHEDULE_CONCURRENT}; got "${flags.maxConcurrent.slice(0, 20)}"`,
-      );
-    result.maxConcurrent = limit;
-  }
-  if (times !== undefined) {
-    if (!/^[1-9]\d{0,5}$/.test(times))
-      throw new UsageError(`--times takes a positive whole number; got "${times.slice(0, 20)}"`);
-    result.times = Number(times);
-  }
-  result.until = parseStart({ at: until }, now);
-  if (result.until !== undefined && result.until.getTime() < (result.notBefore ?? now).getTime())
-    throw new UsageError('--until is before the first run');
-  parseKeyFlags(flags, result, { hold, backlog });
-  result.prompt = words.join(' ').trim();
-  if (result.prompt === '') throw new UsageError('a prompt is required');
-  return result;
+}
+
+// The schedule `--after` names, as typed: an id or the start of one.
+export function checkedAfter(value: string): string {
+  if (!/^[A-Za-z0-9_-]{3,64}$/.test(value))
+    throw new UsageError(`--after takes the id of a schedule or the start of it; got "${value.slice(0, 40)}"`);
+  return value;
+}
+
+export function parseMaxConcurrent(text: string): number {
+  const limit = Number(text);
+  if (!/^[1-9]\d{0,2}$/.test(text) || limit > MAX_SCHEDULE_CONCURRENT)
+    throw new UsageError(
+      `--max-concurrent takes a whole number from 1 to ${MAX_SCHEDULE_CONCURRENT}; got "${text.slice(0, 20)}"`,
+    );
+  return limit;
+}
+
+export function parseTimes(text: string): number {
+  if (!/^[1-9]\d{0,5}$/.test(text))
+    throw new UsageError(`--times takes a positive whole number; got "${text.slice(0, 20)}"`);
+  return Number(text);
 }
 
 function checkedText(flag: string, value: string, max: number): string {
@@ -323,7 +356,7 @@ export function parseStart(
   }
 }
 
-function parseInterval(text: string): number {
+export function parseInterval(text: string): number {
   try {
     return parseDuration(text);
   } catch (error) {
@@ -465,6 +498,7 @@ async function addRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<{ sche
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.lane === undefined ? {} : { lane: args.lane }),
     ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
     ...ruleDraft(deps, args),
@@ -532,6 +566,7 @@ async function scheduleKeyed(deps: ScheduleDeps, args: ScheduleArgs, key: string
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.lane === undefined ? {} : { lane: args.lane }),
     ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
     ...(args.version === undefined ? {} : { head: args.version }),
@@ -631,6 +666,10 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
           deps.print(
             `${existing.id} keeps its model (${existing.model ?? 'the default'}); --model applies only to a new task`,
           );
+        if (args.lane !== undefined && args.lane !== existing.requestedLane)
+          deps.print(
+            `${existing.id} keeps its lane (${existing.requestedLane ?? 'the default'}); --lane applies only to a new task: use \`board task ${existing.id} set lane ${args.lane}\``,
+          );
         if (args.autoDone && !existing.autoDone)
           deps.print(
             `${existing.id} keeps its auto-done setting (off); --auto-done applies only to a new task: use \`board task ${existing.id} set auto-done on\``,
@@ -675,6 +714,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.lane === undefined ? {} : { lane: args.lane }),
     ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
   });

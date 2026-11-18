@@ -12,6 +12,7 @@ import {
   IconPlayerStop,
   IconPlayerTrackNext,
   IconRepeat,
+  IconRoute,
   IconUsers,
   IconSparkles,
 } from '@tabler/icons-react';
@@ -27,7 +28,7 @@ import { PriorityBadge } from './PriorityPicker';
 
 /**
  * What sets a task apart at a glance: its priority (unless normal), an open question, a proposal, a pending
- * resume, a start time still ahead, the end of a wait, a repeating schedule, a wait for a free slot of it, where it runs, a hold for usage, and whether its agent may mark it done.
+ * resume, a start time still ahead, the end of a wait, a repeating schedule, a wait for a free slot of it, the lane it asks for, where it runs, a hold for usage, and whether its agent may mark it done.
  */
 export function TaskBadges({
   task,
@@ -164,6 +165,18 @@ export function TaskBadges({
       {task.status === 'todo' && task.next === 'resume' && !task.paused && !task.woken && (
         <Badge size="sm" color="indigo" variant="light" leftSection={<IconPlayerTrackNext size={12} />}>
           Resume
+        </Badge>
+      )}
+      {(task.status === 'todo' || task.status === 'backlog') && task.requestedLane !== null && (
+        <Badge
+          size="sm"
+          color="teal"
+          variant="light"
+          tt="none"
+          leftSection={<IconRoute size={12} />}
+          title="The lane it asks for; a machine without that lane runs it in its default lane"
+        >
+          {task.requestedLane}
         </Badge>
       )}
       {task.status === 'running' && task.machine && (

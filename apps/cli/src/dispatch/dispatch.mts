@@ -48,7 +48,7 @@ import type { CheckResult, WaitCheck, WaitStore } from './waits.mts';
 import { CHECK_TIME_LIMIT_MS, createWaitStore, runCheck, runCommand } from './waits.mts';
 import { createUpdateState, updateStateFile } from '../self/update-state.mts';
 import { cliVersion, releaseVersion } from '../self/version.mts';
-import { getPaths, loadConfig, loadConfigWarnings } from '../config/config.mts';
+import { defaultLane, getPaths, loadConfig, loadConfigWarnings } from '../config/config.mts';
 import { createGitHub } from './github.mts';
 import type { GitHub } from './github.mts';
 import { createPrRefreshState, prRefreshFile, refreshPrStatesIfDue } from './pr-states.mts';
@@ -581,7 +581,7 @@ export async function runDispatch(given: DispatchDeps): Promise<void> {
       const record = files.readRun(taskId);
       return {
         taskId,
-        lane: record?.lane ?? config.lanes[0]?.name ?? 'default',
+        lane: record?.lane ?? defaultLane(config.lanes).name,
         borrowed: record?.borrowed ?? false,
         startedAt: record?.startedAt ?? (await system.startedAt(unitName(taskId))),
         pauseRequested: files.pauseRequestedAt(taskId) !== undefined,
@@ -640,7 +640,7 @@ export async function runDispatch(given: DispatchDeps): Promise<void> {
   const candidates = eligible.filter((task) => !isHeld(task));
   if (held.length > 0) log(`HOLD ${held.length} task(s) below ${lowest}: ${describeReached(reached)}`);
 
-  const ownLaneOf = (task: Task) => ownLane(task, config.lanes);
+  const ownLaneOf = (task: Task): string => ownLane(task, config.lanes).name;
   const started = new Set<string>();
   const tried = new Set<string>();
   // One start at a time, planned again after each: a lost claim hands its slot to the next task.
@@ -652,6 +652,8 @@ export async function runDispatch(given: DispatchDeps): Promise<void> {
     const task = open.find((candidate) => candidate.id === start.taskId);
     if (!task) continue;
     const skill = promptSkill(task.input) ?? 'prompt';
+    const { name: own, missing } = ownLane(task, config.lanes);
+    const fellBack = missing === undefined ? '' : `, lane ${missing} → ${own} (no such lane here)`;
     if ((await backend.claimTask(task.id, config.machine)) === undefined) {
       log(`LOST ${task.id} claimed elsewhere`);
       continue;
@@ -680,8 +682,8 @@ export async function runDispatch(given: DispatchDeps): Promise<void> {
       startedAt: deps.now(),
       pauseRequested: false,
     });
-    log(`STARTED ${task.id} ${skill} lane=${start.lane}${start.borrowed ? ' borrowed' : ''}`);
-    const where = `${start.lane} lane${start.borrowed ? ', borrowed' : ''}, unit ${unitName(task.id)}${pid ? `, pid ${pid}` : ''}`;
+    log(`STARTED ${task.id} ${skill} lane=${start.lane}${start.borrowed ? ' borrowed' : ''}${fellBack}`);
+    const where = `${start.lane} lane${start.borrowed ? ', borrowed' : ''}${fellBack}, unit ${unitName(task.id)}${pid ? `, pid ${pid}` : ''}`;
     await backend
       .addNote(task.id, `${START_MARKER} ${deps.now().toISOString()} (${skill}, ${config.machine}, ${where})`, {
         author: 'system',
@@ -696,7 +698,7 @@ export async function runDispatch(given: DispatchDeps): Promise<void> {
   for (const task of candidates) {
     if (started.has(task.id)) continue;
     const lane = ownLaneOf(task);
-    if (lane !== undefined) waitingOwn.set(lane, (waitingOwn.get(lane) ?? 0) + 1);
+    waitingOwn.set(lane, (waitingOwn.get(lane) ?? 0) + 1);
   }
   const lanes = { lanes: config.lanes, waitingOwn, pauseAfterMinutes: config.pauseAfterMinutes };
   const paused = new Set<string>();

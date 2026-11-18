@@ -2,8 +2,8 @@
   "machine": "laptop",
   "lanes": {
     "general": {
-      "skills": ["*"],
-      "slots": 3
+      "slots": 3,
+      "default": true
     }
   },
   "defaultCwd": "~",

@@ -9,9 +9,9 @@ import type { Config } from '../config/config.mts';
 import { isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import {
   ContractError,
-  defaultTitle,
   formatAnswers,
   formatDuration,
+  MACHINE_NAME_RULE,
   MAX_WAIT_MS,
   parseDuration,
   describeRule,
@@ -19,6 +19,7 @@ import {
   isPriority,
   isPrUrl,
   prUrlIn,
+  isSafeLane,
   isSafeTaskId,
   isSafeWorkdir,
   isStatus,
@@ -30,7 +31,7 @@ import {
   STATUSES,
   UNREADABLE_TEXT,
 } from '@agent-board/shared';
-import type { Note, PendingCardOutcome, Priority, Schedule, Status, Task } from '@agent-board/shared';
+import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
 import { createStyle } from '../output/style.mts';
 import { SystemError } from '../setup/system.mts';
 import { requireTaskId } from '../task-id.mts';
@@ -328,6 +329,7 @@ export interface AddFlags {
   file?: string;
   parent?: string;
   priority?: string;
+  lane?: string;
 }
 
 export function parseAddFlags(flags: AddFlags): {
@@ -335,15 +337,18 @@ export function parseAddFlags(flags: AddFlags): {
   file: string;
   parent: string | undefined;
   priority: Priority | undefined;
+  lane: string | undefined;
 } {
   const title = flags.title?.trim();
-  const { file, parent, priority } = flags;
+  const { file, parent, priority, lane } = flags;
   if (!title) throw new UsageError('--title needs a title');
   if (!file) throw new UsageError('--file is required');
   if (parent !== undefined) requireTaskId(parent, UsageError);
   if (priority !== undefined && !isPriority(priority))
     throw new UsageError(`unknown priority "${priority.slice(0, 20)}"; use one of ${PRIORITIES.join(', ')}`);
-  return { title, file, parent, priority };
+  if (lane !== undefined && !isSafeLane(lane))
+    throw new UsageError(`"${lane.slice(0, 40)}" is not a lane name (${MACHINE_NAME_RULE})`);
+  return { title, file, parent, priority, lane };
 }
 
 /**
@@ -366,7 +371,7 @@ export async function add(
   // `cwd`: the real path of the working directory; `startDir`: AGENT_BOARD_START_DIR, where the run started.
   where: { cwd: string; startDir?: string },
 ): Promise<Task> {
-  const { title, file, parent, priority } = parseAddFlags(flags);
+  const { title, file, parent, priority, lane } = parseAddFlags(flags);
   const workdir = proposalDir(context.config, where);
   // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
   // proposing agent works, on this machine.
@@ -378,6 +383,7 @@ export async function add(
     workdir,
     ...(parent ? { parentId: parent } : {}),
     ...(priority ? { priority } : {}),
+    ...(lane === undefined ? {} : { lane }),
   };
   const { task } = await context.backend.addTask(draft);
   confirm(context, `proposed ${task.id} ${context.taskLink(task.id)}`);
@@ -640,34 +646,6 @@ export async function schedules(context: Context, args: string[]): Promise<void>
   confirm(context, `resumed ${id}${schedule.nextRunAt ? `, next run ${localTime(schedule.nextRunAt)}` : ''}`);
 }
 
-const PENDING_CARD_LINES: Record<PendingCardOutcome, string> = {
-  updated: 'The pending card was updated too',
-  started: 'The pending card has already started; the change applies from the next run',
-  none: 'The schedule has no pending card; its next run takes the change',
-};
-
-/**
- * The user's new prompt for a schedule, and a new title (`undefined` keeps the current one; an empty one is made from the
- * prompt). Every later run takes them; the pending card too while it has not started. The old text is not kept.
- */
-export async function editSchedulePrompt(
-  context: Context,
-  id: string,
-  options: { text: string; title?: string | undefined },
-): Promise<void> {
-  const input = options.text.trim();
-  if (input === '') throw new UsageError('the prompt is missing');
-  const current = (await context.backend.listSchedules()).find((schedule) => schedule.id === id);
-  if (current === undefined) throw new UsageError(`no schedule ${plainLine(id).slice(0, 40)}`);
-  if (current.ended) throw new UsageError(`${id} has ended; an ended schedule can only be deleted`);
-  if (current.unreadable.length > 0) throw new UsageError(`${id} cannot be decrypted here, so it is not edited here`);
-  const title = options.title === undefined ? current.title : options.title.trim() || defaultTitle(input);
-  if (title === current.title && input === current.input)
-    return context.print(`${id} already has this title and prompt`);
-  const { pending } = await context.backend.editSchedule(id, { title, input });
-  confirm(context, `${id} prompt updated. ${PENDING_CARD_LINES[pending]}.`);
-}
-
 // The question goes to stderr, so a JSON document on stdout stays alone.
 async function chooseInTerminal(): Promise<Choice> {
   const terminal = createInterface({ input: process.stdin, output: process.stderr });
@@ -684,7 +662,7 @@ async function chooseInTerminal(): Promise<Choice> {
 }
 
 // A typo fails here, before the board holds a task that no machine could run.
-function requireLocalAgent(config: Pick<Config, 'agents' | 'agentErrors' | 'machine'>, name: string): void {
+export function requireLocalAgent(config: Pick<Config, 'agents' | 'agentErrors' | 'machine'>, name: string): void {
   if (Object.hasOwn(config.agents, name)) return;
   const known = Object.keys(config.agents);
   const broken = Object.hasOwn(config.agentErrors, name) ? ` (${config.agentErrors[name]})` : '';

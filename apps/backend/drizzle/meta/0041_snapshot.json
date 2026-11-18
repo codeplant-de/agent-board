@@ -1,5 +1,5 @@
 {
-  "id": "b9d3efa5-9286-4991-b2bc-17f8b4d62c7d",
+  "id": "2b2a6507-9ed7-45d3-a58c-b81b7419ac2d",
   "prevId": "161b790f-ddca-494d-b894-ae5ab5f51da3",
   "version": "7",
   "dialect": "postgresql",
@@ -490,6 +490,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "requested_lane": {
+          "name": "requested_lane",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "auto_done": {
           "name": "auto_done",
           "type": "boolean",
@@ -705,79 +711,6 @@
       },
       "isRLSEnabled": true
     },
-    "public.shared_agents": {
-      "name": "shared_agents",
-      "schema": "",
-      "columns": {
-        "owner": {
-          "name": "owner",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "current_setting('app.owner', true)"
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "document": {
-          "name": "document",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pushed_at": {
-          "name": "pushed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "shared_agents_owner_app_user_username_fk": {
-          "name": "shared_agents_owner_app_user_username_fk",
-          "tableFrom": "shared_agents",
-          "tableTo": "app_user",
-          "columnsFrom": [
-            "owner"
-          ],
-          "columnsTo": [
-            "username"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {
-        "tenant": {
-          "name": "tenant",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "board_app"
-          ],
-          "using": "owner = (select current_setting('app.owner', true))",
-          "withCheck": "owner = (select current_setting('app.owner', true))"
-        }
-      },
-      "checkConstraints": {
-        "shared_agents_document_sealed": {
-          "name": "shared_agents_document_sealed",
-          "value": "\"shared_agents\".\"document\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
-        },
-        "shared_agents_version_positive": {
-          "name": "shared_agents_version_positive",
-          "value": "\"shared_agents\".\"version\" >= 1"
-        }
-      },
-      "isRLSEnabled": true
-    },
     "public.task_pr": {
       "name": "task_pr",
       "schema": "",
@@ -944,6 +877,12 @@
         },
         "model": {
           "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_lane": {
+          "name": "requested_lane",
           "type": "text",
           "primaryKey": false,
           "notNull": false

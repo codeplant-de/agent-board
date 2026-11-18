@@ -2,7 +2,14 @@
 // board as one sealed document (`machine.catalog`, see sealing.mts) so the browser can complete `/skill` and offer the models.
 // It is advice for what a form offers and is never acted on. Everything in it came from a program's output, so every text is
 // cleaned before it is sent and shape-checked again when it is opened.
-import { hasControlCharacter, isAgentName, isModelName, isSafeWorkdir, isSharedAgentsVersion } from './contract.mts';
+import {
+  hasControlCharacter,
+  isAgentName,
+  isModelName,
+  isSafeLane,
+  isSafeWorkdir,
+  isSharedAgentsVersion,
+} from './contract.mts';
 import { isRecord } from './guards.mts';
 
 export interface CatalogModel {
@@ -29,13 +36,15 @@ export interface CatalogAgents {
 
 /**
  * `skills` are those every probed directory has; `dirs[path]` are the skills only that directory has (a path with none is
- * left out). With one probed directory everything is in `skills`.
+ * left out). With one probed directory everything is in `skills`. `lanes` are the names of the machine's lanes, for the lane
+ * field of the forms; absent from a CLI that predates them.
  */
 export interface MachineCatalog {
   claude?: string;
   models: CatalogModel[];
   skills: CatalogSkill[];
   dirs: Record<string, CatalogSkill[]>;
+  lanes?: string[];
   // Absent from a CLI before shared agents.
   agents?: CatalogAgents;
 }
@@ -44,6 +53,7 @@ export const MAX_CATALOG_MODELS = 50;
 export const MAX_CATALOG_SKILLS = 500;
 export const MAX_CATALOG_DIRS = 200;
 export const MAX_CATALOG_DIR_SKILLS = 200;
+export const MAX_CATALOG_LANES = 20;
 export const MAX_CATALOG_VERSION_CHARS = 64;
 export const MAX_CATALOG_LABEL_CHARS = 64;
 export const MAX_CATALOG_DESCRIPTION_CHARS = 200;
@@ -103,6 +113,10 @@ function parseModel(entry: unknown): CatalogModel | undefined {
   };
 }
 
+function parseLane(entry: unknown): string | undefined {
+  return typeof entry === 'string' && isSafeLane(entry) ? entry : undefined;
+}
+
 // A list of entries `parse` keeps or drops one by one; undefined when it is not a list or has more than `max` entries.
 function parseList<T>(value: unknown, max: number, parse: (entry: unknown) => T | undefined): T[] | undefined {
   if (value === undefined) return [];
@@ -151,6 +165,8 @@ export function parseMachineCatalog(json: unknown): MachineCatalog | undefined {
     if (list === undefined) return undefined;
     if (list.length > 0) dirs[path] = list;
   }
+  const lanes = parseList(json['lanes'], MAX_CATALOG_LANES, parseLane);
+  if (lanes === undefined) return undefined;
   const claude = optionalText(json['claude'], MAX_CATALOG_VERSION_CHARS);
   const agents = parseAgents(json['agents']);
   return {
@@ -158,6 +174,7 @@ export function parseMachineCatalog(json: unknown): MachineCatalog | undefined {
     models,
     skills,
     dirs,
+    ...(lanes.length === 0 ? {} : { lanes }),
     ...(agents === undefined ? {} : { agents }),
   };
 }
@@ -178,6 +195,7 @@ export function machineCatalogJson(catalog: MachineCatalog): string {
     })),
     skills: catalog.skills.map(skill),
     dirs: Object.fromEntries(Object.entries(catalog.dirs).map(([path, list]) => [path, list.map(skill)])),
+    ...(catalog.lanes === undefined || catalog.lanes.length === 0 ? {} : { lanes: catalog.lanes }),
     ...(catalog.agents === undefined
       ? {}
       : {
@@ -198,6 +216,7 @@ export function machineCatalogJson(catalog: MachineCatalog): string {
 export function catalogProblem(catalog: MachineCatalog): string | undefined {
   if (catalog.models.length > MAX_CATALOG_MODELS) return `more than ${MAX_CATALOG_MODELS} models`;
   if (catalog.skills.length > MAX_CATALOG_SKILLS) return `more than ${MAX_CATALOG_SKILLS} skills`;
+  if ((catalog.lanes?.length ?? 0) > MAX_CATALOG_LANES) return `more than ${MAX_CATALOG_LANES} lanes`;
   const paths = Object.keys(catalog.dirs);
   if (paths.length > MAX_CATALOG_DIRS) return `more than ${MAX_CATALOG_DIRS} directories`;
   if (paths.some((path) => (catalog.dirs[path]?.length ?? 0) > MAX_CATALOG_DIR_SKILLS))

@@ -9,6 +9,7 @@ import {
   ConfigError,
   configWarnings,
   getPaths,
+  isIgnoredSkillsWarning,
   isOverrideWarning,
   isSafeMode,
   parseConfig,
@@ -642,7 +643,9 @@ const checkConfig: Check = (deps) => {
               warning,
               isOverrideWarning(warning)
                 ? 'the directory setting is the one that counts: remove the old key, or make both name the same directory'
-                : 'fix or remove the key: the CLI does not read it, so its setting keeps the default',
+                : isIgnoredSkillsWarning(warning)
+                  ? 'set "default": true on the lane every other task should use, then remove the skills lists; pass --lane <name> where a script relied on the skill prefix'
+                  : 'fix or remove the key: the CLI does not read it, so its setting keeps the default',
             ),
       ),
     ];

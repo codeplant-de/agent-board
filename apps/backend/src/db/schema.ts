@@ -112,6 +112,8 @@ export const tasks = pgTable(
     priority: taskPriority('priority').notNull().default('normal'),
     /** The Claude model of its runs (a clear choice, not content); null is claude's default. */
     model: text('model'),
+    /** The lane of a machine the user wants the task to run in (routing, clear like the priority); null is the machine's default lane. */
+    requestedLane: text('requested_lane'),
     /** The agent may move the task to Done itself, when it judges every acceptance criterion met (a clear setting, not content). */
     autoDone: boolean('auto_done').notNull().default(false),
     /** Who made the last status change; null for a task that has not changed status since it was created. */
@@ -217,6 +219,8 @@ export const schedules = pgTable(
     priority: taskPriority('priority').notNull().default('normal'),
     /** The model of every occurrence; null is claude's default. */
     model: text('model'),
+    /** The lane every occurrence asks for; null is the machine's default lane. */
+    requestedLane: text('requested_lane'),
     /** Whether every occurrence lets the agent move it to Done itself. */
     autoDone: boolean('auto_done').notNull().default(false),
     machine: text('machine'),

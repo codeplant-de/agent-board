@@ -5,6 +5,8 @@ import { UsageError } from '../cli.mts';
 import { DIR_SETTINGS, dirKeyPath, dirSettingProblem, expandHome, MAX_DIRS, parseConfig } from '../config/config.mts';
 import type { Config, DirEntry, DirSetting } from '../config/config.mts';
 import { readConfigFile, writeConfigFile } from '../config/config-file.mts';
+import { checkoutRepo } from '../config/checkout-repo.mts';
+import type { GitRunner } from '../config/checkout-repo.mts';
 import { coveringDir, isDirectory, routedDirs, syncDirs, tryRealpath } from '../config/dirs.mts';
 import { plainLine } from '../output/terminal.mts';
 import { errorText } from '../output/text.mts';
@@ -82,6 +84,8 @@ export interface DirsDeps {
   // `rm` asks the board for work, and `add` and `rm` send the list afterwards.
   backend: Pick<Backend, 'listTasks' | 'listSchedules' | 'checkDirs' | 'setDirs'>;
   bold?: (text: string) => string;
+  // How `add` reads a checkout's remote; git itself unless a test passes its own.
+  git?: GitRunner;
 }
 
 // What sending the list needs, which `board config` has as well.
@@ -91,6 +95,8 @@ export type DirsSyncDeps = Pick<DirsDeps, 'configFile' | 'dryRun' | 'print'> & {
 
 export interface DirsAddFlags {
   fromConfig?: boolean;
+  // `--no-repo` is false: leave `repo` unset.
+  repo?: boolean;
 }
 
 export interface DirsRemoveFlags {
@@ -160,10 +166,79 @@ function refusal(path: string, real: string | undefined): string | undefined {
 
 const isHome = (deps: DirsDeps, real: string): boolean => real === (tryRealpath(deps.home) ?? deps.home);
 
+/**
+ * The `repo` a new entry for `real` gets, or a note saying why it gets none. `known` are the entries the list will have;
+ * a repo another entry has, or that `repos` maps to a different path, is not claimed.
+ */
+function repoForNewDir(
+  deps: DirsDeps,
+  config: Config,
+  known: readonly DirEntry[],
+  real: string,
+  flags: DirsAddFlags,
+): { repo?: string; note?: string } {
+  if (flags.repo === false) return {};
+  const repo = checkoutRepo(real, deps.git);
+  if (repo === undefined) return {};
+  const holder = known.find((entry) => entry.repo === repo);
+  if (holder !== undefined) return { note: `repo ${repo} not set: ${plainLine(holder.path)} has it already` };
+  const mapped = config.repos[repo];
+  if (mapped !== undefined && (tryRealpath(mapped) ?? mapped) !== real)
+    return { note: `repo ${repo} not set: repos maps it to ${plainLine(mapped)}` };
+  return { repo };
+}
+
+function repoLine(deps: DirsDeps, real: string, repo: string): string {
+  return `${deps.dryRun ? 'would set' : 'set'} repo of ${plainLine(real)}: ${repo}`;
+}
+
+// Re-adding a listed directory: sets or corrects its `repo` from git; every other setting stays as it is.
+function correctRepo(
+  deps: DirsDeps,
+  config: Config,
+  entries: readonly DirEntry[],
+  listed: DirEntry,
+  real: string,
+  flags: DirsAddFlags,
+): void {
+  const shown = plainLine(real);
+  const detected = flags.repo === false ? undefined : checkoutRepo(real, deps.git);
+  if (flags.repo !== false && detected === undefined && listed.repo !== undefined)
+    deps.print(
+      `note: could not confirm repo ${plainLine(listed.repo)} from git (not the top level of a GitHub checkout?)`,
+    );
+  if (detected === undefined || detected === listed.repo) {
+    deps.print(`${shown} is already listed`);
+    return;
+  }
+  const { repo, note } = repoForNewDir(
+    deps,
+    config,
+    entries.filter((entry) => entry !== listed),
+    real,
+    flags,
+  );
+  if (repo === undefined) {
+    deps.print(`${shown} is already listed`);
+    if (note !== undefined) deps.print(`note: ${note}`);
+    return;
+  }
+  const change = listed.repo === undefined ? `: ${repo}` : `: ${plainLine(listed.repo)} → ${repo}`;
+  const verb = listed.repo === undefined ? 'set' : 'change';
+  if (deps.dryRun) {
+    deps.print(`would ${verb} repo of ${shown}${change}`);
+    return;
+  }
+  changeDirs(deps.configFile, (keys) =>
+    keys.map((entry) => (entry.path === listed.path ? { ...entry, settings: { ...entry.settings, repo } } : entry)),
+  );
+  deps.print(`${verb === 'set' ? 'set' : 'changed'} repo of ${shown}${change}`);
+}
+
 export function dirsAdd(deps: DirsDeps, path: string | undefined, flags: DirsAddFlags = {}): void {
   if (flags.fromConfig) {
     if (path !== undefined) throw new UsageError('--from-config takes no path');
-    return addFromConfig(deps);
+    return addFromConfig(deps, flags);
   }
   const { config } = readDirsFile(deps.configFile);
   const entries = config.dirs ?? [];
@@ -173,24 +248,28 @@ export function dirsAdd(deps: DirsDeps, path: string | undefined, flags: DirsAdd
   if (refused !== undefined || real === undefined) throw new UsageError(refused ?? `${wanted} is not there`);
   const listed = entries.find((entry) => entry.path === real || tryRealpath(entry.path) === real);
   if (listed !== undefined) {
-    deps.print(`${plainLine(real)} is already listed`);
+    correctRepo(deps, config, entries, listed, real, flags);
     return;
   }
   if (entries.length >= MAX_DIRS)
     throw new UsageError(`the list already has ${MAX_DIRS} directories, the most it can hold`);
   const parent = coveringDir(entries, real);
   if (isHome(deps, real)) warn(deps, `${real} is your home directory: listing it allows every directory below it`);
-  write(deps, `list ${real}`, (keys) => [...keys, { key: real, settings: {} }]);
+  const { repo, note } = repoForNewDir(deps, config, entries, real, flags);
+  write(deps, `list ${real}`, (keys) => [...keys, { key: real, settings: repo === undefined ? {} : { repo } }]);
+  if (repo !== undefined && deps.dryRun) deps.print(repoLine(deps, real, repo));
   if (deps.dryRun) return;
   deps.print(`listed ${real}`);
+  if (repo !== undefined) deps.print(repoLine(deps, real, repo));
+  if (note !== undefined) deps.print(`note: ${note}`);
   if (parent !== undefined) deps.print(`note: it was already allowed through ${plainLine(parent.path)}`);
   if (config.dirs === undefined) for (const line of FIRST_ADD_NOTE) deps.print(line);
 }
 
-function addFromConfig(deps: DirsDeps): void {
+function addFromConfig(deps: DirsDeps, flags: DirsAddFlags): void {
   const { config } = readDirsFile(deps.configFile);
   const entries = config.dirs ?? [];
-  const added: string[] = [];
+  const added: { path: string; repo?: string }[] = [];
   const known: DirEntry[] = [...entries];
   for (const { label, path } of routedDirs(config)) {
     const real = tryRealpath(path);
@@ -206,9 +285,12 @@ function addFromConfig(deps: DirsDeps): void {
       if (covering !== undefined) {
         deps.print(`skipped ${shown} (already allowed through ${plainLine(covering.path)})`);
       } else {
-        known.push({ path: real });
-        added.push(real);
+        const { repo, note } = repoForNewDir(deps, config, known, real, flags);
+        known.push(repo === undefined ? { path: real } : { path: real, repo });
+        added.push(repo === undefined ? { path: real } : { path: real, repo });
         deps.print(`${deps.dryRun ? 'would list' : 'listed'} ${shown}${real === path ? '' : ` (${plainLine(real)})`}`);
+        if (repo !== undefined) deps.print(`  ${repoLine(deps, real, repo)}`);
+        if (note !== undefined) deps.print(`  note: ${note}`);
       }
     }
   }
@@ -217,7 +299,10 @@ function addFromConfig(deps: DirsDeps): void {
     throw new UsageError(
       `that would make ${entries.length + added.length} directories, more than the ${MAX_DIRS} the list can hold`,
     );
-  write(deps, `list ${added.length} directories`, (keys) => [...keys, ...added.map((key) => ({ key, settings: {} }))]);
+  write(deps, `list ${added.length} directories`, (keys) => [
+    ...keys,
+    ...added.map(({ path, repo }) => ({ key: path, settings: repo === undefined ? {} : { repo } })),
+  ]);
   if (!deps.dryRun && config.dirs === undefined) for (const line of FIRST_ADD_NOTE) deps.print(line);
 }
 

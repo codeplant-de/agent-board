@@ -14,7 +14,6 @@ import {
   PRIORITIES,
   isSafeWorkdir,
   isStringList,
-  shortSkill,
 } from '@agent-board/shared';
 import type { Priority } from '@agent-board/shared';
 
@@ -52,13 +51,13 @@ export interface BoardAgents {
   files: Record<string, string>;
 }
 
-// Slots of one kind of work on this machine. A lane runs its own skills first (a task's skill is the slash command its
-// prompt starts with) and borrows any other work when it has none; it takes its slot back by pausing borrowed work once
-// its own work waits. "*" owns every skill no other lane names, and prompts without one.
+// Slots of one kind of work on this machine. A lane runs its own work first (the tasks that name it, `requestedLane`) and
+// borrows any other work when it has none; it takes its slot back by pausing borrowed work once its own work waits. The
+// default lane owns the tasks that name no lane, or one this machine does not have.
 export interface Lane {
   name: string;
-  skills: string[];
   slots: number;
+  default: boolean;
   // Where its tasks run when they have no directory of their own and their prompt names no PR of a known repo.
   cwd?: string;
 }
@@ -104,7 +103,7 @@ const HOLD_PRIORITIES: readonly Priority[] = PRIORITIES.filter((priority) => pri
 export interface Config {
   // This machine's name on the board: it claims tasks under it, and a resume runs only on the machine that ran the session.
   machine: string;
-  // In config order. Every skill is in at most one lane, and at most one lane has "*".
+  // In config order; exactly one is the default lane.
   lanes: Lane[];
   // Where a task without a directory of its own runs (one created in the UI).
   defaultCwd: string;
@@ -174,7 +173,7 @@ export function dirKeyPath(key: string): string | undefined {
   return isSafeWorkdir(expanded) ? resolve(expanded) : undefined;
 }
 
-const REPO_PATTERN = /^[^/\s]+\/[^/\s]+$/;
+export const REPO_PATTERN = /^[^/\s]+\/[^/\s]+$/;
 
 /** What is wrong with `value` as the setting `key` of a directory, or undefined when it is fine. `lanes` are the names the config has. */
 export function dirSettingProblem(key: DirSetting, value: unknown, lanes: readonly string[]): string | undefined {
@@ -280,37 +279,51 @@ function parseUsageLimits(raw: unknown): UsageLimits | undefined {
   };
 }
 
-export const DEFAULT_LANES: Lane[] = [{ name: 'general', skills: ['*'], slots: 3 }];
+export const DEFAULT_LANES: Lane[] = [{ name: 'general', slots: 3, default: true }];
+
+/** The lane of `lanes` that owns tasks naming no lane; a config has exactly one. */
+export function defaultLane(lanes: readonly Lane[]): Lane {
+  return lanes.find((lane) => lane.default) ?? lanes[0] ?? DEFAULT_LANES[0]!;
+}
+
+const hasLegacyWildcard = (entry: unknown): boolean =>
+  isRecord(entry) && Array.isArray(entry['skills']) && entry['skills'].includes('*');
+
+// Which lane is the default: the one marked `default`. With none marked, the lane with a legacy "*" in its `skills` is the
+// default, else the first lane, so a config of the earlier release keeps loading and one can move the mark between lanes.
+function defaultLaneName(entries: [string, Record<string, unknown>][]): string {
+  const marked = entries.filter(([, entry]) => entry['default'] === true).map(([name]) => name);
+  if (marked.length > 1)
+    throw new ConfigError(`config: lanes ${marked.join(', ')} are all marked default; exactly one lane is`);
+  if (marked[0] !== undefined) return marked[0];
+  const wildcard = entries.filter(([, entry]) => hasLegacyWildcard(entry)).map(([name]) => name);
+  if (wildcard.length > 1)
+    throw new ConfigError(`config: "*" is in lanes ${wildcard.join(', ')}; mark exactly one lane default instead`);
+  return wildcard[0] ?? entries[0]![0];
+}
 
 function parseLanes(raw: unknown): Lane[] {
   if (raw === undefined) return DEFAULT_LANES;
   if (!isRecord(raw) || Object.keys(raw).length === 0)
     throw new ConfigError('config: lanes must be an object with at least one lane');
-  const owner = new Map<string, string>();
-  return Object.entries(raw).map(([name, entry]): Lane => {
-    const where = `lanes.${name}.`;
+  const entries = Object.entries(raw).map(([name, entry]): [string, Record<string, unknown>] => {
     if (!isSafeMachineName(name))
       throw new ConfigError(`config: lane name "${name.slice(0, 40)}" must be ${MACHINE_NAME_RULE}`);
     if (!isRecord(entry)) throw new ConfigError(`config: lanes.${name} must be an object`);
-    const skills = entry['skills'];
-    if (!isStringList(skills) || skills.length === 0)
-      throw new ConfigError(`config: ${where}skills must be a non-empty list of skill names (or "*")`);
-    for (const skill of skills) {
-      const key = skill === '*' ? '*' : shortSkill(skill.replace(/^\//, ''));
-      const other = owner.get(key);
-      if (other !== undefined)
-        throw new ConfigError(
-          `config: ${key === '*' ? '"*"' : `skill "${skill}"`} is in lanes ${other} and ${name}; it belongs to one lane`,
-        );
-      owner.set(key, name);
-    }
+    if ('default' in entry && typeof entry['default'] !== 'boolean')
+      throw new ConfigError(`config: lanes.${name}.default must be true or false`);
+    return [name, entry];
+  });
+  const defaultName = defaultLaneName(entries);
+  return entries.map(([name, entry]): Lane => {
+    const where = `lanes.${name}.`;
     const cwd = entry['cwd'];
     if (cwd !== undefined && (typeof cwd !== 'string' || !expandHome(cwd).startsWith('/')))
       throw new ConfigError(`config: ${where}cwd must be an absolute path (or ~/...)`);
     return {
       name,
-      skills: skills.map((skill) => (skill === '*' ? '*' : shortSkill(skill.replace(/^\//, '')))),
       slots: positiveInt(entry, 'slots', where, 1),
+      default: name === defaultName,
       ...(cwd === undefined ? {} : { cwd: expandHome(cwd) }),
     };
   });
@@ -665,7 +678,7 @@ export const TOP_KEYS = [
   'dirs',
   'usageLimits',
 ] as const;
-const LANE_KEYS = ['skills', 'slots', 'cwd'] as const;
+const LANE_KEYS = ['slots', 'cwd', 'default', 'skills'] as const;
 
 function editDistance(a: string, b: string): number {
   let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
@@ -708,6 +721,12 @@ function unknownKeys(obj: Record<string, unknown>, known: readonly string[], whe
  */
 export const REMOVED_INTAKE =
   "the built-in intake was removed: run the github-reviews script (board example github-reviews.sh) with your own timer; move intake's lists to agents.<name>";
+
+/** What a lane that still has a `skills` key is told: a task names its lane itself now, and one lane is the default. */
+export const IGNORED_LANE_SKILLS = (lane: string): string =>
+  `lanes.${lane.slice(0, 40)}.skills is ignored: a task's lane is set with --lane, and the lane for every other task is the one marked "default": true`;
+
+export const isIgnoredSkillsWarning = (warning: string): boolean => warning.includes('.skills is ignored');
 
 const OVERRIDDEN = ' is overridden by ';
 
@@ -752,7 +771,10 @@ export function configWarnings(raw: unknown): string[] {
   const lanes = raw['lanes'];
   if (isRecord(lanes))
     for (const [name, entry] of Object.entries(lanes))
-      if (isRecord(entry)) warnings.push(...unknownKeys(entry, LANE_KEYS, `lanes.${name.slice(0, 40)}.`));
+      if (isRecord(entry)) {
+        warnings.push(...unknownKeys(entry, LANE_KEYS, `lanes.${name.slice(0, 40)}.`));
+        if ('skills' in entry) warnings.push(IGNORED_LANE_SKILLS(name));
+      }
   const usageLimits = raw['usageLimits'];
   if (isRecord(usageLimits)) warnings.push(...unknownKeys(usageLimits, USAGE_LIMIT_KEYS, 'usageLimits.'));
   if ('intake' in raw) warnings.push(REMOVED_INTAKE);

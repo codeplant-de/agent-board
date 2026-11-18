@@ -126,6 +126,11 @@ export interface Task {
   // The Claude model the runs use (`claude --model`): an alias or a full id; null is claude's default. A clear value from the
   // server, so a worker shape-checks it with `isModelName` again before it reaches argv.
   model: string | null;
+  // The lane the user asked for, by name; null for the default lane of whichever machine takes it. Routing, like the
+  // priority: clear, not sealed. A machine without a lane of that name runs the task in its default lane, and the worker
+  // shape-checks it with `isSafeLane` again. Not the lane it runs in (`lane`). Absent from a server without `task.lane`,
+  // which reads as null.
+  requestedLane: string | null;
   // The agent may move the task to Done itself (`update-task` with a run and status done) once it judges every acceptance
   // criterion met; the user can change it in any status. Absent from a server without `task.auto-done`, which reads as false.
   autoDone: boolean;
@@ -273,6 +278,8 @@ export interface TaskDraft {
   priority?: Priority;
   // Default: claude's default model.
   model?: string;
+  // The lane to run in (`isSafeLane`). Default: the default lane of the machine that takes it.
+  lane?: string;
   // Default: false.
   autoDone?: boolean;
   // Unique per board: a second add-task with the same key returns the first task instead of a new one. The CLI sends the
@@ -336,6 +343,8 @@ export interface Schedule {
   priority: Priority;
   // The model of every occurrence; null is claude's default.
   model: string | null;
+  // The lane every occurrence asks for (`Task.requestedLane`); null for the default lane.
+  requestedLane: string | null;
   // Whether every occurrence lets the agent move it to Done itself.
   autoDone: boolean;
   // Pins the occurrences to a machine and the directory they run in there.
@@ -379,6 +388,8 @@ export interface ScheduleDraft {
   priority?: Priority;
   // Default: claude's default model.
   model?: string;
+  // The lane every occurrence asks for (`isSafeLane`). Default: the default lane.
+  lane?: string;
   // Default: false.
   autoDone?: boolean;
   machine?: string;
@@ -445,8 +456,9 @@ export interface Backend {
   // The user's new title and prompt for a task of theirs that has not started (the board refuses with 409 otherwise); the
   // old text stays in a note of the user's on the task. Only the user's own CLI calls this, never a run.
   editPrompt(id: string, edit: PromptEdit): Promise<Task>;
-  // The user's new title and prompt for a schedule: every later run takes them, and the pending card too while it has not started.
-  editSchedule(id: string, edit: PromptEdit): Promise<EditScheduleResult>;
+  // The user's new title and prompt for a schedule, and with `settings` every other setting too: every later run takes them,
+  // and the pending card too while it has not started.
+  editSchedule(id: string, edit: ScheduleEdit): Promise<EditScheduleResult>;
   // Moves a todo task to running for `machine`; undefined when another caller got it first or it is pinned elsewhere.
   claimTask(id: string, machine: string): Promise<Task | undefined>;
   // A `suggestion` (agent comments only) is the reply the user will most likely send next; a `polish` note is a rewritten prompt.
@@ -623,6 +635,8 @@ export interface TaskConfigChange {
   priority?: Priority;
   // A model name, or null for claude's default. It applies from the next run on.
   model?: string | null;
+  // A lane name (`isSafeLane`), or null for the default lane. Refused while the task runs: a run keeps its lane.
+  lane?: string | null;
   // Whether the agent may move the task to Done itself. Takes effect at once, also while the task runs.
   autoDone?: boolean;
   // Where the task runs from now on. An object pins it to the directory on the calling machine and drops the session (it
@@ -638,9 +652,50 @@ export interface PromptEdit {
   input: string;
 }
 
-// What an edit of a schedule did to its pending card: changed too, already started, or there is none.
-export type PendingCardOutcome = 'updated' | 'started' | 'none';
-export const PENDING_CARD_OUTCOMES: readonly PendingCardOutcome[] = ['updated', 'started', 'none'];
+// What an edit of a schedule did to its pending card: changed too, already started, or there is none. Only an edit with
+// `settings` can remove the card (the schedule now runs after another) or create one (it no longer does).
+export type PendingCardOutcome = 'updated' | 'started' | 'none' | 'removed' | 'created';
+export const PENDING_CARD_OUTCOMES: readonly PendingCardOutcome[] = [
+  'updated',
+  'started',
+  'none',
+  'removed',
+  'created',
+];
+
+// The repeat of a schedule edit: an interval, cron expressions (the first and up to nine more) in a time zone, or running
+// after another schedule.
+export type ScheduleRepeat =
+  | { everyMs: number }
+  | { cron: string; moreCrons?: string[]; timezone: string }
+  | { after: { scheduleId: string; delayMs: number } };
+
+// Every setting of a schedule besides title and prompt, as the user edits them: the edit replaces all of them.
+export interface ScheduleSettings {
+  // The agent by name; absent is none.
+  agent?: string;
+  // The machine and directory the occurrences run in; null is no machine and no directory.
+  place: { machine: string; workdir: string } | null;
+  priority: Priority;
+  // A model name; null is claude's default.
+  model: string | null;
+  // A lane name (`isSafeLane`); null is the default lane. Absent keeps the schedule's. Needs the `task.lane` feature.
+  lane?: string | null;
+  autoDone: boolean;
+  repeat: ScheduleRepeat;
+  // The first run of a rule of its own; absent keeps the schedule's.
+  at?: Date;
+  // Runs the schedule still has, the pending card included; null is forever. Not with `until`.
+  runsLeft: number | null;
+  until: Date | null;
+  // At most this many cards under way at once (1 to 100); null is no limit.
+  maxConcurrent: number | null;
+}
+
+// A new title and prompt for a schedule, and with `settings` a replacement of every other setting too.
+export interface ScheduleEdit extends PromptEdit {
+  settings?: ScheduleSettings;
+}
 
 export interface EditScheduleResult {
   schedule: Schedule;
@@ -654,8 +709,17 @@ export interface WirePromptEdit {
   previous: WireNoteInput;
 }
 
-// The body of edit-schedule: the title and prompt sealed under the schedule.
-export type WireScheduleEdit = Omit<WirePromptEdit, 'previous'>;
+// The settings of an edit-schedule body: the agent and the directory are sealed under the schedule, with the title and prompt.
+export type WireScheduleSettings = Omit<ScheduleSettings, 'agent' | 'place'> & {
+  agent?: string;
+  place: { machine: string; workdir: string } | null;
+};
+
+// The body of edit-schedule: the title and prompt sealed under the schedule, and optionally `settings` (a full replacement
+// of every other setting, which needs the `schedule.update` feature).
+export interface WireScheduleEdit extends Omit<WirePromptEdit, 'previous'> {
+  settings?: WireScheduleSettings;
+}
 
 export interface WireEditScheduleResult {
   schedule: WireSchedule;
@@ -1055,6 +1119,20 @@ function modelOf(obj: Record<string, unknown>, what: string): string | null {
   return value;
 }
 
+/** The `requestedLane` of a task or schedule; a server that predates the key leaves it out, which means the default lane. */
+function requestedLaneOf(obj: Record<string, unknown>, what: string): string | null {
+  const value = obj['requestedLane'] ?? null;
+  if (value !== null && !(typeof value === 'string' && isSafeLane(value)))
+    throw new ContractError(`${what}.requestedLane is not a safe name`);
+  return value;
+}
+
+function laneName(obj: Record<string, unknown>, what: string): string {
+  const value = obj['lane'];
+  if (typeof value !== 'string' || !isSafeLane(value)) throw new ContractError(`${what}.lane is not a safe name`);
+  return value;
+}
+
 /** The `movedBy` of a task: left out when the server does not send it or names an actor this client does not know. */
 function movedByOf(obj: Record<string, unknown>): { movedBy?: TaskActor } {
   const movedBy = TASK_ACTORS.find((actor) => actor === obj['movedBy']);
@@ -1095,8 +1173,8 @@ function count(obj: Record<string, unknown>, key: string, what: string): number 
   return value;
 }
 
-function nullablePositiveInt(obj: Record<string, unknown>, key: string, what: string): number | null {
-  return obj[key] === null ? null : positiveInt(obj, key, what);
+function nullablePositiveInt(obj: Record<string, unknown>, key: string, what: string, max?: number): number | null {
+  return obj[key] === null ? null : positiveInt(obj, key, what, max);
 }
 
 function boolean(obj: Record<string, unknown>, key: string, what: string): boolean {
@@ -1210,6 +1288,7 @@ export function parseWireTask(value: unknown): WireTask {
     status: member(obj, 'status', 'task', STATUSES),
     priority: member(obj, 'priority', 'task', PRIORITIES),
     model: modelOf(obj, 'task'),
+    requestedLane: requestedLaneOf(obj, 'task'),
     autoDone: obj['autoDone'] === true,
     closed: boolean(obj, 'closed', 'task'),
     machine,
@@ -1326,6 +1405,7 @@ export function parseWireSchedule(value: unknown): WireSchedule {
     input: string(obj, 'input', 'schedule'),
     priority: member(obj, 'priority', 'schedule', PRIORITIES),
     model: modelOf(obj, 'schedule'),
+    requestedLane: requestedLaneOf(obj, 'schedule'),
     autoDone: obj['autoDone'] === true,
     machine,
     workdir: nullableString(obj, 'workdir', 'schedule'),
@@ -1697,6 +1777,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
       'status',
       'priority',
       'model',
+      'lane',
       'autoDone',
       'dedupeKey',
       'parentId',
@@ -1717,6 +1798,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', 'draft', PRIORITIES);
   if ('model' in obj) draft.model = modelName(obj, 'draft');
+  if ('lane' in obj) draft.lane = laneName(obj, 'draft');
   if ('autoDone' in obj) draft.autoDone = boolean(obj, 'autoDone', 'draft');
   if ('dedupeKey' in obj) draft.dedupeKey = parseBlindIndex(obj['dedupeKey'], 'draft.dedupeKey');
   if ('parentId' in obj) draft.parentId = safeId(string(obj, 'parentId', 'draft'), 'draft.parentId');
@@ -1742,11 +1824,11 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
 }
 
 // The `moreCrons` of a draft: expressions as the browser and the CLI send them, which the server reads with croner afterwards.
-function draftCronList(value: unknown): string[] {
+function draftCronList(value: unknown, what: string): string[] {
   if (!Array.isArray(value) || !value.every((entry): entry is string => typeof entry === 'string'))
-    throw new ContractError('schedule draft.moreCrons must be a list of strings');
+    throw new ContractError(`${what}.moreCrons must be a list of strings`);
   if (value.length > MAX_SCHEDULE_CRONS - 1)
-    throw new ContractError(`schedule draft.moreCrons holds at most ${MAX_SCHEDULE_CRONS - 1} expressions`);
+    throw new ContractError(`${what}.moreCrons holds at most ${MAX_SCHEDULE_CRONS - 1} expressions`);
   return value;
 }
 
@@ -1761,6 +1843,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
       'input',
       'priority',
       'model',
+      'lane',
       'autoDone',
       'machine',
       'workdir',
@@ -1785,6 +1868,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', what, PRIORITIES);
   if ('model' in obj) draft.model = modelName(obj, what);
+  if ('lane' in obj) draft.lane = laneName(obj, what);
   if ('autoDone' in obj) draft.autoDone = boolean(obj, 'autoDone', what);
   if ('machine' in obj) {
     draft.machine = string(obj, 'machine', what);
@@ -1804,7 +1888,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   } else if ('timezone' in obj) throw new ContractError('schedule draft.timezone only goes with cron');
   if ('moreCrons' in obj) {
     if (!('cron' in obj)) throw new ContractError('schedule draft.moreCrons only goes with cron');
-    draft.moreCrons = draftCronList(obj['moreCrons']);
+    draft.moreCrons = draftCronList(obj['moreCrons'], 'schedule draft');
   }
   if ('after' in obj) {
     if ('startAt' in obj) throw new ContractError('schedule draft.startAt does not go with after');
@@ -1855,12 +1939,13 @@ export function parseWireTaskPatch(value: unknown): WireTaskPatch {
 // Body of configure-task. At least one key. `place` carries the sealed directory only: the machine is the token's.
 export function parseWireTaskConfig(value: unknown): WireTaskConfig {
   const obj = record(value, 'config');
-  const keys = ['priority', 'model', 'autoDone', 'place'];
+  const keys = ['priority', 'model', 'lane', 'autoDone', 'place'];
   rejectUnknownKeys(obj, keys, 'config');
   if (!keys.some((key) => key in obj)) throw new ContractError(`config needs one of ${keys.join(', ')}`);
   const config: WireTaskConfig = {};
   if ('priority' in obj) config.priority = member(obj, 'priority', 'config', PRIORITIES);
   if ('model' in obj) config.model = obj['model'] === null ? null : modelName(obj, 'config');
+  if ('lane' in obj) config.lane = obj['lane'] === null ? null : laneName(obj, 'config');
   if ('autoDone' in obj) config.autoDone = boolean(obj, 'autoDone', 'config');
   if ('place' in obj) {
     if (obj['place'] === null) config.place = null;
@@ -1884,13 +1969,81 @@ export function parseWirePromptEdit(value: unknown): WirePromptEdit {
   };
 }
 
-// Body of edit-schedule: the sealed title and prompt.
+function parseScheduleRepeat(value: unknown, what: string): ScheduleRepeat {
+  const obj = record(value, what);
+  const rules = ['everyMs', 'cron', 'after'].filter((key) => key in obj);
+  if (rules.length !== 1) throw new ContractError(`${what} needs exactly one of everyMs, cron and after`);
+  if ('everyMs' in obj) {
+    rejectUnknownKeys(obj, ['everyMs'], what);
+    return { everyMs: positiveInt(obj, 'everyMs', what, MAX_INTERVAL_MS) };
+  }
+  if ('cron' in obj) {
+    rejectUnknownKeys(obj, ['cron', 'moreCrons', 'timezone'], what);
+    const timezone = string(obj, 'timezone', what);
+    if (timezone === '') throw new ContractError(`${what}.timezone must not be empty`);
+    return {
+      cron: string(obj, 'cron', what),
+      ...('moreCrons' in obj ? { moreCrons: draftCronList(obj['moreCrons'], what) } : {}),
+      timezone,
+    };
+  }
+  rejectUnknownKeys(obj, ['after'], what);
+  const after = record(obj['after'], `${what}.after`);
+  rejectUnknownKeys(after, ['scheduleId', 'delayMs'], `${what}.after`);
+  return {
+    after: {
+      scheduleId: safeId(string(after, 'scheduleId', `${what}.after`), `${what}.after.scheduleId`),
+      delayMs: draftDelayMs(after, `${what}.after`),
+    },
+  };
+}
+
+function parseWireScheduleSettings(value: unknown, what: string): WireScheduleSettings {
+  const obj = record(value, what);
+  rejectUnknownKeys(
+    obj,
+    ['agent', 'place', 'priority', 'model', 'lane', 'autoDone', 'repeat', 'at', 'runsLeft', 'until', 'maxConcurrent'],
+    what,
+  );
+  let place: WireScheduleSettings['place'] = null;
+  if (obj['place'] !== null) {
+    const placeObj = record(obj['place'], `${what}.place`);
+    rejectUnknownKeys(placeObj, ['machine', 'workdir'], `${what}.place`);
+    const machine = string(placeObj, 'machine', `${what}.place`);
+    if (!isSafeMachineName(machine)) throw new ContractError(`${what}.place.machine is not a safe name`);
+    place = { machine, workdir: sealedField(placeObj, 'workdir', `${what}.place`, 'workdir') };
+  }
+  const settings: WireScheduleSettings = {
+    place,
+    priority: member(obj, 'priority', what, PRIORITIES),
+    model: obj['model'] === null ? null : modelName(obj, what),
+    autoDone: boolean(obj, 'autoDone', what),
+    repeat: parseScheduleRepeat(obj['repeat'], `${what}.repeat`),
+    runsLeft: nullablePositiveInt(obj, 'runsLeft', what, MAX_INT32),
+    until: nullableDate(obj, 'until', what),
+    maxConcurrent:
+      obj['maxConcurrent'] === null ? null : positiveInt(obj, 'maxConcurrent', what, MAX_SCHEDULE_CONCURRENT),
+  };
+  if ('agent' in obj) settings.agent = sealedField(obj, 'agent', what, 'agent');
+  if ('lane' in obj) settings.lane = obj['lane'] === null ? null : laneName(obj, what);
+  if ('at' in obj) {
+    if ('after' in settings.repeat)
+      throw new ContractError(`${what}.at does not go with a repeat after another schedule`);
+    settings.at = date(obj, 'at', what);
+  }
+  if (settings.runsLeft !== null && settings.until !== null)
+    throw new ContractError(`${what}.runsLeft and ${what}.until exclude each other`);
+  return settings;
+}
+
+// Body of edit-schedule: the sealed title and prompt, and optionally `settings`, which replace every other setting.
 export function parseWireScheduleEdit(value: unknown): WireScheduleEdit {
   const obj = record(value, 'schedule edit');
-  rejectUnknownKeys(obj, ['title', 'input'], 'schedule edit');
+  rejectUnknownKeys(obj, ['title', 'input', 'settings'], 'schedule edit');
   return {
     title: sealedField(obj, 'title', 'schedule edit', 'title'),
     input: sealedField(obj, 'input', 'schedule edit', 'input'),
+    ...('settings' in obj ? { settings: parseWireScheduleSettings(obj['settings'], 'schedule edit.settings') } : {}),
   };
 }
 
