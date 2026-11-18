@@ -62,6 +62,11 @@ test('the schedule capabilities of the server are named and labelled', () => {
   }
 });
 
+test('the lane feature is named and labelled', () => {
+  assert.ok(SERVER_FEATURES.includes('task.lane'));
+  assert.equal(SERVER_FEATURE_LABELS['task.lane'], 'choosing the lane a task runs in');
+});
+
 test('the client vocabulary lists each feature of the table once', () => {
   assert.deepEqual(clientVocabulary(ADDED), ['note.event', 'status.backlog']);
 });

@@ -2,12 +2,14 @@ import { ActionIcon, Button, Group, Modal, Select, Stack, Switch, Text } from '@
 import { IconPencil } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
+import { DEFAULT_LANE, laneFromOption } from '../lib/lane';
 import { DEFAULT_MODEL, modelFromOption } from '../lib/model';
 import { useTRPC, type BoardTask } from '../lib/trpc';
 import { isCurrentPlace } from '../lib/workingDirectories';
 import { confirmPlace } from './confirmPlace';
 import { DirectorySelect } from './DirectorySelect';
 import { useDirectoryChoices } from './useDirectoryChoices';
+import { useLaneOptions } from './useLaneOptions';
 import { useModelOptions } from './useModelOptions';
 
 const SCHEDULE_HINT =
@@ -29,6 +31,31 @@ export function ModelPicker({ task }: { task: BoardTask }) {
       value={task.model ?? DEFAULT_MODEL}
       onChange={(value) => value !== null && configure.mutate({ task, model: modelFromOption(value) })}
       disabled={configure.isPending}
+    />
+  );
+}
+
+/** The lane the task asks for, from its next start on; a running task keeps the lane it started in. */
+export function LanePicker({ task }: { task: BoardTask }) {
+  const trpc = useTRPC();
+  const configure = useMutation(trpc.tasks.configure.mutationOptions());
+  const lanes = useLaneOptions(task.machine, task.requestedLane);
+  const running = task.status === 'running';
+  return (
+    <Select
+      aria-label="Lane"
+      title={
+        running
+          ? 'The task is running: it keeps its lane until its next start'
+          : `The lane of the machine that runs it, from its next start on${task.scheduleId === null ? '' : `. ${SCHEDULE_HINT}`}`
+      }
+      size="xs"
+      w={130}
+      allowDeselect={false}
+      data={lanes}
+      value={task.requestedLane ?? DEFAULT_LANE}
+      onChange={(value) => value !== null && configure.mutate({ task, lane: laneFromOption(value) })}
+      disabled={running || configure.isPending}
     />
   );
 }

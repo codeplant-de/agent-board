@@ -4,6 +4,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { skillsFor } from '../lib/catalog';
+import { DEFAULT_LANE } from '../lib/lane';
 import { DEFAULT_MODEL } from '../lib/model';
 import { parseDelay, parseRepeatRule } from '../lib/repeat';
 import { errorMessage, useTRPC } from '../lib/trpc';
@@ -11,8 +12,9 @@ import { useNow } from '../lib/useNow';
 import { DirectorySelect } from './DirectorySelect';
 import { MarkdownEditor } from './MarkdownEditor';
 import { RepeatFields, limitError, timesError } from './RepeatFields';
-import { AgentField, AutoDoneField, ModelField, PriorityField, agentNameError } from './TaskFields';
+import { AgentField, AutoDoneField, LaneField, ModelField, PriorityField, agentNameError } from './TaskFields';
 import { useDirectoryChoices } from './useDirectoryChoices';
+import { useLaneOptions } from './useLaneOptions';
 import { useModelOptions } from './useModelOptions';
 
 const WHEN_LABEL = { now: 'Now', later: 'Later', repeat: 'Repeating', backlog: 'Backlog', hold: 'Needs me' } as const;
@@ -42,6 +44,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const [delay, setDelay] = useState('');
   const [priority, setPriority] = useState<Priority>('normal');
   const [model, setModel] = useState(DEFAULT_MODEL);
+  const [lane, setLane] = useState(DEFAULT_LANE);
   const [autoDone, setAutoDone] = useState(false);
   const [directory, setDirectory] = useState<string | null>(null);
   const [agent, setAgent] = useState('');
@@ -61,6 +64,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
     [catalogs.data, place?.machine, place?.path],
   );
   const models = useModelOptions(place?.machine, model);
+  const lanes = useLaneOptions(place?.machine, lane);
   const agentName = agent.trim();
   const agentError = agentNameError(agentName);
   const startsLater = when === 'later' || when === 'repeat';
@@ -100,6 +104,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
         when: payload,
         priority,
         ...(model === DEFAULT_MODEL ? {} : { model }),
+        ...(lane === DEFAULT_LANE ? {} : { lane }),
         ...(autoDone ? { autoDone } : {}),
         ...(place === undefined ? {} : { place: { machine: place.machine, workdir: place.path } }),
         ...(agentName === '' ? {} : { agent: agentName }),
@@ -112,6 +117,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           setPriority('normal');
           setWhen('now');
           setModel(DEFAULT_MODEL);
+          setLane(DEFAULT_LANE);
           setAutoDone(false);
           setDirectory(null);
           setAgent('');
@@ -142,9 +148,8 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           placeholder={'/review-pr 17741\n\nor any instruction, as you would type it into Claude Code'}
         />
         <Text size="xs" c="dimmed" mt={-8}>
-          A leading <Code>/skill</Code> picks the lane; type <Code>/</Code> to pick one from the skills of the chosen
-          machine and directory. Without a working directory it runs in the default directory of whichever machine takes
-          it.
+          Type <Code>/</Code> to pick a skill of the chosen machine and directory. Without a working directory it runs
+          in the default directory of whichever machine takes it. The Lane field below sets the lane it runs in.
         </Text>
         <DirectorySelect
           label="Working directory"
@@ -161,6 +166,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
         />
         <PriorityField value={priority} onChange={setPriority} />
         <ModelField value={model} onChange={setModel} models={models} />
+        <LaneField value={lane} onChange={setLane} lanes={lanes} />
         <AutoDoneField value={autoDone} onChange={setAutoDone} />
         <div>
           <Text size="sm" fw={500} mb={4}>

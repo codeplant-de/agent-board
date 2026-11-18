@@ -64,7 +64,7 @@ export function planStarts(input: {
   lanes: Lane[];
   running: LaneRun[];
   candidates: Task[];
-  ownLaneOf: (task: Task) => string | undefined;
+  ownLaneOf: (task: Task) => string;
 }): Start[] {
   const free = new Map(
     input.lanes.map((lane) => [lane.name, lane.slots - input.running.filter((run) => run.lane === lane.name).length]),
@@ -73,7 +73,7 @@ export function planStarts(input: {
   const taken = new Set<string>();
   for (const task of input.candidates) {
     const lane = input.ownLaneOf(task);
-    if (lane !== undefined && (free.get(lane) ?? 0) > 0) {
+    if ((free.get(lane) ?? 0) > 0) {
       starts.push({ taskId: task.id, lane, borrowed: false });
       free.set(lane, (free.get(lane) ?? 0) - 1);
       taken.add(task.id);

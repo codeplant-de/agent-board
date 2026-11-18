@@ -51,6 +51,7 @@ const task = (overrides: Partial<ListedTask>): ListedTask =>
     openQuestion: false,
     machine: null,
     lane: null,
+    requestedLane: null,
     sessionId: null,
     next: 'fresh',
     head: null,

@@ -1,4 +1,4 @@
-// `board schedule [--priority p] [--model m] [--auto-done] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
+// `board schedule [--priority p] [--model m] [--lane l] [--auto-done] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
 // [--times <n> | --until <time>] [--polish] [--new] [--key <k> [--version <v>]] <prompt...>`: a task from a prompt, written as you
 // would type it into Claude Code, bound to this machine and the directory it was scheduled from. Before it creates one, a quick
 // Haiku call checks whether an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead.
@@ -15,7 +15,9 @@ import {
   isModelName,
   isPriority,
   isRecord,
+  isSafeLane,
   isSafeTaskId,
+  MACHINE_NAME_RULE,
   MAX_SCHEDULE_CONCURRENT,
   MAX_SCHEDULE_CRONS,
   MODEL_ALIASES,
@@ -35,6 +37,8 @@ export interface ScheduleArgs {
   priority: Priority | undefined;
   // The Claude model of the run; undefined is claude's default.
   model: string | undefined;
+  // The lane the task asks for; undefined is the default lane of the machine that takes it.
+  lane: string | undefined;
   // The agent may move the task to Done itself; false leaves it unset.
   autoDone: boolean;
   // The agent of this machine's config.json the task runs as; undefined runs it by its creator's rules.
@@ -71,6 +75,7 @@ export interface ScheduleArgs {
 export interface ScheduleFlags {
   priority?: string;
   model?: string;
+  lane?: string;
   autoDone?: boolean;
   agent?: string;
   title?: string;
@@ -101,6 +106,10 @@ export function addScheduleOptions(command: Command): Command {
     .option(
       '--model <model>',
       `claude model alias or full name, e.g. ${MODEL_ALIASES.map((alias) => alias.value).join(', ')} (default: claude's default)`,
+    )
+    .option(
+      '--lane <name>',
+      "the lane of the machine that runs the task (default: that machine's default lane; a machine without the lane uses its default one)",
     )
     .option(
       '--auto-done',
@@ -192,6 +201,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     prompt: '',
     priority: undefined,
     model: undefined,
+    lane: undefined,
     autoDone: flags.autoDone === true,
     agent: undefined,
     title: flags.title?.trim(),
@@ -222,6 +232,11 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
         `"${flags.model.slice(0, 70)}" is not a model name (a claude alias such as opus, or a full name such as claude-opus-5-5)`,
       );
     result.model = flags.model;
+  }
+  if (flags.lane !== undefined) {
+    if (!isSafeLane(flags.lane))
+      throw new UsageError(`"${flags.lane.slice(0, 40)}" is not a lane name (${MACHINE_NAME_RULE})`);
+    result.lane = flags.lane;
   }
   if (flags.agent !== undefined) {
     if (!isAgentName(flags.agent))
@@ -465,6 +480,7 @@ async function addRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<{ sche
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.lane === undefined ? {} : { lane: args.lane }),
     ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
     ...ruleDraft(deps, args),
@@ -532,6 +548,7 @@ async function scheduleKeyed(deps: ScheduleDeps, args: ScheduleArgs, key: string
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.lane === undefined ? {} : { lane: args.lane }),
     ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
     ...(args.version === undefined ? {} : { head: args.version }),
@@ -631,6 +648,10 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
           deps.print(
             `${existing.id} keeps its model (${existing.model ?? 'the default'}); --model applies only to a new task`,
           );
+        if (args.lane !== undefined && args.lane !== existing.requestedLane)
+          deps.print(
+            `${existing.id} keeps its lane (${existing.requestedLane ?? 'the default'}); --lane applies only to a new task: use \`board task ${existing.id} set lane ${args.lane}\``,
+          );
         if (args.autoDone && !existing.autoDone)
           deps.print(
             `${existing.id} keeps its auto-done setting (off); --auto-done applies only to a new task: use \`board task ${existing.id} set auto-done on\``,
@@ -675,6 +696,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.lane === undefined ? {} : { lane: args.lane }),
     ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
   });

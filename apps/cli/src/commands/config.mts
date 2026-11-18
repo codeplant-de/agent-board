@@ -210,7 +210,7 @@ export function configShow(deps: ConfigDeps, flags: { json?: boolean } = {}): vo
   deps.print(`${label('lanes')}${'lanes' in raw ? '' : '(default)'}`.trimEnd());
   for (const lane of config.lanes)
     deps.print(
-      `  ${plainLine(lane.name)}  skills ${plainLine(lane.skills.join(', '))}  slots ${lane.slots}${lane.cwd === undefined ? '' : `  cwd ${plainLine(lane.cwd)}`}`,
+      `  ${plainLine(lane.name)}  slots ${lane.slots}${lane.default ? '  default' : ''}${lane.cwd === undefined ? '' : `  cwd ${plainLine(lane.cwd)}`}`,
     );
   const repos = Object.entries(config.repos);
   deps.print(`${label('repos')}${repos.length === 0 ? 'none' : ''}`.trimEnd());

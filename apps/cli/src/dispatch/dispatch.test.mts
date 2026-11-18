@@ -378,12 +378,12 @@ test('a failed listing starts nothing and changes nothing', async () => {
 const LANED = {
   ...CONFIG,
   lanes: [
-    { name: 'reviews', skills: ['selftest'], slots: 1 },
-    { name: 'implement', skills: ['implement'], slots: 1 },
+    { name: 'reviews', slots: 1, default: true },
+    { name: 'implement', slots: 1, default: false },
   ],
 };
-const review = (id: string) => task({ id, input: '/selftest go' });
-const impl = (id: string) => task({ id, input: '/implement it' });
+const review = (id: string) => task({ id, input: '/selftest go', requestedLane: 'reviews' });
+const impl = (id: string) => task({ id, input: '/implement it', requestedLane: 'implement' });
 
 test('each lane takes its own work, an idle lane borrows, and the lane is written before the unit starts', async () => {
   const { deps, started, files, logs, backend } = setup([review('r1'), review('r2'), review('r3')]);
@@ -394,6 +394,25 @@ test('each lane takes its own work, an idle lane borrows, and the lane is writte
   assert.deepEqual(files.runs.get('r2'), { lane: 'implement', borrowed: true, startedAt: NOW });
   assert.ok(logs.includes('TICK started=2 reviews=1/1 implement=1/1'));
   assert.ok(backend.writes.some((w) => w.startsWith('note r2 (system)') && w.includes('implement lane, borrowed')));
+});
+
+test('a task without a lane runs in the default lane, and one asking for a lane this machine lacks says so', async () => {
+  const plain = task({ id: 'p1', input: 'do it' });
+  const lost = task({ id: 'l1', input: 'do it', requestedLane: 'nowhere' });
+  const { deps, files, backend, logs } = setup([plain, lost]);
+  deps.config = LANED;
+  await runDispatch(deps);
+  assert.deepEqual(files.runs.get('p1'), { lane: 'reviews', borrowed: false, startedAt: NOW });
+  assert.deepEqual(files.runs.get('l1'), { lane: 'implement', borrowed: true, startedAt: NOW });
+  assert.ok(logs.some((line) => line.startsWith('STARTED p1') && !line.includes('no such lane')));
+  assert.ok(
+    logs.some((line) => line.startsWith('STARTED l1') && line.includes('lane nowhere → reviews (no such lane here)')),
+  );
+  assert.ok(
+    backend.writes.some(
+      (w) => w.startsWith('note l1 (system)') && w.includes('lane nowhere → reviews (no such lane here)'),
+    ),
+  );
 });
 
 test('a lane whose own work waits asks its borrowed run to pause, once, after five minutes', async () => {
@@ -414,7 +433,7 @@ test('a lane whose own work waits asks its borrowed run to pause, once, after fi
 test('a young borrowed run is not paused yet', async () => {
   const borrowed = task({ id: 'b1', status: 'running', input: '/selftest go', machine: 'here' });
   const { deps, files } = setup([borrowed, impl('i1')], ['agent-board-b1']);
-  deps.config = { ...LANED, lanes: [{ name: 'implement', skills: ['implement'], slots: 1 }] };
+  deps.config = { ...LANED, lanes: [{ name: 'implement', slots: 1, default: true }] };
   files.runs.set('b1', { lane: 'implement', borrowed: true, startedAt: new Date(NOW.getTime() - 2 * 60_000) });
   files.alive.set('b1', NOW);
   await runDispatch(deps);
@@ -712,7 +731,7 @@ test('a check not due yet counts from its last attempt; one that passed counts n
 test('a borrowed run counts the moment it may be paused, while its lane has own work waiting', async () => {
   const borrowed = task({ id: 'b1', status: 'running', input: '/selftest go', machine: 'here' });
   const { deps, files } = setup([borrowed, impl('i1')], ['agent-board-b1']);
-  deps.config = { ...LANED, lanes: [{ name: 'implement', skills: ['implement'], slots: 1 }] };
+  deps.config = { ...LANED, lanes: [{ name: 'implement', slots: 1, default: true }] };
   files.runs.set('b1', { lane: 'implement', borrowed: true, startedAt: at(-2 * MIN) });
   files.alive.set('b1', NOW);
   await runDispatch(deps);
@@ -724,7 +743,7 @@ test('a borrowed run paused in this tick, or one whose lane has nothing waiting,
   const borrowed = task({ id: 'b1', status: 'running', input: '/selftest go', machine: 'here' });
   const young = task({ id: 'b2', status: 'running', input: '/selftest go', machine: 'here' });
   const { deps, files } = setup([borrowed, young, impl('i1')], ['agent-board-b1', 'agent-board-b2']);
-  deps.config = { ...LANED, lanes: [{ name: 'implement', skills: ['implement'], slots: 2 }] };
+  deps.config = { ...LANED, lanes: [{ name: 'implement', slots: 2, default: true }] };
   files.runs.set('b1', { lane: 'implement', borrowed: true, startedAt: at(-6 * MIN) });
   files.runs.set('b2', { lane: 'implement', borrowed: true, startedAt: at(-MIN) });
   files.alive.set('b1', NOW);

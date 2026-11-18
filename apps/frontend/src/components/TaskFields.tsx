@@ -1,5 +1,6 @@
 import { AGENT_NAME_RULE, isAgentName, PRIORITIES, type Priority } from '@agent-board/shared';
 import { Checkbox, SegmentedControl, Select, Text, TextInput } from '@mantine/core';
+import type { LaneOption } from '../lib/lane';
 import { PRIORITY_LABEL } from '../lib/priority';
 import type { ModelChoices } from './useModelOptions';
 
@@ -59,6 +60,29 @@ export function ModelField({
           ? 'The models claude lists on the chosen machine, or on any machine. Default is the model claude picks on the machine that runs it'
           : 'Default is the model claude picks on the machine that runs it'
       }
+    />
+  );
+}
+
+/** The lane as a select value: `DEFAULT_LANE` is the default lane of the machine that runs the task. */
+export function LaneField({
+  value,
+  onChange,
+  lanes,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  lanes: LaneOption[];
+}) {
+  return (
+    <Select
+      label="Lane"
+      allowDeselect={false}
+      searchable
+      value={value}
+      onChange={(next) => next && onChange(next)}
+      data={lanes}
+      description="The lane of the machine that runs it, which sets how many tasks run at once beside it. A machine without that lane runs it in its default lane. A repeat gives this to each task it makes."
     />
   );
 }

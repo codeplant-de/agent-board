@@ -67,6 +67,7 @@ function running(overrides: Partial<BoardTask>): BoardTask {
     openQuestion: false,
     createdBy: 'user',
     lane: null,
+    requestedLane: null,
     borrowed: false,
     lastActiveAt: minutesAgo(1),
     runStartedAt: minutesAgo(30),

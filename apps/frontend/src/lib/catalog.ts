@@ -55,6 +55,15 @@ export function modelsFor(machines: readonly OpenedCatalog[], machine: string | 
     .filter(({ value }) => !seen.has(value) && seen.add(value));
 }
 
+/**
+ * The lane names the Lane field offers: the chosen machine's, or with none chosen every machine's, each once in the order they
+ * were published. Empty when no readable catalogue has any.
+ */
+export function lanesFor(machines: readonly OpenedCatalog[], machine: string | null | undefined): string[] {
+  const among = machine === null || machine === undefined ? machines : machines.filter(({ name }) => name === machine);
+  return [...new Set(among.flatMap(({ catalog }) => catalog?.lanes ?? []))];
+}
+
 export interface SkillCompletion {
   /** What was typed after the `/`, up to the caret. */
   query: string;
