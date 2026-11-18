@@ -28,8 +28,10 @@ import {
   sealPr,
   sealQuestions,
   sealWatches,
+  sealTitle,
   sealWorkdir,
   taskLabels,
+  textBeforeEdit,
   transcriptBinding,
 } from '@agent-board/shared';
 import type {
@@ -38,6 +40,7 @@ import type {
   Note,
   Opener,
   PrState,
+  PromptEdit,
   Question,
   RowRef,
   Schedule,
@@ -162,6 +165,15 @@ async function openThreadNote(keys: Keys, taskId: string, wire: WireNote): Promi
     ...(wire.queued === undefined ? {} : { queued: wire.queued }),
     ...(wire.deliveredAt === undefined ? {} : { deliveredAt: wire.deliveredAt }),
   };
+}
+
+/** The new title and prompt of an edit, trimmed; neither may be empty. */
+function edited(command: string, edit: PromptEdit): PromptEdit {
+  const title = edit.title.trim();
+  const input = edit.input.trim();
+  if (title === '') throw invalid(command, 'the title must not be empty');
+  if (input === '') throw invalid(command, 'the prompt must not be empty');
+  return { title, input };
 }
 
 /** `Backend` over a `WireBackend`: seals on the way out, opens on the way in. `keys` may be resolved on first use. */
@@ -301,6 +313,31 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       const workdir = await checked('configure-task', () => sealWorkdir(sealer, row, place.workdir));
       return opened(await inner.configureTask(id, { ...rest, place: { workdir } }), openTask);
     },
+    // The user's edit of a prompt: sealed as the user, as the browser does, under the row the server holds now.
+    async editPrompt(id, edit) {
+      const { title, input } = edited('edit-prompt', edit);
+      const current = await opened(await inner.getTask(id), openTask);
+      if (current.createdBy !== 'user')
+        throw invalid('edit-prompt', 'only a task you created has a prompt you can edit');
+      if (current.scheduleId !== null)
+        throw invalid('edit-prompt', 'this card is the next run of a schedule; edit the schedule instead');
+      if (current.unreadable.some((field) => field !== 'watches'))
+        throw invalid('edit-prompt', 'this task cannot be read, so what it says now could not be kept');
+      const row: RowRef = {
+        kind: 'task',
+        id,
+        createdBy: 'user',
+        scheduleId: null,
+        agent: current.agent ?? null,
+        forkOf: current.forkOf ?? null,
+      };
+      const wire = await checked('edit-prompt', async () => ({
+        title: await sealTitle(sealer, row, title),
+        input: await sealInput(sealer, row, input),
+        previous: await sealNote(sealer, { taskId: id, author: 'user', kind: 'event' }, textBeforeEdit(current)),
+      }));
+      return opened(await inner.editPrompt(id, wire), openTask);
+    },
     async claimTask(id, machine) {
       const claimed = await inner.claimTask(id, machine);
       return claimed === undefined ? undefined : opened(claimed, openTask);
@@ -411,6 +448,21 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     },
     listSchedules: async () => openedAll(await inner.listSchedules(), openSchedule),
     updateSchedule: async (id, patch) => opened(await inner.updateSchedule(id, patch), openSchedule),
+    async editSchedule(id, edit) {
+      const { title, input } = edited('edit-schedule', edit);
+      const found = await openedAll(await inner.listSchedules(), openSchedule);
+      const current = found.find((schedule) => schedule.id === id);
+      if (current === undefined) throw new BackendError(`edit-schedule: no schedule ${id.slice(0, 40)}`, 404);
+      if (current.unreadable.length > 0)
+        throw invalid('edit-schedule', 'this schedule cannot be read, so it is not edited here');
+      const row: RowRef = { kind: 'schedule', id, agent: current.agent ?? null };
+      const wire = await checked('edit-schedule', async () => ({
+        title: await sealTitle(sealer, row, title),
+        input: await sealInput(sealer, row, input),
+      }));
+      const result = await inner.editSchedule(id, wire);
+      return { schedule: await opened(result.schedule, openSchedule), pending: result.pending };
+    },
     removeSchedule: (id) => inner.removeSchedule(id),
     indexHead: async (sha) => headIndex(await getKeys(), sha),
   };

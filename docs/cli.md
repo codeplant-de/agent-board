@@ -38,11 +38,12 @@ Tasks:
   add                        propose a follow-up task
   polish <task>              post a polished title and prompt for a task
   task <task> [action...]    show a task's settings, or change its priority,
-                             model, auto-done setting or directory
+                             model, auto-done setting, directory or prompt
 
 Scheduling:
   schedule <prompt...>       a task from a prompt, run here on this machine
-  schedules [action...]      list, pause, resume or delete repeating schedules
+  schedules [action...]      list, edit, pause, resume or delete repeating
+                             schedules
   delay <task>               delay a task in Todo, or make it due at once
 
 Setup:
@@ -643,14 +644,23 @@ run starts fresh there and reads the thread. A running or waiting task is
 refused: stop it first. With a `dirs` list on this machine, the directory must
 be listed (`board dirs add`).
 
+`set prompt <text...>` changes the title and prompt of a task you created that
+no worker has claimed yet and that waits in Todo or Backlog; the old title and
+prompt stay in a note on the task. The text is every word after `prompt`, `-`
+reads it from stdin and `--file <path>` from a regular file in /tmp, for long
+text. `--title <title>` sets the title too; without it the title stays. A card
+of a repeating schedule is edited through its schedule (`board schedules edit`),
+and a task a worker started has its prompt in its thread: reply with `board
+comment`. Start a prompt that begins with dashes after `--`.
+
 On a card of a repeating schedule a change applies to that card only: the next
 occurrence takes its priority, model, auto-done setting, machine and directory
 from the schedule again, which the command says. `set dir` needs this machine's
 config.json, since it pins the task to the machine's name.
 
 `set` and `unset` are not available inside a board run: only you change where a
-task runs, with what, and whether its agent may mark it done. Viewing works
-there.
+task runs, with what, and whether its agent may mark it done, and what it says.
+Viewing works there.
 
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
@@ -659,17 +669,20 @@ case does not matter; it must be unique). Inside a board run only the full id is
 accepted.
 
 Arguments:
-  task        the task: its id, a board task link or the start of its id
-  action      set priority|model|auto-done|dir <value>, or unset
-              model|auto-done|dir
+  task             the task: its id, a board task link or the start of its id
+  action           set priority|model|auto-done|dir|prompt <value>, or unset
+                   model|auto-done|dir
 
 Options:
-  --json      print JSON on stdout instead of text; a value this machine cannot
-              decrypt is null there and named in "unreadable" (text shows
-              "(cannot decrypt: input)" after the task, and "(cannot decrypt
-              this title)" for a title)
-  --dry-run   read everything, print every write instead of doing it
-  -h, --help  display help for command
+  --title <title>  with set prompt: the new title (default: keep the current
+                   one)
+  --file <path>    with set prompt: the prompt from a regular file in /tmp
+  --json           print JSON on stdout instead of text; a value this machine
+                   cannot decrypt is null there and named in "unreadable" (text
+                   shows "(cannot decrypt: input)" after the task, and "(cannot
+                   decrypt this title)" for a title)
+  --dry-run        read everything, print every write instead of doing it
+  -h, --help       display help for command
 
 Examples:
   board task Ab3dEf9x
@@ -682,6 +695,9 @@ Examples:
   board task Ab3 set dir
   board task Ab3 set dir ~/workspace/agent-board
   board task Ab3 unset dir
+  board task Ab3 set prompt Find out why the bidder export is slow
+  board task Ab3 set prompt --title "Slow export" --file /tmp/prompt.md
+  echo "new prompt" | board task Ab3 set prompt -
 ```
 
 ## Scheduling
@@ -806,32 +822,45 @@ Examples:
 ### board schedules
 
 ```
-Usage: board schedules [options] [pause|resume|rm <id>]
+Usage: board schedules [options] [pause|resume|rm <id> | edit <id> <text...|-|--file <path>>]
 
 Without arguments, list the repeating schedules: id, rule, next run, runs left,
 paused or ended, the limit if it has one, title; --json prints them as JSON.
 
 `pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes
-the next run, `rm <id>` deletes the schedule and its waiting run. Changing a
-schedule is not available inside a board run. The id can be the start of it (3
-to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.
+the next run, `rm <id>` deletes the schedule and its waiting run.
+
+`edit <id> <text...>` changes the schedule's prompt: the text is every word
+after the id, `-` reads it from stdin and `--file <path>` from a regular file in
+/tmp, for long text. `--title <title>` sets the title too; without it the title
+stays. Every later run takes the new text. The waiting run takes it too while it
+is in Todo and no worker has claimed it, and the command says which of three
+happened. Runs that already started keep what they had, and the old text is not
+kept. An ended schedule is refused.
+
+Changing a schedule is not available inside a board run. The id can be the start
+of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.
 
 Arguments:
-  action      pause, resume or rm, and the schedule id
+  action           pause, resume, rm or edit, and the schedule id
 
 Options:
-  --json      print JSON on stdout instead of text; a value this machine cannot
-              decrypt is null there and named in "unreadable" (text shows
-              "(cannot decrypt: input)" after the task, and "(cannot decrypt
-              this title)" for a title)
-  --dry-run   read everything, print every write instead of doing it
-  -h, --help  display help for command
+  --title <title>  with edit: the new title (default: keep the current one)
+  --file <path>    with edit: the prompt from a regular file in /tmp
+  --json           print JSON on stdout instead of text; a value this machine
+                   cannot decrypt is null there and named in "unreadable" (text
+                   shows "(cannot decrypt: input)" after the task, and "(cannot
+                   decrypt this title)" for a title)
+  --dry-run        read everything, print every write instead of doing it
+  -h, --help       display help for command
 
 Examples:
   board schedules
   board schedules --json
   board schedules pause s1b2c3d4
   board schedules rm s1b
+  board schedules edit s1b2c3d4 /sweep the stale branches and the stale worktrees
+  board schedules edit s1b --title "Nightly sweep" --file /tmp/prompt.md
 ```
 
 ### board delay

@@ -56,3 +56,24 @@ export function defaultTitle(prompt: string): string {
   const first = prompt.trim().split('\n')[0]?.trim() ?? '';
   return first.length > 100 ? `${first.slice(0, 99)}…` : first;
 }
+
+/** `text` in a code fence long enough that nothing inside it closes the fence. */
+function fenced(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}\n${text}\n${fence}`;
+}
+
+function keptText(label: string, target: { title: string; input: string }): string {
+  return `${label}\n\nTitle: ${target.title}\n\n${fenced(target.input)}`;
+}
+
+/** The note that keeps what a polished prompt replaces, so applying it loses nothing. */
+export function previousText(target: { title: string; input: string }): string {
+  return keptText('Prompt before polishing', target);
+}
+
+/** The note that keeps what an edit of the prompt replaces. */
+export function textBeforeEdit(target: { title: string; input: string }): string {
+  return keptText('Prompt before editing', target);
+}
