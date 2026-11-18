@@ -1,5 +1,6 @@
 import {
   isModelName,
+  isSafeLane,
   isSafeMachineName,
   isSafeTaskId,
   isWatchId,
@@ -69,6 +70,7 @@ const id = z.string().refine(isSafeTaskId, 'not a task id');
 const status = z.enum(STATUSES);
 const priority = z.enum(PRIORITIES);
 const model = z.string().refine(isModelName, 'not a model name');
+const lane = z.string().refine(isSafeLane, 'not a lane name');
 const repeatEnd = {
   times: z.number().int().positive().max(MAX_INT32).optional(),
   until: z.coerce.date().optional(),
@@ -211,6 +213,8 @@ const tasksRouter = router({
         priority: priority.default('normal'),
         /** The Claude model of its runs; absent is claude's default. */
         model: model.optional(),
+        /** The lane of the machine that should run the task, or each occurrence of its schedule; absent is the default lane. */
+        lane: lane.optional(),
         /** The agent may move the task, or each occurrence of its schedule, to Done itself; absent is off. */
         autoDone: z.boolean().optional(),
         /** The task this one follows from, which must be on the board. */
@@ -231,6 +235,7 @@ const tasksRouter = router({
           input: input.input,
           priority: input.priority,
           ...(input.model === undefined ? {} : { model: input.model }),
+          ...(input.lane === undefined ? {} : { lane: input.lane }),
           ...(input.autoDone === undefined ? {} : { autoDone: input.autoDone }),
           ...(place === undefined ? {} : { machine: place.machine, workdir: place.workdir }),
           ...(agent === undefined ? {} : { agent }),
@@ -248,6 +253,7 @@ const tasksRouter = router({
         input: input.input,
         priority: input.priority,
         ...(input.model === undefined ? {} : { model: input.model }),
+        ...(input.lane === undefined ? {} : { lane: input.lane }),
         ...(input.autoDone === undefined ? {} : { autoDone: input.autoDone }),
         status: typeof when === 'string' ? createStatus[when] : 'todo',
         notBefore: typeof when === 'string' ? undefined : when.at,
@@ -409,7 +415,7 @@ const tasksRouter = router({
 
   /**
    * Changes a task's settings after creation. A `place` pins it to the machine and the sealed directory (null: none) and drops
-   * its session, so the next run starts fresh there; a running or waiting task is refused with CONFLICT. A model applies from the next run on; `autoDone` applies at once, in any status.
+   * its session, so the next run starts fresh there; a running or waiting task is refused with CONFLICT. A model applies from the next run on; a lane is refused (CONFLICT) while the task runs; `autoDone` applies at once, in any status.
    */
   configure: procedure
     .input(
@@ -418,6 +424,7 @@ const tasksRouter = router({
           id,
           priority: priority.optional(),
           model: model.nullable().optional(),
+          lane: lane.nullable().optional(),
           autoDone: z.boolean().optional(),
           place: z
             .object({ machine: machineName, workdir: sealed('workdir', 'directory') })
@@ -425,9 +432,9 @@ const tasksRouter = router({
             .optional(),
         })
         .refine(
-          ({ priority: p, model: m, autoDone, place }) =>
-            p !== undefined || m !== undefined || autoDone !== undefined || place !== undefined,
-          'change at least one of priority, model, autoDone and place',
+          ({ priority: p, model: m, lane: l, autoDone, place }) =>
+            p !== undefined || m !== undefined || l !== undefined || autoDone !== undefined || place !== undefined,
+          'change at least one of priority, model, lane, autoDone and place',
         ),
     )
     .mutation(async ({ ctx, input: { id: taskId, ...config } }) =>
@@ -515,6 +522,8 @@ const schedulesRouter = router({
           place: z.object({ machine: machineName, workdir: sealed('workdir', 'directory') }).nullable(),
           priority,
           model: model.nullable(),
+          /** A lane name, or null for the default lane; absent keeps the schedule's. */
+          lane: lane.nullable().optional(),
           autoDone: z.boolean(),
           repeat: z.union([
             z.object({ everyMs: intervalRule.every }),
@@ -542,6 +551,7 @@ const schedulesRouter = router({
         place: input.place,
         priority: input.priority,
         model: input.model,
+        ...(input.lane === undefined ? {} : { lane: input.lane }),
         autoDone: input.autoDone,
         rule: 'everyMs' in input.repeat ? { everyMs: input.repeat.everyMs } : ruleOf(input.repeat),
         ...(input.at === undefined ? {} : { startAt: input.at }),

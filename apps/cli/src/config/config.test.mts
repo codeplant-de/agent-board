@@ -14,6 +14,9 @@ import {
   parseConfig,
   readSecretFile,
   REMOVED_INTAKE,
+  IGNORED_LANE_SKILLS,
+  defaultLane,
+  isIgnoredSkillsWarning,
 } from './config.mts';
 
 const valid = {
@@ -22,7 +25,7 @@ const valid = {
 
 test('a valid config gets defaults', () => {
   const config = parseConfig(valid);
-  assert.deepEqual(config.lanes, [{ name: 'general', skills: ['*'], slots: 3 }]);
+  assert.deepEqual(config.lanes, [{ name: 'general', slots: 3, default: true }]);
   assert.ok(config.defaultCwd.startsWith('/') && !config.defaultCwd.includes('~'));
   assert.deepEqual([config.pauseAfterMinutes, config.inactivityMinutes, config.maxRunHours], [5, 15, 6]);
   assert.ok(!config.repos['cosuno/cosuno']?.startsWith('~'));
@@ -32,14 +35,11 @@ test('invalid configs are refused with a pointed message', () => {
   const cases: [unknown, RegExp][] = [
     ['nope', /top level/],
     [{ ...valid, inactivityMinutes: 0 }, /inactivityMinutes/],
-    [{ ...valid, lanes: { reviews: { skills: [] } } }, /skills must be a non-empty list/],
-    [
-      { ...valid, lanes: { a: { skills: ['review-pr'] }, b: { skills: ['/pr-review:review-pr'] } } },
-      /in lanes a and b/,
-    ],
-    [{ ...valid, lanes: { a: { skills: ['*'] }, b: { skills: ['*'] } } }, /"\*" is in lanes a and b/],
-    [{ ...valid, lanes: { 'a b': { skills: ['x'] } } }, /lane name/],
-    [{ ...valid, lanes: { a: { skills: ['x'], slots: 0 } } }, /lanes.a.slots/],
+    [{ ...valid, lanes: { a: { default: true }, b: { default: true } } }, /lanes a, b are all marked default/],
+    [{ ...valid, lanes: { a: { default: 'yes' } } }, /lanes.a.default must be true or false/],
+    [{ ...valid, lanes: { a: { skills: ['*'] }, b: { skills: ['*'] } } }, /"\*" is in lanes a, b/],
+    [{ ...valid, lanes: { 'a b': { default: true } } }, /lane name/],
+    [{ ...valid, lanes: { a: { default: true, slots: 0 } } }, /lanes.a.slots/],
     [{ ...valid, defaultCwd: 'relative' }, /defaultCwd/],
     [{ ...valid, repos: { bad: '/x' } }, /owner\/name/],
   ];
@@ -58,7 +58,7 @@ test('a machine name that is too long is refused with the limit, and one of 64 c
   );
   assert.equal(parseConfig({ ...valid, machine: 'm'.repeat(64) }).machine, 'm'.repeat(64));
   assert.throws(
-    () => parseConfig({ ...valid, lanes: { ['l'.repeat(65)]: { skills: ['x'] } } }),
+    () => parseConfig({ ...valid, lanes: { ['l'.repeat(65)]: { default: true } } }),
     (error) => error instanceof ConfigError && /1 to 64 characters/.test(error.message),
   );
 });
@@ -110,7 +110,7 @@ test('a missing config.json is the defaults only when the command allows it; any
   try {
     const path = join(dir, 'config.json');
     assert.throws(() => loadConfig(path), /config file missing: .*run "board init"/);
-    assert.deepEqual(loadConfig(path, { optionalConfig: true }).lanes, [{ name: 'general', skills: ['*'], slots: 3 }]);
+    assert.deepEqual(loadConfig(path, { optionalConfig: true }).lanes, [{ name: 'general', slots: 3, default: true }]);
     writeFileSync(path, '{ nope');
     assert.throws(() => loadConfig(path, { optionalConfig: true }), /not valid JSON/);
     writeFileSync(path, '{"lanes": 3}');
@@ -178,7 +178,7 @@ test('a bad dirs entry is refused with a pointed message', () => {
 test('a dirs entry takes label, repo, default and lane, and keeps what it is given', () => {
   const config = parseConfig({
     ...valid,
-    lanes: { reviews: { skills: ['review-pr'], slots: 1 }, general: { skills: ['*'], slots: 1 } },
+    lanes: { reviews: { slots: 1 }, general: { slots: 1, default: true } },
     dirs: {
       '/srv/a': { label: '  Board  ', repo: 'acme/board', default: true, lane: 'reviews' },
       '/srv/b': { label: 'Other' },
@@ -194,8 +194,8 @@ test('a dirs entry takes label, repo, default and lane, and keeps what it is giv
 
 test('a dirs setting is folded into repos, defaultCwd and the lane cwd, and wins over the old key', () => {
   const lanes = {
-    reviews: { skills: ['review-pr'], slots: 1, cwd: '/old/reviews' },
-    general: { skills: ['*'], slots: 1 },
+    reviews: { slots: 1, cwd: '/old/reviews' },
+    general: { slots: 1, default: true },
   };
   const config = parseConfig({
     ...valid,
@@ -219,7 +219,7 @@ test('a dirs setting is folded into repos, defaultCwd and the lane cwd, and wins
 });
 
 test('a bad dirs setting is refused, pointing at the entry and the setting', () => {
-  const lanes = { reviews: { skills: ['review-pr'], slots: 1 }, other: { skills: ['*'], slots: 1 } };
+  const lanes = { reviews: { slots: 1 }, other: { slots: 1, default: true } };
   const cases: [Record<string, unknown>, RegExp][] = [
     [{ '/a': { label: '' } }, /dirs\["\/a"\]\.label must be a label of 1 to 64 characters/],
     [{ '/a': { label: '   ' } }, /\.label must be a label/],
@@ -256,7 +256,7 @@ test('a dirs setting over a different old path is a warning; the same path is no
   const raw = {
     repos: { 'acme/board': '/old/board', 'acme/same': '~/same' },
     defaultCwd: '/old/default',
-    lanes: { reviews: { skills: ['review-pr'], cwd: '/old/reviews' }, deep: { skills: ['x'], cwd: '/srv/lane' } },
+    lanes: { reviews: { default: true, cwd: '/old/reviews' }, deep: { cwd: '/srv/lane' } },
     dirs: {
       '/srv/a': { repo: 'acme/board', default: true, lane: 'reviews' },
       [`${homedir()}/same`]: { repo: 'acme/same' },
@@ -269,11 +269,53 @@ test('a dirs setting over a different old path is a warning; the same path is no
     'lanes.reviews.cwd is overridden by dirs["/srv/a"].lane',
   ]);
   assert.deepEqual(
-    configWarnings({ ...raw, repos: {}, defaultCwd: undefined, lanes: { reviews: { skills: ['x'] } } }),
+    configWarnings({ ...raw, repos: {}, defaultCwd: undefined, lanes: { reviews: { default: true } } }),
     [],
   );
   assert.equal(isOverrideWarning('repos.a/b is overridden by dirs["/x"].repo'), true);
   assert.equal(isOverrideWarning('unknown key "x", ignored'), false);
+});
+
+test('a lane config of the earlier release (skills, no default) still loads: the lane with "*" is the default', () => {
+  const lanes = (raw: unknown) => parseConfig({ ...valid, lanes: raw }).lanes.map(({ name, default: d }) => [name, d]);
+  assert.deepEqual(lanes({ reviews: { skills: ['review-pr'], slots: 2 }, general: { skills: ['*'], slots: 3 } }), [
+    ['reviews', false],
+    ['general', true],
+  ]);
+  assert.deepEqual(lanes({ reviews: { skills: ['review-pr'] }, docs: { skills: ['docs'] } }), [
+    ['reviews', true],
+    ['docs', false],
+  ]);
+});
+
+test('a lane marked default wins over a "*" in skills, which are ignored with a warning', () => {
+  const raw = {
+    lanes: { reviews: { skills: ['*'], default: false }, general: { skills: ['review-pr'], default: true } },
+  };
+  assert.deepEqual(
+    parseConfig(raw).lanes.map(({ name, default: d }) => [name, d]),
+    [
+      ['reviews', false],
+      ['general', true],
+    ],
+  );
+  assert.deepEqual(configWarnings(raw), [IGNORED_LANE_SKILLS('reviews'), IGNORED_LANE_SKILLS('general')]);
+  assert.equal(isIgnoredSkillsWarning(IGNORED_LANE_SKILLS('reviews')), true);
+  assert.equal(isIgnoredSkillsWarning('unknown key "x", ignored'), false);
+});
+
+test('without a lane marked default the first lane is the default, and the mark can move', () => {
+  const marks = (raw: unknown) => parseConfig({ ...valid, lanes: raw }).lanes.map(({ default: d }) => d);
+  assert.deepEqual(marks({ general: { slots: 2 } }), [true]);
+  assert.deepEqual(marks({ a: { slots: 1 }, b: { slots: 1 } }), [true, false]);
+  assert.deepEqual(marks({ a: { default: false }, b: { default: true } }), [false, true]);
+});
+
+test('defaultLane is the lane marked default', () => {
+  assert.equal(
+    defaultLane(parseConfig({ lanes: { a: { slots: 1 }, b: { slots: 1, default: true } } }).lanes).name,
+    'b',
+  );
 });
 
 test('dirs holds at most 200 entries', () => {
@@ -287,8 +329,8 @@ test('a misspelt key at any level is a warning naming the nearest known key, not
   const raw = {
     ...valid,
     inactivityMinuts: 60,
-    lane: { reviews: { skills: ['review-pr'] } },
-    lanes: { reviews: { skills: ['review-pr'], slot: 2 } },
+    lane: { reviews: { default: true } },
+    lanes: { reviews: { default: true, slot: 2 } },
   };
   assert.doesNotThrow(() => parseConfig(raw));
   assert.deepEqual(configWarnings(raw), [
@@ -307,7 +349,7 @@ test('an unknown key close to no known one lists the keys of its level', () => {
 test('a config with only known keys, or no object at all, has no warnings', () => {
   assert.deepEqual(configWarnings(valid), []);
   assert.deepEqual(configWarnings({ dirs: { '/srv/a': {} } }), []);
-  assert.deepEqual(configWarnings({ lanes: { a: { skills: ['*'], slots: 2, cwd: '~' } } }), []);
+  assert.deepEqual(configWarnings({ lanes: { a: { default: true, slots: 2, cwd: '~' } } }), []);
   for (const raw of [undefined, null, [], 'x']) assert.deepEqual(configWarnings(raw), []);
 });
 

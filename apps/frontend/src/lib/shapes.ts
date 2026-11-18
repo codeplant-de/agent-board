@@ -74,6 +74,8 @@ export interface TaskShapes {
   model: string | null;
   machine: string | null;
   lane: string | null;
+  /** The lane the user asked for; the lane it runs in is `lane`. */
+  requestedLane: string | null;
   sessionId: string | null;
   head: string | null;
   scheduleId: string | null;
@@ -94,6 +96,7 @@ export function checkTaskShapes(wire: {
   model: string | null;
   machine: string | null;
   lane: string | null;
+  requestedLane: string | null;
   sessionId: string | null;
   head: string | null;
   scheduleId: string | null;
@@ -108,6 +111,11 @@ export function checkTaskShapes(wire: {
   const model = checked(wire.model === null || isModelName(wire.model), wire.model, null);
   const machine = checked(wire.machine === null || isSafeMachineName(wire.machine), wire.machine, INVALID_VALUE);
   const lane = checked(wire.lane === null || isSafeLane(wire.lane), wire.lane, INVALID_VALUE);
+  const requestedLane = checked(
+    wire.requestedLane === null || isSafeLane(wire.requestedLane),
+    wire.requestedLane,
+    INVALID_VALUE,
+  );
   const sessionId = checked(wire.sessionId === null || isSessionId(wire.sessionId), wire.sessionId, null);
   const head = checked(wire.head === null || isBlindIndex(wire.head), wire.head, null);
   const fields: [string, Checked<unknown>][] = [
@@ -118,6 +126,7 @@ export function checkTaskShapes(wire: {
     ['model', model],
     ['machine', machine],
     ['lane', lane],
+    ['requestedLane', requestedLane],
     ['sessionId', sessionId],
     ['head', head],
   ];
@@ -129,6 +138,7 @@ export function checkTaskShapes(wire: {
     model: model.value,
     machine: machine.value,
     lane: lane.value,
+    requestedLane: requestedLane.value,
     sessionId: sessionId.value,
     head: head.value,
     scheduleId: safeNullableId(wire.scheduleId, 'schedule id'),

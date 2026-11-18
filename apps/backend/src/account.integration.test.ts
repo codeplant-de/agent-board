@@ -391,12 +391,13 @@ describe('account.import', () => {
         task('baddate', { createdAt: 'yesterday' }),
         task('badmodel', { model: '--evil' }),
         task('badmachine', { machine: 'a b' }),
+        task('badlane', { requestedLane: 'a b' }),
         task('badindex', { dedupeKey: 'abh1.short' }),
         'not an object',
         null,
       ],
     });
-    expect(result).toEqual({ inserted: 3, existing: 0, invalid: 9, orphaned: 0 });
+    expect(result).toEqual({ inserted: 3, existing: 0, invalid: 10, orphaned: 0 });
     const rows = await exportAll(jascha, 'task');
     expect(rows.map((row) => [row['id'], row['parentId']])).toEqual([
       ['good1', null],
@@ -404,6 +405,18 @@ describe('account.import', () => {
       ['orphanparent', null],
     ]);
     expect(rows[0]!['createdAt']).toBe(now);
+    expect(
+      await jascha.account.import({
+        keyId: KEY,
+        table: 'task',
+        rows: [task('lane1', { requestedLane: 'reviews' }), task('lane2', { requestedLane: null })],
+      }),
+    ).toMatchObject({ inserted: 2 });
+    expect(
+      (await exportAll(jascha, 'task'))
+        .filter((row) => String(row['id']).startsWith('lane'))
+        .map((row) => row['requestedLane']),
+    ).toEqual(['reviews', null]);
 
     const note = (id: string, more: object = {}) => ({
       id,
@@ -484,6 +497,28 @@ describe('account.import', () => {
     };
     const importSchedules = (client: Client, rows: unknown[]) =>
       client.account.import({ keyId: KEY, table: 'schedule', rows });
+
+    it('keeps the lane a task or a schedule asks for, and drops a row whose lane is not a name', async () => {
+      const jascha = await ready();
+      expect(
+        await jascha.account.import({
+          keyId: KEY,
+          table: 'task',
+          rows: [task('lt1', { requestedLane: 'reviews' }), task('lt2'), task('lt3', { requestedLane: 'a b' })],
+        }),
+      ).toEqual({ inserted: 2, existing: 0, invalid: 1, orphaned: 0 });
+      expect(
+        await importSchedules(jascha, [
+          schedule('ls1', { requestedLane: 'docs' }),
+          schedule('ls2', { requestedLane: 'x'.repeat(65) }),
+        ]),
+      ).toEqual({ inserted: 1, existing: 0, invalid: 1, orphaned: 0 });
+      expect((await exportAll(jascha, 'task')).map((row) => [row['id'], row['requestedLane']])).toEqual([
+        ['lt1', 'reviews'],
+        ['lt2', null],
+      ]);
+      expect((await exportAll(jascha, 'schedule')).map((row) => row['requestedLane'])).toEqual(['docs']);
+    });
 
     it('keeps auto done, who moved a task, when its occurrence finished, and every schedule setting', async () => {
       const jascha = await ready();

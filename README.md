@@ -40,7 +40,7 @@ You need Linux with systemd, or macOS. You also need `claude` and `gh`, both log
    board doctor          # checks config, token, key, server version and units
    ```
 
-4. Optional: list your checkouts with `board dirs` and split parallel runs by skill with `lanes`. [Configuration worth knowing](docs/first-steps.md#configuration-worth-knowing) walks through both.
+4. Optional: list your checkouts with `board dirs` and split parallel runs with `lanes`. [Configuration worth knowing](docs/first-steps.md#configuration-worth-knowing) walks through both.
 
 To turn PR review requests into tasks, add the reviewer agent with `board agents add example:reviewer` and run the `github-reviews` script on a timer. [Review requests from GitHub](docs/usage.md#review-requests-from-github) has the script and the timer unit.
 

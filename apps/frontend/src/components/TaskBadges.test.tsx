@@ -19,6 +19,7 @@ const task = (overrides: Partial<BoardTask>) =>
     borrowed: false,
     machine: null,
     lane: null,
+    requestedLane: null,
     notBefore: null,
     scheduleId: null,
     wakeAt: null,
@@ -49,6 +50,18 @@ describe('TaskBadges', () => {
     unmount();
     renderBadges({ scheduleId: 'sch1' });
     expect(screen.queryByText('Waits for a slot')).not.toBeInTheDocument();
+  });
+
+  it('shows the lane a queued task asks for, and not once it runs or when it asks for none', () => {
+    const { unmount } = renderBadges({ requestedLane: 'reviews' });
+    expect(screen.getByText('reviews')).toBeInTheDocument();
+    unmount();
+    const running = renderBadges({ status: 'running', machine: 'laptop', lane: 'general', requestedLane: 'reviews' });
+    expect(screen.queryByText('reviews')).not.toBeInTheDocument();
+    expect(screen.getByText('laptop · general')).toBeInTheDocument();
+    running.unmount();
+    renderBadges({ requestedLane: null });
+    expect(screen.queryByTitle(/The lane it asks for/)).not.toBeInTheDocument();
   });
 
   it('shows Paused on a task waiting in Todo', () => {

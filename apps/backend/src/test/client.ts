@@ -30,7 +30,14 @@ type ScheduleChanges = Partial<
   Pick<
     ScheduleUpdateInput,
     'priority' | 'model' | 'autoDone' | 'repeat' | 'at' | 'runsLeft' | 'until' | 'maxConcurrent'
-  > & { title: string; input: string; agent: string | null; place: { machine: string; workdir: string } | null }
+  > & {
+    title: string;
+    input: string;
+    agent: string | null;
+    place: { machine: string; workdir: string } | null;
+    /** A lane name, or null for the default lane; left out it keeps the schedule's. */
+    lane: string | null;
+  }
 >;
 // Machine API bodies and answers are untyped JSON.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -506,7 +513,7 @@ export function plainUi(db: Db, owner = 'jascha') {
           ({ id }) => id === changes.id,
         );
         // A schedule that is not there gets a valid edit, so the board's answer is the refusal under test.
-        const kept: Required<Omit<ScheduleChanges, 'at'>> =
+        const kept: Required<Omit<ScheduleChanges, 'at' | 'lane'>> =
           current === undefined
             ? {
                 title: 'title',
@@ -546,7 +553,7 @@ export function plainUi(db: Db, owner = 'jascha') {
                 until: current.until,
                 maxConcurrent: current.maxConcurrent,
               };
-        const { id, at, ...next } = { ...kept, ...changes };
+        const { id, at, lane, ...next } = { ...kept, ...changes };
         const fields = await sealFields(
           sealing.seal,
           { kind: 'schedule', id, agent: next.agent },
@@ -563,6 +570,7 @@ export function plainUi(db: Db, owner = 'jascha') {
               : { machine: next.place.machine, workdir: fields.workdir },
           priority: next.priority,
           model: next.model,
+          ...(lane === undefined ? {} : { lane }),
           autoDone: next.autoDone,
           repeat: next.repeat,
           ...(at === undefined ? {} : { at }),
