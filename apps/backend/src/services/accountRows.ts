@@ -218,6 +218,13 @@ export const machineRowSchema = z.object({
   usageUpdatedAt: nullable(timestamp),
 });
 
+/** The version is in the binding of the document, so it comes in as it was; a board that has its own keeps it. */
+export const sharedAgentsRowSchema = z.object({
+  version: z.number().int().min(1).max(MAX_INT32),
+  document: sealed('agents.shared', 'document'),
+  pushedAt: timestamp,
+});
+
 export const transcriptRunRowSchema = z.object({
   id: z.string().regex(TRANSCRIPT_RUN_ID, 'not a run id'),
   taskId: id,

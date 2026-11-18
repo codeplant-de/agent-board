@@ -10,7 +10,8 @@ import { API_VERSION, MIN_SERVER } from '@agent-board/shared';
 import type { TaskWatch } from '@agent-board/shared';
 import { RETRY_AFTER_FAILURE_MS, RETRY_AFTER_UNPUBLISHED_MS } from '../self/auto-update.mts';
 import type { UpdateDeps } from '../self/auto-update.mts';
-import type { AutoUpdate } from '../config/config.mts';
+import type { AutoUpdate, Config } from '../config/config.mts';
+import { loadConfig } from '../config/config.mts';
 import { parseWorkerUnits, SystemError } from '../setup/system.mts';
 import type { System } from '../setup/system.mts';
 import { START_MARKER } from '../task-rules.mts';
@@ -231,6 +232,30 @@ test('a task that names an agent this machine does not define is skipped, and on
   assert.deepEqual(started, ['known']);
   assert.ok(!backend.writes.some((w) => w.includes('ghost')), 'left in Todo, not claimed or failed');
   assert.ok(logs.includes('SKIP ghost no agent ghost defined here'));
+});
+
+test('a newer version of the board’s agents is applied before the starts, so a task that names a pushed agent starts in the same tick', async (context) => {
+  const dir = mkdtempSync('/tmp/board-dispatch-agents-');
+  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configFile = join(dir, 'config.json');
+  writeFileSync(configFile, '{"machine":"here"}\n');
+  const pushed = task({ id: 'pushed', input: 'Review it', agent: 'reviewer' });
+  const { deps, started, backend, logs } = setup([pushed]);
+  const reviewer = { description: 'd', tools: ['Read'] };
+  backend.boardAgents.held = { version: 7, document: { version: 7, agents: { reviewer } } };
+  deps.sharedAgents = { configFile, reload: () => ({ ...CONFIG, ...pick(loadConfig(configFile)) }) };
+  await runDispatch(deps);
+  assert.ok(logs.includes('APPLIED agents v7: 1 agent(s)'));
+  assert.deepEqual(started, ['pushed']);
+  await runDispatch(deps);
+  assert.equal(logs.filter((line) => line.startsWith('APPLIED')).length, 1, 'the same version is not fetched again');
+});
+
+// The agents of the config the apply wrote, over the test's config.
+const pick = ({ agents, agentErrors, board }: Config) => ({
+  agents,
+  agentErrors,
+  ...(board === undefined ? {} : { board }),
 });
 
 test('a task pinned here that names a missing agent is claimed, so its worker can fail it', async () => {

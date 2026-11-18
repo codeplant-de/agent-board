@@ -16,6 +16,7 @@ import { ContractError } from './contract.mts';
 import { deriveKeys, generateDataKey, open, seal, wrapDataKey } from './crypto.mts';
 import type { Keys } from './crypto.mts';
 import { serializePolish } from './polish.mts';
+import { sealSharedAgents, sharedAgentsBinding, sharedAgentsJson } from './sharedAgents.mts';
 import type { Question } from './questions.mts';
 import {
   agentBinding,
@@ -439,6 +440,18 @@ test('a machine whose name is not a machine name has unreadable documents', asyn
   const { row: out, unreadable } = await reseal('machine', row);
   assert.deepEqual(unreadable, ['dirs']);
   assert.deepEqual(out, row);
+});
+
+test('the shared agents are sealed again under the version of the row; another version leaves them unreadable', async () => {
+  const document = { version: 4, agents: { reviewer: { description: 'Reviews', tools: ['Read'] } } };
+  const row = { version: 4, document: await sealSharedAgents(sealA, document), pushedAt: '2026-11-18T10:00:00Z' };
+  const { row: out, unreadable } = await reseal('shared_agents', row);
+  assert.deepEqual(unreadable, []);
+  await assertMoved(row, out, 'document', sharedAgentsBinding(4), sharedAgentsJson(document));
+  assert.equal(out['version'], 4);
+  const relabelled = await reseal('shared_agents', { ...row, version: 5 });
+  assert.deepEqual(relabelled.unreadable, ['document']);
+  assert.deepEqual((await reseal('shared_agents', { ...row, version: 'four' })).unreadable, ['document']);
 });
 
 test('a transcript run has nothing to seal', async () => {

@@ -19,6 +19,7 @@ import {
   isSafeMachineName,
   isSafeTaskId,
   isTaskCreator,
+  isSharedAgentsVersion,
   isWireNoteAuthor,
   rejectUnknownKeys,
 } from './contract.mts';
@@ -39,6 +40,7 @@ import {
   workdirOpenBindings,
 } from './sealing.mts';
 import type { Binding, Opener, RowRef, Sealer } from './sealing.mts';
+import { sharedAgentsBinding } from './sharedAgents.mts';
 
 export const EXPORT_FORMAT = 'agent-board-export';
 export const EXPORT_VERSION = 1;
@@ -50,6 +52,7 @@ export const EXPORT_TABLES = [
   'note',
   'task_pr',
   'machine',
+  'shared_agents',
   'transcript_run',
   'transcript_event',
 ] as const;
@@ -180,6 +183,7 @@ export const SEALED_ROW_COLUMNS: Record<ExportTable, readonly string[]> = {
   note: ['body', 'preview', 'suggestion', 'questions', 'answers'],
   task_pr: ['pr'],
   machine: ['dirs', 'catalog', 'usage'],
+  shared_agents: ['document'],
   transcript_run: [],
   transcript_event: ['data', 'output'],
 };
@@ -279,6 +283,10 @@ async function planOf(ctx: ResealContext, table: ExportTable, row: Record<string
         catalog: [machineCatalogBinding(name)],
         usage: [machineUsageBinding(name)],
       };
+    }
+    case 'shared_agents': {
+      const { version } = row;
+      return isSharedAgentsVersion(version) ? { document: [sharedAgentsBinding(version)] } : {};
     }
     case 'transcript_run':
       return {};

@@ -13,7 +13,7 @@ import {
   MAX_CATALOG_SKILLS,
   SEALED_LIMITS,
 } from '@agent-board/shared';
-import type { Backend, CatalogSkill, MachineCatalog } from '@agent-board/shared';
+import type { Backend, CatalogAgents, CatalogSkill, MachineCatalog } from '@agent-board/shared';
 import { coveringDir, dirsToSend, isDirectory, routedDirs, tryRealpath } from '../config/dirs.mts';
 import type { Config } from '../config/config.mts';
 import { errorText } from '../output/text.mts';
@@ -167,6 +167,8 @@ export interface CatalogSyncDeps {
   skipProbe?: boolean;
   log: (line: string) => void;
   exists?: (path: string) => boolean;
+  // What the machine has of the agents, sent with the catalogue so the browser can tell which machines run what.
+  agents?: CatalogAgents;
 }
 
 /** What `syncCatalog` did: sent the catalogue, found the board's copy current or the server unable to hold one, or had nothing to send yet. */
@@ -226,13 +228,14 @@ export async function syncCatalog(deps: CatalogSyncDeps): Promise<CatalogSync> {
     return entry?.result ? [{ ...entry, result: entry.result }] : [];
   });
   let trimmed: string | undefined;
-  const catalog = composeCatalog(
+  const composed = composeCatalog(
     entries,
     store.initSkills(),
     (what) => (trimmed = what),
     config.lanes.map(({ name }) => name),
   );
-  if (catalog === undefined) return { result: 'nothing-probed' };
+  if (composed === undefined) return { result: 'nothing-probed' };
+  const catalog = deps.agents === undefined ? composed : { ...composed, agents: deps.agents };
   const state = await backend.checkCatalog(config.machine, catalog);
   if (state !== 'stale') return { result: state === 'current' ? 'unchanged' : 'unsupported' };
   await backend.setCatalog(config.machine, catalog);

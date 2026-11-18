@@ -33,6 +33,7 @@ import {
   parseWireWatchStopAck,
   parseWirePromptEdit,
   parseWireScheduleDraft,
+  parseWireSetAgents,
   parseWireScheduleEdit,
   parseWireTaskConfig,
   parseWireTaskDraft,
@@ -74,6 +75,7 @@ import {
   updateSchedule,
 } from './services/schedules';
 import type { ScheduleUpdate } from './services/schedules';
+import { getSharedAgents, setSharedAgents, sharedAgentsVersion } from './services/sharedAgents';
 import { appendTranscript } from './services/transcripts';
 import {
   ackMessages,
@@ -215,6 +217,7 @@ async function handleMachineCall(
         dirsIndex: await machineDirsIndex(db, machine),
         catalogIndex: await machineCatalogIndex(db, machine),
         usageIndex: await machineUsageIndex(db, machine),
+        agentsVersion: await sharedAgentsVersion(db),
         ...(config.cliVersion === null ? {} : { cli: config.cliVersion }),
       };
     case 'list-tasks': {
@@ -348,6 +351,14 @@ async function handleMachineCall(
         parsed(() => parseWireUsage(body['body'])),
       );
       return null;
+    case 'get-agents':
+      return getSharedAgents(db);
+    case 'set-agents':
+      await setSharedAgents(
+        db,
+        parsed(() => parseWireSetAgents(body['body'])),
+      );
+      return null;
     case 'ask': {
       const asked = parsed(() => parseWireAsk(body['body']));
       await ask(db, idOf(body, 'task'), asked, machine, runOf(body));
@@ -468,6 +479,8 @@ const DISPATCH_WRITES = new Set([
   'update-schedule',
   'edit-schedule',
   'remove-schedule',
+  // Every machine applies a pushed document on its next tick; this makes that tick now.
+  'set-agents',
 ]);
 
 export interface MachineApiOptions {
