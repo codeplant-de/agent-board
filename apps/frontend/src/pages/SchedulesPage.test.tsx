@@ -14,10 +14,7 @@ type Row = Schedule;
 const list = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
 const setPaused = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const remove = vi.hoisted(() => vi.fn(async (_: unknown) => null));
-const setRule = vi.hoisted(() =>
-  vi.fn(async (_: unknown): Promise<{ pending: 'updated' | 'started' | 'none' }> => ({ pending: 'updated' })),
-);
-const edit = vi.hoisted(() =>
+const update = vi.hoisted(() =>
   vi.fn(async (_: unknown): Promise<{ pending: 'updated' | 'started' | 'none' }> => ({ pending: 'updated' })),
 );
 
@@ -35,8 +32,11 @@ vi.mock('../lib/trpc', () => ({
       list: { queryOptions: () => ({ queryKey: ['schedules'], queryFn: list }) },
       setPaused: { mutationOptions: () => ({ mutationFn: setPaused }) },
       remove: { mutationOptions: () => ({ mutationFn: remove }) },
-      edit: { mutationOptions: () => ({ mutationFn: edit }) },
-      setRule: { mutationOptions: () => ({ mutationFn: setRule }) },
+      update: { mutationOptions: () => ({ mutationFn: update }) },
+    },
+    machines: {
+      list: { queryOptions: () => ({ queryKey: ['machines'], queryFn: async () => [] }) },
+      catalogs: { queryOptions: () => ({ queryKey: ['catalogs'], queryFn: async () => [] }) },
     },
   }),
 }));
@@ -88,8 +88,7 @@ beforeEach(() => {
   list.mockReset();
   setPaused.mockClear();
   remove.mockClear();
-  edit.mockClear();
-  setRule.mockClear();
+  update.mockClear();
 });
 
 describe('SchedulesPage', () => {
@@ -246,27 +245,35 @@ describe('SchedulesPage', () => {
     expect(within(ended).queryByRole('link', { name: 'Next card' })).not.toBeInTheDocument();
   });
 
-  it('edit opens the schedule’s title and prompt, saves them and says the pending card was updated', async () => {
+  it('edit opens one dialog with the schedule’s values and saves all of them through update', async () => {
     list.mockResolvedValue([row({})]);
     renderPage();
-    await userEvent.click(within((await screen.findByText('Nightly sweep')).closest('tr')!).getByLabelText('Edit'));
+    const actions = within((await screen.findByText('Nightly sweep')).closest('tr')!);
+    expect(actions.queryByLabelText('Change repeat')).not.toBeInTheDocument();
+    await userEvent.click(actions.getByLabelText('Edit'));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByLabelText('Title')).toHaveValue('Nightly sweep');
     const prompt = within(dialog).getByLabelText('Prompt');
     expect(prompt).toHaveValue('/sweep the backlog\nand report');
+    expect(within(dialog).getByLabelText(/Repeat/)).toHaveValue('2h');
     await userEvent.clear(prompt);
     await userEvent.type(prompt, '/sweep everything');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
     expect(await within(dialog).findByText('The pending card was updated too.')).toBeInTheDocument();
-    expect(edit.mock.calls[0]?.[0]).toMatchObject({
-      schedule: { id: 'sch1' },
+    expect(update.mock.calls[0]?.[0]).toMatchObject({
+      id: 'sch1',
       title: 'Nightly sweep',
       input: '/sweep everything',
+      place: { machine: 'laptop', workdir: '/work' },
+      repeat: { everyMs: 7_200_000 },
+      runsLeft: null,
+      until: null,
+      maxConcurrent: null,
     });
   });
 
   it('edit says when the pending card had already started', async () => {
-    edit.mockResolvedValueOnce({ pending: 'started' as const });
+    update.mockResolvedValueOnce({ pending: 'started' as const });
     list.mockResolvedValue([row({})]);
     renderPage();
     await userEvent.click(within((await screen.findByText('Nightly sweep')).closest('tr')!).getByLabelText('Edit'));
@@ -276,89 +283,14 @@ describe('SchedulesPage', () => {
     expect(await screen.findByText(/already started; the change applies from the next run/)).toBeInTheDocument();
   });
 
-  it('change repeat opens the interval, and saves a new one', async () => {
-    list.mockResolvedValue([row({})]);
-    renderPage();
-    await userEvent.click(
-      within((await screen.findByText('Nightly sweep')).closest('tr')!).getByLabelText('Change repeat'),
-    );
-    const dialog = await screen.findByRole('dialog');
-    const repeat = within(dialog).getByLabelText(/Repeat/);
-    expect(repeat).toHaveValue('2h');
-    await userEvent.clear(repeat);
-    await userEvent.type(repeat, '1d');
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
-    expect(await within(dialog).findByText('The waiting card was moved to the new next run.')).toBeInTheDocument();
-    expect(setRule.mock.calls[0]?.[0]).toEqual({ id: 'sch1', every: 86_400_000 });
-  });
-
-  it('change repeat opens every cron expression as a row, and saves added and removed ones', async () => {
-    list.mockResolvedValue([
-      row({
-        everyMs: null,
-        cron: '0 9 * * 5#1',
-        moreCrons: ['0 9 * * 5#3'],
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      }),
-    ]);
-    renderPage();
-    await userEvent.click(
-      within((await screen.findByText('Nightly sweep')).closest('tr')!).getByLabelText('Change repeat'),
-    );
-    const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByLabelText(/Repeat/)).toHaveValue('0 9 * * 5#1');
-    expect(within(dialog).getByLabelText('Cron expression 2')).toHaveValue('0 9 * * 5#3');
-    expect(within(dialog).queryByText(/The schedule was set in/)).not.toBeInTheDocument();
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Add cron expression' }));
-    await userEvent.type(within(dialog).getByLabelText('Cron expression 3'), '0 9 * * 1');
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Remove cron expression 2' }));
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(setRule).toHaveBeenCalled());
-    expect(setRule.mock.calls[0]?.[0]).toEqual({
-      id: 'sch1',
-      cron: '0 9 * * 5#1',
-      moreCrons: ['0 9 * * 1'],
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    });
-  });
-
-  it('change repeat mentions a stored time zone that differs, and holds back a rule it cannot read', async () => {
-    list.mockResolvedValue([row({ everyMs: null, cron: '0 9 * * 1-5', timezone: 'Pacific/Auckland' })]);
-    renderPage();
-    await userEvent.click(
-      within((await screen.findByText('Nightly sweep')).closest('tr')!).getByLabelText('Change repeat'),
-    );
-    const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText(/The schedule was set in Pacific\/Auckland/)).toBeInTheDocument();
-    await userEvent.type(within(dialog).getByLabelText(/Repeat/), ' 5');
-    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
-  });
-
-  it('change repeat says when the waiting card had started', async () => {
-    setRule.mockResolvedValueOnce({ pending: 'started' as const });
-    list.mockResolvedValue([row({})]);
-    renderPage();
-    await userEvent.click(
-      within((await screen.findByText('Nightly sweep')).closest('tr')!).getByLabelText('Change repeat'),
-    );
-    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Save' }));
-    expect(await screen.findByText(/already started; the new rule applies from the next card/)).toBeInTheDocument();
-  });
-
-  it('offers no change repeat for an ended schedule or one that runs after another', async () => {
+  it('offers no edit for an ended schedule and a disabled one for a schedule that cannot be read', async () => {
     list.mockResolvedValue([
       row({ ended: true, remaining: 0, nextRunAt: null, occurrenceTaskId: null }),
-      row({
-        id: 'sch2',
-        title: 'Deploy',
-        everyMs: null,
-        after: { scheduleId: 'sch1', delayMs: 0 },
-        occurrenceTaskId: null,
-        nextRunAt: null,
-      }),
+      row({ id: 'sch2', title: 'Broken', unreadable: ['input'] }),
     ]);
     renderPage();
-    await screen.findByText('Deploy');
-    expect(screen.queryByLabelText('Change repeat')).not.toBeInTheDocument();
+    const ended = (await screen.findByText('Nightly sweep')).closest('tr')!;
+    expect(within(ended).queryByLabelText('Edit')).not.toBeInTheDocument();
+    expect(within(screen.getByText('Broken').closest('tr')!).getByLabelText('Edit')).toBeDisabled();
   });
 });

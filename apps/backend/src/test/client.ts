@@ -4,6 +4,7 @@ import {
   noteBinding,
   openFields,
   openNote,
+  runsLeft,
   openPreview,
   sealAnswers,
   sealFields,
@@ -23,6 +24,14 @@ import { caller } from './helpers';
 import { sealerFor, type Sealing } from './sealed';
 
 type Raw = ReturnType<typeof caller>;
+type ScheduleUpdateInput = Parameters<Raw['schedules']['update']>[0];
+/** What a test changes about a schedule; the rest stays. A null `agent` clears it, a null `place` clears machine and directory. */
+type ScheduleChanges = Partial<
+  Pick<
+    ScheduleUpdateInput,
+    'priority' | 'model' | 'autoDone' | 'repeat' | 'at' | 'runsLeft' | 'until' | 'maxConcurrent'
+  > & { title: string; input: string; agent: string | null; place: { machine: string; workdir: string } | null }
+>;
 // Machine API bodies and answers are untyped JSON.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = Record<string, any>;
@@ -491,22 +500,75 @@ export function plainUi(db: Db, owner = 'jascha') {
       list: async () => Promise.all((await raw.schedules.list()).map(openSchedule)),
       setPaused: async (input: { id: string; paused: boolean }) => openSchedule(await raw.schedules.setPaused(input)),
       remove: raw.schedules.remove,
-      setRule: async (input: Parameters<Raw['schedules']['setRule']>[0]) => {
-        const { schedule, pending } = await raw.schedules.setRule(input);
-        return { schedule: await openSchedule(schedule), pending };
-      },
-      // As the browser does: the new title and prompt sealed under the schedule.
-      edit: async (input: { id: string; title: string; input: string }) => {
-        const found = (await raw.schedules.list()).find((schedule) => schedule.id === input.id);
-        const agent =
-          found === undefined
-            ? null
-            : (await openFields(sealing.open, { kind: 'schedule', id: input.id }, found)).agent;
-        const fields = await sealFields(sealing.seal, { kind: 'schedule', id: input.id, agent }, input);
-        const { schedule, pending } = await raw.schedules.edit({
-          id: input.id,
+      // As the browser does: title, prompt, directory and agent sealed together under the schedule. What `changes` leaves out stays as it is.
+      update: async (changes: ScheduleChanges & { id: string }) => {
+        const current = (await Promise.all((await raw.schedules.list()).map(openSchedule))).find(
+          ({ id }) => id === changes.id,
+        );
+        // A schedule that is not there gets a valid edit, so the board's answer is the refusal under test.
+        const kept: Required<Omit<ScheduleChanges, 'at'>> =
+          current === undefined
+            ? {
+                title: 'title',
+                input: 'input',
+                agent: null,
+                place: null,
+                priority: 'normal' as const,
+                model: null,
+                autoDone: false,
+                repeat: { everyMs: 3_600_000 },
+                runsLeft: null,
+                until: null,
+                maxConcurrent: null,
+              }
+            : {
+                title: current.title,
+                input: current.input,
+                agent: current.agent ?? null,
+                place:
+                  current.machine !== null && current.workdir !== null
+                    ? { machine: current.machine, workdir: current.workdir }
+                    : null,
+                priority: current.priority,
+                model: current.model,
+                autoDone: current.autoDone,
+                repeat:
+                  current.after !== null
+                    ? { after: current.after }
+                    : current.everyMs !== null
+                      ? { everyMs: current.everyMs }
+                      : {
+                          cron: current.cron!,
+                          ...(current.moreCrons?.length ? { moreCrons: current.moreCrons } : {}),
+                          timezone: current.timezone!,
+                        },
+                runsLeft: runsLeft(current),
+                until: current.until,
+                maxConcurrent: current.maxConcurrent,
+              };
+        const { id, at, ...next } = { ...kept, ...changes };
+        const fields = await sealFields(
+          sealing.seal,
+          { kind: 'schedule', id, agent: next.agent },
+          { title: next.title, input: next.input, workdir: next.place?.workdir },
+        );
+        const { schedule, pending } = await raw.schedules.update({
+          id,
           title: fields.title,
           input: fields.input,
+          ...(fields.agent === undefined ? {} : { agent: fields.agent }),
+          place:
+            next.place === null || fields.workdir === undefined
+              ? null
+              : { machine: next.place.machine, workdir: fields.workdir },
+          priority: next.priority,
+          model: next.model,
+          autoDone: next.autoDone,
+          repeat: next.repeat,
+          ...(at === undefined ? {} : { at }),
+          runsLeft: next.runsLeft,
+          until: next.until,
+          maxConcurrent: next.maxConcurrent,
         });
         return { schedule: await openSchedule(schedule), pending };
       },

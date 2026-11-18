@@ -1106,7 +1106,7 @@ The user's new title and prompt for a schedule. It needs the `prompt.edit` featu
 - The pending occurrence takes it too when it is in `todo`, open, and no worker ever claimed it. The answer says what became of it in `pending`: `updated`, `started` (it exists but was left alone) or `none` (the schedule is paused, or has nothing waiting).
 - No note is written. A schedule has no thread, so the old text is not kept.
 
-The browser makes the same change with `schedules.edit`.
+The browser changes much more with its own `schedules.update` (the whole schedule, in one step: see [The Schedules page](usage.md#the-schedules-page)); this command stays for the CLI's `board schedules edit`.
 
 #### `remove-schedule`
 

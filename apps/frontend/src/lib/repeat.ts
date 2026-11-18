@@ -1,4 +1,4 @@
-import { ContractError, MAX_SCHEDULE_CRONS, parseDuration } from '@agent-board/shared';
+import { ContractError, MAX_INTERVAL_MS, MAX_SCHEDULE_CRONS, parseDuration } from '@agent-board/shared';
 
 export type RepeatRule = { every: number } | { cron: string; moreCrons?: string[]; timezone: string };
 
@@ -44,4 +44,11 @@ export function parseRepeatRule(text: string, timezone: string): RepeatRule | { 
   const same = lines.map(normalized);
   if (same.some((line, index) => same.indexOf(line) !== index)) return { error: 'A cron expression is given twice' };
   return { cron: rule, ...(others.length > 0 ? { moreCrons: others } : {}), timezone };
+}
+
+/** The delay of a schedule that runs after another: empty is none, else a duration the board may hold. */
+export function parseDelay(text: string): number | undefined {
+  if (text.trim() === '') return 0;
+  const ms = readInterval(text.trim());
+  return ms !== undefined && ms <= MAX_INTERVAL_MS ? ms : undefined;
 }

@@ -4,7 +4,7 @@ import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { CatalogSkill } from '@agent-board/shared';
 import { canEditPrompt } from '../lib/editPrompt';
-import { errorMessage, useTRPC, type BoardTask, type Schedule } from '../lib/trpc';
+import { errorMessage, useTRPC, type BoardTask } from '../lib/trpc';
 import { MarkdownEditor } from './MarkdownEditor';
 
 interface FormProps {
@@ -100,53 +100,5 @@ export function EditTaskPrompt({ task, skills }: { task: BoardTask; skills?: rea
         />
       </Modal>
     </>
-  );
-}
-
-type PendingCard = 'updated' | 'started' | 'none';
-
-/** What saving a schedule's edit tells the user about the card waiting on the board. */
-export function pendingCardMessage(pending: PendingCard): string {
-  switch (pending) {
-    case 'updated':
-      return 'The pending card was updated too.';
-    case 'started':
-      return 'The pending card has already started; the change applies from the next run.';
-    case 'none':
-      return 'The schedule has no pending card; its next run takes the change.';
-  }
-}
-
-/** Edits the title and prompt of a schedule; its next occurrences, and its pending card while it has not started, take them. */
-export function EditSchedulePrompt({ schedule, onClose }: { schedule: Schedule; onClose: () => void }) {
-  const trpc = useTRPC();
-  const edit = useMutation(trpc.schedules.edit.mutationOptions());
-  const [saved, setSaved] = useState<PendingCard | undefined>(undefined);
-  if (saved !== undefined)
-    return (
-      <Stack>
-        <Alert color="green" variant="light" title="Saved">
-          <Text size="sm">{pendingCardMessage(saved)}</Text>
-        </Alert>
-        <Group justify="flex-end">
-          <Button onClick={onClose}>Close</Button>
-        </Group>
-      </Stack>
-    );
-  return (
-    <PromptForm
-      title={schedule.title}
-      input={schedule.input}
-      hint="Every later run takes this title and prompt. The waiting card takes it too, unless a worker already started it."
-      pending={edit.isPending}
-      error={edit.error}
-      onCancel={onClose}
-      onSave={(title, input) =>
-        edit.mutate(
-          { schedule: { ...schedule, agent: schedule.agent ?? null }, title, input },
-          { onSuccess: ({ pending }) => setSaved(pending) },
-        )
-      }
-    />
   );
 }

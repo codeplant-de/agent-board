@@ -2,7 +2,7 @@ import { deriveKeys, openFields, sealFields, textBeforeEdit, type RowRef } from 
 import { describe, expect, it } from 'vitest';
 import { sealerFor } from './contexts';
 import { openerFor } from './opening';
-import { InputError, sealEdit, sealScheduleEdit, type EditTarget } from './sealing';
+import { InputError, sealEdit, sealScheduleUpdate, type EditTarget, type ScheduleUpdate } from './sealing';
 
 const keys = await deriveKeys(
   Uint8Array.from({ length: 32 }, (_, i) => i),
@@ -78,26 +78,61 @@ describe('sealEdit', () => {
   });
 });
 
-describe('sealScheduleEdit', () => {
-  it('seals the new title and prompt under the schedule', async () => {
-    const sealed = await sealScheduleEdit(keys, {
-      schedule: { id: 'sched001', agent: null, unreadable: [] },
-      title: 'Nightly',
-      input: 'sweep',
-    });
-    expect(await opened({ kind: 'schedule', id: 'sched001' }, sealed)).toMatchObject({
-      title: 'Nightly',
-      input: 'sweep',
-      unreadable: [],
-    });
-    expect((await opened({ kind: 'schedule', id: 'sched002' }, sealed)).unreadable).toEqual(['title', 'input']);
+describe('sealScheduleUpdate', () => {
+  const update = (overrides: Partial<ScheduleUpdate> = {}): ScheduleUpdate => ({
+    id: 'sched001',
+    title: 'Nightly',
+    input: 'sweep',
+    agent: null,
+    place: null,
+    priority: 'normal',
+    model: null,
+    autoDone: false,
+    repeat: { everyMs: 3_600_000 },
+    runsLeft: null,
+    until: null,
+    maxConcurrent: null,
+    unreadable: [],
+    ...overrides,
   });
 
-  it('refuses an empty prompt and a schedule that cannot be read', async () => {
-    const schedule = { id: 'sched001', agent: null, unreadable: [] };
-    await expect(sealScheduleEdit(keys, { schedule, title: 't', input: '' })).rejects.toThrow(InputError);
-    await expect(
-      sealScheduleEdit(keys, { schedule: { ...schedule, unreadable: ['input'] }, title: 't', input: 'x' }),
-    ).rejects.toThrow(InputError);
+  it('seals the title, prompt, directory and agent under the schedule, and passes the clear fields on', async () => {
+    const sealed = await sealScheduleUpdate(
+      keys,
+      update({ agent: ' auditor ', place: { machine: 'laptop', workdir: '/work' }, priority: 'high', runsLeft: 3 }),
+    );
+    expect(sealed).toMatchObject({
+      id: 'sched001',
+      priority: 'high',
+      runsLeft: 3,
+      repeat: { everyMs: 3_600_000 },
+      place: { machine: 'laptop' },
+    });
+    expect(sealed).not.toHaveProperty('unreadable');
+    expect(
+      await openFields(
+        openerFor(keys),
+        { kind: 'schedule', id: 'sched001' },
+        { ...sealed, workdir: sealed.place?.workdir },
+      ),
+    ).toMatchObject({ title: 'Nightly', input: 'sweep', agent: 'auditor', workdir: '/work', unreadable: [] });
+    expect((await opened({ kind: 'schedule', id: 'sched002' }, sealed)).unreadable).toContain('title');
+  });
+
+  it('seals again under a new agent, which the old one does not open', async () => {
+    const withAgent = await sealScheduleUpdate(keys, update({ agent: 'auditor' }));
+    const without = await sealScheduleUpdate(keys, update());
+    expect(without).not.toHaveProperty('agent');
+    expect(without.input).not.toBe(withAgent.input);
+  });
+
+  it('leaves no directory sealed for none', async () => {
+    expect((await sealScheduleUpdate(keys, update())).place).toBeNull();
+  });
+
+  it('refuses an empty prompt, a bad agent name and a schedule that cannot be read', async () => {
+    await expect(sealScheduleUpdate(keys, update({ input: ' ' }))).rejects.toThrow(InputError);
+    await expect(sealScheduleUpdate(keys, update({ agent: 'not an agent!' }))).rejects.toThrow(InputError);
+    await expect(sealScheduleUpdate(keys, update({ unreadable: ['input'] }))).rejects.toThrow(InputError);
   });
 });
