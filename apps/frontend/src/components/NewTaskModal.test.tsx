@@ -345,6 +345,32 @@ describe('NewTaskModal model', () => {
   });
 });
 
+describe('NewTaskModal lane', () => {
+  it('sends no lane by default, and does not say that the prompt picks the lane', async () => {
+    await open();
+    expect(screen.queryByText(/picks the lane/)).not.toBeInTheDocument();
+    expect(screen.getByText(/The Lane field below sets the lane it runs in/)).toBeInTheDocument();
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).not.toHaveProperty('lane');
+  });
+
+  it('offers the lanes the machines published and sends the chosen one', async () => {
+    listed.catalogs = [
+      { name: 'laptop', catalog: { models: [], skills: [], dirs: {}, lanes: ['general', 'reviews'] } },
+      { name: 'desktop', catalog: { models: [], skills: [], dirs: {}, lanes: ['general', 'docs'] } },
+    ];
+    await open();
+    await userEvent.click(screen.getByRole('combobox', { name: 'Lane' }));
+    expect(await screen.findByRole('option', { name: 'Default lane', hidden: true })).toBeInTheDocument();
+    expect(screen.getAllByRole('option', { name: 'general', hidden: true })).toHaveLength(1);
+    await userEvent.click(screen.getByRole('option', { name: 'docs', hidden: true }));
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ lane: 'docs', when: 'now' });
+  });
+});
+
 describe('NewTaskModal auto-done', () => {
   it('sends no setting by default', async () => {
     await open();

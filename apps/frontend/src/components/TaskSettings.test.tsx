@@ -6,12 +6,13 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Machine } from '../lib/opening';
 import type { BoardTask } from '../lib/trpc';
-import { AutoDoneSetting, ModelPicker, WorkdirSetting } from './TaskSettings';
+import { AutoDoneSetting, LanePicker, ModelPicker, WorkdirSetting } from './TaskSettings';
 
 const configure = vi.hoisted(() => vi.fn(async (_: unknown) => ({})));
 const listed = vi.hoisted(() => ({
   paths: ['/work/app', '/work/other'],
   models: [] as { value: string; label: string }[],
+  lanes: ['general', 'reviews'],
 }));
 
 vi.mock('../lib/trpc', () => ({
@@ -21,7 +22,9 @@ vi.mock('../lib/trpc', () => ({
       catalogs: {
         queryOptions: () => ({
           queryKey: ['machines.catalogs'],
-          queryFn: async () => [{ name: 'laptop', catalog: { models: listed.models, skills: [], dirs: {} } }],
+          queryFn: async () => [
+            { name: 'laptop', catalog: { models: listed.models, skills: [], dirs: {}, lanes: listed.lanes } },
+          ],
         }),
       },
       list: {
@@ -231,5 +234,28 @@ describe('WorkdirSetting', () => {
     await pick('/work/app');
     await userEvent.click(await save());
     await waitFor(() => expect(configure).toHaveBeenCalled());
+  });
+});
+
+describe('LanePicker', () => {
+  it('offers the default lane and the published lanes, and saves the chosen one through configure', async () => {
+    renderWith(<LanePicker task={task({ requestedLane: null })} />);
+    await userEvent.click(screen.getByRole('combobox', { name: 'Lane' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'reviews', hidden: true }));
+    await waitFor(() => expect(configure).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ lane: 'reviews' });
+  });
+
+  it('sends null for the default lane', async () => {
+    renderWith(<LanePicker task={task({ requestedLane: 'reviews' })} />);
+    await userEvent.click(screen.getByRole('combobox', { name: 'Lane' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'Default lane', hidden: true }));
+    await waitFor(() => expect(configure).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ lane: null });
+  });
+
+  it('is disabled while the task runs', () => {
+    renderWith(<LanePicker task={task({ status: 'running', requestedLane: 'reviews' })} />);
+    expect(screen.getByRole('combobox', { name: 'Lane' })).toBeDisabled();
   });
 });

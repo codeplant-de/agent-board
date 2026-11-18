@@ -105,7 +105,7 @@ const said = (run: Run): string => run.printed.join('\n');
 test('the writer changes only the dirs key: other keys keep their values and order, the mode stays, no temp file is left', (context) => {
   const fx = fixture(context, {
     autoUpdate: 'never',
-    lanes: { general: { skills: ['*'], slots: 3 } },
+    lanes: { general: { slots: 3, default: true } },
     repos: { 'a/b': '/srv/b' },
     zzz: [1, 2, { x: null }],
   });
@@ -308,7 +308,7 @@ test('add --from-config lists what the config routes to, skipping what is missin
   const config = {
     machine: 'here',
     defaultCwd: fx.home,
-    lanes: { reviews: { skills: ['/review-pr'], slots: 1, cwd: lane }, general: { skills: ['*'], slots: 1 } },
+    lanes: { reviews: { slots: 1, cwd: lane }, general: { slots: 1, default: true } },
     repos: { 'a/checkout': checkout, 'a/inner': inside, 'a/gone': join(fx.root, 'gone'), 'a/root': '/' },
   };
   writeFileSync(fx.configFile, JSON.stringify(config));
@@ -597,7 +597,7 @@ const settingsOf = (fx: Fixture): Record<string, unknown> => (fx.config()['dirs'
 
 test('add and rm keep the settings of the other entries, and their order', async (context) => {
   const fx = fixture(context, {
-    lanes: { reviews: { skills: ['review-pr'], slots: 1 } },
+    lanes: { reviews: { slots: 1, default: true } },
     dirs: {
       '/srv/a': { repo: 'acme/a', label: 'A', default: true },
       '/srv/b': { lane: 'reviews' },
@@ -647,7 +647,7 @@ test('set writes one setting of one listed directory, and says so when it is the
 
 test('set default and set lane are refused on a second directory, naming the first, and lane must exist', async (context) => {
   const fx = fixture(context, {
-    lanes: { reviews: { skills: ['review-pr'], slots: 1 }, general: { skills: ['*'], slots: 1 } },
+    lanes: { reviews: { slots: 1 }, general: { slots: 1, default: true } },
   });
   const a = fx.make('a');
   const b = fx.make('b');
@@ -739,7 +739,7 @@ test('set and unset refuse inside a board run, and a dry run writes and sends no
 
 test('list shows the settings of each entry on its line', async (context) => {
   const fx = fixture(context, {
-    lanes: { reviews: { skills: ['review-pr'], slots: 1 } },
+    lanes: { reviews: { slots: 1, default: true } },
     dirs: {
       '/srv/a': { lane: 'reviews', default: true, repo: 'acme/a', label: 'Board' },
       '/srv/b': {},
@@ -755,7 +755,7 @@ test('list shows the settings of each entry on its line', async (context) => {
 
 test('rm says which of repo, default and lane go with the entry, and nothing for a label alone', async (context) => {
   const fx = fixture(context, {
-    lanes: { reviews: { skills: ['review-pr'], slots: 1 } },
+    lanes: { reviews: { slots: 1, default: true } },
     dirs: {
       '/srv/a': { repo: 'acme/a', default: true, lane: 'reviews', label: 'A' },
       '/srv/b': { label: 'B' },

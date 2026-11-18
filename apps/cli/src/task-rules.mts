@@ -1,5 +1,6 @@
-import { isAgentName, promptSkill, shortSkill } from '@agent-board/shared';
+import { isAgentName, isSafeLane } from '@agent-board/shared';
 import type { Task, UnreadableField } from '@agent-board/shared';
+import { defaultLane } from './config/config.mts';
 import type { AgentConfig, Lane } from './config/config.mts';
 
 export const START_MARKER = 'agent-board: started';
@@ -8,15 +9,19 @@ export const WAKE_MARKER = 'agent-board: wait over:';
 // The start of the thread note a watch's event leaves (see watch/finish.mts); the agent did not write it.
 export const WATCH_MARKER = 'agent-board: watch';
 
-// The lane of this machine whose own work the task is: the lane naming the skill its prompt starts with, else the lane
-// with "*". Undefined when no lane owns it; any lane may still borrow it.
-export function ownLane(task: Task, lanes: Lane[]): string | undefined {
-  const skill = promptSkill(task.input);
-  const short = skill === undefined ? undefined : shortSkill(skill);
-  return (
-    lanes.find((lane) => short !== undefined && lane.skills.includes(short)) ??
-    lanes.find((lane) => lane.skills.includes('*'))
-  )?.name;
+export interface OwnLane {
+  name: string;
+  // The lane the task asked for when this machine has none of that name, so the task went to the default lane.
+  missing?: string;
+}
+
+// The lane of this machine whose own work the task is: the lane it asked for (`requestedLane`) when this machine has it, else
+// the default lane. Any other lane may still borrow it.
+export function ownLane(task: Pick<Task, 'requestedLane'>, lanes: readonly Lane[]): OwnLane {
+  const asked = task.requestedLane;
+  if (asked === null) return { name: defaultLane(lanes).name };
+  if (isSafeLane(asked) && lanes.some((lane) => lane.name === asked)) return { name: asked };
+  return { name: defaultLane(lanes).name, missing: isSafeLane(asked) ? asked : '(not a lane name)' };
 }
 
 // The fields this machine could not open that a run needs: its prompt and the directory it works in. A task listed here must

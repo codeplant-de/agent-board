@@ -36,6 +36,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     prompt: '/review-pr 17741 --auto',
     priority: 'high',
     model: undefined,
+    lane: undefined,
     autoDone: false,
     agent: undefined,
     title: undefined,
@@ -59,6 +60,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     prompt: 'Find out why',
     priority: undefined,
     model: undefined,
+    lane: undefined,
     autoDone: false,
     agent: undefined,
     title: 'Export',
@@ -433,6 +435,53 @@ test('--model is checked and sent for a plain task and for a repeat', async () =
     ?.task;
   assert.equal(first?.model, 'fable');
   assert.ok(repeat.backend.writes[0]?.endsWith('| here:/work/cosuno | model fable'));
+});
+
+test('--lane is checked and sent for a plain task, a keyed one and a repeat, and only when given', async () => {
+  assert.equal(parseScheduleArgs(['--lane', 'reviews', 'x']).lane, 'reviews');
+  assert.equal(parseScheduleArgs(['x']).lane, undefined);
+  for (const bad of ['a b', 'lane;ls', '-x', '.x', 'l'.repeat(65)])
+    assert.throws(() => parseScheduleArgs(['--lane', bad, 'x']), /is not a lane name/, bad);
+
+  const plain = setup(undefined);
+  assert.equal(
+    (await schedule(plain.deps, parseScheduleArgs(['--lane', 'reviews', '--new', '/sweep'])))?.task.requestedLane,
+    'reviews',
+  );
+  const none = setup(undefined);
+  assert.equal((await schedule(none.deps, parseScheduleArgs(['--new', '/sweep'])))?.task.requestedLane, null);
+
+  const keyed = setup(undefined);
+  const made = await schedule(keyed.deps, parseScheduleArgs(['--lane', 'reviews', '--key', 'k1', '/sweep']));
+  assert.equal(made?.task.requestedLane, 'reviews');
+
+  const repeat = setup(undefined);
+  const first = (await schedule(repeat.deps, parseScheduleArgs(['--lane', 'reviews', '--every', '2h', '/sweep'], NOW)))
+    ?.task;
+  assert.equal(first?.requestedLane, 'reviews');
+  assert.ok(repeat.backend.writes[0]?.includes(' | lane reviews'));
+});
+
+test('--key on a task that exists leaves its lane alone: no other-agent, no change, a requeue keeps it', async () => {
+  const same = keyedSetup({ head: 'sha2', requestedLane: 'docs' });
+  const outcome = await schedule(same.deps, parseScheduleArgs(['--lane', 'reviews', ...KEYED]));
+  assert.deepEqual(outcome?.keyed, { result: 'exists', reason: 'same-version' });
+  assert.equal(same.backend.tasks[0]?.requestedLane, 'docs');
+  const requeued = keyedSetup({ status: 'done', requestedLane: 'docs' });
+  assert.deepEqual((await schedule(requeued.deps, parseScheduleArgs(['--lane', 'reviews', ...KEYED])))?.keyed, {
+    result: 'requeued',
+  });
+  assert.equal(requeued.backend.tasks[0]?.requestedLane, 'docs');
+});
+
+test('a requeue keeps the existing task lane and says --lane was not applied', async () => {
+  const requeue = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
+  await schedule(requeue.deps, parseScheduleArgs(['--lane', 'reviews', '/review-pr', '17741']));
+  assert.ok(
+    requeue.printed.includes(
+      'old keeps its lane (the default); --lane applies only to a new task: use `board task old set lane reviews`',
+    ),
+  );
 });
 
 test('--auto-done is sent for a plain task, a keyed one and a repeat, and only when given', async () => {

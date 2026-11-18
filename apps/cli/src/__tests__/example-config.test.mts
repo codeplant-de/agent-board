@@ -21,8 +21,8 @@ const neutral = parseConfig(
 
 test('the config board init copies is neutral: one general lane, no repos', () => {
   assert.deepEqual(
-    neutral.lanes.map((lane) => [lane.name, lane.skills, lane.slots]),
-    [['general', ['*'], 3]],
+    neutral.lanes.map((lane) => [lane.name, lane.default, lane.slots]),
+    [['general', true, 3]],
   );
   assert.deepEqual(neutral.repos, {});
   assert.ok(!readFileSync(new URL('../../config.example.json', import.meta.url), 'utf8').includes('cosuno'));
@@ -109,10 +109,10 @@ test('no rule ends in the legacy `:*` prefix syntax after a wildcard, which Clau
 
 test('the shipped lanes give reviews their own slots and everything else three', () => {
   assert.deepEqual(
-    config.lanes.map((lane) => [lane.name, lane.skills, lane.slots]),
+    config.lanes.map((lane) => [lane.name, lane.default, lane.slots]),
     [
-      ['reviews', ['review-pr'], 2],
-      ['general', ['*'], 3],
+      ['reviews', false, 2],
+      ['general', true, 3],
     ],
   );
 });

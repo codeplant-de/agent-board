@@ -15,18 +15,20 @@ Tasks only move while a machine with the right setup is on.
 
 ## Lanes
 
-A machine splits its parallel runs into lanes by skill, in its `config.json`:
+A machine splits its parallel runs into lanes, in its `config.json`. A task names the lane it wants; the prompt does not decide it.
 
 ```json
 "lanes": {
-  "reviews": { "skills": ["review-pr"], "slots": 2 },
-  "general": { "skills": ["*"], "slots": 3 }
+  "reviews": { "slots": 2 },
+  "general": { "slots": 3, "default": true }
 }
 ```
 
-Without `lanes`, a machine runs one lane, `general`, with `*` and three slots.
+Exactly one lane is the `default`. Without `lanes`, a machine runs one lane, `general`, with three slots, and it is the default. A config that marks no lane takes the first lane as the default, and one that marks two is refused.
 
-- **Own work first.** A task belongs to the lane that names the skill its prompt starts with. `/review-pr` and `/pr-review:review-pr` both count as `review-pr`. Every other task, prompts without a skill included, belongs to the lane with `*`. A skill belongs to at most one lane, and at most one lane has `*`. A lane with a free slot takes the first Todo task of its own. Resumes come first (answered, replied to or paused), then the rest by priority.
+- **The task names its lane.** You set it in the New task form, the lane picker on the task page or the schedule editor, or with `board schedule --lane <name>`, `board add --lane <name>` and `board task <task> set lane <name>`. A recurring schedule gives its lane to every occurrence. A task made by an agent's `board add` does not inherit the lane of the task that made it: it asks for none unless `--lane` says so. The lane is routing like the priority, so the board keeps it in clear. Its name has the shape of a machine name (`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`), and the worker checks it again before it uses it.
+- **Own work first.** A task belongs to the lane it names, when this machine has a lane of that name. A task that names none, or one this machine lacks, belongs to the default lane. The dispatcher says so when it starts one that fell back (`lane reviews → general (no such lane here)` in the log and the start note), so a lane that exists only on one machine still works on the others. A lane with a free slot takes the first Todo task of its own. Resumes come first (answered, replied to or paused), then the rest by priority.
+- **A running task keeps its lane.** The lane can be changed while the task is not running. The board refuses a change while it runs, and the run goes on in the lane it started in. A new start (a resume, a re-run) takes the lane the task names then.
 - **Borrowing.** A lane with nothing of its own borrows the first task any other lane would run, so idle slots do not wait. The run is marked borrowed.
 - **Taking the slot back.** A full lane may have its own work waiting while it runs borrowed work. Once a borrowed run has gone on for `pauseAfterMinutes` (default 5), the dispatcher asks the newest such run to pause, one per lane at a time. Lane bias beats priority, so a borrowed urgent run gives way to its lane's own low task. An urgent task only has guaranteed room in its own lane.
 
@@ -40,13 +42,13 @@ A turn that has not ended 2 minutes after the message is interrupted (see [Talki
 
 ### A lane's directory
 
-A lane may name a `cwd`. Its tasks run there when they have no directory of their own (see [Where a task runs](#where-a-task-runs)):
+A lane may name a `cwd`. Its tasks run there when they have no directory of their own (see [Where a task runs](#where-a-task-runs)). A task's lane for this is the one it owns, the lane it names or the default one, not the lane that borrowed it:
 
 ```json
-"reviews": { "skills": ["review-pr"], "slots": 2, "cwd": "~/workspace/acme/app" }
+"reviews": { "slots": 2, "cwd": "~/workspace/acme/app" }
 ```
 
-With that, `/review-pr 17766` from the New task form runs in the checkout and gets its settings. You can set the same from the directory's side with `board dirs set lane reviews ~/workspace/acme/app` (see [Config](setup.md#config)). That setting wins over the lane's `cwd`, and one directory serves one lane.
+With that, a task from the New task form with the lane `reviews` runs in the checkout and gets its settings. You can set the same from the directory's side with `board dirs set lane reviews ~/workspace/acme/app` (see [Config](setup.md#config)). That setting wins over the lane's `cwd`, and one directory serves one lane.
 
 ## Usage limits
 
@@ -96,7 +98,7 @@ The worker checks the heartbeat every 15 seconds:
 - **No tool call for `inactivityMinutes`** (default 15). The run is interrupted as stuck, and the task goes to `needs-me` with the end of the log. Claude Code caps a foreground Bash call at ten minutes, so a long command does not trip it.
 - **A run longer than `maxRunHours`** (default 6). The run is interrupted, however busy. This guards against an agent that loops on tool calls.
 
-While the agent is active, the worker passes the heartbeat and the lane on to the board every 15 seconds. A running card counts the seconds since ("active 12s ago", then "active 1m 5s ago"). It turns amber after 5 quiet minutes and red after 10. The card also shows its lane, with a "borrowed" badge when it runs in another lane's slot.
+While the agent is active, the worker passes the heartbeat and the lane on to the board every 15 seconds. A running card counts the seconds since ("active 12s ago", then "active 1m 5s ago"). It turns amber after 5 quiet minutes and red after 10. The card also shows its lane, with a "borrowed" badge when it runs in another lane's slot. A task that waits in Todo or Backlog shows the lane it asks for as a small badge.
 
 ### How a run is stopped
 
@@ -304,9 +306,13 @@ An entry's settings (`repo`, `default`, `lane`) only say where tasks run. They c
 - The copy never reaches a path, an argument or a decision on any machine. The worker reads only its own `config.json`.
 - `board doctor` says whether the board has the current list.
 
+### Lanes from the earlier release
+
+A lane with a `skills` list still loads for one release, and the lists are ignored. If no lane has `default`, the lane whose `skills` include `*` becomes the default (the first lane, when none has it, as for any config that marks no lane). A config with both `skills` and `default` loads as well. `board doctor` and the dispatch log warn about every `skills` key and say to set `default` instead. [Upgrading](setup.md#upgrading) has the steps.
+
 ### Skills and models on the board
 
-Each machine tells the board which skills (slash commands) and which Claude models it has, sealed. The browser uses this catalogue to complete `/skill` in a prompt or a reply and to offer the machine's models. The catalogue is advice. No CLI reads it back, no worker relies on it, and a machine without it works.
+Each machine tells the board which skills (slash commands) and which Claude models it has, and the names of its lanes, sealed. The browser uses this catalogue to complete `/skill` in a prompt or a reply, to offer the machine's models and to fill the Lane field. The catalogue is advice. No CLI reads it back, no worker relies on it, and a machine without it works.
 
 **How it asks.** The dispatcher starts `claude -p` with stream-json input and output and `--strict-mcp-config` in a directory, sends one `initialize` control request and no prompt, reads the answer and ends the process.
 
@@ -332,6 +338,7 @@ The results are files under `<state dir>/catalog/`, one per directory.
 - A skill keeps its name, a description of at most 200 characters and an argument hint of at most 100, each on one line. Its aliases and agents are not sent.
 - The models are those `claude` offers except `default`, with their display name and description.
 - `skills` holds the skills every probed directory has. Each directory lists those only it has, so a project's own skills show only for it.
+- `lanes` holds the names of the machine's lanes in config order, at most 20 (a lane beyond that is not offered). The New task form, the task page's lane picker and the schedule editor offer the union over every machine, or the chosen machine's. The list is advice: a task may name any lane, and a machine without it uses its default lane.
 
 **Sending.** After the probe, the dispatcher composes one document from every directory asked so far. It sends the document when it differs from the one the board holds, and nothing until one directory has an answer.
 
@@ -612,7 +619,7 @@ A rule must not start with `*` before a script path. A leading `*` matches any c
 
 1. **Sweep.** For each task in `running` claimed by this machine, the tick asks whether its worker is running. On Linux that is `systemctl --user is-active agent-board-<task>`. On macOS it checks that the pid in the run directory's `<task>.pid` is alive and its command line ends in `internal worker <task>`. A task whose worker is gone moves to `needs-me` with the log tail. So does one whose worker failed to enforce the [limits](#liveness-and-limits) for five minutes past them, and its unit is stopped. If `systemctl` gives no known state, or the backend fails, the tick stops before starting anything and exits non-zero.
 2. **Wake.** For each task in `waiting` that this machine ran, a wait whose `wakeAt` has passed is woken with the reason, so it can start in this tick. A waiting task with a watch event and no live run is woken too. The tick drops the watches of tasks that are Done, closed, in Backlog or gone.
-3. **Plan and start.** The tick skips a task this machine cannot serve (see [Two machines](#two-machines)), a proposal you have not started, a task it cannot decrypt, a delayed task that is not due, and a task the board marks `held` because its schedule's [limit](usage.md#limiting-a-schedule) is used up (the board refuses its claim too). While a [usage limit](#usage-limits) is reached, it also leaves out tasks below the limit's priority. It plans the rest into [lanes](#lanes), own work first, then borrowing. It claims each start, writes its lane to the run directory and starts the worker. On Linux that is `systemd-run --user --collect --unit agent-board-<task>`. On macOS it is a detached `board internal worker <task>` process with its output in the task log. A start note names the machine, lane and PID. A lost claim hands its slot to the next task. The first failed start ends the tick's starting.
+3. **Plan and start.** The tick skips a task this machine cannot serve (see [Two machines](#two-machines)), a proposal you have not started, a task it cannot decrypt, a delayed task that is not due, and a task the board marks `held` because its schedule's [limit](usage.md#limiting-a-schedule) is used up (the board refuses its claim too). While a [usage limit](#usage-limits) is reached, it also leaves out tasks below the limit's priority. It plans the rest into [lanes](#lanes), own work first (the lane a task names, else the default one), then borrowing. It claims each start, writes its lane to the run directory and starts the worker. On Linux that is `systemd-run --user --collect --unit agent-board-<task>`. On macOS it is a detached `board internal worker <task>` process with its output in the task log. A start note names the machine, lane and PID. A lost claim hands its slot to the next task. The first failed start ends the tick's starting.
 4. **Pause.** Lanes whose own work still waits ask one borrowed run each to pause.
 5. **Poll.** When the watch unit is not running, the tick polls the due watches (see [Without the watch unit](#without-the-watch-unit)). It also runs the checks that an older `board wait --check` stored in `<state dir>/waits/`, side by side, 45 seconds each at most. A check that exits 0 wakes its task with the end of its output.
 6. **Next.** The tick works out when this machine next has something to do that no event announces (see [The next tick](#the-next-tick)).

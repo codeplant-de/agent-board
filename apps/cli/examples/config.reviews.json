@@ -2,13 +2,12 @@
   "machine": "laptop",
   "lanes": {
     "reviews": {
-      "skills": ["review-pr"],
       "slots": 2,
       "cwd": "~/workspace/acme/app"
     },
     "general": {
-      "skills": ["*"],
-      "slots": 3
+      "slots": 3,
+      "default": true
     }
   },
   "defaultCwd": "~",

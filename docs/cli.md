@@ -38,7 +38,7 @@ Tasks:
   add                        propose a follow-up task
   polish <task>              post a polished title and prompt for a task
   task <task> [action...]    show a task's settings, or change its priority,
-                             model, auto-done setting, directory or prompt
+                             model, lane, auto-done setting, directory or prompt
 
 Scheduling:
   schedule <prompt...>       a task from a prompt, run here on this machine
@@ -576,12 +576,15 @@ Options:
   --parent <task>        the task this follows from (the task: its id, a board
                          task link or the start of its id)
   --priority <priority>  urgent, high, normal or low (default normal)
+  --lane <name>          the lane the task asks for once you start it (default:
+                         the default lane; it does not inherit this run's lane)
   --json                 print JSON on stdout instead of text
   --dry-run              read everything, print every write instead of doing it
   -h, --help             display help for command
 
 Examples:
   board add --title "Fix the flaky test" --file /tmp/prompt.md --parent Ab3dEf9x
+  board add --title "Review the fix" --file /tmp/prompt.md --lane reviews
 ```
 
 ### board polish
@@ -618,15 +621,20 @@ Examples:
 ```
 Usage: board task [options] <task> [set <key> <value> | unset <key>]
 
-Without an action, print a task's settings: status, priority, model, whether the
-agent may mark it done, agent, who made it, the machine it is pinned to and its
-directory, when it starts, its schedule, the task it was forked from, whether
-its next run resumes a session, and its PR. With --json, print the task as
-`board tasks --json` does.
+Without an action, print a task's settings: status, priority, model, the lane it
+asks for, whether the agent may mark it done, agent, who made it, the machine it
+is pinned to and its directory, when it starts, its schedule, the task it was
+forked from, whether its next run resumes a session, and its PR. With --json,
+print the task as `board tasks --json` does.
 
 `set priority <urgent|high|normal|low>` and `set model <alias or model id>`
 change the setting, `unset model` goes back to claude's default model. A model
 applies from the next run on; a run in progress keeps its own.
+
+`set lane <name>` makes the task ask for that lane of the machine that runs it,
+`unset lane` for the default lane. A machine without a lane of that name runs
+the task in its default lane. A running task keeps its lane until its next
+start, so the change is refused while it runs.
 
 `set auto-done on` lets the agent move the task to Done itself when it judges
 that every acceptance criterion is met and nothing is left for you; `set
@@ -659,8 +667,8 @@ from the schedule again, which the command says. `set dir` needs this machine's
 config.json, since it pins the task to the machine's name.
 
 `set` and `unset` are not available inside a board run: only you change where a
-task runs, with what, and whether its agent may mark it done, and what it says.
-Viewing works there.
+task runs, in which lane, with what, and whether its agent may mark it done, and
+what it says. Viewing works there.
 
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
@@ -670,8 +678,8 @@ accepted.
 
 Arguments:
   task             the task: its id, a board task link or the start of its id
-  action           set priority|model|auto-done|dir|prompt <value>, or unset
-                   model|auto-done|dir
+  action           set priority|model|lane|auto-done|dir|prompt <value>, or
+                   unset model|lane|auto-done|dir
 
 Options:
   --title <title>  with set prompt: the new title (default: keep the current
@@ -690,6 +698,8 @@ Examples:
   board task Ab3 set priority high
   board task Ab3 set model opus
   board task Ab3 unset model
+  board task Ab3 set lane reviews
+  board task Ab3 unset lane
   board task Ab3 set auto-done on
   board task Ab3 unset auto-done
   board task Ab3 set dir
@@ -760,6 +770,9 @@ Options:
   --priority <priority>  urgent, high, normal, low (default normal)
   --model <model>        claude model alias or full name, e.g. fable, opus,
                          sonnet, haiku (default: claude's default)
+  --lane <name>          the lane of the machine that runs the task (default:
+                         that machine's default lane; a machine without the lane
+                         uses its default one)
   --auto-done            let the agent move the task to Done itself when it
                          judges every acceptance criterion met (default: it ends
                          in needs-me)
@@ -1007,22 +1020,22 @@ lane, a `dirs` path, `owner/name.js` under `repos`) is read as the document has
 it.
 
 `set <key> <value>` takes the value as JSON when it is JSON (`3`, `true`,
-`["Read","Bash"]`, `{"skills":["*"],"slots":2}`) and as a string otherwise
-(write `'"123"'` for the string 123), and creates the objects on the way. The
-whole resulting file is checked before anything is written, and the change is
-refused, with the file left as it is, when the config would not load, when it
-would add an agent that cannot be loaded, when the key is not one the CLI reads
-(the error names the nearest key), or when a directory the config routes work to
-(`defaultCwd`, the `cwd` of a lane, a `repos` checkout) would newly not be a
-directory or not be covered by `dirs`. Setting one lane in a file that has no
-`lanes` key writes the default lane out too. A change to `dirs` that drops a
-listed directory warns that work still pinned to it stops in Needs me (`board
-dirs rm` checks for that). `unset <key>` removes a key so its default applies
-again, with the same check. Setting what is already there writes nothing. The
-file is rewritten as JSON with 2 spaces and keeps its key order and mode, and a
-config.json that is a link is changed where it points. `--dry-run` shows what
-would be written. The entries of `dirs` are changed with `board dirs`; `set` and
-`unset` refuse a key below `dirs`.
+`["Read","Bash"]`, `{"slots":2}`) and as a string otherwise (write `'"123"'` for
+the string 123), and creates the objects on the way. The whole resulting file is
+checked before anything is written, and the change is refused, with the file
+left as it is, when the config would not load, when it would add an agent that
+cannot be loaded, when the key is not one the CLI reads (the error names the
+nearest key), or when a directory the config routes work to (`defaultCwd`, the
+`cwd` of a lane, a `repos` checkout) would newly not be a directory or not be
+covered by `dirs`. Setting one lane in a file that has no `lanes` key writes the
+default lane out too. A change to `dirs` that drops a listed directory warns
+that work still pinned to it stops in Needs me (`board dirs rm` checks for
+that). `unset <key>` removes a key so its default applies again, with the same
+check. Setting what is already there writes nothing. The file is rewritten as
+JSON with 2 spaces and keeps its key order and mode, and a config.json that is a
+link is changed where it points. `--dry-run` shows what would be written. The
+entries of `dirs` are changed with `board dirs`; `set` and `unset` refuse a key
+below `dirs`.
 
 `edit` opens the file in $VISUAL, else $EDITOR (run through the shell the way
 git runs its editor, so a command line with arguments or quotes such as `code
@@ -1055,7 +1068,7 @@ Examples:
   board config get lanes.reviews.slots
   board config set pauseAfterMinutes 10
   board config set agents.reviewer.tools '["Read","Bash"]'
-  board config set lanes.reviews '{"skills":["/review"],"slots":2}'
+  board config set lanes.reviews '{"slots":2}'
   board config --dry-run unset maxRunHours
   board config edit
 ```

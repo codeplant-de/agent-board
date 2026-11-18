@@ -33,6 +33,7 @@ export const ADDED_SERVER_FEATURES = [
   'task.moved-by',
   'prompt.edit',
   'schedule.rule-edit',
+  'task.lane',
 ] as const;
 
 export const SERVER_FEATURES = [...BASELINE_SERVER_FEATURES, ...ADDED_SERVER_FEATURES] as const;
@@ -65,8 +66,9 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'schedule.after': 'a schedule that runs after another',
   'task.auto-done': 'letting the agent move a task to Done',
   'task.moved-by': 'who moved a task',
-  'prompt.edit': 'editing a prompt',
   'schedule.rule-edit': 'changing the repeat of a schedule',
+  'prompt.edit': 'editing a prompt',
+  'task.lane': 'choosing the lane a task runs in',
   wait: 'waiting',
 };
 

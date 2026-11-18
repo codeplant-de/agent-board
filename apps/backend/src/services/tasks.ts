@@ -78,6 +78,7 @@ export function toTask(
     status: row.status,
     priority: row.priority,
     model: row.model,
+    requestedLane: row.requestedLane,
     autoDone: row.autoDone,
     closed: row.closed,
     machine: row.machine,
@@ -249,6 +250,7 @@ export async function forkTask(db: DbOrTx, request: ForkRequest): Promise<TaskRo
         machine: parent.machine,
         workdir: request.workdir,
         ...(parent.model === null ? {} : { model: parent.model }),
+        ...(parent.requestedLane === null ? {} : { lane: parent.requestedLane }),
         ...(request.agent === undefined ? {} : { agent: request.agent }),
       },
       { forkOf: parent.id },
@@ -987,12 +989,13 @@ export async function setPriority(db: DbOrTx, taskId: string, priority: Priority
 export interface TaskConfig {
   priority?: Priority | undefined;
   model?: string | null | undefined;
+  lane?: string | null | undefined;
   autoDone?: boolean | undefined;
   place?: { machine: string; workdir: string } | null | undefined;
 }
 
 /**
- * The user's edit of a task's settings, in one step. A priority works as `setPriority`. A model applies from the next run. `autoDone` applies at once, in any status. A
+ * The user's edit of a task's settings, in one step. A priority works as `setPriority`. A model applies from the next run. A lane is refused while the task runs, which keeps the lane it started in. `autoDone` applies at once, in any status. A
  * new place (the machine and the sealed directory, or null for none) replaces the directory the task was created with and
  * drops the session: Claude Code keeps a session under its working directory, so it cannot be resumed from another one, and
  * the next run starts fresh there and reads the thread. A running or waiting task keeps its place, since a run holds it.
@@ -1000,7 +1003,9 @@ export interface TaskConfig {
 export async function configureTask(db: DbOrTx, taskId: string, config: TaskConfig, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    const { priority, model, autoDone, place } = config;
+    const { priority, model, lane, autoDone, place } = config;
+    if (lane !== undefined && task.status === 'running')
+      throw new AppError('CONFLICT', 'The task is running: it keeps its lane until its next start.');
     if (place !== undefined) {
       if (task.status === 'running' || task.status === 'waiting')
         throw new AppError('CONFLICT', `The task is ${task.status}. Stop it first, then move it.`);
@@ -1008,6 +1013,7 @@ export async function configureTask(db: DbOrTx, taskId: string, config: TaskConf
     }
     const set: TaskValues = {};
     if (model !== undefined) set.model = model;
+    if (lane !== undefined) set.requestedLane = lane;
     if (autoDone !== undefined) set.autoDone = autoDone;
     if (place !== undefined) {
       const workdir = place?.workdir ?? null;

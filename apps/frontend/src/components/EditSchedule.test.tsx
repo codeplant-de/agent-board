@@ -9,7 +9,11 @@ import { EditScheduleModal } from './EditSchedule';
 
 type Outcome = 'updated' | 'started' | 'none' | 'removed' | 'created';
 const update = vi.hoisted(() => vi.fn(async (_: unknown): Promise<{ pending: Outcome }> => ({ pending: 'updated' })));
-const listed = vi.hoisted(() => ({ machines: [] as unknown[], schedules: [] as unknown[] }));
+const listed = vi.hoisted(() => ({
+  machines: [] as unknown[],
+  schedules: [] as unknown[],
+  catalogs: [] as unknown[],
+}));
 
 vi.mock('../lib/trpc', () => ({
   useTRPC: () => ({
@@ -19,7 +23,7 @@ vi.mock('../lib/trpc', () => ({
     },
     machines: {
       list: { queryOptions: () => ({ queryKey: ['machines'], queryFn: async () => listed.machines }) },
-      catalogs: { queryOptions: () => ({ queryKey: ['catalogs'], queryFn: async () => [] }) },
+      catalogs: { queryOptions: () => ({ queryKey: ['catalogs'], queryFn: async () => listed.catalogs }) },
     },
   }),
   errorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
@@ -42,6 +46,7 @@ const schedule = (overrides: Partial<Schedule> = {}): Schedule =>
     agent: 'reviewer',
     priority: 'high',
     model: null,
+    requestedLane: null,
     autoDone: false,
     machine: 'laptop',
     workdir: '/work/a',
@@ -93,6 +98,7 @@ beforeEach(() => {
   update.mockReset().mockResolvedValue({ pending: 'updated' });
   listed.machines = [machine('laptop', ['/work/a', '/work/b'])];
   listed.schedules = [];
+  listed.catalogs = [];
 });
 
 describe('EditScheduleModal', () => {
@@ -116,6 +122,7 @@ describe('EditScheduleModal', () => {
       place: { machine: 'laptop', workdir: '/work/a' },
       priority: 'high',
       model: 'opus',
+      lane: null,
       autoDone: true,
       repeat: { everyMs: 7_200_000 },
       runsLeft: 5,
@@ -123,6 +130,28 @@ describe('EditScheduleModal', () => {
       maxConcurrent: 2,
       unreadable: [],
     });
+  });
+
+  it('offers the lanes the machines published, keeps the schedule’s own, and sends the changed one', async () => {
+    listed.catalogs = [
+      { name: 'laptop', catalog: { models: [], skills: [], dirs: {}, lanes: ['general', 'reviews'] } },
+    ];
+    open(schedule({ requestedLane: 'docs' }));
+    expect(await screen.findByRole('combobox', { name: 'Lane' })).toHaveValue('docs');
+    await userEvent.click(screen.getByRole('combobox', { name: 'Lane' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'reviews', hidden: true }));
+    await save();
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ lane: 'reviews' });
+  });
+
+  it('sends no lane when the default lane is picked for a schedule that had one', async () => {
+    open(schedule({ requestedLane: 'docs' }));
+    await userEvent.click(await screen.findByRole('combobox', { name: 'Lane' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'Default lane', hidden: true }));
+    await save();
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ lane: null });
   });
 
   it('selects the schedule’s directory even when no machine lists it', async () => {
