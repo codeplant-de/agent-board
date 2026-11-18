@@ -33,6 +33,7 @@ import { TaskBadges } from '../components/TaskBadges';
 import { AutoDoneSetting, ModelPicker, WorkdirSetting } from '../components/TaskSettings';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
+import { openQuestionOf } from '../lib/answers';
 import { skillsFor } from '../lib/catalog';
 import { canFork } from '../lib/sealing';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
@@ -89,6 +90,7 @@ function TaskView({ id }: { id: string }) {
   }
 
   const { task, thread, followUps, parent } = query.data;
+  const openQuestion = openQuestionOf(task, thread);
   const unlisted = unlistedMachine(task, machines.data ?? []);
   const skills = skillsFor(catalogs.data ?? [], task);
   const prs = prsOf(task);
@@ -309,7 +311,7 @@ function TaskView({ id }: { id: string }) {
             note.kind === 'polish' && !note.unreadable ? (
               <PolishItem key={index} note={note} task={task} parent={parent} />
             ) : (
-              <ThreadItem key={index} note={note} thread={thread} />
+              <ThreadItem key={index} note={note} thread={thread} openQuestionId={openQuestion?.id} />
             ),
           )}
         </Stack>

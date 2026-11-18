@@ -15,6 +15,7 @@ import {
 } from '@mantine/core';
 import { useHotkeys } from '@mantine/hooks';
 import { IconAlertTriangle, IconMessageQuestion, IconPlayerPlay } from '@tabler/icons-react';
+import { modals } from '@mantine/modals';
 import { useState } from 'react';
 import { MarkdownEditor } from './MarkdownEditor';
 
@@ -40,10 +41,36 @@ interface Props {
   submitting: boolean;
   /** `questions` are the ones this panel showed, which the answers are checked against and sealed with. */
   onSubmit: (questions: Question[], answers: Answer[], message: string) => void;
+  /** Drops the questions without an answer. The panel asks the user to confirm first. */
+  onDismiss: () => void;
+  dismissing: boolean;
 }
 
 interface FormProps extends Props {
   questions: Question[];
+}
+
+function confirmDismiss(onConfirm: () => void): void {
+  modals.openConfirmModal({
+    title: 'Dismiss the questions?',
+    children: (
+      <Text size="sm">
+        The agent’s questions are dropped without an answer. The task stays in Needs me, where you can reply, start over
+        or finish it.
+      </Text>
+    ),
+    labels: { confirm: 'Dismiss questions', cancel: 'Cancel' },
+    confirmProps: { color: 'red' },
+    onConfirm,
+  });
+}
+
+function DismissButton({ onDismiss, dismissing }: Pick<Props, 'onDismiss' | 'dismissing'>) {
+  return (
+    <Button variant="default" onClick={() => confirmDismiss(onDismiss)} loading={dismissing}>
+      Dismiss questions
+    </Button>
+  );
 }
 
 const sameQuestions = (a: Question[], b: Question[]): boolean => JSON.stringify(a) === JSON.stringify(b);
@@ -54,7 +81,7 @@ const sameQuestions = (a: Question[], b: Question[]): boolean => JSON.stringify(
  * under the same note id, nothing is swapped in silently: the form is replaced by a notice, the picks are dropped, and the
  * user chooses to look at the changed questions, which starts a new set of picks.
  */
-export function QuestionPanel({ questions, submitting, onSubmit }: Props) {
+export function QuestionPanel({ questions, submitting, onSubmit, onDismiss, dismissing }: Props) {
   const [shown, setShown] = useState(questions);
   const [round, setRound] = useState(0);
   if (!sameQuestions(shown, questions))
@@ -69,6 +96,7 @@ export function QuestionPanel({ questions, submitting, onSubmit }: Props) {
             </Text>
           </Alert>
           <Group justify="flex-end">
+            <DismissButton onDismiss={onDismiss} dismissing={dismissing} />
             <Button
               variant="default"
               onClick={() => {
@@ -82,13 +110,22 @@ export function QuestionPanel({ questions, submitting, onSubmit }: Props) {
         </Stack>
       </Paper>
     );
-  return <QuestionForm key={round} questions={shown} submitting={submitting} onSubmit={onSubmit} />;
+  return (
+    <QuestionForm
+      key={round}
+      questions={shown}
+      submitting={submitting}
+      onSubmit={onSubmit}
+      onDismiss={onDismiss}
+      dismissing={dismissing}
+    />
+  );
 }
 
 /** A drawer or modal covers the form, so a key pressed there must not change the answer behind it. */
 const isOverlayOpen = (): boolean => document.querySelector('[role="dialog"]') !== null;
 
-function QuestionForm({ questions, submitting, onSubmit }: FormProps) {
+function QuestionForm({ questions, submitting, onSubmit, onDismiss, dismissing }: FormProps) {
   const [drafts, setDrafts] = useState<Draft[]>(() => initial(questions));
   const [active, setActive] = useState(0);
   const [message, setMessage] = useState('');
@@ -258,9 +295,12 @@ function QuestionForm({ questions, submitting, onSubmit }: FormProps) {
             {questions.length > 1 ? 'Number keys pick in the highlighted question. ' : 'Number keys pick an option. '}
             <Kbd size="xs">⌘</Kbd>+<Kbd size="xs">Enter</Kbd> sends.
           </Text>
-          <Button leftSection={<IconPlayerPlay size={16} />} onClick={submit} disabled={!ready} loading={submitting}>
-            Answer &amp; continue
-          </Button>
+          <Group gap="xs">
+            <DismissButton onDismiss={onDismiss} dismissing={dismissing} />
+            <Button leftSection={<IconPlayerPlay size={16} />} onClick={submit} disabled={!ready} loading={submitting}>
+              Answer &amp; continue
+            </Button>
+          </Group>
         </Group>
       </Stack>
     </Paper>

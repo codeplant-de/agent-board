@@ -21,6 +21,7 @@ vi.mock('../lib/trpc', () => {
         removePr: idle,
         stopWatch: idle,
         answer: idle,
+        dismissQuestion: idle,
         reply: idle,
         send: idle,
         stop: idle,

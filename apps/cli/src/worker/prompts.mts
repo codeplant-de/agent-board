@@ -11,9 +11,11 @@ const byTime = (notes: Note[]): Note[] => [...notes].sort((a, b) => a.createdAt.
 // The agent's own notes. The unit's event notes are posted as the agent too, while the task waits, so they do not count.
 const isAgentSpeech = (note: Note): boolean => note.author === 'agent' && !note.text.startsWith(WATCH_MARKER);
 
+const isAnswer = (note: Note): boolean => note.kind === 'answer';
+
 // What the user wrote: answers to the agent's questions and free comments.
 const userNotes = (notes: Note[]): Note[] =>
-  notes.filter((note) => note.author === 'user' && (note.kind === 'answer' || note.kind === 'comment'));
+  notes.filter((note) => note.author === 'user' && (isAnswer(note) || note.kind === 'comment'));
 
 /**
  * The user's reply, oldest first: what they wrote since the agent last spoke, and the messages they sent the running agent
@@ -143,9 +145,12 @@ export function buildResumePrompt(
     return [...lead, CONTINUE_LINE].join('\n');
   }
   const parts = reply.map((note) => noteText(note));
+  const dismissed = byTime(notes).findLast(isAgentSpeech)?.kind === 'question' && !reply.some(isAnswer);
   return [
     ...lead,
-    `The user replied on board task ${task.id}:`,
+    dismissed
+      ? `The user dismissed your questions on board task ${task.id} without answering them, and replied:`
+      : `The user replied on board task ${task.id}:`,
     '',
     ...parts.flatMap((part) => [part, '']),
     `Continue the task with this. ${CONTINUE_LINE}`,

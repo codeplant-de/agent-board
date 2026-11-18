@@ -598,6 +598,19 @@ export async function answer(
   });
 }
 
+/**
+ * The user drops the open question without an answer. The task stays in Needs me where it is, and nothing is written to
+ * the thread: a question note that is no longer the open one and has no answer reads as dismissed.
+ */
+export async function dismissQuestion(db: DbOrTx, input: { taskId: string; questionNoteId: string }): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    if (task.openQuestionNoteId !== input.questionNoteId)
+      throw new AppError('CONFLICT', 'This question was already answered or replaced.');
+    return transition(tx, task, { by: 'user', set: { openQuestionNoteId: null } });
+  });
+}
+
 /** A user comment; with `resume` it also sends the task back to the agent. */
 export async function reply(
   db: DbOrTx,
