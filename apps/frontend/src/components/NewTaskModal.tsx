@@ -19,7 +19,6 @@ import {
   Select,
   Stack,
   Text,
-  Textarea,
   TextInput,
 } from '@mantine/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -33,6 +32,7 @@ import { errorMessage, useTRPC } from '../lib/trpc';
 import { useNow } from '../lib/useNow';
 import { DirectorySelect } from './DirectorySelect';
 import { MarkdownEditor } from './MarkdownEditor';
+import { RepeatRuleInput } from './RepeatRuleInput';
 import { useDirectoryChoices } from './useDirectoryChoices';
 import { useModelOptions } from './useModelOptions';
 
@@ -68,7 +68,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const [input, setInput] = useState(initial?.input ?? '');
   const [when, setWhen] = useState<When>('now');
   const [at, setAt] = useState('');
-  const [rule, setRule] = useState('');
+  const [ruleLines, setRuleLines] = useState<string[]>(['']);
   const [times, setTimes] = useState<number | string>('');
   const [limit, setLimit] = useState<number | string>('');
   const [after, setAfter] = useState<string | null>(null);
@@ -86,6 +86,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const now = useNow(30_000);
   const start = new Date(at);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const rule = ruleLines.join('\n');
   const parsedRule = parseRepeatRule(rule, timezone);
   const place = directories.choices.find(({ value }) => value === directory);
   const skills = useMemo(
@@ -154,7 +155,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           setDirectory(null);
           setAgent('');
           setAt('');
-          setRule('');
+          setRuleLines(['']);
           setTimes('');
           setLimit('');
           setAfter(null);
@@ -274,20 +275,14 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
               />
               {after === null ? (
                 <>
-                  <Textarea
-                    label="Repeat"
-                    required
-                    autosize
-                    minRows={1}
-                    maxRows={6}
-                    placeholder="2h, or a cron expression such as 0 9 * * 1-5"
-                    value={rule}
-                    onChange={(e) => {
+                  <RepeatRuleInput
+                    lines={ruleLines}
+                    onChange={(lines) => {
                       create.reset();
-                      setRule(e.currentTarget.value);
+                      setRuleLines(lines);
                     }}
+                    timezone={timezone}
                     error={ruleError ?? (create.error ? errorMessage(create.error) : undefined)}
-                    description={`An interval (30m, 2h, 1d, 1w) or 5 cron fields, read in ${timezone}. One cron expression per line (up to 10) runs whenever any matches`}
                   />
                   <TextInput
                     type="datetime-local"

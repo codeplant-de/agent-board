@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseRepeatRule } from './repeat';
+import { isInterval, parseRepeatRule } from './repeat';
 
 describe('parseRepeatRule', () => {
   it('reads a duration as an interval in ms', () => {
@@ -31,5 +31,13 @@ describe('parseRepeatRule', () => {
   it('explains what it cannot read', () => {
     for (const bad of ['', 'often', '0 9 * *', '0 0 9 * * *', '0m'])
       expect(parseRepeatRule(bad, 'UTC'), bad).toHaveProperty('error');
+  });
+});
+
+describe('isInterval', () => {
+  it('tells a duration from a cron expression', () => {
+    expect(isInterval(' 2h ')).toBe(true);
+    expect(isInterval('0 9 * * 1-5')).toBe(false);
+    expect(isInterval('')).toBe(false);
   });
 });

@@ -31,6 +31,7 @@ import {
   listSchedules,
   removeSchedule,
   setPaused,
+  setScheduleRule,
   toSchedule,
 } from '../services/schedules';
 import { hasStarted } from '../services/taskRows';
@@ -75,27 +76,23 @@ const repeatEnd = {
   until: z.coerce.date().optional(),
   maxConcurrent: z.number().int().min(1).max(MAX_SCHEDULE_CONCURRENT).optional(),
 };
+const intervalRule = { every: z.number().int().min(60_000).max(MAX_INTERVAL_MS) };
+const cronRule = {
+  cron: z.string().trim().min(1),
+  moreCrons: z
+    .array(z.string().trim().min(1))
+    .max(MAX_SCHEDULE_CRONS - 1)
+    .optional(),
+  timezone: z.string().trim().min(1),
+};
 /**
  * A repeat: an interval in ms, a cron expression with its time zone (and up to nine more), or a schedule to run after, with a
  * delay; `at` is the first run of the first two.
  */
 const repeat = z
   .union([
-    z.object({
-      every: z.number().int().min(60_000).max(MAX_INTERVAL_MS),
-      at: z.coerce.date().optional(),
-      ...repeatEnd,
-    }),
-    z.object({
-      cron: z.string().trim().min(1),
-      moreCrons: z
-        .array(z.string().trim().min(1))
-        .max(MAX_SCHEDULE_CRONS - 1)
-        .optional(),
-      timezone: z.string().trim().min(1),
-      at: z.coerce.date().optional(),
-      ...repeatEnd,
-    }),
+    z.object({ ...intervalRule, at: z.coerce.date().optional(), ...repeatEnd }),
+    z.object({ ...cronRule, at: z.coerce.date().optional(), ...repeatEnd }),
     z.object({
       after: z.object({ scheduleId: id, delayMs: z.number().int().min(0).max(MAX_INTERVAL_MS).default(0) }),
       ...repeatEnd,
@@ -522,6 +519,16 @@ const schedulesRouter = router({
     .input(z.object({ id, title: sealed('title', 'title'), input: sealed('input', 'prompt') }))
     .mutation(async ({ ctx, input }) => {
       const { schedule, pending } = await editSchedule(ctx.db, input);
+      return { schedule: toSchedule(schedule), pending };
+    }),
+  /** A new interval or cron expressions for the schedule; the pending card moves to the new next run while it has not started. */
+  setRule: procedure
+    .input(z.union([z.object({ id, ...intervalRule }), z.object({ id, ...cronRule })]))
+    .mutation(async ({ ctx, input }) => {
+      const { schedule, pending } = await setScheduleRule(ctx.db, {
+        id: input.id,
+        ...ruleOf(input),
+      });
       return { schedule: toSchedule(schedule), pending };
     }),
   remove: procedure.input(z.object({ id })).mutation(({ ctx, input }) => removeSchedule(ctx.db, input.id)),

@@ -196,9 +196,15 @@ describe('NewTaskModal When', () => {
 const cronZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 describe('NewTaskModal repeating with several cron expressions', () => {
-  it('reads one cron expression per line, the first as the rule and the others as more', async () => {
+  it('offers more rows only for a cron expression, and sends the first as the rule and the others as more', async () => {
     await open('Repeating');
-    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * 5#1{Enter}0 9 * * 5#3');
+    expect(screen.queryByRole('button', { name: 'Add cron expression' })).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/Repeat/), '2h');
+    expect(screen.queryByRole('button', { name: 'Add cron expression' })).not.toBeInTheDocument();
+    await userEvent.clear(screen.getByLabelText(/Repeat/));
+    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * 5#1');
+    await userEvent.click(screen.getByRole('button', { name: 'Add cron expression' }));
+    await userEvent.type(screen.getByLabelText('Cron expression 2'), '0 9 * * 5#3');
     await userEvent.click(createButton());
     await waitFor(() => expect(create).toHaveBeenCalled());
     expect((sent() as { when: unknown }).when).toEqual({
@@ -208,13 +214,36 @@ describe('NewTaskModal repeating with several cron expressions', () => {
     });
   });
 
-  it('holds back a repeated expression and a line that is not cron', async () => {
+  it('removes a row, and sends a single expression without more', async () => {
     await open('Repeating');
-    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * *{Enter}0 9 * * *');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * 5#1');
+    await userEvent.click(screen.getByRole('button', { name: 'Add cron expression' }));
+    await userEvent.type(screen.getByLabelText('Cron expression 2'), '0 9 * * 5#3');
+    await userEvent.click(screen.getByRole('button', { name: 'Remove cron expression 2' }));
+    expect(screen.queryByLabelText('Cron expression 2')).not.toBeInTheDocument();
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect((sent() as { when: unknown }).when).toEqual({ cron: '0 9 * * 5#1', timezone: cronZone() });
+  });
+
+  it('stops offering rows at ten', async () => {
+    await open('Repeating');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '0 0 * * *');
+    for (let row = 1; row < 10; row += 1)
+      await userEvent.click(screen.getByRole('button', { name: 'Add cron expression' }));
+    expect(screen.getByLabelText('Cron expression 10')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add cron expression' })).not.toBeInTheDocument();
+  });
+
+  it('holds back a repeated expression and a row that is not cron', async () => {
+    await open('Repeating');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * *');
+    await userEvent.click(screen.getByRole('button', { name: 'Add cron expression' }));
+    await userEvent.type(screen.getByLabelText('Cron expression 2'), '0 9 * * *');
     expect(await screen.findByText('A cron expression is given twice')).toBeInTheDocument();
     expect(createButton()).toBeDisabled();
-    await userEvent.clear(screen.getByLabelText(/Repeat/));
-    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * *{Enter}often');
+    await userEvent.clear(screen.getByLabelText('Cron expression 2'));
+    await userEvent.type(screen.getByLabelText('Cron expression 2'), 'often');
     expect(await screen.findByText(/does not have 5 cron fields/)).toBeInTheDocument();
     expect(createButton()).toBeDisabled();
   });
