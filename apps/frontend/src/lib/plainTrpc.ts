@@ -43,6 +43,7 @@ import {
   type Proposal,
 } from './sealing';
 import { parseMe } from './shapes';
+import type { RouterInputs } from './wire';
 
 export type RawTRPC = ReturnType<typeof useRawTRPC>;
 export type RawClient = TRPCClient<AppRouter>;
@@ -103,6 +104,9 @@ export interface EditScheduleVariables {
   title: string;
   input: string;
 }
+
+/** The schedule's new rule: nothing in it is sealed. */
+export type SetScheduleRuleVariables = RouterInputs['schedules']['setRule'];
 
 export type ConfigureVariables = Configuration & {
   // The task as the page shows it: a new directory is sealed under its row.
@@ -318,6 +322,16 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
               const { schedule, pending } = await client.schedules.edit.mutate(
                 await sealScheduleEdit(need(), variables),
               );
+              return { schedule: await openSchedule(need(), schedule), pending };
+            },
+          }),
+      },
+      setRule: {
+        mutationOptions: () =>
+          mutationOptions({
+            mutationKey: raw.schedules.setRule.mutationKey(),
+            mutationFn: async (variables: SetScheduleRuleVariables) => {
+              const { schedule, pending } = await client.schedules.setRule.mutate(variables);
               return { schedule: await openSchedule(need(), schedule), pending };
             },
           }),

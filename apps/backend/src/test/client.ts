@@ -491,6 +491,10 @@ export function plainUi(db: Db, owner = 'jascha') {
       list: async () => Promise.all((await raw.schedules.list()).map(openSchedule)),
       setPaused: async (input: { id: string; paused: boolean }) => openSchedule(await raw.schedules.setPaused(input)),
       remove: raw.schedules.remove,
+      setRule: async (input: Parameters<Raw['schedules']['setRule']>[0]) => {
+        const { schedule, pending } = await raw.schedules.setRule(input);
+        return { schedule: await openSchedule(schedule), pending };
+      },
       // As the browser does: the new title and prompt sealed under the schedule.
       edit: async (input: { id: string; title: string; input: string }) => {
         const found = (await raw.schedules.list()).find((schedule) => schedule.id === input.id);

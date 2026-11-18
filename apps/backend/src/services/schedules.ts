@@ -506,3 +506,42 @@ export async function editSchedule(
     return { schedule: await viewOf(tx, schedule.id), pending: editable ? 'updated' : 'started' };
   });
 }
+
+/**
+ * A new interval or new cron expressions for the schedule, which keeps its start time (the interval grid stays anchored where
+ * it was). The pending card moves to the new next run while it waits in Todo and has not started; otherwise the next card
+ * takes the rule. A schedule that runs after another has no rule of its own, and a rule that would never run is refused.
+ */
+export async function setScheduleRule(
+  db: DbOrTx,
+  input: Pick<WireScheduleDraft, 'id' | 'everyMs' | 'cron' | 'moreCrons' | 'timezone'>,
+  now: Date = new Date(),
+): Promise<{ schedule: ScheduleView; pending: 'updated' | 'started' | 'none' }> {
+  requireRule(input);
+  return db.transaction(async (tx) => {
+    const { schedule, pending } = await lockWithOccurrence(tx, input.id);
+    if (schedule.endedAt !== null) throw new AppError('CONFLICT', 'The schedule has ended.');
+    if (schedule.afterScheduleId !== null)
+      throw new AppError('BAD_REQUEST', 'A schedule that runs after another has no repeat rule of its own.');
+    const rule = {
+      everyMs: input.everyMs ?? null,
+      cron: input.cron ?? null,
+      moreCrons: input.moreCrons ?? [],
+      timezone: input.cron === undefined ? null : (input.timezone ?? null),
+    };
+    const from = schedule.anchorAt.getTime() > now.getTime() ? schedule.anchorAt : now;
+    const next = nextOccurrence({ ...schedule, ...rule }, from, true);
+    if (next === null)
+      throw new AppError('BAD_REQUEST', 'The schedule would never run: nothing matches before its end.');
+    const editable = pending !== undefined && pending.status === 'todo' && !pending.closed && !hasStarted(pending);
+    await tx
+      .update(schedules)
+      .set({ ...rule, ...(editable ? { lastOccurrenceAt: next } : {}) })
+      .where(eq(schedules.id, schedule.id));
+    if (editable) await tx.update(tasks).set({ notBefore: next, updatedAt: now }).where(eq(tasks.id, pending.id));
+    return {
+      schedule: await viewOf(tx, schedule.id),
+      pending: pending === undefined ? 'none' : editable ? 'updated' : 'started',
+    };
+  });
+}
