@@ -905,6 +905,7 @@ An agent that has to wait for something outside the run, such as CI, a deploy or
 ```sh
 board watch <task> --ci                                  # the newest open PR the task reported with board pr
 board watch <task> --ci https://github.com/o/r/pull/7 --required
+board watch <task> --ci --ignore 'policy-bot*'           # leave an approval gate out of the count
 board watch <task> --pr-review                           # the first review or comment someone else leaves on that PR
 board watch <task> --pr-merged                           # once that PR is merged or closed
 board watch <task> --name health --every 30s -- 'curl -fsS https://staging.example.com/health'
@@ -943,10 +944,12 @@ An event's text can come from text you did not write, such as job names from a P
 **CI** (`--ci [pr]`). The watch follows the PR given. Without one it follows the newest PR the task reported with `board pr` that is not merged or closed, or the newest one when all are.
 
 - Every 30 seconds the machine reads `gh pr checks <pr> --json name,bucket,link`. It looks at all checks, or with `--required` at the required ones.
+- `--ignore <pattern>` (repeatable, at most 20) leaves out the checks whose name matches. `*` stands for any characters and the rest is literal; a pattern must match the whole name, and case counts (`'policy-bot*'` matches `policy-bot: my-branch`). Use it for a check that waits for a person and so never finishes on its own, such as an approval gate like policy-bot or a CircleCI hold job: without it the watch stays pending until its timeout. An ignored check counts as neither running, passed nor failed, so an ignored check that fails does not end the watch. The event and the status say how many were ignored. If every check is ignored, the watch treats the PR as having no checks (see below). The patterns stay in the watch on this machine and are not sent to the board; `board watches` lists them.
+- An agent usually does not need `--ignore`: the `ciIgnore` setting of the [directory entry](setup.md#dirs) that covers the watch's working directory (a worktree below a listed checkout counts) is merged with the flags when the watch starts, and `board watch` prints `ignoring "policy-bot*" (from the dirs config)`. The merged list is stored in the watch, so a later change of the config does not touch a watch that is open. More than 20 patterns together is refused.
 - It reports at the first failed or cancelled check, with the failed checks' names and links and how many are still running or passed.
 - It reports once every check has passed or been skipped, and the next look 30 seconds later finds the same checks. For some seconds after `gh run rerun`, `gh pr checks` lists only the checks outside the re-queued run, all passed; one look would take that for a green build. So a green build is never reported at registration: the watch is stored and reports on its second look.
 - It reports a PR that was merged or closed.
-- Right after a push, "no checks reported" counts as running for 3 minutes. Then the watch reports "no checks appeared".
+- Right after a push, "no checks reported" counts as running for 3 minutes. Then the watch reports "no checks appeared", or that every check found is ignored.
 - A new head commit restarts the watch on that commit.
 
 The watch ends with its event. After a red build the agent fixes, pushes and starts a new `--ci` watch.

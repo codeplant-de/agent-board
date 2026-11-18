@@ -209,6 +209,14 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
+### `board watch --ci --ignore` and `ciIgnore` (CLI 0.30.0)
+
+The CLI alone changes: `--ignore <pattern>` on `board watch --ci`, and the `ciIgnore` setting of a `dirs` entry (see [dirs](#dirs) and [CI](usage.md#sources)). The server and the contract stay as they are, and the patterns are never sent to the board. Update machines in any order.
+
+- A watch with ignore patterns is a watch file with one more key. A watch unit that still runs the older CLI reads it and ignores the key, so its `--ci` watch counts the ignored checks again, and it writes the watch back without the key. Restart the unit after updating a checkout install: `board restart watch`. `board self-update` restarts it.
+- An older CLI refuses a config that has `ciIgnore`: `parseConfig` throws `has no setting "ciIgnore"`, and every command that reads the config stops with that error. That includes each dispatch tick (the timer's and the ones the listener starts), every worker, `board watch`, `board dirs` and `board doctor`, so a machine with a stale CLI stops dispatching. The listener and the watch unit themselves do not read config.json, so they keep running, but the ticks the listener starts fail. Add `ciIgnore` only after every CLI on the machine runs the new version: `board self-update`, or on a checkout install `git pull`, `pnpm install` and `board restart`.
+- `--ignore` alone needs no config change.
+
 ### Schedule rules and limits (CLI 0.29.0)
 
 Four new server features: `schedule.crons`, `schedule.max-concurrent`, `schedule.after` and `task.held`. `board schedule` takes `--cron` several times, `--max-concurrent <n>` and `--after <schedule> [--delay <dur>]` (see [Repeating schedules](usage.md#repeating-schedules)). A migration adds columns to `schedule` and `task`. Nothing changes for the schedules you have, and no version number is raised.
@@ -495,14 +503,17 @@ An object keyed by path, where `~/` works. Each value holds the directory's sett
 
 Manage it with `board dirs add`, `rm`, `set`, `unset` and `list`, which rewrite only this key.
 
-| Setting   | Meaning                                                                                                                                                |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `label`   | A short name the New task form shows with the path. 1 to 64 characters, no control characters, no space around it. The only setting the board is sent. |
-| `repo`    | `owner/name`. The directory is that repository's checkout, like a `repos` entry.                                                                       |
-| `default` | Only `true`. Tasks without a directory run here, like `defaultCwd`. At most one entry.                                                                 |
-| `lane`    | A lane of this config. That lane's tasks without a directory run here, like the lane's `cwd`. At most one entry per lane.                              |
+| Setting    | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `label`    | A short name the New task form shows with the path. 1 to 64 characters, no control characters, no space around it. The only setting the board is sent.                                                                                                                                                                                                                                                                                                                        |
+| `repo`     | `owner/name`. The directory is that repository's checkout, like a `repos` entry.                                                                                                                                                                                                                                                                                                                                                                                              |
+| `default`  | Only `true`. Tasks without a directory run here, like `defaultCwd`. At most one entry.                                                                                                                                                                                                                                                                                                                                                                                        |
+| `lane`     | A lane of this config. That lane's tasks without a directory run here, like the lane's `cwd`. At most one entry per lane.                                                                                                                                                                                                                                                                                                                                                     |
+| `ciIgnore` | A list of 1 to 20 check names that `board watch --ci` leaves out, started in this directory or one below it (see [CI](usage.md#sources)). Each name is up to 100 characters without control characters, and `*` stands for any characters. Stays on this machine: the board is not sent it. `board dirs set ciIgnore 'policy-bot*,hold *'` takes a comma-separated list and replaces the whole list, so a name cannot hold a comma there; edit config.json for one that does. |
 
 A setting wins over the key it stands for (`repos`, `defaultCwd`, a lane's `cwd`). Those keys keep working, and `board doctor` and the dispatch log warn when a setting overrides a different path.
+
+`ciIgnore` is for checks that wait for a person and never finish alone, such as an approval gate like policy-bot or a CI hold job. A `--ci` watch looks up the entry with the longest path that covers its working directory, so a worktree below a listed checkout takes the checkout's list, and merges it with its own `--ignore` flags. It reads the list once, when the watch starts: a later change of the config does not touch a watch that is open.
 
 The CLI refuses a config with an unknown setting, a bad value, two entries with the same `repo`, `default` or `lane`, or a `lane` that is not one of `lanes`. The list holds at most 200 entries.
 

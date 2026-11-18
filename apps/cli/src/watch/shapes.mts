@@ -29,3 +29,19 @@ export const MAX_SEEN_IDS = 200;
 export function isSettledDigest(digest: string): boolean {
   return /^[0-9a-f]{16}$/.test(digest);
 }
+
+export const MAX_IGNORE_PATTERNS = 20;
+export const MAX_IGNORE_CHARS = 100;
+
+/** A `--ignore` pattern: a check name with `*` for any run of characters, non-empty, short and without control characters. */
+export function isIgnorePattern(pattern: string): boolean {
+  return pattern.length > 0 && pattern.length <= MAX_IGNORE_CHARS && !/\p{Cc}/u.test(pattern);
+}
+
+/** The patterns of a stored ci watch, or undefined when `raw` is not a list of at most MAX_IGNORE_PATTERNS valid ones. */
+export function parseIgnorePatterns(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw) || raw.length > MAX_IGNORE_PATTERNS) return undefined;
+  return raw.every((pattern): pattern is string => typeof pattern === 'string' && isIgnorePattern(pattern))
+    ? raw
+    : undefined;
+}

@@ -81,6 +81,22 @@ function parseChecks(stdout: string): Check[] | undefined {
   }));
 }
 
+const globCache = new Map<string, RegExp>();
+
+/** Whether a check name matches a pattern: `*` is any run of characters, everything else literal, anchored, case-sensitive. */
+export function matchesIgnore(pattern: string, name: string): boolean {
+  let regex = globCache.get(pattern);
+  if (regex === undefined) {
+    const body = pattern
+      .split(/\*+/)
+      .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+      .join('.*');
+    regex = new RegExp(`^${body}$`, 's');
+    globCache.set(pattern, regex);
+  }
+  return regex.test(name);
+}
+
 const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? '' : 's'}`;
 
 // The checks a look found, as a short digest: names come from the repository, so the watch file keeps no names.
@@ -144,8 +160,22 @@ export function decideCi({ source, now, view, checks }: CiInput): CiDecision {
     return { kind: 'event', text: `No checks appeared on ${url} at ${sha} within 3 minutes.`, source: watched };
   }
   if (checks.exitCode !== 0) return { kind: 'error', reason: firstLine(checks.stderr, 'gh pr checks failed') };
-  const list = parseChecks(checks.stdout);
-  if (list === undefined) return { kind: 'error', reason: 'gh pr checks printed something that is not JSON' };
+  const all = parseChecks(checks.stdout);
+  if (all === undefined) return { kind: 'error', reason: 'gh pr checks printed something that is not JSON' };
+  const patterns = source.ignore ?? [];
+  const list = all.filter(({ name }) => !patterns.some((pattern) => matchesIgnore(pattern, name)));
+  const ignored = all.length - list.length;
+  const ignoredNote = ignored > 0 ? `, ${ignored} ignored` : '';
+  if (list.length === 0) {
+    const since = Date.parse(watched.headSince ?? nowIso);
+    if (now.getTime() - since < NO_CHECKS_GRACE_MS)
+      return { kind: 'pending', summary: `only ignored checks (${ignored}) on ${sha} yet`, source: watched };
+    return {
+      kind: 'event',
+      text: `No checks to watch on ${url} at ${sha} within 3 minutes: ${plural(ignored, 'check')} found, all ignored.`,
+      source: watched,
+    };
+  }
 
   const failed = list.filter(({ bucket }) => bucket === 'fail');
   const cancelled = list.filter(({ bucket }) => bucket === 'cancel');
@@ -158,20 +188,28 @@ export function decideCi({ source, now, view, checks }: CiInput): CiDecision {
       `${base} failed.`,
       ...failed.map((check) => describeCheck('failed', check)),
       ...cancelled.map((check) => describeCheck('cancelled', check)),
-      `still running: ${running}, passed: ${passed}${skipped > 0 ? `, skipped: ${skipped}` : ''}`,
+      `still running: ${running}, passed: ${passed}${skipped > 0 ? `, skipped: ${skipped}` : ''}${ignoredNote}`,
     ];
     return { kind: 'event', text: lines.join('\n'), source: watched };
   }
   if (running > 0)
-    return { kind: 'pending', summary: `${passed} of ${list.length} passed, ${running} running`, source: watched };
+    return {
+      kind: 'pending',
+      summary: `${passed} of ${list.length} passed, ${running} running${ignoredNote}`,
+      source: watched,
+    };
   const skippedNote = skipped > 0 ? `, ${skipped} skipped` : '';
   const settled = settledDigest(list);
   if (headChanged || source.settled !== settled)
     return {
       kind: 'pending',
-      summary: `${passed === 0 ? `all ${plural(skipped, 'check')} skipped` : `${plural(passed, 'check')} passed${skippedNote}`}, looking once more before reporting`,
+      summary: `${passed === 0 ? `all ${plural(skipped, 'check')} skipped` : `${plural(passed, 'check')} passed${skippedNote}${ignoredNote}`}, looking once more before reporting`,
       source: { ...watched, settled },
     };
-  if (passed === 0) return { kind: 'event', text: `${base}: every check was skipped.`, source: watched };
-  return { kind: 'event', text: `${base} passed: ${plural(passed, 'check')} passed${skippedNote}.`, source: watched };
+  if (passed === 0) return { kind: 'event', text: `${base}: every check was skipped${ignoredNote}.`, source: watched };
+  return {
+    kind: 'event',
+    text: `${base} passed: ${plural(passed, 'check')} passed${skippedNote}${ignoredNote}.`,
+    source: watched,
+  };
 }

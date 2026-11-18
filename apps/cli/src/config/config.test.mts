@@ -233,7 +233,7 @@ test('a bad dirs setting is refused, pointing at the entry and the setting', () 
     [{ '/a': { default: 'true' } }, /\.default must be true/],
     [{ '/a': { lane: 'nope' } }, /\.lane must name a lane of this config \(reviews, other\)/],
     [{ '/a': { lane: 4 } }, /\.lane must name a lane/],
-    [{ '/a': { cwd: '/x' } }, /no setting "cwd" \(it takes label, repo, default, lane\)/],
+    [{ '/a': { cwd: '/x' } }, /no setting "cwd" \(it takes label, repo, default, lane, ciIgnore\)/],
     [{ '/a': { repo: 'o/n' }, '/b': { repo: 'o/n' } }, /both set repo "o\/n"/],
     [
       { '/a': { default: true }, '/b': { default: true } },
@@ -475,4 +475,17 @@ test('an unknown key inside usageLimits is a warning, and usageLimits itself is 
   const warnings = configWarnings({ ...valid, usageLimits: { fivehour: 80 } });
   assert.equal(warnings.length, 1);
   assert.match(warnings[0] ?? '', /usageLimits\.fivehour.*fiveHour/);
+});
+
+test('a dirs entry takes ciIgnore, a list of 1 to 20 valid check-name patterns', () => {
+  const config = parseConfig({ ...valid, dirs: { '/a': { ciIgnore: ['policy-bot*', 'hold *'] }, '/b': {} } });
+  assert.deepEqual(config.dirs, [{ path: '/a', ciIgnore: ['policy-bot*', 'hold *'] }, { path: '/b' }]);
+  const twenty = Array.from({ length: 20 }, (_, index) => `c${index}`);
+  assert.equal(parseConfig({ ...valid, dirs: { '/a': { ciIgnore: twenty } } }).dirs?.[0]?.ciIgnore?.length, 20);
+  for (const ciIgnore of ['policy-bot*', [], [''], [1], ['a\nb'], ['x'.repeat(101)], [...twenty, 'one-more']])
+    assert.throws(
+      () => parseConfig({ ...valid, dirs: { '/a': { ciIgnore } } }),
+      /dirs\["\/a"\]\.ciIgnore must be a list of 1 to 20 check names/,
+      JSON.stringify(ciIgnore).slice(0, 40),
+    );
 });

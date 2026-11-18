@@ -193,7 +193,7 @@ test('the bash script completes commands, task ids, statuses, priorities and sch
   assert.deepEqual(bashOffers(['schedules'], 'p'), ['pause']);
   assert.deepEqual(bashOffers(['dirs'], ''), ['list', 'add', 'rm', 'set', 'unset']);
   assert.deepEqual(bashOffers(['agents'], ''), ['list', 'show', 'export', 'add', 'rm']);
-  assert.deepEqual(bashOffers(['dirs', 'set'], ''), ['label', 'repo', 'default', 'lane']);
+  assert.deepEqual(bashOffers(['dirs', 'set'], ''), ['label', 'repo', 'default', 'lane', 'ciIgnore']);
   assert.deepEqual(bashOffers(['dirs', 'unset'], 'd'), ['default']);
   assert.deepEqual(bashOffers(['dirs', 'add'], ''), [], 'only set and unset take a setting');
   assert.deepEqual(bashOffers(['dirs', 'set', 'label'], ''), [], 'the value is free text');

@@ -18,7 +18,15 @@ import {
 } from '../watch/store.mts';
 import type { WatchDef, WatchStore } from '../watch/store.mts';
 import { publishWatches } from '../watch/publish.mts';
-import { isGhLogin, isPrUrl, isWatchName } from '../watch/shapes.mts';
+import {
+  isGhLogin,
+  isIgnorePattern,
+  isPrUrl,
+  isWatchName,
+  MAX_IGNORE_CHARS,
+  MAX_IGNORE_PATTERNS,
+} from '../watch/shapes.mts';
+import { dirCiIgnore } from '../config/dirs.mts';
 import { isUnitRunning } from '../watch/tick.mts';
 import { confirm } from './board.mts';
 import { localTime, parseStart } from './schedule.mts';
@@ -31,6 +39,8 @@ export interface WatchFlags {
   // `--pr-merged` alone is true; `--pr-merged <pr>` carries the PR.
   prMerged?: string | true;
   required?: boolean;
+  // `--ignore`, repeated.
+  ignore?: string[];
   name?: string;
   // With a command: keep it running and report its output lines.
   stream?: boolean;
@@ -55,7 +65,7 @@ export type WatchPlan = {
   name: string;
   deadline: Date;
 } & (
-  | { kind: 'ci'; pr: string | undefined; required: boolean }
+  | { kind: 'ci'; pr: string | undefined; required: boolean; ignore: string[] }
   | { kind: 'pr-review'; pr: string | undefined }
   | { kind: 'pr-merged'; pr: string | undefined }
   | { kind: 'command'; command: string; everyMs: number }
@@ -83,12 +93,33 @@ function checkedName(name: string): string {
   return name;
 }
 
+/** The `--ignore` patterns and the covering directory's `ciIgnore`, flags first, without duplicates; refused above the cap. */
+export function mergedIgnore(flags: string[], configured: string[]): { ignore: string[]; fromConfig: string[] } {
+  const ignore = [...new Set([...flags, ...configured])];
+  if (ignore.length > MAX_IGNORE_PATTERNS)
+    throw new UsageError(
+      `--ignore and the ciIgnore of the dirs config make ${ignore.length} patterns, more than the ${MAX_IGNORE_PATTERNS} a watch takes; give fewer --ignore or shorten the dir's ciIgnore`,
+    );
+  return { ignore, fromConfig: configured.filter((pattern) => !flags.includes(pattern)) };
+}
+
+function checkedIgnore(patterns: string[]): string[] {
+  if (patterns.length > MAX_IGNORE_PATTERNS)
+    throw new UsageError(`--ignore may be given at most ${MAX_IGNORE_PATTERNS} times`);
+  for (const pattern of patterns)
+    if (!isIgnorePattern(pattern))
+      throw new UsageError(
+        `--ignore takes a check name, with * for any characters: 1-${MAX_IGNORE_CHARS} characters, no control characters; got "${oneLine(pattern, 40)}"`,
+      );
+  return [...new Set(patterns)];
+}
+
 /**
  * What the flags and the words after `--` ask for. Exactly one source: `--ci`, `--pr-review`, `--pr-merged`, a command, or `--in`/`--at`. Reads nothing: the
  * task and the PR are looked at afterwards.
  */
 export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = new Date()): WatchPlan {
-  const { ci, prReview, prMerged, required, name, stream, every, timeout, in: inText, at } = flags;
+  const { ci, prReview, prMerged, required, ignore, name, stream, every, timeout, in: inText, at } = flags;
   if (inText !== undefined && at !== undefined) throw new UsageError('give --in or --at, not both');
   if (stream === true && words.length === 0) throw new UsageError('--stream goes with a command after --');
   if (stream === true && every !== undefined)
@@ -107,6 +138,7 @@ export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = 
       `give exactly one source: --ci for the CI of a PR, --pr-review for its reviews and comments, --pr-merged for its merge, a command after -- (with --name; --stream to follow its output), or --in/--at for a timer`,
     );
   if (required === true && ci === undefined) throw new UsageError('--required goes with --ci');
+  if (ignore !== undefined && ci === undefined) throw new UsageError('--ignore goes with --ci');
   const timeoutMs = (fallback: string = DEFAULT_WATCH_TIMEOUT): number => {
     const ms = duration(timeout ?? fallback, '--timeout');
     if (ms > MAX_WAIT_MS) throw new UsageError(`--timeout may be at most ${formatDuration(MAX_WAIT_MS)}`);
@@ -120,6 +152,7 @@ export function parseWatchFlags(flags: WatchFlags, words: string[], now: Date = 
       name: checkedName(name ?? 'ci'),
       pr: ci === true ? undefined : ci,
       required: required === true,
+      ignore: checkedIgnore(ignore ?? []),
       deadline: new Date(now.getTime() + timeoutMs()),
     };
   }
@@ -317,14 +350,19 @@ export async function watch(
   };
   const { cwd } = deps;
   let def: WatchDef;
+  // The ignore patterns of a ci watch that came from the dirs config and not from --ignore.
+  let fromConfig: string[] = [];
   if (plan.kind === 'ci') {
     const { url, head } = await resolvePr(id, '--ci', plan.pr, reportedPr(task.prs), deps);
+    const merged = mergedIgnore(plan.ignore, dirCiIgnore(context.config.dirs, cwd));
+    fromConfig = merged.fromConfig;
     def = {
       ...base,
       source: {
         kind: 'ci',
         pr: url,
         required: plan.required,
+        ...(merged.ignore.length > 0 ? { ignore: merged.ignore } : {}),
         head,
         headSince: now.toISOString(),
         cwd,
@@ -400,14 +438,31 @@ export async function watch(
   // A timer's state is its end, so the time is said once.
   const until = def.source.kind === 'timer' ? '' : `; until ${deadlineTime(plan.deadline, now)}`;
   confirm(context, `watching "${def.name}" on ${id}: ${result.summary}${until}`);
+  if (def.source.kind === 'ci' && def.source.ignore !== undefined) {
+    const patterns = def.source.ignore.map((pattern) => `"${pattern}"`).join(', ');
+    const origin =
+      fromConfig.length === 0
+        ? ''
+        : fromConfig.length === def.source.ignore.length
+          ? ' (from the dirs config)'
+          : ` (${fromConfig.map((pattern) => `"${pattern}"`).join(', ')} from the dirs config)`;
+    confirm(context, `ignoring ${patterns}${origin}`);
+  }
   if (replaced) confirm(context, `it replaced the open watch "${def.name}"`);
   confirm(context, KEEP_WORKING);
+}
+
+function describeIgnore(ignore: string[] | undefined): string {
+  return ignore === undefined || ignore.length === 0
+    ? ''
+    : ` (ignoring ${ignore.map((pattern) => `"${pattern}"`).join(', ')})`;
 }
 
 function describeSource(def: WatchDef): string {
   const { source } = def;
   if (source.kind === 'timer') return 'timer';
-  if (source.kind === 'ci') return `ci ${source.pr}${source.required ? ' (required checks)' : ''}`;
+  if (source.kind === 'ci')
+    return `ci ${source.pr}${source.required ? ' (required checks)' : ''}${describeIgnore(source.ignore)}`;
   if (source.kind === 'stream') return `stream: ${oneLine(source.command, 80)}`;
   if (source.kind === 'pr-review') return `reviews and comments of ${source.pr}`;
   if (source.kind === 'pr-merged') return `merge of ${source.pr}`;
@@ -422,7 +477,7 @@ function watchJson(def: WatchDef): Record<string, unknown> {
       source.kind === 'timer'
         ? { kind: 'timer' }
         : source.kind === 'ci'
-          ? { kind: 'ci', pr: source.pr, required: source.required }
+          ? { kind: 'ci', pr: source.pr, required: source.required, ignore: source.ignore ?? [] }
           : source.kind === 'stream'
             ? { kind: 'stream', command: source.command, starts: source.starts, events: source.events }
             : source.kind === 'pr-review'

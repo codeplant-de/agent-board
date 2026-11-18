@@ -32,7 +32,7 @@ function taskPr(url: string, state: TaskPr['state'] = null, id = url): TaskPr {
 const NOW = new Date('2026-01-01T12:00:00Z');
 const HOUR = 60 * 60_000;
 
-function setup(overrides: Partial<Parameters<typeof task>[0]> = {}) {
+function setup(overrides: Partial<Parameters<typeof task>[0]> = {}, config: typeof CONFIG = CONFIG) {
   const backend = fakeBackend([task({ id: ID, status: 'running', machine: CONFIG.machine, ...overrides })]);
   const printed: string[] = [];
   const out: string[] = [];
@@ -42,7 +42,7 @@ function setup(overrides: Partial<Parameters<typeof task>[0]> = {}) {
     runBoard(argv, {
       env: {},
       context: (dryRun): LinkingContext => ({
-        config: CONFIG,
+        config,
         backend,
         dryRun,
         taskLink: linkTo,
@@ -59,6 +59,28 @@ function setup(overrides: Partial<Parameters<typeof task>[0]> = {}) {
   return { backend, printed, out, watches, run, go };
 }
 
+test('--ignore is repeatable, goes with --ci only, and is shape-checked', () => {
+  const plan = parseWatchFlags({ ci: true, ignore: ['policy-bot*', 'hold *', 'hold *'] }, [], NOW);
+  assert.deepEqual(plan.kind === 'ci' && plan.ignore, ['policy-bot*', 'hold *']);
+  for (const flags of [
+    { prReview: true as const, ignore: ['x'] },
+    { prMerged: true as const, ignore: ['x'] },
+    { in: '5m', ignore: ['x'] },
+  ])
+    assert.throws(() => parseWatchFlags(flags, [], NOW), /--ignore goes with --ci/);
+  assert.throws(() => parseWatchFlags({ name: 'x', ignore: ['x'] }, ['true'], NOW), /--ignore goes with --ci/);
+  for (const bad of ['', 'a'.repeat(101), 'a\nb', 'a\u0000b'])
+    assert.throws(() => parseWatchFlags({ ci: true, ignore: [bad] }, [], NOW), /--ignore takes a check name/);
+  assert.throws(
+    () => parseWatchFlags({ ci: true, ignore: Array.from({ length: 21 }, (_, index) => `c${index}`) }, [], NOW),
+    /at most 20 times/,
+  );
+  assert.equal(
+    parseWatchFlags({ ci: true, ignore: Array.from({ length: 20 }, (_, index) => `c${index}`) }, [], NOW).kind,
+    'ci',
+  );
+});
+
 test('flags: one source, with its defaults', () => {
   const ci = parseWatchFlags({ ci: true }, [], NOW);
   assert.deepEqual(ci, {
@@ -66,6 +88,7 @@ test('flags: one source, with its defaults', () => {
     name: 'ci',
     pr: undefined,
     required: false,
+    ignore: [],
     deadline: new Date(NOW.getTime() + 2 * HOUR),
   });
   assert.equal(parseWatchFlags({ ci: '17', required: true, name: 'build', timeout: '1h' }, [], NOW).kind, 'ci');
@@ -633,6 +656,76 @@ test('watch and unwatch tell the board the list after they changed the store, an
   };
   await missing.go(['watch', ID, '--in', '30m', '--name', 'deploy']);
   assert.equal(missing.watches.list(ID).defs.length, 1);
+});
+
+test('a ci watch with --ignore stores the patterns and lists them', async () => {
+  const { go, watches, printed, out } = setup({ prs: [taskPr(PR)] });
+  await go(['watch', ID, '--ci', '--ignore', 'policy-bot*', '--ignore', 'hold']);
+  const [def] = watches.list(ID).defs;
+  assert.deepEqual(def?.source.kind === 'ci' && def.source.ignore, ['policy-bot*', 'hold']);
+  printed.length = 0;
+  await go(['watches', ID]);
+  assert.match(printed.join('\n'), /^ci {2}ci \S+ \(ignoring "policy-bot\*", "hold"\)\n/);
+  out.length = 0;
+  await go(['watches', ID, '--json']);
+  assert.deepEqual(
+    JSON.parse(out.join('')).map((watch: { source: unknown }) => watch.source),
+    [{ kind: 'ci', pr: PR, required: false, ignore: ['policy-bot*', 'hold'] }],
+  );
+});
+
+const withDirs = (dirs: { path: string; ciIgnore?: string[] }[]): typeof CONFIG => ({ ...CONFIG, dirs });
+
+async function ciIgnoreOf(
+  dirs: { path: string; ciIgnore?: string[] }[],
+  cwd: string,
+  flags: string[] = [],
+): Promise<{ ignore: string[] | undefined; printed: string[] }> {
+  const { go, watches, printed } = setup({ prs: [taskPr(PR)] }, withDirs(dirs));
+  await go(['watch', ID, '--ci', ...flags], { cwd });
+  const [def] = watches.list(ID).defs;
+  return { ignore: def?.source.kind === 'ci' ? def.source.ignore : undefined, printed };
+}
+
+test('the ciIgnore of the directory that covers the watch is stored, and the confirmation says where it came from', async () => {
+  const { ignore, printed } = await ciIgnoreOf([{ path: '/work', ciIgnore: ['policy-bot*'] }], '/work');
+  assert.deepEqual(ignore, ['policy-bot*']);
+  assert.ok(printed.includes('ignoring "policy-bot*" (from the dirs config)'));
+});
+
+test('a worktree below a listed directory takes its ciIgnore, the longest entry wins, and an uncovered directory has none', async () => {
+  const dirs = [
+    { path: '/srv/app', ciIgnore: ['policy-bot*'] },
+    { path: '/srv/app/.claude/worktrees/special', ciIgnore: ['hold'] },
+    { path: '/srv/other' },
+  ];
+  assert.deepEqual((await ciIgnoreOf(dirs, '/srv/app/.claude/worktrees/x')).ignore, ['policy-bot*']);
+  assert.deepEqual((await ciIgnoreOf(dirs, '/srv/app/.claude/worktrees/special')).ignore, ['hold']);
+  assert.equal((await ciIgnoreOf(dirs, '/srv/other')).ignore, undefined);
+  const uncovered = await ciIgnoreOf(dirs, '/elsewhere');
+  assert.equal(uncovered.ignore, undefined);
+  assert.ok(!uncovered.printed.some((line) => line.startsWith('ignoring')));
+  assert.equal((await ciIgnoreOf(dirs, '/srv/application')).ignore, undefined);
+});
+
+test('--ignore and ciIgnore merge without duplicates, and the confirmation names the ones from the config', async () => {
+  const dirs = [{ path: '/work', ciIgnore: ['policy-bot*', 'hold'] }];
+  const both = await ciIgnoreOf(dirs, '/work', ['--ignore', 'policy-bot*', '--ignore', 'lint']);
+  assert.deepEqual(both.ignore, ['policy-bot*', 'lint', 'hold']);
+  assert.ok(both.printed.includes('ignoring "policy-bot*", "lint", "hold" ("hold" from the dirs config)'));
+  const flagsOnly = await ciIgnoreOf([{ path: '/work' }], '/work', ['--ignore', 'lint']);
+  assert.ok(flagsOnly.printed.includes('ignoring "lint"'));
+});
+
+test('flags and ciIgnore together over 20 patterns are refused', async () => {
+  const configured = Array.from({ length: 15 }, (_, index) => `c${index}`);
+  const flags = Array.from({ length: 6 }, (_, index) => ['--ignore', `f${index}`]).flat();
+  const { go, watches } = setup({ prs: [taskPr(PR)] }, withDirs([{ path: '/work', ciIgnore: configured }]));
+  await assert.rejects(go(['watch', ID, '--ci', ...flags]), /make 21 patterns, more than the 20/);
+  assert.deepEqual(watches.list(ID).defs, []);
+  const fits = Array.from({ length: 5 }, (_, index) => ['--ignore', `f${index}`]).flat();
+  await go(['watch', ID, '--ci', ...fits]);
+  assert.equal(watches.list(ID).defs.length, 1);
 });
 
 test('watches lists name, source, until, last attempt and undelivered events, or JSON', async () => {
