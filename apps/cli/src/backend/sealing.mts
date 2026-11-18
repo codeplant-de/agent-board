@@ -463,6 +463,10 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       const result = await inner.editSchedule(id, wire);
       return { schedule: await opened(result.schedule, openSchedule), pending: result.pending };
     },
+    async setScheduleRule(id, rule) {
+      const result = await inner.setScheduleRule(id, rule);
+      return { schedule: await opened(result.schedule, openSchedule), pending: result.pending };
+    },
     removeSchedule: (id) => inner.removeSchedule(id),
     indexHead: async (sha) => headIndex(await getKeys(), sha),
   };

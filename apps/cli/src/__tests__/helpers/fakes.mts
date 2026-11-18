@@ -544,6 +544,19 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       if (editable) Object.assign(card, edit);
       return { schedule: { ...found }, pending: editable ? 'updated' : 'started' };
     },
+    async setScheduleRule(id, rule) {
+      const found = state.schedules.find((s) => s.id === id);
+      if (!found) throw new BackendError(`no schedule ${id}`, 404);
+      if (found.ended) throw new BackendError('The schedule has ended.', 409);
+      state.writes.push(`set-schedule-rule ${id}: ${JSON.stringify(rule)}`);
+      const { everyMs = null, cron = null, moreCrons = [], timezone = null } = rule;
+      Object.assign(found, { everyMs, cron, moreCrons, timezone });
+      const card = state.tasks.find((t) => t.id === found.occurrenceTaskId);
+      if (card === undefined) return { schedule: { ...found }, pending: 'none' };
+      const editable = card.status === 'todo' && !card.closed && card.lastActiveAt === null && card.sessionId === null;
+      if (editable) found.nextRunAt = new Date('2027-01-02T09:00:00Z');
+      return { schedule: { ...found }, pending: editable ? 'updated' : 'started' };
+    },
     async removeSchedule(id) {
       state.writes.push(`remove-schedule ${id}`);
       state.schedules = state.schedules.filter((s) => s.id !== id);

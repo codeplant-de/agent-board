@@ -16,6 +16,7 @@ import {
   parseWirePromptEdit,
   parseWireScheduleDraft,
   parseWireScheduleEdit,
+  parseWireScheduleRule,
   parseWireTaskConfig,
   parseWireTaskDraft,
   parseWireTaskPatch,
@@ -258,6 +259,12 @@ function fakeWire(): FakeWire {
       const sent = parseWireScheduleEdit(JSON.parse(record(state, body)));
       const found = state.schedules.find((s) => s.id === id)!;
       Object.assign(found, sent);
+      return { schedule: found, pending: 'updated' };
+    },
+    async setScheduleRule(id, body) {
+      const { everyMs = null, cron = null, moreCrons = [], timezone = null } = parseWireScheduleRule(body);
+      const found = state.schedules.find((s) => s.id === id)!;
+      Object.assign(found, { everyMs, cron, moreCrons, timezone });
       return { schedule: found, pending: 'updated' };
     },
     async removeSchedule() {},
@@ -1336,4 +1343,16 @@ test('an edited schedule is sealed under the schedule and its agent, and an unre
   noMarkers(wire);
   await assert.rejects(board.editSchedule('s2', { title: 't', input: 'x' }), /cannot be read/);
   await assert.rejects(board.editSchedule('nothere1', { title: 't', input: 'x' }), /no schedule/);
+});
+
+test('a new repeat rule is sent as it is and the schedule that comes back is opened', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  wire.schedules.push(await wireSchedule({ id: 's1', agent: 'sweeper' }));
+  const { schedule: changed, pending } = await board.setScheduleRule('s1', { everyMs: 7_200_000 });
+  assert.deepEqual(
+    [changed.everyMs, changed.agent, changed.unreadable, pending],
+    [7_200_000, 'sweeper', [], 'updated'],
+  );
+  assert.deepEqual(wire.requests, []);
 });

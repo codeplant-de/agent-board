@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { Command } from 'commander';
-import { delay, editSchedulePrompt, scheduleCommand, schedules, scheduleJson } from './board.mts';
+import { delay, editSchedulePrompt, editScheduleRule, scheduleCommand, schedules, scheduleJson } from './board.mts';
 import type { DelayFlags } from './board.mts';
 import { UsageError } from '../cli.mts';
 import { resolveScheduleId } from './ids.mts';
@@ -100,14 +100,23 @@ export function registerScheduleCommands(shared: ProgramShared): void {
           paragraphs(
             'Without arguments, list the repeating schedules: id, rule, next run, runs left, paused or ended, the limit if it has one, title; --json prints them as JSON.',
             '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run.',
-            "`edit <id> <text...>` changes the schedule's prompt: the text is every word after the id, `-` reads it from stdin and `--file <path>` from a regular file in /tmp, for long text. `--title <title>` sets the title too; without it the title stays. Every later run takes the new text. The waiting run takes it too while it is in Todo and no worker has claimed it, and the command says which of three happened. Runs that already started keep what they had, and the old text is not kept. An ended schedule is refused.",
+            "`edit <id> <text...>` changes the schedule's prompt: the text is every word after the id, `-` reads it from stdin and `--file <path>` from a regular file in /tmp, for long text. `--title <title>` sets the title too; without it the title stays. Every later run takes the new text. The waiting run takes it too while it is in Todo and no worker has claimed it, and the command says which of three happened. Runs that already started keep what they had, and the old text is not kept.",
+            "`edit <id> --every <duration>` or `--cron <expr>` changes how the schedule repeats, as the Schedules page does. `--cron` is a 5-field expression read in this machine's time zone, given up to 10 times to run when any matches; it replaces the old expressions. The schedule keeps its start time and its limits. The waiting run moves to the new next run while it is in Todo and no worker has claimed it, and the command says so; otherwise the next run takes the new rule. A schedule that runs after another has no repeat of its own and is refused. Give a prompt, a rule, or both: the rule changes first, then the prompt. An ended schedule is refused.",
             'Changing a schedule is not available inside a board run. The id can be the start of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.',
           ),
         )
-        .usage('[options] [pause|resume|rm <id> | edit <id> <text...|-|--file <path>>]')
+        .usage(
+          '[options] [pause|resume|rm <id> | edit <id> [text...|-|--file <path>] [--every <duration> | --cron <expr>]]',
+        )
         .argument('[action...]', 'pause, resume, rm or edit, and the schedule id')
         .option('--title <title>', 'with edit: the new title (default: keep the current one)')
         .option('--file <path>', 'with edit: the prompt from a regular file in /tmp')
+        .option('--every <duration>', "with edit: repeat on a fixed grid from the schedule's start (2h)")
+        .option(
+          '--cron <expr>',
+          'with edit: repeat by a 5-field cron expression in this machine\'s time zone ("0 9 * * 1-5"); give it up to 10 times to run when any matches',
+          (value: string, previous: string[] = []) => [...previous, value],
+        )
         .addHelpText(
           'after',
           examples(
@@ -117,29 +126,42 @@ export function registerScheduleCommands(shared: ProgramShared): void {
             'board schedules rm s1b',
             'board schedules edit s1b2c3d4 /sweep the stale branches and the stale worktrees',
             'board schedules edit s1b --title "Nightly sweep" --file /tmp/prompt.md',
+            'board schedules edit s1b2c3d4 --every 2h',
+            'board schedules edit s1b --cron "0 9 * * 1-5" --cron "0 12 * * 6"',
           ),
         ),
     ),
-  ).action(async (words: string[], flags: { json?: boolean; title?: string; file?: string }, command: Command) => {
-    if (words.length > 0) notInRun('board schedules changes are not available inside a board run');
-    const context = contextOf(command, { json: flags.json === true });
-    if (flags.json) {
-      if (words.length > 0) throw new UsageError('--json only prints the list of schedules');
-      return writeJson((await context.backend.listSchedules()).map(scheduleJson));
-    }
-    const [action, arg, ...rest] = words;
-    if ((flags.title !== undefined || flags.file !== undefined) && action !== 'edit')
-      throw new UsageError('--title and --file belong to board schedules edit');
-    const changes = action === 'pause' || action === 'resume' || action === 'rm' || action === 'edit';
-    const id = arg === undefined || !changes ? undefined : await resolveScheduleId(context.backend, arg, { inRun });
-    if (action === 'edit' && id !== undefined) {
-      if (flags.file !== undefined && rest.length > 0)
-        throw new UsageError('give the prompt as words or with --file, not both');
-      const text = await textOf(flags.file === undefined ? rest : ['--file', flags.file]);
-      return editSchedulePrompt(context, id, { text, ...(flags.title === undefined ? {} : { title: flags.title }) });
-    }
-    return schedules(context, id === undefined ? words : [action ?? '', id, ...rest]);
-  });
+  ).action(
+    async (
+      words: string[],
+      flags: { json?: boolean; title?: string; file?: string } & Pick<ScheduleFlags, 'every' | 'cron'>,
+      command: Command,
+    ) => {
+      if (words.length > 0) notInRun('board schedules changes are not available inside a board run');
+      const context = contextOf(command, { json: flags.json === true });
+      if (flags.json) {
+        if (words.length > 0) throw new UsageError('--json only prints the list of schedules');
+        return writeJson((await context.backend.listSchedules()).map(scheduleJson));
+      }
+      const [action, arg, ...rest] = words;
+      const rule = flags.every !== undefined || flags.cron !== undefined;
+      if ((flags.title !== undefined || flags.file !== undefined || rule) && action !== 'edit')
+        throw new UsageError('--title, --file, --every and --cron belong to board schedules edit');
+      const changes = action === 'pause' || action === 'resume' || action === 'rm' || action === 'edit';
+      const id = arg === undefined || !changes ? undefined : await resolveScheduleId(context.backend, arg, { inRun });
+      if (action === 'edit' && id !== undefined) {
+        if (flags.file !== undefined && rest.length > 0)
+          throw new UsageError('give the prompt as words or with --file, not both');
+        const prompt = rest.length > 0 || flags.file !== undefined || flags.title !== undefined;
+        if (!prompt && !rule) throw new UsageError('edit takes a prompt, --every or --cron');
+        const text = prompt ? await textOf(flags.file === undefined ? rest : ['--file', flags.file]) : undefined;
+        if (rule) await editScheduleRule(context, id, flags);
+        if (text === undefined) return;
+        return editSchedulePrompt(context, id, { text, ...(flags.title === undefined ? {} : { title: flags.title }) });
+      }
+      return schedules(context, id === undefined ? words : [action ?? '', id, ...rest]);
+    },
+  );
 }
 
 export function registerDelayCommand(shared: ProgramShared): void {

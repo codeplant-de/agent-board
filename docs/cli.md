@@ -822,7 +822,7 @@ Examples:
 ### board schedules
 
 ```
-Usage: board schedules [options] [pause|resume|rm <id> | edit <id> <text...|-|--file <path>>]
+Usage: board schedules [options] [pause|resume|rm <id> | edit <id> [text...|-|--file <path>] [--every <duration> | --cron <expr>]]
 
 Without arguments, list the repeating schedules: id, rule, next run, runs left,
 paused or ended, the limit if it has one, title; --json prints them as JSON.
@@ -836,23 +836,38 @@ after the id, `-` reads it from stdin and `--file <path>` from a regular file in
 stays. Every later run takes the new text. The waiting run takes it too while it
 is in Todo and no worker has claimed it, and the command says which of three
 happened. Runs that already started keep what they had, and the old text is not
-kept. An ended schedule is refused.
+kept.
+
+`edit <id> --every <duration>` or `--cron <expr>` changes how the schedule
+repeats, as the Schedules page does. `--cron` is a 5-field expression read in
+this machine's time zone, given up to 10 times to run when any matches; it
+replaces the old expressions. The schedule keeps its start time and its limits.
+The waiting run moves to the new next run while it is in Todo and no worker has
+claimed it, and the command says so; otherwise the next run takes the new rule.
+A schedule that runs after another has no repeat of its own and is refused. Give
+a prompt, a rule, or both: the rule changes first, then the prompt. An ended
+schedule is refused.
 
 Changing a schedule is not available inside a board run. The id can be the start
 of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.
 
 Arguments:
-  action           pause, resume, rm or edit, and the schedule id
+  action              pause, resume, rm or edit, and the schedule id
 
 Options:
-  --title <title>  with edit: the new title (default: keep the current one)
-  --file <path>    with edit: the prompt from a regular file in /tmp
-  --json           print JSON on stdout instead of text; a value this machine
-                   cannot decrypt is null there and named in "unreadable" (text
-                   shows "(cannot decrypt: input)" after the task, and "(cannot
-                   decrypt this title)" for a title)
-  --dry-run        read everything, print every write instead of doing it
-  -h, --help       display help for command
+  --title <title>     with edit: the new title (default: keep the current one)
+  --file <path>       with edit: the prompt from a regular file in /tmp
+  --every <duration>  with edit: repeat on a fixed grid from the schedule's
+                      start (2h)
+  --cron <expr>       with edit: repeat by a 5-field cron expression in this
+                      machine's time zone ("0 9 * * 1-5"); give it up to 10
+                      times to run when any matches
+  --json              print JSON on stdout instead of text; a value this machine
+                      cannot decrypt is null there and named in "unreadable"
+                      (text shows "(cannot decrypt: input)" after the task, and
+                      "(cannot decrypt this title)" for a title)
+  --dry-run           read everything, print every write instead of doing it
+  -h, --help          display help for command
 
 Examples:
   board schedules
@@ -861,6 +876,8 @@ Examples:
   board schedules rm s1b
   board schedules edit s1b2c3d4 /sweep the stale branches and the stale worktrees
   board schedules edit s1b --title "Nightly sweep" --file /tmp/prompt.md
+  board schedules edit s1b2c3d4 --every 2h
+  board schedules edit s1b --cron "0 9 * * 1-5" --cron "0 12 * * 6"
 ```
 
 ### board delay

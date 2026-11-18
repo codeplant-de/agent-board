@@ -257,6 +257,13 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
       if (!found) throw new BackendError(`edit-schedule: no schedule ${id.slice(0, 40)}`, 404);
       return { schedule: { ...found, ...edit }, pending: 'none' };
     },
+    async setScheduleRule(id, rule) {
+      print(`DRY set-schedule-rule ${id} ${oneLine(JSON.stringify(rule), 160)}`);
+      const found = (await inner.listSchedules()).find((schedule) => schedule.id === id);
+      if (!found) throw new BackendError(`set-schedule-rule: no schedule ${id.slice(0, 40)}`, 404);
+      const { everyMs = null, cron = null, moreCrons = [], timezone = null } = rule;
+      return { schedule: { ...found, everyMs, cron, moreCrons, timezone }, pending: 'none' };
+    },
     async removeSchedule(id) {
       print(`DRY remove-schedule ${id}`);
     },

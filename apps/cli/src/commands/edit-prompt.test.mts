@@ -178,9 +178,114 @@ test('schedules edit refuses an ended or unreadable schedule, an unknown one and
   await assert.rejects(run.go(['schedules', 'edit', 'ended001', 'new']), /has ended/);
   await assert.rejects(run.go(['schedules', 'edit', 'bad00001', 'new']), /cannot be decrypted/);
   await assert.rejects(run.go(['schedules', 'edit', 'nothere1', 'new']), /no schedule/);
-  await assert.rejects(run.go(['schedules', 'edit', 'same0001']), /text is missing/);
+  await assert.rejects(run.go(['schedules', 'edit', 'same0001']), /takes a prompt, --every or --cron/);
   await assert.rejects(run.go(['schedules', 'pause', 'same0001', '--title', 'x']), /belong to .*edit/);
   await run.go(['schedules', 'edit', 'same0001', 'same']);
   assert.deepEqual(run.backend.writes, []);
   assert.deepEqual(run.printed, ['same0001 already has this title and prompt']);
+});
+
+test('schedules edit --every and --cron change the rule, and say what became of the pending card', async () => {
+  const run = runner(
+    [task({ id: 'pending', scheduleId: 's1' })],
+    [schedule({ id: 's1', everyMs: 7_200_000 }), schedule({ id: 's2', occurrenceTaskId: null, paused: true })],
+  );
+  await run.go(['schedules', 'edit', 's1', '--every', '3h']);
+  await run.go(['schedules', 'edit', 's1', '--cron', '0 9 * * 1-5', '--cron', '0 12 * * 6']);
+  await run.go(['schedules', 'edit', 's2', '--every', '1h']);
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  assert.deepEqual(run.backend.writes, [
+    'set-schedule-rule s1: {"everyMs":10800000}',
+    `set-schedule-rule s1: ${JSON.stringify({ cron: '0 9 * * 1-5', moreCrons: ['0 12 * * 6'], timezone: zone })}`,
+    'set-schedule-rule s2: {"everyMs":3600000}',
+  ]);
+  assert.match(
+    run.printed[0]!,
+    /^s1 repeat changed to every 3h, next run 2027-01-02 \d\d:\d\d\. The pending card moved to the new next run\.$/,
+  );
+  assert.match(
+    run.printed[1]!,
+    new RegExp(`^s1 repeat changed to cron 0 9 \\* \\* 1-5 \\| 0 12 \\* \\* 6 \\(${zone}\\), next run `),
+  );
+  assert.equal(
+    run.printed[2],
+    's2 repeat changed to every 1h. The schedule has no pending card; its next run takes the change.',
+  );
+});
+
+test('schedules edit --every on a pending card that started does not promise a next run', async () => {
+  const run = runner([task({ id: 'pending', scheduleId: 's1', lastActiveAt: new Date() })], [schedule({ id: 's1' })]);
+  await run.go(['schedules', 'edit', 's1', '--every', '3h']);
+  assert.deepEqual(run.printed, [
+    's1 repeat changed to every 3h. The pending card has already started; the change applies from the next run.',
+  ]);
+});
+
+test('schedules edit says when the rule is the one it has, and writes nothing', async () => {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const run = runner(
+    [],
+    [
+      schedule({ id: 'every001', everyMs: 7_200_000 }),
+      schedule({ id: 'cron0001', everyMs: null, cron: '0 9 * * 1', moreCrons: ['0 12 * * 6'], timezone: zone }),
+    ],
+  );
+  await run.go(['schedules', 'edit', 'every001', '--every', '2h']);
+  await run.go(['schedules', 'edit', 'cron0001', '--cron', '0 9 * * 1', '--cron', '0  12 * * 6']);
+  assert.deepEqual(run.backend.writes, []);
+  assert.deepEqual(run.printed, ['every001 already has this rule', 'cron0001 already has this rule']);
+});
+
+test('schedules edit with a rule refuses what cannot take one, and a bad rule, before sending anything', async () => {
+  const run = runner(
+    [],
+    [
+      schedule({ id: 'ended001', ended: true }),
+      schedule({ id: 'after001', everyMs: null, after: { scheduleId: 's1', delayMs: 0 } }),
+      schedule({ id: 'ok000001' }),
+    ],
+  );
+  const refuse = (argv: string[], message: RegExp) => assert.rejects(run.go(['schedules', 'edit', ...argv]), message);
+  await refuse(['ended001', '--every', '1h'], /has ended/);
+  await refuse(['after001', '--every', '1h'], /runs after another schedule/);
+  await refuse(['nothere1', '--every', '1h'], /no schedule/);
+  await refuse(['ok000001', '--every', '1h', '--cron', '0 9 * * *'], /cannot be combined/);
+  await refuse(['ok000001', '--every', 'soon'], /duration|every/i);
+  await refuse(['ok000001', '--cron', '0 9 * *'], /5 fields/);
+  await refuse(['ok000001', '--cron', '0 9 * * *', '--cron', '0  9 * * *'], /given twice/);
+  await refuse(['ok000001'], /takes a prompt, --every or --cron/);
+  await refuse(['ok000001', '--every', '1h', '--title', 'x'], /text is missing/);
+  await assert.rejects(run.go(['schedules', 'pause', 'ok000001', '--every', '1h']), /belong to .*edit/);
+  assert.deepEqual(run.backend.writes, []);
+});
+
+test('schedules edit with a rule and a prompt changes the rule first, then the prompt', async () => {
+  const run = runner([task({ id: 'pending', scheduleId: 's1' })], [schedule({ id: 's1', title: 'T', input: 'old' })]);
+  await run.go(['schedules', 'edit', 's1', 'new', 'prompt', '--every', '1d']);
+  assert.deepEqual(run.backend.writes, [
+    'set-schedule-rule s1: {"everyMs":86400000}',
+    'edit-schedule s1: T | new prompt',
+  ]);
+  assert.equal(run.printed.length, 2);
+});
+
+test('schedules edit --every needs the server feature, and --dry-run confirms nothing', async () => {
+  const run = runner([], [schedule({ id: 's1' })]);
+  await run.go(['schedules', 'edit', 's1', '--every', '1h', '--dry-run']);
+  assert.ok(!run.printed.some((line) => line.includes('repeat changed')));
+  run.backend.setScheduleRule = async () => {
+    throw new BackendError(
+      'the board server does not support changing the repeat of a schedule yet; update the board server',
+    );
+  };
+  await assert.rejects(run.go(['schedules', 'edit', 's1', '--every', '3h']), /does not support changing the repeat/);
+});
+
+test('schedules edit with a rule is refused inside a board run', async () => {
+  const run = runner([task({ id: ID })], [schedule({ id: 's1' })]);
+  await assert.rejects(
+    run.go(['schedules', 'edit', 's1', '--every', '1h'], { env: { AGENT_BOARD_TASK: ID } }),
+    /not available inside a board run/,
+  );
+  assert.deepEqual(run.backend.writes, []);
 });

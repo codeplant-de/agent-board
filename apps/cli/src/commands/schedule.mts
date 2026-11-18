@@ -147,6 +147,34 @@ export function addScheduleOptions(command: Command): Command {
     );
 }
 
+/** `--every` or `--cron`, checked: an interval in ms, or the cron expressions with the first one apart. */
+export function parseRepeatFlags(
+  flags: Pick<ScheduleFlags, 'every' | 'cron'>,
+): Pick<ScheduleArgs, 'every' | 'cron' | 'moreCrons'> {
+  const crons = [flags.cron ?? []].flat().map((expression) => expression.trim());
+  if (flags.every !== undefined && crons.length > 0) throw new UsageError('--every and --cron cannot be combined');
+  for (const expression of crons)
+    if (expression.split(/\s+/).length !== 5)
+      throw new UsageError(
+        `--cron takes 5 fields (minute hour day month weekday), such as "0 9 * * 1-5"; got "${expression.slice(0, 60)}"`,
+      );
+  if (crons.length > MAX_SCHEDULE_CRONS)
+    throw new UsageError(`--cron can be given at most ${MAX_SCHEDULE_CRONS} times`);
+  const normalized = crons.map((expression) => expression.split(/\s+/).join(' '));
+  const repeated = normalized.find((expression, index) => normalized.indexOf(expression) !== index);
+  if (repeated !== undefined) throw new UsageError(`--cron "${repeated.slice(0, 60)}" is given twice`);
+  return {
+    every: flags.every === undefined ? undefined : parseInterval(flags.every),
+    cron: crons[0],
+    moreCrons: crons.slice(1),
+  };
+}
+
+/** The IANA zone a cron expression of this machine is read in. */
+export function localTimezone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
 // The flags are the board's own; the words after them are the prompt, flags included (`--auto`).
 export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Date = new Date()): ScheduleArgs {
   const hold = flags.hold === true;
@@ -188,6 +216,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
         `--polish parks the task in Backlog, where its polished prompt is applied; it cannot be combined with ${conflicts.join(', ')}`,
       );
   }
+  const repeat = parseRepeatFlags(flags);
   const result: ScheduleArgs = {
     prompt: '',
     priority: undefined,
@@ -198,9 +227,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     hold,
     backlog,
     notBefore: undefined,
-    every: undefined,
-    cron,
-    moreCrons: crons.slice(1),
+    ...repeat,
     after: undefined,
     delay: undefined,
     maxConcurrent: undefined,
@@ -232,7 +259,6 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
   if (delay !== undefined && at !== undefined) throw new UsageError('--in and --at cannot be combined');
   if ((delay !== undefined || at !== undefined) && (hold || backlog))
     throw new UsageError('--in and --at queue the task in Todo; they cannot be combined with --hold or --backlog');
-  if (every !== undefined && cron !== undefined) throw new UsageError('--every and --cron cannot be combined');
   const repeats = every !== undefined || cron !== undefined || flags.after !== undefined;
   if (!repeats && (times !== undefined || until !== undefined))
     throw new UsageError('--times and --until end a repeat; add --every, --cron or --after');
@@ -242,17 +268,6 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     throw new UsageError('--every and --cron queue tasks in Todo; they cannot be combined with --hold or --backlog');
   if (times !== undefined && until !== undefined) throw new UsageError('--times and --until cannot be combined');
   result.notBefore = parseStart({ delay, at }, now);
-  if (every !== undefined) result.every = parseInterval(every);
-  for (const expression of crons)
-    if (expression.split(/\s+/).length !== 5)
-      throw new UsageError(
-        `--cron takes 5 fields (minute hour day month weekday), such as "0 9 * * 1-5"; got "${expression.slice(0, 60)}"`,
-      );
-  if (crons.length > MAX_SCHEDULE_CRONS)
-    throw new UsageError(`--cron can be given at most ${MAX_SCHEDULE_CRONS} times`);
-  const normalized = crons.map((expression) => expression.split(/\s+/).join(' '));
-  const repeated = normalized.find((expression, index) => normalized.indexOf(expression) !== index);
-  if (repeated !== undefined) throw new UsageError(`--cron "${repeated.slice(0, 60)}" is given twice`);
   if (flags.after !== undefined) {
     if (!/^[A-Za-z0-9_-]{3,64}$/.test(flags.after))
       throw new UsageError(`--after takes the id of a schedule or the start of it; got "${flags.after.slice(0, 40)}"`);

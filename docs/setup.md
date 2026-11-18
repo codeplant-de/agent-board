@@ -209,6 +209,14 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
+### Changing the repeat of a schedule (CLI 0.30.0)
+
+A new server feature, `schedule.rule-edit`. `board schedules edit <id> --every <duration>` and `--cron <expr>` change the interval or the cron expressions of a schedule, as **Change repeat** on the Schedules page does (see [Repeating schedules](usage.md#repeating-schedules)). Nothing changes in the database, and no version number is raised.
+
+Update the server first. A server without `schedule.rule-edit` makes the command refuse with "the board server does not support changing the repeat of a schedule yet; update the board server", and nothing else changes. A machine on an older CLI has no such flags and runs everything as before.
+
+- `board doctor` warns about a server without `schedule.rule-edit`.
+
 ### Schedule rules and limits (CLI 0.29.0)
 
 Four new server features: `schedule.crons`, `schedule.max-concurrent`, `schedule.after` and `task.held`. `board schedule` takes `--cron` several times, `--max-concurrent <n>` and `--after <schedule> [--delay <dur>]` (see [Repeating schedules](usage.md#repeating-schedules)). A migration adds columns to `schedule` and `task`. Nothing changes for the schedules you have, and no version number is raised.

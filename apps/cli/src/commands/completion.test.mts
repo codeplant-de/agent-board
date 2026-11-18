@@ -191,6 +191,8 @@ test('the bash script completes commands, task ids, statuses, priorities and sch
   assert.deepEqual(bashOffers(['events', '--type'], 'n'), ['note']);
   assert.deepEqual(bashOffers(['events', '--status'], 'n'), ['needs-me']);
   assert.deepEqual(bashOffers(['schedules'], 'p'), ['pause']);
+  assert.deepEqual(bashOffers(['schedules', 'edit', 'Sc1aBcDe'], '--e'), ['--every']);
+  assert.deepEqual(bashOffers(['schedules', 'edit', 'Sc1aBcDe'], '--c'), ['--cron']);
   assert.deepEqual(bashOffers(['dirs'], ''), ['list', 'add', 'rm', 'set', 'unset']);
   assert.deepEqual(bashOffers(['agents'], ''), ['list', 'show', 'export', 'add', 'rm']);
   assert.deepEqual(bashOffers(['dirs', 'set'], ''), ['label', 'repo', 'default', 'lane']);

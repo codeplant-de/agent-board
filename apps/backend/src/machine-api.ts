@@ -34,6 +34,7 @@ import {
   parseWirePromptEdit,
   parseWireScheduleDraft,
   parseWireScheduleEdit,
+  parseWireScheduleRule,
   parseWireTaskConfig,
   parseWireTaskDraft,
   parseWireTaskPatch,
@@ -70,6 +71,7 @@ import {
   listSchedules,
   removeSchedule,
   setPaused,
+  setScheduleRule,
   toSchedule,
 } from './services/schedules';
 import { appendTranscript } from './services/transcripts';
@@ -421,6 +423,11 @@ async function handleMachineCall(
       const { schedule: edited, pending } = await editSchedule(db, { id: idOf(body, 'schedule'), ...edit });
       return { schedule: serializeSchedule(schedule(edited)), pending };
     }
+    case 'set-schedule-rule': {
+      const rule = parsed(() => parseWireScheduleRule(body['body']));
+      const { schedule: changed, pending } = await setScheduleRule(db, { id: idOf(body, 'schedule'), ...rule });
+      return { schedule: serializeSchedule(schedule(changed)), pending };
+    }
     case 'remove-schedule':
       await removeSchedule(db, idOf(body, 'schedule'));
       return null;
@@ -449,6 +456,7 @@ const DISPATCH_WRITES = new Set([
   'add-schedule',
   'update-schedule',
   'edit-schedule',
+  'set-schedule-rule',
   'remove-schedule',
 ]);
 

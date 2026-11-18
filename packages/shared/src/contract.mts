@@ -442,6 +442,9 @@ export interface Backend {
   editPrompt(id: string, edit: PromptEdit): Promise<Task>;
   // The user's new title and prompt for a schedule: every later run takes them, and the pending card too while it has not started.
   editSchedule(id: string, edit: PromptEdit): Promise<EditScheduleResult>;
+  // A new interval or new cron expressions for a schedule; its start time stays. The pending card moves to the new next run
+  // while it has not started. The board refuses an ended schedule (409) and one that runs after another (400).
+  setScheduleRule(id: string, rule: ScheduleRule): Promise<EditScheduleResult>;
   // Moves a todo task to running for `machine`; undefined when another caller got it first or it is pinned elsewhere.
   claimTask(id: string, machine: string): Promise<Task | undefined>;
   // A `suggestion` (agent comments only) is the reply the user will most likely send next; a `polish` note is a rewritten prompt.
@@ -625,6 +628,9 @@ export interface PromptEdit {
 export type PendingCardOutcome = 'updated' | 'started' | 'none';
 export const PENDING_CARD_OUTCOMES: readonly PendingCardOutcome[] = ['updated', 'started', 'none'];
 
+// What a schedule repeats by: exactly one of `everyMs` and `cron`, the rest as in `ScheduleDraft`.
+export type ScheduleRule = Pick<ScheduleDraft, 'everyMs' | 'cron' | 'moreCrons' | 'timezone'>;
+
 export interface EditScheduleResult {
   schedule: Schedule;
   pending: PendingCardOutcome;
@@ -644,6 +650,9 @@ export interface WireEditScheduleResult {
   schedule: WireSchedule;
   pending: PendingCardOutcome;
 }
+
+// The body of set-schedule-rule: not sealed, the rule is clear.
+export type WireScheduleRule = ScheduleRule;
 
 // The body of configure-task: the directory is sealed.
 export type WireTaskConfig = Omit<TaskConfigChange, 'seal'>;
@@ -770,6 +779,7 @@ export interface WireBackend {
   configureTask(id: string, body: WireTaskConfig): Promise<WireTask>;
   editPrompt(id: string, body: WirePromptEdit): Promise<WireTask>;
   editSchedule(id: string, body: WireScheduleEdit): Promise<WireEditScheduleResult>;
+  setScheduleRule(id: string, body: WireScheduleRule): Promise<WireEditScheduleResult>;
   claimTask(id: string, machine: string): Promise<WireTask | undefined>;
   addNote(
     id: string,
@@ -1670,12 +1680,37 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
 }
 
 // The `moreCrons` of a draft: expressions as the browser and the CLI send them, which the server reads with croner afterwards.
-function draftCronList(value: unknown): string[] {
+function draftCronList(value: unknown, what: string): string[] {
   if (!Array.isArray(value) || !value.every((entry): entry is string => typeof entry === 'string'))
-    throw new ContractError('schedule draft.moreCrons must be a list of strings');
+    throw new ContractError(`${what}.moreCrons must be a list of strings`);
   if (value.length > MAX_SCHEDULE_CRONS - 1)
-    throw new ContractError(`schedule draft.moreCrons holds at most ${MAX_SCHEDULE_CRONS - 1} expressions`);
+    throw new ContractError(`${what}.moreCrons holds at most ${MAX_SCHEDULE_CRONS - 1} expressions`);
   return value;
+}
+
+// The `everyMs`, `cron`, `moreCrons` and `timezone` of a draft or a rule; a cron needs its time zone.
+function ruleFields(obj: Record<string, unknown>, what: string): ScheduleRule {
+  const rule: ScheduleRule = {};
+  if ('everyMs' in obj) rule.everyMs = positiveInt(obj, 'everyMs', what, MAX_INTERVAL_MS);
+  if ('cron' in obj) {
+    rule.cron = string(obj, 'cron', what);
+    rule.timezone = string(obj, 'timezone', what);
+    if (rule.timezone === '') throw new ContractError(`${what}.timezone must not be empty`);
+  } else if ('timezone' in obj) throw new ContractError(`${what}.timezone only goes with cron`);
+  if ('moreCrons' in obj) {
+    if (!('cron' in obj)) throw new ContractError(`${what}.moreCrons only goes with cron`);
+    rule.moreCrons = draftCronList(obj['moreCrons'], what);
+  }
+  return rule;
+}
+
+// Body of set-schedule-rule: exactly one of `everyMs` and `cron`, which takes a `timezone` and may take `moreCrons`.
+export function parseWireScheduleRule(value: unknown): WireScheduleRule {
+  const obj = record(value, 'schedule rule');
+  rejectUnknownKeys(obj, ['everyMs', 'cron', 'moreCrons', 'timezone'], 'schedule rule');
+  if (['everyMs', 'cron'].filter((rule) => rule in obj).length !== 1)
+    throw new ContractError('a schedule rule needs exactly one of everyMs and cron');
+  return ruleFields(obj, 'schedule rule');
 }
 
 // Body of add-schedule. `id`, `title`, `input` and one rule are required.
@@ -1724,16 +1759,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
     throw new ContractError('schedule draft.machine and schedule draft.workdir go together');
   if (['everyMs', 'cron', 'after'].filter((rule) => rule in obj).length !== 1)
     throw new ContractError('a schedule needs exactly one of everyMs, cron and after');
-  if ('everyMs' in obj) draft.everyMs = positiveInt(obj, 'everyMs', what, MAX_INTERVAL_MS);
-  if ('cron' in obj) {
-    draft.cron = string(obj, 'cron', what);
-    draft.timezone = string(obj, 'timezone', what);
-    if (draft.timezone === '') throw new ContractError('schedule draft.timezone must not be empty');
-  } else if ('timezone' in obj) throw new ContractError('schedule draft.timezone only goes with cron');
-  if ('moreCrons' in obj) {
-    if (!('cron' in obj)) throw new ContractError('schedule draft.moreCrons only goes with cron');
-    draft.moreCrons = draftCronList(obj['moreCrons']);
-  }
+  Object.assign(draft, ruleFields(obj, what));
   if ('after' in obj) {
     if ('startAt' in obj) throw new ContractError('schedule draft.startAt does not go with after');
     const after = record(obj['after'], 'schedule draft.after');

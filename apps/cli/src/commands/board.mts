@@ -30,13 +30,22 @@ import {
   STATUSES,
   UNREADABLE_TEXT,
 } from '@agent-board/shared';
-import type { Note, PendingCardOutcome, Priority, Schedule, Status, Task } from '@agent-board/shared';
+import type { Note, PendingCardOutcome, Priority, Schedule, ScheduleRule, Status, Task } from '@agent-board/shared';
 import { createStyle } from '../output/style.mts';
 import { SystemError } from '../setup/system.mts';
 import { requireTaskId } from '../task-id.mts';
 import { plainLine, plainText } from '../output/terminal.mts';
 import type { Style } from '../output/style.mts';
-import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule, scheduleAfter } from './schedule.mts';
+import {
+  haikuDuplicateCheck,
+  localTime,
+  localTimezone,
+  parseRepeatFlags,
+  parseScheduleArgs,
+  parseStart,
+  schedule,
+  scheduleAfter,
+} from './schedule.mts';
 import { resolveScheduleId } from './ids.mts';
 import type { Choice, Scheduled, ScheduledAfter, ScheduleFlags } from './schedule.mts';
 import { publishWatches } from '../watch/publish.mts';
@@ -668,6 +677,46 @@ export async function editSchedulePrompt(
   confirm(context, `${id} prompt updated. ${PENDING_CARD_LINES[pending]}.`);
 }
 
+const RULE_PENDING_LINES: Record<PendingCardOutcome, string> = {
+  updated: 'The pending card moved to the new next run',
+  started: 'The pending card has already started; the change applies from the next run',
+  none: 'The schedule has no pending card; its next run takes the change',
+};
+
+function cronsOf(rule: { cron?: string | null | undefined; moreCrons?: string[] | undefined }): string {
+  return [rule.cron ?? '', ...(rule.moreCrons ?? [])].map((expression) => expression.split(/\s+/).join(' ')).join('\n');
+}
+
+function hasRule(current: Schedule, rule: ScheduleRule): boolean {
+  if (rule.everyMs !== undefined) return current.everyMs === rule.everyMs;
+  return current.everyMs === null && current.timezone === rule.timezone && cronsOf(current) === cronsOf(rule);
+}
+
+/**
+ * The user's new repeat for a schedule: `--every` or `--cron`, the latter read in this machine's time zone. The schedule keeps
+ * its start time; the pending card moves to the new next run while it has not started.
+ */
+export async function editScheduleRule(
+  context: Context,
+  id: string,
+  flags: Pick<ScheduleFlags, 'every' | 'cron'>,
+): Promise<void> {
+  const { every, cron, moreCrons } = parseRepeatFlags(flags);
+  const rule: ScheduleRule =
+    every === undefined
+      ? { cron: cron ?? '', ...(moreCrons.length === 0 ? {} : { moreCrons }), timezone: localTimezone() }
+      : { everyMs: every };
+  const current = (await context.backend.listSchedules()).find((schedule) => schedule.id === id);
+  if (current === undefined) throw new UsageError(`no schedule ${plainLine(id).slice(0, 40)}`);
+  if (current.ended) throw new UsageError(`${id} has ended; an ended schedule can only be deleted`);
+  if (current.after !== null)
+    throw new UsageError(`${id} runs after another schedule and has no repeat of its own; it is not changed here`);
+  if (hasRule(current, rule)) return context.print(`${id} already has this rule`);
+  const { schedule: changed, pending } = await context.backend.setScheduleRule(id, rule);
+  const next = pending === 'updated' && changed.nextRunAt !== null ? `, next run ${localTime(changed.nextRunAt)}` : '';
+  confirm(context, `${id} repeat changed to ${describeRule(changed)}${next}. ${RULE_PENDING_LINES[pending]}.`);
+}
+
 // The question goes to stderr, so a JSON document on stdout stays alone.
 async function chooseInTerminal(): Promise<Choice> {
   const terminal = createInterface({ input: process.stdin, output: process.stderr });
@@ -713,7 +762,7 @@ export async function scheduleCommand(
     backend: context.backend,
     machine: context.config.machine,
     workdir: cwd,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timezone: localTimezone(),
     print: context.print,
     confirm: (line: string) => confirm(context, line),
     link: context.taskLink,

@@ -80,6 +80,7 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   'configure-task': 'task.configure',
   'edit-prompt': 'prompt.edit',
   'edit-schedule': 'prompt.edit',
+  'set-schedule-rule': 'schedule.rule-edit',
   'set-catalog': 'machine.catalog',
   'set-usage': 'machine.usage',
 };
@@ -320,6 +321,8 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     updateSchedule: async (id, patch) =>
       call('update-schedule', { id: scheduleId(id), body: patch }, parseWireSchedule),
     editSchedule: async (id, body) => call('edit-schedule', { id: scheduleId(id), body }, parseWireEditScheduleResult),
+    setScheduleRule: async (id, body) =>
+      call('set-schedule-rule', { id: scheduleId(id), body }, parseWireEditScheduleResult),
     removeSchedule: async (id) => send('remove-schedule', { id: scheduleId(id) }),
   };
 }
