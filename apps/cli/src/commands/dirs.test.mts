@@ -681,7 +681,7 @@ test('set refuses a bad key, value or path, and an unlisted directory or no list
   await assert.rejects(run.go(['dirs', 'set', 'label', 'x']), /no directories are listed/);
   listDirs(fx, run, [a]);
   const refused: [string[], RegExp][] = [
-    [['dirs', 'set', 'mode', 'rw'], /not a directory setting: label, repo, default, lane/],
+    [['dirs', 'set', 'mode', 'rw'], /not a directory setting: label, repo, default, lane, ciIgnore/],
     [['dirs', 'set', 'label'], /takes a setting, its value/],
     [['dirs', 'set', 'default', 'false'], /default takes true/],
     [['dirs', 'set', 'default'], /takes a setting, its value/],
@@ -774,6 +774,35 @@ test('rm says which of repo, default and lane go with the entry, and nothing for
   assert.ok(!said(run).includes('note:'));
   await run.go(['dirs', 'rm', '--force', '/srv/c', '--dry-run']);
   assert.match(said(run), /DRY unlist \/srv\/c[^\n]*\nnote: it no longer has its repo o\/n/);
+});
+
+test('set ciIgnore writes a list from comma-separated names, list shows it, unset removes it, and the board is not sent it', async (context) => {
+  const fx = fixture(context, {});
+  const a = fx.make('a');
+  const b = fx.make('b');
+  const run = runner(fx, a);
+  listDirs(fx, run, [a, b]);
+  await run.go(['dirs', 'set', 'ciIgnore', 'policy-bot*, hold *,policy-bot*']);
+  assert.deepEqual(settingsOf(fx), { [a]: { ciIgnore: ['policy-bot*', 'hold *'] }, [b]: {} });
+  await run.go(['dirs', 'set', 'ciIgnore', 'policy-bot*', b]);
+  assert.deepEqual(settingsOf(fx), {
+    [a]: { ciIgnore: ['policy-bot*', 'hold *'] },
+    [b]: { ciIgnore: ['policy-bot*'] },
+  });
+  run.printed.length = 0;
+  await run.go(['dirs', 'set', 'ciIgnore', 'policy-bot*', b]);
+  assert.match(said(run), /already has ciIgnore=policy-bot\*/);
+  run.printed.length = 0;
+  await run.go(['dirs', 'list']);
+  assert.match(said(run), /ciIgnore="policy-bot\*","hold \*"/);
+  assert.ok(written(run.backend).every((line) => !line.includes('policy-bot')));
+  await run.go(['dirs', 'unset', 'ciIgnore']);
+  assert.deepEqual(settingsOf(fx), { [a]: {}, [b]: { ciIgnore: ['policy-bot*'] } });
+  await assert.rejects(run.go(['dirs', 'set', 'ciIgnore', '']), /ciIgnore must be a list of 1 to 20 check names/);
+  await assert.rejects(
+    run.go(['dirs', 'set', 'ciIgnore', Array.from({ length: 21 }, (_, index) => `c${index}`).join(',')]),
+    /ciIgnore must be a list/,
+  );
 });
 
 // A real git checkout under the fixture whose `origin` is `url`.

@@ -136,8 +136,10 @@ export function dirsList(deps: DirsDeps): void {
 // An entry's settings as `label=Board  repo=owner/name  default  lane=reviews`, each led by two spaces.
 function settingsText(entry: DirEntry): string {
   return DIR_SETTINGS.map((setting) => {
-    if (entry[setting] === undefined) return '';
-    return `  ${setting === 'default' ? 'default' : `${setting}=${plainLine(String(entry[setting]))}`}`;
+    const value = entry[setting];
+    if (value === undefined) return '';
+    if (setting === 'default') return '  default';
+    return `  ${setting}=${plainLine(Array.isArray(value) ? value.map((pattern) => JSON.stringify(pattern)).join(',') : String(value))}`;
   }).join('');
 }
 
@@ -400,12 +402,17 @@ function settingKey(key: string): DirSetting {
   return setting;
 }
 
-// What a typed value is as the setting: only `default` is not text.
-function settingValue(setting: DirSetting, value: string): string | true {
+// What a typed value is as the setting: `default` is `true` and `ciIgnore` a comma-separated list; the rest is text.
+function settingValue(setting: DirSetting, value: string): string | string[] | true {
   if (setting === 'default' && value !== 'true')
     throw new UsageError('default takes true; "board dirs unset default" takes it away');
+  if (setting === 'ciIgnore') return [...new Set(value.split(',').map((pattern) => pattern.trim()))];
   return setting === 'default' ? true : value.trim();
 }
+
+const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+const shownValue = (value: string | string[] | true): string =>
+  value === true ? '' : `=${plainLine(Array.isArray(value) ? value.join(',') : value)}`;
 
 export function dirsSet(deps: DirsDeps, key: string, text: string, path: string | undefined): void {
   const setting = settingKey(key);
@@ -419,15 +426,15 @@ export function dirsSet(deps: DirsDeps, key: string, text: string, path: string 
     config.lanes.map(({ name }) => name),
   );
   if (problem !== undefined) throw new UsageError(`${setting} ${problem}`);
-  if (match[setting] === value) {
-    deps.print(`${plainLine(match.path)} already has ${setting}${value === true ? '' : `=${plainLine(value)}`}`);
+  if (sameValue(match[setting], value)) {
+    deps.print(`${plainLine(match.path)} already has ${setting}${shownValue(value)}`);
     return;
   }
-  if (setting !== 'label') {
+  if (setting === 'repo' || setting === 'default' || setting === 'lane') {
     const holder = config.dirs.find((entry) => entry !== match && entry[setting] === value);
     if (holder !== undefined)
       throw new UsageError(
-        `${plainLine(holder.path)} has ${setting}${value === true ? '' : ` ${plainLine(value)}`} already; "board dirs unset ${setting} ${shellQuote(holder.path)}" takes it away first`,
+        `${plainLine(holder.path)} has ${setting}${value === true ? '' : ` ${plainLine(String(value))}`} already; "board dirs unset ${setting} ${shellQuote(holder.path)}" takes it away first`,
       );
   }
   write(deps, `set ${setting} of ${match.path}`, (keys) =>

@@ -108,6 +108,16 @@ test('a watch definition is shape-checked: the PR, the directories, the commit, 
   assert.equal(noisy?.last, undefined);
 });
 
+test('a ci watch keeps valid ignore patterns, reads without them, and is unreadable with bad ones', () => {
+  const plain = watchDef({ source: { kind: 'ci', pr: PR, required: false, cwd: '/work' } });
+  assert.equal(parseWatchDef(plain)?.source.kind === 'ci' && 'ignore' in parseWatchDef(plain)!.source, false);
+  const ignoring = { ...plain, source: { ...plain.source, ignore: ['policy-bot*', 'hold'] } };
+  assert.deepEqual(parseWatchDef(ignoring), ignoring);
+  assert.deepEqual(parseWatchDef({ ...plain, source: { ...plain.source, ignore: [] } }), plain);
+  for (const ignore of ['x', [1], [''], ['a\nb'], ['a'.repeat(101)], Array.from({ length: 21 }, (_, i) => `c${i}`)])
+    assert.equal(parseWatchDef({ ...plain, source: { ...plain.source, ignore } }), undefined);
+});
+
 test('a pr-merged watch is shape-checked: it keeps its PR, its directories and nothing else', () => {
   const merged = mergedDef({ source: { kind: 'pr-merged', pr: PR, cwd: '/work', settingsDir: '/start' } });
   assert.deepEqual(parseWatchDef(merged), merged);

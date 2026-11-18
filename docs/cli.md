@@ -364,24 +364,28 @@ and the task waits without holding a slot. A task may have several watches.
 
 Give exactly one source. --ci watches the checks of a pull request (the PR is
 the argument, or the newest open one you reported with "board pr"; --required
-looks at the required checks only; a new commit restarts it) and reports when
-one failed, the PR was merged or closed, or two looks 30 seconds apart found the
-same checks all passed (so a passed answer never comes at once). --pr-review
-watches the reviews and comments of a pull request (the same default) every
-minute and reports the first one that someone other than the PR's author and
-this machine's gh user writes after the watch started, with who wrote it, the
-review's state and the first lines of its text. --pr-merged watches the PR
-itself (the same default) every minute and reports once it was merged, with the
-merge commit, or closed without merging. A command after -- is run every --every
-(default 30s, at least 15s) in this directory, with the env of your Claude Code
-settings, and reports once it exits 0; it needs --name, and it is run once right
-away. With --stream the command is started once and kept running: the lines it
-prints reach you as events (the lines of about 2 seconds together), and its
-exit, with the exit code, is the last event. A stream that prints more than 50
-events or 20 KB in 10 minutes is stopped, so filter the output down to the lines
-that matter (grep --line-buffered). After a restart of the watch unit or a
-reboot the command starts again from the beginning, and the next event says so.
---in or --at is a timer.
+looks at the required checks only; --ignore <name> leaves out the checks of that
+name, * standing for any characters and the option repeatable, for a check that
+waits for a person and so never finishes on its own, such as an approval gate
+like policy-bot or a CI hold job, and the event tells how many were ignored; a
+new commit restarts it) and reports when one failed, the PR was merged or
+closed, or two looks 30 seconds apart found the same checks all passed (so a
+passed answer never comes at once). --pr-review watches the reviews and comments
+of a pull request (the same default) every minute and reports the first one that
+someone other than the PR's author and this machine's gh user writes after the
+watch started, with who wrote it, the review's state and the first lines of its
+text. --pr-merged watches the PR itself (the same default) every minute and
+reports once it was merged, with the merge commit, or closed without merging. A
+command after -- is run every --every (default 30s, at least 15s) in this
+directory, with the env of your Claude Code settings, and reports once it exits
+0; it needs --name, and it is run once right away. With --stream the command is
+started once and kept running: the lines it prints reach you as events (the
+lines of about 2 seconds together), and its exit, with the exit code, is the
+last event. A stream that prints more than 50 events or 20 KB in 10 minutes is
+stopped, so filter the output down to the lines that matter (grep
+--line-buffered). After a restart of the watch unit or a reboot the command
+starts again from the beginning, and the next event says so. --in or --at is a
+timer.
 
 --timeout (default 2h, for --pr-review 1d, for --pr-merged 7d, at most 7 days)
 is how long a ci, pr-review, pr-merged or command watch looks, or a stream runs,
@@ -406,6 +410,8 @@ Options:
   --ci [pr]             watch the checks of a PR (URL or number; default: the
                         newest open PR reported for this task)
   --required            with --ci: the required checks only
+  --ignore <pattern>    with --ci: leave out the checks with this name, * for
+                        any characters ('policy-bot*'); repeatable
   --pr-review [pr]      watch the reviews and comments of a PR (URL or number;
                         default: the newest open PR reported for this task)
   --pr-merged [pr]      watch for the merge or close of a PR (URL or number;
@@ -427,6 +433,7 @@ Options:
 Examples:
   board watch Ab3dEf9x --ci
   board watch Ab3dEf9x --ci 17741 --required --timeout 1h
+  board watch Ab3dEf9x --ci --ignore 'policy-bot*' --ignore 'hold *'
   board watch Ab3dEf9x --pr-review
   board watch Ab3dEf9x --pr-merged
   board watch Ab3dEf9x --name health --every 1m -- 'curl -fsS https://staging.example.com/health'
@@ -997,7 +1004,7 @@ directory the run started in) outside it. `add`, `rm`, `set` and `unset` rewrite
 the `dirs` key of config.json and nothing else (the settings of the other
 entries stay as they are), and are not available inside a board run.
 
-A listed directory can carry four settings. `label` (1 to 64 characters) is a
+A listed directory can carry five settings. `label` (1 to 64 characters) is a
 short name the New task form shows with the path, and the only setting the board
 is sent. `repo` (owner/name) makes the directory the checkout of that
 repository, like a `repos` entry. `default` (the value is `true`) makes it the
@@ -1007,7 +1014,12 @@ without one, like the lane's `cwd`; one directory per lane. A setting wins over
 the old key it stands for (`repos`, `defaultCwd`, a lane `cwd`), and `set`
 refuses one that another directory has: `unset` it there first. `list` shows
 each entry's settings; `rm` says which of repo, default and lane go with the
-entry.
+entry. `ciIgnore` is a comma-separated list of check names (up to 20, `*` for
+any characters, no comma in a name) that `board watch --ci` leaves out when it
+starts in this directory or one below it, such as an approval gate
+(`policy-bot*`) or a CI hold job; it stays on this machine, and `board watch`
+merges it with its own --ignore at the start of a watch. `set` replaces the
+whole list.
 
 The board gets a copy of the list, for the New task form to offer: the listed
 directories that exist, sent by `add`, `rm`, `set` and `unset` and by every
@@ -1039,6 +1051,7 @@ Examples:
   board dirs set repo acme/board ~/workspace/agent-board
   board dirs set default true
   board dirs set lane reviews ~/workspace/reviews
+  board dirs set ciIgnore 'policy-bot*,hold *' ~/workspace/acme/app
   board dirs unset label
 ```
 

@@ -18,6 +18,25 @@ export function coveringDir(dirs: readonly DirEntry[], path: string): DirEntry |
     );
 }
 
+/**
+ * The `ciIgnore` patterns of the listed directory that covers `path`, compared as written and by real path like
+ * isAllowedDir, so a worktree below a checkout gets its checkout's patterns. None when no entry covers it.
+ */
+export function dirCiIgnore(
+  dirs: readonly DirEntry[] | undefined,
+  path: string,
+  realpath: (path: string) => string | undefined = tryRealpath,
+): string[] {
+  if (dirs === undefined) return [];
+  const resolved = dirs.flatMap((entry) => {
+    const real = realpath(entry.path);
+    return real === undefined || real === entry.path ? [] : [{ ...entry, path: real }];
+  });
+  const all = [...dirs, ...resolved];
+  const covering = coveringDir(all, realpath(path) ?? path) ?? coveringDir(all, path);
+  return covering?.ciIgnore ?? [];
+}
+
 /** The realpath of an existing path, or undefined when it is not there. */
 export function tryRealpath(path: string): string | undefined {
   try {

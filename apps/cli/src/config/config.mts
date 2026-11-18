@@ -17,6 +17,7 @@ import {
 } from '@agent-board/shared';
 import type { Priority } from '@agent-board/shared';
 
+import { MAX_IGNORE_CHARS, MAX_IGNORE_PATTERNS, parseIgnorePatterns } from '../watch/shapes.mts';
 import { ConfigError } from './config-error.mts';
 import { parseAgentDocument } from './agent-document.mts';
 
@@ -79,10 +80,12 @@ export interface DirEntry {
   default?: true;
   // A lane of this config: its tasks without a directory run here, like the lane's `cwd`.
   lane?: string;
+  // Check-name patterns a `board watch --ci` started here leaves out (see isIgnorePattern); stays on this machine.
+  ciIgnore?: string[];
 }
 
 // The settings of a `dirs` entry, in the order the CLI writes and lists them.
-export const DIR_SETTINGS = ['label', 'repo', 'default', 'lane'] as const;
+export const DIR_SETTINGS = ['label', 'repo', 'default', 'lane', 'ciIgnore'] as const;
 export type DirSetting = (typeof DIR_SETTINGS)[number];
 
 export const MAX_DIRS = 200;
@@ -188,6 +191,12 @@ export function dirSettingProblem(key: DirSetting, value: unknown, lanes: readon
       return typeof value === 'string' && lanes.includes(value)
         ? undefined
         : `must name a lane of this config (${lanes.join(', ')})`;
+    case 'ciIgnore': {
+      const patterns = parseIgnorePatterns(value);
+      return patterns !== undefined && patterns.length > 0
+        ? undefined
+        : `must be a list of 1 to ${MAX_IGNORE_PATTERNS} check names (${MAX_IGNORE_CHARS} characters at most, no control characters; * stands for any characters)`;
+    }
   }
 }
 
@@ -221,6 +230,7 @@ function parseDirs(raw: unknown, lanes: readonly string[]): DirEntry[] | undefin
       const problem = dirSettingProblem(setting, typeof value === 'string' ? value.trim() : value, lanes);
       if (problem !== undefined) throw new ConfigError(`config: dirs[${shown}].${setting} ${problem}`);
       if (setting === 'default') entry.default = true;
+      else if (setting === 'ciIgnore') entry.ciIgnore = parseIgnorePatterns(value) ?? [];
       else entry[setting] = String(value).trim();
     }
     return entry;

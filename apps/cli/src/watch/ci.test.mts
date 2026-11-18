@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { HEAD, OTHER_HEAD, PR } from '../__tests__/helpers/watch.mts';
 import { CI_EVERY_MS } from './store.mts';
-import { decideCi, NO_CHECKS_GRACE_MS } from './ci.mts';
+import { decideCi, matchesIgnore, NO_CHECKS_GRACE_MS } from './ci.mts';
 import type { CiDecision, CiInput, CiSource, GhOutput } from './ci.mts';
 
 const NOW = new Date('2026-01-01T12:10:00Z');
@@ -234,4 +234,96 @@ test('right after a re-run, a look that finds only the checks outside it, all pa
     });
     assert.equal(two.kind, 'pending', `looks at ${at}s and ${rerun.looks[next]?.afterSeconds}s`);
   }
+});
+
+const ignoring = (...ignore: string[]): CiSource => ({ ...source, ignore });
+
+test('glob patterns: * is any run, anchored, case-sensitive, everything else literal', () => {
+  assert.equal(matchesIgnore('policy-bot*', 'policy-bot: feature/x'), true);
+  assert.equal(matchesIgnore('policy-bot*', 'my policy-bot'), false);
+  assert.equal(matchesIgnore('*bot', 'policy-bot'), true);
+  assert.equal(matchesIgnore('a*c*e', 'abcde'), true);
+  assert.equal(matchesIgnore('a**c', 'ac'), true);
+  assert.equal(matchesIgnore('lint', 'lint'), true);
+  assert.equal(matchesIgnore('lint', 'lint (node 22)'), false);
+  assert.equal(matchesIgnore('Lint', 'lint'), false);
+  assert.equal(matchesIgnore('build (node 22)', 'build (node 22)'), true);
+  assert.equal(matchesIgnore('a.c', 'abc'), false);
+  assert.equal(matchesIgnore('a+b[1]?', 'a+b[1]?'), true);
+  assert.equal(matchesIgnore('*', ''), true);
+});
+
+test('an ignored pending check does not hold the watch: it passes after two looks and says how many were ignored', () => {
+  const list = checks([
+    { name: 'unit', bucket: 'pass' },
+    { name: 'policy-bot: feature', bucket: 'pending' },
+  ]);
+  const first = decide({ checks: list, source: ignoring('policy-bot*') });
+  assert.equal(first.kind, 'pending');
+  assert.equal(
+    first.kind === 'pending' && first.summary,
+    '1 check passed, 1 ignored, looking once more before reporting',
+  );
+  const second = decide({
+    checks: list,
+    source: first.kind === 'pending' ? { ...ignoring('policy-bot*'), ...first.source } : source,
+  });
+  assert.equal(second.kind === 'event' && second.text, `CI on ${PR} at aaaaaaa passed: 1 check passed, 1 ignored.`);
+  assert.equal(decide({ checks: list }).kind, 'pending');
+});
+
+test('the pending summary counts only the checks that are not ignored', () => {
+  const decision = decide({
+    checks: checks([
+      { name: 'unit', bucket: 'pass' },
+      { name: 'e2e', bucket: 'pending' },
+      { name: 'hold', bucket: 'pending' },
+    ]),
+    source: ignoring('hold'),
+  });
+  assert.equal(decision.kind === 'pending' && decision.summary, '1 of 2 passed, 1 running, 1 ignored');
+});
+
+test('an ignored failing or cancelled check does not fail the watch', () => {
+  const list = checks([
+    { name: 'unit', bucket: 'pass' },
+    { name: 'policy-bot', bucket: 'fail' },
+    { name: 'hold', bucket: 'cancel' },
+  ]);
+  assert.equal(decide({ checks: list }).kind, 'event');
+  const decision = decide({ checks: list, source: ignoring('policy-bot', 'hold') });
+  assert.equal(decision.kind, 'pending');
+  assert.equal(decision.kind === 'pending' && decision.source.settled !== undefined, true);
+});
+
+test('a failure of a check that is not ignored still ends the watch, with the ignored count', () => {
+  const decision = decide({
+    checks: checks([
+      { name: 'unit', bucket: 'fail' },
+      { name: 'policy-bot', bucket: 'pending' },
+    ]),
+    source: ignoring('policy-bot'),
+  });
+  assert.equal(decision.kind === 'event' && decision.text.split('\n').at(-1), 'still running: 0, passed: 0, 1 ignored');
+});
+
+test('the settled digest covers the checks that are not ignored only', () => {
+  const base = [{ name: 'unit', bucket: 'pass' }];
+  const a = decide({ checks: checks([...base, { name: 'hold', bucket: 'pending' }]), source: ignoring('hold') });
+  const b = decide({ checks: checks([...base, { name: 'hold', bucket: 'fail' }]), source: ignoring('hold') });
+  assert.equal(a.kind === 'pending' && a.source.settled, b.kind === 'pending' && b.source.settled);
+});
+
+test('when every check is ignored the watch waits out the no-checks grace, then reports', () => {
+  const list = checks([{ name: 'policy-bot', bucket: 'pending' }]);
+  const fresh = decide({ checks: list, source: { ...ignoring('policy-bot*'), headSince: NOW.toISOString() } });
+  assert.equal(fresh.kind === 'pending' && fresh.summary, `only ignored checks (1) on aaaaaaa yet`);
+  const late = decide({
+    checks: list,
+    source: { ...ignoring('policy-bot*'), headSince: new Date(NOW.getTime() - NO_CHECKS_GRACE_MS).toISOString() },
+  });
+  assert.equal(
+    late.kind === 'event' && late.text,
+    `No checks to watch on ${PR} at aaaaaaa within 3 minutes: 1 check found, all ignored.`,
+  );
 });

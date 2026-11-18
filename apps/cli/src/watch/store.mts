@@ -28,7 +28,15 @@ import { isRecord, isSafeTaskId, isSafeWorkdir } from '@agent-board/shared';
 import { getPaths } from '../config/config.mts';
 import { requireTaskId } from '../task-id.mts';
 import { sanitizeEventText } from './fence.mts';
-import { isGhLogin, isPrUrl, isReviewItemId, isSettledDigest, isWatchName, MAX_SEEN_IDS } from './shapes.mts';
+import {
+  isGhLogin,
+  isPrUrl,
+  isReviewItemId,
+  isSettledDigest,
+  isWatchName,
+  MAX_SEEN_IDS,
+  parseIgnorePatterns,
+} from './shapes.mts';
 
 export { isPrUrl, isWatchName } from './shapes.mts';
 
@@ -49,6 +57,8 @@ export type WatchSource =
       // The PR URL as gh prints it.
       pr: string;
       required: boolean;
+      // Check names (with `*` as a wildcard) the watch leaves out of its count; absent when none.
+      ignore?: string[];
       // The commit being watched, and when this commit was first seen (or the watch registered).
       head?: string;
       headSince?: string;
@@ -212,12 +222,15 @@ function parseSource(raw: unknown): WatchSource | undefined {
     return { kind, command, cwd, starts, events, ...optionalSettingsDir(raw) };
   }
   if (kind === 'ci') {
-    const { pr, required, head, headSince, settled } = raw;
+    const { pr, required, ignore, head, headSince, settled } = raw;
     if (typeof pr !== 'string' || !isPrUrl(pr) || typeof required !== 'boolean') return undefined;
+    const patterns = ignore === undefined ? [] : parseIgnorePatterns(ignore);
+    if (patterns === undefined) return undefined;
     return {
       kind,
       pr,
       required,
+      ...(patterns.length > 0 ? { ignore: patterns } : {}),
       cwd,
       ...(typeof head === 'string' && COMMIT.test(head) ? { head } : {}),
       ...(isIso(headSince) ? { headSince } : {}),
