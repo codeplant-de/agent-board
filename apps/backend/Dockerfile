@@ -54,6 +54,10 @@ COPY --from=deps --chown=board:board /app ./
 COPY --from=builder --chown=board:board /app/apps/backend/dist apps/backend/dist
 COPY --chown=board:board apps/backend/drizzle apps/backend/drizzle
 
+# The commit, which the settings page shows; CI passes it, empty means unknown. Last, so a new commit reuses the layers above.
+ARG GIT_SHA=
+ENV GIT_SHA=$GIT_SHA
+
 WORKDIR /app/apps/backend
 USER board
 EXPOSE 4000

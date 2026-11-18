@@ -403,6 +403,29 @@ function Session() {
   );
 }
 
+const COMMIT = /^[0-9a-f]{7,40}$/;
+
+/** The web build's own commit, baked in by the image build. */
+const WEB_REVISION = COMMIT.test(import.meta.env.VITE_GIT_SHA ?? '') ? (import.meta.env.VITE_GIT_SHA ?? null) : null;
+
+function RevisionCode({ revision }: { revision: string | null | undefined }) {
+  if (revision === undefined) return <Code>…</Code>;
+  if (revision === null) return <Code>unknown</Code>;
+  return <Code title={revision}>{revision.slice(0, 7)}</Code>;
+}
+
+/** The deployed commits, for bug reports. Web and server are separate images and roll out apart, so both are shown. */
+function Revision() {
+  const trpc = useTRPC();
+  const server = useQuery(trpc.revision.queryOptions());
+  return (
+    <Text size="xs" c="dimmed" ta="center" data-testid="revision">
+      Web <RevisionCode revision={WEB_REVISION} /> · Server{' '}
+      <RevisionCode revision={server.isError ? null : server.data} />
+    </Text>
+  );
+}
+
 export function SettingsPage() {
   const config = useAuthConfig();
   return (
@@ -414,6 +437,7 @@ export function SettingsPage() {
       {config.data?.login === true && config.data.passkeys && <Passkeys />}
       <Session />
       <YourData />
+      <Revision />
     </Stack>
   );
 }

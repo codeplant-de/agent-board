@@ -69,12 +69,22 @@ export interface Config {
   auth: AuthConfig;
   /** The newest CLI release, x.y.z, which the machine API advertises; null when this build does not know it. */
   cliVersion: string | null;
+  /** The git commit this build came from, for the settings page; null when the build was not given one. */
+  revision: string | null;
 }
 
 /** An unset or malformed value is "unknown", not a start failure: the advertisement is a convenience. */
 function parseCliVersion(value: string | undefined): string | null {
   const version = value?.trim();
   return isReleaseVersion(version) ? version : null;
+}
+
+const COMMIT = /^[0-9a-f]{7,40}$/;
+
+/** CI passes the full commit SHA; anything else is "unknown", like the CLI version. */
+function parseRevision(value: string | undefined): string | null {
+  const revision = value?.trim().toLowerCase();
+  return revision !== undefined && COMMIT.test(revision) ? revision : null;
 }
 
 const MAX_LABEL_LENGTH = 40;
@@ -243,5 +253,6 @@ export function loadConfig(env: Env = process.env): Config {
     backfillOwner: env.BACKFILL_OWNER?.trim().toLowerCase() || null,
     auth: parseNoLogin(env, nodeEnv) ?? parseLogin(env, nodeEnv),
     cliVersion: parseCliVersion(env.CLI_VERSION),
+    revision: parseRevision(env.GIT_SHA),
   };
 }

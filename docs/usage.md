@@ -849,6 +849,10 @@ It does not remove:
 - the files on your worker machines: `~/.config/agent-board`, the state and logs, and Claude's session files
 - the operator's database backups, until they expire
 
+## Deployed revision
+
+The bottom of the settings page shows the commit of the deployed web app and of the server, seven characters each, the full commit on hover. Web and server roll out separately, so the two can differ for a while after a merge. Put both in a bug report. A build without a commit, such as a dev server, shows "unknown".
+
 ## Board events
 
 `board events` prints one line per change on your board, as it happens, until you stop it. It is for scripts that react to the board, such as a notification:

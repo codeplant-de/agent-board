@@ -630,6 +630,8 @@ export const appRouter = router({
   auth: authRouter,
   passkeys: passkeysRouter,
   me: procedure.query(async ({ ctx }) => ({ username: ctx.username, keyId: (await getKeys(ctx.db))?.keyId ?? null })),
+  /** The commit the server was built from, shown at the bottom of the settings page. */
+  revision: procedure.query(({ ctx }) => ctx.config.revision),
   keys: keysRouter,
   tasks: tasksRouter,
   schedules: schedulesRouter,
