@@ -1,52 +1,19 @@
-import {
-  AGENT_NAME_RULE,
-  ContractError,
-  isAgentName,
-  MAX_INTERVAL_MS,
-  MAX_SCHEDULE_CONCURRENT,
-  parseDuration,
-  PRIORITIES,
-  type Priority,
-} from '@agent-board/shared';
-import {
-  Button,
-  Checkbox,
-  Code,
-  Group,
-  Modal,
-  NumberInput,
-  SegmentedControl,
-  Select,
-  Stack,
-  Text,
-  TextInput,
-} from '@mantine/core';
+import type { Priority } from '@agent-board/shared';
+import { Box, Button, Code, Group, Modal, Select, Stack, Text, TextInput } from '@mantine/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { skillsFor } from '../lib/catalog';
 import { DEFAULT_MODEL } from '../lib/model';
-import { PRIORITY_LABEL } from '../lib/priority';
-import { parseRepeatRule } from '../lib/repeat';
+import { parseDelay, parseRepeatRule } from '../lib/repeat';
 import { errorMessage, useTRPC } from '../lib/trpc';
 import { useNow } from '../lib/useNow';
 import { DirectorySelect } from './DirectorySelect';
 import { MarkdownEditor } from './MarkdownEditor';
-import { RepeatRuleInput } from './RepeatRuleInput';
+import { RepeatFields, limitError, timesError } from './RepeatFields';
+import { AgentField, AutoDoneField, ModelField, PriorityField, agentNameError } from './TaskFields';
 import { useDirectoryChoices } from './useDirectoryChoices';
 import { useModelOptions } from './useModelOptions';
-
-/** The delay of a schedule that runs after another: empty is none, else a duration the board may hold. */
-function parseDelay(text: string): number | undefined {
-  if (text.trim() === '') return 0;
-  try {
-    const ms = parseDuration(text);
-    return ms <= MAX_INTERVAL_MS ? ms : undefined;
-  } catch (error) {
-    if (error instanceof ContractError) return undefined;
-    throw error;
-  }
-}
 
 const WHEN_LABEL = { now: 'Now', later: 'Later', repeat: 'Repeating', backlog: 'Backlog', hold: 'Needs me' } as const;
 type When = keyof typeof WHEN_LABEL;
@@ -95,15 +62,9 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   );
   const models = useModelOptions(place?.machine, model);
   const agentName = agent.trim();
-  const agentError = agentName !== '' && !isAgentName(agentName) ? `Use ${AGENT_NAME_RULE}` : undefined;
+  const agentError = agentNameError(agentName);
   const startsLater = when === 'later' || when === 'repeat';
   const atError = startsLater && at !== '' && !(start.getTime() > now) ? 'Pick a time in the future' : undefined;
-  const timesError =
-    times !== '' && !(Number.isInteger(times) && Number(times) > 0) ? 'A whole number, 1 or more' : undefined;
-  const limitError =
-    limit !== '' && !(Number.isInteger(limit) && Number(limit) >= 1 && Number(limit) <= MAX_SCHEDULE_CONCURRENT)
-      ? `A whole number from 1 to ${MAX_SCHEDULE_CONCURRENT}`
-      : undefined;
   const afterOptions = (schedules.data ?? [])
     .filter(({ ended }) => !ended)
     .map(({ id, title }) => ({ value: id, label: title }));
@@ -120,8 +81,8 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
     (when !== 'repeat' ||
       (repeat !== undefined &&
         (after !== null || atError === undefined) &&
-        timesError === undefined &&
-        limitError === undefined));
+        timesError(times) === undefined &&
+        limitError(limit) === undefined));
   const submit = () => {
     if (!ready || create.isPending) return;
     const schedule = repeat && {
@@ -191,49 +152,16 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           value={directory}
           onChange={setDirectory}
         />
-        <TextInput
-          label="Agent"
-          placeholder="Runs as you, with your permissions"
-          value={agent}
-          onChange={(e) => setAgent(e.currentTarget.value)}
-          error={agentError}
-          description="The name of an agent in the config.json of the machine that runs it: only its tools and lists, never asking. A machine without it does not run the task. The board cannot read the name."
-        />
+        <AgentField value={agent} onChange={setAgent} />
         <TextInput
           label="Title"
           placeholder="Defaults to the prompt's first line"
           value={title}
           onChange={(e) => setTitle(e.currentTarget.value)}
         />
-        <div>
-          <Text size="sm" fw={500} mb={4}>
-            Priority
-          </Text>
-          <SegmentedControl
-            fullWidth
-            value={priority}
-            onChange={(value) => setPriority(value as Priority)}
-            data={PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABEL[p] }))}
-          />
-        </div>
-        <Select
-          label="Model"
-          allowDeselect={false}
-          value={model}
-          onChange={(value) => value && setModel(value)}
-          data={models.options}
-          description={
-            models.fromCatalog
-              ? 'The models claude lists on the chosen machine, or on any machine. Default is the model claude picks on the machine that runs it'
-              : 'Default is the model claude picks on the machine that runs it'
-          }
-        />
-        <Checkbox
-          label="Agent may mark it done"
-          description="When it judges every acceptance criterion met and nothing is left for you, the agent moves the task to Done instead of Needs me. A repeat gives this to each task it makes."
-          checked={autoDone}
-          onChange={(event) => setAutoDone(event.currentTarget.checked)}
-        />
+        <PriorityField value={priority} onChange={setPriority} />
+        <ModelField value={model} onChange={setModel} models={models} />
+        <AutoDoneField value={autoDone} onChange={setAutoDone} />
         <div>
           <Text size="sm" fw={500} mb={4}>
             When
@@ -258,78 +186,30 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
             />
           )}
           {when === 'repeat' && (
-            <Stack gap="xs" mt="xs">
-              <Select
-                label="Run after"
-                placeholder="Not after another schedule"
-                clearable
-                searchable
-                value={after}
-                onChange={(value) => {
-                  create.reset();
-                  setAfter(value);
-                }}
-                data={afterOptions}
-                nothingFoundMessage="No schedule that has not ended"
-                description="Instead of a rule: a card is made each time a card of that schedule finishes, in Needs me or Done"
+            <Box mt="xs">
+              <RepeatFields
+                after={after}
+                onAfterChange={setAfter}
+                afterOptions={afterOptions}
+                ruleLines={ruleLines}
+                onRuleLinesChange={setRuleLines}
+                timezone={timezone}
+                ruleError={ruleError}
+                delay={delay}
+                onDelayChange={setDelay}
+                delayError={delayError}
+                at={at}
+                onAtChange={setAt}
+                atError={atError}
+                atDescription="Default: now"
+                times={times}
+                onTimesChange={setTimes}
+                limit={limit}
+                onLimitChange={setLimit}
+                saveError={create.error ? errorMessage(create.error) : undefined}
+                onEdit={create.reset}
               />
-              {after === null ? (
-                <>
-                  <RepeatRuleInput
-                    lines={ruleLines}
-                    onChange={(lines) => {
-                      create.reset();
-                      setRuleLines(lines);
-                    }}
-                    timezone={timezone}
-                    error={ruleError ?? (create.error ? errorMessage(create.error) : undefined)}
-                  />
-                  <TextInput
-                    type="datetime-local"
-                    label="First run"
-                    value={at}
-                    onChange={(e) => setAt(e.currentTarget.value)}
-                    error={atError}
-                    description="Default: now"
-                  />
-                </>
-              ) : (
-                <TextInput
-                  label="Delay"
-                  placeholder="10m"
-                  value={delay}
-                  onChange={(e) => setDelay(e.currentTarget.value)}
-                  error={delayError ?? (create.error ? errorMessage(create.error) : undefined)}
-                  description="How long after that card finished the next one starts. Default: at once"
-                />
-              )}
-              <NumberInput
-                label="Number of runs"
-                min={1}
-                allowDecimal={false}
-                allowNegative={false}
-                value={times}
-                onChange={setTimes}
-                error={timesError}
-                description="Default: it repeats until you delete it"
-              />
-              <NumberInput
-                label="At most at once"
-                min={1}
-                max={MAX_SCHEDULE_CONCURRENT}
-                allowDecimal={false}
-                allowNegative={false}
-                value={limit}
-                onChange={setLimit}
-                error={limitError}
-                description="Cards of the schedule running or waiting at once. A card over the limit stays in Todo until one finishes. Default: no limit"
-              />
-              <Text size="xs" c="dimmed">
-                {after === null
-                  ? 'One pending card is on the board at a time; the next appears when it is started, moved or closed.'
-                  : 'No card is on the board until a card of that schedule finishes; then one waits in Todo for the delay.'}
-              </Text>
-            </Stack>
+            </Box>
           )}
         </div>
         <Group justify="flex-end">

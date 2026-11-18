@@ -1,25 +1,11 @@
 import { describeRule, formatDuration, INVALID_VALUE, runsLeft } from '@agent-board/shared';
-import {
-  ActionIcon,
-  Anchor,
-  Badge,
-  Code,
-  Group,
-  Modal,
-  Paper,
-  Stack,
-  Table,
-  Text,
-  Title,
-  Tooltip,
-} from '@mantine/core';
+import { ActionIcon, Anchor, Badge, Code, Group, Paper, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
 import { modals } from '@mantine/modals';
-import { IconClock, IconPencil, IconPlayerPause, IconPlayerPlay, IconTrash } from '@tabler/icons-react';
+import { IconPencil, IconPlayerPause, IconPlayerPlay, IconTrash } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChangeScheduleRepeat } from '../components/ChangeScheduleRepeat';
-import { EditSchedulePrompt } from '../components/EditPrompt';
+import { EditScheduleModal } from '../components/EditSchedule';
 import { QueryStatus } from '../components/QueryStatus';
 import { ago, stamp } from '../lib/time';
 import { POLL_MS, useTRPC, type Schedule as ScheduleRow } from '../lib/trpc';
@@ -29,8 +15,6 @@ function ScheduleActions({ schedule }: { schedule: ScheduleRow }) {
   const setPaused = useMutation(trpc.schedules.setPaused.mutationOptions());
   const remove = useMutation(trpc.schedules.remove.mutationOptions());
   const [editing, setEditing] = useState(false);
-  const [changingRepeat, setChangingRepeat] = useState(false);
-  const hasOwnRule = schedule.after === null && !schedule.invalid.includes('everyMs');
   const confirmRemove = () =>
     modals.openConfirmModal({
       title: `Delete "${schedule.title}"?`,
@@ -58,19 +42,6 @@ function ScheduleActions({ schedule }: { schedule: ScheduleRow }) {
           </ActionIcon>
         </Tooltip>
       )}
-      {!schedule.ended && hasOwnRule && (
-        <Tooltip label="Change repeat">
-          <ActionIcon
-            variant="subtle"
-            color="gray"
-            aria-label="Change repeat"
-            disabled={schedule.unreadable.length > 0}
-            onClick={() => setChangingRepeat(true)}
-          >
-            <IconClock size={16} />
-          </ActionIcon>
-        </Tooltip>
-      )}
       {!schedule.ended && (
         <Tooltip label={schedule.paused ? 'Resume' : 'Pause'}>
           <ActionIcon
@@ -89,12 +60,7 @@ function ScheduleActions({ schedule }: { schedule: ScheduleRow }) {
           <IconTrash size={16} />
         </ActionIcon>
       </Tooltip>
-      <Modal opened={editing} onClose={() => setEditing(false)} title="Edit schedule" size="lg">
-        <EditSchedulePrompt schedule={schedule} onClose={() => setEditing(false)} />
-      </Modal>
-      <Modal opened={changingRepeat} onClose={() => setChangingRepeat(false)} title="Change repeat" size="lg">
-        <ChangeScheduleRepeat schedule={schedule} onClose={() => setChangingRepeat(false)} />
-      </Modal>
+      <EditScheduleModal schedule={schedule} opened={editing} onClose={() => setEditing(false)} />
     </Group>
   );
 }

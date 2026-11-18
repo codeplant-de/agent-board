@@ -3,6 +3,7 @@ import {
   MAX_SCHEDULE_CONCURRENT,
   MAX_SCHEDULE_CRONS,
   isCronExpression,
+  type Priority,
   type WireSchedule,
   type WireScheduleDraft,
 } from '@agent-board/shared';
@@ -12,7 +13,7 @@ import type { DbOrTx } from '../db/client';
 import { schedules, tasks, transcriptRuns, type ScheduleRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
 import { requireSealed } from './sealed';
-import { hasStarted, insertTask, lockTask } from './taskRows';
+import { edgePosition, hasStarted, insertTask, lockTask } from './taskRows';
 
 const MIN_INTERVAL_MS = 60_000;
 
@@ -507,41 +508,166 @@ export async function editSchedule(
   });
 }
 
+export type PendingOutcome = 'updated' | 'started' | 'none' | 'removed' | 'created';
+
+/** Everything of a schedule the user edits, except its id: the update replaces all of it. */
+export interface ScheduleUpdate {
+  id: string;
+  /** `title`, `input`, `agent` and the directory are sealed for the schedule; the first two are bound to the agent. */
+  title: string;
+  input: string;
+  agent?: string;
+  place: { machine: string; workdir: string } | null;
+  priority: Priority;
+  model: string | null;
+  autoDone: boolean;
+  rule: Pick<WireScheduleDraft, 'everyMs' | 'cron' | 'moreCrons' | 'timezone' | 'after'>;
+  /** The first run of a rule of its own; absent keeps the schedule's. */
+  startAt?: Date;
+  /** Runs the schedule still has, the pending card included; null is forever. */
+  runsLeft: number | null;
+  until: Date | null;
+  maxConcurrent: number | null;
+}
+
+const sameInstant = (a: Date | null, b: Date | null): boolean => a?.getTime() === b?.getTime();
+
+/** Whether the schedule must not run after `upstreamId`, because that one already runs (through others) after it. */
+async function requireNoCycle(tx: DbOrTx, scheduleId: string, upstreamId: string): Promise<void> {
+  const seen = new Set<string>();
+  let current: string | null = upstreamId;
+  while (current !== null && !seen.has(current)) {
+    if (current === scheduleId)
+      throw new AppError(
+        'BAD_REQUEST',
+        'That would make the schedules run after each other in a circle, so none of them would ever start.',
+      );
+    seen.add(current);
+    const [row]: { afterScheduleId: string | null }[] = await tx
+      .select({ afterScheduleId: schedules.afterScheduleId })
+      .from(schedules)
+      .where(eq(schedules.id, current));
+    current = row?.afterScheduleId ?? null;
+  }
+}
+
 /**
- * A new interval or new cron expressions for the schedule, which keeps its start time (the interval grid stays anchored where
- * it was). The pending card moves to the new next run while it waits in Todo and has not started; otherwise the next card
- * takes the rule. A schedule that runs after another has no rule of its own, and a rule that would never run is refused.
+ * Replaces everything the user can set on a schedule, as the browser's Edit schedule form does. The pending card takes the
+ * text, agent, directory, priority, model and auto-done while it waits in Todo and has not started, and moves to the new next
+ * run when the rule, the first run or the end changed; otherwise the next card takes the change. Moving between a rule of its
+ * own and running after another schedule removes or creates the pending card to fit. The caller seals `title`, `input`, `agent`
+ * and the directory together, because the first two are bound to the agent.
  */
-export async function setScheduleRule(
+export async function updateSchedule(
   db: DbOrTx,
-  input: Pick<WireScheduleDraft, 'id' | 'everyMs' | 'cron' | 'moreCrons' | 'timezone'>,
+  update: ScheduleUpdate,
   now: Date = new Date(),
-): Promise<{ schedule: ScheduleView; pending: 'updated' | 'started' | 'none' }> {
-  requireRule(input);
+): Promise<{ schedule: ScheduleView; pending: PendingOutcome }> {
+  const { rule, place } = update;
+  requireRule({
+    id: update.id,
+    ...rule,
+    ...(update.maxConcurrent === null ? {} : { maxConcurrent: update.maxConcurrent }),
+  });
+  if (update.runsLeft !== null && update.until !== null)
+    throw new AppError('BAD_REQUEST', 'Give a number of runs or an end time, not both.');
   return db.transaction(async (tx) => {
-    const { schedule, pending } = await lockWithOccurrence(tx, input.id);
+    const { schedule, pending } = await lockWithOccurrence(tx, update.id);
     if (schedule.endedAt !== null) throw new AppError('CONFLICT', 'The schedule has ended.');
-    if (schedule.afterScheduleId !== null)
-      throw new AppError('BAD_REQUEST', 'A schedule that runs after another has no repeat rule of its own.');
-    const rule = {
-      everyMs: input.everyMs ?? null,
-      cron: input.cron ?? null,
-      moreCrons: input.moreCrons ?? [],
-      timezone: input.cron === undefined ? null : (input.timezone ?? null),
+    if (rule.after !== undefined) {
+      const upstreamId = rule.after.scheduleId;
+      const [upstream] = await tx.select().from(schedules).where(eq(schedules.id, upstreamId)).for('share');
+      if (!upstream) throw new AppError('BAD_REQUEST', `There is no schedule ${upstreamId.slice(0, 64)} to run after.`);
+      if (upstream.endedAt !== null && upstreamId !== schedule.afterScheduleId)
+        throw new AppError('BAD_REQUEST', 'The schedule to run after has ended, so this one would never run.');
+      await requireNoCycle(tx, schedule.id, upstreamId);
+    }
+    const wasAfter = schedule.afterScheduleId !== null;
+    const ownRule =
+      rule.after === undefined
+        ? {
+            everyMs: rule.everyMs ?? null,
+            cron: rule.cron ?? null,
+            moreCrons: rule.cron === undefined ? [] : (rule.moreCrons ?? []),
+            timezone: rule.cron === undefined ? null : (rule.timezone ?? null),
+          }
+        : { everyMs: null, cron: null, moreCrons: [], timezone: null };
+    const values = {
+      title: update.title,
+      input: update.input,
+      agent: update.agent ?? null,
+      machine: place?.machine ?? null,
+      workdir: place?.workdir ?? null,
+      priority: update.priority,
+      model: update.model,
+      autoDone: update.autoDone,
+      maxConcurrent: update.maxConcurrent,
+      until: update.until,
+      ...ownRule,
+      afterScheduleId: rule.after?.scheduleId ?? null,
+      afterDelayMs: rule.after === undefined ? null : (rule.after.delayMs ?? 0),
+      anchorAt: rule.after === undefined ? (update.startAt ?? schedule.anchorAt) : schedule.anchorAt,
+      remaining: update.runsLeft,
     };
-    const from = schedule.anchorAt.getTime() > now.getTime() ? schedule.anchorAt : now;
-    const next = nextOccurrence({ ...schedule, ...rule }, from, true);
-    if (next === null)
+    const merged: ScheduleRow = { ...schedule, ...values };
+    const ruleChanged =
+      wasAfter ||
+      merged.everyMs !== schedule.everyMs ||
+      merged.cron !== schedule.cron ||
+      merged.timezone !== schedule.timezone ||
+      merged.moreCrons.join('\n') !== schedule.moreCrons.join('\n') ||
+      !sameInstant(merged.anchorAt, schedule.anchorAt) ||
+      !sameInstant(merged.until, schedule.until);
+    const from = merged.anchorAt.getTime() > now.getTime() ? merged.anchorAt : now;
+    const next = rule.after === undefined && ruleChanged ? nextOccurrence(merged, from, true) : null;
+    if (rule.after === undefined && ruleChanged && next === null)
       throw new AppError('BAD_REQUEST', 'The schedule would never run: nothing matches before its end.');
+
     const editable = pending !== undefined && pending.status === 'todo' && !pending.closed && !hasStarted(pending);
+    let outcome: PendingOutcome = pending === undefined ? 'none' : editable ? 'updated' : 'started';
+    let occurrenceTaskId = schedule.occurrenceTaskId;
+    let lastOccurrenceAt = schedule.lastOccurrenceAt;
+    const neverStarted = pending !== undefined && !hasStarted(pending);
+    if (rule.after !== undefined && !wasAfter && neverStarted && (await removePending(tx, pending))) {
+      occurrenceTaskId = null;
+      outcome = 'removed';
+    }
+    if (editable && occurrenceTaskId !== null) {
+      const pinned = place !== null;
+      const moves = next !== null;
+      if (moves) lastOccurrenceAt = next;
+      await tx
+        .update(tasks)
+        .set({
+          title: update.title,
+          input: update.input,
+          agent: update.agent ?? null,
+          priority: update.priority,
+          model: update.model,
+          autoDone: update.autoDone,
+          machine: pinned ? place.machine : null,
+          workdir: pinned ? place.workdir : null,
+          homeWorkdir: pinned ? place.workdir : null,
+          ...(update.priority === pending.priority ? {} : { position: await edgePosition(tx, 'todo', 'bottom') }),
+          ...(moves ? { notBefore: next } : {}),
+          updatedAt: now,
+        })
+        .where(eq(tasks.id, pending.id));
+    }
     await tx
       .update(schedules)
-      .set({ ...rule, ...(editable ? { lastOccurrenceAt: next } : {}) })
+      .set({ ...values, occurrenceTaskId, lastOccurrenceAt })
       .where(eq(schedules.id, schedule.id));
-    if (editable) await tx.update(tasks).set({ notBefore: next, updatedAt: now }).where(eq(tasks.id, pending.id));
-    return {
-      schedule: await viewOf(tx, schedule.id),
-      pending: pending === undefined ? 'none' : editable ? 'updated' : 'started',
-    };
+    if (rule.after === undefined && occurrenceTaskId === null && schedule.pausedAt === null) {
+      const created = await materializeNext(tx, { ...merged, occurrenceTaskId, lastOccurrenceAt }, now, from);
+      if (created !== undefined) {
+        occurrenceTaskId = created.id;
+        outcome = 'created';
+      }
+    }
+    const remaining =
+      update.runsLeft === null ? null : Math.max(0, update.runsLeft - (occurrenceTaskId === null ? 0 : 1));
+    await tx.update(schedules).set({ remaining }).where(eq(schedules.id, schedule.id));
+    return { schedule: await viewOf(tx, schedule.id), pending: outcome };
   });
 }
