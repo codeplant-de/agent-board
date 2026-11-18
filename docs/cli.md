@@ -853,7 +853,8 @@ what they had, and the old text is not kept. An ended schedule is refused.
 
 The other flags of `edit` change the settings of the schedule, all that the Edit
 schedule dialog on the board changes; what you leave out stays as it is.
---priority, --model (`default` for claude's default), --auto-done on|off and
+--priority, --model (`default` for claude's default), --lane <name> (`default`
+for the default lane of the machine that runs it), --auto-done on|off and
 --agent (an agent of this machine's config.json, or `none`). --dir <path> pins
 the schedule to this machine and that directory (listed in `board dirs`; `none`:
 no machine and no directory), as `board task <id> set dir` does for a task.
@@ -880,6 +881,8 @@ Options:
   --priority <priority>  with edit: urgent, high, normal, low
   --model <model>        with edit: a claude model alias or full name, or
                          default for claude's default
+  --lane <name>          with edit: the lane of the machine that runs the tasks,
+                         or default for that machine's default lane
   --auto-done <on|off>   with edit: let the agent move the tasks to Done itself
   --agent <name>         with edit: run as this agent of this machine's
                          config.json, or none
@@ -916,6 +919,7 @@ Examples:
   board schedules edit s1b2c3d4 /sweep the stale branches and the stale worktrees
   board schedules edit s1b --title "Nightly sweep" --file /tmp/prompt.md
   board schedules edit s1b2c3d4 --priority high --model opus --auto-done on
+  board schedules edit s1b2c3d4 --lane review
   board schedules edit s1b2c3d4 --every 6h --times 10
   board schedules edit s1b2c3d4 --cron "0 9 * * 1-5" --until 2027-06-30
   board schedules edit s1b2c3d4 --after s9z8y7x6 --delay 10m --forever

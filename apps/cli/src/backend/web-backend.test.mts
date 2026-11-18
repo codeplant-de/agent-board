@@ -656,6 +656,17 @@ test('an edit of a schedule with settings needs schedule.update; one with only t
   const newer = boardWith(['prompt.edit', 'schedule.update'], { 'edit-schedule': await answer() });
   await newer.backend.editSchedule('sch1', { ...text, settings });
   assert.deepEqual(newer.seen.at(-1)?.body, { id: 'sch1', body: { ...text, settings } });
+  await assert.rejects(
+    newer.backend.editSchedule('sch1', { ...text, settings: { ...settings, lane: null } }),
+    (error: unknown) => error instanceof BackendError && error.missingFeature === 'task.lane',
+  );
+  assert.equal(newer.seen.filter((request) => request.command === 'edit-schedule').length, 1, 'the lane was not sent');
+  const withLanes = boardWith(['prompt.edit', 'schedule.update', 'task.lane'], { 'edit-schedule': await answer() });
+  await withLanes.backend.editSchedule('sch1', { ...text, settings: { ...settings, lane: 'review' } });
+  assert.deepEqual(withLanes.seen.at(-1)?.body, {
+    id: 'sch1',
+    body: { ...text, settings: { ...settings, lane: 'review' } },
+  });
 });
 
 test('a PR is added with add-pr on a server with task.prs, and replaces the earlier one with set-pr on one without', async () => {

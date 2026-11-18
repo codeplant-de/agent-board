@@ -1203,6 +1203,9 @@ test('an edit-schedule body is the sealed title and prompt, and with settings a 
   };
   const parsed = parseWireScheduleEdit({ ...text, settings: full });
   assert.deepEqual(parsed.settings, { ...full, at: new Date('2027-01-01T09:00:00.000Z') });
+  assert.equal('lane' in (parseWireScheduleEdit({ ...text, settings }).settings ?? {}), false);
+  assert.equal(parseWireScheduleEdit({ ...text, settings: { ...settings, lane: 'review' } }).settings?.lane, 'review');
+  assert.equal(parseWireScheduleEdit({ ...text, settings: { ...settings, lane: null } }).settings?.lane, null);
   const after = { after: { scheduleId: 'Up3dEf9x', delayMs: 0 } };
   assert.deepEqual(
     parseWireScheduleEdit({ ...text, settings: { ...settings, repeat: after } }).settings?.repeat,
@@ -1258,6 +1261,8 @@ test('an edit-schedule body refuses what the tRPC update refuses', () => {
   refuse({ runsLeft: 2_147_483_648 }, /runsLeft must be at most/);
   refuse({ until: 'soon' }, /until is not a date/);
   refuse({ runsLeft: 2, until: '2027-01-01' }, /exclude each other/);
+  refuse({ lane: 'a b' }, /lane is not a safe name/);
+  refuse({ lane: 3 }, /lane is not a safe name/);
   refuse({ maxConcurrent: 0 }, /maxConcurrent must be a positive integer/);
   refuse({ maxConcurrent: 101 }, /maxConcurrent must be at most 100/);
 });

@@ -211,9 +211,9 @@ The listener checks the API range each time it connects. When the server no long
 
 ### Changing every setting of a schedule (CLI 0.30.0)
 
-A new server feature, `schedule.update`. `board schedules edit` takes the settings of the Edit schedule dialog as flags: `--priority`, `--model`, `--auto-done`, `--agent`, `--dir`, the repeat (`--every`, `--cron`, `--after` with `--delay`), the first run (`--in`, `--at`), the end (`--times`, `--until`, `--forever`) and `--max-concurrent` (see [Managing schedules](usage.md#repeating-schedules)). The text became optional. Nothing changes in the database, and no version number is raised.
+A new server feature, `schedule.update`. `board schedules edit` takes the settings of the Edit schedule dialog as flags: `--priority`, `--model`, `--lane`, `--auto-done`, `--agent`, `--dir`, the repeat (`--every`, `--cron`, `--after` with `--delay`), the first run (`--in`, `--at`), the end (`--times`, `--until`, `--forever`) and `--max-concurrent` (see [Managing schedules](usage.md#repeating-schedules)). The text became optional. Nothing changes in the database, and no version number is raised.
 
-Update the server first. A server without `schedule.update` makes a setting flag refuse with "the board server does not support changing every setting of a schedule yet; update the board server", and nothing else changes: a title or prompt alone still works with `prompt.edit`. A machine on an older CLI has no such flags and runs everything as before.
+`--lane` also needs `task.lane`. Update the server first. A server without `schedule.update` makes a setting flag refuse with "the board server does not support changing every setting of a schedule yet; update the board server", and nothing else changes: a title or prompt alone still works with `prompt.edit`. A machine on an older CLI has no such flags and runs everything as before.
 
 ### A task names its lane
 

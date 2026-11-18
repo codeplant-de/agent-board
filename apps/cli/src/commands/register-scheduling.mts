@@ -106,7 +106,7 @@ export function registerScheduleCommands(shared: ProgramShared): void {
             'Without arguments, list the repeating schedules: id, rule, next run, runs left, paused or ended, the limit if it has one, title; --json prints them as JSON.',
             '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run.',
             "`edit <id> [text...]` changes the schedule's prompt: the text is every word after the id, `-` reads it from stdin and `--file <path>` from a regular file in /tmp, for long text; without any text the prompt stays. `--title <title>` sets the title too; without it the title stays. Every later run takes the new text. The waiting run takes it too while it is in Todo and no worker has claimed it, and the command says which of three happened. Runs that already started keep what they had, and the old text is not kept. An ended schedule is refused.",
-            "The other flags of `edit` change the settings of the schedule, all that the Edit schedule dialog on the board changes; what you leave out stays as it is. --priority, --model (`default` for claude's default), --auto-done on|off and --agent (an agent of this machine's config.json, or `none`). --dir <path> pins the schedule to this machine and that directory (listed in `board dirs`; `none`: no machine and no directory), as `board task <id> set dir` does for a task.",
+            "The other flags of `edit` change the settings of the schedule, all that the Edit schedule dialog on the board changes; what you leave out stays as it is. --priority, --model (`default` for claude's default), --lane <name> (`default` for the default lane of the machine that runs it), --auto-done on|off and --agent (an agent of this machine's config.json, or `none`). --dir <path> pins the schedule to this machine and that directory (listed in `board dirs`; `none`: no machine and no directory), as `board task <id> set dir` does for a task.",
             "The repeat: --every <duration>, --cron <expr> (up to 10 times, in this machine's time zone) or --after <schedule> with --delay <duration>; the one you give replaces the old repeat. --in or --at moves the first run of a schedule that has a rule of its own. The end: --times <n> runs left (the waiting one included), --until <time> or --forever; give one. --max-concurrent <n|none> limits how many tasks of the schedule run at once. Switching to --after removes the waiting task, and switching back makes one. These flags need a board server that has them; the command says when it has not.",
             'Changing a schedule is not available inside a board run. The id can be the start of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.',
           ),
@@ -117,6 +117,10 @@ export function registerScheduleCommands(shared: ProgramShared): void {
         .option('--file <path>', 'with edit: the prompt from a regular file in /tmp')
         .option('--priority <priority>', `with edit: ${PRIORITIES.join(', ')}`)
         .option('--model <model>', "with edit: a claude model alias or full name, or default for claude's default")
+        .option(
+          '--lane <name>',
+          "with edit: the lane of the machine that runs the tasks, or default for that machine's default lane",
+        )
         .option('--auto-done <on|off>', 'with edit: let the agent move the tasks to Done itself')
         .option('--agent <name>', "with edit: run as this agent of this machine's config.json, or none")
         .option(
@@ -147,6 +151,7 @@ export function registerScheduleCommands(shared: ProgramShared): void {
             'board schedules edit s1b2c3d4 /sweep the stale branches and the stale worktrees',
             'board schedules edit s1b --title "Nightly sweep" --file /tmp/prompt.md',
             'board schedules edit s1b2c3d4 --priority high --model opus --auto-done on',
+            'board schedules edit s1b2c3d4 --lane review',
             'board schedules edit s1b2c3d4 --every 6h --times 10',
             'board schedules edit s1b2c3d4 --cron "0 9 * * 1-5" --until 2027-06-30',
             'board schedules edit s1b2c3d4 --after s9z8y7x6 --delay 10m --forever',

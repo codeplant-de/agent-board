@@ -662,6 +662,8 @@ export interface ScheduleSettings {
   priority: Priority;
   // A model name; null is claude's default.
   model: string | null;
+  // A lane name (`isSafeLane`); null is the default lane. Absent keeps the schedule's. Needs the `task.lane` feature.
+  lane?: string | null;
   autoDone: boolean;
   repeat: ScheduleRepeat;
   // The first run of a rule of its own; absent keeps the schedule's.
@@ -1928,7 +1930,7 @@ function parseWireScheduleSettings(value: unknown, what: string): WireScheduleSe
   const obj = record(value, what);
   rejectUnknownKeys(
     obj,
-    ['agent', 'place', 'priority', 'model', 'autoDone', 'repeat', 'at', 'runsLeft', 'until', 'maxConcurrent'],
+    ['agent', 'place', 'priority', 'model', 'lane', 'autoDone', 'repeat', 'at', 'runsLeft', 'until', 'maxConcurrent'],
     what,
   );
   let place: WireScheduleSettings['place'] = null;
@@ -1951,6 +1953,7 @@ function parseWireScheduleSettings(value: unknown, what: string): WireScheduleSe
       obj['maxConcurrent'] === null ? null : positiveInt(obj, 'maxConcurrent', what, MAX_SCHEDULE_CONCURRENT),
   };
   if ('agent' in obj) settings.agent = sealedField(obj, 'agent', what, 'agent');
+  if ('lane' in obj) settings.lane = obj['lane'] === null ? null : laneName(obj, what);
   if ('at' in obj) {
     if ('after' in settings.repeat)
       throw new ContractError(`${what}.at does not go with a repeat after another schedule`);

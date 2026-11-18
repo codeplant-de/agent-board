@@ -122,6 +122,28 @@ test('default, off and none clear a model, auto-done, the agent, the directory a
   ]);
 });
 
+test('--lane sends the lane, default sends null, and without the flag no lane is sent', async () => {
+  const run = runner([schedule({ id: 's1', requestedLane: 'old' })]);
+  await run.go(['schedules', 'edit', 's1', '--lane', 'review']);
+  assert.equal(sentSettings(run).lane, 'review');
+  assert.deepEqual(run.printed, ['s1 updated: lane review. The pending card was updated too.']);
+  await run.go(['schedules', 'edit', 's1', '--lane', 'default']);
+  assert.equal(sentSettings(run).lane, null);
+  assert.equal(run.printed.at(-1), 's1 updated: lane default. The pending card was updated too.');
+  await run.go(['schedules', 'edit', 's1', '--priority', 'high']);
+  assert.equal('lane' in sentSettings(run), false);
+});
+
+test('--lane with the lane the schedule has already changes nothing, and a bad name is refused', async () => {
+  const run = runner([schedule({ id: 's1', requestedLane: 'review' }), schedule({ id: 's2' })]);
+  await run.go(['schedules', 'edit', 's1', '--lane', 'review']);
+  await run.go(['schedules', 'edit', 's2', '--lane', 'default']);
+  assert.deepEqual(run.printed, ['s1 already has these settings', 's2 already has these settings']);
+  assert.deepEqual(run.backend.writes, []);
+  await assert.rejects(run.go(['schedules', 'edit', 's1', '--lane', 'a b']), /is not a lane name/);
+  assert.deepEqual(run.backend.writes, []);
+});
+
 test('a new repeat replaces the old rule, with the time zone of this machine for cron', async () => {
   const run = runner([
     schedule({ id: 's1', everyMs: null, cron: '0 9 * * *', moreCrons: ['0 17 * * *'], timezone: 'UTC' }),
@@ -304,6 +326,8 @@ test('parseScheduleChanges reads each flag once, with none, default and off as c
   assert.deepEqual(parseScheduleChanges({ cron: ['0 9 * * *', ' 0 10 * * *'] }, NOW), {
     repeat: { crons: ['0 9 * * *', '0 10 * * *'] },
   });
+  assert.deepEqual(parseScheduleChanges({ lane: 'default' }, NOW), { lane: null });
+  assert.deepEqual(parseScheduleChanges({ lane: 'review' }, NOW), { lane: 'review' });
   assert.deepEqual(parseScheduleChanges({}, NOW), {});
 });
 

@@ -1,4 +1,4 @@
-// `board schedules edit <id> [text...] [--title t] [--priority p] [--model m] [--auto-done on|off] [--agent a] [--dir d]
+// `board schedules edit <id> [text...] [--title t] [--priority p] [--model m] [--lane l] [--auto-done on|off] [--agent a] [--dir d]
 // [--every d | --cron e | --after s [--delay d]] [--in d | --at t] [--times n | --until t | --forever] [--max-concurrent n]`:
 // the prompt and every setting of a schedule, the ones the browser's Edit schedule form changes. What a flag leaves out stays
 // as the schedule has it, and a new repeat replaces the old one.
@@ -14,6 +14,7 @@ import {
   checkCrons,
   checkedAfter,
   checkedAgent,
+  checkedLane,
   checkedModel,
   checkedPriority,
   localTime,
@@ -28,6 +29,7 @@ import { chosenDirectory } from './task-settings.mts';
 export interface ScheduleEditFlags {
   priority?: string;
   model?: string;
+  lane?: string;
   autoDone?: string;
   agent?: string;
   dir?: string;
@@ -48,6 +50,8 @@ export interface ScheduleEditFlags {
 export interface ScheduleChanges {
   priority?: Priority;
   model?: string | null;
+  // null for the default lane.
+  lane?: string | null;
   autoDone?: boolean;
   agent?: string | null;
   // The directory as typed; null for none.
@@ -74,6 +78,7 @@ const PENDING_CARD_LINES: Record<PendingCardOutcome, string> = {
 const SETTING_FLAGS = [
   'priority',
   'model',
+  'lane',
   'autoDone',
   'agent',
   'dir',
@@ -136,6 +141,7 @@ export function parseScheduleChanges(flags: ScheduleEditFlags, now: Date = new D
   const changes: ScheduleChanges = {};
   if (flags.priority !== undefined) changes.priority = checkedPriority(flags.priority);
   if (flags.model !== undefined) changes.model = flags.model === 'default' ? null : checkedModel(flags.model);
+  if (flags.lane !== undefined) changes.lane = flags.lane === 'default' ? null : checkedLane(flags.lane);
   if (flags.autoDone !== undefined) changes.autoDone = onOff(flags.autoDone);
   if (flags.agent !== undefined) changes.agent = flags.agent === NONE ? null : checkedAgent(flags.agent);
   if (flags.dir !== undefined) {
@@ -196,6 +202,8 @@ export function settingsOf(schedule: Schedule): ScheduleSettings {
 }
 
 interface Resolved {
+  // Only a lane that differs from the schedule's.
+  lane?: string | null;
   place?: ScheduleSettings['place'];
   repeat?: ScheduleRepeat;
 }
@@ -213,6 +221,7 @@ function applyChanges(before: ScheduleSettings, changes: ScheduleChanges, resolv
     ...(agent === undefined ? {} : { agent }),
     ...(changes.priority === undefined ? {} : { priority: changes.priority }),
     ...(changes.model === undefined ? {} : { model: changes.model }),
+    ...(resolved.lane === undefined ? {} : { lane: resolved.lane }),
     ...(changes.autoDone === undefined ? {} : { autoDone: changes.autoDone }),
     ...(changes.maxConcurrent === undefined ? {} : { maxConcurrent: changes.maxConcurrent }),
     ...(resolved.place === undefined ? {} : { place: resolved.place }),
@@ -279,6 +288,7 @@ function differences(before: ScheduleSettings, after: ScheduleSettings, startAt:
       : []),
     ...(changed('priority') ? [`priority ${after.priority}`] : []),
     ...(changed('model') ? [`model ${plainLine(after.model ?? 'default')}`] : []),
+    ...(after.lane === undefined ? [] : [`lane ${plainLine(after.lane ?? 'default')}`]),
     ...(changed('autoDone') ? [`auto-done ${after.autoDone ? 'on' : 'off'}`] : []),
     ...(changed('repeat') ? [`repeat ${plainLine(ruleLine(after.repeat))}`] : []),
     ...(startAt === undefined ? [] : [`first run ${localTime(startAt)}`]),
@@ -339,7 +349,9 @@ export async function editSchedule(context: Context, id: string, options: Schedu
             ),
           };
   const repeat = await repeatOf(context, id, current, changes);
+  const lane = changes.lane === current.requestedLane ? undefined : changes.lane;
   const after = applyChanges(before, changes, {
+    ...(lane === undefined ? {} : { lane }),
     ...(place === undefined ? {} : { place }),
     ...(repeat === undefined ? {} : { repeat }),
   });

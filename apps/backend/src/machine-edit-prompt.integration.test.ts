@@ -234,6 +234,20 @@ describe('edit-schedule with settings', () => {
     });
   });
 
+  it('sets the lane of the schedule and its pending card, and keeps it when the settings leave the lane out', async () => {
+    const { card, scheduleId } = await scheduled();
+    const set = await update(scheduleId, { lane: 'review' });
+    expect(set.json.result.schedule).toMatchObject({ requestedLane: 'review' });
+    expect((await ctx.ui.tasks.get({ id: card.id })).task).toMatchObject({ requestedLane: 'review' });
+    const kept = await update(scheduleId, { priority: 'high' });
+    expect(kept.json.result.schedule).toMatchObject({ requestedLane: 'review' });
+    expect((await ctx.ui.tasks.get({ id: card.id })).task).toMatchObject({ requestedLane: 'review' });
+    const cleared = await update(scheduleId, { lane: null });
+    expect(cleared.json.result.schedule).toMatchObject({ requestedLane: null });
+    expect((await ctx.ui.tasks.get({ id: card.id })).task).toMatchObject({ requestedLane: null });
+    expect((await update(scheduleId, { lane: 'a b' })).status).toBe(400);
+  });
+
   it('clears what the settings leave out: the agent, the directory, the limit and the end', async () => {
     const { scheduleId } = await scheduled();
     await update(scheduleId, {
