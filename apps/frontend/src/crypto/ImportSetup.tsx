@@ -52,13 +52,13 @@ export function ImportSetup({ owner, onComplete, onBack, onImporting }: Props) {
     chosen !== null && secretText.trim() !== '',
   );
 
-  if (keys !== null) {
+  if (keys !== null && chosen !== null) {
     const { run } = runner;
     const finished = run.status === 'done' || run.status === 'failed' || run.status === 'cancelled';
     return (
       <Stack>
         <Text size="sm">Your key is set up. The rows of the file are being added to the board.</Text>
-        <ImportRunView run={run} onCancel={runner.cancel} />
+        <ImportRunView run={run} onCancel={runner.cancel} owner={owner} fileOwner={chosen.header.owner} />
         {(run.status === 'failed' || run.status === 'cancelled') && (
           <Alert color="orange" title="The import is not complete">
             <Text size="sm">

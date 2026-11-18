@@ -166,7 +166,9 @@ function ImportSection() {
           )}
         </>
       )}
-      <ImportRunView run={run} onCancel={cancel} />
+      {chosen !== null && keys !== null && (
+        <ImportRunView run={run} onCancel={cancel} owner={keys.owner} fileOwner={chosen.header.owner} />
+      )}
     </Stack>
   );
 }

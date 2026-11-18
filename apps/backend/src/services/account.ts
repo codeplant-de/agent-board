@@ -191,7 +191,7 @@ export interface ImportResult {
   existing: number;
   /** Rows that are not well formed. */
   invalid: number;
-  /** Rows whose task or run is not on the board. */
+  /** Rows whose task, run or upstream schedule is not on the board. */
   orphaned: number;
 }
 
@@ -213,7 +213,7 @@ function parseRows<S extends z.ZodType>(schema: S, rows: unknown[]): { valid: z.
 /** Which of `ids` are rows of the signed-in user's board; row-level security hides the rest, so another user's ids read as absent. */
 async function presentIds(
   db: DbOrTx,
-  table: typeof tasks | typeof transcriptRuns,
+  table: typeof tasks | typeof schedules | typeof transcriptRuns,
   ids: string[],
 ): Promise<Set<string>> {
   const wanted = [...new Set(ids)];
@@ -281,18 +281,39 @@ async function importTasks(db: DbOrTx, rows: unknown[]): Promise<ImportResult> {
   return outcome(valid.length, added.length, invalid);
 }
 
+/**
+ * A schedule that runs after another goes in once the other is on the board, in rounds: first the rows with a rule of their
+ * own, then the rows whose upstream was added or was there already, and so on. A row whose upstream never gets there (not in
+ * the file, held by another account, or part of a cycle) is orphaned: it has no rule of its own to fall back on, and it
+ * would never run. A schedule whose pending occurrence is not on the board is paused when it was active, so that Resume
+ * makes the next occurrence; without that it would sit active with nothing to run.
+ */
 async function importSchedules(db: DbOrTx, rows: unknown[]): Promise<ImportResult> {
   const { valid, invalid } = parseRows(scheduleRowSchema, rows);
   const onBoard = await presentIds(db, tasks, valid.map(({ occurrenceTaskId }) => occurrenceTaskId).filter(present));
-  const settled = valid.map((row) => ({
-    ...row,
-    occurrenceTaskId: row.occurrenceTaskId !== null && onBoard.has(row.occurrenceTaskId) ? row.occurrenceTaskId : null,
-  }));
-  const added =
-    settled.length === 0
-      ? []
-      : await db.insert(schedules).values(settled).onConflictDoNothing().returning({ id: schedules.id });
-  return outcome(valid.length, added.length, invalid);
+  const settled = valid.map((row) => {
+    const lost = row.occurrenceTaskId !== null && !onBoard.has(row.occurrenceTaskId);
+    const active = row.pausedAt === null && row.endedAt === null;
+    return {
+      ...row,
+      occurrenceTaskId: lost ? null : row.occurrenceTaskId,
+      ...(lost && active ? { pausedAt: sql`now()` } : {}),
+    };
+  });
+  const known = await presentIds(db, schedules, settled.map(({ afterScheduleId }) => afterScheduleId).filter(present));
+  let waiting = settled;
+  let inserted = 0;
+  for (;;) {
+    const isReady = ({ afterScheduleId }: (typeof settled)[number]) =>
+      afterScheduleId === null || known.has(afterScheduleId);
+    const ready = waiting.filter(isReady);
+    if (ready.length === 0) break;
+    waiting = waiting.filter((row) => !isReady(row));
+    const added = await db.insert(schedules).values(ready).onConflictDoNothing().returning({ id: schedules.id });
+    inserted += added.length;
+    for (const { id: addedId } of added) known.add(addedId);
+  }
+  return outcome(valid.length - waiting.length, inserted, invalid, waiting.length);
 }
 
 /**
@@ -380,7 +401,7 @@ const IMPORTERS: Record<AccountTable, (db: DbOrTx, rows: unknown[]) => Promise<I
 /**
  * Writes the rows of one table of an export under the signed-in user. An export is sealed under the key it was made with, so
  * it is only taken by a board whose key it is; the owner of every row is the signed-in user, whatever the row says. A row
- * that is not well formed, or whose task or run is not on the board, is counted and skipped, never a failure of the batch.
+ * that is not well formed, or whose task, run or upstream schedule is not on the board, is counted and skipped, never a failure of the batch.
  */
 export async function importRows(
   db: DbOrTx,

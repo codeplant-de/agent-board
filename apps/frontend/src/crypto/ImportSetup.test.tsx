@@ -135,6 +135,22 @@ describe('setting up from an export', () => {
     expect(keys && (await openAs(keys, titleBinding(taskRef), sent.rows[0]?.title ?? ''))).toBe('my title');
   });
 
+  it('says the old account holds the rows when nothing was added because they exist and the file is of another username', async () => {
+    importRows.mockImplementation(async ({ rows }: { rows: unknown[] }) => ({
+      inserted: 0,
+      existing: rows.length,
+      invalid: 0,
+      orphaned: 0,
+    }));
+    await openFile();
+    await userEvent.type(screen.getByLabelText('Passphrase of the export'), PASSPHRASE);
+    await userEvent.click(screen.getByRole('button', { name: 'Set up with this key and import' }));
+    expect(await screen.findByText('Import finished')).toBeInTheDocument();
+    expect(screen.getByText(/already on this board or held by another account on this server/)).toBeInTheDocument();
+    expect(screen.getByText(/probably still holds these rows/)).toBeInTheDocument();
+    expect(screen.getByText('oldname', { selector: 'strong' })).toBeInTheDocument();
+  });
+
   it('opens the file with its recovery key as well', async () => {
     await openFile();
     await userEvent.click(screen.getByRole('button', { name: 'Use the recovery key' }));

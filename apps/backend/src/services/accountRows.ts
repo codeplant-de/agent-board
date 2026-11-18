@@ -4,6 +4,8 @@
  * default or that may be null can be left out of a row; ids, sealed text, positions and timestamps cannot.
  */
 import {
+  hasControlCharacter,
+  isCronExpression,
   isModelName,
   isSafeMachineName,
   isServerEventText,
@@ -13,18 +15,40 @@ import {
   MAX_INT32,
   MAX_INTERVAL_MS,
   MAX_OUTPUT_SIZE,
+  MAX_SCHEDULE_CONCURRENT,
+  MAX_SCHEDULE_CRONS,
   parseBlindIndex,
 } from '@agent-board/shared';
 import { sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
-import { nextRun, noteAuthor, noteKind, prState, taskCreator, taskPriority, taskStatus } from '../db/schema';
+import { nextRun, noteAuthor, noteKind, prState, taskActor, taskCreator, taskPriority, taskStatus } from '../db/schema';
 import { parsedBy, sealed } from '../trpc/inputs';
+import { AppError } from './errors';
+import { requireRule } from './schedules';
+
+const MIN_TIME = Date.parse('0001-01-01T00:00:00Z');
+/** A second short of the end of year 9999: a fraction past it rounds to year 10000 in Postgres, which an export writes with five digits. */
+const MAX_TIME = Date.parse('9999-12-31T23:59:59Z');
 
 /**
- * An ISO timestamp, handed to Postgres as it came: an exported value keeps its microseconds, which a `Date` would drop, and
- * notes written in one millisecond are ordered by them.
+ * An ISO timestamp within years 1 to 9999 (Postgres refuses year 0000, and a `Date` and the export's cursors hold four-digit
+ * years), handed to Postgres as it came: an exported value keeps its microseconds, which a `Date` would drop, and notes
+ * written in one millisecond are ordered by them.
  */
-const timestamp = z.iso.datetime({ offset: true }).transform((value): SQL => sql`${value}::timestamptz`);
+const timestamp = z.iso
+  .datetime({ offset: true })
+  .refine((value) => {
+    const time = Date.parse(value);
+    return time >= MIN_TIME && time <= MAX_TIME;
+  }, 'not a time between the years 1 and 9999')
+  .transform((value): SQL => sql`${value}::timestamptz`);
+/** Free text in a clear column: Postgres refuses a NUL in text, and a control character has no place in a name or a line. */
+const plainText = (max: number) =>
+  z
+    .string()
+    .min(1)
+    .max(max)
+    .refine((value) => !hasControlCharacter(value), 'holds a control character');
 const nullable = <T extends z.ZodType>(schema: T) => schema.nullable().default(null);
 const id = z.string().refine(isSafeTaskId, 'not an id');
 const machineName = z.string().refine(isSafeMachineName, 'not a safe machine name');
@@ -40,6 +64,8 @@ export const taskRowSchema = z.object({
   status: z.enum(taskStatus.enumValues).default('todo'),
   priority: z.enum(taskPriority.enumValues).default('normal'),
   model: nullable(z.string().refine(isModelName, 'not a model name')),
+  autoDone: z.boolean().default(false),
+  movedBy: nullable(z.enum(taskActor.enumValues)),
   position: z.number().finite(),
   closed: z.boolean().default(false),
   closedAt: nullable(timestamp),
@@ -67,23 +93,37 @@ export const taskRowSchema = z.object({
   createdBy: z.enum(taskCreator.enumValues).default('user'),
   scheduleId: nullable(id),
   forkOf: nullable(id),
+  occurrenceFinishedAt: nullable(timestamp),
   proposed: z.boolean().default(false),
   createdAt: timestamp,
   updatedAt: timestamp,
 });
 
-export const scheduleRowSchema = z.object({
+/**
+ * The rule columns as `addSchedule` checks them (interval bounds, cron expressions and time zone, the delay, the limit), and
+ * the shape the database holds a schedule to: exactly one of an interval, a cron expression and an upstream schedule, a
+ * delay with an upstream and only then, and a time zone with a cron expression and only then.
+ */
+const scheduleRowShape = z.object({
   id,
   title: sealed('title', 'title'),
   input: sealed('input', 'input'),
   priority: z.enum(taskPriority.enumValues).default('normal'),
   model: nullable(z.string().refine(isModelName, 'not a model name')),
+  autoDone: z.boolean().default(false),
   machine: nullable(machineName),
   workdir: nullable(sealed('workdir', 'workdir')),
   agent: nullable(sealed('agent', 'agent')),
   everyMs: nullable(z.number().int().positive().max(MAX_INTERVAL_MS)),
-  cron: nullable(z.string().min(1).max(256)),
-  timezone: nullable(z.string().min(1).max(256)),
+  cron: nullable(plainText(256)),
+  moreCrons: z
+    .array(plainText(256).refine(isCronExpression, 'not a cron expression'))
+    .max(MAX_SCHEDULE_CRONS - 1)
+    .default([]),
+  timezone: nullable(plainText(256)),
+  afterScheduleId: nullable(id),
+  afterDelayMs: nullable(z.number().int().min(0).max(MAX_INTERVAL_MS)),
+  maxConcurrent: nullable(z.number().int().min(1).max(MAX_SCHEDULE_CONCURRENT)),
   anchorAt: timestamp,
   lastOccurrenceAt: nullable(timestamp),
   remaining: nullable(count),
@@ -92,6 +132,31 @@ export const scheduleRowSchema = z.object({
   endedAt: nullable(timestamp),
   occurrenceTaskId: nullable(id),
   createdAt: timestamp,
+});
+
+export const scheduleRowSchema = scheduleRowShape.superRefine((row, ctx) => {
+  const fail = (message: string) => ctx.addIssue({ code: 'custom', message });
+  const rules = [row.everyMs, row.cron, row.afterScheduleId].filter((rule) => rule !== null).length;
+  if (rules !== 1)
+    return fail('a schedule needs exactly one of an interval, a cron expression and a schedule to run after');
+  if ((row.afterScheduleId === null) !== (row.afterDelayMs === null))
+    return fail('a delay goes with a schedule to run after');
+  if ((row.cron === null) !== (row.timezone === null)) return fail('a time zone goes with a cron expression');
+  if (row.cron === null && row.moreCrons.length > 0) return fail('more cron expressions go with a cron expression');
+  try {
+    requireRule({
+      id: row.id,
+      ...(row.everyMs === null ? {} : { everyMs: row.everyMs }),
+      ...(row.cron === null ? {} : { cron: row.cron, timezone: row.timezone ?? '', moreCrons: row.moreCrons }),
+      ...(row.afterScheduleId === null
+        ? {}
+        : { after: { scheduleId: row.afterScheduleId, delayMs: row.afterDelayMs ?? 0 } }),
+      ...(row.maxConcurrent === null ? {} : { maxConcurrent: row.maxConcurrent }),
+    });
+  } catch (error) {
+    if (!(error instanceof AppError)) throw error;
+    fail(error.message);
+  }
 });
 
 /** The body of a note by the server is plain text and must be one of its fixed event texts; every other body is sealed. */
@@ -107,7 +172,7 @@ export const noteRowSchema = z
     questions: nullable(sealed('note.questions', 'questions')),
     answers: nullable(sealed('note.answers', 'answers')),
     questionNoteId: nullable(id),
-    by: nullable(z.string().min(1).max(256)),
+    by: nullable(plainText(256)),
     queued: z.boolean().default(false),
     deliveredAt: nullable(timestamp),
     createdAt: timestamp,
@@ -137,7 +202,7 @@ export const machineRowSchema = z.object({
   tokenHash: z.string().regex(/^[0-9a-f]{64}$/, 'not a sha256 hex digest'),
   createdAt: timestamp,
   lastSeenAt: nullable(timestamp),
-  clientVersion: nullable(z.string().min(1).max(64)),
+  clientVersion: nullable(plainText(64)),
   clientApi: nullable(count),
   revokedAt: nullable(timestamp),
   dirs: nullable(sealed('machine.dirs', 'dirs')),
@@ -154,7 +219,7 @@ export const machineRowSchema = z.object({
 export const transcriptRunRowSchema = z.object({
   id: z.string().regex(TRANSCRIPT_RUN_ID, 'not a run id'),
   taskId: id,
-  machine: z.string().min(1).max(256),
+  machine: plainText(256),
   sessionId: nullable(z.string().refine(isSessionId, 'not a session id')),
   resumed: z.boolean().default(false),
   startedAt: timestamp,

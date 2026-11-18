@@ -173,7 +173,8 @@ export interface ResealedRow {
  */
 type Plan = Record<string, Binding[]>;
 
-const SEALED_ROW_COLUMNS: Record<ExportTable, readonly string[]> = {
+/** The sealed (envelope) columns of each table, which a re-seal opens; the server's `SEALED_COLUMNS` must list the same ones. */
+export const SEALED_ROW_COLUMNS: Record<ExportTable, readonly string[]> = {
   task: ['title', 'input', 'workdir', 'homeWorkdir', 'agent', 'watches'],
   schedule: ['title', 'input', 'workdir', 'agent'],
   note: ['body', 'preview', 'suggestion', 'questions', 'answers'],

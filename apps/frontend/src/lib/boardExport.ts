@@ -86,7 +86,7 @@ export async function buildExport(options: BuildExportOptions): Promise<Blob> {
     transcripts: includeTranscripts,
     prefs,
   };
-  const parts: string[] = [`${exportHeaderLine(header)}\n`];
+  const parts: Blob[] = [new Blob([`${exportHeaderLine(header)}\n`])];
   let rows = 0;
   onProgress?.({ rows, total });
   for (const table of tablesOfExport(includeTranscripts)) {
@@ -95,7 +95,8 @@ export async function buildExport(options: BuildExportOptions): Promise<Blob> {
       signal.throwIfAborted();
       const page: ExportPage = await fetchPage(table, cursor, signal);
       signal.throwIfAborted();
-      parts.push(page.rows.map((row) => `${exportRowLine(table, row)}\n`).join(''));
+      // A Blob per page lets the browser keep the file's parts outside the JS heap.
+      parts.push(new Blob([page.rows.map((row) => `${exportRowLine(table, row)}\n`).join('')]));
       rows += page.rows.length;
       cursor = page.next;
       onProgress?.({ rows, total });

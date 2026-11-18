@@ -4,12 +4,15 @@ import type { ImportRun } from './useImportRun';
 interface Props {
   run: ImportRun;
   onCancel: () => void;
+  /** The username the import runs as, and the one the file was exported under. */
+  owner: string;
+  fileOwner: string;
 }
 
 const plural = (count: number, one: string, many: string): string => `${count} ${count === 1 ? one : many}`;
 
 /** Progress while an import runs, and what it did when it stopped. Renders nothing before it starts. */
-export function ImportRunView({ run, onCancel }: Props) {
+export function ImportRunView({ run, onCancel, owner, fileOwner }: Props) {
   if (run.status === 'idle') return null;
   if (run.status === 'running') {
     const { bytesRead, size } = run.progress;
@@ -46,10 +49,18 @@ export function ImportRunView({ run, onCancel }: Props) {
       </Text>
       <List size="sm" spacing={2}>
         <List.Item>{plural(inserted, 'row added', 'rows added')}</List.Item>
-        <List.Item>{existing} already on the board, left as they are</List.Item>
+        <List.Item>
+          {existing} already on this board or held by another account on this server, left as they are
+        </List.Item>
         <List.Item>{invalid} not well formed, skipped</List.Item>
-        <List.Item>{orphaned} skipped because their task or run is not on the board</List.Item>
+        <List.Item>{orphaned} skipped because their task, run or schedule to run after is not on the board</List.Item>
       </List>
+      {inserted === 0 && existing > 0 && fileOwner !== owner && (
+        <Text size="sm">
+          The account <strong>{fileOwner}</strong> on this server probably still holds these rows: ids and machine
+          tokens are unique across the server. Export again if needed, delete that account, then import the file again.
+        </Text>
+      )}
       {unreadable > 0 && (
         <Text size="sm">
           {plural(unreadable, 'value', 'values')} could not be opened and {unreadable === 1 ? 'was' : 'were'} copied as

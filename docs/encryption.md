@@ -349,7 +349,7 @@ Settings → Your data writes the board to one NDJSON file (see [Your data](usag
 
 **How secret it is.** As secret as the database, and no more: the database holds the same ciphertext, the same slots and the same hashes. Without the passphrase or the recovery key the file opens nothing. With one of them it opens everything in it, so it is kept like the database backup.
 
-**Import into the same username** sends the rows as they are. The server accepts them only under the key id of the file (the key of the account), and checks the shape of every row as it does for any write.
+**Import into the same username** sends the rows as they are. The server accepts them only under the key id of the file (the key of the account), and checks every row as it does for any write: the sealed columns, the schedule rules, the clear text columns. A row it would refuse is counted and skipped, and never fails the batch. A test ties the columns the browser re-seals to the sealed columns the database checks, so a new sealed column fails it until the re-seal handles it.
 
 **Import under another username.** Every envelope is bound to its owner through its additional data. The browser opens each sealed column with the old username and its derived keys (the keys do not depend on the username, only the additional data does), and seals the same plaintext again with the same field and context under the new username. Which binding a column opens under is decided by the shared rules, from the clear columns of its row. Nothing is sealed under a binding it did not open with:
 

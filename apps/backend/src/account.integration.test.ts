@@ -456,6 +456,259 @@ describe('account.import', () => {
     ).toEqual({ inserted: 0, existing: 0, invalid: 0, orphaned: 1 });
   });
 
+  describe('schedules and the columns of later migrations', () => {
+    const now = '2026-03-01T10:00:00.123456Z';
+    const schedule = (id: string, more: object = {}) => ({
+      id,
+      title: SEALED,
+      input: SEALED,
+      anchorAt: now,
+      createdAt: now,
+      cron: '0 9 * * 1',
+      timezone: 'Europe/Berlin',
+      ...more,
+    });
+    const task = (id: string, more: object = {}) => ({
+      id,
+      title: SEALED,
+      input: SEALED,
+      position: 1,
+      createdAt: now,
+      updatedAt: now,
+      ...more,
+    });
+    const ready = async () => {
+      const jascha = caller(db);
+      await jascha.keys.setup({ keyId: KEY, slots: slots() });
+      return jascha;
+    };
+    const importSchedules = (client: Client, rows: unknown[]) =>
+      client.account.import({ keyId: KEY, table: 'schedule', rows });
+
+    it('keeps auto done, who moved a task, when its occurrence finished, and every schedule setting', async () => {
+      const jascha = await ready();
+      await jascha.account.import({
+        keyId: KEY,
+        table: 'task',
+        rows: [task('t1', { autoDone: true, movedBy: 'agent', occurrenceFinishedAt: '2026-03-02T11:00:00.654321Z' })],
+      });
+      expect(
+        await importSchedules(jascha, [
+          schedule('s1', {
+            autoDone: true,
+            moreCrons: ['30 18 * * 5'],
+            maxConcurrent: 3,
+            occurrenceTaskId: 't1',
+          }),
+          schedule('s2', { cron: null, timezone: null, afterScheduleId: 's1', afterDelayMs: 90_000 }),
+        ]),
+      ).toEqual({ inserted: 2, existing: 0, invalid: 0, orphaned: 0 });
+      const [t1] = await exportAll(jascha, 'task');
+      expect(t1).toMatchObject({
+        autoDone: true,
+        movedBy: 'agent',
+        occurrenceFinishedAt: '2026-03-02T11:00:00.654321Z',
+      });
+      const rows = await exportAll(jascha, 'schedule');
+      expect(rows.find((row) => row['id'] === 's1')).toMatchObject({
+        autoDone: true,
+        moreCrons: ['30 18 * * 5'],
+        maxConcurrent: 3,
+        occurrenceTaskId: 't1',
+        pausedAt: null,
+      });
+      expect(rows.find((row) => row['id'] === 's2')).toMatchObject({ afterScheduleId: 's1', afterDelayMs: 90_000 });
+    });
+
+    it('adds a schedule that runs after one later in the file, and counts one whose upstream is missing as orphaned', async () => {
+      const jascha = await ready();
+      const result = await importSchedules(jascha, [
+        schedule('later', { cron: null, timezone: null, afterScheduleId: 'first', afterDelayMs: 0 }),
+        schedule('first'),
+        schedule('nowhere', { cron: null, timezone: null, afterScheduleId: 'gone', afterDelayMs: 0 }),
+        schedule('loopa', { cron: null, timezone: null, afterScheduleId: 'loopb', afterDelayMs: 0 }),
+        schedule('loopb', { cron: null, timezone: null, afterScheduleId: 'loopa', afterDelayMs: 0 }),
+        schedule('behind', { cron: null, timezone: null, afterScheduleId: 'nowhere', afterDelayMs: 0 }),
+        schedule('myself', { cron: null, timezone: null, afterScheduleId: 'myself', afterDelayMs: 0 }),
+      ]);
+      expect(result).toEqual({ inserted: 2, existing: 0, invalid: 1, orphaned: 4 });
+      expect((await exportAll(jascha, 'schedule')).map((row) => [row['id'], row['afterScheduleId']])).toEqual([
+        ['first', null],
+        ['later', 'first'],
+      ]);
+      expect(
+        await importSchedules(jascha, [
+          schedule('next', { cron: null, timezone: null, afterScheduleId: 'later', afterDelayMs: 5 }),
+        ]),
+      ).toMatchObject({ inserted: 1 });
+    });
+
+    it('orphans a schedule that runs after a schedule held by another account', async () => {
+      await seed('carol');
+      const jascha = await ready();
+      expect(
+        await importSchedules(jascha, [
+          schedule('mine', { cron: null, timezone: null, afterScheduleId: 'sched1-carol', afterDelayMs: 0 }),
+        ]),
+      ).toEqual({ inserted: 0, existing: 0, invalid: 0, orphaned: 1 });
+    });
+
+    it('can be deleted with the account when schedules run after each other', async () => {
+      const jascha = await ready();
+      await importSchedules(jascha, [
+        schedule('a1'),
+        schedule('a2', { cron: null, timezone: null, afterScheduleId: 'a1', afterDelayMs: 0 }),
+        schedule('a3', { cron: null, timezone: null, afterScheduleId: 'a2', afterDelayMs: 0 }),
+      ]);
+      await jascha.account.delete({ username: 'jascha' });
+      expect(await admin.select().from(schedules)).toEqual([]);
+    });
+
+    it('refuses the rules the service refuses, and rules the database would', async () => {
+      const jascha = await ready();
+      const after = { cron: null, timezone: null, afterScheduleId: 'ok1', afterDelayMs: 0 };
+      const result = await importSchedules(jascha, [
+        schedule('ok1'),
+        schedule('ok2', { cron: null, timezone: null, everyMs: 60_000 }),
+        schedule('short', { cron: null, timezone: null, everyMs: 59_999 }),
+        schedule('huge', { cron: null, timezone: null, everyMs: Number.MAX_SAFE_INTEGER }),
+        schedule('both', { everyMs: 120_000 }),
+        schedule('neither', { cron: null, timezone: null }),
+        schedule('afterandcron', { ...after, cron: '0 9 * * 1', timezone: 'UTC' }),
+        schedule('badcron', { cron: '99 99 * * *' }),
+        schedule('sentence', { cron: 'run this every day please' }),
+        schedule('notz', { timezone: 'Mars/Olympus' }),
+        schedule('notzset', { timezone: null }),
+        schedule('tzwithinterval', { cron: null, everyMs: 120_000 }),
+        schedule('twice', { moreCrons: ['0 9 * * 1'] }),
+        schedule('manycrons', { moreCrons: Array.from({ length: 10 }, (_, hour) => `0 ${hour} * * 2`) }),
+        schedule('moreonly', { cron: null, timezone: null, everyMs: 120_000, moreCrons: ['0 9 * * 1'] }),
+        schedule('limit0', { maxConcurrent: 0 }),
+        schedule('limit101', { maxConcurrent: 101 }),
+        schedule('delaynoafter', { cron: null, timezone: null, everyMs: 120_000, afterDelayMs: 5 }),
+        schedule('afternodelay', { ...after, afterDelayMs: null }),
+        schedule('negdelay', { ...after, afterDelayMs: -1 }),
+        schedule('bigdelay', { ...after, afterDelayMs: Number.MAX_SAFE_INTEGER }),
+      ]);
+      expect(result).toEqual({ inserted: 2, existing: 0, invalid: 19, orphaned: 0 });
+    });
+
+    it('pauses an active schedule whose pending occurrence is not on the board, and Resume makes the next one', async () => {
+      const jascha = await ready();
+      const stamp = '2026-03-02T00:00:00Z';
+      await importSchedules(jascha, [
+        schedule('active', { occurrenceTaskId: 'gone' }),
+        schedule('paused', { occurrenceTaskId: 'gone', pausedAt: stamp }),
+        schedule('ended', { occurrenceTaskId: 'gone', endedAt: stamp }),
+        schedule('plain'),
+        schedule('waiting', { cron: null, timezone: null, afterScheduleId: 'plain', afterDelayMs: 0 }),
+        schedule('lostwaiting', {
+          cron: null,
+          timezone: null,
+          afterScheduleId: 'plain',
+          afterDelayMs: 0,
+          occurrenceTaskId: 'gone',
+        }),
+      ]);
+      const byId = async () =>
+        Object.fromEntries((await exportAll(jascha, 'schedule')).map((row) => [row['id'] as string, row]));
+      const rows = await byId();
+      expect(rows['active']).toMatchObject({ occurrenceTaskId: null, pausedAt: expect.any(String) });
+      expect(rows['paused']).toMatchObject({ occurrenceTaskId: null, pausedAt: '2026-03-02T00:00:00.000000Z' });
+      expect(rows['ended']).toMatchObject({ occurrenceTaskId: null, pausedAt: null });
+      expect(rows['plain']).toMatchObject({ pausedAt: null });
+      expect(rows['waiting']).toMatchObject({ pausedAt: null, occurrenceTaskId: null });
+      expect(rows['lostwaiting']).toMatchObject({ pausedAt: expect.any(String) });
+
+      await jascha.schedules.setPaused({ id: 'active', paused: false });
+      const resumed = (await byId())['active']!;
+      expect(resumed['pausedAt']).toBeNull();
+      expect(resumed['occurrenceTaskId']).toEqual(expect.any(String));
+      expect(await jascha.account.summary()).toMatchObject({ tasks: 1 });
+    });
+
+    it('lands the rest of a batch when a row has a time or text the database refuses', async () => {
+      const jascha = await ready();
+      const rows = [
+        task('fine1'),
+        task('year0', { createdAt: '0000-06-01T00:00:00Z' }),
+        task('year0b', { updatedAt: '0000-01-01T00:00:00.000000+00:00' }),
+        task('before1', { closedAt: '0000-12-31T23:59:59Z' }),
+        task('fine2', { createdAt: '0001-01-01T00:00:00Z', updatedAt: '9999-12-31T23:59:59Z' }),
+        task('toolate', { updatedAt: '9999-12-31T23:59:59.999999Z' }),
+        task('nulmodel', { model: 'opus\u0000' }),
+        task('nulmachine', { machine: 'lap\u0000top' }),
+        task('fine3'),
+      ];
+      expect(await jascha.account.import({ keyId: KEY, table: 'task', rows })).toEqual({
+        inserted: 3,
+        existing: 0,
+        invalid: 6,
+        orphaned: 0,
+      });
+      expect((await exportAll(jascha, 'task')).map((row) => row['id']).sort()).toEqual(['fine1', 'fine2', 'fine3']);
+
+      expect(
+        await importSchedules(jascha, [
+          schedule('okcron'),
+          schedule('nulcron', { cron: '0 9 * * 1\u0000' }),
+          schedule('newlinecron', { cron: '0 9 * * 1\n' }),
+          schedule('nultz', { timezone: 'UTC\u0000' }),
+          schedule('nulmore', { moreCrons: ['0 9 * * 2\u0000'] }),
+          schedule('year0', { anchorAt: '0000-01-01T00:00:00Z' }),
+        ]),
+      ).toEqual({ inserted: 1, existing: 0, invalid: 5, orphaned: 0 });
+
+      const note = (id: string, more: object = {}) => ({
+        id,
+        taskId: 'fine1',
+        author: 'agent',
+        kind: 'comment',
+        body: SEALED,
+        createdAt: now,
+        ...more,
+      });
+      expect(
+        await jascha.account.import({
+          keyId: KEY,
+          table: 'note',
+          rows: [note('n1'), note('n2', { by: 'sam\u0000' }), note('n3', { createdAt: '0000-01-01T00:00:00Z' })],
+        }),
+      ).toEqual({ inserted: 1, existing: 0, invalid: 2, orphaned: 0 });
+
+      const machine = (name: string, more: object = {}) => ({
+        name,
+        tokenHash: name.padEnd(64, '0').replace(/[^0-9a-f]/g, 'a'),
+        createdAt: now,
+        ...more,
+      });
+      expect(
+        await jascha.account.import({
+          keyId: KEY,
+          table: 'machine',
+          rows: [
+            machine('m1'),
+            machine('m2', { clientVersion: '1.0\u0000' }),
+            machine('m3', { revokedAt: '0000-01-01T00:00:00Z' }),
+          ],
+        }),
+      ).toEqual({ inserted: 1, existing: 0, invalid: 2, orphaned: 0 });
+
+      const run = { taskId: 'fine1', startedAt: now, lastEventAt: now };
+      expect(
+        await jascha.account.import({
+          keyId: KEY,
+          table: 'transcript_run',
+          rows: [
+            { id: RUN, machine: 'laptop', ...run },
+            { id: 'run-0002-aaaa', machine: 'lap\u0000top', ...run },
+            { id: 'run-0003-aaaa', machine: 'laptop', ...run, startedAt: '0000-01-01T00:00:00Z' },
+          ],
+        }),
+      ).toEqual({ inserted: 1, existing: 0, invalid: 2, orphaned: 0 });
+    });
+  });
+
   it('drops an occurrence task that is not on the board, and takes no more than 1000 rows', async () => {
     const jascha = caller(db);
     await jascha.keys.setup({ keyId: KEY, slots: slots() });
@@ -468,7 +721,10 @@ describe('account.import', () => {
         rows: [{ ...schedule, occurrenceTaskId: 'nowhere', everyMs: 60_000 }],
       }),
     ).toMatchObject({ inserted: 1 });
-    expect((await exportAll(jascha, 'schedule'))[0]).toMatchObject({ occurrenceTaskId: null });
+    expect((await exportAll(jascha, 'schedule'))[0]).toMatchObject({
+      occurrenceTaskId: null,
+      pausedAt: expect.any(String),
+    });
     await expect(
       jascha.account.import({ keyId: KEY, table: 'task', rows: Array.from({ length: 1001 }, () => ({})) }),
     ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
