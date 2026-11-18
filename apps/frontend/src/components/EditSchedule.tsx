@@ -3,6 +3,7 @@ import { Alert, Button, Group, Modal, Stack, Text, TextInput } from '@mantine/co
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { skillsFor } from '../lib/catalog';
+import { DEFAULT_LANE, laneFromOption } from '../lib/lane';
 import { DEFAULT_MODEL, modelFromOption } from '../lib/model';
 import { parseDelay, parseRepeatRule } from '../lib/repeat';
 import { localInputValue } from '../lib/time';
@@ -10,8 +11,9 @@ import { errorMessage, useTRPC, type Schedule } from '../lib/trpc';
 import { DirectorySelect } from './DirectorySelect';
 import { MarkdownEditor } from './MarkdownEditor';
 import { RepeatFields, limitError, timesError } from './RepeatFields';
-import { AgentField, AutoDoneField, ModelField, PriorityField, agentNameError } from './TaskFields';
+import { AgentField, AutoDoneField, LaneField, ModelField, PriorityField, agentNameError } from './TaskFields';
 import { useDirectoryChoices, type DirectoryChoicesState } from './useDirectoryChoices';
+import { useLaneOptions } from './useLaneOptions';
 import { useModelOptions } from './useModelOptions';
 
 type PendingCard = 'updated' | 'started' | 'none' | 'removed' | 'created';
@@ -81,6 +83,7 @@ function EditScheduleForm({ schedule, onClose }: { schedule: Schedule; onClose: 
   const [agent, setAgent] = useState(schedule.agent ?? '');
   const [priority, setPriority] = useState(schedule.priority);
   const [model, setModel] = useState(schedule.model ?? DEFAULT_MODEL);
+  const [lane, setLane] = useState(schedule.requestedLane ?? DEFAULT_LANE);
   const [autoDone, setAutoDone] = useState(schedule.autoDone);
   const [after, setAfter] = useState<string | null>(schedule.after?.scheduleId ?? null);
   const [delay, setDelay] = useState(
@@ -98,6 +101,7 @@ function EditScheduleForm({ schedule, onClose }: { schedule: Schedule; onClose: 
     [catalogs.data, place?.machine, place?.path],
   );
   const models = useModelOptions(place?.machine, model);
+  const lanes = useLaneOptions(place?.machine, lane);
   const parsedRule = parseRepeatRule(ruleLines.join('\n'), timezone);
   const ruleError =
     after === null && 'error' in parsedRule && ruleLines.some((line) => line.trim() !== '')
@@ -145,6 +149,7 @@ function EditScheduleForm({ schedule, onClose }: { schedule: Schedule; onClose: 
         place: place === undefined ? null : { machine: place.machine, workdir: place.path },
         priority,
         model: modelFromOption(model),
+        lane: laneFromOption(lane),
         autoDone,
         repeat,
         ...(after === null && at !== '' && at !== firstRun ? { at: new Date(at) } : {}),
@@ -189,6 +194,7 @@ function EditScheduleForm({ schedule, onClose }: { schedule: Schedule; onClose: 
       />
       <PriorityField value={priority} onChange={setPriority} />
       <ModelField value={model} onChange={setModel} models={models} />
+      <LaneField value={lane} onChange={setLane} lanes={lanes} />
       <AutoDoneField value={autoDone} onChange={setAutoDone} />
       <RepeatFields
         after={after}

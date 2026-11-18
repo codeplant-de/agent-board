@@ -1,7 +1,15 @@
 // `board task <task> [set <key> <value> | unset <key>]`: the settings of a task after it was made. Without an action it prints
-// them; `set` and `unset` change the priority, the model, whether the agent may mark it done and the directory the task runs in (which pins it to this machine).
+// them; `set` and `unset` change the priority, the model, the lane, whether the agent may mark it done and the directory the task runs in (which pins it to this machine).
 import { resolve } from 'node:path';
-import { defaultTitle, isModelName, isPriority, isSafeWorkdir, PRIORITIES } from '@agent-board/shared';
+import {
+  defaultTitle,
+  isModelName,
+  isPriority,
+  isSafeLane,
+  isSafeWorkdir,
+  MACHINE_NAME_RULE,
+  PRIORITIES,
+} from '@agent-board/shared';
 import type { Backend, Task, UnreadableField } from '@agent-board/shared';
 import { UsageError } from '../cli.mts';
 import { expandHome } from '../config/config.mts';
@@ -11,7 +19,7 @@ import { pinnedMachine } from '../dispatch/decide.mts';
 import { plainLine } from '../output/terminal.mts';
 import { localTime } from './schedule.mts';
 
-export const SETTING_KEYS = ['priority', 'model', 'auto-done', 'dir', 'prompt'] as const;
+export const SETTING_KEYS = ['priority', 'model', 'lane', 'auto-done', 'dir', 'prompt'] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
 export interface TaskSettingsDeps {
@@ -38,6 +46,11 @@ function machineLine(task: Task): string {
   return `${plainLine(task.machine)} (${pinned ? 'runs only there' : 'ran there last; any machine may take it'})`;
 }
 
+function laneLine(task: Task): string {
+  const asked = task.requestedLane === null ? 'default' : plainLine(task.requestedLane);
+  return task.status === 'running' && task.lane !== null ? `${asked} (running in ${plainLine(task.lane)})` : asked;
+}
+
 function directoryLine(deps: TaskSettingsDeps, task: Task): string {
   if (isUnreadable(task, 'workdir')) return UNREADABLE;
   if (task.workdir === null) return DEFAULT_DIRECTORY;
@@ -56,6 +69,7 @@ export function formatSettings(deps: TaskSettingsDeps, task: Task): string[] {
     ['status', `${task.status}${task.closed ? ' (closed)' : ''}`],
     ['priority', task.priority],
     ['model', task.model === null ? 'default' : plainLine(task.model)],
+    ['lane', laneLine(task)],
     ['auto-done', task.autoDone ? 'on: the agent may move it to Done' : 'off'],
     ['agent', isUnreadable(task, 'agent') ? UNREADABLE : task.agent == null ? 'none' : plainLine(task.agent)],
     ['created by', task.createdBy],
@@ -94,7 +108,7 @@ function confirmed(deps: TaskSettingsDeps, line: string): void {
 function noteSchedule(deps: TaskSettingsDeps, task: Task): void {
   if (task.scheduleId !== null)
     deps.print(
-      'note: this card belongs to a schedule; the change applies to it only, and the next occurrence takes priority, model, auto-done, machine and directory from the schedule again',
+      'note: this card belongs to a schedule; the change applies to it only, and the next occurrence takes priority, model, lane, auto-done, machine and directory from the schedule again',
     );
 }
 
@@ -121,6 +135,22 @@ export async function setModel(deps: TaskSettingsDeps, id: string, model: string
   noteSchedule(deps, task);
   const running = task.status === 'running' ? ' (the run in progress keeps its model)' : '';
   confirmed(deps, `${id} uses ${shown} from its next run on${running}`);
+}
+
+/** A lane name, or undefined for the default lane. A running task keeps the lane it started in, so it is refused. */
+export async function setLane(deps: TaskSettingsDeps, id: string, lane: string | undefined): Promise<void> {
+  if (lane !== undefined && !isSafeLane(lane))
+    throw new UsageError(`"${plainLine(lane).slice(0, 40)}" is not a lane name (${MACHINE_NAME_RULE})`);
+  const task = await deps.backend.getTask(id);
+  const shown = lane ?? 'the default lane';
+  if (task.requestedLane === (lane ?? null)) return deps.print(`${id} already asks for ${shown}`);
+  if (task.status === 'running')
+    throw new UsageError(
+      `${id} is running and keeps its lane until its next start: change the lane once it has stopped`,
+    );
+  await deps.backend.configureTask(id, { lane: lane ?? null });
+  noteSchedule(deps, task);
+  confirmed(deps, `${id} asks for ${shown} from its next start on`);
 }
 
 /** The agent may move the task to Done itself (`on`), or only to Needs me (`off`). It takes effect at once, in any status. */

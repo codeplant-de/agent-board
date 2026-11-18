@@ -74,8 +74,11 @@ test('board add needs a title and a file, and checks the parent and the priority
     file: '/tmp/x.md',
     parent: 'abc',
     priority: undefined,
+    lane: undefined,
   });
   assert.equal(parseAddFlags({ title: 't', file: '/tmp/x', priority: 'high' }).priority, 'high');
+  assert.equal(parseAddFlags({ title: 't', file: '/tmp/x', lane: 'reviews' }).lane, 'reviews');
+  assert.throws(() => parseAddFlags({ title: 't', file: '/tmp/x', lane: 'not a lane' }), /not a lane name/);
   assert.throws(() => parseAddFlags({ title: 't', file: '/tmp/x', priority: 'asap' }), /unknown priority "asap"/);
   assert.equal(parseAddFlags({ title: 't', file: '/tmp/x' }).parent, undefined);
   assert.throws(() => parseAddFlags({ title: 't' }), UsageError);

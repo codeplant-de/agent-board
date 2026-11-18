@@ -74,6 +74,7 @@ const task = {
   status: 'todo',
   priority: 'normal',
   model: null,
+  requestedLane: null,
   autoDone: false,
   closed: false,
   machine: null,
@@ -272,7 +273,7 @@ test('a task config takes a priority, a model or null, and a place with a sealed
     priority: 'high',
     model: 'opus',
   });
-  assert.throws(() => parseWireTaskConfig({}), /config needs one of priority, model, autoDone, place/);
+  assert.throws(() => parseWireTaskConfig({}), /config needs one of priority, model, lane, autoDone, place/);
   assert.throws(() => parseWireTaskConfig([]), /must be a JSON object/);
   assert.throws(() => parseWireTaskConfig({ priority: 'asap' }), /priority must be one of/);
   for (const model of ['', 'not a model', '-x', 5, undefined])
@@ -415,6 +416,7 @@ const schedule = {
   input: INPUT,
   priority: 'normal',
   model: null,
+  requestedLane: null,
   autoDone: false,
   machine: null,
   workdir: null,
@@ -1001,6 +1003,44 @@ test('a draft carries a model that is checked, in add-task and add-schedule', ()
   const rule = { id: ID, title: TITLE, input: INPUT, everyMs: 60_000 };
   assert.equal(parseWireScheduleDraft({ ...rule, model: 'opus' }).model, 'opus');
   assert.throws(() => parseWireScheduleDraft({ ...rule, model: 'a b' }), /schedule draft.model is not a model name/);
+});
+
+test('a lane is a name of a safe shape, and a server that sends none means the default lane', () => {
+  const { requestedLane: _lane, ...legacyTask } = task;
+  assert.equal(parseWireTask(legacyTask).requestedLane, null);
+  assert.equal(parseWireTask({ ...task, requestedLane: 'reviews' }).requestedLane, 'reviews');
+  assert.equal(parseWireSchedule({ ...schedule, requestedLane: 'a.b-c_1' }).requestedLane, 'a.b-c_1');
+  assert.equal(parseWireSchedule(schedule).requestedLane, null);
+  for (const bad of ['a b', '', '-x', 'x'.repeat(65), 'a\n', 5])
+    assert.throws(
+      () => parseWireTask({ ...task, requestedLane: bad }),
+      /task.requestedLane is not a safe name/,
+      String(bad),
+    );
+  assert.throws(() => parseWireSchedule({ ...schedule, requestedLane: '$(x)' }), /schedule.requestedLane/);
+  assert.equal(parseWireTask({ ...task, lane: 'running-here', requestedLane: 'asked' }).lane, 'running-here');
+});
+
+test('a draft and a config carry a lane that is checked, and a config may clear it', () => {
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, lane: 'reviews' }).lane, 'reviews');
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT }).lane, undefined);
+  for (const lane of ['a b', '', null, 3])
+    assert.throws(
+      () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, lane }),
+      /draft.lane is not a safe name/,
+      String(lane),
+    );
+  const rule = { id: ID, title: TITLE, input: INPUT, everyMs: 60_000 };
+  assert.equal(parseWireScheduleDraft({ ...rule, lane: 'docs' }).lane, 'docs');
+  assert.throws(() => parseWireScheduleDraft({ ...rule, lane: 'a b' }), /schedule draft.lane is not a safe name/);
+  assert.deepEqual(parseWireTaskConfig({ lane: 'reviews' }), { lane: 'reviews' });
+  assert.deepEqual(parseWireTaskConfig({ lane: null }), { lane: null });
+  for (const lane of ['', 'a b', 5, undefined])
+    assert.throws(
+      () => parseWireTaskConfig({ lane }),
+      /config.lane is not a safe name|config needs one of/,
+      String(lane),
+    );
 });
 
 test('autoDone is a boolean in a config and in the drafts, and a server that sends none means false', () => {

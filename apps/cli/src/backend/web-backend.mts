@@ -142,6 +142,11 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     if (draft.model !== undefined) requireFeature((await connect()).features, 'task.model');
   };
 
+  // Refuses to send a lane (or its removal) to a server that would reject the key.
+  const requireLaneSupport = async (values: { lane?: string | null }): Promise<void> => {
+    if (values.lane !== undefined) requireFeature((await connect()).features, 'task.lane');
+  };
+
   // Refuses to send the auto-done setting to a server that would reject the key.
   const requireAutoDoneSupport = async (values: { autoDone?: boolean }): Promise<void> => {
     if (values.autoDone !== undefined) requireFeature((await connect()).features, 'task.auto-done');
@@ -220,6 +225,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     addTask: async (draft) => {
       await requireSendable(draft);
       await requireModelSupport(draft);
+      await requireLaneSupport(draft);
       await requireAutoDoneSupport(draft);
       await requireAgentSupport(draft);
       return call('add-task', { body: draft }, parseWireAddTaskResult);
@@ -232,6 +238,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     configureTask: async (id, body) => {
       const checkedId = taskId(id);
       await requireAutoDoneSupport(body);
+      await requireLaneSupport(body);
       return call('configure-task', { id: checkedId, body }, parseWireTask);
     },
     editPrompt: async (id, body) => call('edit-prompt', { id: taskId(id), body }, parseWireTask),
@@ -311,6 +318,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     addSchedule: async (draft) => {
       await requireSendable(draft);
       await requireModelSupport(draft);
+      await requireLaneSupport(draft);
       await requireAutoDoneSupport(draft);
       await requireAgentSupport(draft);
       await requireScheduleSupport(draft);

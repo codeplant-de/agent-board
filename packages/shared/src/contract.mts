@@ -121,6 +121,11 @@ export interface Task {
   // The Claude model the runs use (`claude --model`): an alias or a full id; null is claude's default. A clear value from the
   // server, so a worker shape-checks it with `isModelName` again before it reaches argv.
   model: string | null;
+  // The lane the user asked for, by name; null for the default lane of whichever machine takes it. Routing, like the
+  // priority: clear, not sealed. A machine without a lane of that name runs the task in its default lane, and the worker
+  // shape-checks it with `isSafeLane` again. Not the lane it runs in (`lane`). Absent from a server without `task.lane`,
+  // which reads as null.
+  requestedLane: string | null;
   // The agent may move the task to Done itself (`update-task` with a run and status done) once it judges every acceptance
   // criterion met; the user can change it in any status. Absent from a server without `task.auto-done`, which reads as false.
   autoDone: boolean;
@@ -268,6 +273,8 @@ export interface TaskDraft {
   priority?: Priority;
   // Default: claude's default model.
   model?: string;
+  // The lane to run in (`isSafeLane`). Default: the default lane of the machine that takes it.
+  lane?: string;
   // Default: false.
   autoDone?: boolean;
   // Unique per board: a second add-task with the same key returns the first task instead of a new one. The CLI sends the
@@ -331,6 +338,8 @@ export interface Schedule {
   priority: Priority;
   // The model of every occurrence; null is claude's default.
   model: string | null;
+  // The lane every occurrence asks for (`Task.requestedLane`); null for the default lane.
+  requestedLane: string | null;
   // Whether every occurrence lets the agent move it to Done itself.
   autoDone: boolean;
   // Pins the occurrences to a machine and the directory they run in there.
@@ -374,6 +383,8 @@ export interface ScheduleDraft {
   priority?: Priority;
   // Default: claude's default model.
   model?: string;
+  // The lane every occurrence asks for (`isSafeLane`). Default: the default lane.
+  lane?: string;
   // Default: false.
   autoDone?: boolean;
   machine?: string;
@@ -607,6 +618,8 @@ export interface TaskConfigChange {
   priority?: Priority;
   // A model name, or null for claude's default. It applies from the next run on.
   model?: string | null;
+  // A lane name (`isSafeLane`), or null for the default lane. Refused while the task runs: a run keeps its lane.
+  lane?: string | null;
   // Whether the agent may move the task to Done itself. Takes effect at once, also while the task runs.
   autoDone?: boolean;
   // Where the task runs from now on. An object pins it to the directory on the calling machine and drops the session (it
@@ -1063,6 +1076,20 @@ function modelOf(obj: Record<string, unknown>, what: string): string | null {
   return value;
 }
 
+/** The `requestedLane` of a task or schedule; a server that predates the key leaves it out, which means the default lane. */
+function requestedLaneOf(obj: Record<string, unknown>, what: string): string | null {
+  const value = obj['requestedLane'] ?? null;
+  if (value !== null && !(typeof value === 'string' && isSafeLane(value)))
+    throw new ContractError(`${what}.requestedLane is not a safe name`);
+  return value;
+}
+
+function laneName(obj: Record<string, unknown>, what: string): string {
+  const value = obj['lane'];
+  if (typeof value !== 'string' || !isSafeLane(value)) throw new ContractError(`${what}.lane is not a safe name`);
+  return value;
+}
+
 /** The `movedBy` of a task: left out when the server does not send it or names an actor this client does not know. */
 function movedByOf(obj: Record<string, unknown>): { movedBy?: TaskActor } {
   const movedBy = TASK_ACTORS.find((actor) => actor === obj['movedBy']);
@@ -1218,6 +1245,7 @@ export function parseWireTask(value: unknown): WireTask {
     status: member(obj, 'status', 'task', STATUSES),
     priority: member(obj, 'priority', 'task', PRIORITIES),
     model: modelOf(obj, 'task'),
+    requestedLane: requestedLaneOf(obj, 'task'),
     autoDone: obj['autoDone'] === true,
     closed: boolean(obj, 'closed', 'task'),
     machine,
@@ -1334,6 +1362,7 @@ export function parseWireSchedule(value: unknown): WireSchedule {
     input: string(obj, 'input', 'schedule'),
     priority: member(obj, 'priority', 'schedule', PRIORITIES),
     model: modelOf(obj, 'schedule'),
+    requestedLane: requestedLaneOf(obj, 'schedule'),
     autoDone: obj['autoDone'] === true,
     machine,
     workdir: nullableString(obj, 'workdir', 'schedule'),
@@ -1674,6 +1703,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
       'status',
       'priority',
       'model',
+      'lane',
       'autoDone',
       'dedupeKey',
       'parentId',
@@ -1694,6 +1724,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', 'draft', PRIORITIES);
   if ('model' in obj) draft.model = modelName(obj, 'draft');
+  if ('lane' in obj) draft.lane = laneName(obj, 'draft');
   if ('autoDone' in obj) draft.autoDone = boolean(obj, 'autoDone', 'draft');
   if ('dedupeKey' in obj) draft.dedupeKey = parseBlindIndex(obj['dedupeKey'], 'draft.dedupeKey');
   if ('parentId' in obj) draft.parentId = safeId(string(obj, 'parentId', 'draft'), 'draft.parentId');
@@ -1738,6 +1769,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
       'input',
       'priority',
       'model',
+      'lane',
       'autoDone',
       'machine',
       'workdir',
@@ -1762,6 +1794,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', what, PRIORITIES);
   if ('model' in obj) draft.model = modelName(obj, what);
+  if ('lane' in obj) draft.lane = laneName(obj, what);
   if ('autoDone' in obj) draft.autoDone = boolean(obj, 'autoDone', what);
   if ('machine' in obj) {
     draft.machine = string(obj, 'machine', what);
@@ -1832,12 +1865,13 @@ export function parseWireTaskPatch(value: unknown): WireTaskPatch {
 // Body of configure-task. At least one key. `place` carries the sealed directory only: the machine is the token's.
 export function parseWireTaskConfig(value: unknown): WireTaskConfig {
   const obj = record(value, 'config');
-  const keys = ['priority', 'model', 'autoDone', 'place'];
+  const keys = ['priority', 'model', 'lane', 'autoDone', 'place'];
   rejectUnknownKeys(obj, keys, 'config');
   if (!keys.some((key) => key in obj)) throw new ContractError(`config needs one of ${keys.join(', ')}`);
   const config: WireTaskConfig = {};
   if ('priority' in obj) config.priority = member(obj, 'priority', 'config', PRIORITIES);
   if ('model' in obj) config.model = obj['model'] === null ? null : modelName(obj, 'config');
+  if ('lane' in obj) config.lane = obj['lane'] === null ? null : laneName(obj, 'config');
   if ('autoDone' in obj) config.autoDone = boolean(obj, 'autoDone', 'config');
   if ('place' in obj) {
     if (obj['place'] === null) config.place = null;

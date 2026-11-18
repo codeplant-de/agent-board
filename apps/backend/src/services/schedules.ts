@@ -78,12 +78,12 @@ function requireCron(expression: string, timezone: string): void {
   }
 }
 
-type RuleDraft = Pick<
+export type RuleDraft = Pick<
   WireScheduleDraft,
   'everyMs' | 'cron' | 'moreCrons' | 'timezone' | 'after' | 'maxConcurrent' | 'id'
 >;
 
-function requireRule(draft: RuleDraft): void {
+export function requireRule(draft: RuleDraft): void {
   if (
     draft.maxConcurrent !== undefined &&
     !(draft.maxConcurrent >= 1 && draft.maxConcurrent <= MAX_SCHEDULE_CONCURRENT)
@@ -133,6 +133,7 @@ export function toSchedule(row: ScheduleView): WireSchedule {
     input: row.input,
     priority: row.priority,
     model: row.model,
+    requestedLane: row.requestedLane,
     autoDone: row.autoDone,
     machine: row.machine,
     workdir: row.workdir,
@@ -184,6 +185,7 @@ async function insertOccurrence(tx: DbOrTx, schedule: ScheduleRow, at: Date | nu
       status: 'todo',
       priority: schedule.priority,
       ...(schedule.model === null ? {} : { model: schedule.model }),
+      ...(schedule.requestedLane === null ? {} : { lane: schedule.requestedLane }),
       ...(schedule.autoDone ? { autoDone: true } : {}),
       ...(at === null ? {} : { notBefore: at }),
       createdBy: 'user',
@@ -275,6 +277,7 @@ export async function addSchedule(
         input: draft.input,
         priority: draft.priority ?? 'normal',
         model: draft.model ?? null,
+        requestedLane: draft.lane ?? null,
         autoDone: draft.autoDone ?? false,
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
@@ -520,6 +523,8 @@ export interface ScheduleUpdate {
   place: { machine: string; workdir: string } | null;
   priority: Priority;
   model: string | null;
+  /** A lane name, or null for the default lane; absent keeps the schedule's. */
+  lane?: string | null;
   autoDone: boolean;
   rule: Pick<WireScheduleDraft, 'everyMs' | 'cron' | 'moreCrons' | 'timezone' | 'after'>;
   /** The first run of a rule of its own; absent keeps the schedule's. */
@@ -553,7 +558,7 @@ async function requireNoCycle(tx: DbOrTx, scheduleId: string, upstreamId: string
 
 /**
  * Replaces everything the user can set on a schedule, as the browser's Edit schedule form does. The pending card takes the
- * text, agent, directory, priority, model and auto-done while it waits in Todo and has not started, and moves to the new next
+ * text, agent, directory, priority, model, lane and auto-done while it waits in Todo and has not started, and moves to the new next
  * run when the rule, the first run or the end changed; otherwise the next card takes the change. Moving between a rule of its
  * own and running after another schedule removes or creates the pending card to fit. The caller seals `title`, `input`, `agent`
  * and the directory together, because the first two are bound to the agent.
@@ -600,6 +605,7 @@ export async function updateSchedule(
       workdir: place?.workdir ?? null,
       priority: update.priority,
       model: update.model,
+      requestedLane: update.lane === undefined ? schedule.requestedLane : update.lane,
       autoDone: update.autoDone,
       maxConcurrent: update.maxConcurrent,
       until: update.until,
@@ -644,6 +650,7 @@ export async function updateSchedule(
           agent: update.agent ?? null,
           priority: update.priority,
           model: update.model,
+          requestedLane: update.lane === undefined ? schedule.requestedLane : update.lane,
           autoDone: update.autoDone,
           machine: pinned ? place.machine : null,
           workdir: pinned ? place.workdir : null,

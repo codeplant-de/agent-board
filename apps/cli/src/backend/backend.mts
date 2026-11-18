@@ -153,6 +153,7 @@ function dryTask(draft: TaskDraft): Task {
     head,
     notBefore,
     model,
+    lane,
     autoDone,
     ...fields
   } = draft;
@@ -163,6 +164,7 @@ function dryTask(draft: TaskDraft): Task {
     status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
     priority: draft.priority ?? 'normal',
     model: model ?? null,
+    requestedLane: lane ?? null,
     autoDone: autoDone ?? false,
     id: 'dry',
     closed: false,
@@ -209,6 +211,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
               input: draft.input,
               ...(draft.priority ? { priority: draft.priority } : {}),
               ...(draft.model === undefined ? {} : { model: draft.model }),
+              ...(draft.lane === undefined ? {} : { lane: draft.lane }),
               ...(draft.autoDone === undefined ? {} : { autoDone: draft.autoDone }),
               ...(draft.agent === undefined ? {} : { agent: draft.agent }),
               ...(draft.machine !== undefined && draft.workdir !== undefined
@@ -223,6 +226,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         input: draft.input,
         priority: draft.priority ?? 'normal',
         model: draft.model ?? null,
+        requestedLane: draft.lane ?? null,
         autoDone: draft.autoDone ?? false,
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,

@@ -7,7 +7,7 @@ Board content is end-to-end encrypted. The server stores and returns ciphertext 
 The operator of the server and database sees:
 
 - ids, statuses, priorities and positions
-- the model a task names
+- the model and the lane a task names
 - machine and lane names, session ids and usernames
 - timestamps, activity timing and schedule rules
 - the state of each of a task's pull requests (open, merged or closed), without which PR it is
@@ -55,7 +55,7 @@ The operator can read, swap, replay and forge anything in the database and in AP
 - In `pr`, `watches` and in a polish note, `<id>` and `<taskId>` are the task the agent runs. The sealed text of a polish note is `{"target", "title", "prompt"}`, where `target` is the task it polishes.
 - The three machine documents are one JSON document each:
   - `machine.dirs` is `{"dirs":[{"path":…,"label":…}]}`, with `label` only when the directory has one.
-  - `machine.catalog` is `{"claude":…,"models":[…],"skills":[…],"dirs":{…}}`.
+  - `machine.catalog` is `{"claude":…,"models":[…],"skills":[…],"dirs":{…},"lanes":[…]}`, with `lanes` only when the machine has some: the names of its lanes.
   - `machine.usage` is `{"limits":…,"windows":{…},"reached":[…],"held":[…],"open":[…]}`.
 
 Clients choose the ids of the tasks and schedules they make, because the fields are sealed against them. An id is 12 random characters, and a collision is a 409 whoever holds the id.
@@ -293,7 +293,7 @@ Each machine sends the board three sealed documents: its directory list, its cat
 | Document          | What it holds                                                                                       | Used for                                      | Blind index of                 | Index in `version` |
 | ----------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------ | ------------------ |
 | `machine.dirs`    | the listed directories that exist, each with its label                                              | the New task form's Working directory field   | `dirs:<machine>:<document>`    | `dirsIndex`        |
-| `machine.catalog` | the skills and models `claude` reports on the machine                                               | completing `/skill` and offering models       | `catalog:<machine>:<document>` | `catalogIndex`     |
+| `machine.catalog` | the skills and models `claude` reports on the machine, and the names of its lanes                   | completing `/skill` and offering models       | `catalog:<machine>:<document>` | `catalogIndex`     |
 | `machine.usage`   | the usage limits, the last readings, and the ids of Todo tasks the machine held back or could serve | a badge on a task card and a line in Settings | `usage:<machine>:<document>`   | `usageIndex`       |
 
 **The directory list.** `board dirs` keeps the list that is enforced in the machine's own `config.json`. The copy is for the form to offer (see [Scheduling](usage.md#scheduling)).
@@ -307,7 +307,7 @@ Each machine sends the board three sealed documents: its directory list, its cat
 **The catalogue.** The CLI asks `claude` on the machine which skills and models it has (see [Skills and models on the board](workers.md#skills-and-models-on-the-board)).
 
 - Everything in it is text from a program's output on the user's machine. It can come from a plugin or a checkout the user does not control. So the CLI cleans it before sealing: one line, no control characters, cut to a length.
-- A reader checks it again with `parseMachineCatalog`. A skill name is letters, digits and `_ . : -`. A model name passes `isModelName`. A path is a safe absolute one. An entry that fails is dropped and the rest opens. A list over its cap makes the document unreadable.
+- A reader checks it again with `parseMachineCatalog`. A skill name is letters, digits and `_ . : -`. A model name passes `isModelName`. A lane name passes `isSafeLane`, and there are at most 20. A path is a safe absolute one. An entry that fails is dropped and the rest opens. A list over its cap makes the document unreadable.
 - The browser shows it as plain text. Picking a skill or a model puts text in a field the user then reviews and seals as their own.
 
 **The usage status.** At the end of a dispatch tick the CLI seals its `usageLimits`, its last usage readings and the task ids (see [Usage limits](workers.md#usage-limits)).
@@ -334,6 +334,38 @@ Each machine sends the board three sealed documents: its directory list, its cat
 - the name the board reports for you in the key warning, shown only when it looks like a login name
 
 A value that fails shows as a neutral placeholder, and the task page says so. The board's own events show as `Board`, apart from the `system` notes of your machines.
+
+## The export file
+
+Settings → Your data writes the board to one NDJSON file (see [Your data](usage.md#your-data)). The header is the first line, and every other line is one row of a table. `packages/shared/src/archive.mts` defines the format.
+
+**What is in it.**
+
+- The rows as the server stores them: every sealed column is still an envelope, so the file holds no plaintext of the board.
+- The wrapped key slots, the passphrase slot and the recovery slot. The data key itself is not in the file.
+- The clear columns exactly as the server sees them (see [What the server sees](#what-the-server-sees)): ids, statuses, priorities, times, machine names, blind indexes and the rest.
+- The sha256 hashes of the machine tokens, never a token.
+- The username the envelopes are bound to, the key id, and the preferences of the browser that exported.
+
+**How secret it is.** As secret as the database, and no more: the database holds the same ciphertext, the same slots and the same hashes. Without the passphrase or the recovery key the file opens nothing. With one of them it opens everything in it, so it is kept like the database backup.
+
+**Import into the same username** sends the rows as they are. The server accepts them only under the key id of the file (the key of the account), and checks every row as it does for any write: the sealed columns, the schedule rules, the clear text columns. A row it would refuse is counted and skipped, and never fails the batch. A test ties the columns the browser re-seals to the sealed columns the database checks, so a new sealed column fails it until the re-seal handles it.
+
+**Import under another username.** Every envelope is bound to its owner through its additional data. The browser opens each sealed column with the old username and its derived keys (the keys do not depend on the username, only the additional data does), and seals the same plaintext again with the same field and context under the new username. Which binding a column opens under is decided by the shared rules, from the clear columns of its row. Nothing is sealed under a binding it did not open with:
+
+- A value that does not open is copied as it is and stays unreadable. The import counts them and says so.
+- A column whose clear values do not allow a binding stays unreadable too.
+- A server event keeps its plain text, as it has no envelope.
+
+So no value gains a meaning it did not have. The rule "nothing runs unless your own client sealed it as runnable" holds: a prompt that was sealed for the creator `user` stays that and is sealed again as that, and a prompt of an agent or of the board stays one.
+
+**The limit.** The clear columns of a file are not authenticated. A file that someone else changed can do what a hostile server can do (see [What the server can still do](#what-the-server-can-still-do)) and no more:
+
+- reorder rows, change a status, a priority or a time
+- add a machine token hash. Whoever holds the token that hashes to it can then read the ciphertext of the account and write rows through the machine API. It cannot make a worker run text that was not sealed as runnable.
+- leave rows out
+
+A task that was running arrives in Needs me, because the import cannot know that its run ended. A pending message for a running agent is not imported as pending. The import cannot make a file harmless, so the screen says to import only a file you exported yourself.
 
 ## What the server validates
 
@@ -396,7 +428,7 @@ The data key is read from `AGENT_BOARD_DATA_KEY`. It is never printed or put int
 The server relays what the user does, and the user's actions are not signed. A hostile server, or a stolen database login, can therefore:
 
 - decide **when** a task starts, resumes, re-runs, is paused or closed
-- decide **on which of the user's machines** it runs (any machine that holds a token) and **in which lane**
+- decide **on which of the user's machines** it runs (any machine that holds a token) and **in which lane**, by dropping or changing the lane a task asks for (`requestedLane`)
 - change a task's priority or position
 - choose the model of any run: a review of untrusted PR text on a weaker model, or every task on the most expensive one
 - withhold, delay or reorder anything, notes and answers included

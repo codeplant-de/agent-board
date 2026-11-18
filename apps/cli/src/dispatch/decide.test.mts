@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { decideStale, decideWake, notServableHere, planPauses, planStarts } from './decide.mts';
 import type { LaneRun } from './decide.mts';
 import { SESSION, task } from '../__tests__/helpers/fakes.mts';
+import { ownLane } from '../task-rules.mts';
 
 const PR = 'https://github.com/cosuno/cosuno/pull/17741';
 
@@ -65,10 +66,10 @@ test('stale: a gone unit at once; an active one only past the limits plus grace'
 });
 
 const LANES = [
-  { name: 'reviews', skills: ['review-pr'], slots: 2 },
-  { name: 'implement', skills: ['implement'], slots: 1 },
+  { name: 'reviews', slots: 2, default: true },
+  { name: 'implement', slots: 1, default: false },
 ];
-const lane = (t: { labels: string[] }) => LANES.find((l) => l.skills.includes(t.labels[0] ?? ''))?.name;
+const lane = (t: Parameters<typeof ownLane>[0]) => ownLane(t, LANES).name;
 const run = (
   taskId: string,
   laneName: string,
@@ -79,17 +80,17 @@ const run = (
 
 test('lanes take their own work first, then idle lanes borrow in list order', () => {
   const candidates = [
-    task({ id: 'r1', labels: ['review-pr'] }),
-    task({ id: 'r2', labels: ['review-pr'] }),
-    task({ id: 'r3', labels: ['review-pr'] }),
-    task({ id: 'x', labels: ['other'] }),
+    task({ id: 'r1', requestedLane: 'reviews' }),
+    task({ id: 'r2', requestedLane: 'reviews' }),
+    task({ id: 'r3', requestedLane: 'reviews' }),
+    task({ id: 'x' }),
   ];
   assert.deepEqual(planStarts({ lanes: LANES, running: [], candidates, ownLaneOf: lane }), [
     { taskId: 'r1', lane: 'reviews', borrowed: false },
     { taskId: 'r2', lane: 'reviews', borrowed: false },
     { taskId: 'r3', lane: 'implement', borrowed: true },
   ]);
-  const withImplement = [...candidates, task({ id: 'i1', labels: ['implement'] })];
+  const withImplement = [...candidates, task({ id: 'i1', requestedLane: 'implement' })];
   assert.deepEqual(
     planStarts({ lanes: LANES, running: [], candidates: withImplement, ownLaneOf: lane }).map(
       (s) => `${s.taskId}:${s.lane}:${s.borrowed}`,

@@ -546,6 +546,8 @@ export function registerMachineApi(
       res.write(': connected\n\n');
 
       const stop = changes.subscribe(identity.owner, () => res.write('event: tasks\ndata:\n\n'));
+      // The user deleted their account: the token check would end the stream at the next ping, this ends it now.
+      const stopEnd = changes.onEnd(identity.owner, end);
       const ping = setInterval(() => {
         res.write(': ping\n\n');
         // A revoked token must not keep a stream.
@@ -559,6 +561,7 @@ export function registerMachineApi(
       function end(): void {
         clearInterval(ping);
         stop();
+        stopEnd();
         streams.delete(end);
         res.end();
       }

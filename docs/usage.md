@@ -4,7 +4,7 @@ How tasks move through the board, and what you and the agent can do with them.
 
 ## Tasks
 
-A task is a prompt, written as you would type it into Claude Code: `/review-pr 17741`, `/grill the plan in docs/x.md`, or plain instructions. The worker runs it as written. If the prompt starts with a slash command, that is the task's skill. The skill picks the [lane](workers.md#lanes) and shows as the task's label.
+A task is a prompt, written as you would type it into Claude Code: `/review-pr 17741`, `/grill the plan in docs/x.md`, or plain instructions. The worker runs it as written. If the prompt starts with a slash command, that is the task's skill, and it shows as the task's label. The task's [lane](workers.md#lanes) is a setting of its own: you pick it in the **Lane** field or with `--lane`, and the prompt does not decide it.
 
 ### Statuses
 
@@ -35,6 +35,7 @@ Dropping a card among tasks of another priority gives it their priority. The tas
 board schedule /review-pr 17741
 board schedule --priority high /review-pr acme/app#17741 --auto
 board schedule --model opus "Find out why the CSV export is slow and propose a fix"
+board schedule --lane reviews /review-pr 17741
 board schedule --in 2h /review-pr 17741
 board schedule --at 09:00 /grill the plan in docs/x.md
 board schedule --polish "CSV export should include postal codes"
@@ -52,7 +53,7 @@ board schedules
 ### `board schedule`
 
 ```text
-board schedule [--priority p] [--model m] [--auto-done] [--agent a] [--title t] [--hold | --backlog]
+board schedule [--priority p] [--model m] [--lane l] [--auto-done] [--agent a] [--title t] [--hold | --backlog]
                [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>" ... | --after <schedule> [--delay <dur>]]
                [--times <n> | --until <time>] [--max-concurrent <n>] [--polish] [--new]
                [--key <key> [--version <v>]] <prompt...>
@@ -66,6 +67,7 @@ The board's flags come first. Everything from the first other word on is the pro
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
 | `--priority`                   | `urgent`, `high`, `normal` or `low`.                                                                                        |
 | `--model`                      | The Claude model of the task's runs. See [Model](#model).                                                                   |
+| `--lane`                       | The lane of the machine that runs the task. See [Lane](#lane).                                                              |
 | `--auto-done`                  | Lets the agent move the task to Done itself. See [Letting the agent mark a task done](#letting-the-agent-mark-a-task-done). |
 | `--agent`                      | Runs the task as a named agent. See [Choosing an agent](#choosing-an-agent).                                                |
 | `--title`                      | The title. It defaults to the prompt's first line.                                                                          |
@@ -89,6 +91,14 @@ When this machine has a `dirs` list, `board schedule` refuses in a directory the
 Every run uses claude's default model unless the task names one. `--model <model>` takes an alias (`fable`, `opus`, `sonnet`, `haiku`) or a full name such as `claude-opus-5-5`. With a repeat, every task the schedule makes uses it.
 
 The New task form and the task page have a **Model** select for the same choice.
+
+### Lane
+
+A machine splits its parallel runs into [lanes](workers.md#lanes), and a task runs in the lane it names. `--lane <name>` names one, with the shape of a machine name. Without it the task asks for none, and whichever machine takes it runs it in its default lane. A machine that has no lane of that name runs the task in its default lane too, and says so in the start note. With a repeat, every task the schedule makes asks for the lane. Which lane a task asks for is not read from its prompt: a leading `/skill` no longer picks it.
+
+The lane is routing, like the priority, so the board keeps it in clear. The New task form and the schedule editor have a **Lane** select for the same choice, and the task page has one next to the model. A task that waits in Todo or Backlog shows the lane it asks for as a small badge on its card.
+
+The lane can be changed until the task runs, with `board task <task> set lane <name>` (`unset lane` goes back to the default lane), the task page's **Lane** select (any task that is not running, an agent's proposal included) or the schedule editor. A running task keeps the lane it started in, and the board refuses a change until it stops. `board schedule --key` leaves the lane of a task it finds alone, like the model; the lines `exists (…)` do not mention it. A task an agent adds with `board add` does not inherit the lane of the task it runs for: it asks for none, unless `board add --lane <name>` says so.
 
 ### Letting the agent mark a task done
 
@@ -137,7 +147,7 @@ When you requeue the existing task:
 
 - `--hold` and `--backlog` pick where it goes.
 - `--in` or `--at` sets a delay on it. If the task is already in Todo, it is delayed. If it is running, the start time is not applied, and the line says so.
-- The task keeps its own model. `--model` applies only to a new task, and the line says so.
+- The task keeps its own model and lane. `--model` and `--lane` apply only to a new task, and the line says so.
 - `--polish` queues nothing, and the line says so. The task's prompt is not the one you typed, so polish it from the board.
 
 ### Changing a task later
@@ -145,6 +155,7 @@ When you requeue the existing task:
 `board task <task>` prints a task's settings:
 
 - status, priority and model (`default` for claude's)
+- the lane it asks for (`default` for none), and the lane it runs in while it runs
 - whether its agent may mark it done (`auto-done`)
 - agent and who made it
 - the machine it is pinned to and its directory, or "the default directory of the machine that takes it"
@@ -159,12 +170,14 @@ A directory on this machine that the `dirs` list does not cover is marked "not l
 | `board task <task> set priority <urgent\|high\|normal\|low>` | Changes the priority and writes the usual note.                                              |
 | `board task <task> set model <alias or model id>`            | Applies from the next run on. A run in progress keeps its own model.                         |
 | `board task <task> unset model`                              | Back to claude's default.                                                                    |
+| `board task <task> set lane <name>`                          | The lane the task asks for, from its next start on. Refused while the task runs.             |
+| `board task <task> unset lane`                               | Back to the default lane.                                                                    |
 | `board task <task> set auto-done <on\|off>`                  | Lets the agent move the task to Done itself, or not. Applies at once, to a running task too. |
 | `board task <task> unset auto-done`                          | Same as `off`.                                                                               |
 | `board task <task> set dir [path]`                           | Pins the task to this machine and a directory. The default is the current one.               |
 | `board task <task> unset dir`                                | Removes the directory and the pin. Any machine takes the task in its default directory.      |
 
-Priority, model and auto-done changes work in every status. A model, auto-done or directory change writes no note.
+Priority, model and auto-done changes work in every status; a lane change works in every status but Running. A model, lane, auto-done or directory change writes no note.
 
 `set dir` accepts relative paths and `~`, and resolves symlinks. With a `dirs` list on this machine the directory must be listed, as for `board schedule`.
 
@@ -173,7 +186,7 @@ Priority, model and auto-done changes work in every status. A model, auto-done o
 - A running or waiting task refuses a directory change. Stop it first.
 - The new directory also becomes the one **Re-run fresh** goes back to.
 
-On a card of a repeating schedule, a change applies to that card only. The next occurrence takes priority, model, auto-done setting, machine and directory from the schedule again. The command says so, and so does the task page.
+On a card of a repeating schedule, a change applies to that card only. The next occurrence takes priority, model, lane, auto-done setting, machine and directory from the schedule again. The command says so, and so does the task page.
 
 `set` and `unset` are refused inside a board run, because an agent does not move a task, pick its model or grant itself the permission to finish it. Viewing works there.
 
@@ -247,7 +260,7 @@ The board checks the limit when a worker claims a card, for a first start and fo
 - The schedule keeps one pending card at most. A task that finishes while the card waits in Todo makes no second one. When that card is claimed, nothing follows until the next task of the other schedule finishes.
 - A paused or ended schedule makes none, and resuming one makes none. `--times` counts the cards made, and `--until` is the last moment one may start: a card that would start later ends the schedule instead.
 - The other schedule must exist and must not have ended; it may be paused or itself run after another, so schedules chain. Deleting a schedule that others run after is refused, and the error names them: delete those first. An upstream that ended makes no new cards, so it triggers only through a task of it that is still under way and finishes later.
-- `--after` cannot be combined with `--every`, `--cron`, `--in`, `--at`, `--hold`, `--backlog`, `--key` or `--polish`. `--delay` goes only with `--after`. `--times`, `--until`, `--max-concurrent`, `--model`, `--agent` and `--priority` do.
+- `--after` cannot be combined with `--every`, `--cron`, `--in`, `--at`, `--hold`, `--backlog`, `--key` or `--polish`. `--delay` goes only with `--after`. `--times`, `--until`, `--max-concurrent`, `--model`, `--lane`, `--agent` and `--priority` do.
 
 The confirmation names the schedule and says its first task is made when a task of the other one finishes; with `--json` the output is `{"scheduleId"}`, as there is no task yet.
 
@@ -284,9 +297,9 @@ The command says what changed ("s1b2c3d4 updated: priority high, repeat every 6h
 
 The **Schedules** page of the web board lists each schedule with its title and prompt, rule (every cron expression, and "At most N at once" when it is limited), next run, runs left (`forever` without an end), machine and a link to the pending card. You can edit, pause, resume and delete from there. An ended schedule is dimmed and can only be deleted.
 
-**Edit** (the pencil icon) opens one dialog with everything New task, When: Repeating can set, filled in with the schedule's values: the prompt, **Working directory** (the schedule's own is selected even when no machine lists it), **Agent**, title, priority, model, **Agent may mark it done**, and the repeat: an interval or cron expressions (the **Repeat** row with **Add cron expression** rows, read in your browser's time zone; the dialog says so when the schedule was made in another one, and saving stores the browser's), or **Run after** another schedule with a delay, plus **First run**, **Number of runs** (counting the pending card, as the Runs left column does) and **At most at once**. A schedule's end time (`board schedule --until`) stays when you save; giving a number of runs replaces it. **Run after** does not offer the schedule itself, a schedule that has ended, or one that already runs after this one; the server refuses a circle too. Saving replaces all of it at once, and the title, prompt, directory and agent are sealed again together as yours, since the title and prompt belong to the agent. An ended schedule has no Edit, and neither has one whose title, prompt, directory or agent the browser cannot read.
+**Edit** (the pencil icon) opens one dialog with everything New task, When: Repeating can set, filled in with the schedule's values: the prompt, **Working directory** (the schedule's own is selected even when no machine lists it), **Agent**, title, priority, model, **Lane**, **Agent may mark it done**, and the repeat: an interval or cron expressions (the **Repeat** row with **Add cron expression** rows, read in your browser's time zone; the dialog says so when the schedule was made in another one, and saving stores the browser's), or **Run after** another schedule with a delay, plus **First run**, **Number of runs** (counting the pending card, as the Runs left column does) and **At most at once**. A schedule's end time (`board schedule --until`) stays when you save; giving a number of runs replaces it. **Run after** does not offer the schedule itself, a schedule that has ended, or one that already runs after this one; the server refuses a circle too. Saving replaces all of it at once, and the title, prompt, directory and agent are sealed again together as yours, since the title and prompt belong to the agent. An ended schedule has no Edit, and neither has one whose title, prompt, directory or agent the browser cannot read.
 
-Every later run takes the change. The pending card takes the prompt, title, agent, directory, priority, model and auto-done too while it waits in Todo and no worker has claimed it. It moves to the new next run when the repeat, the first run or the end changed; saving a new title alone leaves its start time alone. A card a worker started, a closed one, and cards that already ran keep what they had. The page says what happened to the pending card: "The pending card was updated too", "The pending card has already started; the change applies from the next run", "The schedule has no pending card; its next run takes the change" (a paused schedule has none, and stays paused), "The pending card was removed; the next one is made when a card of the schedule it runs after finishes" (a rule of its own became **Run after**; a card that was started stays), or "A card now waits for the schedule's next run" (**Run after** became a rule of its own). A rule that would never run before the schedule's end is refused and nothing changes. The old text is not kept: a schedule has no thread.
+Every later run takes the change. The pending card takes the prompt, title, agent, directory, priority, model, lane and auto-done too while it waits in Todo and no worker has claimed it. It moves to the new next run when the repeat, the first run or the end changed; saving a new title alone leaves its start time alone. A card a worker started, a closed one, and cards that already ran keep what they had. The page says what happened to the pending card: "The pending card was updated too", "The pending card has already started; the change applies from the next run", "The schedule has no pending card; its next run takes the change" (a paused schedule has none, and stays paused), "The pending card was removed; the next one is made when a card of the schedule it runs after finishes" (a rule of its own became **Run after**; a card that was started stays), or "A card now waits for the schedule's next run" (**Run after** became a rule of its own). A rule that would never run before the schedule's end is refused and nothing changes. The old text is not kept: a schedule has no thread.
 
 `board schedules edit` changes the same settings from a terminal, see [Managing schedules](#repeating-schedules).
 
@@ -313,6 +326,8 @@ The list is advice. A name that is not in it still runs, and a machine that has 
 
 **Model.** The field shows the models the chosen machine listed, or every machine's when none is chosen. When no machine listed any, it shows the built-in aliases. A model picked before the machine changed stays selected.
 
+**Lane.** A select of the lanes the machines published (the chosen machine's, or every machine's when none is chosen), with **Default lane** first and chosen by default. A lane picked before the machine changed stays selected. The list is advice, like the skills: a machine without the lane runs the task in its default lane. With Repeating it applies to every task the schedule makes. See [Lane](#lane).
+
 **Agent may mark it done.** A checkbox, off by default. See [Letting the agent mark a task done](#letting-the-agent-mark-a-task-done). With Repeating it applies to every task the schedule makes.
 
 **Agent.** See [Choosing an agent](#choosing-an-agent).
@@ -324,6 +339,7 @@ The list is advice. A name that is not in it still runs, and a machine that has 
 The task page changes the same settings after the fact, next to the priority.
 
 - A **Model** select with the options of the New task form for the task's machine, plus the task's own model when it is not among them. It applies from the next run on and works in every status.
+- A **Lane** select with the lanes the machines published, the task's own lane when it is not among them, and **Default lane**. It applies from the next start on and works in every status but Running, where it is disabled.
 - An **Agent may mark it done** switch. It applies at once and works in every status.
 - A pencil beside the directory that opens the same picker as the New task form. **No directory** removes the directory and the machine pin.
 
@@ -446,7 +462,7 @@ Some of these need more words:
 
 The agent keeps the run narrow, whoever made the task. `--agent reviewer` seals `reviewer` on the task, and the worker runs it with that agent's tools and lists and never lets it ask (see [Agents](workers.md#agents)).
 
-The prompt, `--model`, `--priority` and `--title` apply to a task that is made, not to one that is found. A requeue runs the prompt stored when the task was created.
+The prompt, `--model`, `--lane`, `--priority` and `--title` apply to a task that is made, not to one that is found. A lane is never an `exists` reason: unlike `--agent`, it changes nothing about how the task runs under the old rules. A requeue runs the prompt stored when the task was created.
 
 ### Review requests from GitHub
 
@@ -683,10 +699,10 @@ The dispatcher of every machine where `gh` is installed looks the state up on Gi
 An agent can propose follow-up work:
 
 ```text
-board add --title <t> --file <path> --parent <task> [--priority <p>]
+board add --title <t> --file <path> --parent <task> [--priority <p>] [--lane <name>]
 ```
 
-The file is the new task's prompt. Without `--priority` a proposal takes its parent's priority. It runs where the proposing agent worked, on that machine.
+The file is the new task's prompt. Without `--priority` a proposal takes its parent's priority. It runs where the proposing agent worked, on that machine. Without `--lane` it asks for no lane, so it runs in the default lane once you start it: it does not take the lane of the task that proposed it.
 
 A proposal lands in Backlog with a **Proposed** badge and runs only after you start it. So a run that a PR's text turned against you cannot queue work by itself.
 
@@ -751,6 +767,70 @@ Once granted, the browser shows an OS notification for each task that newly ente
 - It works while a board tab is open, a background tab included. Browsers may slow a hidden tab's timers to about once a minute.
 - Your browser decrypts the title, so there is no server push.
 - The browser needs https or localhost.
+
+## Your data
+
+**Settings → Your data** exports the board to a file, imports such a file, and deletes the account. The browser does the work. The server only pages rows out and takes rows in.
+
+### Export
+
+**Download export** writes one file, `agent-board-<username>-<date>.ndjson`. It holds:
+
+- every task, schedule, note, pull request link and machine, and the transcripts, exactly as the server stores them (encrypted)
+- the wrapped key slots, which only your passphrase or recovery key opens
+- the hashes of the machine tokens
+- the notification setting of this browser
+
+The checkbox **Include transcripts** is on by default. Transcripts are most of a board's size, and a file without them imports to a board with no transcripts. A bar shows the rows read out of the total, and **Cancel** stops the export without writing a file.
+
+The file is as secret as a backup of the database: it opens nothing without the passphrase or recovery key. Keep it where you keep that backup. [Encryption](encryption.md#the-export-file) says what it holds and what a changed file can do.
+
+### Import
+
+An import adds the rows of a file to the board. A row the board already has is skipped, so importing a file twice does no harm. So is a row whose id or machine token another account on the same server holds: those are unique across the server. It works in two places.
+
+- **Settings → Your data → Import** imports into the board you have open. The file must be made with the key this browser uses (the key id on the screen). A file of another key is refused, with a pointer to the setup screen.
+- The **setup screen** of an account with no key has **Import a board export instead**. Choose the file, then enter the passphrase or the recovery key the export was made with. The browser opens the key slots in the file. A wrong secret writes nothing. A right one stores the file's key slots as this account's key, imports the rows, and shows how it went before you continue. If the import stops after that, the key stays. Import the file again from Settings.
+
+Before anything is sent, the screen shows when the file was exported, by which user, its key id and whether it has transcripts. Only import a file you exported yourself. The machines in the file keep their tokens, so they work against this board once their `web.json` points here, and tasks in Todo start on them.
+
+The rows go in file order, a table at a time, in batches of up to 1000 rows or about 4 MB. A bar shows how much of the file is read, and **Cancel** stops the import. The batches already sent stay. At the end the screen adds up the rows added, the rows already on this board or held by another account on this server, the rows that were not well formed, and the rows skipped because their task, run or schedule to run after is not on the board. The notification setting is restored when the whole file went in.
+
+The server checks every row as it does for a normal write and counts one it refuses as not well formed, without stopping the batch. That includes a schedule whose rule adding a schedule would refuse (an interval under a minute, a cron expression or time zone that does not parse, more than one rule), a time outside the years 1 to 9999, and text with a control character.
+
+A task that was running when you exported arrives in Needs me, because its run is not on this board.
+
+A schedule that runs after another needs that schedule on the board, already or earlier in the file. One whose upstream is missing, held by another account or part of a cycle is skipped and counted with the rows whose task is missing, because it has no rule of its own to fall back on.
+
+A schedule whose waiting occurrence is not on the board arrives paused if it was active. **Resume** then makes the next occurrence. A schedule that was already paused or ended keeps that state.
+
+If nothing was added, the rows were already there, and the file was made under another username, the screen says that the old account on this server still holds the rows. Delete that account, then import again.
+
+If the file was made under another username, the browser opens each value with the old username and encrypts it again for the one you are signed in as. A value that does not open is copied as it is, stays unreadable, and is counted at the end ("n values could not be opened and were copied as they are").
+
+### Moving to another server or username
+
+Ids and machine tokens are unique across a server, so an account cannot import rows that another account on the same server still holds.
+
+1. On the old board, export with transcripts if you want them. Keep the passphrase or the recovery key at hand.
+2. On the same server, check the file, then delete the old account (**Delete account**) before you import as the new user. On another server, the old account can stay until you have checked the new board.
+3. Sign in to the new board as the user that should own it. If that account has a key already, delete the account's data first (**Delete account**): a file can only go into an account with no key, or into one that has the file's key.
+4. On the setup screen choose **Import a board export instead** and follow the steps above.
+5. On every worker machine, set `url` in `~/.config/agent-board/web.json` to the new board and restart the listener with `board restart`. Then run `board doctor`. The token and the data key in `env` stay as they are, and the machine learns the new username from the board. See [Setup](setup.md#board-init) for the files.
+
+Until a machine's `web.json` points at the new board, it keeps working against the old one. Once the move to another server is done, delete the account on the old board so that nothing starts there.
+
+### Delete account
+
+**Delete account** removes everything the board holds for you: tasks, schedules, notes, machines with their tokens, transcripts and the key slots. The confirmation shows the counts and asks you to type your username. It recommends an export first. It warns when tasks are running: those runs go on on their machines but can no longer report.
+
+Afterwards the browser forgets the keys and the notification setting, and shows a page that no longer talks to the board. Reloading leads to the setup screen of a new, empty board. Deleting cannot be undone.
+
+It does not remove:
+
+- your sign-in, which belongs to the login proxy in front of the board
+- the files on your worker machines: `~/.config/agent-board`, the state and logs, and Claude's session files
+- the operator's database backups, until they expire
 
 ## Board events
 

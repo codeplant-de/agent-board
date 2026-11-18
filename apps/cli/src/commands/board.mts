@@ -11,6 +11,7 @@ import {
   ContractError,
   formatAnswers,
   formatDuration,
+  MACHINE_NAME_RULE,
   MAX_WAIT_MS,
   parseDuration,
   describeRule,
@@ -18,6 +19,7 @@ import {
   isPriority,
   isPrUrl,
   prUrlIn,
+  isSafeLane,
   isSafeTaskId,
   isSafeWorkdir,
   isStatus,
@@ -327,6 +329,7 @@ export interface AddFlags {
   file?: string;
   parent?: string;
   priority?: string;
+  lane?: string;
 }
 
 export function parseAddFlags(flags: AddFlags): {
@@ -334,15 +337,18 @@ export function parseAddFlags(flags: AddFlags): {
   file: string;
   parent: string | undefined;
   priority: Priority | undefined;
+  lane: string | undefined;
 } {
   const title = flags.title?.trim();
-  const { file, parent, priority } = flags;
+  const { file, parent, priority, lane } = flags;
   if (!title) throw new UsageError('--title needs a title');
   if (!file) throw new UsageError('--file is required');
   if (parent !== undefined) requireTaskId(parent, UsageError);
   if (priority !== undefined && !isPriority(priority))
     throw new UsageError(`unknown priority "${priority.slice(0, 20)}"; use one of ${PRIORITIES.join(', ')}`);
-  return { title, file, parent, priority };
+  if (lane !== undefined && !isSafeLane(lane))
+    throw new UsageError(`"${lane.slice(0, 40)}" is not a lane name (${MACHINE_NAME_RULE})`);
+  return { title, file, parent, priority, lane };
 }
 
 /**
@@ -365,7 +371,7 @@ export async function add(
   // `cwd`: the real path of the working directory; `startDir`: AGENT_BOARD_START_DIR, where the run started.
   where: { cwd: string; startDir?: string },
 ): Promise<Task> {
-  const { title, file, parent, priority } = parseAddFlags(flags);
+  const { title, file, parent, priority, lane } = parseAddFlags(flags);
   const workdir = proposalDir(context.config, where);
   // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
   // proposing agent works, on this machine.
@@ -377,6 +383,7 @@ export async function add(
     workdir,
     ...(parent ? { parentId: parent } : {}),
     ...(priority ? { priority } : {}),
+    ...(lane === undefined ? {} : { lane }),
   };
   const { task } = await context.backend.addTask(draft);
   confirm(context, `proposed ${task.id} ${context.taskLink(task.id)}`);

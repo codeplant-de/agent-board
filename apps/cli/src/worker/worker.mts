@@ -36,7 +36,7 @@ import { createCatalogStore } from '../catalog/cache.mts';
 import { initSkillsIn, recordRunSkills } from '../catalog/catalog.mts';
 import { createUsageStore, rateLimitIn, sameReading, usageFile } from '../usage/usage.mts';
 import type { RateLimitReading } from '../usage/usage.mts';
-import { getPaths } from '../config/config.mts';
+import { defaultLane, getPaths } from '../config/config.mts';
 import { checkoutAbove, isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import { selfCommand } from '../self/self.mts';
 import { pickEnv, readMcpServers, readSettingsEnv } from './settings-env.mts';
@@ -259,7 +259,7 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
     agents: config.agents,
     agentErrors: config.agentErrors,
     agentsPath: deps.files.agentsPath(taskId),
-    laneCwd: config.lanes.find((lane) => lane.name === ownLane(task, config.lanes))?.cwd,
+    laneCwd: config.lanes.find((lane) => lane.name === ownLane(task, config.lanes).name)?.cwd,
     home: deps.home,
     pluginRoots,
   });
@@ -341,9 +341,9 @@ async function runTask(deps: WorkerDeps, taskId: string, workerStartedAt: Date):
   }
 
   const files = deps.files;
-  // The dispatcher wrote the lane before it started this worker; a run started without one counts as the first lane's own.
+  // The dispatcher wrote the lane before it started this worker; a run started without one counts as the default lane's own.
   const record = files.readRun(taskId) ?? {
-    lane: config.lanes[0]?.name ?? 'default',
+    lane: defaultLane(config.lanes).name,
     borrowed: false,
     startedAt: deps.now(),
   };
