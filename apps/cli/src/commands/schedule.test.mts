@@ -36,6 +36,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     prompt: '/review-pr 17741 --auto',
     priority: 'high',
     model: undefined,
+    autoDone: false,
     agent: undefined,
     title: undefined,
     hold: false,
@@ -58,6 +59,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     prompt: 'Find out why',
     priority: undefined,
     model: undefined,
+    autoDone: false,
     agent: undefined,
     title: 'Export',
     hold: true,
@@ -431,6 +433,38 @@ test('--model is checked and sent for a plain task and for a repeat', async () =
     ?.task;
   assert.equal(first?.model, 'fable');
   assert.ok(repeat.backend.writes[0]?.endsWith('| here:/work/cosuno | model fable'));
+});
+
+test('--auto-done is sent for a plain task, a keyed one and a repeat, and only when given', async () => {
+  assert.equal(parseScheduleArgs(['--auto-done', 'x']).autoDone, true);
+  assert.equal(parseScheduleArgs(['x']).autoDone, false);
+
+  const plain = setup(undefined);
+  assert.equal(
+    (await schedule(plain.deps, parseScheduleArgs(['--auto-done', '--new', '/sweep'])))?.task.autoDone,
+    true,
+  );
+  const none = setup(undefined);
+  assert.equal((await schedule(none.deps, parseScheduleArgs(['--new', '/sweep'])))?.task.autoDone, false);
+
+  const keyed = setup(undefined);
+  const made = await schedule(keyed.deps, parseScheduleArgs(['--auto-done', '--key', 'k1', '/sweep']));
+  assert.equal(made?.task.autoDone, true);
+
+  const repeat = setup(undefined);
+  await schedule(repeat.deps, parseScheduleArgs(['--auto-done', '--every', '2h', '/sweep'], NOW));
+  assert.ok(repeat.backend.writes[0]?.endsWith('| auto-done'));
+  const off = setup(undefined);
+  await schedule(off.deps, parseScheduleArgs(['--every', '2h', '/sweep'], NOW));
+  assert.ok(!off.backend.writes[0]?.includes('auto-done'));
+});
+
+test('a requeue keeps the existing task auto-done setting and says --auto-done was not applied', async () => {
+  const requeue = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
+  await schedule(requeue.deps, parseScheduleArgs(['--auto-done', '/review-pr', '17741']));
+  assert.ok(
+    requeue.printed.some((line) => line.startsWith('old keeps its auto-done setting (off); --auto-done applies')),
+  );
 });
 
 test('--agent is checked and sent for a plain task and for a repeat', async () => {

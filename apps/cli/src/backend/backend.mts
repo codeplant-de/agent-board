@@ -143,7 +143,18 @@ export function asBackendError(command: string, error: unknown): Error {
 
 // The task an add-task would have made.
 function dryTask(draft: TaskDraft): Task {
-  const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, model, ...fields } = draft;
+  const {
+    dedupeKey: _key,
+    parentId: _parent,
+    createdBy,
+    machine,
+    workdir,
+    head,
+    notBefore,
+    model,
+    autoDone,
+    ...fields
+  } = draft;
   return {
     ...fields,
     labels: taskLabels({ input: draft.input, createdBy: createdBy ?? 'user' }),
@@ -151,6 +162,7 @@ function dryTask(draft: TaskDraft): Task {
     status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
     priority: draft.priority ?? 'normal',
     model: model ?? null,
+    autoDone: autoDone ?? false,
     id: 'dry',
     closed: false,
     machine: machine ?? null,
@@ -196,6 +208,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
               input: draft.input,
               ...(draft.priority ? { priority: draft.priority } : {}),
               ...(draft.model === undefined ? {} : { model: draft.model }),
+              ...(draft.autoDone === undefined ? {} : { autoDone: draft.autoDone }),
               ...(draft.agent === undefined ? {} : { agent: draft.agent }),
               ...(draft.machine !== undefined && draft.workdir !== undefined
                 ? { machine: draft.machine, workdir: draft.workdir }
@@ -209,6 +222,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         input: draft.input,
         priority: draft.priority ?? 'normal',
         model: draft.model ?? null,
+        autoDone: draft.autoDone ?? false,
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
         ...(draft.agent === undefined ? {} : { agent: draft.agent }),
@@ -248,12 +262,13 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     async configureTask(id, change) {
       const { seal: _seal, ...fields } = change;
       print(`DRY configure-task ${id} ${oneLine(JSON.stringify(fields), 160)}`);
-      const { priority, model, place } = change;
+      const { priority, model, autoDone, place } = change;
       const task = await inner.getTask(id);
       return {
         ...task,
         ...(priority === undefined ? {} : { priority }),
         ...(model === undefined ? {} : { model }),
+        ...(autoDone === undefined ? {} : { autoDone }),
         ...(place === undefined ? {} : { workdir: place?.workdir ?? null, sessionId: null, next: 'fresh' as const }),
       };
     },

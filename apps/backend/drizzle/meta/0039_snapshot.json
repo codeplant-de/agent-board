@@ -1,5 +1,5 @@
 {
-  "id": "3f8ce6a3-f5a9-4221-a0ed-5045d8589e27",
+  "id": "ad5fb899-ee02-4ff4-8797-8e628d0fbce2",
   "prevId": "24bf5e53-3425-4b4d-9cba-883254869179",
   "version": "7",
   "dialect": "postgresql",
@@ -490,6 +490,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "auto_done": {
+          "name": "auto_done",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "machine": {
           "name": "machine",
           "type": "text",
@@ -520,34 +527,9 @@
           "primaryKey": false,
           "notNull": false
         },
-        "more_crons": {
-          "name": "more_crons",
-          "type": "text[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::text[]"
-        },
         "timezone": {
           "name": "timezone",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "after_schedule_id": {
-          "name": "after_schedule_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "after_delay_ms": {
-          "name": "after_delay_ms",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "max_concurrent": {
-          "name": "max_concurrent",
-          "type": "integer",
           "primaryKey": false,
           "notNull": false
         },
@@ -630,21 +612,6 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
-        },
-        "schedule_after_fk": {
-          "name": "schedule_after_fk",
-          "tableFrom": "schedule",
-          "tableTo": "schedule",
-          "columnsFrom": [
-            "owner",
-            "after_schedule_id"
-          ],
-          "columnsTo": [
-            "owner",
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -686,14 +653,6 @@
         "schedule_agent_sealed": {
           "name": "schedule_agent_sealed",
           "value": "\"schedule\".\"agent\" ~ '^abe1[.][A-Za-z0-9_-]{38,}$'"
-        },
-        "schedule_one_rule": {
-          "name": "schedule_one_rule",
-          "value": "(\"schedule\".\"every_ms\" is not null)::int + (\"schedule\".\"cron\" is not null)::int + (\"schedule\".\"after_schedule_id\" is not null)::int = 1"
-        },
-        "schedule_after_delay": {
-          "name": "schedule_after_delay",
-          "value": "(\"schedule\".\"after_schedule_id\" is null) = (\"schedule\".\"after_delay_ms\" is null)"
         }
       },
       "isRLSEnabled": true
@@ -865,6 +824,20 @@
         "model": {
           "name": "model",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "auto_done": {
+          "name": "auto_done",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "moved_by": {
+          "name": "moved_by",
+          "type": "task_actor",
+          "typeSchema": "public",
           "primaryKey": false,
           "notNull": false
         },
@@ -1067,12 +1040,6 @@
         "fork_of": {
           "name": "fork_of",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "occurrence_finished_at": {
-          "name": "occurrence_finished_at",
-          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -1535,6 +1502,15 @@
         "open",
         "merged",
         "closed"
+      ]
+    },
+    "public.task_actor": {
+      "name": "task_actor",
+      "schema": "public",
+      "values": [
+        "user",
+        "agent",
+        "machine"
       ]
     },
     "public.task_creator": {

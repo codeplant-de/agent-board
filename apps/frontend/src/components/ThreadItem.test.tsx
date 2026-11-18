@@ -16,10 +16,10 @@ const note = (overrides: Partial<ThreadNote>): ThreadNote => ({
   ...overrides,
 });
 
-const renderNote = (n: ThreadNote) =>
+const renderNote = (n: ThreadNote, openQuestionId?: string) =>
   render(
     <MantineProvider>
-      <ThreadItem note={n} thread={[n]} />
+      <ThreadItem note={n} thread={[n]} openQuestionId={openQuestionId} />
     </MantineProvider>,
   );
 
@@ -98,5 +98,45 @@ describe('ThreadItem', () => {
     renderNote(note({ text: 'agent-board: watch "ci" reported.\n\nbody', suggestion: 'Reply with this' }));
     expect(screen.queryByTestId('watch-event')).not.toBeInTheDocument();
     expect(screen.getByText(/Suggested reply: Reply with this/)).toBeInTheDocument();
+  });
+
+  describe('an unanswered question', () => {
+    const asked = note({
+      id: 'q1',
+      kind: 'question',
+      questions: [
+        {
+          header: 'Scope',
+          question: 'How far?',
+          multiSelect: false,
+          options: [
+            { label: 'Narrow', description: '' },
+            { label: 'Wide', description: '' },
+          ],
+        },
+      ],
+    });
+
+    it('is open, with the pointer to the panel, when the task waits on it', () => {
+      renderNote(asked, 'q1');
+      expect(screen.getByText('open')).toBeInTheDocument();
+      expect(screen.getByText(/Scope: answer below\./)).toBeInTheDocument();
+      expect(screen.queryByText('not answered')).not.toBeInTheDocument();
+    });
+
+    it('is marked not answered, with its questions listed, once the task no longer waits on it', () => {
+      renderNote(asked);
+      expect(screen.getByText('not answered')).toBeInTheDocument();
+      expect(screen.queryByText('open')).not.toBeInTheDocument();
+      expect(screen.queryByText(/answer below/)).not.toBeInTheDocument();
+      expect(screen.getByText('How far?')).toBeInTheDocument();
+      expect(screen.getByText('Narrow')).toBeInTheDocument();
+      expect(screen.getByText('Wide')).toBeInTheDocument();
+    });
+
+    it('is not answered when the task waits on a later question', () => {
+      renderNote(asked, 'q2');
+      expect(screen.getByText('not answered')).toBeInTheDocument();
+    });
   });
 });

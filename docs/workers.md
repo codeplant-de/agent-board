@@ -383,16 +383,17 @@ Every run has these in its environment:
 
 The board's rules also tell the agent not to end its turn while background work runs.
 
-While `AGENT_BOARD_TASK` is set, these commands refuse to run: `board schedule`, the changes of `board schedules`, the changes of `board dirs` and `board config`, `board task set` and `unset`, and `board agents add` and `rm`. An agent proposes follow-up work with `board add` instead, and the proposal waits in Backlog until you press **Start**.
+While `AGENT_BOARD_TASK` is set, these commands refuse to run: `board schedule`, the changes of `board schedules`, the changes of `board dirs` and `board config`, `board task set` and `unset` (which includes `set auto-done`), and `board agents add` and `rm`. An agent proposes follow-up work with `board add` instead, and the proposal waits in Backlog until you press **Start**.
 
 ### Allow rules for `board`
 
 A config that allows `Bash(board *)` covers `board schedule` and `board move <task> todo`. Narrow it to the rules in `apps/cli/examples/config.reviews.json`:
 
 - allow `board comment *`, `board ask *`, `board add *`, `board show *`, `board move * needs-me`, and `board watch` with `--ci` or `--in`,
+- for a task whose agent may mark it done (see [auto-done](usage.md#letting-the-agent-mark-a-task-done)), also allow `board move * done`. An agent whose rules allow only `board move * needs-me` is refused when it runs `board move <task> done`,
 - deny `Bash(board schedule *)`, `Bash(board schedules *)`, `Bash(board dirs *)`, `Bash(board agents *)` and `Bash(board internal *)`.
 
-`board dirs` and `board agents` refuse their changes inside a run anyway. The deny rules keep an agent from even trying.
+The board checks the setting itself when a run moves its task to Done, so the allow rule alone does not let an agent finish a task that has auto-done off. `board dirs` and `board agents` refuse their changes inside a run anyway. The deny rules keep an agent from even trying.
 
 ### Command watches
 
@@ -574,7 +575,7 @@ The appended rules tell the agent:
 - its task id,
 - to report with `board comment`,
 - to ask with `board ask` instead of AskUserQuestion,
-- to finish with `board move <task> needs-me`,
+- to finish with `board move <task> needs-me`, or, when the task has [auto-done](usage.md#letting-the-agent-mark-a-task-done) on, with `board move <task> done` once it has checked that every acceptance criterion is met and nothing is left for you; in every other case, and when in doubt, it still moves the task to Needs me,
 - to wait for CI and the like with a watch (`board watch`),
 - how to propose follow-ups.
 
@@ -585,6 +586,8 @@ Outside an agent's run they also set how far the agent goes alone:
 - **Code changes end in a PR.** A prompt to implement, fix or change code counts as the request to commit and push. The agent works on a new branch, in a new worktree if the checkout holds changes that are not its own. It pushes, opens a PR with `gh pr create`, and starts CI when the repository's CLAUDE.md or skills say CI has to be started or approved by hand. It waits for CI with `board watch <task> --ci` and links the PR in its final comment.
 - **PRs are reported.** Right after opening a PR the agent runs `board pr <task> <url>`, and it reports every PR it opens or works on for the task that way. The board then shows them on the task's card and page (see [Ask and resume](usage.md#ask-and-resume)).
 - A task that asks only for a plan, an investigation or a review opens no PR.
+
+The rules are passed to every run, a resume included, so each run's rules state the auto-done setting as it is when the run starts. When you switch it off while a run goes on, the board refuses that run's move to Done.
 
 The rules only ask. `--permission-mode auto` can still refuse a push or `gh pr create`, and the refusal shows in the log.
 
@@ -642,7 +645,7 @@ The 2-minute timer unit stays as the fallback for a listener that is down.
 
 Before anything starts, a directory that does not exist, or that a `dirs` list does not allow, ends the task in `needs-me` with the reason (see [Where a task runs](#where-a-task-runs)).
 
-**Resume.** A task resumes its session when it has `next: resume`, a session, and a user reply, a pause or a wake since the agent last spoke. The prompt is the reply, with "you were paused" or "your wait is over: <why>" where that applies. The worker resumes only a session this machine started for the task. For any other session it refuses the run with the reason.
+**Resume.** A task resumes its session when it has `next: resume`, a session, and a user reply, a pause or a wake since the agent last spoke. The prompt is the reply, with "you were paused" or "your wait is over: <why>" where that applies. When the reply answers none of the agent's last questions because you dismissed them, the lead line says so: "The user dismissed your questions on board task <id> without answering them, and replied:". The worker resumes only a session this machine started for the task. For any other session it refuses the run with the reason.
 
 **Fresh.** Anything else starts a new session. The worker records the id on this machine and stores it on the task once the run is about to start. It clears the id again if the process cannot be spawned. The prompt is the task's prompt. When the thread already holds notes by you or the agent, the prompt is followed by what you wrote since the previous run started and a line that tells the agent to read the thread with `board show <task>`.
 

@@ -432,6 +432,9 @@ export async function move(
       throw new UsageError(
         `${id} was not moved: ${error.message}. From inside a run the board moves the run's task only while that run holds it. If you are that run, it was taken back or has ended: do not move it again, end your turn.`,
       );
+    // The board's own reason: this task is not set to finish by itself, or it is a proposal.
+    if (error instanceof BackendError && error.fromApi && error.status === 403 && status === 'done')
+      throw new UsageError(`${id} was not moved: ${error.message}`);
     if (error instanceof BackendError && error.status === 403)
       throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Backlog.`);
     throw error;

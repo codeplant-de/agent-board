@@ -29,6 +29,7 @@ export function registerScheduleCommands(shared: ProgramShared): void {
     .description(
       paragraphs(
         'Make a task of the prompt, written as you would type it into Claude Code, bound to this machine and this directory. Prints its URL. A quick Haiku call first checks whether an open task already covers it; --new skips that.',
+        '--auto-done lets the agent move the task to Done itself when it judges that every acceptance criterion is met and nothing is left for you; without it the task ends in Needs me. A repeating schedule hands the setting to each task it makes. `board task <id> set auto-done on|off` changes it later.',
         'The flags come first; everything from the first other word on is the prompt, flags included (`--auto` below goes to the skill). To start the prompt with dashes, put -- before it.',
         '--in or --at keeps the task in Todo until then. --every or --cron makes a repeating schedule instead, starting at --in/--at (default now), for --times runs or until --until, else forever.',
         '--polish parks the task in Backlog and queues a second task, "Polish prompt: <title>", that asks an agent to turn the prompt into a complete plan, as the Polish prompt button on the board does. Apply the result from that task\'s page. It cannot be combined with --hold, --in, --at or a repeat.',
@@ -46,6 +47,7 @@ export function registerScheduleCommands(shared: ProgramShared): void {
       examples(
         'board schedule /review-pr 17741',
         'board schedule --priority high /review-pr acme/app#17741 --auto',
+        'board schedule --auto-done "Bump the patch version of every package and open a PR"',
         'board schedule --model opus "Find out why the bidder export is slow and propose a fix"',
         'board schedule "Find out why the bidder export is slow and propose a fix"',
         'board schedule --in 2h /review-pr 17741',

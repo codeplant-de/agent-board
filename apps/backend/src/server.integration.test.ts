@@ -404,6 +404,55 @@ describe('machine API', () => {
   });
 });
 
+describe('dismissing the open question', () => {
+  async function asked() {
+    const { json } = await ctx.call('laptop', 'add-task', { body: { title: 't', labels: ['review-pr'] } });
+    const id = json.result.task.id;
+    await ctx.call('laptop', 'claim-task', { id, machine: 'laptop' });
+    await ctx.call('laptop', 'update-task', { id, body: { sessionId: SESSION } });
+    expect((await ctx.call('laptop', 'ask', { id, body: { questions: [question] } })).status).toBe(200);
+    const ui = plainUi(db);
+    const { thread } = await ui.tasks.get({ id });
+    return { id, ui, questionId: thread.find((n) => n.kind === 'question')!.id };
+  }
+
+  it('drops the question, keeps the task in Needs me and writes no note', async () => {
+    const { id, ui, questionId } = await asked();
+    const before = (await ui.tasks.get({ id })).thread.length;
+    const dismissed = await ui.tasks.dismissQuestion({ id, questionNoteId: questionId });
+    expect(dismissed).toMatchObject({ status: 'needs-me', openQuestion: false, machine: 'laptop' });
+    const { thread } = await ui.tasks.get({ id });
+    expect(thread).toHaveLength(before);
+    expect(thread.filter((n) => n.kind === 'answer')).toEqual([]);
+    expect((await ctx.call('laptop', 'get-task', { id })).json.result).toMatchObject({
+      status: 'needs-me',
+      openQuestion: false,
+    });
+  });
+
+  it('refuses a note that is not the open question, and a second dismissal', async () => {
+    const { id, ui, questionId } = await asked();
+    await expect(ui.tasks.dismissQuestion({ id, questionNoteId: 'not-the-open-one' })).rejects.toThrow(
+      /already answered or replaced/,
+    );
+    expect((await ui.tasks.get({ id })).task).toMatchObject({ openQuestion: true });
+    await ui.tasks.dismissQuestion({ id, questionNoteId: questionId });
+    await expect(ui.tasks.dismissQuestion({ id, questionNoteId: questionId })).rejects.toThrow(
+      /already answered or replaced/,
+    );
+    await expect(ui.tasks.answer({ id, questionNoteId: questionId, answers: [{ selected: ['Yes'] }] })).rejects.toThrow(
+      /already answered/,
+    );
+  });
+
+  it('lets a reply resume the task as usual', async () => {
+    const { id, ui, questionId } = await asked();
+    await ui.tasks.dismissQuestion({ id, questionNoteId: questionId });
+    const replied = await ui.tasks.reply({ id, message: 'start over', resume: true });
+    expect(replied).toMatchObject({ status: 'todo', next: 'resume', openQuestion: false, machine: 'laptop' });
+  });
+});
+
 describe('board UI', () => {
   it('a reply with resume goes to the top of Todo; without a session it runs fresh', async () => {
     const ui = plainUi(db);

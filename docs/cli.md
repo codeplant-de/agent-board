@@ -38,7 +38,7 @@ Tasks:
   add                        propose a follow-up task
   polish <task>              post a polished title and prompt for a task
   task <task> [action...]    show a task's settings, or change its priority,
-                             model or directory
+                             model, auto-done setting or directory
 
 Scheduling:
   schedule <prompt...>       a task from a prompt, run here on this machine
@@ -498,24 +498,33 @@ done`. The first look at the board prints nothing; only what changes after it
 does.
 
 The types: created (a new task, or a closed one reopened; its earlier notes are
-not reported), moved (the status changed: from, to), changed (title, priority,
-model, agent, machine, openQuestion, notBefore, wakeAt, prs or promptPrState
-changed: fields), closed, removed (deleted), and note (a new note in a task's
-thread; its text is null in JSON when this machine cannot decrypt it). Changes
-between two looks at the board are joined: a task that went todo, running,
-needs-me meanwhile prints one move from todo to needs-me.
+not reported), moved (the status changed: from, to, actor), changed (title,
+priority, model, agent, machine, openQuestion, notBefore, wakeAt, prs or
+promptPrState changed: fields), closed, removed (deleted), and note (a new note
+in a task's thread; its text is null in JSON when this machine cannot decrypt
+it). Changes between two looks at the board are joined: a task that went todo,
+running, needs-me meanwhile prints one move from todo to needs-me.
 
 --status keeps the events of tasks that are in one of the statuses after the
 change, so everything that enters Needs me is `--type moved --status needs-me`.
---task, --status and --type can be given more than once. The filters only choose
-what is printed.
+--task, --status, --type and --actor can be given more than once. The filters
+only choose what is printed.
+
+A moved event carries the actor that made the task's last status change: user
+(you, in the browser), agent (the task's own run: it asked a question, waits, or
+moves its task itself, for example to Done when the task allows it) or machine
+(a CLI outside a run: a worker claiming or ending a run, a script, a terminal).
+Changes between two looks are joined, so the actor is the one of the last move.
+--actor keeps only moved events of those actors; other events and moves whose
+actor the board does not say are dropped. It needs a board that says who moved a
+task.
 
 With --json each line is one JSON object: {"type", "at", "task", "from"?, "to"?,
-"fields"?, "note"?}. `task` is the task as `board tasks --json` shows it, plus
-its "url"; `at` is when this CLI saw the change. Connection messages go to
-stderr. The command reads with this machine's token and data key, so titles and
-notes are plain text here and nowhere else. It ends on Ctrl-C (exit 0), when the
-pipe it writes to closes, and with 1 when the board refuses the token or the
+"actor"?, "fields"?, "note"?}. `task` is the task as `board tasks --json` shows
+it, plus its "url"; `at` is when this CLI saw the change. Connection messages go
+to stderr. The command reads with this machine's token and data key, so titles
+and notes are plain text here and nowhere else. It ends on Ctrl-C (exit 0), when
+the pipe it writes to closes, and with 1 when the board refuses the token or the
 CLI. It is not available inside a board run.
 
 <task> can be the full id, a link to the task on this board (as the CLI prints
@@ -531,6 +540,8 @@ Options:
                      (backlog, todo, running, waiting, needs-me, done)
   --type <type>      only this type of event; repeatable (created, moved,
                      changed, closed, removed, note)
+  --actor <actor>    only moves made by this actor; repeatable (user, agent,
+                     machine)
   --machine <name>   only tasks of this machine
   --json             print one JSON object per line on stdout instead of text
   -h, --help         display help for command
@@ -538,6 +549,7 @@ Options:
 Examples:
   board events
   board events --type moved --status needs-me
+  board events --type moved --status done --actor agent
   board events --task Ab3 --type note
   board events --json --machine laptop
 ```
@@ -605,14 +617,22 @@ Examples:
 ```
 Usage: board task [options] <task> [set <key> <value> | unset <key>]
 
-Without an action, print a task's settings: status, priority, model, agent, who
-made it, the machine it is pinned to and its directory, when it starts, its
-schedule, the task it was forked from, whether its next run resumes a session,
-and its PR. With --json, print the task as `board tasks --json` does.
+Without an action, print a task's settings: status, priority, model, whether the
+agent may mark it done, agent, who made it, the machine it is pinned to and its
+directory, when it starts, its schedule, the task it was forked from, whether
+its next run resumes a session, and its PR. With --json, print the task as
+`board tasks --json` does.
 
 `set priority <urgent|high|normal|low>` and `set model <alias or model id>`
 change the setting, `unset model` goes back to claude's default model. A model
 applies from the next run on; a run in progress keeps its own.
+
+`set auto-done on` lets the agent move the task to Done itself when it judges
+that every acceptance criterion is met and nothing is left for you; `set
+auto-done off` (or `unset auto-done`) keeps the move to Done yours, and the
+agent ends in Needs me. It applies at once, also to a run in progress: an agent
+that tries to finish a task set to off is refused and moves it to Needs me
+instead.
 
 `set dir [path]` pins the task to this machine and the directory (default: the
 current one; a path is relative to it and `~` expands). `unset dir` removes the
@@ -624,12 +644,13 @@ refused: stop it first. With a `dirs` list on this machine, the directory must
 be listed (`board dirs add`).
 
 On a card of a repeating schedule a change applies to that card only: the next
-occurrence takes its priority, model, machine and directory from the schedule
-again, which the command says. `set dir` needs this machine's config.json, since
-it pins the task to the machine's name.
+occurrence takes its priority, model, auto-done setting, machine and directory
+from the schedule again, which the command says. `set dir` needs this machine's
+config.json, since it pins the task to the machine's name.
 
 `set` and `unset` are not available inside a board run: only you change where a
-task runs, and with what. Viewing works there.
+task runs, with what, and whether its agent may mark it done. Viewing works
+there.
 
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
@@ -639,7 +660,8 @@ accepted.
 
 Arguments:
   task        the task: its id, a board task link or the start of its id
-  action      set priority|model|dir <value>, or unset model|dir
+  action      set priority|model|auto-done|dir <value>, or unset
+              model|auto-done|dir
 
 Options:
   --json      print JSON on stdout instead of text; a value this machine cannot
@@ -655,6 +677,8 @@ Examples:
   board task Ab3 set priority high
   board task Ab3 set model opus
   board task Ab3 unset model
+  board task Ab3 set auto-done on
+  board task Ab3 unset auto-done
   board task Ab3 set dir
   board task Ab3 set dir ~/workspace/agent-board
   board task Ab3 unset dir
@@ -670,6 +694,11 @@ Usage: board schedule [options] <prompt...>
 Make a task of the prompt, written as you would type it into Claude Code, bound
 to this machine and this directory. Prints its URL. A quick Haiku call first
 checks whether an open task already covers it; --new skips that.
+
+--auto-done lets the agent move the task to Done itself when it judges that
+every acceptance criterion is met and nothing is left for you; without it the
+task ends in Needs me. A repeating schedule hands the setting to each task it
+makes. `board task <id> set auto-done on|off` changes it later.
 
 The flags come first; everything from the first other word on is the prompt,
 flags included (`--auto` below goes to the skill). To start the prompt with
@@ -715,6 +744,9 @@ Options:
   --priority <priority>  urgent, high, normal, low (default normal)
   --model <model>        claude model alias or full name, e.g. fable, opus,
                          sonnet, haiku (default: claude's default)
+  --auto-done            let the agent move the task to Done itself when it
+                         judges every acceptance criterion met (default: it ends
+                         in needs-me)
   --agent <name>         run the task as this agent of this machine's
                          config.json (its tools and lists only, never asking);
                          the board keeps the name sealed
@@ -755,6 +787,7 @@ Options:
 Examples:
   board schedule /review-pr 17741
   board schedule --priority high /review-pr acme/app#17741 --auto
+  board schedule --auto-done "Bump the patch version of every package and open a PR"
   board schedule --model opus "Find out why the bidder export is slow and propose a fix"
   board schedule "Find out why the bidder export is slow and propose a fix"
   board schedule --in 2h /review-pr 17741

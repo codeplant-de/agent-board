@@ -72,6 +72,7 @@ const task = {
   status: 'todo',
   priority: 'normal',
   model: null,
+  autoDone: false,
   closed: false,
   machine: null,
   sessionId: null,
@@ -269,7 +270,7 @@ test('a task config takes a priority, a model or null, and a place with a sealed
     priority: 'high',
     model: 'opus',
   });
-  assert.throws(() => parseWireTaskConfig({}), /config needs one of priority, model, place/);
+  assert.throws(() => parseWireTaskConfig({}), /config needs one of priority, model, autoDone, place/);
   assert.throws(() => parseWireTaskConfig([]), /must be a JSON object/);
   assert.throws(() => parseWireTaskConfig({ priority: 'asap' }), /priority must be one of/);
   for (const model of ['', 'not a model', '-x', 5, undefined])
@@ -412,6 +413,7 @@ const schedule = {
   input: INPUT,
   priority: 'normal',
   model: null,
+  autoDone: false,
   machine: null,
   workdir: null,
   everyMs: 7_200_000,
@@ -997,6 +999,37 @@ test('a draft carries a model that is checked, in add-task and add-schedule', ()
   const rule = { id: ID, title: TITLE, input: INPUT, everyMs: 60_000 };
   assert.equal(parseWireScheduleDraft({ ...rule, model: 'opus' }).model, 'opus');
   assert.throws(() => parseWireScheduleDraft({ ...rule, model: 'a b' }), /schedule draft.model is not a model name/);
+});
+
+test('autoDone is a boolean in a config and in the drafts, and a server that sends none means false', () => {
+  assert.deepEqual(parseWireTaskConfig({ autoDone: true }), { autoDone: true });
+  assert.deepEqual(parseWireTaskConfig({ autoDone: false, priority: 'low' }), { autoDone: false, priority: 'low' });
+  for (const autoDone of ['yes', 1, null])
+    assert.throws(() => parseWireTaskConfig({ autoDone }), /config.autoDone must be a boolean/, String(autoDone));
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, autoDone: true }).autoDone, true);
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT }).autoDone, undefined);
+  assert.throws(
+    () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, autoDone: 'on' }),
+    /draft.autoDone must be a boolean/,
+  );
+  const rule = { id: ID, title: TITLE, input: INPUT, everyMs: 60_000 };
+  assert.equal(parseWireScheduleDraft({ ...rule, autoDone: true }).autoDone, true);
+  assert.throws(() => parseWireScheduleDraft({ ...rule, autoDone: 1 }), /schedule draft.autoDone must be a boolean/);
+  const { autoDone: _task, ...legacyTask } = { ...task, autoDone: true };
+  assert.equal(parseWireTask(legacyTask).autoDone, false);
+  assert.equal(parseWireTask({ ...task, autoDone: true }).autoDone, true);
+  const { autoDone: _schedule, ...legacySchedule } = { ...schedule, autoDone: true };
+  assert.equal(parseWireSchedule(legacySchedule).autoDone, false);
+  assert.equal(parseWireSchedule({ ...schedule, autoDone: true }).autoDone, true);
+});
+
+test('movedBy is read when it names a known actor and left out otherwise, so a later actor does not break an old client', () => {
+  assert.equal(parseWireTask({ ...task, movedBy: 'agent' }).movedBy, 'agent');
+  for (const movedBy of ['user', 'machine']) assert.equal(parseWireTask({ ...task, movedBy }).movedBy, movedBy);
+  for (const movedBy of ['robot', 5, null, undefined]) {
+    const parsed = parseWireTask({ ...task, movedBy });
+    assert.ok(!('movedBy' in parsed), String(movedBy));
+  }
 });
 
 const SEALED_TEXT = `abe1.${'A'.repeat(40)}`;

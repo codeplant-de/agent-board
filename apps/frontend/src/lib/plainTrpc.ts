@@ -181,6 +181,7 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
       setPriority: raw.tasks.setPriority,
       setNotBefore: raw.tasks.setNotBefore,
       takeBack: raw.tasks.takeBack,
+      dismissQuestion: raw.tasks.dismissQuestion,
       wakeNow: raw.tasks.wakeNow,
       setClosed: raw.tasks.setClosed,
       removePr: raw.tasks.removePr,

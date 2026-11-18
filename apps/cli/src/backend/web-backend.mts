@@ -139,6 +139,11 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     if (draft.model !== undefined) requireFeature((await connect()).features, 'task.model');
   };
 
+  // Refuses to send the auto-done setting to a server that would reject the key.
+  const requireAutoDoneSupport = async (values: { autoDone?: boolean }): Promise<void> => {
+    if (values.autoDone !== undefined) requireFeature((await connect()).features, 'task.auto-done');
+  };
+
   // Refuses to send an agent to a server that would reject the field, or that would not keep it with the task.
   const requireAgentSupport = async (draft: { agent?: string }): Promise<void> => {
     if (draft.agent !== undefined) requireFeature((await connect()).features, 'task.agent');
@@ -212,6 +217,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     addTask: async (draft) => {
       await requireSendable(draft);
       await requireModelSupport(draft);
+      await requireAutoDoneSupport(draft);
       await requireAgentSupport(draft);
       return call('add-task', { body: draft }, parseWireAddTaskResult);
     },
@@ -220,7 +226,11 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       await requireSendable(patch);
       return call('update-task', { id: checkedId, body: patch }, parseWireTask);
     },
-    configureTask: async (id, body) => call('configure-task', { id: taskId(id), body }, parseWireTask),
+    configureTask: async (id, body) => {
+      const checkedId = taskId(id);
+      await requireAutoDoneSupport(body);
+      return call('configure-task', { id: checkedId, body }, parseWireTask);
+    },
     async claimTask(id, machine) {
       if (!isSafeMachineName(machine))
         throw new BackendError(`"${machine.slice(0, 40)}" is not a valid machine name: use ${MACHINE_NAME_RULE}`);
@@ -297,6 +307,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     addSchedule: async (draft) => {
       await requireSendable(draft);
       await requireModelSupport(draft);
+      await requireAutoDoneSupport(draft);
       await requireAgentSupport(draft);
       await requireScheduleSupport(draft);
       return call('add-schedule', { body: draft }, parseWireAddScheduleResult);

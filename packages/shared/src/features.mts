@@ -29,6 +29,8 @@ export const ADDED_SERVER_FEATURES = [
   'schedule.crons',
   'schedule.max-concurrent',
   'schedule.after',
+  'task.auto-done',
+  'task.moved-by',
 ] as const;
 
 export const SERVER_FEATURES = [...BASELINE_SERVER_FEATURES, ...ADDED_SERVER_FEATURES] as const;
@@ -59,6 +61,8 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'schedule.crons': 'several cron expressions in one schedule',
   'schedule.max-concurrent': 'a limit on how many cards of a schedule run at once',
   'schedule.after': 'a schedule that runs after another',
+  'task.auto-done': 'letting the agent move a task to Done',
+  'task.moved-by': 'who moved a task',
   wait: 'waiting',
 };
 

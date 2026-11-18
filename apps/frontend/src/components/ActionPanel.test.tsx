@@ -13,6 +13,7 @@ import { ActionPanel } from './ActionPanel';
 const takeBack = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const setNotBefore = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const answer = vi.hoisted(() => vi.fn(async (_: unknown) => null));
+const dismissQuestion = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const reply = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const create = vi.hoisted(() => vi.fn(async (_: unknown) => null));
@@ -29,6 +30,7 @@ vi.mock('../lib/trpc', () => {
     useTRPC: () => ({
       tasks: {
         answer: procedure(answer),
+        dismissQuestion: procedure(dismissQuestion),
         reply: procedure(reply),
         send: procedure(send),
         stop: procedure(stop),
@@ -402,6 +404,17 @@ describe('ActionPanel of an open question', () => {
       answers: [{ selected: ['Yes'] }],
       message: '',
     });
+  });
+
+  it('dismisses the open question with its note id, after a confirmation', async () => {
+    dismissQuestion.mockClear();
+    answer.mockClear();
+    renderPanel(running({ status: 'needs-me', openQuestion: true }), [asking({})]);
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss questions' }));
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Dismiss questions' }));
+    await waitFor(() => expect(dismissQuestion).toHaveBeenCalled());
+    expect(dismissQuestion.mock.calls[0]?.[0]).toEqual({ id: 'abc12345', questionNoteId: 'q-new' });
+    expect(answer).not.toHaveBeenCalled();
   });
 
   it('does not seal a question the board swapped in after the pick: it says the question changed and drops the picks', async () => {

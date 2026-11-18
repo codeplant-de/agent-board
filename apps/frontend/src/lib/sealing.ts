@@ -33,6 +33,8 @@ export interface NewTask {
   priority?: Priority;
   /** An alias or full name; absent is claude's default. */
   model?: string;
+  /** The agent may move the task, or each occurrence of a repeat, to Done itself; absent is off. */
+  autoDone?: boolean;
   when?: CreateInput['when'];
   parentId?: string;
   /** The machine and directory it runs in (every occurrence of a repeat), instead of the default directory of whichever machine takes it. */
@@ -73,6 +75,7 @@ export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInpu
     ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
     ...(task.priority === undefined ? {} : { priority: task.priority }),
     ...(task.model === undefined ? {} : { model: task.model }),
+    ...(task.autoDone === undefined ? {} : { autoDone: task.autoDone }),
     ...(task.when === undefined ? {} : { when: task.when }),
     ...(task.parentId === undefined ? {} : { parentId: task.parentId }),
     ...(task.place === undefined || sealed.workdir === undefined
@@ -229,6 +232,7 @@ export interface ConfigureTarget {
 /** The settings to change; absent leaves one alone. A null model is claude's default, a null place is no directory and no machine. */
 export interface Configuration {
   model?: string | null;
+  autoDone?: boolean;
   place?: { machine: string; workdir: string } | null;
 }
 
@@ -237,7 +241,7 @@ export async function sealConfigure(
   keys: Keys,
   options: { task: ConfigureTarget } & Configuration,
 ): Promise<RouterInputs['tasks']['configure']> {
-  const { task, model, place } = options;
+  const { task, model, autoDone, place } = options;
   const row: RowRef = {
     kind: 'task',
     id: task.id,
@@ -248,6 +252,7 @@ export async function sealConfigure(
   return {
     id: task.id,
     ...(model === undefined ? {} : { model }),
+    ...(autoDone === undefined ? {} : { autoDone }),
     ...(place === undefined
       ? {}
       : {

@@ -10,6 +10,7 @@ import {
 } from '@agent-board/shared';
 import {
   Button,
+  Checkbox,
   Code,
   Group,
   Modal,
@@ -74,6 +75,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const [delay, setDelay] = useState('');
   const [priority, setPriority] = useState<Priority>('normal');
   const [model, setModel] = useState(DEFAULT_MODEL);
+  const [autoDone, setAutoDone] = useState(false);
   const [directory, setDirectory] = useState<string | null>(null);
   const [agent, setAgent] = useState('');
   const directories = useDirectoryChoices();
@@ -136,6 +138,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
         when: payload,
         priority,
         ...(model === DEFAULT_MODEL ? {} : { model }),
+        ...(autoDone ? { autoDone } : {}),
         ...(place === undefined ? {} : { place: { machine: place.machine, workdir: place.path } }),
         ...(agentName === '' ? {} : { agent: agentName }),
       },
@@ -147,6 +150,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           setPriority('normal');
           setWhen('now');
           setModel(DEFAULT_MODEL);
+          setAutoDone(false);
           setDirectory(null);
           setAgent('');
           setAt('');
@@ -222,6 +226,12 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
               ? 'The models claude lists on the chosen machine, or on any machine. Default is the model claude picks on the machine that runs it'
               : 'Default is the model claude picks on the machine that runs it'
           }
+        />
+        <Checkbox
+          label="Agent may mark it done"
+          description="When it judges every acceptance criterion met and nothing is left for you, the agent moves the task to Done instead of Needs me. A repeat gives this to each task it makes."
+          checked={autoDone}
+          onChange={(event) => setAutoDone(event.currentTarget.checked)}
         />
         <div>
           <Text size="sm" fw={500} mb={4}>

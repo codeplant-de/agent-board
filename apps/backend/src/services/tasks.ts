@@ -12,6 +12,7 @@ import {
   type PrState,
   type PrStates,
   type Status,
+  type TaskActor,
   type WireNote,
   type WireNoteInput,
   type WireTask,
@@ -77,12 +78,14 @@ export function toTask(
     status: row.status,
     priority: row.priority,
     model: row.model,
+    autoDone: row.autoDone,
     closed: row.closed,
     machine: row.machine,
     sessionId: row.sessionId,
     workdir: row.workdir,
     ...(row.agent === null ? {} : { agent: row.agent }),
     ...(row.forkOf === null ? {} : { forkOf: row.forkOf }),
+    ...(row.movedBy === null ? {} : { movedBy: row.movedBy }),
     pr: newest?.pr ?? null,
     prState: newest === undefined ? row.prState : newest.state,
     prs: prs.map(({ id, pr, state }) => ({ id, pr, state })),
@@ -261,8 +264,8 @@ interface Transition {
   to?: Status;
   /** Default: where it is when the status stays, else the bottom. A number is a position between neighbours. */
   place?: 'top' | 'bottom' | number;
-  /** Only a user starts a proposal. */
-  by: 'worker' | 'user';
+  /** Who makes the change; only a user starts a proposal. */
+  by: TaskActor;
   /** The user's start of an agent's proposal: its prompt, sealed again for the creator "user". Nothing else takes a proposal into Todo. */
   start?: { input: string };
   /** Columns on top of what the invariants set; they win. */
@@ -295,12 +298,13 @@ async function transition(tx: DbOrTx, task: TaskRow, change: Transition): Promis
     : undefined;
   const to = handedBack ? 'todo' : (change.to ?? task.status);
   const moved = to !== task.status;
-  if (change.by === 'worker' && moved && task.proposed)
+  if (change.by !== 'user' && moved && task.proposed)
     throw new AppError('FORBIDDEN', 'An agent proposed this task; only you start it.');
   if (task.proposed && to === 'todo' && change.start === undefined)
     throw new AppError('FORBIDDEN', 'An agent proposed this task; start it first.');
   const now = new Date();
   const values: TaskValues = { status: to, updatedAt: now };
+  if (moved) values.movedBy = change.by;
   if (to !== 'needs-me') values.openQuestionNoteId = null;
   if (!keepsPause(task.status, to)) values.pausedAt = null;
   // A wait that ends into Todo resumes the session (it is still under way) and tells the agent why; a wake survives the
@@ -387,11 +391,21 @@ async function handBackPendingMessages(
   };
 }
 
+const NOT_AUTO_DONE = 'This task is not set to finish by itself: move it to needs-me, and the user marks it done.';
+
 /**
  * A status or priority change puts the task at the bottom of its new place. With `run` the call comes from that run of the
- * task: it may not touch a later run, and it may change the status only while the run still holds the task.
+ * task, which is its agent: it may not touch a later run, it may change the status only while the run still holds the task,
+ * and it may move the task to Done only when the task is set to `autoDone`; the move goes to the top of Done. A call without
+ * a run comes from a machine's script or terminal and moves the task wherever it names. `by` is the calling machine.
  */
-export async function updateTask(db: DbOrTx, id: string, patch: WireTaskPatch, run?: string): Promise<TaskRow> {
+export async function updateTask(
+  db: DbOrTx,
+  id: string,
+  patch: WireTaskPatch,
+  by: string,
+  run?: string,
+): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const current = await lockTask(tx, id);
     if (patch.expect !== undefined && patch.expect !== current.status)
@@ -399,6 +413,7 @@ export async function updateTask(db: DbOrTx, id: string, patch: WireTaskPatch, r
     if (run !== undefined) {
       const refused = notInRun(current, run, { moves: patch.status !== undefined });
       if (refused) throw new AppError('CONFLICT', refused);
+      if (patch.status === 'done' && !current.autoDone) throw new AppError('FORBIDDEN', NOT_AUTO_DONE);
     }
     const set: TaskValues = {};
     if (patch.input !== undefined) set.input = patch.input;
@@ -418,12 +433,19 @@ export async function updateTask(db: DbOrTx, id: string, patch: WireTaskPatch, r
       set.pausedAt = null;
       set.wokenAt = null;
     }
+    const agentDone = run !== undefined && patch.status === 'done';
+    let place: Transition['place'];
+    if (agentDone) place = 'top';
+    else if (set.priority !== undefined) place = 'bottom';
     const row = await transition(tx, current, {
       to: patch.status,
-      place: set.priority !== undefined ? 'bottom' : undefined,
-      by: 'worker',
+      place,
+      by: run === undefined ? 'machine' : 'agent',
       set,
     });
+    // Pending messages send the task back to Todo instead, and then nothing was finished.
+    if (agentDone && row.status === 'done')
+      await systemEvent(tx, id, { type: 'moved', from: 'running', to: 'done' }, by);
     // A run that hands its card back as done work (not one that asks, fails or is stopped) lets the schedules after it start.
     if (current.status === 'running' && (row.status === 'needs-me' || row.status === 'done'))
       await occurrenceFinished(tx, current, row.updatedAt);
@@ -464,7 +486,7 @@ export async function claimTask(db: DbOrTx, id: string, machine: string): Promis
       (task.workdir === null || task.machine === null || task.machine === machine) &&
       (task.next === 'fresh' || task.sessionId === null || task.machine === null || task.machine === machine) &&
       (task.scheduleId === null || !(await isScheduleFull(tx, task.scheduleId, task.id)));
-    return free ? transition(tx, task, { to: 'running', by: 'worker', set: { machine } }) : undefined;
+    return free ? transition(tx, task, { to: 'running', by: 'machine', set: { machine } }) : undefined;
   });
 }
 
@@ -540,7 +562,7 @@ export async function ask(
       by,
       questions: asked.questions,
     });
-    await transition(tx, current, { to: 'needs-me', by: 'worker', set: { openQuestionNoteId: note.id } });
+    await transition(tx, current, { to: 'needs-me', by: 'agent', set: { openQuestionNoteId: note.id } });
     return note;
   });
 }
@@ -584,6 +606,19 @@ export async function answer(
       questionNoteId: question.id,
     });
     return continueTask(tx, task);
+  });
+}
+
+/**
+ * The user drops the open question without an answer. The task stays in Needs me where it is, and nothing is written to
+ * the thread: a question note that is no longer the open one and has no answer reads as dismissed.
+ */
+export async function dismissQuestion(db: DbOrTx, input: { taskId: string; questionNoteId: string }): Promise<TaskRow> {
+  return db.transaction(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    if (task.openQuestionNoteId !== input.questionNoteId)
+      throw new AppError('CONFLICT', 'This question was already answered or replaced.');
+    return transition(tx, task, { by: 'user', set: { openQuestionNoteId: null } });
   });
 }
 
@@ -952,11 +987,12 @@ export async function setPriority(db: DbOrTx, taskId: string, priority: Priority
 export interface TaskConfig {
   priority?: Priority | undefined;
   model?: string | null | undefined;
+  autoDone?: boolean | undefined;
   place?: { machine: string; workdir: string } | null | undefined;
 }
 
 /**
- * The user's edit of a task's settings, in one step. A priority works as `setPriority`. A model applies from the next run. A
+ * The user's edit of a task's settings, in one step. A priority works as `setPriority`. A model applies from the next run. `autoDone` applies at once, in any status. A
  * new place (the machine and the sealed directory, or null for none) replaces the directory the task was created with and
  * drops the session: Claude Code keeps a session under its working directory, so it cannot be resumed from another one, and
  * the next run starts fresh there and reads the thread. A running or waiting task keeps its place, since a run holds it.
@@ -964,7 +1000,7 @@ export interface TaskConfig {
 export async function configureTask(db: DbOrTx, taskId: string, config: TaskConfig, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    const { priority, model, place } = config;
+    const { priority, model, autoDone, place } = config;
     if (place !== undefined) {
       if (task.status === 'running' || task.status === 'waiting')
         throw new AppError('CONFLICT', `The task is ${task.status}. Stop it first, then move it.`);
@@ -972,6 +1008,7 @@ export async function configureTask(db: DbOrTx, taskId: string, config: TaskConf
     }
     const set: TaskValues = {};
     if (model !== undefined) set.model = model;
+    if (autoDone !== undefined) set.autoDone = autoDone;
     if (place !== undefined) {
       const workdir = place?.workdir ?? null;
       // A pause or a wake belongs to the session that is gone, and so do the watches the old machine ran for it.
@@ -1201,7 +1238,7 @@ export async function pause(
     return transition(tx, task, {
       to: 'todo',
       place: 'top',
-      by: 'worker',
+      by: 'machine',
       set: { next: task.sessionId ? 'resume' : 'fresh', pausedAt: new Date() },
     });
   });
@@ -1235,7 +1272,7 @@ export async function wait(
     });
     return transition(tx, task, {
       to: 'waiting',
-      by: 'worker',
+      by: 'agent',
       set: { wakeAt: request.wakeAt, waitCheck: request.check, next: task.sessionId ? 'resume' : 'fresh' },
     });
   });
@@ -1252,7 +1289,7 @@ export async function wake(
     const task = await lockTask(tx, taskId);
     if (notHeldBy(task, by, 'waiting')) return { applied: false, row: task };
     await clientEvent(tx, taskId, note, by);
-    return { applied: true, row: await transition(tx, task, { to: 'todo', place: 'top', by: 'worker' }) };
+    return { applied: true, row: await transition(tx, task, { to: 'todo', place: 'top', by: 'machine' }) };
   });
 }
 
@@ -1278,7 +1315,7 @@ export async function failTask(
     const task = await lockTask(tx, taskId);
     if (notHeldBy(task, by, 'running', { run })) return { applied: false, row: task };
     await clientEvent(tx, taskId, note, by);
-    return { applied: true, row: await transition(tx, task, { to: 'needs-me', by: 'worker' }) };
+    return { applied: true, row: await transition(tx, task, { to: 'needs-me', by: 'machine' }) };
   });
 }
 
@@ -1374,6 +1411,6 @@ export async function stopped(
     const task = await lockTask(tx, taskId);
     requireRunOf(task, by, run);
     await clientEvent(tx, taskId, note, by);
-    return transition(tx, task, { to: 'needs-me', by: 'worker', userStop: true });
+    return transition(tx, task, { to: 'needs-me', by: 'machine', userStop: true });
   });
 }

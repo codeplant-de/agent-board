@@ -64,6 +64,24 @@ test("the board's rules tell the agent not to end its turn while background work
   assert.match(boardRules(task({ id: 'abc' })), /Do not end your turn while a background agent .* in the foreground/s);
 });
 
+test('the finishing rule sends the task to needs-me, and offers done only when the task is set to auto-done', () => {
+  for (const options of [{}, { asAgent: true }]) {
+    const off = boardRules(task({ id: 'abc' }), options);
+    assert.match(off, /then `board move abc needs-me`/);
+    assert.doesNotMatch(off, /board move abc done/);
+    const on = boardRules(task({ id: 'abc', autoDone: true }), options);
+    assert.match(
+      on,
+      /every acceptance criterion of the task is met and nothing is left for the user to decide, answer, review or do, run `board move abc done`/,
+    );
+    assert.match(
+      on,
+      /whenever you are in doubt, run `board move abc needs-me` and attach to the summary the reply you expect/,
+    );
+    assert.match(on, /board comment --suggest "<reply>" abc "<summary>"/);
+  }
+});
+
 test('long text is tailed', () => {
   assert.equal(tail('abcdef', 4), '…def');
 });
@@ -189,6 +207,26 @@ test('events also go into a reply and a pause resume', () => {
     buildResumePrompt(resumable({ paused: true }), [], { events: [EVENT], open: [] }) ?? '',
     /<watch-event[\s\S]*You were paused/,
   );
+});
+
+test('a reply to questions the user dismissed says so, and an answered question keeps the plain line', () => {
+  const asked = makeNote('Which one?', at(1), { author: 'agent', kind: 'question' });
+  const comment = makeNote('start over with option B', at(3), { author: 'user', kind: 'comment' });
+  const dismissed = buildResumePrompt(resumable(), [asked, comment]);
+  assert.match(
+    dismissed ?? '',
+    /The user dismissed your questions on board task p without answering them, and replied:\n\nstart over with option B/,
+  );
+  assert.doesNotMatch(dismissed ?? '', /The user replied on board task p/);
+
+  const answer = makeNote('thanks', at(3), { author: 'user', kind: 'answer' });
+  const answered = buildResumePrompt(resumable(), [asked, answer]);
+  assert.match(answered ?? '', /The user replied on board task p:/);
+  assert.doesNotMatch(answered ?? '', /dismissed/);
+
+  const spoke = makeNote('Done.', at(2), { author: 'agent', kind: 'comment' });
+  assert.match(buildResumePrompt(resumable(), [asked, spoke, comment]) ?? '', /The user replied on board task p:/);
+  assert.equal(buildResumePrompt(resumable(), [asked]), undefined, 'no reply, nothing to resume with');
 });
 
 test('a wake without events says what is still open', () => {

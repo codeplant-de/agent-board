@@ -45,6 +45,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     status: 'todo',
     priority: 'normal',
     model: null,
+    autoDone: false,
     closed: false,
     machine: null,
     sessionId: null,
@@ -92,6 +93,7 @@ export function schedule(overrides: Partial<Schedule> & { id: string }): Schedul
     input: '/sweep',
     priority: 'normal',
     model: null,
+    autoDone: false,
     machine: null,
     workdir: null,
     everyMs: 7_200_000,
@@ -237,17 +239,19 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     async configureTask(id, change) {
       const found = state.tasks.find((t) => t.id === id);
       if (!found) throw new BackendError(`configure-task: no task ${id}`, 404, true);
-      const { priority, model, place } = change;
+      const { priority, model, autoDone, place } = change;
       if (place !== undefined && (found.status === 'running' || found.status === 'waiting')) {
         state.writes.push(`configure ${id} refused: ${found.status}`);
         throw new BackendError(`the task is ${found.status}. Stop it first, then move it.`, 409, true);
       }
       if (priority !== undefined) state.writes.push(`priority ${id}: ${priority}`);
       if (model !== undefined) state.writes.push(`model ${id}: ${model ?? 'default'}`);
+      if (autoDone !== undefined) state.writes.push(`auto-done ${id}: ${autoDone ? 'on' : 'off'}`);
       if (place !== undefined) state.writes.push(`place ${id}: ${place === null ? 'none' : place.workdir}`);
       Object.assign(found, {
         ...(priority === undefined ? {} : { priority }),
         ...(model === undefined ? {} : { model }),
+        ...(autoDone === undefined ? {} : { autoDone }),
         ...(place === undefined
           ? {}
           : {
@@ -445,7 +449,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         `add-schedule ${draft.title} | ${draft.input} | ${draft.everyMs ?? (draft.after ? 'after' : `${draft.cron} ${draft.timezone}`)}` +
           `${draft.startAt ? ` | start ${draft.startAt.toISOString()}` : ''}${draft.times ? ` | times ${draft.times}` : ''}` +
           `${draft.until ? ` | until ${draft.until.toISOString()}` : ''}${draft.machine ? ` | ${draft.machine}:${draft.workdir}` : ''}` +
-          `${draft.model ? ` | model ${draft.model}` : ''}${draft.agent ? ` | agent ${draft.agent}` : ''}` +
+          `${draft.model ? ` | model ${draft.model}` : ''}${draft.agent ? ` | agent ${draft.agent}` : ''}${draft.autoDone ? ' | auto-done' : ''}` +
           `${draft.moreCrons ? ` | more ${draft.moreCrons.join(' ; ')}` : ''}` +
           `${draft.after ? ` | after ${draft.after.scheduleId} +${draft.after.delayMs ?? 0}` : ''}` +
           `${draft.maxConcurrent ? ` | max ${draft.maxConcurrent}` : ''}`,
@@ -457,6 +461,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
             title: draft.title,
             input: draft.input,
             model: draft.model ?? null,
+            autoDone: draft.autoDone ?? false,
             agent: draft.agent ?? null,
             machine: draft.machine ?? null,
             workdir: draft.workdir ?? null,
@@ -468,6 +473,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         title: draft.title,
         input: draft.input,
         model: draft.model ?? null,
+        autoDone: draft.autoDone ?? false,
         agent: draft.agent ?? null,
         everyMs: draft.everyMs ?? null,
         cron: draft.cron ?? null,

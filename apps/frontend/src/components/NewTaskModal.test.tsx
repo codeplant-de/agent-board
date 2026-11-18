@@ -316,6 +316,23 @@ describe('NewTaskModal model', () => {
   });
 });
 
+describe('NewTaskModal auto-done', () => {
+  it('sends no setting by default', async () => {
+    await open();
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).not.toHaveProperty('autoDone');
+  });
+
+  it('sends autoDone when the box is checked', async () => {
+    await open();
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Agent may mark it done' }));
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ autoDone: true, when: 'now' });
+  });
+});
+
 const HOUR = 3_600_000;
 const machine = (name: string, dirs: (string | MachineDir)[] | null, extra: Partial<Machine> = {}): Machine =>
   ({
