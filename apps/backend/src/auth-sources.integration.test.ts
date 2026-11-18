@@ -207,6 +207,9 @@ describe('a board’s name belongs to the method that created it', () => {
     const app = await buildServer({ ...loginConfig(), auth: { login: false, user: 'dev' } }, db);
     open.push(app);
     expect((await rpc(app, 'me', undefined, { type: 'query' })).status).toBe(200);
+    // A query does not create the row (so that a browser still polling after `account.delete` does not bring it back).
+    expect(await sourceOf('dev')).toBeUndefined();
+    expect((await rpc(app, 'auth.logout')).status).toBe(200);
     expect(await sourceOf('dev')).toBeNull();
   });
 });

@@ -11,6 +11,7 @@ import {
   parseWireCatalog,
   parseWireDirs,
   parseWireUsage,
+  parseWireSetAgents,
   parseWireNoteInput,
   parseWirePr,
   parseWirePromptEdit,
@@ -34,6 +35,7 @@ import type {
   WireBackend,
   WireCatalog,
   WireDirs,
+  WireSharedAgents,
   WireUsage,
   WireNote,
   WireNoteInput,
@@ -78,6 +80,7 @@ interface FakeWire extends WireBackend {
   catalogSupported: boolean;
   usage: WireUsage | undefined;
   usageSupported: boolean;
+  agents: WireSharedAgents | null;
 }
 
 let nextId = 0;
@@ -97,6 +100,7 @@ function fakeWire(): FakeWire {
     catalogSupported: true,
     usage: undefined,
     usageSupported: true,
+    agents: null,
     async listTasks() {
       return state.tasks;
     },
@@ -199,6 +203,17 @@ function fakeWire(): FakeWire {
     async usageState() {
       return { supported: state.usageSupported, index: state.usage?.index ?? null };
     },
+    async getAgents() {
+      return state.agents;
+    },
+    async setAgents(body) {
+      const { document, version, expectedVersion } = parseWireSetAgents(JSON.parse(record(state, body)));
+      if ((state.agents?.version ?? 0) !== expectedVersion) throw new BackendError('set-agents: conflict', 409, true);
+      state.agents = { version, document };
+    },
+    async agentsState() {
+      return { supported: true, version: state.agents?.version ?? null };
+    },
     async pause(id, note) {
       push(state, id, parseWireNoteInput(JSON.parse(record(state, note)), 'note'), 'system', 'event');
       return state.tasks.find((t) => t.id === id)!;
@@ -255,9 +270,15 @@ function fakeWire(): FakeWire {
       return state.schedules[0]!;
     },
     async editSchedule(id, body) {
-      const sent = parseWireScheduleEdit(JSON.parse(record(state, body)));
+      const { settings, ...text } = parseWireScheduleEdit(JSON.parse(record(state, body)));
       const found = state.schedules.find((s) => s.id === id)!;
-      Object.assign(found, sent);
+      Object.assign(found, text);
+      if (settings !== undefined) {
+        found.agent = settings.agent ?? null;
+        found.machine = settings.place?.machine ?? null;
+        found.workdir = settings.place?.workdir ?? null;
+        found.priority = settings.priority;
+      }
       return { schedule: found, pending: 'updated' };
     },
     async removeSchedule() {},
@@ -1171,6 +1192,30 @@ test('a usage status the board would refuse is refused before it is sent', async
   assert.equal(wire.requests.length, 0);
 });
 
+test('the shared agents are sealed under their version, never reach the board in clear, and open only as that version', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  assert.equal(await board.sharedAgentsVersion(), null);
+  assert.equal(await board.getSharedAgents(), null);
+  const document = { version: 1, agents: { 'secret-repo': { description: 'MARKER-description', tools: ['Read'] } } };
+  await board.setSharedAgents(document, 0);
+  noMarkers(wire);
+  assert.equal(await board.sharedAgentsVersion(), 1);
+  assert.deepEqual(await board.getSharedAgents(), { version: 1, document });
+  assert.equal(await open(KEYS, 'agents.shared', 'agents:v1', wire.agents!.document), JSON.stringify(document));
+  // A board that relabels the document as a newer version serves something that opens under no binding.
+  wire.agents = { version: 2, document: wire.agents!.document };
+  assert.deepEqual(await board.getSharedAgents(), { version: 2, unreadable: true });
+  await assert.rejects(
+    board.setSharedAgents({ version: 3, agents: {} }, 1),
+    (error: unknown) => error instanceof BackendError && error.status === 400,
+  );
+  await assert.rejects(
+    board.setSharedAgents({ version: 1, agents: {} }, 0),
+    (error: unknown) => error instanceof BackendError && error.status === 409,
+  );
+});
+
 test('an agent is sealed with the task, never reaches the board in clear, and opens again; the prompt is bound to it', async () => {
   const wire = fakeWire();
   const board = sealingBackend(wire, KEYS);
@@ -1336,4 +1381,66 @@ test('an edited schedule is sealed under the schedule and its agent, and an unre
   noMarkers(wire);
   await assert.rejects(board.editSchedule('s2', { title: 't', input: 'x' }), /cannot be read/);
   await assert.rejects(board.editSchedule('nothere1', { title: 't', input: 'x' }), /no schedule/);
+});
+
+test('an edit of a schedule with settings seals title, prompt, agent and directory together under the new agent', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  wire.schedules.push(await wireSchedule({ id: 's1', agent: 'sweeper' }));
+  const settings = {
+    agent: 'reviewer',
+    place: { machine: 'laptop', workdir: WORKDIR },
+    priority: 'high' as const,
+    model: null,
+    autoDone: false,
+    repeat: { everyMs: 3_600_000 },
+    runsLeft: null,
+    until: null,
+    maxConcurrent: null,
+  };
+  const { schedule: moved } = await board.editSchedule('s1', { title: TITLE, input: INPUT, settings });
+  assert.deepEqual(
+    [moved.title, moved.input, moved.agent, moved.workdir, moved.machine, moved.priority, moved.unreadable],
+    [TITLE, INPUT, 'reviewer', WORKDIR, 'laptop', 'high', []],
+  );
+  const sent = JSON.parse(wire.requests.at(-1)!) as { settings: { agent: string; place: { workdir: string } } };
+  assert.match(sent.settings.agent, /^abe1\./);
+  assert.match(sent.settings.place.workdir, /^abe1\./);
+  noMarkers(wire);
+  assert.ok(!wire.requests.at(-1)!.includes('reviewer'), 'the agent name reached the server');
+
+  const { place: _place, agent: _agent, ...bare } = settings;
+  const { schedule: cleared } = await board.editSchedule('s1', {
+    title: TITLE,
+    input: INPUT,
+    settings: { ...bare, place: null },
+  });
+  assert.deepEqual([cleared.agent, cleared.workdir, cleared.machine, cleared.unreadable], [null, null, null, []]);
+  const clearedSent = JSON.parse(wire.requests.at(-1)!) as { settings: Record<string, unknown> };
+  assert.deepEqual([clearedSent.settings['agent'], clearedSent.settings['place']], [undefined, null]);
+  noMarkers(wire);
+});
+
+test('an edit of a schedule with settings refuses a relative directory before anything is sent', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  wire.schedules.push(await wireSchedule({ id: 's1' }));
+  await assert.rejects(
+    board.editSchedule('s1', {
+      title: 't',
+      input: 'x',
+      settings: {
+        place: { machine: 'laptop', workdir: 'relative/dir' },
+        priority: 'normal',
+        model: null,
+        autoDone: false,
+        repeat: { everyMs: 3_600_000 },
+        runsLeft: null,
+        until: null,
+        maxConcurrent: null,
+      },
+    }),
+    /workdir must be an absolute path/,
+  );
+  assert.deepEqual(wire.requests, []);
 });

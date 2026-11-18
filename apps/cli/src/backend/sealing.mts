@@ -13,6 +13,7 @@ import {
   openFields,
   openNote,
   openPrs,
+  openSharedAgents,
   openWatches,
   headIndex,
   parsePolish,
@@ -27,6 +28,7 @@ import {
   sealNote,
   sealPr,
   sealQuestions,
+  sealSharedAgents,
   sealWatches,
   sealTitle,
   sealWorkdir,
@@ -54,6 +56,7 @@ import type {
   WireNote,
   WireNoteInput,
   WireSchedule,
+  WireScheduleEdit,
   WireTask,
   WireTaskDraft,
   WireTaskPr,
@@ -391,6 +394,22 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       const sealed = await checked('set-usage', () => sealMachineUsage(sealer, machine, usage));
       await inner.setUsage({ usage: sealed, index: await machineUsageIndex(await getKeys(), machine, usage) });
     },
+    async sharedAgentsVersion() {
+      const { supported, version } = await inner.agentsState();
+      return supported ? version : 'unsupported';
+    },
+    async getSharedAgents() {
+      const wire = await inner.getAgents();
+      if (wire === null) return null;
+      const document = await openSharedAgents(openerFor(await getKeys()), wire.version, wire.document);
+      return document === undefined ? { version: wire.version, unreadable: true } : { version: wire.version, document };
+    },
+    async setSharedAgents(document, expectedVersion) {
+      if (document.version !== expectedVersion + 1)
+        throw invalid('set-agents', 'the version must be one more than the version it replaces');
+      const sealed = await checked('set-agents', () => sealSharedAgents(sealer, document));
+      await inner.setAgents({ document: sealed, version: document.version, expectedVersion });
+    },
     async pause(id, note) {
       return opened(await inner.pause(id, await noteInput('pause', id, 'system', note.trim())), openTask);
     },
@@ -450,16 +469,37 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     updateSchedule: async (id, patch) => opened(await inner.updateSchedule(id, patch), openSchedule),
     async editSchedule(id, edit) {
       const { title, input } = edited('edit-schedule', edit);
+      const { settings } = edit;
+      requireAbsolute('edit-schedule', settings?.place?.workdir);
       const found = await openedAll(await inner.listSchedules(), openSchedule);
       const current = found.find((schedule) => schedule.id === id);
       if (current === undefined) throw new BackendError(`edit-schedule: no schedule ${id.slice(0, 40)}`, 404);
       if (current.unreadable.length > 0)
         throw invalid('edit-schedule', 'this schedule cannot be read, so it is not edited here');
-      const row: RowRef = { kind: 'schedule', id, agent: current.agent ?? null };
-      const wire = await checked('edit-schedule', async () => ({
-        title: await sealTitle(sealer, row, title),
-        input: await sealInput(sealer, row, input),
-      }));
+      const wire = await checked('edit-schedule', async (): Promise<WireScheduleEdit> => {
+        if (settings === undefined) {
+          const row: RowRef = { kind: 'schedule', id, agent: current.agent ?? null };
+          return { title: await sealTitle(sealer, row, title), input: await sealInput(sealer, row, input) };
+        }
+        const { agent, place, ...rest } = settings;
+        const sealed = await sealFields(
+          sealer,
+          { kind: 'schedule', id, agent: agent ?? null },
+          { title, input, workdir: place?.workdir },
+        );
+        return {
+          title: sealed.title,
+          input: sealed.input,
+          settings: {
+            ...rest,
+            ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
+            place:
+              place === null || sealed.workdir === undefined
+                ? null
+                : { machine: place.machine, workdir: sealed.workdir },
+          },
+        };
+      });
       const result = await inner.editSchedule(id, wire);
       return { schedule: await opened(result.schedule, openSchedule), pending: result.pending };
     },

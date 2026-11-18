@@ -74,6 +74,7 @@ const task = (id: string, title: string): BoardTask =>
     openQuestion: false,
     createdBy: 'user',
     lane: null,
+    requestedLane: null,
     borrowed: false,
     lastActiveAt: null,
     runStartedAt: null,

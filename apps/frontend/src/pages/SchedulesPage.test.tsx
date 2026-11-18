@@ -14,7 +14,7 @@ type Row = Schedule;
 const list = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
 const setPaused = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const remove = vi.hoisted(() => vi.fn(async (_: unknown) => null));
-const edit = vi.hoisted(() =>
+const update = vi.hoisted(() =>
   vi.fn(async (_: unknown): Promise<{ pending: 'updated' | 'started' | 'none' }> => ({ pending: 'updated' })),
 );
 
@@ -32,7 +32,11 @@ vi.mock('../lib/trpc', () => ({
       list: { queryOptions: () => ({ queryKey: ['schedules'], queryFn: list }) },
       setPaused: { mutationOptions: () => ({ mutationFn: setPaused }) },
       remove: { mutationOptions: () => ({ mutationFn: remove }) },
-      edit: { mutationOptions: () => ({ mutationFn: edit }) },
+      update: { mutationOptions: () => ({ mutationFn: update }) },
+    },
+    machines: {
+      list: { queryOptions: () => ({ queryKey: ['machines'], queryFn: async () => [] }) },
+      catalogs: { queryOptions: () => ({ queryKey: ['catalogs'], queryFn: async () => [] }) },
     },
   }),
 }));
@@ -84,7 +88,7 @@ beforeEach(() => {
   list.mockReset();
   setPaused.mockClear();
   remove.mockClear();
-  edit.mockClear();
+  update.mockClear();
 });
 
 describe('SchedulesPage', () => {
@@ -241,27 +245,35 @@ describe('SchedulesPage', () => {
     expect(within(ended).queryByRole('link', { name: 'Next card' })).not.toBeInTheDocument();
   });
 
-  it('edit opens the schedule’s title and prompt, saves them and says the pending card was updated', async () => {
+  it('edit opens one dialog with the schedule’s values and saves all of them through update', async () => {
     list.mockResolvedValue([row({})]);
     renderPage();
-    await userEvent.click(within((await screen.findByText('Nightly sweep')).closest('tr')!).getByLabelText('Edit'));
+    const actions = within((await screen.findByText('Nightly sweep')).closest('tr')!);
+    expect(actions.queryByLabelText('Change repeat')).not.toBeInTheDocument();
+    await userEvent.click(actions.getByLabelText('Edit'));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByLabelText('Title')).toHaveValue('Nightly sweep');
     const prompt = within(dialog).getByLabelText('Prompt');
     expect(prompt).toHaveValue('/sweep the backlog\nand report');
+    expect(within(dialog).getByLabelText(/Repeat/)).toHaveValue('2h');
     await userEvent.clear(prompt);
     await userEvent.type(prompt, '/sweep everything');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
     expect(await within(dialog).findByText('The pending card was updated too.')).toBeInTheDocument();
-    expect(edit.mock.calls[0]?.[0]).toMatchObject({
-      schedule: { id: 'sch1' },
+    expect(update.mock.calls[0]?.[0]).toMatchObject({
+      id: 'sch1',
       title: 'Nightly sweep',
       input: '/sweep everything',
+      place: { machine: 'laptop', workdir: '/work' },
+      repeat: { everyMs: 7_200_000 },
+      runsLeft: null,
+      until: null,
+      maxConcurrent: null,
     });
   });
 
   it('edit says when the pending card had already started', async () => {
-    edit.mockResolvedValueOnce({ pending: 'started' as const });
+    update.mockResolvedValueOnce({ pending: 'started' as const });
     list.mockResolvedValue([row({})]);
     renderPage();
     await userEvent.click(within((await screen.findByText('Nightly sweep')).closest('tr')!).getByLabelText('Edit'));
@@ -269,5 +281,16 @@ describe('SchedulesPage', () => {
     await userEvent.type(prompt, '!');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText(/already started; the change applies from the next run/)).toBeInTheDocument();
+  });
+
+  it('offers no edit for an ended schedule and a disabled one for a schedule that cannot be read', async () => {
+    list.mockResolvedValue([
+      row({ ended: true, remaining: 0, nextRunAt: null, occurrenceTaskId: null }),
+      row({ id: 'sch2', title: 'Broken', unreadable: ['input'] }),
+    ]);
+    renderPage();
+    const ended = (await screen.findByText('Nightly sweep')).closest('tr')!;
+    expect(within(ended).queryByLabelText('Edit')).not.toBeInTheDocument();
+    expect(within(screen.getByText('Broken').closest('tr')!).getByLabelText('Edit')).toBeDisabled();
   });
 });

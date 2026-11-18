@@ -95,12 +95,14 @@ describe('request scoping', () => {
     expect(await ids()).toEqual(['committed']);
   });
 
-  it('provisions a user only when the request commits', async () => {
+  it('provisions a user when a mutation commits, and not for a query or a failed mutation', async () => {
     const users = async () => (await admin.select().from(appUsers)).map(({ username }) => username);
     const carol = probe.createCaller(testContext(db, 'carol'));
     await expect(carol.writeThenFail()).rejects.toMatchObject({ code: 'CONFLICT' });
     expect(await users()).toEqual([]);
     await carol.owner();
+    expect(await users()).toEqual([]);
+    await carol.write();
     expect(await users()).toEqual(['carol']);
   });
 

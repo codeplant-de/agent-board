@@ -30,7 +30,7 @@ import { PriorityPicker } from '../components/PriorityPicker';
 import { PrStateIcon } from '../components/PrStateIcon';
 import { PolishItem } from '../components/PolishItem';
 import { TaskBadges } from '../components/TaskBadges';
-import { AutoDoneSetting, ModelPicker, WorkdirSetting } from '../components/TaskSettings';
+import { AutoDoneSetting, LanePicker, ModelPicker, WorkdirSetting } from '../components/TaskSettings';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
 import { openQuestionOf } from '../lib/answers';
@@ -136,6 +136,7 @@ function TaskView({ id }: { id: string }) {
               onChange={(priority) => setPriority.mutate({ id: task.id, priority })}
             />
             <ModelPicker task={task} />
+            <LanePicker task={task} />
             {task.agent ? (
               <Badge variant="default" tt="none" size="sm" title="The agent of the machine's config.json it runs as">
                 Agent: {task.agent}

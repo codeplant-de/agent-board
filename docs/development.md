@@ -76,7 +76,7 @@ Tests follow the module they test:
 Three test skills in `apps/cli/src/__tests__/fixtures/skills` run real headless checks. Link one into `~/.claude/skills` and schedule it with `board schedule /<name>`.
 
 - `board-selftest-ask` asks one question through AskUserQuestion and reports the answer after you answer on the board.
-- `board-selftest-slow` works through eight 15-second steps. With two lanes of one slot each, schedule two so one lane borrows, then schedule own work for that lane. The next tick after `pauseAfterMinutes` pauses the borrowed run, which later resumes in its session.
+- `board-selftest-slow` works through eight 15-second steps. With two lanes of one slot each, schedule two with `--lane` for the same lane so the other lane borrows, then schedule own work for the borrowing lane with its `--lane`. The next tick after `pauseAfterMinutes` pauses the borrowed run, which later resumes in its session.
 - `board-selftest-worktree` enters a worktree first, so a pause and resume show that the session continues in it.
 
 ## Database migrations

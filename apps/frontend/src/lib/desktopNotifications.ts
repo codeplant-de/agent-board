@@ -1,6 +1,6 @@
 import type { ListedTask } from './opening';
 
-const PREFERENCE_KEY = 'agent-board.desktopNotifications';
+export const DESKTOP_NOTIFICATIONS_PREFERENCE_KEY = 'agent-board.desktopNotifications';
 const PREFERENCE_EVENT = 'agent-board:desktop-notifications';
 
 export type NotifiableTask = Pick<ListedTask, 'id' | 'status' | 'closed'>;
@@ -23,7 +23,7 @@ export const isNotificationSupported = (): boolean => typeof Notification !== 'u
 
 export const readDesktopNotificationsPreference = (): boolean => {
   try {
-    return localStorage.getItem(PREFERENCE_KEY) === 'on';
+    return localStorage.getItem(DESKTOP_NOTIFICATIONS_PREFERENCE_KEY) === 'on';
   } catch {
     return false;
   }
@@ -31,8 +31,8 @@ export const readDesktopNotificationsPreference = (): boolean => {
 
 export function writeDesktopNotificationsPreference(on: boolean): void {
   try {
-    if (on) localStorage.setItem(PREFERENCE_KEY, 'on');
-    else localStorage.removeItem(PREFERENCE_KEY);
+    if (on) localStorage.setItem(DESKTOP_NOTIFICATIONS_PREFERENCE_KEY, 'on');
+    else localStorage.removeItem(DESKTOP_NOTIFICATIONS_PREFERENCE_KEY);
   } catch {
     // Storage is blocked: the preference only lasts until the page closes, which the subscribers below still see.
   }

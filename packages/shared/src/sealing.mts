@@ -13,6 +13,7 @@
 //   machine.dirs   machine:<name> (the directory list the machine's CLI sends, one JSON document)
 //   machine.catalog machine:<name> (the skills and models the machine's CLI found, one JSON document)
 //   machine.usage  machine:<name> (the usage limits, readings and held tasks the machine's CLI found, one JSON document)
+//   agents.shared  agents:v<version> (every agent definition the user pushed to the board, one JSON document; see sharedAgents.mts)
 //   note.*         note:<taskId>:<author>:<kind>
 //   tr.*           <taskId>:<runId>:<seq>
 //

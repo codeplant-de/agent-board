@@ -82,6 +82,7 @@ const task = (overrides: Partial<BoardTask>): BoardTask =>
     machine: null,
     workdir: null,
     lane: null,
+    requestedLane: null,
     sessionId: null,
     next: 'fresh',
     head: null,

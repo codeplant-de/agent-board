@@ -5,6 +5,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './AppLayout';
 import { LoginPage } from './auth/LoginPage';
 import { RedirectReturn } from './auth/RedirectReturn';
+import { AccountDeletedProvider } from './components/AccountDeletedProvider';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { KeyGate } from './crypto/KeyGate';
 import { subscribeToSession } from './lib/session';
@@ -15,17 +16,6 @@ import { ClosedPage } from './pages/ClosedPage';
 import { SchedulesPage } from './pages/SchedulesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskPage } from './pages/TaskPage';
-
-/** The way back from an identity provider is a page of its own: nobody is signed in yet when it finishes the sign-in. */
-export function App() {
-  return (
-    <Routes>
-      <Route path="login/oidc" element={<RedirectReturn method="oidc" />} />
-      <Route path="login/saml" element={<RedirectReturn method="saml" />} />
-      <Route path="*" element={<SignedInApp />} />
-    </Routes>
-  );
-}
 
 function SignedInApp() {
   const trpc = useTRPC();
@@ -90,5 +80,18 @@ function SignedInApp() {
         </ErrorBoundary>
       </KeyGate>
     </>
+  );
+}
+
+/** The way back from an identity provider is a page of its own: nobody is signed in yet when it finishes the sign-in. */
+export function App() {
+  return (
+    <AccountDeletedProvider>
+      <Routes>
+        <Route path="login/oidc" element={<RedirectReturn method="oidc" />} />
+        <Route path="login/saml" element={<RedirectReturn method="saml" />} />
+        <Route path="*" element={<SignedInApp />} />
+      </Routes>
+    </AccountDeletedProvider>
   );
 }

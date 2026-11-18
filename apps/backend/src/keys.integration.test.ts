@@ -108,7 +108,7 @@ describe('keys router', () => {
   });
 
   it('the database refuses a key id without slots or slots without a key id', async () => {
-    await caller(db).me();
+    await caller(db).machines.issue({ name: 'laptop' });
     await expect(admin.update(appUsers).set({ keyId: KEY_A })).rejects.toThrow();
     await expect(admin.update(appUsers).set({ keySlots: [passphrase()] })).rejects.toThrow();
   });

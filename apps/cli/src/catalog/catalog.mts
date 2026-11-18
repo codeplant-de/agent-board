@@ -9,10 +9,11 @@ import {
   isSafeWorkdir,
   machineCatalogJson,
   MAX_CATALOG_DIR_SKILLS,
+  MAX_CATALOG_LANES,
   MAX_CATALOG_SKILLS,
   SEALED_LIMITS,
 } from '@agent-board/shared';
-import type { Backend, CatalogSkill, MachineCatalog } from '@agent-board/shared';
+import type { Backend, CatalogAgents, CatalogSkill, MachineCatalog } from '@agent-board/shared';
 import { coveringDir, dirsToSend, isDirectory, routedDirs, tryRealpath } from '../config/dirs.mts';
 import type { Config } from '../config/config.mts';
 import { errorText } from '../output/text.mts';
@@ -105,20 +106,23 @@ function fitToSeal(catalog: MachineCatalog, onTrim?: (what: string) => void): Ma
  * The document for the directories probed so far, or undefined when none is. `skills` are those every directory has, and each
  * directory lists the rest. The program and the models are those of the newest probe. `reported` are the skills runs on this
  * machine have reported, which is what tells a skill from a command of Claude Code itself. A document over the limit of a
- * sealed catalogue is made smaller deterministically (see `fitToSeal`), so that sending it cannot fail for its size.
+ * sealed catalogue is made smaller deterministically (see `fitToSeal`), so that sending it cannot fail for its size. `lanes` are
+ * this machine's lane names, which the forms offer.
  */
 export function composeCatalog(
   entries: readonly (CatalogEntry & { result: ProbeResult })[],
   reported: ReadonlySet<string>,
   onTrim?: (what: string) => void,
+  lanes: readonly string[] = [],
 ): MachineCatalog | undefined {
-  const full = composeFull(entries, reported);
+  const full = composeFull(entries, reported, lanes);
   return full === undefined ? undefined : fitToSeal(full, onTrim);
 }
 
 function composeFull(
   entries: readonly (CatalogEntry & { result: ProbeResult })[],
   reported: ReadonlySet<string>,
+  lanes: readonly string[],
 ): MachineCatalog | undefined {
   const [first] = entries;
   if (first === undefined) return undefined;
@@ -145,6 +149,7 @@ function composeFull(
       .sort(byName)
       .slice(0, MAX_CATALOG_SKILLS),
     dirs: Object.fromEntries(Object.entries(dirs).sort(([a], [b]) => (a < b ? -1 : 1))),
+    ...(lanes.length === 0 ? {} : { lanes: lanes.slice(0, MAX_CATALOG_LANES) }),
   };
 }
 
@@ -162,6 +167,8 @@ export interface CatalogSyncDeps {
   skipProbe?: boolean;
   log: (line: string) => void;
   exists?: (path: string) => boolean;
+  // What the machine has of the agents, sent with the catalogue so the browser can tell which machines run what.
+  agents?: CatalogAgents;
 }
 
 /** What `syncCatalog` did: sent the catalogue, found the board's copy current or the server unable to hold one, or had nothing to send yet. */
@@ -221,8 +228,14 @@ export async function syncCatalog(deps: CatalogSyncDeps): Promise<CatalogSync> {
     return entry?.result ? [{ ...entry, result: entry.result }] : [];
   });
   let trimmed: string | undefined;
-  const catalog = composeCatalog(entries, store.initSkills(), (what) => (trimmed = what));
-  if (catalog === undefined) return { result: 'nothing-probed' };
+  const composed = composeCatalog(
+    entries,
+    store.initSkills(),
+    (what) => (trimmed = what),
+    config.lanes.map(({ name }) => name),
+  );
+  if (composed === undefined) return { result: 'nothing-probed' };
+  const catalog = deps.agents === undefined ? composed : { ...composed, agents: deps.agents };
   const state = await backend.checkCatalog(config.machine, catalog);
   if (state !== 'stale') return { result: state === 'current' ? 'unchanged' : 'unsupported' };
   await backend.setCatalog(config.machine, catalog);

@@ -22,7 +22,10 @@ import type { TestContext } from 'node:test';
 import { ConfigError, loadConfig, parseConfig } from '../config/config.mts';
 import { parseAgentDocument } from '../config/agent-document.mts';
 import { parseAgentUrl, sha256Hex } from '../config/agent-fetch.mts';
-import { agentsAdd, broadRule, grantSummary, looksSecret } from './agents.mts';
+import { agentsAdd, agentsPush, agentsRemoveFromBoard, broadRule, grantSummary, looksSecret } from './agents.mts';
+import { fakeBackend } from '../__tests__/helpers/fakes.mts';
+import type { SharedAgentsOnBoard } from '@agent-board/shared';
+import { readBoardAgentsState } from '../config/config.mts';
 import type { AgentsDeps } from './agents.mts';
 import { exampleText } from './example.mts';
 import { runBoard } from './program.mts';
@@ -463,7 +466,7 @@ test('board agents lists each agent with where it is defined, its counts, its so
   await fx.go(['agents']);
   const text = fx.out.join('');
   assert.match(text, /^broken {2}NOT USABLE: agents\/broken\.yaml: tools must be a non-empty list/m);
-  assert.match(text, /^inline {2}usable {2}\(config\.json\)\n {2}tools 1: Read; allow 1, deny 0$/m);
+  assert.match(text, /^inline {2}usable {2}\(config\.json\) {2}[0-9a-f]{12}\n {2}tools 1: Read; allow 1, deny 0$/m);
   assert.match(text, /^plugged {2}NOT USABLE: \{nope\} does not resolve/m);
   assert.match(text, /source: https:\/\/example\.com\/p\.yaml/);
   fx.out.length = 0;
@@ -481,8 +484,139 @@ test('board agents lists each agent with where it is defined, its counts, its so
 
 test('board agents refuses unknown actions and misplaced flags', async (context) => {
   const fx = fixture(context);
-  await assert.rejects(fx.go(['agents', 'install', 'x']), /agents takes nothing, or list, show, export, add, rm/);
+  await assert.rejects(fx.go(['agents', 'install', 'x']), /agents takes nothing, or list, show, export, add, push, rm/);
   await assert.rejects(fx.go(['agents', 'show']), /takes one name/);
-  await assert.rejects(fx.go(['agents', 'list', '--yes']), /--name, --replace and --yes belong to add/);
+  await assert.rejects(fx.go(['agents', 'list', '--yes']), /--name and --yes belong to add and push/);
+  await assert.rejects(fx.go(['agents', 'push', 'x', '--replace']), /--replace belongs to add/);
+  await assert.rejects(fx.go(['agents', 'add', 'x', '--board']), /--board belongs to rm/);
+  await assert.rejects(
+    fx.go(['agents', 'push', 'x'], { env: { AGENT_BOARD_CONFIG_DIR: fx.configDir, AGENT_BOARD_TASK: 't1' } }),
+    /board agents push is not available inside a board run/,
+  );
   await assert.rejects(fx.go(['agents', 'show', 'x', '--json', '--yaml']), /choose one/);
+});
+
+// The board's agents: push and rm --board
+
+const READER_ENTRY = {
+  description: 'A small agent',
+  tools: ['Read', 'Bash'],
+  allowedTools: ['Read', 'Bash(git status)'],
+  disallowedTools: ['Read(~/.ssh/**)'],
+};
+
+function boardFixture(context: TestContext, config: Record<string, unknown> = {}) {
+  const fx = fixture(context, config);
+  const backend = fakeBackend([]);
+  const deps = (overrides: Partial<AgentsDeps> = {}) =>
+    fx.deps({ backend, now: () => new Date('2026-11-18T10:15:00Z'), ...overrides });
+  return { ...fx, backend, boardDeps: deps };
+}
+
+test('push of an agent this machine defines puts it on the board, and it becomes the board’s here too', async (context) => {
+  const fx = boardFixture(context);
+  writeFileSync(join(fx.root, 'small.yaml'), SMALL_YAML);
+  await agentsAdd(fx.deps(), 'small.yaml', { yes: true });
+  await assert.rejects(
+    agentsPush(fx.boardDeps(), 'small', {}),
+    /nothing was pushed: confirm at a terminal, or pass --yes/,
+  );
+  assert.equal(fx.backend.boardAgents.held, null);
+  await agentsPush(fx.boardDeps(), 'small', { yes: true });
+  assert.deepEqual(fx.backend.writes, ['agents v1: small']);
+  const held: SharedAgentsOnBoard = fx.backend.boardAgents.held as SharedAgentsOnBoard;
+  assert.ok(held !== null && 'document' in held);
+  assert.deepEqual(held.document.agents['small'], READER_ENTRY, 'neither name nor source goes to the board');
+  assert.match(said(fx), /What a run as this agent may do on every machine of yours/);
+  assert.deepEqual(readdirSync(fx.agentsDir), [], 'the local file went: the board copy holds it');
+  const config = loadConfig(fx.configFile);
+  assert.equal(config.agents['small']?.source, 'board');
+  assert.equal(readBoardAgentsState(join(fx.configDir, 'agents.board')).version, 1);
+
+  fx.out.length = 0;
+  await fx.go(['agents']);
+  assert.match(fx.out.join(''), /^small {2}usable {2}\(board v1\) {2}[0-9a-f]{12}$/m);
+  // A board agent is changed by pushing, and taken off the board, not removed here.
+  await assert.rejects(
+    agentsAdd(fx.deps(), 'small.yaml', { yes: true, replace: true }),
+    /held on the board for every machine/,
+  );
+  await assert.rejects(fx.go(['agents', 'rm', 'small']), /board agents rm --board small takes it off every machine/);
+  await assert.rejects(
+    agentsPush(fx.boardDeps(), 'small', { yes: true }),
+    /is on the board already; to change it, export it/,
+  );
+});
+
+test('push from a file replaces the board’s entry and moves this machine’s own definition of the name aside', async (context) => {
+  const fx = boardFixture(context, { agents: { small: { description: 'mine', tools: ['Bash'] } } });
+  fx.backend.boardAgents.held = { version: 4, document: { version: 4, agents: { other: READER_ENTRY } } };
+  writeFileSync(join(fx.root, 'small.yaml'), SMALL_YAML);
+  await agentsPush(fx.boardDeps(), './small.yaml', { yes: true });
+  assert.deepEqual(fx.backend.writes, ['agents v5: other,small']);
+  assert.match(said(fx), /This machine's own small \(config\.json\) will be moved to agents\.replaced\//);
+  assert.match(said(fx), /REPLACED small: local definition moved to .*agents\.replaced\/small\.20261118T101500Z\.yaml/);
+  const config = loadConfig(fx.configFile);
+  assert.deepEqual(Object.keys(config.agents).sort(), ['other', 'small']);
+  assert.equal(config.agents['small']?.description, 'A small agent');
+});
+
+test('a push that finds another push came first fetches again, retries once, and asks again only when its own entry changed', async (context) => {
+  const fx = boardFixture(context);
+  writeFileSync(join(fx.root, 'small.yaml'), SMALL_YAML);
+  fx.backend.boardAgents.conflicts = 1;
+  await agentsPush(fx.boardDeps(), 'small.yaml', { yes: true });
+  assert.deepEqual(fx.backend.writes, ['agents v1: small']);
+
+  // Someone else pushes `small` while this push waits for its confirmation.
+  const asked: string[] = [];
+  const backend = fx.backend;
+  const deps = fx.boardDeps({
+    confirm: async (question) => {
+      asked.push(question);
+      if (asked.length === 1)
+        backend.boardAgents.held = {
+          version: 2,
+          document: { version: 2, agents: { small: { ...READER_ENTRY, tools: ['Read'] } } },
+        };
+      return asked.length === 1;
+    },
+  });
+  writeFileSync(join(fx.root, 'small.yaml'), `${SMALL_YAML}model: opus\n`);
+  await agentsPush(deps, 'small.yaml', {});
+  assert.deepEqual(asked, ['Replace agent small on every machine?', 'Replace it with yours on every machine?']);
+  assert.match(said(fx), /Another push changed small on the board meanwhile \(now v2\)/);
+  assert.match(said(fx), /nothing was pushed\./);
+  assert.deepEqual(fx.backend.writes, ['agents v1: small']);
+});
+
+test('push refuses a board whose document does not open, and a server without the feature', async (context) => {
+  const fx = boardFixture(context);
+  writeFileSync(join(fx.root, 'small.yaml'), SMALL_YAML);
+  fx.backend.boardAgents.held = { version: 3, unreadable: true };
+  await assert.rejects(
+    agentsPush(fx.boardDeps(), 'small.yaml', { yes: true }),
+    /v3 do not open with this machine's data key; nothing was pushed/,
+  );
+  fx.backend.boardAgents.supported = false;
+  await assert.rejects(
+    agentsPush(fx.boardDeps(), 'small.yaml', { yes: true }),
+    /does not support agent definitions held on the board yet/,
+  );
+  assert.deepEqual(fx.backend.writes, []);
+});
+
+test('rm --board takes one agent off the board and out of agents.board/ here', async (context) => {
+  const fx = boardFixture(context);
+  fx.backend.boardAgents.held = {
+    version: 2,
+    document: { version: 2, agents: { small: READER_ENTRY, other: READER_ENTRY } },
+  };
+  await assert.rejects(
+    agentsRemoveFromBoard(fx.boardDeps(), 'nope'),
+    /the board holds no agent "nope" \(v2 has other, small\)/,
+  );
+  await agentsRemoveFromBoard(fx.boardDeps(), 'small');
+  assert.deepEqual(fx.backend.writes, ['agents v3: other']);
+  assert.deepEqual(Object.keys(loadConfig(fx.configFile).agents), ['other']);
 });

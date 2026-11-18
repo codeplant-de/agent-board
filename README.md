@@ -40,7 +40,7 @@ You need Linux with systemd, or macOS. You also need `claude` and `gh`, both log
    board doctor          # checks config, token, key, server version and units
    ```
 
-4. Optional: list your checkouts with `board dirs` and split parallel runs by skill with `lanes`. [Configuration worth knowing](docs/first-steps.md#configuration-worth-knowing) walks through both.
+4. Optional: list your checkouts with `board dirs` and split parallel runs with `lanes`. [Configuration worth knowing](docs/first-steps.md#configuration-worth-knowing) walks through both.
 
 To turn PR review requests into tasks, add the reviewer agent with `board agents add example:reviewer` and run the `github-reviews` script on a timer. [Review requests from GitHub](docs/usage.md#review-requests-from-github) has the script and the timer unit.
 
@@ -103,7 +103,7 @@ pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 | --- | --- |
 | [first-steps.md](docs/first-steps.md) | What to try after installing, automatic task creation, useful settings. |
 | [architecture.md](docs/architecture.md) | Components, data flow, design decisions and the rules a change must keep. |
-| [usage.md](docs/usage.md) | Tasks, scheduling, questions and resume, waiting, proposals, polish. |
+| [usage.md](docs/usage.md) | Tasks, scheduling, questions and resume, waiting, proposals, polish, export and import of your data. |
 | [workers.md](docs/workers.md) | Multiple machines, lanes, liveness, transcripts, permissions, how dispatch decides. |
 | [setup.md](docs/setup.md) | Installing the CLI, `config.json`, upgrading. |
 | [cli.md](docs/cli.md) | Generated `board` command reference. |

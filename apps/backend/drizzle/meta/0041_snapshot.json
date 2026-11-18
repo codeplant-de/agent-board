@@ -1,5 +1,5 @@
 {
-  "id": "5794b83c-438a-47dc-8716-2584414ae655",
+  "id": "2b2a6507-9ed7-45d3-a58c-b81b7419ac2d",
   "prevId": "161b790f-ddca-494d-b894-ae5ab5f51da3",
   "version": "7",
   "dialect": "postgresql",
@@ -32,13 +32,6 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
-        },
-        "source": {
-          "name": "source",
-          "type": "session_method",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {},
@@ -68,87 +61,6 @@
         }
       },
       "isRLSEnabled": true
-    },
-    "public.auth_flow": {
-      "name": "auth_flow",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "auth_flow_kind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "challenge": {
-          "name": "challenge",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "data": {
-          "name": "data",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "owner": {
-          "name": "owner",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "auth_flow_expires_idx": {
-          "name": "auth_flow_expires_idx",
-          "columns": [
-            {
-              "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "auth_flow_owner_app_user_username_fk": {
-          "name": "auth_flow_owner_app_user_username_fk",
-          "tableFrom": "auth_flow",
-          "tableTo": "app_user",
-          "columnsFrom": [
-            "owner"
-          ],
-          "columnsTo": [
-            "username"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
     },
     "public.machine": {
       "name": "machine",
@@ -535,117 +447,6 @@
       },
       "isRLSEnabled": true
     },
-    "public.passkey": {
-      "name": "passkey",
-      "schema": "",
-      "columns": {
-        "credential_id": {
-          "name": "credential_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "owner": {
-          "name": "owner",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "current_setting('app.owner', true)"
-        },
-        "public_key": {
-          "name": "public_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "counter": {
-          "name": "counter",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "transports": {
-          "name": "transports",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "last_used_at": {
-          "name": "last_used_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "passkey_owner_idx": {
-          "name": "passkey_owner_idx",
-          "columns": [
-            {
-              "expression": "owner",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "passkey_owner_app_user_username_fk": {
-          "name": "passkey_owner_app_user_username_fk",
-          "tableFrom": "passkey",
-          "tableTo": "app_user",
-          "columnsFrom": [
-            "owner"
-          ],
-          "columnsTo": [
-            "username"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {
-        "tenant": {
-          "name": "tenant",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "board_app"
-          ],
-          "using": "owner = (select current_setting('app.owner', true))",
-          "withCheck": "owner = (select current_setting('app.owner', true))"
-        }
-      },
-      "checkConstraints": {
-        "passkey_name_length": {
-          "name": "passkey_name_length",
-          "value": "char_length(\"passkey\".\"name\") between 1 and 60"
-        }
-      },
-      "isRLSEnabled": true
-    },
     "public.schedule": {
       "name": "schedule",
       "schema": "",
@@ -685,6 +486,12 @@
         },
         "model": {
           "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_lane": {
+          "name": "requested_lane",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -904,115 +711,6 @@
       },
       "isRLSEnabled": true
     },
-    "public.session": {
-      "name": "session",
-      "schema": "",
-      "columns": {
-        "token_hash": {
-          "name": "token_hash",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "owner": {
-          "name": "owner",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "current_setting('app.owner', true)"
-        },
-        "method": {
-          "name": "method",
-          "type": "session_method",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "last_seen_at": {
-          "name": "last_seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "session_owner_idx": {
-          "name": "session_owner_idx",
-          "columns": [
-            {
-              "expression": "owner",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "session_expires_idx": {
-          "name": "session_expires_idx",
-          "columns": [
-            {
-              "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "session_owner_app_user_username_fk": {
-          "name": "session_owner_app_user_username_fk",
-          "tableFrom": "session",
-          "tableTo": "app_user",
-          "columnsFrom": [
-            "owner"
-          ],
-          "columnsTo": [
-            "username"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {
-        "tenant": {
-          "name": "tenant",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "board_app"
-          ],
-          "using": "owner = (select current_setting('app.owner', true))",
-          "withCheck": "owner = (select current_setting('app.owner', true))"
-        }
-      },
-      "checkConstraints": {},
-      "isRLSEnabled": true
-    },
     "public.task_pr": {
       "name": "task_pr",
       "schema": "",
@@ -1179,6 +877,12 @@
         },
         "model": {
           "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_lane": {
+          "name": "requested_lane",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1828,17 +1532,6 @@
     }
   },
   "enums": {
-    "public.auth_flow_kind": {
-      "name": "auth_flow_kind",
-      "schema": "public",
-      "values": [
-        "oidc",
-        "saml",
-        "passkey-login",
-        "passkey-register",
-        "passkey-signup"
-      ]
-    },
     "public.next_run": {
       "name": "next_run",
       "schema": "public",
@@ -1875,15 +1568,6 @@
         "open",
         "merged",
         "closed"
-      ]
-    },
-    "public.session_method": {
-      "name": "session_method",
-      "schema": "public",
-      "values": [
-        "passkey",
-        "oidc",
-        "saml"
       ]
     },
     "public.task_actor": {

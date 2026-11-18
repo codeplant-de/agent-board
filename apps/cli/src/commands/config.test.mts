@@ -31,7 +31,7 @@ interface Fixture {
 
 const BASE = {
   machine: 'here',
-  lanes: { general: { skills: ['*'], slots: 3 }, reviews: { skills: ['/review'], slots: 2 } },
+  lanes: { general: { slots: 3, default: true }, reviews: { slots: 2 } },
   repos: { 'acme/app.js': '/srv/app' },
   agents: { reviewer: { description: 'Reviews', tools: ['Read'] } },
 };
@@ -97,7 +97,7 @@ test('show prints the path, the settings with their defaults marked, lanes, repo
   assert.ok(lines.includes('autoUpdate         never'));
   assert.ok(lines.some((line) => /^inactivityMinutes {2}15 {2}\(default\)$/.test(line)));
   assert.ok(lines.some((line) => /^defaultCwd .*\(default\)$/.test(line)));
-  assert.ok(lines.some((line) => /^ {2}reviews {2}skills \/?review {2}slots 2$/.test(line)));
+  assert.ok(lines.some((line) => /^ {2}reviews {2}slots 2$/.test(line)));
   assert.ok(lines.includes('  acme/app.js  /srv/app'));
   assert.ok(lines.includes('  reviewer'));
   assert.ok(lines.some((line) => line.startsWith('dirs') && line.includes('not set')));
@@ -151,7 +151,7 @@ test('get prints a string bare and anything else as JSON, and follows names that
   assert.deepEqual(run.printed, [
     'here',
     '2',
-    JSON.stringify({ skills: ['/review'], slots: 2 }, null, 2),
+    JSON.stringify({ slots: 2 }, null, 2),
     JSON.stringify(['Read'], null, 2),
     '/srv/app',
   ]);
@@ -179,14 +179,14 @@ test('set takes JSON or a string, creates the objects on the way and keeps the k
   const run = runner(fx);
   await run.go(['config', 'set', 'pauseAfterMinutes', '10']);
   await run.go(['config', 'set', 'autoUpdate', 'never']);
-  await run.go(['config', 'set', 'lanes.docs', '{"skills":["/docs"],"slots":1}']);
+  await run.go(['config', 'set', 'lanes.docs', '{"slots":1}']);
   await run.go(['config', 'set', 'agents.reviewer.tools', '["Read","Bash"]']);
   await run.go(['config', 'set', 'repos.acme/web.js', fx.root]);
   await run.go(['config', 'set', 'agents.writer', '{"description":"Writes","tools":["Write"]}']);
   const after = fx.json();
   assert.equal(after['pauseAfterMinutes'], 10);
   assert.equal(after['autoUpdate'], 'never');
-  assert.deepEqual((after['lanes'] as Record<string, unknown>)['docs'], { skills: ['/docs'], slots: 1 });
+  assert.deepEqual((after['lanes'] as Record<string, unknown>)['docs'], { slots: 1 });
   assert.deepEqual((after['agents'] as Record<string, Record<string, unknown>>)['reviewer']?.['tools'], [
     'Read',
     'Bash',
@@ -205,25 +205,25 @@ test('set takes JSON or a string, creates the objects on the way and keeps the k
 
 test('set creates a nested object under a key the file lacks', async (context) => {
   const fx = fixture(context, { machine: 'here' });
-  await runner(fx).go(['config', 'set', 'lanes.reviews.skills', '["/review"]']);
-  assert.deepEqual(fx.json()['lanes'], { general: { skills: ['*'], slots: 3 }, reviews: { skills: ['/review'] } });
+  await runner(fx).go(['config', 'set', 'lanes.reviews.slots', '2']);
+  assert.deepEqual(fx.json()['lanes'], { general: { slots: 3, default: true }, reviews: { slots: 2 } });
 });
 
 test('set below lanes in a file without lanes writes the default lane out too, and says so', async (context) => {
   const fx = fixture(context, { machine: 'here' });
   const run = runner(fx);
-  await run.go(['config', 'set', 'lanes.reviews', '{"skills":["/review"],"slots":2}']);
+  await run.go(['config', 'set', 'lanes.reviews', '{"slots":2}']);
   assert.deepEqual(fx.json()['lanes'], {
-    general: { skills: ['*'], slots: 3 },
-    reviews: { skills: ['/review'], slots: 2 },
+    general: { slots: 3, default: true },
+    reviews: { slots: 2 },
   });
   assert.ok(said(run).includes('the default lane general is written out too'));
   const again = runner(fx);
-  await again.go(['config', 'set', 'lanes.docs', '{"skills":["/docs"]}']);
+  await again.go(['config', 'set', 'lanes.docs', '{"slots":1}']);
   assert.ok(!said(again).includes('written out'), 'the lanes are in the file now');
   const dry = fixture(context, { machine: 'here' });
   const dryRun = runner(dry);
-  await dryRun.go(['--dry-run', 'config', 'set', 'lanes.reviews', '{"skills":["/review"]}']);
+  await dryRun.go(['--dry-run', 'config', 'set', 'lanes.reviews', '{"slots":2}']);
   assert.ok(!('lanes' in dry.json()));
 });
 
@@ -231,7 +231,7 @@ test('get lanes without the key prints the default as the file spells it, and a 
   const fx = fixture(context, { machine: 'here' });
   const run = runner(fx);
   await run.go(['config', 'get', 'lanes']);
-  assert.deepEqual(JSON.parse(run.printed.join('\n')), { general: { skills: ['*'], slots: 3 } });
+  assert.deepEqual(JSON.parse(run.printed.join('\n')), { general: { slots: 3, default: true } });
   const work = join(fx.root, 'work');
   mkdirSync(work);
   writeFileSync(fx.configFile, JSON.stringify({ machine: 'here', dirs: { [work]: { default: true } } }));
@@ -262,7 +262,7 @@ test('set and unset refuse a route that was fine and now is not a directory or n
     JSON.stringify({
       machine: 'here',
       dirs: { [listed]: { default: true } },
-      lanes: { general: { skills: ['*'], slots: 1 } },
+      lanes: { general: { slots: 1, default: true } },
     }),
   );
   const before = fx.text();
@@ -336,7 +336,7 @@ test('set with the value already there says so and writes nothing', async (conte
   const before = fx.text();
   const run = runner(fx);
   await run.go(['config', 'set', 'machine', 'here']);
-  await run.go(['config', 'set', 'lanes.reviews', '{"slots":2,"skills":["/review"]}']);
+  await run.go(['config', 'set', 'lanes.reviews', '{"slots":2}']);
   assert.ok(run.printed.every((line) => line.includes('is already')));
   assert.equal(run.printed.length, 2);
   assert.equal(fx.text(), before);
@@ -370,7 +370,7 @@ test('set refuses a value the config would not load, an unknown key and a new br
   );
   await refused(['set', 'agents.writer', '{"description":"W"}'], /agents\.writer\.tools must be a non-empty list/);
   await refused(['set', 'machine', 'bad name'], /machine must be a name/);
-  await refused(['set', 'lanes.reviews.skills.0', '"x"'], /is a list, not an object/);
+  await refused(['set', 'agents.reviewer.tools.0', '"x"'], /is a list, not an object/);
   await refused(['set', 'lanes.reviews.slots.deep', '1'], /lanes\.reviews\.slots is a number, not an object/);
 });
 
@@ -407,7 +407,7 @@ test('unset refuses what would leave a config that does not load, and writes not
     run.go(['config', 'unset', 'lanes.reviews']),
     /cannot be removed: config: dirs\["\/srv\/a"\]\.lane must name a lane/,
   );
-  await assert.rejects(run.go(['config', 'unset', 'lanes.general.skills']), /skills must be a non-empty list/);
+  await assert.rejects(run.go(['config', 'set', 'lanes.reviews.default', 'true']), /are all marked default/);
   assert.equal(fx.text(), before);
 });
 

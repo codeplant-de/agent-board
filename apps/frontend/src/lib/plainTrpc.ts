@@ -30,7 +30,7 @@ import {
   sealEdit,
   sealNewTask,
   sealReply,
-  sealScheduleEdit,
+  sealScheduleUpdate,
   sealStart,
   startsProposal,
   type Configuration,
@@ -38,7 +38,7 @@ import {
   type ForkSource,
   type EditTarget,
   type NewTask,
-  type ScheduleEditTarget,
+  type ScheduleUpdate,
   type PolishTarget,
   type Proposal,
 } from './sealing';
@@ -98,11 +98,7 @@ export interface EditVariables {
   input: string;
 }
 
-export interface EditScheduleVariables {
-  schedule: ScheduleEditTarget;
-  title: string;
-  input: string;
-}
+export type UpdateScheduleVariables = ScheduleUpdate;
 
 export type ConfigureVariables = Configuration & {
   // The task as the page shows it: a new directory is sealed under its row.
@@ -320,13 +316,13 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
               openSchedules(need(), await client.schedules.list.query(undefined, { signal })),
           }),
       },
-      edit: {
+      update: {
         mutationOptions: () =>
           mutationOptions({
-            mutationKey: raw.schedules.edit.mutationKey(),
-            mutationFn: async (variables: EditScheduleVariables) => {
-              const { schedule, pending } = await client.schedules.edit.mutate(
-                await sealScheduleEdit(need(), variables),
+            mutationKey: raw.schedules.update.mutationKey(),
+            mutationFn: async (variables: UpdateScheduleVariables) => {
+              const { schedule, pending } = await client.schedules.update.mutate(
+                await sealScheduleUpdate(need(), variables),
               );
               return { schedule: await openSchedule(need(), schedule), pending };
             },

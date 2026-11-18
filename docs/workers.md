@@ -15,18 +15,20 @@ Tasks only move while a machine with the right setup is on.
 
 ## Lanes
 
-A machine splits its parallel runs into lanes by skill, in its `config.json`:
+A machine splits its parallel runs into lanes, in its `config.json`. A task names the lane it wants; the prompt does not decide it.
 
 ```json
 "lanes": {
-  "reviews": { "skills": ["review-pr"], "slots": 2 },
-  "general": { "skills": ["*"], "slots": 3 }
+  "reviews": { "slots": 2 },
+  "general": { "slots": 3, "default": true }
 }
 ```
 
-Without `lanes`, a machine runs one lane, `general`, with `*` and three slots.
+Exactly one lane is the `default`. Without `lanes`, a machine runs one lane, `general`, with three slots, and it is the default. A config that marks no lane takes the first lane as the default, and one that marks two is refused.
 
-- **Own work first.** A task belongs to the lane that names the skill its prompt starts with. `/review-pr` and `/pr-review:review-pr` both count as `review-pr`. Every other task, prompts without a skill included, belongs to the lane with `*`. A skill belongs to at most one lane, and at most one lane has `*`. A lane with a free slot takes the first Todo task of its own. Resumes come first (answered, replied to or paused), then the rest by priority.
+- **The task names its lane.** You set it in the New task form, the lane picker on the task page or the schedule editor, or with `board schedule --lane <name>`, `board add --lane <name>` and `board task <task> set lane <name>`. A recurring schedule gives its lane to every occurrence. A task made by an agent's `board add` does not inherit the lane of the task that made it: it asks for none unless `--lane` says so. The lane is routing like the priority, so the board keeps it in clear. Its name has the shape of a machine name (`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`), and the worker checks it again before it uses it.
+- **Own work first.** A task belongs to the lane it names, when this machine has a lane of that name. A task that names none, or one this machine lacks, belongs to the default lane. The dispatcher says so when it starts one that fell back (`lane reviews → general (no such lane here)` in the log and the start note), so a lane that exists only on one machine still works on the others. A lane with a free slot takes the first Todo task of its own. Resumes come first (answered, replied to or paused), then the rest by priority.
+- **A running task keeps its lane.** The lane can be changed while the task is not running. The board refuses a change while it runs, and the run goes on in the lane it started in. A new start (a resume, a re-run) takes the lane the task names then.
 - **Borrowing.** A lane with nothing of its own borrows the first task any other lane would run, so idle slots do not wait. The run is marked borrowed.
 - **Taking the slot back.** A full lane may have its own work waiting while it runs borrowed work. Once a borrowed run has gone on for `pauseAfterMinutes` (default 5), the dispatcher asks the newest such run to pause, one per lane at a time. Lane bias beats priority, so a borrowed urgent run gives way to its lane's own low task. An urgent task only has guaranteed room in its own lane.
 
@@ -40,13 +42,13 @@ A turn that has not ended 2 minutes after the message is interrupted (see [Talki
 
 ### A lane's directory
 
-A lane may name a `cwd`. Its tasks run there when they have no directory of their own (see [Where a task runs](#where-a-task-runs)):
+A lane may name a `cwd`. Its tasks run there when they have no directory of their own (see [Where a task runs](#where-a-task-runs)). A task's lane for this is the one it owns, the lane it names or the default one, not the lane that borrowed it:
 
 ```json
-"reviews": { "skills": ["review-pr"], "slots": 2, "cwd": "~/workspace/acme/app" }
+"reviews": { "slots": 2, "cwd": "~/workspace/acme/app" }
 ```
 
-With that, `/review-pr 17766` from the New task form runs in the checkout and gets its settings. You can set the same from the directory's side with `board dirs set lane reviews ~/workspace/acme/app` (see [Config](setup.md#config)). That setting wins over the lane's `cwd`, and one directory serves one lane.
+With that, a task from the New task form with the lane `reviews` runs in the checkout and gets its settings. You can set the same from the directory's side with `board dirs set lane reviews ~/workspace/acme/app` (see [Config](setup.md#config)). That setting wins over the lane's `cwd`, and one directory serves one lane.
 
 ## Usage limits
 
@@ -96,7 +98,7 @@ The worker checks the heartbeat every 15 seconds:
 - **No tool call for `inactivityMinutes`** (default 15). The run is interrupted as stuck, and the task goes to `needs-me` with the end of the log. Claude Code caps a foreground Bash call at ten minutes, so a long command does not trip it.
 - **A run longer than `maxRunHours`** (default 6). The run is interrupted, however busy. This guards against an agent that loops on tool calls.
 
-While the agent is active, the worker passes the heartbeat and the lane on to the board every 15 seconds. A running card counts the seconds since ("active 12s ago", then "active 1m 5s ago"). It turns amber after 5 quiet minutes and red after 10. The card also shows its lane, with a "borrowed" badge when it runs in another lane's slot.
+While the agent is active, the worker passes the heartbeat and the lane on to the board every 15 seconds. A running card counts the seconds since ("active 12s ago", then "active 1m 5s ago"). It turns amber after 5 quiet minutes and red after 10. The card also shows its lane, with a "borrowed" badge when it runs in another lane's slot. A task that waits in Todo or Backlog shows the lane it asks for as a small badge.
 
 ### How a run is stopped
 
@@ -233,7 +235,7 @@ A task without a directory of its own starts in the first of these that applies:
 2. its lane's `cwd`,
 3. `defaultCwd`.
 
-Each of the three can also come from the `dirs` list. A directory with `repo` is that repository's checkout, one with `lane` is that lane's `cwd`, and the one with `default` is `defaultCwd`. A setting in `dirs` wins over the matching key.
+Each of the three can also come from the `dirs` list. A directory with `repo` is that repository's checkout, one with `lane` is that lane's `cwd`, and the one with `default` is `defaultCwd`. A setting in `dirs` wins over the matching key. `board dirs add` sets `repo` for a directory that is the top level of a GitHub checkout, so the checkouts you list serve the PRs of their repository without a `repos` entry.
 
 The directory matters beyond the files. Claude Code loads a checkout's `.claude/settings*.json` only when it starts there, and that is where a project's tokens and endpoints usually live. The task's `workdir` is set to the start directory.
 
@@ -304,9 +306,13 @@ An entry's settings (`repo`, `default`, `lane`) only say where tasks run. They c
 - The copy never reaches a path, an argument or a decision on any machine. The worker reads only its own `config.json`.
 - `board doctor` says whether the board has the current list.
 
+### Lanes from the earlier release
+
+A lane with a `skills` list still loads for one release, and the lists are ignored. If no lane has `default`, the lane whose `skills` include `*` becomes the default (the first lane, when none has it, as for any config that marks no lane). A config with both `skills` and `default` loads as well. `board doctor` and the dispatch log warn about every `skills` key and say to set `default` instead. [Upgrading](setup.md#upgrading) has the steps.
+
 ### Skills and models on the board
 
-Each machine tells the board which skills (slash commands) and which Claude models it has, sealed. The browser uses this catalogue to complete `/skill` in a prompt or a reply and to offer the machine's models. The catalogue is advice. No CLI reads it back, no worker relies on it, and a machine without it works.
+Each machine tells the board which skills (slash commands) and which Claude models it has, and the names of its lanes, sealed. The browser uses this catalogue to complete `/skill` in a prompt or a reply, to offer the machine's models and to fill the Lane field. The catalogue is advice. No CLI reads it back, no worker relies on it, and a machine without it works.
 
 **How it asks.** The dispatcher starts `claude -p` with stream-json input and output and `--strict-mcp-config` in a directory, sends one `initialize` control request and no prompt, reads the answer and ends the process.
 
@@ -332,8 +338,11 @@ The results are files under `<state dir>/catalog/`, one per directory.
 - A skill keeps its name, a description of at most 200 characters and an argument hint of at most 100, each on one line. Its aliases and agents are not sent.
 - The models are those `claude` offers except `default`, with their display name and description.
 - `skills` holds the skills every probed directory has. Each directory lists those only it has, so a project's own skills show only for it.
+- `lanes` holds the names of the machine's lanes in config order, at most 20 (a lane beyond that is not offered). The New task form, the task page's lane picker and the schedule editor offer the union over every machine, or the chosen machine's. The list is advice: a task may name any lane, and a machine without it uses its default lane.
 
 **Sending.** After the probe, the dispatcher composes one document from every directory asked so far. It sends the document when it differs from the one the board holds, and nothing until one directory has an answer.
+
+The document also says what the machine has of the agents: the version of the [board's agents](#agents-on-the-board) it applied, the hash of every agent it has, wherever defined, and the names whose local definition an apply moved aside. A change there sends the document again.
 
 - The board takes at most 256 KiB for a sealed catalogue. A larger document is cut before it is sent: first the descriptions and hints of the skills of single directories, then those of the common skills, then the lists themselves. The log says once what was left out.
 - A failed send costs the tick one log line at most.
@@ -409,11 +418,11 @@ A dedicated OS user for the workers, with its own checkouts and a narrowly scope
 
 ## Agents
 
-An agent is a named set of tools and rules on the machine. It is an entry under `agents` in the machine's `config.json`, or a file `<name>.yaml` in the `agents` directory beside it (see [Sharing and importing agents](#sharing-and-importing-agents)). A task that names one runs as that agent, with only what the agent allows, whoever made the task.
+An agent is a named set of tools and rules on the machine. It is an entry under `agents` in the machine's `config.json`, a file `<name>.yaml` in the `agents` directory beside it (see [Sharing and importing agents](#sharing-and-importing-agents)), or a definition the board holds for every machine of yours (see [Agents on the board](#agents-on-the-board)). A task that names one runs as that agent, with only what the agent allows, whoever made the task.
 
 You choose the agent with `board schedule --agent <name>` or the **Agent** field of the New task form (see [Choosing an agent](usage.md#choosing-an-agent)). A repeating schedule hands its agent to every occurrence.
 
-The task holds the name as a sealed `agent` field. The board server stores and returns it but cannot read, change or drop it without making the task unreadable (see [Encryption](encryption.md#encryption)). The definition never leaves the machine. The board holds only the name.
+The task holds the name as a sealed `agent` field. The board server stores and returns it but cannot read, change or drop it without making the task unreadable (see [Encryption](encryption.md#encryption)). The task holds the name only, never a definition or its version: a task, and every occurrence of a schedule, runs as the definition the machine has when the run starts.
 
 ```json
 "agents": {
@@ -455,7 +464,7 @@ The worker copies `env` and `mcpServers` only after the directory has passed the
 - A proposal made from an agent's run carries no agent. Once you start it, it runs in `auto` like any task of yours.
 - `board attach` resumes an agent's task with your own settings.
 - The commands that are refused inside a run rely on `AGENT_BOARD_TASK`. Only the agent's own lists stop a command from unsetting it.
-- The name is the only link to the definition, so machines must define same-named agents the same way.
+- The name is the only link to the definition. Machines that each define an agent of the same name in `config.json` or `agents/` must define it the same way. An agent pushed to the board is the same on every machine that applied it; `board agents` shows a hash of each definition, so you can compare.
 
 ### Sharing and importing agents
 
@@ -503,9 +512,57 @@ It writes `agents/<name>.yaml` (mode 600, the directory mode 700) only after you
 - Nothing fetches the URL again. Run `add --replace` with it to take a newer version.
 - `example:<name>` reads `apps/cli/examples/agents/<name>.yaml`, built into the CLI. `board example agents/reviewer.yaml` prints it.
 - `rm` removes the file, or the entry from `config.json`, keeping every other key and the file's mode. A task that names the agent then does not run on this machine any more.
-- `add` and `rm` are refused inside a board run.
+- `add` refuses a name the board holds; push the new definition instead, or add it under another name.
+- `add`, `push` and `rm` are refused inside a board run.
 
-The definitions stay on each machine, and nothing sends them to the board. Machines that should run the same agent each `add` the same file.
+An agent added with `add` stays on its machine. To give every machine the same agent, push it to the board.
+
+### Agents on the board
+
+The board can hold agent definitions for every machine of yours. Any of your CLIs puts one there, and every machine applies it and its later versions itself, on its next dispatch tick.
+
+```sh
+board agents push reviewer        # put this machine's reviewer on the board: shows every grant, asks, then pushes
+board agents push ./reviewer.yaml # the same from a file (also -, an https URL or example:<name>, read as add reads them)
+board agents                      # each agent with where it came from: config.json, agents/<file> or board v<n>, and its hash
+board agents rm --board reviewer  # take it off the board; every machine drops its copy on its next tick
+```
+
+**`push` shows what it grants.** It reads the definition as `add` does, through the same strict parser, and prints the same definition and grant summary, with the same flags. It pushes only after you confirm at a terminal, or with `--yes`. `--dry-run` prints all of it and pushes nothing. `push` is refused inside a board run, like `add` and `rm`.
+
+There is no `push --all`: you move agents to the board one at a time. To change a board agent, `board agents export <name> > <name>.yaml`, edit the file and push the file.
+
+**How it is held.** All your agents on the board are one sealed document with a version that goes up with every push. The board cannot read it, and it cannot hand an old document out as a newer one (see [Encryption](encryption.md#the-agents-on-the-board)). A push fetches the document, changes its one entry and sends it back as the next version. The server takes it only while its version is still the one the push started from. If another push came first, `push` fetches again and retries once; when that other push changed the same agent, it shows what the board holds now and asks again. `rm --board` works the same way.
+
+**How a machine applies it.**
+
+1. The `version` answer every tick starts with names the board's version. A tick where it is not newer than the one applied here costs nothing more.
+2. When it is newer, the tick fetches the document, opens it under that version and reads every entry with the strict parser of an agent file.
+3. It writes each agent to `~/.config/agent-board/agents.board/<name>.yaml` (mode 600, the directory mode 700), deletes the files of agents the document no longer has, and records the version and each agent's hash in `agents.board/state.json`. The dispatcher logs `APPLIED agents v<n>`.
+4. The apply runs before the tick decides what to start, so a task that names a newly pushed agent can start in the same tick.
+
+Everything that reads agents reads `agents.board/` alongside `config.json` and `agents/`. `board agents` shows a board agent as `board v<n>` and its `source` as `board`. Do not edit the files: the next apply writes them again.
+
+**The board wins a name.** When the board holds a name that `config.json` or `agents/` also defines, the apply moves the machine's own definition aside in the same step, also when the two are the same:
+
+- an `agents/<name>.yaml` file moves to `~/.config/agent-board/agents.replaced/<name>.<time>.yaml` (mode 600, the directory mode 700), which nothing reads;
+- a `config.json` entry is written there too and removed from `config.json` as `board agents rm` removes it, keeping every other key and the file's mode.
+
+The dispatcher logs `REPLACED <name>: local definition moved to <path>`. `board agents` shows the agent as `board v<n>, replaced a local definition` until you delete the moved file, and `board doctor` lists the moved files. A file you drop into `agents/` under a board name later is moved aside on the next tick. To get a moved definition back, add it under another name: `board agents add ~/.config/agent-board/agents.replaced/<file> --name <other>`. Under its old name the next tick would move it aside again.
+
+After a push, the agent is the board's on the pushing machine too: `push` takes the machine's own file or `config.json` entry away, since the board copy holds the same definition.
+
+**What fails, and how.**
+
+- An entry that does not parse (a newer CLI may have pushed a key this one does not know) makes that one agent unusable on this machine and leaves the others. Its local definition is moved aside all the same.
+- A local definition the apply cannot move (a read-only `config.json`, say) makes that agent unusable here until you move it yourself, so the definition a task gets never depends on load order. `board doctor` says why.
+- A document that does not open under the version the board names, or one older than the version applied here, changes nothing: the machine keeps what it has, the dispatcher logs a warning and `board doctor` reports it.
+- A board that holds no document, or deletes it, takes nothing away: the machines keep their copies. To take an agent off every machine, push a document without it (`rm --board`).
+- A CLI from before shared agents ignores them and runs only its local agents. A task that names a board agent waits in Todo for a machine that has it, as for any name a machine lacks.
+
+**Drift.** Each agent's hash is the SHA-256 of the keys that decide what a run may do (`description`, `prompt`, `model`, `tools`, `allowedTools`, `disallowedTools`, `env`, `mcpServers`) as canonical JSON. `version` and `source` are left out. `board agents` shows the first 12 hex digits, and `--json` all of them. `board doctor` warns, and does not fail, when this machine applied an older version than the board holds, when the last look at the board changed nothing, and when local definitions were moved aside. Each machine's [catalogue](#skills-and-models-on-the-board) carries the version it applied, the hash of every agent it has and the names whose local definition it replaced.
+
+**The limit.** Before, an agent's definition changed on a machine only when you read and confirmed it there. Now a push from any one machine reaches all of them within a tick, without a reading on each. A push needs the data key, and `board agents push` is refused inside a run, but the data key sits in `~/.config/agent-board/env` on every worker machine. A run in `auto` mode that reads it can seal and push a definition with broader grants, and every machine applies it. Such a run could always rewrite the agent files of its own machine; the new reach is every other machine. This is accepted, without a signing key or a per-machine switch (see [Design decisions](architecture.md#design-decisions)).
 
 ### An agent's run
 
@@ -612,7 +669,7 @@ A rule must not start with `*` before a script path. A leading `*` matches any c
 
 1. **Sweep.** For each task in `running` claimed by this machine, the tick asks whether its worker is running. On Linux that is `systemctl --user is-active agent-board-<task>`. On macOS it checks that the pid in the run directory's `<task>.pid` is alive and its command line ends in `internal worker <task>`. A task whose worker is gone moves to `needs-me` with the log tail. So does one whose worker failed to enforce the [limits](#liveness-and-limits) for five minutes past them, and its unit is stopped. If `systemctl` gives no known state, or the backend fails, the tick stops before starting anything and exits non-zero.
 2. **Wake.** For each task in `waiting` that this machine ran, a wait whose `wakeAt` has passed is woken with the reason, so it can start in this tick. A waiting task with a watch event and no live run is woken too. The tick drops the watches of tasks that are Done, closed, in Backlog or gone.
-3. **Plan and start.** The tick skips a task this machine cannot serve (see [Two machines](#two-machines)), a proposal you have not started, a task it cannot decrypt, a delayed task that is not due, and a task the board marks `held` because its schedule's [limit](usage.md#limiting-a-schedule) is used up (the board refuses its claim too). While a [usage limit](#usage-limits) is reached, it also leaves out tasks below the limit's priority. It plans the rest into [lanes](#lanes), own work first, then borrowing. It claims each start, writes its lane to the run directory and starts the worker. On Linux that is `systemd-run --user --collect --unit agent-board-<task>`. On macOS it is a detached `board internal worker <task>` process with its output in the task log. A start note names the machine, lane and PID. A lost claim hands its slot to the next task. The first failed start ends the tick's starting.
+3. **Plan and start.** The tick skips a task this machine cannot serve (see [Two machines](#two-machines)), a proposal you have not started, a task it cannot decrypt, a delayed task that is not due, and a task the board marks `held` because its schedule's [limit](usage.md#limiting-a-schedule) is used up (the board refuses its claim too). While a [usage limit](#usage-limits) is reached, it also leaves out tasks below the limit's priority. It plans the rest into [lanes](#lanes), own work first (the lane a task names, else the default one), then borrowing. It claims each start, writes its lane to the run directory and starts the worker. On Linux that is `systemd-run --user --collect --unit agent-board-<task>`. On macOS it is a detached `board internal worker <task>` process with its output in the task log. A start note names the machine, lane and PID. A lost claim hands its slot to the next task. The first failed start ends the tick's starting.
 4. **Pause.** Lanes whose own work still waits ask one borrowed run each to pause.
 5. **Poll.** When the watch unit is not running, the tick polls the due watches (see [Without the watch unit](#without-the-watch-unit)). It also runs the checks that an older `board wait --check` stored in `<state dir>/waits/`, side by side, 45 seconds each at most. A check that exits 0 wakes its task with the end of its output.
 6. **Next.** The tick works out when this machine next has something to do that no event announces (see [The next tick](#the-next-tick)).

@@ -37,6 +37,8 @@ export function KeyGate({ me, store = defaultStore, children }: PropsWithChildre
   const { username, keyId } = me;
   const identity = `${username}\0${keyId ?? ''}`;
   const [loaded, setLoaded] = useState<{ identity: string; check: StoredKeysCheck }>();
+  // An import sets the key up first and reads the file after; the board then reports a key, which must not end the import.
+  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     let current = true;
@@ -58,6 +60,7 @@ export function KeyGate({ me, store = defaultStore, children }: PropsWithChildre
   const setUp = useCallback(
     async (keys: Keys) => {
       await unlocked(keys);
+      setImporting(false);
       await queryClient.invalidateQueries({ queryKey: trpc.me.queryKey() });
     },
     [unlocked, queryClient, trpc],
@@ -74,6 +77,7 @@ export function KeyGate({ me, store = defaultStore, children }: PropsWithChildre
     dropAll();
   }, [store, identity, dropAll]);
 
+  if (importing) return <SetupScreen owner={username} onComplete={setUp} onImporting={setImporting} />;
   const check = loaded?.identity === identity ? loaded.check : undefined;
   if (check === undefined)
     return (
@@ -82,7 +86,7 @@ export function KeyGate({ me, store = defaultStore, children }: PropsWithChildre
       </Center>
     );
   if (check.kind === 'changed') return <KeyChangedScreen held={check.held} reported={me} onForget={lock} />;
-  if (keyId === null) return <SetupScreen owner={username} onComplete={setUp} />;
+  if (keyId === null) return <SetupScreen owner={username} onComplete={setUp} onImporting={setImporting} />;
   if (check.kind === 'none') return <UnlockScreen owner={username} onUnlocked={unlocked} />;
   return (
     <KeyProvider keys={check.keys} lock={lock}>

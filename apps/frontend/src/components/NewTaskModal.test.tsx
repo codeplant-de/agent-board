@@ -196,9 +196,15 @@ describe('NewTaskModal When', () => {
 const cronZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 describe('NewTaskModal repeating with several cron expressions', () => {
-  it('reads one cron expression per line, the first as the rule and the others as more', async () => {
+  it('offers more rows only for a cron expression, and sends the first as the rule and the others as more', async () => {
     await open('Repeating');
-    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * 5#1{Enter}0 9 * * 5#3');
+    expect(screen.queryByRole('button', { name: 'Add cron expression' })).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/Repeat/), '2h');
+    expect(screen.queryByRole('button', { name: 'Add cron expression' })).not.toBeInTheDocument();
+    await userEvent.clear(screen.getByLabelText(/Repeat/));
+    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * 5#1');
+    await userEvent.click(screen.getByRole('button', { name: 'Add cron expression' }));
+    await userEvent.type(screen.getByLabelText('Cron expression 2'), '0 9 * * 5#3');
     await userEvent.click(createButton());
     await waitFor(() => expect(create).toHaveBeenCalled());
     expect((sent() as { when: unknown }).when).toEqual({
@@ -208,13 +214,36 @@ describe('NewTaskModal repeating with several cron expressions', () => {
     });
   });
 
-  it('holds back a repeated expression and a line that is not cron', async () => {
+  it('removes a row, and sends a single expression without more', async () => {
     await open('Repeating');
-    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * *{Enter}0 9 * * *');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * 5#1');
+    await userEvent.click(screen.getByRole('button', { name: 'Add cron expression' }));
+    await userEvent.type(screen.getByLabelText('Cron expression 2'), '0 9 * * 5#3');
+    await userEvent.click(screen.getByRole('button', { name: 'Remove cron expression 2' }));
+    expect(screen.queryByLabelText('Cron expression 2')).not.toBeInTheDocument();
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect((sent() as { when: unknown }).when).toEqual({ cron: '0 9 * * 5#1', timezone: cronZone() });
+  });
+
+  it('stops offering rows at ten', async () => {
+    await open('Repeating');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '0 0 * * *');
+    for (let row = 1; row < 10; row += 1)
+      await userEvent.click(screen.getByRole('button', { name: 'Add cron expression' }));
+    expect(screen.getByLabelText('Cron expression 10')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add cron expression' })).not.toBeInTheDocument();
+  });
+
+  it('holds back a repeated expression and a row that is not cron', async () => {
+    await open('Repeating');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * *');
+    await userEvent.click(screen.getByRole('button', { name: 'Add cron expression' }));
+    await userEvent.type(screen.getByLabelText('Cron expression 2'), '0 9 * * *');
     expect(await screen.findByText('A cron expression is given twice')).toBeInTheDocument();
     expect(createButton()).toBeDisabled();
-    await userEvent.clear(screen.getByLabelText(/Repeat/));
-    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * *{Enter}often');
+    await userEvent.clear(screen.getByLabelText('Cron expression 2'));
+    await userEvent.type(screen.getByLabelText('Cron expression 2'), 'often');
     expect(await screen.findByText(/does not have 5 cron fields/)).toBeInTheDocument();
     expect(createButton()).toBeDisabled();
   });
@@ -313,6 +342,32 @@ describe('NewTaskModal model', () => {
     await userEvent.click(createButton());
     await waitFor(() => expect(create).toHaveBeenCalled());
     expect(sent()).toMatchObject({ model: 'opus', when: 'now' });
+  });
+});
+
+describe('NewTaskModal lane', () => {
+  it('sends no lane by default, and does not say that the prompt picks the lane', async () => {
+    await open();
+    expect(screen.queryByText(/picks the lane/)).not.toBeInTheDocument();
+    expect(screen.getByText(/The Lane field below sets the lane it runs in/)).toBeInTheDocument();
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).not.toHaveProperty('lane');
+  });
+
+  it('offers the lanes the machines published and sends the chosen one', async () => {
+    listed.catalogs = [
+      { name: 'laptop', catalog: { models: [], skills: [], dirs: {}, lanes: ['general', 'reviews'] } },
+      { name: 'desktop', catalog: { models: [], skills: [], dirs: {}, lanes: ['general', 'docs'] } },
+    ];
+    await open();
+    await userEvent.click(screen.getByRole('combobox', { name: 'Lane' }));
+    expect(await screen.findByRole('option', { name: 'Default lane', hidden: true })).toBeInTheDocument();
+    expect(screen.getAllByRole('option', { name: 'general', hidden: true })).toHaveLength(1);
+    await userEvent.click(screen.getByRole('option', { name: 'docs', hidden: true }));
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ lane: 'docs', when: 'now' });
   });
 });
 

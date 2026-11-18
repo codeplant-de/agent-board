@@ -3,6 +3,7 @@ import {
   deriveKeys,
   MIN_SERVER,
   parseVersion,
+  parseVersionAgentsVersion,
   parseVersionCli,
   parseVersionCatalogIndex,
   parseVersionDirsIndex,
@@ -42,6 +43,8 @@ export interface ServerIdentity {
   catalogIndex?: string;
   // The same for the usage status.
   usageIndex?: string;
+  // The version of the agent definitions the board holds for every machine; absent when it holds none or does not say.
+  agentsVersion?: number;
 }
 
 // Asks the server for its API range and refuses a CLI the server no longer serves and a server older than the CLI
@@ -83,6 +86,7 @@ export async function verifyContract(
     const dirsIndex = parseVersionDirsIndex(version);
     const catalogIndex = parseVersionCatalogIndex(version);
     const usageIndex = parseVersionUsageIndex(version);
+    const agentsVersion = parseVersionAgentsVersion(version);
     return {
       ...identity,
       api: served,
@@ -91,6 +95,7 @@ export async function verifyContract(
       ...(dirsIndex === null ? {} : { dirsIndex }),
       ...(catalogIndex === null ? {} : { catalogIndex }),
       ...(usageIndex === null ? {} : { usageIndex }),
+      ...(agentsVersion === null ? {} : { agentsVersion }),
     };
   } catch (error) {
     throw asBackendError('version', error);

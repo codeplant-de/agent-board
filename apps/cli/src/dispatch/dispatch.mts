@@ -26,6 +26,8 @@ import { unitName } from '../task-id.mts';
 import type { LaneRun } from './decide.mts';
 import { syncDirs } from '../config/dirs.mts';
 import { realFingerprintDeps, syncCatalog } from '../catalog/catalog.mts';
+import { catalogAgents, syncSharedAgents } from '../config/board-agents.mts';
+import type { Config } from '../config/config.mts';
 import type { CatalogSyncDeps } from '../catalog/catalog.mts';
 import { createCatalogStore } from '../catalog/cache.mts';
 import { EXIT_GRACE_MS, PROBE_TIMEOUT_MS, probeClaude } from '../catalog/probe.mts';
@@ -46,7 +48,7 @@ import type { CheckResult, WaitCheck, WaitStore } from './waits.mts';
 import { CHECK_TIME_LIMIT_MS, createWaitStore, runCheck, runCommand } from './waits.mts';
 import { createUpdateState, updateStateFile } from '../self/update-state.mts';
 import { cliVersion, releaseVersion } from '../self/version.mts';
-import { getPaths, loadConfigWarnings } from '../config/config.mts';
+import { defaultLane, getPaths, loadConfig, loadConfigWarnings } from '../config/config.mts';
 import { createGitHub } from './github.mts';
 import type { GitHub } from './github.mts';
 import { createPrRefreshState, prRefreshFile, refreshPrStatesIfDue } from './pr-states.mts';
@@ -106,6 +108,9 @@ export interface DispatchDeps extends Context {
   catalog?: Pick<CatalogSyncDeps, 'store' | 'probe' | 'fingerprintDeps'>;
   // The subscription usage this machine's runs reported; undefined: nothing is held back for usage.
   usage?: Pick<UsageStore, 'read'>;
+  // Where the board's agent definitions are applied, and how the tick reads its agents again after an apply; undefined: the
+  // tick leaves them alone.
+  sharedAgents?: { configFile: string; reload: () => Config };
 }
 
 // Ends a wait on the board: the woken task, or undefined when it no longer waited or the call failed.
@@ -395,6 +400,27 @@ async function pollWatchesInstead(deps: DispatchDeps, tasks: Task[], tickStart: 
   return true;
 }
 
+// Applies a newer version of the board's agent definitions; returns the config with the agents as they are now, or undefined
+// when nothing changed. A server that cannot hold them or a failure costs one line at most, and the tick goes on with what it has.
+async function applyBoardAgents(deps: DispatchDeps): Promise<Config | undefined> {
+  const { sharedAgents } = deps;
+  if (sharedAgents === undefined) return undefined;
+  try {
+    const result = await syncSharedAgents({
+      backend: deps.backend,
+      configFile: sharedAgents.configFile,
+      now: deps.now,
+      dryRun: deps.dryRun,
+      log: deps.print,
+      print: deps.print,
+    });
+    return result === 'applied' ? sharedAgents.reload() : undefined;
+  } catch (error) {
+    deps.print(`WARN applying the board's agents failed: ${errorText(error)}`);
+    return undefined;
+  }
+}
+
 // Tells the board this machine's directory list when it changed; a server that cannot hold one or a failure costs one line at most.
 async function sendDirs({ backend, config, print: log }: DispatchDeps): Promise<void> {
   try {
@@ -414,7 +440,18 @@ async function sendCatalog(deps: DispatchDeps, tickStart: Date): Promise<void> {
   const left = TICK_LIMIT_MS - TICK_MARGIN_MS - (now().getTime() - tickStart.getTime());
   const skipProbe = left < PROBE_TIMEOUT_MS + EXIT_GRACE_MS;
   try {
-    const sync = await syncCatalog({ ...catalog, backend, config, now, dryRun, log, skipProbe });
+    const agents =
+      deps.sharedAgents === undefined ? undefined : catalogAgents(deps.sharedAgents.configFile, config.agents);
+    const sync = await syncCatalog({
+      ...catalog,
+      backend,
+      config,
+      now,
+      dryRun,
+      log,
+      skipProbe,
+      ...(agents === undefined ? {} : { agents }),
+    });
     if (sync.result === 'sent') log(`CATALOG sent ${sync.skills} skills and ${sync.models} models to the board`);
   } catch (error) {
     log(`WARN sending the skill catalogue failed: ${errorText(error)}`);
@@ -462,8 +499,10 @@ function earliest(times: Date[]): Date | undefined {
 
 const updateRun = ({ update, now, print: log, dryRun }: DispatchDeps) => ({ ...update, now, log, dryRun });
 
-export async function runDispatch(deps: DispatchDeps): Promise<void> {
-  const { backend, config, system, files, print: log } = deps;
+export async function runDispatch(given: DispatchDeps): Promise<void> {
+  let deps = given;
+  const { backend, system, files, print: log } = deps;
+  let { config } = deps;
   const tickStart = deps.now();
   // A gap since the last tick is time the whole machine spent asleep: runs were quiet because their agents slept too.
   const previousTick = files.lastDispatchTick();
@@ -495,6 +534,12 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     // Workers call this binary again (their hook), so it is replaced only while none runs; the next tick looks again.
     if (workers.length > 0) log(`UPDATE-WAIT ${why}; ${workers.length} worker(s) running`);
     else if ((await tryUpdate(updateRun(deps), why)) === 'updated') return;
+  }
+  // Before anything decides what runs here, so a task that names a newly pushed agent can start in this tick.
+  const reloaded = await applyBoardAgents(deps);
+  if (reloaded !== undefined) {
+    config = reloaded;
+    deps = { ...deps, config };
   }
   await sendDirs(deps);
   // The unit of a task lives on the machine that claimed it; another machine's tasks are its own business.
@@ -536,7 +581,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
       const record = files.readRun(taskId);
       return {
         taskId,
-        lane: record?.lane ?? config.lanes[0]?.name ?? 'default',
+        lane: record?.lane ?? defaultLane(config.lanes).name,
         borrowed: record?.borrowed ?? false,
         startedAt: record?.startedAt ?? (await system.startedAt(unitName(taskId))),
         pauseRequested: files.pauseRequestedAt(taskId) !== undefined,
@@ -595,7 +640,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   const candidates = eligible.filter((task) => !isHeld(task));
   if (held.length > 0) log(`HOLD ${held.length} task(s) below ${lowest}: ${describeReached(reached)}`);
 
-  const ownLaneOf = (task: Task) => ownLane(task, config.lanes);
+  const ownLaneOf = (task: Task): string => ownLane(task, config.lanes).name;
   const started = new Set<string>();
   const tried = new Set<string>();
   // One start at a time, planned again after each: a lost claim hands its slot to the next task.
@@ -607,6 +652,8 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
     const task = open.find((candidate) => candidate.id === start.taskId);
     if (!task) continue;
     const skill = promptSkill(task.input) ?? 'prompt';
+    const { name: own, missing } = ownLane(task, config.lanes);
+    const fellBack = missing === undefined ? '' : `, lane ${missing} → ${own} (no such lane here)`;
     if ((await backend.claimTask(task.id, config.machine)) === undefined) {
       log(`LOST ${task.id} claimed elsewhere`);
       continue;
@@ -635,8 +682,8 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
       startedAt: deps.now(),
       pauseRequested: false,
     });
-    log(`STARTED ${task.id} ${skill} lane=${start.lane}${start.borrowed ? ' borrowed' : ''}`);
-    const where = `${start.lane} lane${start.borrowed ? ', borrowed' : ''}, unit ${unitName(task.id)}${pid ? `, pid ${pid}` : ''}`;
+    log(`STARTED ${task.id} ${skill} lane=${start.lane}${start.borrowed ? ' borrowed' : ''}${fellBack}`);
+    const where = `${start.lane} lane${start.borrowed ? ', borrowed' : ''}${fellBack}, unit ${unitName(task.id)}${pid ? `, pid ${pid}` : ''}`;
     await backend
       .addNote(task.id, `${START_MARKER} ${deps.now().toISOString()} (${skill}, ${config.machine}, ${where})`, {
         author: 'system',
@@ -651,7 +698,7 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
   for (const task of candidates) {
     if (started.has(task.id)) continue;
     const lane = ownLaneOf(task);
-    if (lane !== undefined) waitingOwn.set(lane, (waitingOwn.get(lane) ?? 0) + 1);
+    waitingOwn.set(lane, (waitingOwn.get(lane) ?? 0) + 1);
   }
   const lanes = { lanes: config.lanes, waitingOwn, pauseAfterMinutes: config.pauseAfterMinutes };
   const paused = new Set<string>();
@@ -771,6 +818,7 @@ export async function dispatchMain({ dryRun }: { dryRun: boolean }): Promise<voi
           fingerprintDeps: () => realFingerprintDeps(),
         },
         usage: createUsageStore(usageFile(getPaths().stateDir)),
+        sharedAgents: { configFile: getPaths().configFile, reload: () => loadConfig(getPaths().configFile) },
         prRefresh: {
           github:
             whichOnPath('gh') === undefined

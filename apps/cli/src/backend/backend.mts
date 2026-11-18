@@ -14,6 +14,7 @@ import {
 import type { Backend, Schedule, ServerFeature, Task, TaskDraft } from '@agent-board/shared';
 import { errorText, oneLine } from '../output/text.mts';
 import { cliVersion } from '../self/version.mts';
+import { withScheduleSettings } from './schedule-settings.mts';
 import type { WebConfig } from './web-config.mts';
 
 const REQUEST_TIMEOUT_MS = 45_000;
@@ -152,6 +153,7 @@ function dryTask(draft: TaskDraft): Task {
     head,
     notBefore,
     model,
+    lane,
     autoDone,
     ...fields
   } = draft;
@@ -162,6 +164,7 @@ function dryTask(draft: TaskDraft): Task {
     status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
     priority: draft.priority ?? 'normal',
     model: model ?? null,
+    requestedLane: lane ?? null,
     autoDone: autoDone ?? false,
     id: 'dry',
     closed: false,
@@ -208,6 +211,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
               input: draft.input,
               ...(draft.priority ? { priority: draft.priority } : {}),
               ...(draft.model === undefined ? {} : { model: draft.model }),
+              ...(draft.lane === undefined ? {} : { lane: draft.lane }),
               ...(draft.autoDone === undefined ? {} : { autoDone: draft.autoDone }),
               ...(draft.agent === undefined ? {} : { agent: draft.agent }),
               ...(draft.machine !== undefined && draft.workdir !== undefined
@@ -222,6 +226,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         input: draft.input,
         priority: draft.priority ?? 'normal',
         model: draft.model ?? null,
+        requestedLane: draft.lane ?? null,
         autoDone: draft.autoDone ?? false,
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
@@ -255,7 +260,9 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
       print(`DRY edit-schedule ${id} ${oneLine(JSON.stringify(edit), 160)}`);
       const found = (await inner.listSchedules()).find((schedule) => schedule.id === id);
       if (!found) throw new BackendError(`edit-schedule: no schedule ${id.slice(0, 40)}`, 404);
-      return { schedule: { ...found, ...edit }, pending: 'none' };
+      const { settings, ...text } = edit;
+      const edited = { ...found, ...text };
+      return { schedule: settings === undefined ? edited : withScheduleSettings(edited, settings), pending: 'none' };
     },
     async removeSchedule(id) {
       print(`DRY remove-schedule ${id}`);
@@ -324,6 +331,11 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     async setUsage(_machine, usage) {
       print(
         `DRY set-usage ${usage.held.length} held and ${usage.open.length} open tasks, reached ${usage.reached.join(', ') || 'none'}`,
+      );
+    },
+    async setSharedAgents(document, expectedVersion) {
+      print(
+        `DRY set-agents v${document.version} (replacing v${expectedVersion}): ${Object.keys(document.agents).sort().join(', ') || 'no agents'}`,
       );
     },
     async heartbeat(id, beat) {

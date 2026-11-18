@@ -23,6 +23,7 @@ export type Field =
   | 'machine.dirs'
   | 'machine.catalog'
   | 'machine.usage'
+  | 'agents.shared'
   | 'note.body'
   | 'note.preview'
   | 'note.suggestion'

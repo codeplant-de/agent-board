@@ -10,7 +10,8 @@ import { API_VERSION, MIN_SERVER } from '@agent-board/shared';
 import type { TaskWatch } from '@agent-board/shared';
 import { RETRY_AFTER_FAILURE_MS, RETRY_AFTER_UNPUBLISHED_MS } from '../self/auto-update.mts';
 import type { UpdateDeps } from '../self/auto-update.mts';
-import type { AutoUpdate } from '../config/config.mts';
+import type { AutoUpdate, Config } from '../config/config.mts';
+import { loadConfig } from '../config/config.mts';
 import { parseWorkerUnits, SystemError } from '../setup/system.mts';
 import type { System } from '../setup/system.mts';
 import { START_MARKER } from '../task-rules.mts';
@@ -233,6 +234,30 @@ test('a task that names an agent this machine does not define is skipped, and on
   assert.ok(logs.includes('SKIP ghost no agent ghost defined here'));
 });
 
+test('a newer version of the board’s agents is applied before the starts, so a task that names a pushed agent starts in the same tick', async (context) => {
+  const dir = mkdtempSync('/tmp/board-dispatch-agents-');
+  context.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configFile = join(dir, 'config.json');
+  writeFileSync(configFile, '{"machine":"here"}\n');
+  const pushed = task({ id: 'pushed', input: 'Review it', agent: 'reviewer' });
+  const { deps, started, backend, logs } = setup([pushed]);
+  const reviewer = { description: 'd', tools: ['Read'] };
+  backend.boardAgents.held = { version: 7, document: { version: 7, agents: { reviewer } } };
+  deps.sharedAgents = { configFile, reload: () => ({ ...CONFIG, ...pick(loadConfig(configFile)) }) };
+  await runDispatch(deps);
+  assert.ok(logs.includes('APPLIED agents v7: 1 agent(s)'));
+  assert.deepEqual(started, ['pushed']);
+  await runDispatch(deps);
+  assert.equal(logs.filter((line) => line.startsWith('APPLIED')).length, 1, 'the same version is not fetched again');
+});
+
+// The agents of the config the apply wrote, over the test's config.
+const pick = ({ agents, agentErrors, board }: Config) => ({
+  agents,
+  agentErrors,
+  ...(board === undefined ? {} : { board }),
+});
+
 test('a task pinned here that names a missing agent is claimed, so its worker can fail it', async () => {
   const pinned = task({ id: 'pin', input: 'Review it', agent: 'ghost', machine: 'here', workdir: '/x' });
   const { deps, started, logs } = setup([pinned]);
@@ -378,12 +403,12 @@ test('a failed listing starts nothing and changes nothing', async () => {
 const LANED = {
   ...CONFIG,
   lanes: [
-    { name: 'reviews', skills: ['selftest'], slots: 1 },
-    { name: 'implement', skills: ['implement'], slots: 1 },
+    { name: 'reviews', slots: 1, default: true },
+    { name: 'implement', slots: 1, default: false },
   ],
 };
-const review = (id: string) => task({ id, input: '/selftest go' });
-const impl = (id: string) => task({ id, input: '/implement it' });
+const review = (id: string) => task({ id, input: '/selftest go', requestedLane: 'reviews' });
+const impl = (id: string) => task({ id, input: '/implement it', requestedLane: 'implement' });
 
 test('each lane takes its own work, an idle lane borrows, and the lane is written before the unit starts', async () => {
   const { deps, started, files, logs, backend } = setup([review('r1'), review('r2'), review('r3')]);
@@ -394,6 +419,25 @@ test('each lane takes its own work, an idle lane borrows, and the lane is writte
   assert.deepEqual(files.runs.get('r2'), { lane: 'implement', borrowed: true, startedAt: NOW });
   assert.ok(logs.includes('TICK started=2 reviews=1/1 implement=1/1'));
   assert.ok(backend.writes.some((w) => w.startsWith('note r2 (system)') && w.includes('implement lane, borrowed')));
+});
+
+test('a task without a lane runs in the default lane, and one asking for a lane this machine lacks says so', async () => {
+  const plain = task({ id: 'p1', input: 'do it' });
+  const lost = task({ id: 'l1', input: 'do it', requestedLane: 'nowhere' });
+  const { deps, files, backend, logs } = setup([plain, lost]);
+  deps.config = LANED;
+  await runDispatch(deps);
+  assert.deepEqual(files.runs.get('p1'), { lane: 'reviews', borrowed: false, startedAt: NOW });
+  assert.deepEqual(files.runs.get('l1'), { lane: 'implement', borrowed: true, startedAt: NOW });
+  assert.ok(logs.some((line) => line.startsWith('STARTED p1') && !line.includes('no such lane')));
+  assert.ok(
+    logs.some((line) => line.startsWith('STARTED l1') && line.includes('lane nowhere → reviews (no such lane here)')),
+  );
+  assert.ok(
+    backend.writes.some(
+      (w) => w.startsWith('note l1 (system)') && w.includes('lane nowhere → reviews (no such lane here)'),
+    ),
+  );
 });
 
 test('a lane whose own work waits asks its borrowed run to pause, once, after five minutes', async () => {
@@ -414,7 +458,7 @@ test('a lane whose own work waits asks its borrowed run to pause, once, after fi
 test('a young borrowed run is not paused yet', async () => {
   const borrowed = task({ id: 'b1', status: 'running', input: '/selftest go', machine: 'here' });
   const { deps, files } = setup([borrowed, impl('i1')], ['agent-board-b1']);
-  deps.config = { ...LANED, lanes: [{ name: 'implement', skills: ['implement'], slots: 1 }] };
+  deps.config = { ...LANED, lanes: [{ name: 'implement', slots: 1, default: true }] };
   files.runs.set('b1', { lane: 'implement', borrowed: true, startedAt: new Date(NOW.getTime() - 2 * 60_000) });
   files.alive.set('b1', NOW);
   await runDispatch(deps);
@@ -712,7 +756,7 @@ test('a check not due yet counts from its last attempt; one that passed counts n
 test('a borrowed run counts the moment it may be paused, while its lane has own work waiting', async () => {
   const borrowed = task({ id: 'b1', status: 'running', input: '/selftest go', machine: 'here' });
   const { deps, files } = setup([borrowed, impl('i1')], ['agent-board-b1']);
-  deps.config = { ...LANED, lanes: [{ name: 'implement', skills: ['implement'], slots: 1 }] };
+  deps.config = { ...LANED, lanes: [{ name: 'implement', slots: 1, default: true }] };
   files.runs.set('b1', { lane: 'implement', borrowed: true, startedAt: at(-2 * MIN) });
   files.alive.set('b1', NOW);
   await runDispatch(deps);
@@ -724,7 +768,7 @@ test('a borrowed run paused in this tick, or one whose lane has nothing waiting,
   const borrowed = task({ id: 'b1', status: 'running', input: '/selftest go', machine: 'here' });
   const young = task({ id: 'b2', status: 'running', input: '/selftest go', machine: 'here' });
   const { deps, files } = setup([borrowed, young, impl('i1')], ['agent-board-b1', 'agent-board-b2']);
-  deps.config = { ...LANED, lanes: [{ name: 'implement', skills: ['implement'], slots: 2 }] };
+  deps.config = { ...LANED, lanes: [{ name: 'implement', slots: 2, default: true }] };
   files.runs.set('b1', { lane: 'implement', borrowed: true, startedAt: at(-6 * MIN) });
   files.runs.set('b2', { lane: 'implement', borrowed: true, startedAt: at(-MIN) });
   files.alive.set('b1', NOW);

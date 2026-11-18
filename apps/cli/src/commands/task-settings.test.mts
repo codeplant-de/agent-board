@@ -72,6 +72,7 @@ test('board task prints the settings: null model and directory read as the defau
     '  status      todo',
     '  priority    normal',
     '  model       default',
+    '  lane        default',
     '  auto-done   off',
     '  agent       none',
     '  created by  user',
@@ -180,6 +181,25 @@ test('set priority changes it, says so, and is a no-op with "already" when it is
   await assert.rejects(run.go(['task', 'abc12345', 'unset', 'priority']), UsageError);
 });
 
+test('set lane and unset lane change the lane the task asks for, and refuse a running task', async (context) => {
+  const run = runner(context, [task({ id: 'abc12345' }), task({ id: 'run12345', status: 'running', lane: 'general' })]);
+  await run.go(['task', 'abc12345', 'set', 'lane', 'reviews']);
+  assert.equal(said(run), 'abc12345 asks for reviews from its next start on');
+  assert.equal(run.backend.tasks[0]?.requestedLane, 'reviews');
+  run.printed.length = 0;
+  await run.go(['task', 'abc12345', 'set', 'lane', 'reviews']);
+  assert.equal(said(run), 'abc12345 already asks for reviews');
+  await run.go(['task', 'abc12345', 'unset', 'lane']);
+  assert.equal(run.backend.tasks[0]?.requestedLane, null);
+  assert.deepEqual(writes(run), ['lane abc12345: reviews', 'lane abc12345: default']);
+  await assert.rejects(run.go(['task', 'abc12345', 'set', 'lane', 'not a lane']), /not a lane name/);
+  await assert.rejects(run.go(['task', 'abc12345', 'set', 'lane']), UsageError);
+  await assert.rejects(run.go(['task', 'run12345', 'set', 'lane', 'reviews']), /keeps its lane until its next start/);
+  run.printed.length = 0;
+  await run.go(['task', 'run12345']);
+  assert.ok(run.printed.includes('  lane        default (running in general)'));
+});
+
 test('set model and unset model change the model from the next run on, in any status', async (context) => {
   const run = runner(context, [task({ id: 'abc12345', status: 'running' })]);
   await run.go(['task', 'abc12345', 'set', 'model', 'opus']);
@@ -200,7 +220,7 @@ test('set auto-done on and off, unset auto-done: from the next look on, in any s
   await run.go(['task', 'abc12345', 'set', 'auto-done', 'on']);
   assert.equal(run.backend.tasks[0]?.autoDone, true);
   assert.match(said(run), /abc12345: its agent may move it to Done when it judges every acceptance criterion met/);
-  assert.match(said(run), /next occurrence takes priority, model, auto-done, machine and directory/);
+  assert.match(said(run), /next occurrence takes priority, model, lane, auto-done, machine and directory/);
   await run.go(['task', 'abc12345']);
   assert.match(said(run), /auto-done {3}on: the agent may move it to Done/);
   run.printed.length = 0;
@@ -254,7 +274,7 @@ test('a card of a schedule gets a note that the change is for it only, on priori
   );
   assert.match(
     said(run),
-    /next occurrence takes priority, model, auto-done, machine and directory from the schedule again/,
+    /next occurrence takes priority, model, lane, auto-done, machine and directory from the schedule again/,
   );
   const plain = runner(context, [task({ id: 'def12345' })]);
   await plain.go(['task', 'def12345', 'set', 'priority', 'high']);
@@ -414,7 +434,7 @@ test('unknown actions and keys are usage errors', async (context) => {
   await assert.rejects(run.go(['task', 'abc12345', 'frob']), /takes nothing, or set or unset/);
   await assert.rejects(
     run.go(['task', 'abc12345', 'set', 'colour', 'red']),
-    /takes priority, model, auto-done, dir or prompt/,
+    /takes priority, model, lane, auto-done, dir or prompt/,
   );
   await assert.rejects(run.go(['task', 'abc12345', 'set', 'dir', 'a', 'b']), /takes one path/);
   await assert.rejects(run.go(['task', 'abc12345', 'unset', 'model', 'x']), UsageError);

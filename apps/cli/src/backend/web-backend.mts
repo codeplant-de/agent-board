@@ -12,6 +12,7 @@ import {
   parseWireRunInbox,
   parseWireSchedule,
   parseWireSchedules,
+  parseWireSharedAgents,
   parseWireTask,
   parseWireTasks,
   SERVER_FEATURE_LABELS,
@@ -59,6 +60,7 @@ interface Connection {
   dirsIndex: string | null;
   catalogIndex: string | null;
   usageIndex: string | null;
+  agentsVersion: number | null;
 }
 
 // The server feature each command needs; a command not listed works on every server this CLI accepts.
@@ -82,6 +84,8 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   'edit-schedule': 'prompt.edit',
   'set-catalog': 'machine.catalog',
   'set-usage': 'machine.usage',
+  'get-agents': 'agents.shared',
+  'set-agents': 'agents.shared',
 };
 
 // The commands a run makes for its own task that the server checks against the task's current run (`task.run`).
@@ -114,6 +118,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
         dirsIndex: identity.dirsIndex ?? null,
         catalogIndex: identity.catalogIndex ?? null,
         usageIndex: identity.usageIndex ?? null,
+        agentsVersion: identity.agentsVersion ?? null,
       };
     })();
     // A failed first call (a server restarting) must not fail every later one of a long-running command.
@@ -140,6 +145,11 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
   // Refuses to send a model to a server that would not read it.
   const requireModelSupport = async (draft: { model?: string }): Promise<void> => {
     if (draft.model !== undefined) requireFeature((await connect()).features, 'task.model');
+  };
+
+  // Refuses to send a lane (or its removal) to a server that would reject the key.
+  const requireLaneSupport = async (values: { lane?: string | null }): Promise<void> => {
+    if (values.lane !== undefined) requireFeature((await connect()).features, 'task.lane');
   };
 
   // Refuses to send the auto-done setting to a server that would reject the key.
@@ -220,6 +230,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     addTask: async (draft) => {
       await requireSendable(draft);
       await requireModelSupport(draft);
+      await requireLaneSupport(draft);
       await requireAutoDoneSupport(draft);
       await requireAgentSupport(draft);
       return call('add-task', { body: draft }, parseWireAddTaskResult);
@@ -232,6 +243,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     configureTask: async (id, body) => {
       const checkedId = taskId(id);
       await requireAutoDoneSupport(body);
+      await requireLaneSupport(body);
       return call('configure-task', { id: checkedId, body }, parseWireTask);
     },
     editPrompt: async (id, body) => call('edit-prompt', { id: taskId(id), body }, parseWireTask),
@@ -299,6 +311,12 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       const { features, usageIndex } = await connect();
       return { supported: features.has('machine.usage'), index: usageIndex };
     },
+    getAgents: async () => call('get-agents', {}, parseWireSharedAgents),
+    setAgents: async (body) => send('set-agents', { body }),
+    agentsState: async () => {
+      const { features, agentsVersion } = await connect();
+      return { supported: features.has('agents.shared'), version: agentsVersion };
+    },
     pause: async (id, note) => call('pause', { id: taskId(id), body: note }, parseWireTask),
     fail: async (id, note) => call('fail', { id: taskId(id), body: note }, parseWireFailResult),
     wait: async (id, wait) => call('wait', { id: taskId(id), body: wait }, parseWireTask),
@@ -311,6 +329,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     addSchedule: async (draft) => {
       await requireSendable(draft);
       await requireModelSupport(draft);
+      await requireLaneSupport(draft);
       await requireAutoDoneSupport(draft);
       await requireAgentSupport(draft);
       await requireScheduleSupport(draft);
@@ -319,7 +338,13 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     listSchedules: async () => call('list-schedules', {}, (value) => parseWireSchedules(value, listOptions)),
     updateSchedule: async (id, patch) =>
       call('update-schedule', { id: scheduleId(id), body: patch }, parseWireSchedule),
-    editSchedule: async (id, body) => call('edit-schedule', { id: scheduleId(id), body }, parseWireEditScheduleResult),
+    editSchedule: async (id, body) => {
+      if (body.settings !== undefined) {
+        requireFeature((await connect()).features, 'schedule.update');
+        await requireLaneSupport(body.settings);
+      }
+      return call('edit-schedule', { id: scheduleId(id), body }, parseWireEditScheduleResult);
+    },
     removeSchedule: async (id) => send('remove-schedule', { id: scheduleId(id) }),
   };
 }

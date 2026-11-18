@@ -6,6 +6,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SESSION_MARKER_KEY } from '../lib/session';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AccountDeletedProvider } from '../components/AccountDeletedProvider';
 import { KeyProvider } from '../crypto/KeyProvider';
 import { createKeySetup } from '../crypto/keySlots';
 import { SettingsPage } from './SettingsPage';
@@ -35,6 +36,26 @@ const lock = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock('../lib/trpc', () => ({
   errorMessage: String,
+  useRawTRPC: () => ({
+    account: {
+      summary: {
+        queryOptions: () => ({
+          queryKey: ['account', 'summary'],
+          queryFn: async () => ({
+            tasks: 1,
+            schedules: 0,
+            notes: 0,
+            taskPrs: 0,
+            machines: 0,
+            sharedAgents: 0,
+            transcriptRuns: 0,
+            transcriptEvents: 0,
+            running: 0,
+          }),
+        }),
+      },
+    },
+  }),
   useRawTRPCClient: () => ({ auth: { logout: { mutate: logout } } }),
   useTRPC: () => ({
     auth: {
@@ -84,9 +105,11 @@ function renderPage() {
     <MantineProvider>
       <ModalsProvider>
         <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-          <KeyProvider keys={held} lock={lock}>
-            <SettingsPage />
-          </KeyProvider>
+          <AccountDeletedProvider>
+            <KeyProvider keys={held} lock={lock}>
+              <SettingsPage />
+            </KeyProvider>
+          </AccountDeletedProvider>
         </QueryClientProvider>
       </ModalsProvider>
     </MantineProvider>,
@@ -393,5 +416,21 @@ describe('signing in and out', () => {
     await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
     expect(lock).not.toHaveBeenCalled();
     expect(localStorage.getItem(SESSION_MARKER_KEY)).toBeNull();
+  });
+});
+
+describe('your data', () => {
+  it('offers an export that includes transcripts unless unchecked, and an import', async () => {
+    renderPage();
+    expect(screen.getByRole('checkbox', { name: /Include transcripts/ })).toBeChecked();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Download export' })).toBeEnabled());
+    expect(screen.getByLabelText('Export file')).toBeInTheDocument();
+  });
+
+  it('opens the delete confirmation, which stays closed to a wrong username', async () => {
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: /Delete account/ }));
+    expect(await screen.findByText('1 task')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete everything' })).toBeDisabled();
   });
 });

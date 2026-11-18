@@ -38,7 +38,7 @@ Tasks:
   add                        propose a follow-up task
   polish <task>              post a polished title and prompt for a task
   task <task> [action...]    show a task's settings, or change its priority,
-                             model, auto-done setting, directory or prompt
+                             model, lane, auto-done setting, directory or prompt
 
 Scheduling:
   schedule <prompt...>       a task from a prompt, run here on this machine
@@ -51,7 +51,7 @@ Setup:
                              may run in on this machine
   config [action...]         show or change this machine's config.json
   agents [action...]         list, show, export, add or remove the agents of
-                             this machine
+                             this machine, or push one to every machine
   init                       write web.json, env and config.json for this
                              machine
   doctor                     check this machine: config, token, server, worker
@@ -576,12 +576,15 @@ Options:
   --parent <task>        the task this follows from (the task: its id, a board
                          task link or the start of its id)
   --priority <priority>  urgent, high, normal or low (default normal)
+  --lane <name>          the lane the task asks for once you start it (default:
+                         the default lane; it does not inherit this run's lane)
   --json                 print JSON on stdout instead of text
   --dry-run              read everything, print every write instead of doing it
   -h, --help             display help for command
 
 Examples:
   board add --title "Fix the flaky test" --file /tmp/prompt.md --parent Ab3dEf9x
+  board add --title "Review the fix" --file /tmp/prompt.md --lane reviews
 ```
 
 ### board polish
@@ -618,15 +621,20 @@ Examples:
 ```
 Usage: board task [options] <task> [set <key> <value> | unset <key>]
 
-Without an action, print a task's settings: status, priority, model, whether the
-agent may mark it done, agent, who made it, the machine it is pinned to and its
-directory, when it starts, its schedule, the task it was forked from, whether
-its next run resumes a session, and its PR. With --json, print the task as
-`board tasks --json` does.
+Without an action, print a task's settings: status, priority, model, the lane it
+asks for, whether the agent may mark it done, agent, who made it, the machine it
+is pinned to and its directory, when it starts, its schedule, the task it was
+forked from, whether its next run resumes a session, and its PR. With --json,
+print the task as `board tasks --json` does.
 
 `set priority <urgent|high|normal|low>` and `set model <alias or model id>`
 change the setting, `unset model` goes back to claude's default model. A model
 applies from the next run on; a run in progress keeps its own.
+
+`set lane <name>` makes the task ask for that lane of the machine that runs it,
+`unset lane` for the default lane. A machine without a lane of that name runs
+the task in its default lane. A running task keeps its lane until its next
+start, so the change is refused while it runs.
 
 `set auto-done on` lets the agent move the task to Done itself when it judges
 that every acceptance criterion is met and nothing is left for you; `set
@@ -659,8 +667,8 @@ from the schedule again, which the command says. `set dir` needs this machine's
 config.json, since it pins the task to the machine's name.
 
 `set` and `unset` are not available inside a board run: only you change where a
-task runs, with what, and whether its agent may mark it done, and what it says.
-Viewing works there.
+task runs, in which lane, with what, and whether its agent may mark it done, and
+what it says. Viewing works there.
 
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
@@ -670,8 +678,8 @@ accepted.
 
 Arguments:
   task             the task: its id, a board task link or the start of its id
-  action           set priority|model|auto-done|dir|prompt <value>, or unset
-                   model|auto-done|dir
+  action           set priority|model|lane|auto-done|dir|prompt <value>, or
+                   unset model|lane|auto-done|dir
 
 Options:
   --title <title>  with set prompt: the new title (default: keep the current
@@ -690,6 +698,8 @@ Examples:
   board task Ab3 set priority high
   board task Ab3 set model opus
   board task Ab3 unset model
+  board task Ab3 set lane reviews
+  board task Ab3 unset lane
   board task Ab3 set auto-done on
   board task Ab3 unset auto-done
   board task Ab3 set dir
@@ -760,6 +770,9 @@ Options:
   --priority <priority>  urgent, high, normal, low (default normal)
   --model <model>        claude model alias or full name, e.g. fable, opus,
                          sonnet, haiku (default: claude's default)
+  --lane <name>          the lane of the machine that runs the task (default:
+                         that machine's default lane; a machine without the lane
+                         uses its default one)
   --auto-done            let the agent move the task to Done itself when it
                          judges every acceptance criterion met (default: it ends
                          in needs-me)
@@ -822,7 +835,7 @@ Examples:
 ### board schedules
 
 ```
-Usage: board schedules [options] [pause|resume|rm <id> | edit <id> <text...|-|--file <path>>]
+Usage: board schedules [options] [pause|resume|rm <id> | edit <id> [text...|-|--file <path>]]
 
 Without arguments, list the repeating schedules: id, rule, next run, runs left,
 paused or ended, the limit if it has one, title; --json prints them as JSON.
@@ -830,29 +843,73 @@ paused or ended, the limit if it has one, title; --json prints them as JSON.
 `pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes
 the next run, `rm <id>` deletes the schedule and its waiting run.
 
-`edit <id> <text...>` changes the schedule's prompt: the text is every word
+`edit <id> [text...]` changes the schedule's prompt: the text is every word
 after the id, `-` reads it from stdin and `--file <path>` from a regular file in
-/tmp, for long text. `--title <title>` sets the title too; without it the title
-stays. Every later run takes the new text. The waiting run takes it too while it
-is in Todo and no worker has claimed it, and the command says which of three
-happened. Runs that already started keep what they had, and the old text is not
-kept. An ended schedule is refused.
+/tmp, for long text; without any text the prompt stays. `--title <title>` sets
+the title too; without it the title stays. Every later run takes the new text.
+The waiting run takes it too while it is in Todo and no worker has claimed it,
+and the command says which of three happened. Runs that already started keep
+what they had, and the old text is not kept. An ended schedule is refused.
+
+The other flags of `edit` change the settings of the schedule, all that the Edit
+schedule dialog on the board changes; what you leave out stays as it is.
+--priority, --model (`default` for claude's default), --lane <name> (`default`
+for the default lane of the machine that runs it), --auto-done on|off and
+--agent (an agent of this machine's config.json, or `none`). --dir <path> pins
+the schedule to this machine and that directory (listed in `board dirs`; `none`:
+no machine and no directory), as `board task <id> set dir` does for a task.
+
+The repeat: --every <duration>, --cron <expr> (up to 10 times, in this machine's
+time zone) or --after <schedule> with --delay <duration>; the one you give
+replaces the old repeat. --in or --at moves the first run of a schedule that has
+a rule of its own. The end: --times <n> runs left (the waiting one included),
+--until <time> or --forever; give one. --max-concurrent <n|none> limits how many
+tasks of the schedule run at once. Switching to --after removes the waiting
+task, and switching back makes one. These flags need a board server that has
+them; the command says when it has not.
 
 Changing a schedule is not available inside a board run. The id can be the start
 of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.
 
 Arguments:
-  action           pause, resume, rm or edit, and the schedule id
+  action                 pause, resume, rm or edit, and the schedule id
 
 Options:
-  --title <title>  with edit: the new title (default: keep the current one)
-  --file <path>    with edit: the prompt from a regular file in /tmp
-  --json           print JSON on stdout instead of text; a value this machine
-                   cannot decrypt is null there and named in "unreadable" (text
-                   shows "(cannot decrypt: input)" after the task, and "(cannot
-                   decrypt this title)" for a title)
-  --dry-run        read everything, print every write instead of doing it
-  -h, --help       display help for command
+  --title <title>        with edit: the new title (default: keep the current
+                         one)
+  --file <path>          with edit: the prompt from a regular file in /tmp
+  --priority <priority>  with edit: urgent, high, normal, low
+  --model <model>        with edit: a claude model alias or full name, or
+                         default for claude's default
+  --lane <name>          with edit: the lane of the machine that runs the tasks,
+                         or default for that machine's default lane
+  --auto-done <on|off>   with edit: let the agent move the tasks to Done itself
+  --agent <name>         with edit: run as this agent of this machine's
+                         config.json, or none
+  --dir <path>           with edit: run on this machine in this directory (a
+                         listed one), or none for no directory
+  --every <duration>     with edit: repeat on a fixed grid (2h)
+  --cron <expr>          with edit: repeat by a 5-field cron expression in this
+                         machine's time zone; give it up to 10 times
+  --after <schedule>     with edit: run after another schedule (its id or the
+                         start of it)
+  --delay <duration>     with edit: start this long after the other schedule's
+                         task finished (10m, 2h)
+  --in <duration>        with edit: the first run, after this long (30m, 2h, 1d)
+  --at <time>            with edit: the first run, then (2027-01-01T12:00,
+                         2027-01-01, 09:30)
+  --times <n>            with edit: runs left, the waiting one included
+  --until <time>         with edit: end after this time
+  --forever              with edit: no end: clears --times and --until
+  --max-concurrent <n>   with edit: at most this many tasks running or waiting
+                         at once, or none
+  --json                 print JSON on stdout instead of text; a value this
+                         machine cannot decrypt is null there and named in
+                         "unreadable" (text shows "(cannot decrypt: input)"
+                         after the task, and "(cannot decrypt this title)" for a
+                         title)
+  --dry-run              read everything, print every write instead of doing it
+  -h, --help             display help for command
 
 Examples:
   board schedules
@@ -861,6 +918,13 @@ Examples:
   board schedules rm s1b
   board schedules edit s1b2c3d4 /sweep the stale branches and the stale worktrees
   board schedules edit s1b --title "Nightly sweep" --file /tmp/prompt.md
+  board schedules edit s1b2c3d4 --priority high --model opus --auto-done on
+  board schedules edit s1b2c3d4 --lane review
+  board schedules edit s1b2c3d4 --every 6h --times 10
+  board schedules edit s1b2c3d4 --cron "0 9 * * 1-5" --until 2027-06-30
+  board schedules edit s1b2c3d4 --after s9z8y7x6 --delay 10m --forever
+  board schedules edit s1b2c3d4 --dir ~/workspace/agent-board --agent reviewer
+  board schedules edit s1b2c3d4 --dir none --agent none --max-concurrent none
 ```
 
 ### board delay
@@ -911,9 +975,17 @@ relative to the current directory.
 
 `add` refuses `/` and a path that is not a directory, warns about the home
 directory (it allows everything below it), and notes when a parent is already
-listed. `add --from-config` lists the directories the config already routes to:
-`defaultCwd`, every lane `cwd` and every `repos` checkout that exists, skipping
-those a listed directory covers and never listing `/` or the home directory.
+listed. When the directory is the top level of a git checkout (not a
+subdirectory, not a linked worktree) whose remote is a GitHub repository, `add`
+also sets its `repo` from the remote of the upstream of the current branch, else
+`origin`; it leaves `repo` unset, with a note, when another entry has that repo
+or `repos` maps it to another path, and `--no-repo` skips this. Adding a listed
+directory again sets or corrects its `repo` the same way (and keeps every other
+setting); when git gives no repo it leaves an existing `repo` alone and says it
+could not confirm it, and `--no-repo` leaves `repo` as it is. `add
+--from-config` lists the directories the config already routes to: `defaultCwd`,
+every lane `cwd` and every `repos` checkout that exists, skipping those a listed
+directory covers and never listing `/` or the home directory.
 
 `rm` asks the board for open tasks and schedules of this machine that run in the
 directory and in no other listed one, and refuses while there are any, and when
@@ -949,6 +1021,7 @@ Arguments:
 
 Options:
   --from-config  add: list the directories the config already routes to
+  --no-repo      add: do not set the repo of a GitHub checkout
   --force        rm: remove although work of this machine still runs there, or
                  the board cannot be checked
   --dry-run      read everything, print every write instead of doing it
@@ -959,6 +1032,7 @@ Examples:
   board dirs add
   board dirs add ~/workspace/agent-board
   board dirs add --from-config
+  board dirs add --no-repo ~/workspace/scratch
   board dirs rm ~/workspace/old
   board dirs rm --force ~/workspace/gone
   board dirs set label Board
@@ -990,22 +1064,22 @@ lane, a `dirs` path, `owner/name.js` under `repos`) is read as the document has
 it.
 
 `set <key> <value>` takes the value as JSON when it is JSON (`3`, `true`,
-`["Read","Bash"]`, `{"skills":["*"],"slots":2}`) and as a string otherwise
-(write `'"123"'` for the string 123), and creates the objects on the way. The
-whole resulting file is checked before anything is written, and the change is
-refused, with the file left as it is, when the config would not load, when it
-would add an agent that cannot be loaded, when the key is not one the CLI reads
-(the error names the nearest key), or when a directory the config routes work to
-(`defaultCwd`, the `cwd` of a lane, a `repos` checkout) would newly not be a
-directory or not be covered by `dirs`. Setting one lane in a file that has no
-`lanes` key writes the default lane out too. A change to `dirs` that drops a
-listed directory warns that work still pinned to it stops in Needs me (`board
-dirs rm` checks for that). `unset <key>` removes a key so its default applies
-again, with the same check. Setting what is already there writes nothing. The
-file is rewritten as JSON with 2 spaces and keeps its key order and mode, and a
-config.json that is a link is changed where it points. `--dry-run` shows what
-would be written. The entries of `dirs` are changed with `board dirs`; `set` and
-`unset` refuse a key below `dirs`.
+`["Read","Bash"]`, `{"slots":2}`) and as a string otherwise (write `'"123"'` for
+the string 123), and creates the objects on the way. The whole resulting file is
+checked before anything is written, and the change is refused, with the file
+left as it is, when the config would not load, when it would add an agent that
+cannot be loaded, when the key is not one the CLI reads (the error names the
+nearest key), or when a directory the config routes work to (`defaultCwd`, the
+`cwd` of a lane, a `repos` checkout) would newly not be a directory or not be
+covered by `dirs`. Setting one lane in a file that has no `lanes` key writes the
+default lane out too. A change to `dirs` that drops a listed directory warns
+that work still pinned to it stops in Needs me (`board dirs rm` checks for
+that). `unset <key>` removes a key so its default applies again, with the same
+check. Setting what is already there writes nothing. The file is rewritten as
+JSON with 2 spaces and keeps its key order and mode, and a config.json that is a
+link is changed where it points. `--dry-run` shows what would be written. The
+entries of `dirs` are changed with `board dirs`; `set` and `unset` refuse a key
+below `dirs`.
 
 `edit` opens the file in $VISUAL, else $EDITOR (run through the shell the way
 git runs its editor, so a command line with arguments or quotes such as `code
@@ -1038,7 +1112,7 @@ Examples:
   board config get lanes.reviews.slots
   board config set pauseAfterMinutes 10
   board config set agents.reviewer.tools '["Read","Bash"]'
-  board config set lanes.reviews '{"skills":["/review"],"slots":2}'
+  board config set lanes.reviews '{"slots":2}'
   board config --dry-run unset maxRunHours
   board config edit
 ```
@@ -1046,7 +1120,7 @@ Examples:
 ### board agents
 
 ```
-Usage: board agents [options] [list | show <name> | export <name> | add <file|-|url|example:name> | rm <name>]
+Usage: board agents [options] [list | show <name> | export <name> | add <file|-|url|example:name> | push <name|file|-|url|example:name> | rm [--board] <name>]
 
 Manage the agents of this machine: the named sets of tools and rules a task runs
 as when it names one (see Agents in docs/workers.md). An agent is defined either
@@ -1081,18 +1155,38 @@ pins the file: `add` refuses one whose sha256 differs. The URL is recorded as
 the agent's `source`; nothing updates it later, so run `add --replace` again to
 take a newer version.
 
+`push <name | file | - | https-url | example:name>` puts one agent on the board
+for every machine of yours: an agent this machine defines, or a definition read
+the way `add` reads one. It prints the same definition and grant summary, and
+pushes only after you confirm at a terminal or pass `--yes`. Every machine
+applies the board's agents on its next dispatch tick: it writes them to
+`agents.board/` beside config.json and moves its own definition of the same name
+to `agents.replaced/` (the board wins a name; nothing is deleted). After a push
+the agent is the board's on this machine too: its agents/ file or config.json
+entry goes. The board holds all agents as one sealed document whose version goes
+up with every push; a push that finds another push came first fetches again and
+retries once.
+
 `rm <name>` removes the agent's file, or its entry in config.json (the rest of
-the file stays as it is). `add` and `rm` are not available inside a board run.
+the file stays as it is). `rm --board <name>` takes an agent off the board, and
+every machine drops its copy on its next tick. `add` refuses a name the board
+holds. `add`, `push` and `rm` are not available inside a board run.
+
+The list says where each agent comes from (`config.json`, `agents/<file>` or
+`board v<n>`, the version of the board's agents this machine applied) and the
+first 12 hex digits of its hash: SHA-256 of the keys that decide what a run may
+do, the same on every machine for the same definition.
 
 Arguments:
-  action         list, show, export, add or rm, and a name or a source
+  action         list, show, export, add, push or rm, and a name or a source
 
 Options:
   --json         list, show, export: print JSON instead of text or YAML
   --yaml         show, export: print YAML (the default)
-  --name <name>  add: the name to add the agent under
+  --name <name>  add, push: the name to add or push the agent under
   --replace      add: overwrite an agent of that name
-  -y, --yes      add: write without asking (read the definition first)
+  -y, --yes      add, push: write without asking (read the definition first)
+  --board        rm: take the agent off the board's agents, for every machine
   --dry-run      read everything, print every write instead of doing it
   -h, --help     display help for command
 
@@ -1105,6 +1199,9 @@ Examples:
   board agents add https://example.com/agents/reviewer.yaml#sha256=<hex>
   yq -o json reviewer.yaml | board agents add - --yes
   board agents rm reviewer
+  board agents push reviewer
+  board agents push ./reviewer.yaml
+  board agents rm --board reviewer
 ```
 
 ### board init

@@ -116,6 +116,8 @@ Two limits are known. A session is not checked against the identity provider aga
 
 Every row belongs to the signed-in user, by the name the sign-in gave. Requests run as the unprivileged `board_app` role with row-level security, so a query sees only its owner's rows even if it forgets a `WHERE`.
 
+Deleting an account (Settings → Your data) removes its rows from the database and nothing else. Backups and volume snapshots keep the data until they expire, so the operator decides how long that is.
+
 A machine token belongs to the user who made it on the Settings page, and the machine API works on that user's board. Two users may use the same machine name or dedupe key.
 
 ### Two ways in
