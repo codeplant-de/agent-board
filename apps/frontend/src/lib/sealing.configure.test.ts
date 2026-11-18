@@ -46,6 +46,7 @@ describe('sealConfigure', () => {
     const task = { id: 'task0001', createdBy: 'user', scheduleId: null } as const;
     expect(await sealConfigure(keys, { task, model: 'opus' })).toEqual({ id: 'task0001', model: 'opus' });
     expect(await sealConfigure(keys, { task, model: null })).toEqual({ id: 'task0001', model: null });
+    expect(await sealConfigure(keys, { task, autoDone: false })).toEqual({ id: 'task0001', autoDone: false });
     expect(await sealConfigure(keys, { task, place: null })).toEqual({ id: 'task0001', place: null });
     expect(await sealConfigure(keys, { task, model: 'haiku', place })).toMatchObject({
       model: 'haiku',

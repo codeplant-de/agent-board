@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Machine } from '../lib/opening';
 import type { BoardTask } from '../lib/trpc';
-import { ModelPicker, WorkdirSetting } from './TaskSettings';
+import { AutoDoneSetting, ModelPicker, WorkdirSetting } from './TaskSettings';
 
 const configure = vi.hoisted(() => vi.fn(async (_: unknown) => ({})));
 const listed = vi.hoisted(() => ({
@@ -54,6 +54,7 @@ const task = (extra: Partial<BoardTask> = {}): BoardTask =>
     workdir: '/work/app',
     sessionId: null,
     model: null,
+    autoDone: false,
     unreadable: [],
     ...extra,
   }) as BoardTask;
@@ -112,6 +113,31 @@ describe('ModelPicker', () => {
     await userEvent.click(await screen.findByRole('option', { name: 'Default', hidden: true }));
     await waitFor(() => expect(configure).toHaveBeenCalled());
     expect(sent()).toMatchObject({ model: null });
+  });
+});
+
+describe('AutoDoneSetting', () => {
+  it('shows the setting and sends the opposite when it is switched, in any status', async () => {
+    renderWith(<AutoDoneSetting task={task({ status: 'running' })} />);
+    const toggle = screen.getByRole('switch', { name: /Agent may mark it done/ });
+    expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle);
+    await waitFor(() => expect(configure).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ autoDone: true });
+  });
+
+  it('shows it on and switches it off', async () => {
+    renderWith(<AutoDoneSetting task={task({ autoDone: true })} />);
+    const toggle = screen.getByRole('switch', { name: /Agent may mark it done/ });
+    expect(toggle).toBeChecked();
+    await userEvent.click(toggle);
+    await waitFor(() => expect(configure).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ autoDone: false });
+  });
+
+  it('says that a schedule’s card takes the setting from its schedule for the next occurrence', () => {
+    renderWith(<AutoDoneSetting task={task({ scheduleId: 'sched001' })} />);
+    expect(screen.getByText(/the next occurrence takes its settings from the schedule/)).toBeInTheDocument();
   });
 });
 

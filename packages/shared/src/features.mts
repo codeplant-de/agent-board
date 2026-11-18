@@ -25,6 +25,8 @@ export const ADDED_SERVER_FEATURES = [
   'task.watches',
   'task.note-count',
   'task.fork',
+  'task.auto-done',
+  'task.moved-by',
 ] as const;
 
 export const SERVER_FEATURES = [...BASELINE_SERVER_FEATURES, ...ADDED_SERVER_FEATURES] as const;
@@ -51,6 +53,8 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'task.watches': 'showing a task’s watches',
   'task.note-count': 'the number of notes of a task',
   'task.fork': 'forking a task',
+  'task.auto-done': 'letting the agent move a task to Done',
+  'task.moved-by': 'who moved a task',
   wait: 'waiting',
 };
 

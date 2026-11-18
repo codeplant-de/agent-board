@@ -4,7 +4,7 @@
  * Changes between two listings are coalesced: a task that went todo, running, needs-me in between shows one move.
  */
 import { BackendError, isPermanentRefusal } from '../backend/backend.mts';
-import type { Backend, Note, Status, Task } from '@agent-board/shared';
+import type { Backend, Note, Status, Task, TaskActor } from '@agent-board/shared';
 
 export const EVENT_TYPES = ['created', 'moved', 'changed', 'closed', 'removed', 'note'] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -35,6 +35,8 @@ export interface BoardEvent {
   status: Status;
   from?: Status;
   to?: Status;
+  // `moved` only: who made the task's last status change, as the board says it after this one. Absent from a board that does not say.
+  actor?: TaskActor;
   fields?: WatchedField[];
   note?: Note;
 }
@@ -110,7 +112,15 @@ export async function diffTasks(
         ...(last === undefined ? [{ ...base, type: 'created' as const }] : []),
         ...notes.map((note) => ({ ...base, type: 'note' as const, note })),
         ...(last !== undefined && last.status !== task.status
-          ? [{ ...base, type: 'moved' as const, from: last.status, to: task.status }]
+          ? [
+              {
+                ...base,
+                type: 'moved' as const,
+                from: last.status,
+                to: task.status,
+                ...(task.movedBy === undefined ? {} : { actor: task.movedBy }),
+              },
+            ]
           : []),
         ...(last === undefined || changedFields(last, task).length === 0
           ? []
@@ -128,6 +138,8 @@ export interface EventFilter {
   // Columns the task is in after the change; empty for every column.
   statuses: readonly Status[];
   types: readonly EventType[];
+  // Who moved the task, for `moved` events; empty for every event. An event that is not a move, or whose actor is unknown, does not match.
+  actors: readonly TaskActor[];
   machine?: string;
 }
 
@@ -136,6 +148,8 @@ export function matchesFilter(event: BoardEvent, filter: EventFilter): boolean {
     (filter.tasks.length === 0 || filter.tasks.includes(event.task.id)) &&
     (filter.statuses.length === 0 || filter.statuses.includes(event.status)) &&
     (filter.types.length === 0 || filter.types.includes(event.type)) &&
+    (filter.actors.length === 0 ||
+      (event.type === 'moved' && event.actor !== undefined && filter.actors.includes(event.actor))) &&
     (filter.machine === undefined || event.task.machine === filter.machine)
   );
 }

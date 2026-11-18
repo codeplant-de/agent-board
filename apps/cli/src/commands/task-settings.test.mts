@@ -72,6 +72,7 @@ test('board task prints the settings: null model and directory read as the defau
     '  status      todo',
     '  priority    normal',
     '  model       default',
+    '  auto-done   off',
     '  agent       none',
     '  created by  user',
     '  machine     any',
@@ -111,6 +112,7 @@ test('a pinned task with a session says so, and a directory this machine does no
   assert.match(text, /status {6}needs-me \(closed\)/);
   assert.match(text, /model {7}opus/);
   assert.match(text, /agent {7}reviewer/);
+  assert.match(text, /auto-done {3}off/);
   assert.match(text, /machine {5}here \(runs only there\)/);
   assert.match(text, /directory {3}\/srv\/app \(not listed on this machine\)/);
   assert.match(text, /schedule {4}sch1/);
@@ -193,6 +195,27 @@ test('set model and unset model change the model from the next run on, in any st
   await assert.rejects(run.go(['task', 'abc12345', 'set', 'model']), UsageError);
 });
 
+test('set auto-done on and off, unset auto-done: from the next look on, in any status, with a note on a schedule’s card', async (context) => {
+  const run = runner(context, [task({ id: 'abc12345', status: 'running', scheduleId: 'sched001' })]);
+  await run.go(['task', 'abc12345', 'set', 'auto-done', 'on']);
+  assert.equal(run.backend.tasks[0]?.autoDone, true);
+  assert.match(said(run), /abc12345: its agent may move it to Done when it judges every acceptance criterion met/);
+  assert.match(said(run), /next occurrence takes priority, model, auto-done, machine and directory/);
+  await run.go(['task', 'abc12345']);
+  assert.match(said(run), /auto-done {3}on: the agent may move it to Done/);
+  run.printed.length = 0;
+  await run.go(['task', 'abc12345', 'set', 'auto-done', 'on']);
+  assert.match(said(run), /abc12345 auto-done is already on/);
+  await run.go(['task', 'abc12345', 'unset', 'auto-done']);
+  assert.equal(run.backend.tasks[0]?.autoDone, false);
+  await run.go(['task', 'abc12345', 'set', 'auto-done', 'off']);
+  assert.match(said(run), /abc12345 auto-done is already off/);
+  assert.deepEqual(writes(run), ['auto-done abc12345: on', 'auto-done abc12345: off']);
+  await assert.rejects(run.go(['task', 'abc12345', 'set', 'auto-done', 'maybe']), /auto-done is on or off/);
+  await assert.rejects(run.go(['task', 'abc12345', 'set', 'auto-done']), /takes one value/);
+  await assert.rejects(run.go(['task', 'abc12345', 'set', 'auto-done', 'on', 'off']), UsageError);
+});
+
 test('set dir pins the task to this machine and the directory, drops the session and says so', async (context) => {
   const run = runner(context, [
     task({ id: 'abc12345', machine: 'laptop', workdir: '/old', sessionId: 's1', next: 'resume', paused: true }),
@@ -223,7 +246,10 @@ test('a card of a schedule gets a note that the change is for it only, on priori
     run.printed.filter((line) => /belongs to a schedule; the change applies to it only/.test(line)).length,
     3,
   );
-  assert.match(said(run), /next occurrence takes priority, model, machine and directory from the schedule again/);
+  assert.match(
+    said(run),
+    /next occurrence takes priority, model, auto-done, machine and directory from the schedule again/,
+  );
   const plain = runner(context, [task({ id: 'def12345' })]);
   await plain.go(['task', 'def12345', 'set', 'priority', 'high']);
   assert.doesNotMatch(said(plain), /schedule/);
@@ -348,6 +374,8 @@ test('set and unset are refused inside a board run; viewing works there', async 
   for (const argv of [
     ['set', 'priority', 'high'],
     ['set', 'model', 'opus'],
+    ['set', 'auto-done', 'on'],
+    ['unset', 'auto-done'],
     ['set', 'dir'],
     ['unset', 'dir'],
   ])
@@ -378,7 +406,7 @@ test('a server without the feature makes the command refuse with the standard te
 test('unknown actions and keys are usage errors', async (context) => {
   const run = runner(context, [task({ id: 'abc12345' })]);
   await assert.rejects(run.go(['task', 'abc12345', 'frob']), /takes nothing, or set or unset/);
-  await assert.rejects(run.go(['task', 'abc12345', 'set', 'colour', 'red']), /takes priority, model or dir/);
+  await assert.rejects(run.go(['task', 'abc12345', 'set', 'colour', 'red']), /takes priority, model, auto-done or dir/);
   await assert.rejects(run.go(['task', 'abc12345', 'set', 'dir', 'a', 'b']), /takes one path/);
   await assert.rejects(run.go(['task', 'abc12345', 'unset', 'model', 'x']), UsageError);
 });
