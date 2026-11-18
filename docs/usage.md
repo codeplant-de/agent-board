@@ -549,7 +549,7 @@ PATH=/home/me/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 ## Choosing an agent
 
-An agent is a named set of tools and rules on a machine, in its `config.json` or its `agents` directory (see [Agents](workers.md#agents)). `board agents` lists them. `board agents add` imports one from a file, a URL or a shipped example after showing what it grants (see [Sharing and importing agents](workers.md#sharing-and-importing-agents)).
+An agent is a named set of tools and rules on a machine, in its `config.json` or its `agents` directory, or held on the board for every machine (see [Agents](workers.md#agents)). `board agents` lists them. `board agents add` imports one from a file, a URL or a shipped example after showing what it grants (see [Sharing and importing agents](workers.md#sharing-and-importing-agents)). `board agents push` puts one on the board, and every machine of yours applies it (see [Agents on the board](workers.md#agents-on-the-board)).
 
 ```sh
 board schedule --agent reviewer /review-pr 17741

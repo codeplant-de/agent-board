@@ -1,13 +1,25 @@
 // `board agents`: list, show, export, add and remove the agents of this machine. An agent definition is a permission
 // grant (what a restricted run may do here), so `add` shows all of it and asks before it writes.
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { AGENT_NAME_RULE, isAgentName, isRecord } from '@agent-board/shared';
+import type { Backend, SharedAgentsDocument } from '@agent-board/shared';
+import { BackendError } from '../backend/backend.mts';
 import { UsageError } from '../cli.mts';
-import { parseAgentDocument, renderAgentDocument } from '../config/agent-document.mts';
+import { agentDocument, parseAgentDocument, renderAgentDocument, writeAgentFile } from '../config/agent-document.mts';
+export { agentDocument, writeAgentFile };
 import type { AgentFormat } from '../config/agent-document.mts';
 import { fetchAgentText, parseAgentUrl } from '../config/agent-fetch.mts';
 import type { FetchOptions } from '../config/agent-fetch.mts';
+import {
+  agentHashOf,
+  applySharedAgents,
+  boardEntry,
+  logApplied,
+  parseBoardEntry,
+  removeLocal,
+  replacedFiles,
+} from '../config/board-agents.mts';
 import { agentFileName, agentsDirOf, ConfigError, expandHome, loadConfig, parseAgent } from '../config/config.mts';
 import type { AgentConfig, Config } from '../config/config.mts';
 import { plainLine, plainText } from '../output/terminal.mts';
@@ -29,6 +41,9 @@ export interface AgentsDeps {
   // Asks a person at a terminal; undefined when there is none, so only --yes can confirm.
   confirm: ((question: string) => Promise<boolean>) | undefined;
   fetch?: FetchOptions;
+  // The board, for push and rm --board; the other actions work without one.
+  backend?: Pick<Backend, 'sharedAgentsVersion' | 'getSharedAgents' | 'setSharedAgents'>;
+  now?: () => Date;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -38,11 +53,18 @@ function machineAgents(deps: Pick<AgentsDeps, 'configFile'>): Config {
   return loadConfig(deps.configFile, { optionalConfig: true });
 }
 
-// Where an agent is defined: its agents/ file, or config.json.
+// Whether the agent of this name is the board's, as this machine last applied it.
+const isBoardAgent = (config: Config, name: string): boolean => config.board?.names.includes(name) ?? false;
+
+// Where an agent is defined: the board (with the version applied), its agents/ file, or config.json.
 const whereOf = (config: Config, name: string): string => {
+  if (isBoardAgent(config, name)) return `board v${config.board?.version ?? '?'}`;
   const file = config.agentFiles?.[name];
   return file === undefined ? 'config.json' : `agents/${basename(file)}`;
 };
+
+/** The short form of an agent's hash that `board agents` prints; the catalogue and --json carry all of it. */
+export const shortHash = (hash: string): string => hash.slice(0, 12);
 
 /** The plugin placeholders of an agent's rules, each with its root here or the reason it does not resolve. */
 export function pluginRoots(
@@ -76,18 +98,25 @@ export interface AgentRow {
   denied: number;
   version?: string;
   source?: string;
+  // The hash of the run-relevant keys; absent for an agent that does not parse.
+  hash?: string;
+  // The local definitions an apply moved aside for this board agent, until they are deleted.
+  replaced?: string[];
   usable: boolean;
   problem?: string;
 }
 
-export function agentRows(config: Config, home: string): AgentRow[] {
+export function agentRows(config: Config, home: string, replaced: Record<string, string[]> = {}): AgentRow[] {
   const names = [...new Set([...Object.keys(config.agents), ...Object.keys(config.agentErrors)])].sort();
   return names.map((name) => {
     const agent = Object.hasOwn(config.agents, name) ? config.agents[name] : undefined;
     const problem = unusable(config, name, home);
+    const moved = isBoardAgent(config, name) ? replaced[name] : undefined;
     return {
       name,
       from: whereOf(config, name),
+      ...(agent === undefined ? {} : { hash: agentHashOf(agent) }),
+      ...(moved === undefined ? {} : { replaced: moved }),
       tools: agent?.tools ?? [],
       allowed: agent?.allowedTools.length ?? 0,
       denied: agent?.disallowedTools.length ?? 0,
@@ -100,7 +129,7 @@ export function agentRows(config: Config, home: string): AgentRow[] {
 }
 
 export function agentsList(deps: AgentsDeps, json: boolean): void {
-  const rows = agentRows(machineAgents(deps), deps.home);
+  const rows = agentRows(machineAgents(deps), deps.home, replacedFiles(deps.configFile));
   if (json) {
     deps.write(`${JSON.stringify({ agents: rows }, null, 2)}\n`);
     return;
@@ -112,8 +141,10 @@ export function agentsList(deps: AgentsDeps, json: boolean): void {
   }
   for (const row of rows) {
     const head = `${plainLine(row.name)}${row.version === undefined ? '' : ` ${plainLine(row.version)}`}`;
+    const from = `${row.from}${row.replaced === undefined ? '' : ', replaced a local definition'}`;
+    const hash = row.hash === undefined ? '' : `  ${shortHash(row.hash)}`;
     deps.print(
-      `${head}  ${row.usable ? 'usable' : `NOT USABLE: ${plainLine(row.problem ?? '')}`}  (${plainLine(row.from)})`,
+      `${head}  ${row.usable ? 'usable' : `NOT USABLE: ${plainLine(row.problem ?? '')}`}  (${plainLine(from)})${hash}`,
     );
     if (row.tools.length > 0)
       deps.print(
@@ -125,23 +156,6 @@ export function agentsList(deps: AgentsDeps, json: boolean): void {
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Documents
-
-/** The shareable document of an agent: its keys in a fixed order, empty optional lists left out. */
-export function agentDocument(name: string, agent: AgentConfig, { withSource = true } = {}): Record<string, unknown> {
-  return {
-    name,
-    ...(agent.version === undefined ? {} : { version: agent.version }),
-    description: agent.description,
-    ...(agent.model === undefined ? {} : { model: agent.model }),
-    tools: agent.tools,
-    allowedTools: agent.allowedTools,
-    disallowedTools: agent.disallowedTools,
-    ...(agent.env.length === 0 ? {} : { env: agent.env }),
-    ...(agent.mcpServers.length === 0 ? {} : { mcpServers: agent.mcpServers }),
-    ...(agent.prompt === undefined ? {} : { prompt: agent.prompt }),
-    ...(withSource && agent.source !== undefined ? { source: agent.source } : {}),
-  };
-}
 
 function definedAgent(config: Config, name: string): AgentConfig {
   const agent = Object.hasOwn(config.agents, name) ? config.agents[name] : undefined;
@@ -285,24 +299,36 @@ async function readSource(deps: AgentsDeps, from: string): Promise<{ text: strin
   return { text, source: path, stem: agentFileName(basename(path)) };
 }
 
-/** Writes `<dir>/<name>.yaml` beside a temp file and renames it into place, mode 0600; another file for the name goes. */
-export function writeAgentFile(dir: string, name: string, text: string): string {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const target = join(dir, `${name}.yaml`);
-  const temp = join(dir, `.${name}.tmp-${process.pid}`);
-  try {
-    rmSync(temp, { force: true });
-    writeFileSync(temp, text, { mode: 0o600, flag: 'wx' });
-    chmodSync(temp, 0o600);
-    renameSync(temp, target);
-  } finally {
-    rmSync(temp, { force: true });
+// The whole definition and every grant it makes, flagged where broad: what a person reads before it is written or pushed.
+function showDefinition(
+  deps: Pick<AgentsDeps, 'print' | 'home'>,
+  name: string,
+  agent: AgentConfig,
+  rendered: string,
+  heading: string,
+  where: string,
+): void {
+  deps.print(heading);
+  deps.print('');
+  for (const row of plainText(rendered).trimEnd().split('\n')) deps.print(`  ${row}`);
+  deps.print('');
+  const { lines, warnings } = grantSummary(name, agent, deps.home);
+  deps.print(`What a run as this agent may do ${where}:`);
+  for (const row of lines) deps.print(row);
+  if (warnings.length > 0) {
+    deps.print('');
+    deps.print(`Check these (${warnings.length}):`);
+    for (const warning of warnings) deps.print(`  ! ${warning}`);
   }
-  for (const other of [`${name}.yml`, `${name}.json`]) rmSync(join(dir, other), { force: true });
-  return target;
+  deps.print('');
 }
 
-export async function agentsAdd(deps: AgentsDeps, from: string, flags: AddFlags): Promise<void> {
+// The definition a file, stdin, URL or example holds, under the name --name, its `name` or its file name give it.
+async function readDefinition(
+  deps: AgentsDeps,
+  from: string,
+  flags: { name?: string },
+): Promise<{ name: string; agent: AgentConfig }> {
   const { text, source, stem } = await readSource(deps, from);
   const label = source === 'stdin' ? 'the definition on stdin' : plainLine(source).slice(0, 200);
   const document = parseAgentDocument(text, label);
@@ -315,9 +341,16 @@ export async function agentsAdd(deps: AgentsDeps, from: string, flags: AddFlags)
   if (!isAgentName(name))
     throw new UsageError(`the agent name "${plainLine(name).slice(0, 40)}" must be ${AGENT_NAME_RULE}`);
   // The source is where this machine got the file, never what the file says about itself.
-  const agent = parseAgent(name, { ...entry, source }, label);
+  return { name, agent: parseAgent(name, { ...entry, source }, label) };
+}
 
+export async function agentsAdd(deps: AgentsDeps, from: string, flags: AddFlags): Promise<void> {
+  const { name, agent } = await readDefinition(deps, from, flags);
   const config = machineAgents(deps);
+  if (isBoardAgent(config, name))
+    throw new ConfigError(
+      `agent ${name} is held on the board for every machine; change it with board agents push, or add this one under another --name`,
+    );
   const defined = Object.hasOwn(config.agents, name) || Object.hasOwn(config.agentErrors, name);
   const inFile = Object.hasOwn(config.agentFiles ?? {}, name);
   if (defined && !inFile)
@@ -328,19 +361,7 @@ export async function agentsAdd(deps: AgentsDeps, from: string, flags: AddFlags)
     throw new ConfigError(`agent ${name} exists (${whereOf(config, name)}); --replace overwrites it`);
 
   const rendered = renderAgentDocument(agentDocument(name, agent), 'yaml');
-  deps.print(`The definition, as it would be written:`);
-  deps.print('');
-  for (const row of plainText(rendered).trimEnd().split('\n')) deps.print(`  ${row}`);
-  deps.print('');
-  const { lines, warnings } = grantSummary(name, agent, deps.home);
-  deps.print('What a run as this agent may do on this machine:');
-  for (const row of lines) deps.print(row);
-  if (warnings.length > 0) {
-    deps.print('');
-    deps.print(`Check these (${warnings.length}):`);
-    for (const warning of warnings) deps.print(`  ! ${warning}`);
-  }
-  deps.print('');
+  showDefinition(deps, name, agent, rendered, 'The definition, as it would be written:', 'on this machine');
   const dir = agentsDirOf(deps.configFile);
   const target = join(dir, `${name}.yaml`);
   const action = `${defined ? 'replace' : 'write'} ${target}`;
@@ -368,6 +389,10 @@ export async function agentsAdd(deps: AgentsDeps, from: string, flags: AddFlags)
 
 export function agentsRemove(deps: AgentsDeps, name: string): void {
   const config = machineAgents(deps);
+  if (isBoardAgent(config, name))
+    throw new UsageError(
+      `agent ${name} is held on the board; board agents rm --board ${name} takes it off every machine`,
+    );
   const file = config.agentFiles?.[name];
   const inConfig = (() => {
     try {
@@ -397,4 +422,185 @@ export function agentsRemove(deps: AgentsDeps, name: string): void {
     }
   }
   deps.print(`tasks that name ${name} no longer run on this machine.`);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The board's agents: push and rm --board
+
+const isConflict = (error: unknown): boolean => error instanceof BackendError && error.fromApi && error.status === 409;
+
+function boardOf(deps: AgentsDeps): NonNullable<AgentsDeps['backend']> {
+  if (deps.backend === undefined) throw new UsageError('this needs the board, and no board is set up here');
+  return deps.backend;
+}
+
+// The board's document as it is now, to change one entry of: an empty one when it holds none.
+async function currentDocument(deps: AgentsDeps): Promise<SharedAgentsDocument & { held: number }> {
+  const backend = boardOf(deps);
+  if ((await backend.sharedAgentsVersion()) === 'unsupported')
+    throw new UsageError(
+      'the board server does not support agent definitions held on the board yet; update the board server',
+    );
+  const onBoard = await backend.getSharedAgents();
+  if (onBoard === null) return { version: 0, agents: {}, held: 0 };
+  if ('unreadable' in onBoard)
+    throw new ConfigError(
+      `the board's agents v${onBoard.version} do not open with this machine's data key; nothing was pushed, since a push replaces all of them`,
+    );
+  return { ...onBoard.document, held: onBoard.version };
+}
+
+// Sends `change` of the board's document as its next version; on a conflict fetches again and, when `confirmAgain` agrees,
+// tries once more. Returns the document the board now holds.
+async function pushChange(
+  deps: AgentsDeps,
+  first: SharedAgentsDocument & { held: number },
+  change: (agents: SharedAgentsDocument['agents']) => SharedAgentsDocument['agents'],
+  confirmAgain: (before: SharedAgentsDocument, now: SharedAgentsDocument) => Promise<boolean>,
+): Promise<SharedAgentsDocument | undefined> {
+  const backend = boardOf(deps);
+  let base = first;
+  for (let attempt = 0; ; attempt++) {
+    const document = { version: base.held + 1, agents: change({ ...base.agents }) };
+    try {
+      await backend.setSharedAgents(document, base.held);
+      return document;
+    } catch (error) {
+      if (!isConflict(error) || attempt > 0) throw error;
+    }
+    const now = await currentDocument(deps);
+    if (!(await confirmAgain(base, now))) return undefined;
+    base = now;
+  }
+}
+
+const sameEntry = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+// Brings this machine's agents.board/ to the document it just pushed, as the next tick would.
+async function applyHere(deps: AgentsDeps, document: SharedAgentsDocument): Promise<void> {
+  const applied = await applySharedAgents(
+    { configFile: deps.configFile, now: deps.now ?? (() => new Date()) },
+    document,
+  );
+  logApplied(deps.print, applied);
+}
+
+export interface PushFlags {
+  name?: string;
+  yes?: boolean;
+}
+
+/**
+ * Puts one agent on the board for every machine: an agent this machine defines (by name) or a definition from a file, stdin,
+ * URL or example. Shows all of it and asks first, like `add`; then the agent is the board's here too: its local file or
+ * config.json entry goes, since the board copy holds the same definition.
+ */
+export async function agentsPush(deps: AgentsDeps, from: string, flags: PushFlags): Promise<void> {
+  const config = machineAgents(deps);
+  const local =
+    isAgentName(from) &&
+    flags.name === undefined &&
+    !isBoardAgent(config, from) &&
+    (Object.hasOwn(config.agents, from) || Object.hasOwn(config.agentErrors, from));
+  if (isAgentName(from) && flags.name === undefined && isBoardAgent(config, from))
+    throw new UsageError(
+      `agent ${from} is on the board already; to change it, export it (board agents export ${from} > ${from}.yaml), edit the file and push the file`,
+    );
+  const { name, agent } = local
+    ? { name: from, agent: definedAgent(config, from) }
+    : await readDefinition(deps, from, flags);
+  const entry = boardEntry(name, agent);
+  // What every machine will have: the strict parser of a board entry must take it as it is.
+  parseBoardEntry(name, entry, 1);
+
+  const first = await currentDocument(deps);
+  const before = first.agents[name];
+  if (before !== undefined && sameEntry(before, entry)) {
+    deps.print(`the board's agents v${first.held} already hold this definition of ${name}.`);
+  } else {
+    showDefinition(
+      deps,
+      name,
+      agent,
+      renderAgentDocument(agentDocument(name, agent, { withSource: false }), 'yaml'),
+      `The definition, as every machine of yours will have it:`,
+      'on every machine of yours, once it applies the board on its next tick',
+    );
+    if (Object.hasOwn(config.agents, name) && !local && !isBoardAgent(config, name))
+      deps.print(`This machine's own ${name} (${whereOf(config, name)}) will be moved to agents.replaced/.`);
+    const action = `${before === undefined ? 'add' : 'replace'} ${name} in the board's agents (v${first.held + 1})`;
+    if (deps.dryRun) {
+      deps.print(`DRY ${action}`);
+      return;
+    }
+    if (!flags.yes) {
+      if (deps.confirm === undefined)
+        throw new ConfigError(
+          'nothing was pushed: confirm at a terminal, or pass --yes once you have read the definition',
+        );
+      if (!(await deps.confirm(`${before === undefined ? 'Push' : 'Replace'} agent ${name} on every machine?`))) {
+        deps.print('nothing was pushed.');
+        return;
+      }
+    }
+    const pushed = await pushChange(
+      deps,
+      first,
+      (agents) => ({ ...agents, [name]: entry }),
+      async (was, now) => {
+        if (sameEntry(was.agents[name], now.agents[name])) return true;
+        const theirs = now.agents[name];
+        deps.print(`Another push changed ${name} on the board meanwhile (now v${now.version}).`);
+        if (theirs !== undefined) {
+          try {
+            const shown = parseBoardEntry(name, theirs, now.version);
+            const { lines } = grantSummary(name, shown, deps.home);
+            deps.print('It now grants:');
+            for (const row of lines) deps.print(row);
+          } catch (error) {
+            deps.print(`It now holds a definition this CLI cannot read: ${errorText(error)}`);
+          }
+        }
+        if (flags.yes || deps.confirm === undefined) return flags.yes === true;
+        return deps.confirm(`Replace it with yours on every machine?`);
+      },
+    );
+    if (pushed === undefined) {
+      deps.print('nothing was pushed.');
+      return;
+    }
+    deps.print(
+      `pushed agent ${name}: the board's agents are v${pushed.version}; every machine applies them on its next tick.`,
+    );
+    if (local) removeLocal(deps.configFile, name);
+    await applyHere(deps, pushed);
+    return;
+  }
+  if (deps.dryRun) return;
+  if (local) {
+    removeLocal(deps.configFile, name);
+    await applyHere(deps, first);
+  }
+}
+
+/** Takes one agent off the board; every machine drops its copy on its next tick. */
+export async function agentsRemoveFromBoard(deps: AgentsDeps, name: string): Promise<void> {
+  const first = await currentDocument(deps);
+  if (!Object.hasOwn(first.agents, name))
+    throw new UsageError(
+      `the board holds no agent "${plainLine(name).slice(0, 40)}"${first.held === 0 ? '' : ` (v${first.held} has ${Object.keys(first.agents).sort().join(', ') || 'none'})`}`,
+    );
+  if (deps.dryRun) {
+    deps.print(`DRY remove ${name} from the board's agents (v${first.held + 1})`);
+    return;
+  }
+  const pushed = await pushChange(
+    deps,
+    first,
+    (agents) => Object.fromEntries(Object.entries(agents).filter(([other]) => other !== name)),
+    async () => true,
+  );
+  if (pushed === undefined) return;
+  deps.print(`removed agent ${name} from the board: v${pushed.version}; every machine drops it on its next tick.`);
+  await applyHere(deps, pushed);
 }

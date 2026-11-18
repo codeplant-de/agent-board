@@ -43,6 +43,14 @@ export interface AgentConfig {
   source?: string;
 }
 
+// What the board's agent definitions are on this machine: the version applied last, and the file of each agent of it.
+export interface BoardAgents {
+  version: number | null;
+  // Every name the board holds, the agents that did not parse here included.
+  names: string[];
+  files: Record<string, string>;
+}
+
 // Slots of one kind of work on this machine. A lane runs its own work first (the tasks that name it, `requestedLane`) and
 // borrows any other work when it has none; it takes its slot back by pausing borrowed work once its own work waits. The
 // default lane owns the tasks that name no lane, or one this machine does not have.
@@ -111,8 +119,10 @@ export interface Config {
   // Why an `agents` entry could not be read, by name. One bad agent must not stop the machine's other work, so it is not a
   // config error; a task that names it fails closed, and doctor and dispatch report it.
   agentErrors: Record<string, string>;
-  // The agents that come from a file of the agents/ directory, by name: the file's path. The rest are from config.json.
+  // The agents that come from a file of the agents/ directory, by name: the file's path. The rest are from config.json or the board.
   agentFiles?: Record<string, string>;
+  // The agents the board holds for every machine (agents.board/), as this machine last applied them.
+  board?: BoardAgents;
   repos: Record<string, string>;
   // Undefined when config.json has no `usageLimits` key: nothing is held back for usage.
   usageLimits?: UsageLimits;
@@ -450,7 +460,11 @@ export function parseAgentFile(name: string, text: string, label: string): Agent
  * came from. A missing directory has none. A file others may write to is refused: whoever can change it decides what an
  * agent's run may do.
  */
-export function readAgentsDir(dir: string): Required<Pick<Config, 'agents' | 'agentErrors' | 'agentFiles'>> {
+export function readAgentsDir(
+  dir: string,
+  prefix = 'agents',
+  ignore: readonly string[] = [],
+): Required<Pick<Config, 'agents' | 'agentErrors' | 'agentFiles'>> {
   const result = { agents: {}, agentErrors: {}, agentFiles: {} } as Required<
     Pick<Config, 'agents' | 'agentErrors' | 'agentFiles'>
   >;
@@ -462,14 +476,14 @@ export function readAgentsDir(dir: string): Required<Pick<Config, 'agents' | 'ag
   }
   for (const file of files) {
     const name = agentFileName(file);
-    if (name === undefined) continue;
+    if (name === undefined || ignore.includes(file)) continue;
     const path = join(dir, file);
-    const label = `agents/${file}`;
+    const label = `${prefix}/${file}`;
     try {
       if (!isAgentName(name)) throw new ConfigError(`${label}: the agent name must be ${AGENT_NAME_RULE}`);
       const other = result.agentFiles[name];
       if (other !== undefined)
-        throw new ConfigError(`agents/ has two files for ${name}: ${other.split('/').pop()} and ${file}; keep one`);
+        throw new ConfigError(`${prefix}/ has two files for ${name}: ${other.split('/').pop()} and ${file}; keep one`);
       result.agentFiles[name] = path;
       const stat = statSync(path);
       if (!stat.isFile()) throw new ConfigError(`${label} is not a file`);
@@ -512,6 +526,93 @@ export function withAgentsDir(config: Config, dir: string): Config {
   for (const [name, problem] of Object.entries(found.agentErrors))
     if (!Object.hasOwn(found.agentFiles, name)) agentErrors[name] = problem;
   return { ...config, agents, agentErrors, agentFiles: found.agentFiles };
+}
+
+// The directory beside config.json that holds the board's agent definitions as this machine applied them, one file each, and
+// state.json with the version and hashes; only the apply writes it.
+export const boardAgentsDirOf = (configFile: string): string => join(dirname(configFile), 'agents.board');
+
+// Where an apply moves a local definition that the board's replaces. Nothing reads it.
+export const replacedAgentsDirOf = (configFile: string): string => join(dirname(configFile), 'agents.replaced');
+
+export interface BoardAgentsState {
+  // The version of the board's document applied last; null before the first.
+  version: number | null;
+  // `agentHash` of each agent of that version that this machine can run, by name.
+  hashes: Record<string, string>;
+  // The entries of that version that did not parse, by name, and why: those agents are unusable here.
+  errors: Record<string, string>;
+  // The local definitions an apply could not move aside, by name, and why: those agents are unusable here.
+  unmoved: Record<string, string>;
+  // Why the last look at the board changed nothing although it had a newer version; absent once one applies.
+  problem?: string;
+}
+
+export const BOARD_STATE_FILE = 'state.json';
+
+export const EMPTY_BOARD_STATE: BoardAgentsState = { version: null, hashes: {}, errors: {}, unmoved: {} };
+
+const stringRecord = (value: unknown): Record<string, string> =>
+  isRecord(value)
+    ? Object.fromEntries(
+        Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+      )
+    : {};
+
+/** state.json of agents.board/; a missing or damaged one is the state of a machine that applied nothing. */
+export function readBoardAgentsState(dir: string): BoardAgentsState {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(join(dir, BOARD_STATE_FILE), 'utf8'));
+  } catch {
+    return { ...EMPTY_BOARD_STATE };
+  }
+  if (!isRecord(raw)) return { ...EMPTY_BOARD_STATE };
+  const version = raw['version'];
+  const problem = raw['problem'];
+  return {
+    version: typeof version === 'number' && Number.isInteger(version) && version >= 1 ? version : null,
+    hashes: stringRecord(raw['hashes']),
+    errors: stringRecord(raw['errors']),
+    unmoved: stringRecord(raw['unmoved']),
+    ...(typeof problem === 'string' ? { problem } : {}),
+  };
+}
+
+/**
+ * The config with the board's agents added. The board wins a name: the apply moves the machine's own definition aside, so a
+ * name defined here as well is one whose move failed, and it is unusable until that is fixed: which of two definitions a task
+ * runs under must not depend on load order.
+ */
+export function withBoardAgents(config: Config, configFile: string): Config {
+  const dir = boardAgentsDirOf(configFile);
+  const state = readBoardAgentsState(dir);
+  const found = readAgentsDir(dir, 'agents.board', [BOARD_STATE_FILE]);
+  const agents = { ...config.agents };
+  const agentErrors = { ...config.agentErrors };
+  const names = new Set([...Object.keys(found.agentFiles), ...Object.keys(state.errors)]);
+  for (const name of names) {
+    if (Object.hasOwn(agents, name) || Object.hasOwn(agentErrors, name)) {
+      const where =
+        config.agentFiles?.[name] === undefined ? 'config.json' : `agents/${config.agentFiles[name].split('/').pop()}`;
+      delete agents[name];
+      agentErrors[name] =
+        `${name} is on the board and also defined in ${where}, which the last apply could not move aside${state.unmoved[name] === undefined ? '' : ` (${state.unmoved[name]})`}; move or remove it`;
+      continue;
+    }
+    const problem = state.errors[name] ?? found.agentErrors[name];
+    const agent = found.agents[name];
+    if (problem !== undefined) agentErrors[name] = problem;
+    else if (agent !== undefined) agents[name] = agent;
+  }
+  for (const [name, problem] of Object.entries(found.agentErrors))
+    if (!names.has(name) && !Object.hasOwn(agents, name)) agentErrors[name] = problem;
+  return {
+    ...config,
+    agents,
+    agentErrors,
+    board: { version: state.version, names: [...names].sort(), files: found.agentFiles },
+  };
 }
 
 export function parseConfig(raw: unknown): Config {
@@ -700,11 +801,11 @@ export function loadConfig(path: string, options: { optionalConfig?: boolean } =
       const code = error instanceof Error && 'code' in error ? String(error.code) : 'unknown error';
       throw new ConfigError(`cannot read the config file ${path} (${code})`);
     }
-    if (options.optionalConfig) return withAgentsDir(parseConfig({}), agentsDirOf(path));
+    if (options.optionalConfig) return withBoardAgents(withAgentsDir(parseConfig({}), agentsDirOf(path)), path);
     throw new ConfigError(`config file missing: ${path} (run "board init")`);
   }
   try {
-    return withAgentsDir(parseConfig(JSON.parse(content)), agentsDirOf(path));
+    return withBoardAgents(withAgentsDir(parseConfig(JSON.parse(content)), agentsDirOf(path)), path);
   } catch (error) {
     if (error instanceof SyntaxError) throw new ConfigError(`config file is not valid JSON: ${path}`);
     throw error;

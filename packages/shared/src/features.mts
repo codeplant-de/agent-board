@@ -34,6 +34,7 @@ export const ADDED_SERVER_FEATURES = [
   'prompt.edit',
   'task.lane',
   'schedule.update',
+  'agents.shared',
 ] as const;
 
 export const SERVER_FEATURES = [...BASELINE_SERVER_FEATURES, ...ADDED_SERVER_FEATURES] as const;
@@ -69,6 +70,7 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'prompt.edit': 'editing a prompt',
   'task.lane': 'choosing the lane a task runs in',
   'schedule.update': 'changing every setting of a schedule',
+  'agents.shared': 'agent definitions held on the board',
   wait: 'waiting',
 };
 

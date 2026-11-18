@@ -333,6 +333,11 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         `DRY set-usage ${usage.held.length} held and ${usage.open.length} open tasks, reached ${usage.reached.join(', ') || 'none'}`,
       );
     },
+    async setSharedAgents(document, expectedVersion) {
+      print(
+        `DRY set-agents v${document.version} (replacing v${expectedVersion}): ${Object.keys(document.agents).sort().join(', ') || 'no agents'}`,
+      );
+    },
     async heartbeat(id, beat) {
       print(`DRY heartbeat ${id} ${JSON.stringify(beat)}`);
     },

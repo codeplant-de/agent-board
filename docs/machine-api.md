@@ -66,7 +66,8 @@ The CLI sends `version` once per process, before its first other call. The answe
   "cli": "<x.y.z>",
   "dirsIndex": "abh1.…",
   "catalogIndex": "abh1.…",
-  "usageIndex": "abh1.…"
+  "usageIndex": "abh1.…",
+  "agentsVersion": 4
 }
 ```
 
@@ -80,8 +81,9 @@ The CLI sends `version` once per process, before its first other call. The answe
 | `features`                                | What the server can do, see [Features](#features).                                                                                        |
 | `cli`                                     | The newest CLI release the server knows of (`CLI_VERSION`). Left out when it knows none.                                                  |
 | `dirsIndex`, `catalogIndex`, `usageIndex` | The blind index of the document the calling machine last sent with `set-dirs`, `set-catalog` or `set-usage`, or `null` when it sent none. |
+| `agentsVersion`                           | The version of the user's [shared agents](#shared-agents), or `null` when they pushed none.                                               |
 
-A server without `machine.dirs`, `machine.catalog` or `machine.usage` leaves the matching index out. A client reads the three leniently: anything that is not a blind index counts as `null`, never as an error.
+A server without `machine.dirs`, `machine.catalog`, `machine.usage` or `agents.shared` leaves the matching key out. A client reads the four leniently: anything that is not a blind index, or a whole number from 1 for `agentsVersion`, counts as `null`, never as an error.
 
 **The numbers.** `API_VERSION`, `MIN_CLIENT` and `MIN_SERVER` are in `packages/shared/src/contract.mts`. `MIN_SERVER` is the oldest server break level a CLI works with. None of them counts changes. They rise only with a breaking change, never with an additive one (see [Wire rules](#wire-rules)). They start at 9, the contract number that servers and CLIs already had when the range was introduced.
 
@@ -139,6 +141,7 @@ Capabilities and vocabulary have names. An additive change then needs no version
 | `prompt.edit`             | The `edit-prompt` and `edit-schedule` commands.                                                                                               |          |
 | `task.lane`               | The `lane` key of `add-task`, `add-schedule` and `configure-task`, and the `requestedLane` field of a task and a schedule, see [Lane](#lane). |          |
 | `schedule.update`         | The `settings` key of `edit-schedule`, see [`edit-schedule`](#edit-schedule).                                                                 |          |
+| `agents.shared`           | The `get-agents` and `set-agents` commands and `agentsVersion` in the `version` answer, see [Shared agents](#shared-agents).                  |          |
 
 - The baseline (`BASELINE_SERVER_FEATURES`) is what the server of contract 9 has. A server that answers no `features` key is taken to have exactly the baseline.
 - A new server capability appends its name to `ADDED_SERVER_FEATURES` in the same commit that implements it.
@@ -219,6 +222,7 @@ The stream says "look at the board again" and carries no data. The CLI then read
 **What sends an event.** `event: tasks` with an empty `data:` follows a committed change to a task or a schedule:
 
 - these commands: `add-task`, `update-task`, `configure-task`, `claim-task`, `add-note`, `add-pr`, `remove-pr`, `set-pr`, `ask`, `pause`, `stopped`, `fail`, `wait`, `wake`, `edit-prompt`, `add-schedule`, `update-schedule`, `edit-schedule` and `remove-schedule`;
+- `set-agents`, so that every machine's listener ticks and applies the new version at once;
 - any change to a task or schedule from the UI.
 
 A failed or rolled back call sends nothing.
@@ -228,7 +232,7 @@ A failed or rolled back call sends nothing.
 - `heartbeat` and `transcript`, which every running task sends every 15 seconds.
 - `set-dirs`, `set-catalog` and `set-usage`, which change no dispatch decision.
 - `set-pr-states` and `set-pr-state`, `run-inbox` and `ack-messages`.
-- The reads: `version`, `list-tasks`, `get-task`, `attach-session`, `read-notes` and `list-schedules`.
+- The reads: `version`, `list-tasks`, `get-task`, `attach-session`, `read-notes`, `list-schedules` and `get-agents`.
 - The UI's changes to machines and keys.
 - The hourly cleanup that closes old Done tasks and deletes old transcripts. The 2-minute timer covers those.
 
@@ -652,6 +656,8 @@ A resume prompt is built from the `user` notes after the last `agent` note. Two 
 | `set-dirs`        | `body`: `{"dirs", "index"}`                                                                                                                                                                                                        | `null`                                                                                                  |
 | `set-catalog`     | `body`: `{"catalog", "index"}`                                                                                                                                                                                                     | `null`                                                                                                  |
 | `set-usage`       | `body`: `{"usage", "index"}`                                                                                                                                                                                                       | `null`                                                                                                  |
+| `get-agents`      | -                                                                                                                                                                                                                                  | `{"version", "document"}`, or `null`                                                                    |
+| `set-agents`      | `body`: `{"document", "version", "expectedVersion"}`                                                                                                                                                                               | `null`, or 409                                                                                          |
 | `heartbeat`       | `id`, `body`: `{"lane": string, "borrowed": bool}`                                                                                                                                                                                 | `null`                                                                                                  |
 | `pause`           | `id`, `body`: `{"body", "preview"?}`                                                                                                                                                                                               | the updated `Task`                                                                                      |
 | `fail`            | `id`, `body`: `{"body", "preview"?}`                                                                                                                                                                                               | `{"applied": bool, "task": Task}`                                                                       |
@@ -956,7 +962,8 @@ The machine's skills and models, as advice for completing `/skill` in a prompt o
   "claude": "2.1.326",
   "models": [{ "value": "…", "label": "…", "description": "…" }],
   "skills": [{ "name": "…", "description": "…", "argumentHint": "…" }],
-  "dirs": { "/abs/path": [{ "name": "…" }] }
+  "dirs": { "/abs/path": [{ "name": "…" }] },
+  "agents": { "version": 4, "hashes": { "reviewer": "<64 hex>" }, "replaced": ["reviewer"] }
 }
 ```
 
@@ -965,6 +972,7 @@ The machine's skills and models, as advice for completing `/skill` in a prompt o
 - The caps are 50 models, 500 skills, 200 directories and 200 skills in one directory.
 - A skill name is letters, digits and `_ . : -`, starts with a letter or digit, and has at most 100 characters.
 - A description is one line of at most 200 characters, and an argument hint of at most 100.
+- `agents` is what the machine has of the agents: the version of the [shared agents](#shared-agents) it applied (`null` for none), the hash of every agent it has, wherever defined, and the names whose local definition an apply moved aside. At most 500 agents. A CLI from before shared agents leaves the key out; one of the wrong shape loses only that key.
 
 A reader opens it with `parseMachineCatalog` in `packages/shared/src/catalog.mts`. It drops an entry of the wrong shape and keeps the rest. A list over its cap makes the whole document unreadable. It ignores other keys, so a later CLI can add some.
 
@@ -995,6 +1003,37 @@ The machine's usage status, for the Held badge on a card and the usage line in S
 A reader opens it with `parseMachineUsage` in `packages/shared/src/machineUsage.mts`. It drops an entry of the wrong shape and keeps the rest. A list over its cap makes the whole document unreadable.
 
 The CLI sends it at the end of a dispatch tick, whether or not the machine has `usageLimits`.
+
+### Shared agents
+
+The agent definitions the user put on the board for every machine (see [Agents on the board](workers.md#agents-on-the-board)). They are one sealed document per user, not one row per agent: agent names are sealed on tasks and must not appear in the clear, and one document makes a push atomic.
+
+```json
+{ "version": 4, "agents": { "reviewer": { "description": "…", "tools": ["Read"], "allowedTools": ["…"] } } }
+```
+
+- The document is sealed as `agents.shared` with the context `agents:v<version>` (see [Encryption](encryption.md#the-agents-on-the-board)). The server keeps `version` in the clear beside it, so a tick compares versions without opening anything, and it cannot hand an old document out as a newer one.
+- Each entry has exactly the keys of an agent file, without `name` and `source`. A machine reads each with the strict parser of an agent file and records `source: board` itself.
+- At most 200 agents and 256 KiB. The server checks only that the document is a sealed value of that size; it cannot read it.
+- The version is a counter from 1 that only goes up, one per push.
+
+#### `get-agents`
+
+No body. The answer is `{"version": 4, "document": "abe1.…"}`, or `null` when the user pushed none. Any machine of the user may read it.
+
+#### `set-agents`
+
+```json
+{ "document": "abe1.…", "version": 5, "expectedVersion": 4 }
+```
+
+Compare-and-set. The server stores the document only while its stored version is still `expectedVersion` (`0` when it holds none), and the new version is `expectedVersion + 1`.
+
+- 400 for a `version` that is not `expectedVersion + 1`, an `expectedVersion` below 0, a document that is not a sealed value or is too long, and any other key.
+- 409 when the stored version moved on, because another CLI pushed first. The CLI fetches again and retries once.
+- It sends the `tasks` event.
+
+Only the CLI writes the document (`board agents push`, `board agents rm --board`); the browser never writes it. Export and import of the account carry the row as the table `shared_agents`; an import into a board that has its own keeps the board's.
 
 ### Run control
 

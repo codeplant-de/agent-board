@@ -209,6 +209,16 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
+### Agents on the board (the next CLI release)
+
+A new server feature, `agents.shared`: `board agents push` puts an agent on the board, and every machine applies it on its next tick (see [Agents on the board](workers.md#agents-on-the-board)). A migration adds the table `shared_agents`. No version number is raised.
+
+Update the server first; against an older one `push` and `rm --board` refuse with "the board server does not support … yet". Then update the CLI on each machine that should run board agents.
+
+- A machine on an older CLI ignores the board's agents and runs only its own. A task that names a board agent waits in Todo for a machine that has it.
+- The first apply on a machine moves its own definition of each board name (an `agents/` file or a `config.json` entry) to `agents.replaced/`. Push one agent at a time and check `board agents` on the other machines.
+- Read the accepted limit under [Agents on the board](workers.md#agents-on-the-board) before you push: a run that reads the data key can push a definition every machine applies.
+
 ### Changing every setting of a schedule (CLI 0.30.0)
 
 A new server feature, `schedule.update`. `board schedules edit` takes the settings of the Edit schedule dialog as flags: `--priority`, `--model`, `--lane`, `--auto-done`, `--agent`, `--dir`, the repeat (`--every`, `--cron`, `--after` with `--delay`), the first run (`--in`, `--at`), the end (`--times`, `--until`, `--forever`) and `--max-concurrent` (see [Managing schedules](usage.md#repeating-schedules)). The text became optional. Nothing changes in the database, and no version number is raised.
@@ -521,7 +531,7 @@ An older token may carry a name outside that shape. It keeps working for what th
 
 Each agent has `description` and `tools`, and optionally `prompt`, `allowedTools`, `disallowedTools`, `mcpServers`, `env` and `model`. An unknown key inside an agent makes that agent unusable.
 
-An agent can also be a file in the `agents` directory beside `config.json`, which `board agents add` writes. A task names an agent with `board schedule --agent` or the New task form. [Agents](workers.md#agents) has the details.
+An agent can also be a file in the `agents` directory beside `config.json`, which `board agents add` writes, or a definition the board holds for every machine, which `board agents push` puts there. A task names an agent with `board schedule --agent` or the New task form. [Agents](workers.md#agents) has the details.
 
 ### dirs
 
@@ -554,12 +564,14 @@ The CLI also sends the listed directories that exist to the board as a sealed co
 
 The config directory is `~/.config/agent-board` (`AGENT_BOARD_CONFIG_DIR`):
 
-| Path          | Purpose                                                          |
-| ------------- | ---------------------------------------------------------------- |
-| `config.json` | The machine settings above.                                      |
-| `web.json`    | The board's `url`. Plain `http` is refused except for localhost. |
-| `env`         | The token and the data key.                                      |
-| `agents/`     | Agent definitions as files, one per agent.                       |
+| Path               | Purpose                                                                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `config.json`      | The machine settings above.                                                                                                          |
+| `web.json`         | The board's `url`. Plain `http` is refused except for localhost.                                                                     |
+| `env`              | The token and the data key.                                                                                                          |
+| `agents/`          | Agent definitions as files, one per agent.                                                                                           |
+| `agents.board/`    | The board's agent definitions as this machine applied them, and `state.json` with the version and hashes. Written by the apply only. |
+| `agents.replaced/` | Local definitions an apply moved aside for the board's. Nothing reads them.                                                          |
 
 The CLI builds every task link it prints as `<url>/t/<id>` from `web.json`. The board's own answers carry no link. The CLI reads `web.json` and `env` on its first call to the board, so a command that fails on a usage error needs neither.
 

@@ -161,6 +161,9 @@ describe('what the application role can store afterwards', () => {
       insert into machine (name, token_hash, dirs, dirs_index, catalog, catalog_index, usage, usage_index)
       values ('laptop', 'hash', ${o.dirs ?? null}, ${o.dirsIndex ?? null}, ${o.catalog ?? null}, ${o.catalogIndex ?? null}, ${o.usage ?? null}, ${o.usageIndex ?? null})`);
 
+  const sharedAgents = (tx: Tx, document: string) =>
+    tx.execute(sql`insert into shared_agents (version, document) values (1, ${document})`);
+
   const plaintextCases: [string, string, (tx: Tx) => Promise<unknown>][] = [
     ['task_title_sealed', 'a plain task title', (tx) => task(tx, { title: 'plain' })],
     ['task_input_sealed', 'a plain prompt', (tx) => task(tx, { input: 'plain' })],
@@ -187,6 +190,7 @@ describe('what the application role can store afterwards', () => {
     ['machine_usage_sealed', 'a plain usage status', (tx) => machine(tx, { usage: '{"windows":{}}' })],
     ['machine_usage_index_blind', 'a plain usage index', (tx) => machine(tx, { usageIndex: 'abcdef' })],
     ['machine_usage_index_blind', 'an envelope as a usage index', (tx) => machine(tx, { usageIndex: ENVELOPE })],
+    ['shared_agents_document_sealed', 'plain shared agents', (tx) => sharedAgents(tx, '{"version":1,"agents":{}}')],
     ['task_title_sealed', 'a too short envelope', (tx) => task(tx, { title: 'abe1.AAAA' })],
     ['task_title_sealed', 'an envelope with a line break', (tx) => task(tx, { title: `${ENVELOPE}\n` })],
     ['schedule_title_sealed', 'a plain schedule title', (tx) => schedule(tx, { title: 'plain' })],
@@ -252,6 +256,7 @@ describe('what the application role can store afterwards', () => {
         usage: ENVELOPE,
         usageIndex: BLIND_INDEX,
       });
+      await sharedAgents(tx, ENVELOPE);
     });
     await clear();
     await as(async (tx) =>

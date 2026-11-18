@@ -11,6 +11,7 @@ import {
   parseWireCatalog,
   parseWireDirs,
   parseWireUsage,
+  parseWireSetAgents,
   parseWireNoteInput,
   parseWirePr,
   parseWirePromptEdit,
@@ -34,6 +35,7 @@ import type {
   WireBackend,
   WireCatalog,
   WireDirs,
+  WireSharedAgents,
   WireUsage,
   WireNote,
   WireNoteInput,
@@ -78,6 +80,7 @@ interface FakeWire extends WireBackend {
   catalogSupported: boolean;
   usage: WireUsage | undefined;
   usageSupported: boolean;
+  agents: WireSharedAgents | null;
 }
 
 let nextId = 0;
@@ -97,6 +100,7 @@ function fakeWire(): FakeWire {
     catalogSupported: true,
     usage: undefined,
     usageSupported: true,
+    agents: null,
     async listTasks() {
       return state.tasks;
     },
@@ -198,6 +202,17 @@ function fakeWire(): FakeWire {
     },
     async usageState() {
       return { supported: state.usageSupported, index: state.usage?.index ?? null };
+    },
+    async getAgents() {
+      return state.agents;
+    },
+    async setAgents(body) {
+      const { document, version, expectedVersion } = parseWireSetAgents(JSON.parse(record(state, body)));
+      if ((state.agents?.version ?? 0) !== expectedVersion) throw new BackendError('set-agents: conflict', 409, true);
+      state.agents = { version, document };
+    },
+    async agentsState() {
+      return { supported: true, version: state.agents?.version ?? null };
     },
     async pause(id, note) {
       push(state, id, parseWireNoteInput(JSON.parse(record(state, note)), 'note'), 'system', 'event');
@@ -1175,6 +1190,30 @@ test('a usage status the board would refuse is refused before it is sent', async
     (error: unknown) => error instanceof BackendError && error.status === 400 && /set-usage: /.test(error.message),
   );
   assert.equal(wire.requests.length, 0);
+});
+
+test('the shared agents are sealed under their version, never reach the board in clear, and open only as that version', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  assert.equal(await board.sharedAgentsVersion(), null);
+  assert.equal(await board.getSharedAgents(), null);
+  const document = { version: 1, agents: { 'secret-repo': { description: 'MARKER-description', tools: ['Read'] } } };
+  await board.setSharedAgents(document, 0);
+  noMarkers(wire);
+  assert.equal(await board.sharedAgentsVersion(), 1);
+  assert.deepEqual(await board.getSharedAgents(), { version: 1, document });
+  assert.equal(await open(KEYS, 'agents.shared', 'agents:v1', wire.agents!.document), JSON.stringify(document));
+  // A board that relabels the document as a newer version serves something that opens under no binding.
+  wire.agents = { version: 2, document: wire.agents!.document };
+  assert.deepEqual(await board.getSharedAgents(), { version: 2, unreadable: true });
+  await assert.rejects(
+    board.setSharedAgents({ version: 3, agents: {} }, 1),
+    (error: unknown) => error instanceof BackendError && error.status === 400,
+  );
+  await assert.rejects(
+    board.setSharedAgents({ version: 1, agents: {} }, 0),
+    (error: unknown) => error instanceof BackendError && error.status === 409,
+  );
 });
 
 test('an agent is sealed with the task, never reaches the board in clear, and opens again; the prompt is bound to it', async () => {
