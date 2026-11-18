@@ -723,6 +723,10 @@ Done tasks nobody touched for 7 days are closed, with a note in the thread. They
 
 A task made with a key (`board schedule --key`) is left open. A closed task is "never again" for its key, so closing one would block the PR's next review request.
 
+## Agents on the board
+
+**Settings → Agents** lists the agent definitions you pushed with `board agents push`, which every machine of yours applies by itself. For each one it shows the full definition, the same grant flags `push` prints, and which machines run it: the version each machine applied, whether its hash matches the board's, and which machines replaced a local definition of that name. The page is read only. To change an agent, push it again from a CLI, or take it off with `board agents rm --board`. See [Agents on the board](workers.md#agents-on-the-board).
+
 ## Desktop notifications
 
 Settings has a **Desktop notifications** switch, off by default. Turning it on asks the browser for permission.

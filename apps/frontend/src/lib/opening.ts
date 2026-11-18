@@ -13,6 +13,8 @@ import {
   openMachineDirs,
   openMachineUsage,
   openNote,
+  openSharedAgents,
+  isSharedAgentsVersion,
   openPrs,
   openPreview,
   isWatchId,
@@ -48,6 +50,7 @@ import {
   shownRule,
   type ShownAuthor,
 } from './shapes';
+import { viewSharedAgents, type SharedAgentView } from './sharedAgents';
 import type { RouterOutputs } from './wire';
 
 type WireBoardTask = RouterOutputs['tasks']['get']['task'];
@@ -370,6 +373,30 @@ export async function openCatalogs(keys: Keys, wire: RouterOutputs['machines']['
           : ((await openMachineCatalog(openerFor(keys), name, sealed)) ?? null),
     })),
   );
+}
+
+/** The board's agent definitions as the Agents page shows them; `agents` is null when the document does not open. */
+export interface BoardAgents {
+  version: number;
+  pushedAt: string;
+  agents: SharedAgentView[] | null;
+}
+
+/** Null when no agent was ever pushed; a version or time of the wrong shape leaves the document unopened. */
+export async function openBoardAgents(
+  keys: Keys,
+  wire: RouterOutputs['agents']['shared'],
+): Promise<BoardAgents | null> {
+  if (wire === null) return null;
+  const { version, document, pushedAt } = wire;
+  const opened = isSharedAgentsVersion(version)
+    ? await openSharedAgents(openerFor(keys), version, document)
+    : undefined;
+  return {
+    version: isSharedAgentsVersion(version) ? version : 0,
+    pushedAt: typeof pushedAt === 'string' ? pushedAt : '',
+    agents: opened === undefined ? null : await viewSharedAgents(opened.agents),
+  };
 }
 
 /** An event that cannot be opened becomes a note saying so, so the rest of the run still reads. */

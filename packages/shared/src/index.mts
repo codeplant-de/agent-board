@@ -15,3 +15,4 @@ export * from './features.mts';
 export * from './watches.mts';
 export * from './archive.mts';
 export * from './sharedAgents.mts';
+export * from './agentGrants.mts';

@@ -1,6 +1,7 @@
 import {
   ActionIcon,
   Alert,
+  Anchor,
   Badge,
   Button,
   Code,
@@ -22,6 +23,7 @@ import { notifications } from '@mantine/notifications';
 import { IconCheck, IconCopy, IconKey } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useSyncExternalStore } from 'react';
+import { Link } from 'react-router-dom';
 import { KeyError } from '../crypto/kdf';
 import { exportDataKey, replacePassphrase } from '../crypto/keySlots';
 import { useKeys } from '../crypto/KeyContext';
@@ -315,6 +317,31 @@ function Encryption() {
   );
 }
 
+function Agents() {
+  const trpc = useTRPC();
+  const shared = useQuery(trpc.agents.shared.queryOptions());
+  const count = shared.data?.agents?.length;
+  return (
+    <Paper withBorder p="md">
+      <Stack gap="xs">
+        <Title order={5}>Agents</Title>
+        <Text size="sm" c="dimmed">
+          The agent definitions you pushed with <Code>board agents push</Code>, which every machine applies by itself.
+          {shared.data === null ? ' None yet.' : null}
+          {shared.data
+            ? ` Version ${shared.data.version}${count === undefined ? '' : `, ${count} ${count === 1 ? 'agent' : 'agents'}`}.`
+            : null}
+        </Text>
+        <Group>
+          <Anchor component={Link} to="/settings/agents" size="sm">
+            Show the agents and which machines run them
+          </Anchor>
+        </Group>
+      </Stack>
+    </Paper>
+  );
+}
+
 function DesktopNotifications() {
   const on = useSyncExternalStore(subscribeToDesktopNotificationsPreference, readDesktopNotificationsPreference);
   const supported = isNotificationSupported();
@@ -375,6 +402,7 @@ export function SettingsPage() {
     <Stack maw={900} mx="auto">
       <Title order={3}>Settings</Title>
       <Machines />
+      <Agents />
       <DesktopNotifications />
       <Encryption />
       <YourData />

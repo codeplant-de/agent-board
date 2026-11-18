@@ -4,6 +4,7 @@ import { ModalsProvider } from '@mantine/modals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountDeletedProvider } from '../components/AccountDeletedProvider';
 import { KeyProvider } from '../crypto/KeyProvider';
@@ -76,6 +77,9 @@ vi.mock('../lib/trpc', () => ({
       issue: { mutationOptions: () => ({ mutationFn: issue }) },
       revoke: { mutationOptions: () => ({ mutationFn: revoke }) },
     },
+    agents: {
+      shared: { queryOptions: () => ({ queryKey: ['agents', 'shared'], queryFn: async () => null }) },
+    },
   }),
 }));
 
@@ -86,17 +90,19 @@ let sealedByBrowser: string;
 
 function renderPage() {
   render(
-    <MantineProvider>
-      <ModalsProvider>
-        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-          <AccountDeletedProvider>
-            <KeyProvider keys={held} lock={async () => undefined}>
-              <SettingsPage />
-            </KeyProvider>
-          </AccountDeletedProvider>
-        </QueryClientProvider>
-      </ModalsProvider>
-    </MantineProvider>,
+    <MemoryRouter>
+      <MantineProvider>
+        <ModalsProvider>
+          <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+            <AccountDeletedProvider>
+              <KeyProvider keys={held} lock={async () => undefined}>
+                <SettingsPage />
+              </KeyProvider>
+            </AccountDeletedProvider>
+          </QueryClientProvider>
+        </ModalsProvider>
+      </MantineProvider>
+    </MemoryRouter>,
   );
 }
 

@@ -1012,7 +1012,7 @@ Compare-and-set. The server stores the document only while its stored version is
 - 409 when the stored version moved on, because another CLI pushed first. The CLI fetches again and retries once.
 - It sends the `tasks` event.
 
-Only the CLI writes the document (`board agents push`, `board agents rm --board`); the browser never writes it. Export and import of the account carry the row as the table `shared_agents`; an import into a board that has its own keeps the board's.
+Only the CLI writes the document (`board agents push`, `board agents rm --board`); the browser never writes it. The browser reads it with `agents.shared`, a call of its own outside the machine API: `{"version", "document", "pushedAt"}` of the user's row, or `null`. It opens the document under `agents:v<version>` as a machine does and computes each agent's hash to compare with the hashes in the machines' catalogues (`machines.catalogs`). There is no browser call that writes it. Export and import of the account carry the row as the table `shared_agents`; an import into a board that has its own keeps the board's.
 
 ### Run control
 
