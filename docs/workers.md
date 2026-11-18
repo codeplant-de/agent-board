@@ -642,7 +642,7 @@ The 2-minute timer unit stays as the fallback for a listener that is down.
 
 Before anything starts, a directory that does not exist, or that a `dirs` list does not allow, ends the task in `needs-me` with the reason (see [Where a task runs](#where-a-task-runs)).
 
-**Resume.** A task resumes its session when it has `next: resume`, a session, and a user reply, a pause or a wake since the agent last spoke. The prompt is the reply, with "you were paused" or "your wait is over: <why>" where that applies. The worker resumes only a session this machine started for the task. For any other session it refuses the run with the reason.
+**Resume.** A task resumes its session when it has `next: resume`, a session, and a user reply, a pause or a wake since the agent last spoke. The prompt is the reply, with "you were paused" or "your wait is over: <why>" where that applies. When the reply answers none of the agent's last questions because you dismissed them, the lead line says so: "The user dismissed your questions on board task <id> without answering them, and replied:". The worker resumes only a session this machine started for the task. For any other session it refuses the run with the reason.
 
 **Fresh.** Anything else starts a new session. The worker records the id on this machine and stores it on the task once the run is about to start. It clears the id again if the process cannot be spawned. The prompt is the task's prompt. When the thread already holds notes by you or the agent, the prompt is followed by what you wrote since the previous run started and a line that tells the agent to read the thread with `board show <task>`.
 

@@ -191,6 +191,26 @@ test('events also go into a reply and a pause resume', () => {
   );
 });
 
+test('a reply to questions the user dismissed says so, and an answered question keeps the plain line', () => {
+  const asked = makeNote('Which one?', at(1), { author: 'agent', kind: 'question' });
+  const comment = makeNote('start over with option B', at(3), { author: 'user', kind: 'comment' });
+  const dismissed = buildResumePrompt(resumable(), [asked, comment]);
+  assert.match(
+    dismissed ?? '',
+    /The user dismissed your questions on board task p without answering them, and replied:\n\nstart over with option B/,
+  );
+  assert.doesNotMatch(dismissed ?? '', /The user replied on board task p/);
+
+  const answer = makeNote('thanks', at(3), { author: 'user', kind: 'answer' });
+  const answered = buildResumePrompt(resumable(), [asked, answer]);
+  assert.match(answered ?? '', /The user replied on board task p:/);
+  assert.doesNotMatch(answered ?? '', /dismissed/);
+
+  const spoke = makeNote('Done.', at(2), { author: 'agent', kind: 'comment' });
+  assert.match(buildResumePrompt(resumable(), [asked, spoke, comment]) ?? '', /The user replied on board task p:/);
+  assert.equal(buildResumePrompt(resumable(), [asked]), undefined, 'no reply, nothing to resume with');
+});
+
 test('a wake without events says what is still open', () => {
   const wake = makeNote(`${WAKE_MARKER} its time ran out.`, at(5), { author: 'system', kind: 'event' });
   const prompt = buildResumePrompt(resumable({ woken: true }), [wake], { events: [], open: OPEN });

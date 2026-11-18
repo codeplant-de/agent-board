@@ -477,6 +477,8 @@ On the task page you pick options, add text where none fits, and press **Answer 
 
 Both put the task at the top of its priority in Todo with `next: resume`. The next dispatch tick on the machine that ran the session starts `claude -p --resume=<session>` with your reply on stdin, so the agent keeps its context. A machine resumes only a session it started for the task.
 
+**Dismiss questions** sits beside **Answer & continue**. Use it when the conversation went off course and the questions no longer make sense. After you confirm, the agent's questions are dropped without an answer. The task stays in Needs me, where the usual panel appears: reply with **Send & continue**, re-run it fresh or mark it done. The thread keeps the question and marks it **not answered**. If you then reply and continue, the agent is told that you dismissed its questions and sent that reply instead. Nothing is added to the thread for the dismissal itself.
+
 Typing `/` at the start of a reply offers the skills of the task's machine and directory, as in the New task form. The message to a running agent, a comment and the text beside an answer do not offer skills.
 
 ### While a task runs
@@ -509,6 +511,7 @@ Other tasks have no Stop.
 | Start / Discard            | On a task an agent proposed. See [Proposals](#proposals).                                      |
 | Polish prompt              | On a Backlog task you wrote. See [Polishing a prompt](#polishing-a-prompt).                    |
 | Take back                  | On a running task whose agent has been quiet for 20 minutes. Moves it to Needs me with a note. |
+| Dismiss questions          | Drops an open question. See [Answering and replying](#answering-and-replying).                 |
 
 **Re-run fresh** starts in the directory the task was created with, on that machine, whatever worktree the last run ended in. That directory came from `board schedule`, from a proposing agent or from the form's Working directory. A task created without one starts in the default directory of whichever machine takes it.
 
@@ -636,7 +639,7 @@ Dragging a card moves it the way the matching button would, minus the reply.
 
 - Nothing can be dropped into Running or Waiting.
 - A card dragged out of Waiting into Todo is woken. Into any other column it loses its wait.
-- Into Todo or Done, a card drops its open question. The question note stays in the thread.
+- Into Todo or Done, a card drops its open question. The question note stays in the thread, marked **not answered**.
 - Into Todo, a task with a session keeps its `next`. A resume with nothing to answer starts a fresh run.
 
 ### Old Done tasks

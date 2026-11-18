@@ -1,6 +1,6 @@
 import type { Question } from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
-import { answerTo } from './answers';
+import { answerTo, openQuestionOf } from './answers';
 import type { ThreadNote } from './opening';
 
 const ask = (header: string): Question[] => [
@@ -53,5 +53,23 @@ describe('which answer is shown with a question', () => {
   it('is none for an answer that could not be opened', () => {
     const broken = { ...answer('a3', 'q1', ask('Scope')), unreadable: true };
     expect(answerTo([first, broken], first)).toBeUndefined();
+  });
+});
+
+describe('which question the task waits on', () => {
+  const first = note({ id: 'q1', kind: 'question', questions: ask('Scope') });
+  const second = note({ id: 'q2', kind: 'question', questions: ask('Cleanup') });
+  const comment = note({ id: 'c1' });
+
+  it('is the last question note while the task has an open question', () => {
+    expect(openQuestionOf({ openQuestion: true }, [first, comment, second, comment])).toBe(second);
+  });
+
+  it('is none once the task has no open question', () => {
+    expect(openQuestionOf({ openQuestion: false }, [first, second])).toBeUndefined();
+  });
+
+  it('is none when the thread holds no question', () => {
+    expect(openQuestionOf({ openQuestion: true }, [comment])).toBeUndefined();
   });
 });

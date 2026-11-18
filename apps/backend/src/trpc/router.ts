@@ -29,6 +29,7 @@ import {
   answer,
   applyPolish,
   configureTask,
+  dismissQuestion,
   forkTask,
   editPrompt,
   getTask,
@@ -273,6 +274,12 @@ const tasksRouter = router({
           by: ctx.username,
         }),
       ),
+    ),
+
+  dismissQuestion: procedure
+    .input(z.object({ id, questionNoteId: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) =>
+      boardTask(ctx.db, await dismissQuestion(ctx.db, { taskId: input.id, questionNoteId: input.questionNoteId })),
     ),
 
   reply: procedure

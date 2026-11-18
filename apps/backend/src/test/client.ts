@@ -355,6 +355,7 @@ export function plainUi(db: Db, owner = 'jascha') {
           }),
         );
       },
+      dismissQuestion: mutation(raw.tasks.dismissQuestion),
       reply: async (input: { id: string; message: string; resume: boolean }) =>
         openTask(
           await raw.tasks.reply({
