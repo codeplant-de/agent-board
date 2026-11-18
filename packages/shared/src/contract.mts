@@ -88,6 +88,10 @@ export const MAX_INT32 = 2_147_483_647;
 // The longest interval a schedule may repeat at; far beyond it, the date arithmetic of the next run breaks.
 export const MAX_INTERVAL_MS = 10 * 365 * 24 * 60 * 60_000;
 
+// How many cron expressions one schedule may have, and the most cards of one schedule that may be under way at once.
+export const MAX_SCHEDULE_CRONS = 10;
+export const MAX_SCHEDULE_CONCURRENT = 100;
+
 export const TASK_CREATORS = ['intake', 'user', 'agent'] as const;
 export type TaskCreator = (typeof TASK_CREATORS)[number];
 
@@ -150,6 +154,9 @@ export interface Task {
   notBefore: Date | null;
   // The schedule this task is an occurrence of; set by the server, never by a draft or a patch.
   scheduleId: string | null;
+  // Todo only: its schedule runs at its `maxConcurrent` limit, so no worker may claim the task until a card of the schedule
+  // finishes or leaves Running and Waiting. Absent otherwise and from a server without `task.held`.
+  held?: true;
   // The task this one was forked from; absent for any other task. The first run of a fork continues a copy of that task's Claude
   // session. A clear value from the server, so a worker shape-checks it again; it is also part of the context of `input`, so a
   // task whose fork link the server added, dropped or changed is unreadable. Absent from a server without `task.fork`.
@@ -294,9 +301,16 @@ export interface TaskPatch {
   expect?: Status;
 }
 
+// A schedule that runs after another one: its occurrence is made when a card of `scheduleId` finishes, and starts `delayMs` later.
+export interface ScheduleAfter {
+  scheduleId: string;
+  delayMs: number;
+}
+
 // A rule that produces delayed Todo tasks. It always has one pending occurrence: a task in Todo with `notBefore` at the
 // next run time. The next one is created when that task leaves Todo (claimed, moved or closed), so a run that was missed
-// while nothing claimed it is not repeated, and closing the pending task skips that run.
+// while nothing claimed it is not repeated, and closing the pending task skips that run. A schedule that runs after another
+// one has no pending occurrence while it waits for it.
 export interface Schedule {
   id: string;
   title: string;
@@ -309,10 +323,18 @@ export interface Schedule {
   workdir: string | null;
   // The agent every occurrence runs as, by name; null for none.
   agent?: string | null;
-  // The rule: an interval on the grid `anchorAt + k * everyMs`, or a 5-field cron expression in `timezone`.
+  // The rule, exactly one of: an interval on the grid `anchorAt + k * everyMs`, a 5-field cron expression in `timezone`, or
+  // `after` another schedule. `cron` is the first expression; `moreCrons` holds the others (up to 9), which a CLI that predates
+  // them does not read. Absent when there is only one, and from a server without `schedule.crons`.
   everyMs: number | null;
   cron: string | null;
+  moreCrons?: string[];
   timezone: string | null;
+  // The schedule this one runs after; null for the other rules. A CLI that does not announce `schedule.after` is not shown a
+  // schedule with it.
+  after: ScheduleAfter | null;
+  // At most this many cards of the schedule are under way (Running or Waiting) at once; null: no limit. A missing key reads as null.
+  maxConcurrent: number | null;
   // The first run of an interval; the earliest a cron expression matches.
   anchorAt: Date;
   // The pending occurrence's start time; null while paused (usually) or ended.
@@ -341,11 +363,17 @@ export interface ScheduleDraft {
   workdir?: string;
   // The agent every occurrence runs as (sealed on the wire).
   agent?: string;
-  // Exactly one of `everyMs` and `cron`; a cron expression needs its `timezone` (IANA name).
+  // Exactly one of `everyMs`, `cron` and `after`; a cron expression needs its `timezone` (IANA name). `moreCrons` goes with
+  // `cron` only: up to 9 more expressions in the same time zone, none the same as another.
   everyMs?: number;
   cron?: string;
+  moreCrons?: string[];
   timezone?: string;
-  // The first run (interval) or the time to match from (cron). Default: now.
+  // Runs after the schedule `scheduleId`, `delayMs` (default 0) after one of its cards finishes.
+  after?: { scheduleId: string; delayMs?: number };
+  // At most this many cards of the schedule under way at once (1 to 100). Default: no limit.
+  maxConcurrent?: number;
+  // The first run (interval) or the time to match from (cron). Default: now. Not with `after`.
   startAt?: Date;
   // The number of occurrences in all; at most one of `times` and `until`. Default: forever.
   times?: number;
@@ -358,8 +386,8 @@ export interface SchedulePatch {
 
 export interface AddScheduleResult {
   schedule: Schedule;
-  // The pending occurrence.
-  task: Task;
+  // The pending occurrence; null for a schedule that runs after another, which has none until that one finishes.
+  task: Task | null;
 }
 
 export interface AddTaskResult {
@@ -675,7 +703,7 @@ export interface WireFailResult {
 
 export interface WireAddScheduleResult {
   schedule: WireSchedule;
-  task: WireTask;
+  task: WireTask | null;
 }
 
 /** `Backend` as the server sees it: the same calls with sealed values. */
@@ -1104,6 +1132,7 @@ export function parseWireTask(value: unknown): WireTask {
     paused: boolean(obj, 'paused', 'task'),
     notBefore: nullableDate(obj, 'notBefore', 'task'),
     scheduleId: obj['scheduleId'] === null ? null : safeId(string(obj, 'scheduleId', 'task'), 'task scheduleId'),
+    ...(obj['held'] === true ? { held: true as const } : {}),
     ...(obj['forkOf'] == null ? {} : { forkOf: safeId(string(obj, 'forkOf', 'task'), 'task forkOf') }),
     wakeAt: nullableDate(obj, 'wakeAt', 'task'),
     waitCheck: boolean(obj, 'waitCheck', 'task'),
@@ -1138,14 +1167,49 @@ export function parseWireFailResult(value: unknown): WireFailResult {
   return { applied: boolean(obj, 'applied', 'fail result'), task: parseWireTask(obj['task']) };
 }
 
+/** The `after` of a schedule: a safe id and a delay; a server that predates the key leaves it out, which is null. */
+function wireScheduleAfter(value: unknown): ScheduleAfter | null {
+  if (value === undefined || value === null) return null;
+  const obj = record(value, 'schedule.after');
+  return {
+    scheduleId: safeId(string(obj, 'scheduleId', 'schedule.after'), 'schedule.after scheduleId'),
+    delayMs: delayMs(obj, 'schedule.after'),
+  };
+}
+
+function delayMs(obj: Record<string, unknown>, what: string): number {
+  const value = obj['delayMs'];
+  if (!isWholeNumber(value)) throw new ContractError(`${what}.delayMs must be a non-negative integer`);
+  return value;
+}
+
+/** The delay a draft may ask for; what the server sends is read by shape only. */
+function draftDelayMs(obj: Record<string, unknown>, what: string): number {
+  const value = delayMs(obj, what);
+  if (value > MAX_INTERVAL_MS) throw new ContractError(`${what}.delayMs must be at most ${MAX_INTERVAL_MS}`);
+  return value;
+}
+
+/** A list of cron expressions, each of the shape `isCronExpression` allows. */
+function cronList(value: unknown, what: string): string[] {
+  if (!Array.isArray(value)) throw new ContractError(`${what} must be a list of cron expressions`);
+  if (!value.every((entry): entry is string => typeof entry === 'string' && isCronExpression(entry)))
+    throw new ContractError(`${what} must hold cron expressions`);
+  return value;
+}
+
 export function parseWireSchedule(value: unknown): WireSchedule {
   const obj = record(value, 'schedule');
   const everyMs = nullablePositiveInt(obj, 'everyMs', 'schedule');
   const cron = nullableString(obj, 'cron', 'schedule');
   const timezone = nullableString(obj, 'timezone', 'schedule');
-  if ((everyMs === null) === (cron === null)) throw new ContractError('schedule needs exactly one of everyMs and cron');
+  const after = wireScheduleAfter(obj['after']);
+  if ([everyMs, cron, after].filter((rule) => rule !== null).length !== 1)
+    throw new ContractError('schedule needs exactly one of everyMs, cron and after');
   if (cron !== null && timezone === null) throw new ContractError('schedule.timezone is required with cron');
   if (cron !== null && !isCronExpression(cron)) throw new ContractError('schedule.cron is not a cron expression');
+  const moreCrons = obj['moreCrons'] === undefined ? [] : cronList(obj['moreCrons'], 'schedule.moreCrons');
+  if (moreCrons.length > 0 && cron === null) throw new ContractError('schedule.moreCrons only goes with cron');
   if (timezone !== null && !isTimeZoneName(timezone))
     throw new ContractError('schedule.timezone is not a time zone name');
   const machine = nullableString(obj, 'machine', 'schedule');
@@ -1162,7 +1226,10 @@ export function parseWireSchedule(value: unknown): WireSchedule {
     ...(obj['agent'] == null ? {} : { agent: string(obj, 'agent', 'schedule') }),
     everyMs,
     cron,
+    ...(moreCrons.length === 0 ? {} : { moreCrons }),
     timezone,
+    after,
+    maxConcurrent: obj['maxConcurrent'] == null ? null : positiveInt(obj, 'maxConcurrent', 'schedule'),
     anchorAt: date(obj, 'anchorAt', 'schedule'),
     nextRunAt: nullableDate(obj, 'nextRunAt', 'schedule'),
     remaining: obj['remaining'] === 0 ? 0 : nullablePositiveInt(obj, 'remaining', 'schedule'),
@@ -1184,7 +1251,10 @@ export function parseWireSchedules(value: unknown, options: ListOptions = {}): W
 
 export function parseWireAddScheduleResult(value: unknown): WireAddScheduleResult {
   const obj = record(value, 'add-schedule result');
-  return { schedule: parseWireSchedule(obj['schedule']), task: parseWireTask(obj['task']) };
+  return {
+    schedule: parseWireSchedule(obj['schedule']),
+    task: obj['task'] == null ? null : parseWireTask(obj['task']),
+  };
 }
 
 // The JSON form of a schedule, as the machine API sends it.
@@ -1524,6 +1594,15 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
   return draft;
 }
 
+// The `moreCrons` of a draft: expressions as the browser and the CLI send them, which the server reads with croner afterwards.
+function draftCronList(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every((entry): entry is string => typeof entry === 'string'))
+    throw new ContractError('schedule draft.moreCrons must be a list of strings');
+  if (value.length > MAX_SCHEDULE_CRONS - 1)
+    throw new ContractError(`schedule draft.moreCrons holds at most ${MAX_SCHEDULE_CRONS - 1} expressions`);
+  return value;
+}
+
 // Body of add-schedule. `id`, `title`, `input` and one rule are required.
 export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   const obj = record(value, 'schedule draft');
@@ -1540,7 +1619,10 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
       'agent',
       'everyMs',
       'cron',
+      'moreCrons',
       'timezone',
+      'after',
+      'maxConcurrent',
       'startAt',
       'times',
       'until',
@@ -1563,13 +1645,30 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   if ('agent' in obj) draft.agent = sealedField(obj, 'agent', what, 'agent');
   if ((draft.machine === undefined) !== (draft.workdir === undefined))
     throw new ContractError('schedule draft.machine and schedule draft.workdir go together');
-  if ('everyMs' in obj === 'cron' in obj) throw new ContractError('a schedule needs exactly one of everyMs and cron');
+  if (['everyMs', 'cron', 'after'].filter((rule) => rule in obj).length !== 1)
+    throw new ContractError('a schedule needs exactly one of everyMs, cron and after');
   if ('everyMs' in obj) draft.everyMs = positiveInt(obj, 'everyMs', what, MAX_INTERVAL_MS);
   if ('cron' in obj) {
     draft.cron = string(obj, 'cron', what);
     draft.timezone = string(obj, 'timezone', what);
     if (draft.timezone === '') throw new ContractError('schedule draft.timezone must not be empty');
   } else if ('timezone' in obj) throw new ContractError('schedule draft.timezone only goes with cron');
+  if ('moreCrons' in obj) {
+    if (!('cron' in obj)) throw new ContractError('schedule draft.moreCrons only goes with cron');
+    draft.moreCrons = draftCronList(obj['moreCrons']);
+  }
+  if ('after' in obj) {
+    if ('startAt' in obj) throw new ContractError('schedule draft.startAt does not go with after');
+    const after = record(obj['after'], 'schedule draft.after');
+    rejectUnknownKeys(after, ['scheduleId', 'delayMs'], 'schedule draft.after');
+    draft.after = {
+      scheduleId: safeId(string(after, 'scheduleId', 'schedule draft.after'), 'schedule draft.after.scheduleId'),
+      ...('delayMs' in after ? { delayMs: draftDelayMs(after, 'schedule draft.after') } : {}),
+    };
+    if (draft.after.scheduleId === draft.id)
+      throw new ContractError('schedule draft.after cannot name the schedule itself');
+  }
+  if ('maxConcurrent' in obj) draft.maxConcurrent = positiveInt(obj, 'maxConcurrent', what, MAX_SCHEDULE_CONCURRENT);
   if ('startAt' in obj) draft.startAt = date(obj, 'startAt', what);
   if ('times' in obj) draft.times = positiveInt(obj, 'times', what, MAX_INT32);
   if ('until' in obj) draft.until = date(obj, 'until', what);

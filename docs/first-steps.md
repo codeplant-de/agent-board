@@ -55,7 +55,7 @@ board schedule --every 2h --times 5 /sweep the stale branches
 board schedules                      # list, pause, resume, rm
 ```
 
-A schedule keeps exactly one pending card in Todo. A machine that was off for a week finds one card, not a pile. See [Scheduling](usage.md#scheduling).
+A schedule keeps exactly one pending card in Todo. A machine that was off for a week finds one card, not a pile. `--cron` can be given several times, `--max-concurrent` limits how many cards run at once, and `--after` starts a schedule when a card of another one finishes. See [Scheduling](usage.md#scheduling).
 
 **Scripts with a key.** A script that watches something outside the board calls `board schedule --key <key> --version <v> --json -- <prompt>`. The board keeps one task per key however often the script runs, and a new version sends a finished task back to Todo. The call needs no terminal and its output says what happened: `created`, `requeued` or `exists`. Run the script from a systemd timer or cron. See [Scripts](usage.md#scripts).
 

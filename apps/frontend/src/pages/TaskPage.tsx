@@ -45,6 +45,19 @@ import { unlistedMachine } from '../lib/workingDirectories';
 const UNREADABLE_LABEL = (field: UnreadableField): string =>
   field === 'input' ? 'prompt' : field === 'workdir' ? 'directory' : field;
 
+/** Why a card in Todo is not started although it is due: its schedule has all the slots it allows in use. */
+function HeldNotice({ scheduleId }: { scheduleId: string }) {
+  const trpc = useTRPC();
+  const schedules = useQuery({ ...trpc.schedules.list.queryOptions(), refetchInterval: POLL_MS });
+  const limit = schedules.data?.find(({ id }) => id === scheduleId)?.maxConcurrent ?? null;
+  return (
+    <Text size="sm" c="dimmed">
+      Waits for a free slot: its schedule runs{limit === null ? ' only a limited number of cards' : ` at most ${limit}`}{' '}
+      at once. It starts when one of them finishes or leaves Running and Waiting.
+    </Text>
+  );
+}
+
 export function TaskPage() {
   const { id = '' } = useParams();
   // The route element stays mounted from one /t/:id to the next. Keyed by the id, nothing of task A (the reply
@@ -214,6 +227,10 @@ function TaskView({ id }: { id: string }) {
             </Group>
           )}
         </Stack>
+
+        {task.status === 'todo' && task.held === true && task.scheduleId !== null && (
+          <HeldNotice scheduleId={task.scheduleId} />
+        )}
 
         {task.invalid.length > 0 && (
           <Alert

@@ -96,6 +96,8 @@ export function schedule(overrides: Partial<Schedule> & { id: string }): Schedul
     workdir: null,
     everyMs: 7_200_000,
     cron: null,
+    after: null,
+    maxConcurrent: null,
     timezone: null,
     anchorAt: new Date('2027-01-01T08:00:00Z'),
     nextRunAt: new Date('2027-01-01T08:00:00Z'),
@@ -440,22 +442,27 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     },
     async addSchedule(draft) {
       state.writes.push(
-        `add-schedule ${draft.title} | ${draft.input} | ${draft.everyMs ?? `${draft.cron} ${draft.timezone}`}` +
+        `add-schedule ${draft.title} | ${draft.input} | ${draft.everyMs ?? (draft.after ? 'after' : `${draft.cron} ${draft.timezone}`)}` +
           `${draft.startAt ? ` | start ${draft.startAt.toISOString()}` : ''}${draft.times ? ` | times ${draft.times}` : ''}` +
           `${draft.until ? ` | until ${draft.until.toISOString()}` : ''}${draft.machine ? ` | ${draft.machine}:${draft.workdir}` : ''}` +
-          `${draft.model ? ` | model ${draft.model}` : ''}${draft.agent ? ` | agent ${draft.agent}` : ''}`,
+          `${draft.model ? ` | model ${draft.model}` : ''}${draft.agent ? ` | agent ${draft.agent}` : ''}` +
+          `${draft.moreCrons ? ` | more ${draft.moreCrons.join(' ; ')}` : ''}` +
+          `${draft.after ? ` | after ${draft.after.scheduleId} +${draft.after.delayMs ?? 0}` : ''}` +
+          `${draft.maxConcurrent ? ` | max ${draft.maxConcurrent}` : ''}`,
       );
-      const pending = task({
-        id: 'pending',
-        title: draft.title,
-        input: draft.input,
-        model: draft.model ?? null,
-        agent: draft.agent ?? null,
-        machine: draft.machine ?? null,
-        workdir: draft.workdir ?? null,
-        notBefore: draft.startAt ?? new Date('2027-01-01T08:00:00Z'),
-        scheduleId: 'sched',
-      });
+      const pending = draft.after
+        ? null
+        : task({
+            id: 'pending',
+            title: draft.title,
+            input: draft.input,
+            model: draft.model ?? null,
+            agent: draft.agent ?? null,
+            machine: draft.machine ?? null,
+            workdir: draft.workdir ?? null,
+            notBefore: draft.startAt ?? new Date('2027-01-01T08:00:00Z'),
+            scheduleId: 'sched',
+          });
       const added = schedule({
         id: 'sched',
         title: draft.title,
@@ -464,9 +471,13 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         agent: draft.agent ?? null,
         everyMs: draft.everyMs ?? null,
         cron: draft.cron ?? null,
+        ...(draft.moreCrons ? { moreCrons: draft.moreCrons } : {}),
         timezone: draft.timezone ?? null,
-        nextRunAt: pending.notBefore,
-        remaining: draft.times === undefined ? null : draft.times - 1,
+        after: draft.after ? { scheduleId: draft.after.scheduleId, delayMs: draft.after.delayMs ?? 0 } : null,
+        maxConcurrent: draft.maxConcurrent ?? null,
+        nextRunAt: pending?.notBefore ?? null,
+        occurrenceTaskId: pending?.id ?? null,
+        remaining: draft.times === undefined ? null : draft.times - (pending === null ? 0 : 1),
       });
       state.schedules.push(added);
       return { schedule: added, task: pending };

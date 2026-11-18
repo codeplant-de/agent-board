@@ -4,7 +4,7 @@ import {
   CLIENT_API_HEADER,
   CLIENT_FEATURES_HEADER,
   CLIENT_VERSION_HEADER,
-  clientVocabulary,
+  announcedClientFeatures,
   ContractError,
   isRecord,
   QuestionError,
@@ -61,7 +61,7 @@ export function machineHeaders(token: string): Record<string, string> {
   identifying ??= {
     [CLIENT_VERSION_HEADER]: cliVersion(),
     [CLIENT_API_HEADER]: String(API_VERSION),
-    [CLIENT_FEATURES_HEADER]: clientVocabulary().join(','),
+    [CLIENT_FEATURES_HEADER]: announcedClientFeatures().join(','),
   };
   return { authorization: `Bearer ${token}`, ...identifying };
 }
@@ -188,18 +188,21 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     },
     async addSchedule(draft) {
       print(`DRY add-schedule ${oneLine(JSON.stringify(draft), 160)}`);
-      const task = dryTask({
-        title: draft.title,
-        input: draft.input,
-        ...(draft.priority ? { priority: draft.priority } : {}),
-        ...(draft.model === undefined ? {} : { model: draft.model }),
-        ...(draft.agent === undefined ? {} : { agent: draft.agent }),
-        ...(draft.machine !== undefined && draft.workdir !== undefined
-          ? { machine: draft.machine, workdir: draft.workdir }
-          : {}),
-        notBefore: draft.startAt ?? new Date(),
-      });
-      task.scheduleId = 'dry';
+      const task =
+        draft.after !== undefined
+          ? null
+          : dryTask({
+              title: draft.title,
+              input: draft.input,
+              ...(draft.priority ? { priority: draft.priority } : {}),
+              ...(draft.model === undefined ? {} : { model: draft.model }),
+              ...(draft.agent === undefined ? {} : { agent: draft.agent }),
+              ...(draft.machine !== undefined && draft.workdir !== undefined
+                ? { machine: draft.machine, workdir: draft.workdir }
+                : {}),
+              notBefore: draft.startAt ?? new Date(),
+            });
+      if (task !== null) task.scheduleId = 'dry';
       const schedule: Schedule = {
         id: 'dry',
         title: draft.title,
@@ -211,14 +214,18 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         ...(draft.agent === undefined ? {} : { agent: draft.agent }),
         everyMs: draft.everyMs ?? null,
         cron: draft.cron ?? null,
+        ...(draft.moreCrons === undefined || draft.moreCrons.length === 0 ? {} : { moreCrons: draft.moreCrons }),
         timezone: draft.timezone ?? null,
+        after:
+          draft.after === undefined ? null : { scheduleId: draft.after.scheduleId, delayMs: draft.after.delayMs ?? 0 },
+        maxConcurrent: draft.maxConcurrent ?? null,
         anchorAt: draft.startAt ?? new Date(),
-        nextRunAt: draft.startAt ?? new Date(),
-        remaining: draft.times === undefined ? null : draft.times - 1,
+        nextRunAt: task === null ? null : (draft.startAt ?? new Date()),
+        remaining: draft.times === undefined ? null : draft.times - (task === null ? 0 : 1),
         until: draft.until ?? null,
         paused: false,
         ended: false,
-        occurrenceTaskId: task.id,
+        occurrenceTaskId: task?.id ?? null,
         createdAt: new Date(),
         unreadable: [],
       };

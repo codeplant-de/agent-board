@@ -571,6 +571,8 @@ export async function runDispatch(deps: DispatchDeps): Promise<void> {
       if (notServableHere(task, config.machine, config) === undefined) delayed.push(task.notBefore);
       continue;
     }
+    // Its schedule has all its slots in use; the board refuses the claim too, this only saves the attempt every tick.
+    if (task.held === true) continue;
     // Another machine may have the checkout, the directory or the session.
     const elsewhere = notServableHere(task, config.machine, config);
     if (elsewhere !== undefined) {

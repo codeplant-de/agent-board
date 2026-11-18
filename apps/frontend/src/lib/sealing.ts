@@ -52,7 +52,7 @@ async function checked<T>(work: () => Promise<T>): Promise<T> {
 }
 
 const isRepeat = (when: CreateInput['when']): boolean =>
-  typeof when === 'object' && ('every' in when || 'cron' in when);
+  typeof when === 'object' && ('every' in when || 'cron' in when || 'after' in when);
 
 export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInput> {
   const input = task.input.trim();

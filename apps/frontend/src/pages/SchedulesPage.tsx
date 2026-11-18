@@ -1,4 +1,4 @@
-import { describeRule, INVALID_VALUE, runsLeft } from '@agent-board/shared';
+import { describeRule, formatDuration, INVALID_VALUE, runsLeft } from '@agent-board/shared';
 import {
   ActionIcon,
   Anchor,
@@ -80,7 +80,20 @@ function ScheduleActions({ schedule }: { schedule: ScheduleRow }) {
   );
 }
 
-function ScheduleRowView({ schedule }: { schedule: ScheduleRow }) {
+/** The title of the schedule `id`, or the id when it is not in the list (gone, or not readable). */
+function titleOf(id: string, all: readonly ScheduleRow[]): string {
+  const found = all.find((candidate) => candidate.id === id);
+  return found === undefined || found.unreadable.includes('title') ? id : found.title;
+}
+
+function describeSchedule(schedule: ScheduleRow, all: readonly ScheduleRow[]): string {
+  if (schedule.invalid.includes('everyMs')) return INVALID_VALUE;
+  if (schedule.after === null) return describeRule(schedule);
+  const { scheduleId, delayMs } = schedule.after;
+  return `after ${titleOf(scheduleId, all)}${delayMs > 0 ? ` +${formatDuration(delayMs)}` : ''}`;
+}
+
+function ScheduleRowView({ schedule, all }: { schedule: ScheduleRow; all: readonly ScheduleRow[] }) {
   return (
     <Table.Tr style={{ opacity: schedule.ended ? 0.55 : undefined }}>
       <Table.Td maw={320}>
@@ -104,7 +117,12 @@ function ScheduleRowView({ schedule }: { schedule: ScheduleRow }) {
         </Text>
       </Table.Td>
       <Table.Td>
-        <Text size="sm">{schedule.invalid.includes('everyMs') ? INVALID_VALUE : describeRule(schedule)}</Text>
+        <Text size="sm">{describeSchedule(schedule, all)}</Text>
+        {schedule.maxConcurrent !== null && (
+          <Text size="xs" c="dimmed">
+            At most {schedule.maxConcurrent} at once
+          </Text>
+        )}
       </Table.Td>
       <Table.Td>
         {schedule.nextRunAt ? (
@@ -116,7 +134,11 @@ function ScheduleRowView({ schedule }: { schedule: ScheduleRow }) {
           </Text>
         ) : (
           <Text size="sm" c={schedule.occurrenceTaskId ? undefined : 'dimmed'}>
-            {schedule.occurrenceTaskId ? 'now' : '-'}
+            {schedule.occurrenceTaskId
+              ? 'now'
+              : schedule.after !== null && !schedule.paused && !schedule.ended
+                ? `waits for ${titleOf(schedule.after.scheduleId, all)}`
+                : '-'}
           </Text>
         )}
       </Table.Td>
@@ -159,7 +181,8 @@ export function SchedulesPage() {
       <Title order={3}>Schedules</Title>
       <Text size="sm" c="dimmed">
         Each schedule keeps one pending card on the board; the next one appears when that card is started, moved or
-        closed. Runs missed while nothing took the card are skipped. Make one with New task, When: Repeating, or{' '}
+        closed. Runs missed while nothing took the card are skipped. A schedule that runs after another has no card
+        until a card of that one finishes. Make one with New task, When: Repeating, or{' '}
         <Code>board schedule --every</Code>.
       </Text>
       <QueryStatus query={schedules} what="schedules" />
@@ -185,7 +208,7 @@ export function SchedulesPage() {
             </Table.Thead>
             <Table.Tbody>
               {rows.map((schedule) => (
-                <ScheduleRowView key={schedule.id} schedule={schedule} />
+                <ScheduleRowView key={schedule.id} schedule={schedule} all={rows} />
               ))}
             </Table.Tbody>
           </Table>

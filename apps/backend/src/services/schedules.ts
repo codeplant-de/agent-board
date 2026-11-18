@@ -1,6 +1,13 @@
-import { MAX_INTERVAL_MS, type WireSchedule, type WireScheduleDraft } from '@agent-board/shared';
+import {
+  MAX_INTERVAL_MS,
+  MAX_SCHEDULE_CONCURRENT,
+  MAX_SCHEDULE_CRONS,
+  isCronExpression,
+  type WireSchedule,
+  type WireScheduleDraft,
+} from '@agent-board/shared';
 import { Cron } from 'croner';
-import { asc, count, eq, sql } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import type { DbOrTx } from '../db/client';
 import { schedules, tasks, transcriptRuns, type ScheduleRow, type TaskRow } from '../db/schema';
 import { AppError } from './errors';
@@ -9,16 +16,21 @@ import { hasStarted, insertTask, lockTask } from './taskRows';
 
 const MIN_INTERVAL_MS = 60_000;
 
-/** The part of a schedule that says when it runs. */
-export type Rule = Pick<ScheduleRow, 'everyMs' | 'cron' | 'timezone' | 'anchorAt' | 'until'>;
+/** The part of a schedule that says when it runs. A schedule that runs after another has no times of its own. */
+export type Rule = Pick<ScheduleRow, 'everyMs' | 'cron' | 'moreCrons' | 'timezone' | 'anchorAt' | 'until'>;
 
-function cronOf(rule: Pick<Rule, 'cron' | 'timezone'>): Cron {
-  return new Cron(rule.cron ?? '', { timezone: rule.timezone ?? undefined, paused: true, mode: '5-part' });
+function cronOf(expression: string, timezone: string | null): Cron {
+  return new Cron(expression, { timezone: timezone ?? undefined, paused: true, mode: '5-part' });
+}
+
+/** Every cron expression of the rule, the first one first. */
+function cronsOf(rule: Pick<Rule, 'cron' | 'moreCrons'>): string[] {
+  return rule.cron === null ? [] : [rule.cron, ...rule.moreCrons];
 }
 
 /**
- * The first run after `after` (at or after it with `inclusive`): the next point on the interval's grid, or the next
- * cron match in the rule's time zone. Null when there is none, because `until` or the expression rules it out, or
+ * The first run after `after` (at or after it with `inclusive`): the next point on the interval's grid, or the earliest
+ * next match of any cron expression in the rule's time zone. Null when there is none, because `until` or the expression rules it out, or
  * when it lies beyond the dates a Date can hold.
  */
 export function nextOccurrence(rule: Rule, after: Date, inclusive: boolean): Date | null {
@@ -38,22 +50,63 @@ function nextOnGrid(anchor: Date, everyMs: number, after: Date, inclusive: boole
 
 function nextMatch(rule: Rule, after: Date, inclusive: boolean): Date | null {
   // croner finds the first match strictly after its argument and works in whole seconds.
-  return cronOf(rule).nextRun(inclusive ? new Date(after.getTime() - 1) : after);
+  const from = inclusive ? new Date(after.getTime() - 1) : after;
+  const matches = cronsOf(rule).flatMap((expression) => cronOf(expression, rule.timezone).nextRun(from) ?? []);
+  return matches.reduce<Date | null>((first, match) => (first === null || match < first ? match : first), null);
 }
 
-function validRule(draft: Pick<WireScheduleDraft, 'everyMs' | 'cron' | 'timezone'>): Rule['everyMs'] {
+/** One expression as the server checks it: five fields that croner reads. */
+function requireCron(expression: string, timezone: string): void {
+  if (expression.trim().split(/\s+/).length !== 5)
+    throw new AppError(
+      'BAD_REQUEST',
+      `"${expression.slice(0, 80)}" is not a 5-field cron expression (minute hour day month weekday).`,
+    );
+  if (!isCronExpression(expression))
+    throw new AppError(
+      'BAD_REQUEST',
+      `"${expression.slice(0, 80)}" is not a cron expression a client can read: single spaces between the fields, only digits, * / , - # ? L W and month and weekday names, at most 100 characters.`,
+    );
+  try {
+    cronOf(expression, timezone);
+  } catch (error) {
+    throw new AppError(
+      'BAD_REQUEST',
+      `"${expression.slice(0, 80)}" is not a cron expression: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+type RuleDraft = Pick<
+  WireScheduleDraft,
+  'everyMs' | 'cron' | 'moreCrons' | 'timezone' | 'after' | 'maxConcurrent' | 'id'
+>;
+
+function requireRule(draft: RuleDraft): void {
+  if (
+    draft.maxConcurrent !== undefined &&
+    !(draft.maxConcurrent >= 1 && draft.maxConcurrent <= MAX_SCHEDULE_CONCURRENT)
+  )
+    throw new AppError(
+      'BAD_REQUEST',
+      `At most ${MAX_SCHEDULE_CONCURRENT} cards of a schedule can run at once, and at least 1.`,
+    );
+  if (draft.after !== undefined) {
+    const { delayMs = 0 } = draft.after;
+    if (!(delayMs >= 0 && delayMs <= MAX_INTERVAL_MS))
+      throw new AppError('BAD_REQUEST', 'The delay after another schedule must be from 0 to 10 years.');
+    if (draft.after.scheduleId === draft.id) throw new AppError('BAD_REQUEST', 'A schedule cannot run after itself.');
+    return;
+  }
   if (draft.everyMs !== undefined) {
     if (draft.everyMs < MIN_INTERVAL_MS) throw new AppError('BAD_REQUEST', 'An interval must be at least 1 minute.');
     if (draft.everyMs > MAX_INTERVAL_MS) throw new AppError('BAD_REQUEST', 'An interval must be at most 10 years.');
-    return draft.everyMs;
+    return;
   }
-  const cron = draft.cron ?? '';
   const timezone = draft.timezone ?? '';
-  if (cron.trim().split(/\s+/).length !== 5)
-    throw new AppError(
-      'BAD_REQUEST',
-      `"${cron.slice(0, 80)}" is not a 5-field cron expression (minute hour day month weekday).`,
-    );
+  const crons = [draft.cron ?? '', ...(draft.moreCrons ?? [])];
+  if (crons.length > MAX_SCHEDULE_CRONS)
+    throw new AppError('BAD_REQUEST', `A schedule has at most ${MAX_SCHEDULE_CRONS} cron expressions.`);
   try {
     new Intl.DateTimeFormat('en', { timeZone: timezone });
   } catch {
@@ -62,15 +115,11 @@ function validRule(draft: Pick<WireScheduleDraft, 'everyMs' | 'cron' | 'timezone
       `"${timezone.slice(0, 60)}" is not a time zone (use a name such as Europe/Berlin).`,
     );
   }
-  try {
-    cronOf({ cron, timezone });
-  } catch (error) {
-    throw new AppError(
-      'BAD_REQUEST',
-      `"${cron.slice(0, 80)}" is not a cron expression: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  return null;
+  for (const expression of crons) requireCron(expression, timezone);
+  const normalized = crons.map((expression) => expression.trim().split(/\s+/).join(' '));
+  const repeated = normalized.find((expression, index) => normalized.indexOf(expression) !== index);
+  if (repeated !== undefined)
+    throw new AppError('BAD_REQUEST', `The cron expression "${repeated.slice(0, 80)}" is given twice.`);
 }
 
 /** A schedule with the start time of its pending occurrence, which only the task knows (a delay changes it). */
@@ -88,7 +137,10 @@ export function toSchedule(row: ScheduleView): WireSchedule {
     ...(row.agent === null ? {} : { agent: row.agent }),
     everyMs: row.everyMs,
     cron: row.cron,
+    ...(row.moreCrons.length === 0 ? {} : { moreCrons: row.moreCrons }),
     timezone: row.timezone,
+    after: row.afterScheduleId === null ? null : { scheduleId: row.afterScheduleId, delayMs: row.afterDelayMs ?? 0 },
+    maxConcurrent: row.maxConcurrent,
     anchorAt: row.anchorAt,
     nextRunAt: row.occurrenceTaskId === null ? null : row.pendingNotBefore,
     remaining: row.remaining,
@@ -118,11 +170,40 @@ async function lockSchedule(tx: DbOrTx, id: string): Promise<ScheduleRow> {
   return row;
 }
 
+/** A Todo occurrence of the schedule that starts at `at`, or right away without it; the schedule's pending one. */
+async function insertOccurrence(tx: DbOrTx, schedule: ScheduleRow, at: Date | null, now: Date): Promise<TaskRow> {
+  const pinned = schedule.machine !== null && schedule.workdir !== null;
+  const { row } = await insertTask(
+    tx,
+    {
+      title: schedule.title,
+      input: schedule.input,
+      ...(schedule.agent === null ? {} : { agent: schedule.agent }),
+      status: 'todo',
+      priority: schedule.priority,
+      ...(schedule.model === null ? {} : { model: schedule.model }),
+      ...(at === null ? {} : { notBefore: at }),
+      createdBy: 'user',
+      ...(pinned ? { machine: schedule.machine ?? undefined, workdir: schedule.workdir ?? undefined } : {}),
+    },
+    { scheduleId: schedule.id },
+  );
+  await tx
+    .update(schedules)
+    .set({
+      occurrenceTaskId: row.id,
+      lastOccurrenceAt: at ?? now,
+      remaining: schedule.remaining === null ? null : schedule.remaining - 1,
+    })
+    .where(eq(schedules.id, schedule.id));
+  return row;
+}
+
 /**
  * Creates the schedule's next occurrence, a Todo task that waits for its run time, and ends the schedule when there is
  * none. The run time is the first rule match after the previous occurrence that is not in the past, so runs missed while
  * nothing claimed the card are skipped. `from` starts the search there instead (a resumed schedule). The caller holds the
- * schedule's lock.
+ * schedule's lock. A schedule that runs after another makes none here: its occurrences come from `triggerAfter`.
  */
 async function materializeNext(
   tx: DbOrTx,
@@ -139,6 +220,7 @@ async function materializeNext(
   };
   if (schedule.pausedAt !== null) return stopped({});
   if (schedule.remaining === 0) return stopped({ endedAt: now });
+  if (schedule.afterScheduleId !== null) return stopped({});
   const rule: Rule = schedule;
   let at: Date | null;
   if (from !== undefined) at = nextOccurrence(rule, from, true);
@@ -148,31 +230,7 @@ async function materializeNext(
     if (at !== null && at.getTime() < now.getTime()) at = nextOccurrence(rule, now, true);
   }
   if (at === null) return stopped({ endedAt: now });
-  const pinned = schedule.machine !== null && schedule.workdir !== null;
-  const { row } = await insertTask(
-    tx,
-    {
-      title: schedule.title,
-      input: schedule.input,
-      ...(schedule.agent === null ? {} : { agent: schedule.agent }),
-      status: 'todo',
-      priority: schedule.priority,
-      ...(schedule.model === null ? {} : { model: schedule.model }),
-      notBefore: at,
-      createdBy: 'user',
-      ...(pinned ? { machine: schedule.machine ?? undefined, workdir: schedule.workdir ?? undefined } : {}),
-    },
-    { scheduleId: schedule.id },
-  );
-  await tx
-    .update(schedules)
-    .set({
-      occurrenceTaskId: row.id,
-      lastOccurrenceAt: at,
-      remaining: schedule.remaining === null ? null : schedule.remaining - 1,
-    })
-    .where(eq(schedules.id, schedule.id));
-  return row;
+  return insertOccurrence(tx, schedule, at, now);
 }
 
 /** The pending occurrence `taskId` left Todo (or was closed): creates the next, unless it is no longer the pending one. */
@@ -189,15 +247,23 @@ export async function completeOccurrence(tx: DbOrTx, taskId: string, scheduleId:
 
 /**
  * Creates the schedule and its first occurrence, which waits for the first run. The schedule's id is the client's, because the
- * schedule's sealed fields are bound to it; one that is taken, by anyone, is a conflict.
+ * schedule's sealed fields are bound to it; one that is taken, by anyone, is a conflict. A schedule that runs after another has
+ * no occurrence yet: `task` is null, and the upstream must exist and not have ended.
  */
 export async function addSchedule(
   db: DbOrTx,
   draft: WireScheduleDraft,
   now: Date = new Date(),
-): Promise<{ schedule: ScheduleView; task: TaskRow }> {
-  const everyMs = validRule(draft);
+): Promise<{ schedule: ScheduleView; task: TaskRow | null }> {
+  requireRule(draft);
   return db.transaction(async (tx) => {
+    if (draft.after !== undefined) {
+      const [upstream] = await tx.select().from(schedules).where(eq(schedules.id, draft.after.scheduleId)).for('share');
+      if (!upstream)
+        throw new AppError('BAD_REQUEST', `There is no schedule ${draft.after.scheduleId.slice(0, 64)} to run after.`);
+      if (upstream.endedAt !== null)
+        throw new AppError('BAD_REQUEST', 'The schedule to run after has ended, so this one would never run.');
+    }
     const [inserted] = await tx
       .insert(schedules)
       .values({
@@ -209,9 +275,13 @@ export async function addSchedule(
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
         agent: draft.agent ?? null,
-        everyMs,
+        everyMs: draft.everyMs ?? null,
         cron: draft.cron ?? null,
+        moreCrons: draft.moreCrons ?? [],
         timezone: draft.timezone ?? null,
+        afterScheduleId: draft.after?.scheduleId ?? null,
+        afterDelayMs: draft.after === undefined ? null : (draft.after.delayMs ?? 0),
+        maxConcurrent: draft.maxConcurrent ?? null,
         anchorAt: draft.startAt ?? now,
         remaining: draft.times ?? null,
         until: draft.until ?? null,
@@ -219,10 +289,96 @@ export async function addSchedule(
       .onConflictDoNothing()
       .returning();
     if (!inserted) throw new AppError('CONFLICT', 'that schedule id is already taken');
+    if (draft.after !== undefined) return { schedule: await viewOf(tx, inserted.id), task: null };
     const task = await materializeNext(tx, inserted, now);
     if (!task) throw new AppError('BAD_REQUEST', 'The schedule would never run: nothing matches before its end.');
     return { schedule: await viewOf(tx, inserted.id), task };
   });
+}
+
+/**
+ * A card of the schedule's run finished (Needs me or Done): the schedules that run after it each get an occurrence that starts
+ * `delayMs` later, unless they are paused, ended or already have a pending one. Takes the dependents' locks, so the caller
+ * holds the card's lock and nothing else of a schedule.
+ */
+async function triggerAfter(tx: DbOrTx, scheduleId: string, now: Date): Promise<void> {
+  const dependents = await tx
+    .select({ id: schedules.id })
+    .from(schedules)
+    .where(and(eq(schedules.afterScheduleId, scheduleId), isNull(schedules.endedAt), isNull(schedules.pausedAt)))
+    .orderBy(asc(schedules.id));
+  for (const { id } of dependents) {
+    const [dependent] = await tx.select().from(schedules).where(eq(schedules.id, id)).for('update');
+    if (!dependent || dependent.endedAt !== null || dependent.pausedAt !== null || dependent.occurrenceTaskId !== null)
+      continue;
+    const at = new Date(now.getTime() + (dependent.afterDelayMs ?? 0));
+    if (dependent.remaining === 0 || (dependent.until !== null && at.getTime() > dependent.until.getTime())) {
+      await tx.update(schedules).set({ endedAt: now }).where(eq(schedules.id, id));
+      continue;
+    }
+    await insertOccurrence(tx, dependent, dependent.afterDelayMs ? at : null, now);
+  }
+}
+
+/**
+ * The run of an occurrence handed the card back as done work. The first time only, that makes the occurrences of the schedules
+ * that run after its schedule; a card that is replied to and finishes again does not trigger them again.
+ */
+export async function occurrenceFinished(
+  tx: DbOrTx,
+  task: Pick<TaskRow, 'id' | 'scheduleId' | 'occurrenceFinishedAt'>,
+  now: Date,
+): Promise<void> {
+  if (task.scheduleId === null || task.occurrenceFinishedAt !== null) return;
+  await tx.update(tasks).set({ occurrenceFinishedAt: now }).where(eq(tasks.id, task.id));
+  await triggerAfter(tx, task.scheduleId, now);
+}
+
+/**
+ * Whether the schedule's limit of cards under way (Running and Waiting) is used up by cards other than `taskId`, so a claim of
+ * that card must be refused. Takes the schedule's lock when there is a limit, so two claims count one after the other. A
+ * schedule that is gone, or has no limit, never holds a card.
+ */
+export async function isScheduleFull(tx: DbOrTx, scheduleId: string, taskId: string): Promise<boolean> {
+  const [unlocked] = await tx
+    .select({ maxConcurrent: schedules.maxConcurrent })
+    .from(schedules)
+    .where(eq(schedules.id, scheduleId));
+  if (unlocked?.maxConcurrent == null) return false;
+  const [locked] = await tx
+    .select({ id: schedules.id })
+    .from(schedules)
+    .where(eq(schedules.id, scheduleId))
+    .for('update');
+  if (!locked) return false;
+  const [underway] = await tx
+    .select({ n: count() })
+    .from(tasks)
+    .where(and(eq(tasks.scheduleId, scheduleId), ne(tasks.id, taskId), inArray(tasks.status, ['running', 'waiting'])));
+  return (underway?.n ?? 0) >= unlocked.maxConcurrent;
+}
+
+/** The ids of the tasks that wait in Todo for a free slot of their schedule, in one query for the whole list. */
+export async function heldTaskIds(
+  db: DbOrTx,
+  rows: readonly Pick<TaskRow, 'id' | 'status' | 'closed' | 'scheduleId'>[],
+): Promise<Set<string>> {
+  const waiting = rows.flatMap(({ id, status, closed, scheduleId }) =>
+    status === 'todo' && !closed && scheduleId !== null ? [{ id, scheduleId }] : [],
+  );
+  if (waiting.length === 0) return new Set();
+  const full = await db
+    .select({ id: schedules.id })
+    .from(schedules)
+    .where(
+      and(
+        inArray(schedules.id, [...new Set(waiting.map(({ scheduleId }) => scheduleId))]),
+        isNotNull(schedules.maxConcurrent),
+        sql`(select count(*) from ${tasks} where ${tasks.scheduleId} = ${schedules.id} and ${tasks.status} in ('running', 'waiting')) >= ${schedules.maxConcurrent}`,
+      ),
+    );
+  const fullIds = new Set(full.map(({ id }) => id));
+  return new Set(waiting.filter(({ scheduleId }) => fullIds.has(scheduleId)).map(({ id }) => id));
 }
 
 /** Active schedules first, by when the pending card starts (one that is due now leads); paused and ended after. */
@@ -300,10 +456,23 @@ export async function setPaused(
   });
 }
 
-/** Deletes the schedule and its never-run pending occurrence. Tasks that ran stay, still naming it: their sealed fields are bound to its id. */
+/** Deletes the schedule and its never-run pending occurrence, unless other schedules run after it. Tasks that ran stay, still naming it: their sealed fields are bound to its id. */
 export async function removeSchedule(db: DbOrTx, id: string): Promise<void> {
   await db.transaction(async (tx) => {
     const { pending } = await lockWithOccurrence(tx, id);
+    const dependents = await tx
+      .select({ id: schedules.id })
+      .from(schedules)
+      .where(eq(schedules.afterScheduleId, id))
+      .orderBy(asc(schedules.id));
+    if (dependents.length > 0)
+      throw new AppError(
+        'CONFLICT',
+        `Schedules run after this one (${dependents
+          .slice(0, 5)
+          .map((dependent) => dependent.id)
+          .join(', ')}${dependents.length > 5 ? ', …' : ''}); delete those first.`,
+      );
     await removePending(tx, pending);
     await tx.delete(schedules).where(eq(schedules.id, id));
   });

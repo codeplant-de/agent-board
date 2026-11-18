@@ -1,17 +1,36 @@
-import { ContractError, parseDuration } from '@agent-board/shared';
+import { ContractError, MAX_SCHEDULE_CRONS, parseDuration } from '@agent-board/shared';
 
-export type RepeatRule = { every: number } | { cron: string; timezone: string };
+export type RepeatRule = { every: number } | { cron: string; moreCrons?: string[]; timezone: string };
 
-/** What the form's rule field holds: a duration (`2h`) or a 5-field cron expression, read in `timezone`. */
+const normalized = (expression: string): string => expression.split(/\s+/).join(' ');
+
+/**
+ * What the form's rule field holds: a duration (`2h`), or 5-field cron expressions, one per line, read in `timezone`. The first
+ * expression is `cron`, the others `moreCrons`.
+ */
 export function parseRepeatRule(text: string, timezone: string): RepeatRule | { error: string } {
-  const rule = text.trim();
-  if (rule === '') return { error: 'Give an interval such as 2h, or a cron expression such as 0 9 * * 1-5' };
-  try {
-    return { every: parseDuration(rule) };
-  } catch (error) {
-    if (!(error instanceof ContractError)) throw error;
-  }
-  if (rule.split(/\s+/).length !== 5)
-    return { error: 'Use an interval such as 2h or 1d, or a cron expression with 5 fields' };
-  return { cron: rule, timezone };
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  const [rule, ...others] = lines;
+  if (rule === undefined) return { error: 'Give an interval such as 2h, or a cron expression such as 0 9 * * 1-5' };
+  if (others.length === 0)
+    try {
+      return { every: parseDuration(rule) };
+    } catch (error) {
+      if (!(error instanceof ContractError)) throw error;
+    }
+  const bad = lines.find((line) => line.split(/\s+/).length !== 5);
+  if (bad !== undefined)
+    return {
+      error:
+        others.length === 0
+          ? 'Use an interval such as 2h or 1d, or a cron expression with 5 fields'
+          : `"${bad.slice(0, 40)}" does not have 5 cron fields; give one expression per line`,
+    };
+  if (lines.length > MAX_SCHEDULE_CRONS) return { error: `At most ${MAX_SCHEDULE_CRONS} cron expressions` };
+  const same = lines.map(normalized);
+  if (same.some((line, index) => same.indexOf(line) !== index)) return { error: 'A cron expression is given twice' };
+  return { cron: rule, ...(others.length > 0 ? { moreCrons: others } : {}), timezone };
 }

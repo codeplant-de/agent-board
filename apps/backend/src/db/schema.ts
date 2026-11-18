@@ -81,7 +81,7 @@ const ownerFk = (
   name: string,
   columns: [AnyPgColumn, AnyPgColumn],
   foreignColumns: [AnyPgColumn, AnyPgColumn],
-  onDelete: 'set null' | 'cascade',
+  onDelete: 'set null' | 'cascade' | 'restrict',
 ) => foreignKey({ name, columns, foreignColumns }).onDelete(onDelete);
 
 const isEnvelope = (column: AnyPgColumn) => sql`${column} ~ ${sql.raw(`'${ENVELOPE_PATTERN}'`)}`;
@@ -176,6 +176,8 @@ export const tasks = pgTable(
      * `schedule_id`: the task's prompt is bound to this id, so it stays when the parent is deleted. Only the browser sets it.
      */
     forkOf: text('fork_of'),
+    /** When the run of this occurrence first handed the card back as done work (Needs me or Done); the schedules that run after its schedule were triggered then, once. */
+    occurrenceFinishedAt: timestamp('occurrence_finished_at', { withTimezone: true }),
     /** Proposed by an agent and not started by the user yet; starting it takes this off and makes `created_by` the user, with the prompt sealed again for that creator. */
     proposed: boolean('proposed').notNull().default(false),
     createdAt: createdAt(),
@@ -216,7 +218,17 @@ export const schedules = pgTable(
     /** An interval on the grid `anchor_at + k * every_ms`, or a 5-field cron expression in `timezone`. */
     everyMs: bigint('every_ms', { mode: 'number' }),
     cron: text('cron'),
+    /** The expressions after the first, read in the same time zone; empty with one expression. */
+    moreCrons: text('more_crons')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     timezone: text('timezone'),
+    /** Runs after the schedule `after_schedule_id`: an occurrence is made when one of its cards finishes, `after_delay_ms` later. Instead of `every_ms` and `cron`. */
+    afterScheduleId: text('after_schedule_id'),
+    afterDelayMs: bigint('after_delay_ms', { mode: 'number' }),
+    /** At most this many cards of the schedule under way (running or waiting) at once; null: no limit. Enforced when a worker claims a card. */
+    maxConcurrent: integer('max_concurrent'),
     anchorAt: timestamp('anchor_at', { withTimezone: true }).notNull(),
     /** The start time of the newest occurrence; the next one lies after it. */
     lastOccurrenceAt: timestamp('last_occurrence_at', { withTimezone: true }),
@@ -234,8 +246,14 @@ export const schedules = pgTable(
     check('schedule_input_sealed', isEnvelope(t.input)),
     check('schedule_workdir_sealed', isEnvelope(t.workdir)),
     check('schedule_agent_sealed', isEnvelope(t.agent)),
+    check(
+      'schedule_one_rule',
+      sql`(${t.everyMs} is not null)::int + (${t.cron} is not null)::int + (${t.afterScheduleId} is not null)::int = 1`,
+    ),
+    check('schedule_after_delay', sql`(${t.afterScheduleId} is null) = (${t.afterDelayMs} is null)`),
     unique('schedule_owner_id_unique').on(t.owner, t.id),
     ownerFk('schedule_occurrence_task_fk', [t.owner, t.occurrenceTaskId], [tasks.owner, tasks.id], 'set null'),
+    ownerFk('schedule_after_fk', [t.owner, t.afterScheduleId], [t.owner, t.id], 'restrict'),
     tenant(),
   ],
 ).enableRLS();

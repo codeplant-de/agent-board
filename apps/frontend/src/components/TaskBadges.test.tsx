@@ -43,6 +43,14 @@ describe('TaskBadges', () => {
     expect(screen.queryByText('Stopping…')).not.toBeInTheDocument();
   });
 
+  it('shows that a task in Todo waits for a free slot of its schedule, and only then', () => {
+    const { unmount } = renderBadges({ scheduleId: 'sch1', held: true });
+    expect(screen.getByText('Waits for a slot')).toBeInTheDocument();
+    unmount();
+    renderBadges({ scheduleId: 'sch1' });
+    expect(screen.queryByText('Waits for a slot')).not.toBeInTheDocument();
+  });
+
   it('shows Paused on a task waiting in Todo', () => {
     renderBadges({ paused: true });
     expect(screen.getByText('Paused')).toBeInTheDocument();

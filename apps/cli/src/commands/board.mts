@@ -35,8 +35,9 @@ import { SystemError } from '../setup/system.mts';
 import { requireTaskId } from '../task-id.mts';
 import { plainLine, plainText } from '../output/terminal.mts';
 import type { Style } from '../output/style.mts';
-import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
-import type { Choice, Scheduled, ScheduleFlags } from './schedule.mts';
+import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule, scheduleAfter } from './schedule.mts';
+import { resolveScheduleId } from './ids.mts';
+import type { Choice, Scheduled, ScheduledAfter, ScheduleFlags } from './schedule.mts';
 import { publishWatches } from '../watch/publish.mts';
 import { newWatchId } from '../watch/store.mts';
 import type { WatchStore } from '../watch/store.mts';
@@ -167,6 +168,7 @@ export function formatTasks(found: Task[], flags: TasksFlags, style: Style): str
         const labels = task.labels.length > 0 ? `  [${plainLine(task.labels.join(','))}]` : '';
         const hints = [
           task.notBefore ? `starts ${localTime(task.notBefore)}` : undefined,
+          task.held ? 'waits for a free slot of its schedule' : undefined,
           task.wakeAt ? `${task.waitCheck ? 'checks, gives up' : 'wakes'} ${localTime(task.wakeAt)}` : undefined,
           task.closed ? 'closed' : undefined,
           task.unreadable.length > 0 ? `cannot decrypt: ${task.unreadable.join(', ')}` : undefined,
@@ -609,6 +611,7 @@ export function formatSchedule(schedule: Schedule): string {
     `next ${nextRun(schedule)}`,
     left !== null ? `${left} left` : schedule.until ? `until ${localTime(schedule.until)}` : 'forever',
     state,
+    ...(schedule.maxConcurrent === null ? [] : [`max ${schedule.maxConcurrent}`]),
     plainLine(schedule.title),
     ...(schedule.unreadable.length > 0 ? [`(cannot decrypt: ${schedule.unreadable.join(', ')})`] : []),
   ].join('  ');
@@ -663,28 +666,31 @@ export async function scheduleCommand(
   flags: ScheduleFlags,
   words: string[],
   cwd: string,
-): Promise<Scheduled | undefined> {
-  const args = parseScheduleArgs(flags, words);
+): Promise<Scheduled | ScheduledAfter | undefined> {
+  const parsed = parseScheduleArgs(flags, words);
+  const args =
+    parsed.after === undefined
+      ? parsed
+      : { ...parsed, after: await resolveScheduleId(context.backend, parsed.after, { inRun: false }) };
   if (args.agent !== undefined) requireLocalAgent(context.config, args.agent);
   if (!isAllowedDir(context.config.dirs, cwd))
     throw new UsageError(
       `${plainLine(cwd)} is not a listed directory on ${context.config.machine}, so a task scheduled here would stop in Needs me. Run "board dirs add" here first, or schedule from a listed directory.`,
     );
-  return schedule(
-    {
-      backend: context.backend,
-      machine: context.config.machine,
-      workdir: cwd,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      print: context.print,
-      confirm: (line) => confirm(context, line),
-      link: context.taskLink,
-      check: haikuDuplicateCheck(
-        context.print,
-        process.stderr.isTTY ? (line) => void process.stderr.write(`${line}\n`) : undefined,
-      ),
-      choose: process.stdin.isTTY && process.stderr.isTTY ? chooseInTerminal : undefined,
-    },
-    args,
-  );
+  const deps = {
+    backend: context.backend,
+    machine: context.config.machine,
+    workdir: cwd,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    print: context.print,
+    confirm: (line: string) => confirm(context, line),
+    link: context.taskLink,
+    check: haikuDuplicateCheck(
+      context.print,
+      process.stderr.isTTY ? (line) => void process.stderr.write(`${line}\n`) : undefined,
+    ),
+    choose: process.stdin.isTTY && process.stderr.isTTY ? chooseInTerminal : undefined,
+  };
+  if (args.after !== undefined) return { schedule: await scheduleAfter(deps, args) };
+  return schedule(deps, args);
 }
