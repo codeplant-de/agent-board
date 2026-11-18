@@ -12,7 +12,7 @@ agent-board is a board for headless Claude Code runs: a Fastify/tRPC backend, a 
 | Sealing contexts and the threat model                         | `docs/encryption.md`, `packages/shared/src/sealing.mts`   |
 | CLI ↔ server wire protocol                                    | `docs/machine-api.md`, `packages/shared/src/contract.mts` |
 | Install, config keys, upgrade steps per contract              | `docs/setup.md`                                           |
-| Server env, deploy, cutover                                   | `docs/operations.md`                                      |
+| Server env, sign-in setup, deploy, cutover                    | `docs/operations.md`                                      |
 | Tests, migrations, releases                                   | `docs/development.md`                                     |
 
 ## Commands
@@ -35,6 +35,7 @@ mise exec -- node apps/cli/src/main.mts <command>  # the CLI from source
 - **Parallel branches collide** on the migration number, the version numbers and the CLI version. On rebase take `main`'s `drizzle/meta` files, regenerate the migration with `pnpm db:generate --name <same name>`, copy any hand-written SQL over from the old file, and renumber the versions.
 - **Backend tests reset `board_test`** on every run. Two worktrees testing at once need separate databases through `TEST_DATABASE_URL`.
 - **Never let an agent seal as `user`.** Anything an agent produces that would change the user's text (a prompt rewrite, a proposed task) is a suggestion the user applies in the browser. New content fields get a binding in `sealing.mts` and an entry in `apps/backend/src/db/sealedColumns.ts`.
+- **The user name owns the board.** It comes from the sign-in (passkey, OIDC claim, SAML NameID, `NO_LOGIN_USER`) and is bound into every sealed value. A change to how a method names users strands the boards of everyone it renames. See `docs/operations.md#sign-in`.
 - **Clear values from the server are untrusted.** Shape-check them before they reach argv, paths, unit names or agent-visible text. Prompts go to `claude` on stdin.
 - **CLI code must run on Node and Bun.** Use `node:` APIs only.
 - **The listener keeps its old code** after a `git pull` or `self-update` until `systemctl --user restart agent-board-listen`.

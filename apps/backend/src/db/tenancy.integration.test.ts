@@ -1,12 +1,12 @@
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { Changes } from '../services/changes';
 import { AppError } from '../services/errors';
 import { testAppDatabaseUrl, testDatabaseUrl } from '../test/global-setup';
-import { SEALED, testConfig, useTestDb } from '../test/helpers';
+import { SEALED, testContext, useTestDb } from '../test/helpers';
 import { procedure, router } from '../trpc/trpc';
 import { appUsers, tasks } from './schema';
-import { assertUnprivileged, createDb, ensureAppRole } from './client';
+import { assertUnprivileged, createDb, ensureAppRole, type DbOrTx } from './client';
+import { withOwner } from './scope';
 
 const { db, admin } = useTestDb();
 
@@ -81,7 +81,7 @@ describe('request scoping', () => {
       ctx.db.insert(tasks).values({ id: 'committed', title: SEALED, input: SEALED, position: 0 }),
     ),
   });
-  const call = () => probe.createCaller({ root: db, config: testConfig, changes: new Changes(), username: 'jascha' });
+  const call = () => probe.createCaller(testContext(db, 'jascha'));
   const ids = async () => (await admin.select({ id: tasks.id }).from(tasks)).map(({ id }) => id);
 
   it('rolls back what a failed procedure wrote, and keeps the mapped error', async () => {
@@ -97,7 +97,7 @@ describe('request scoping', () => {
 
   it('provisions a user when a mutation commits, and not for a query or a failed mutation', async () => {
     const users = async () => (await admin.select().from(appUsers)).map(({ username }) => username);
-    const carol = probe.createCaller({ root: db, config: testConfig, changes: new Changes(), username: 'carol' });
+    const carol = probe.createCaller(testContext(db, 'carol'));
     await expect(carol.writeThenFail()).rejects.toMatchObject({ code: 'CONFLICT' });
     expect(await users()).toEqual([]);
     await carol.owner();
@@ -109,5 +109,57 @@ describe('request scoping', () => {
   it('sets app.owner inside the procedure and not on the connection afterwards', async () => {
     expect(await call().owner()).toBe('jascha');
     expect(await currentOwner(db)).toBeFalsy();
+  });
+});
+
+describe('the sign-in tables', () => {
+  const seed = async () => {
+    await admin.insert(appUsers).values({ username: 'alice' });
+    await admin.execute(sql`
+      insert into session (token_hash, owner, method, expires_at) values ('h1', 'alice', 'oidc', now() + interval '1 day')`);
+    await admin.execute(sql`
+      insert into passkey (credential_id, owner, public_key, name) values ('c1', 'alice', 'pk', 'Laptop')`);
+  };
+  const count = (tx: DbOrTx, table: 'session' | 'passkey') =>
+    tx.execute(sql`select 1 from ${sql.identifier(table)}`).then(({ rows }) => rows.length);
+
+  it('shows board_app nothing without an owner, and nothing of another owner', async () => {
+    await seed();
+    for (const table of ['session', 'passkey'] as const) {
+      expect(await count(db, table), table).toBe(0);
+      expect(await withOwner(db, 'bob', (tx) => count(tx, table)), table).toBe(0);
+      expect(await withOwner(db, 'alice', (tx) => count(tx, table)), table).toBe(1);
+    }
+  });
+
+  it('refuses board_app a session or passkey for no owner or for another one', async () => {
+    await seed();
+    await expect(
+      db.execute(
+        sql`insert into session (token_hash, owner, method, expires_at) values ('h2', 'alice', 'oidc', now())`,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      withOwner(db, 'bob', (tx) =>
+        tx.execute(sql`insert into passkey (credential_id, owner, public_key, name) values ('c2', 'alice', 'pk', 'x')`),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('opens a session or a passkey to board_app only through the sign-in functions', async () => {
+    await seed();
+    const { rows } = await db.execute<{ owner: string | null }>(sql`select session_owner('h1', 60) as owner`);
+    expect(rows[0]?.owner).toBe('alice');
+    expect((await db.execute(sql`select * from passkey_by_credential('c1')`)).rows).toHaveLength(1);
+    expect((await db.execute<{ taken: boolean }>(sql`select username_taken('alice') as taken`)).rows[0]?.taken).toBe(
+      true,
+    );
+    expect((await db.execute<{ taken: boolean }>(sql`select username_taken('nobody') as taken`)).rows[0]?.taken).toBe(
+      false,
+    );
+    const { rows: unknown } = await db.execute<{ owner: string | null }>(
+      sql`select session_owner('nope', 60) as owner`,
+    );
+    expect(unknown[0]?.owner).toBeNull();
   });
 });

@@ -8,7 +8,7 @@ All content is end-to-end encrypted. The server never sees a prompt, a note or a
 
 ```
  browser ──tRPC──▶ backend (Fastify, Postgres) ◀──machine API + SSE── board CLI on each worker machine
-                   board.codeplant.de, behind a login proxy             dispatch · listen · worker
+                   board.codeplant.de, signs users in itself            dispatch · listen · worker
                                                                           └─ starts `claude -p` per task
 ```
 
@@ -90,7 +90,7 @@ mise install                        # Node 24, pnpm 11, Bun
 pnpm install
 docker compose up -d postgres       # Postgres on :54331
 cp apps/backend/.env.example apps/backend/.env
-pnpm dev:backend                    # :4000, signed in as DEV_AUTH_USER
+pnpm dev:backend                    # :4000, no login (NO_LOGIN_USER)
 pnpm dev:frontend                   # :5173
 pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 ```
@@ -109,5 +109,5 @@ pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 | [cli.md](docs/cli.md) | Generated `board` command reference. |
 | [encryption.md](docs/encryption.md) | Threat model, sealing contexts, what the server can still do. |
 | [machine-api.md](docs/machine-api.md) | The contract between CLI and server. |
-| [operations.md](docs/operations.md) | Server deployment, environment, the encryption cutover. |
+| [operations.md](docs/operations.md) | Server deployment, environment, sign-in setup, the encryption cutover. |
 | [development.md](docs/development.md) | Local setup, tests, migrations, releases. |

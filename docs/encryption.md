@@ -24,7 +24,7 @@ The board does not store a PR's head sha. Only a script that schedules with `--v
 
 The goal is stronger than secrecy. **A worker, and the browser, only acts on, or shows as trusted, text that the user's own clients sealed for exactly that purpose.**
 
-The operator can read, swap, replay and forge anything in the database and in API replies, but holds no key. Every sealed value is an AES-256-GCM envelope whose additional data names the user, the field and a context. That binds the value to the row and the role it was sealed for.
+The operator can read, swap, replay and forge anything in the database and in API replies, but holds no key. Every sealed value is an AES-256-GCM envelope whose additional data names the user, the field and a context. That binds the value to the row and the role it was sealed for. The user is the board's user name, which the sign-in gives (a passkey, the identity provider's claim, or `NO_LOGIN_USER`), so a user who signs in under a different name opens nothing of the old board.
 
 `packages/shared/src/sealing.mts` is the one definition of these rules. The CLI and the browser both use it.
 
@@ -453,6 +453,8 @@ The server relays what the user does, and the user's actions are not signed. A h
 - change a task's priority or position
 - choose the model of any run: a review of untrusted PR text on a weaker model, or every task on the most expensive one
 - withhold, delay or reorder anything, notes and answers included
+- name the sign-in address the browser is sent to. For OIDC and SAML the board's server builds the identity provider's URL, so a hostile server can send you to a look-alike page. The board asks for the passphrase on its own origin only, never on an identity provider's page, so a page that asks for it during a sign-in is not the board
+- decide which user name a session belongs to. That gives it nothing it lacks: a browser that holds the keys of another user shows the [key warning](#keys-in-the-browser), and without the key every value stays sealed
 
 It cannot:
 

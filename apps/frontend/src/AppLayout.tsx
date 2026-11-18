@@ -6,6 +6,7 @@ import {
   IconDots,
   IconInbox,
   IconLock,
+  IconLogout,
   IconMoon,
   IconPlus,
   IconRepeat,
@@ -14,6 +15,7 @@ import {
 } from '@tabler/icons-react';
 import { useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { useSignOut } from './auth/useSignOut';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useLock } from './crypto/KeyContext';
 import { NewTaskModal } from './components/NewTaskModal';
@@ -32,6 +34,7 @@ export function AppLayout() {
   const [creating, setCreating] = useState(false);
   const { colorScheme, toggleColorScheme } = useMantineColorScheme();
   const lock = useLock();
+  const signOut = useSignOut();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const active = (to: string) =>
@@ -93,6 +96,13 @@ export function AppLayout() {
                   </ActionIcon>
                 </Tooltip>
               )}
+              {signOut && (
+                <Tooltip label="Sign out">
+                  <ActionIcon variant="default" size="lg" onClick={() => void signOut()} aria-label="Sign out">
+                    <IconLogout size={18} />
+                  </ActionIcon>
+                </Tooltip>
+              )}
             </Group>
             <Menu position="bottom-end" withinPortal>
               <Menu.Target>
@@ -110,6 +120,11 @@ export function AppLayout() {
                 {lock && (
                   <Menu.Item leftSection={<IconLock size={16} />} onClick={() => void lock()}>
                     Lock
+                  </Menu.Item>
+                )}
+                {signOut && (
+                  <Menu.Item leftSection={<IconLogout size={16} />} onClick={() => void signOut()}>
+                    Sign out
                   </Menu.Item>
                 )}
               </Menu.Dropdown>

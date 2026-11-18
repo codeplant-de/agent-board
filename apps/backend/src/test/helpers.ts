@@ -1,11 +1,13 @@
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeEach } from 'vitest';
-import type { Config } from '../config';
+import type { Config, LoginConfig } from '../config';
 import { createDb, type Db, type Tx } from '../db/client';
 import { appUsers } from '../db/schema';
 import { withOwner } from '../db/scope';
 import { Changes } from '../services/changes';
+import { OidcClient } from '../services/auth/oidc';
 import { appRouter } from '../trpc/router';
+import type { Context } from '../trpc/trpc';
 import { testAppDatabaseUrl, testDatabaseUrl } from './global-setup';
 
 export const testConfig: Config = {
@@ -14,18 +16,35 @@ export const testConfig: Config = {
   databaseUrl: testDatabaseUrl(),
   appDatabaseUrl: testAppDatabaseUrl(),
   backfillOwner: null,
-  allowedGroups: ['admins'],
-  devAuthUser: null,
-  proxySecret: null,
+  auth: { login: false, user: 'jascha' },
   cliVersion: null,
 };
+
+/** A board with sign-in on: passkeys, no identity provider unless a test adds one. */
+export function loginConfig(overrides: Partial<LoginConfig> = {}): Config & { auth: LoginConfig } {
+  const auth: LoginConfig = {
+    login: true,
+    publicUrl: 'http://localhost:5173',
+    rpId: 'localhost',
+    sessionDays: 30,
+    passkeys: true,
+    signupToken: null,
+    allowedGroups: [],
+    oidc: null,
+    saml: null,
+    ...overrides,
+  };
+  return { ...testConfig, auth };
+}
 
 /** `db` is the unprivileged handle that serves requests; `admin` bypasses row-level security. The tables are wiped before each test. */
 export function useTestDb(): { db: Db; admin: Db } {
   const app = createDb(testAppDatabaseUrl());
   const admin = createDb(testDatabaseUrl());
   beforeEach(async () => {
-    await admin.db.execute(sql`truncate app_user, note, task, schedule, machine restart identity cascade`);
+    await admin.db.execute(
+      sql`truncate app_user, session, passkey, auth_flow, note, task, schedule, machine restart identity cascade`,
+    );
   });
   afterAll(() => Promise.all([app.pool.end(), admin.pool.end()]));
   return { db: app.db, admin: admin.db };
@@ -39,8 +58,23 @@ export function asOwner<T>(db: Db, owner: string, fn: (tx: Tx) => Promise<T>): P
   });
 }
 
+/** The context of a tRPC call as `username`, for a server-less test; `overrides` swaps what a test needs to look at. */
+export function testContext(root: Db, username: string | null = 'jascha', overrides: Partial<Context> = {}): Context {
+  return {
+    root,
+    config: testConfig,
+    changes: new Changes(),
+    log: { warn: () => undefined },
+    oidc: new OidcClient(null),
+    username,
+    sessionHash: null,
+    setSessionCookie: () => undefined,
+    ...overrides,
+  };
+}
+
 export function caller(root: Db, username = 'jascha', changes = new Changes()) {
-  return appRouter.createCaller({ root, config: testConfig, changes, username });
+  return appRouter.createCaller(testContext(root, username, { changes }));
 }
 
 /** A value of the shape of an envelope, for rows a test inserts directly: the sealed-content constraints of a later release refuse anything else. */

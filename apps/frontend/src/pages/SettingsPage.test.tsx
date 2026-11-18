@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import { SESSION_MARKER_KEY } from '../lib/session';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountDeletedProvider } from '../components/AccountDeletedProvider';
 import { KeyProvider } from '../crypto/KeyProvider';
@@ -28,6 +29,11 @@ interface MachineRow {
 }
 const machines = vi.hoisted(() => ({ current: [] as MachineRow[], failure: null as Error | null }));
 const stored = vi.hoisted(() => ({ current: null as unknown }));
+const authConfig = vi.hoisted(() => ({
+  current: { login: false } as { login: false } | { login: true; passkeys: boolean },
+}));
+const logout = vi.hoisted(() => vi.fn(async () => undefined));
+const lock = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock('../lib/trpc', () => ({
   errorMessage: String,
@@ -51,8 +57,18 @@ vi.mock('../lib/trpc', () => ({
       },
     },
   }),
-  useRawTRPCClient: () => ({}),
+  useRawTRPCClient: () => ({ auth: { logout: { mutate: logout } } }),
   useTRPC: () => ({
+    auth: {
+      config: { queryOptions: () => ({ queryKey: ['auth.config'], queryFn: async () => authConfig.current }) },
+    },
+    passkeys: {
+      list: { queryOptions: () => ({ queryKey: ['passkeys'], queryFn: async () => [] }) },
+      registerOptions: { mutationOptions: () => ({ mutationFn: async () => null }) },
+      register: { mutationOptions: () => ({ mutationFn: async () => null }) },
+      rename: { mutationOptions: () => ({ mutationFn: async () => null }) },
+      remove: { mutationOptions: () => ({ mutationFn: async () => null }) },
+    },
     me: {
       queryOptions: () => ({
         queryKey: ['me'],
@@ -95,7 +111,7 @@ function renderPage() {
         <ModalsProvider>
           <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
             <AccountDeletedProvider>
-              <KeyProvider keys={held} lock={async () => undefined}>
+              <KeyProvider keys={held} lock={lock}>
                 <SettingsPage />
               </KeyProvider>
             </AccountDeletedProvider>
@@ -123,6 +139,9 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  authConfig.current = { login: false };
+  logout.mockClear();
+  lock.mockClear();
   issue.mockClear();
   revoke.mockClear();
   stored.current = setup;
@@ -360,6 +379,49 @@ describe('desktop notifications', () => {
     await userEvent.click(await screen.findByRole('switch', { name: 'Notify me when a task needs me' }));
     await waitFor(() => expect(localStorage.getItem('agent-board.desktopNotifications')).toBeNull());
     expect(requestPermission).not.toHaveBeenCalled();
+  });
+});
+
+describe('signing in and out', () => {
+  beforeEach(() => localStorage.clear());
+
+  it('offers neither passkeys nor sign out on a board without login', async () => {
+    renderPage();
+    await screen.findByText('laptop');
+    expect(screen.queryByText('Sign-in')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument();
+  });
+
+  it('shows the passkeys section only when passkeys are on', async () => {
+    authConfig.current = { login: true, passkeys: false };
+    renderPage();
+    expect(await screen.findByRole('button', { name: 'Sign out' })).toBeInTheDocument();
+    expect(screen.queryByText('Sign-in')).not.toBeInTheDocument();
+  });
+
+  it('shows the passkeys section when login and passkeys are on', async () => {
+    authConfig.current = { login: true, passkeys: true };
+    renderPage();
+    expect(await screen.findByText('Sign-in')).toBeInTheDocument();
+  });
+
+  it('signs out on the board, tells the other tabs and locks the keys', async () => {
+    authConfig.current = { login: true, passkeys: false };
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign out' }));
+    await waitFor(() => expect(lock).toHaveBeenCalled());
+    expect(logout).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(localStorage.getItem(SESSION_MARKER_KEY)).not.toBeNull());
+  });
+
+  it('stays signed in and unlocked when the board could not end the session', async () => {
+    authConfig.current = { login: true, passkeys: false };
+    logout.mockRejectedValueOnce(new Error('502'));
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign out' }));
+    await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
+    expect(lock).not.toHaveBeenCalled();
+    expect(localStorage.getItem(SESSION_MARKER_KEY)).toBeNull();
   });
 });
 

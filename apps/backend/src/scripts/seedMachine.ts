@@ -6,6 +6,7 @@
 import { deriveKeys, encodeDataKey, generateDataKey, wrapDataKey } from '@agent-board/shared';
 import { loadConfig } from '../config';
 import { createDb } from '../db/client';
+import { OidcClient } from '../services/auth/oidc';
 import { Changes } from '../services/changes';
 import { appRouter } from '../trpc/router';
 
@@ -26,7 +27,16 @@ for (const [name, url] of [
   }
 }
 const { db, pool } = createDb(config.appDatabaseUrl);
-const board = appRouter.createCaller({ root: db, config, changes: new Changes(), username: owner });
+const board = appRouter.createCaller({
+  root: db,
+  config,
+  changes: new Changes(),
+  log: console,
+  oidc: new OidcClient(null),
+  username: owner,
+  sessionHash: null,
+  setSessionCookie: () => undefined,
+});
 
 const dataKey = generateDataKey();
 const { keyId } = await deriveKeys(dataKey, owner);

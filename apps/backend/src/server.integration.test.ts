@@ -13,13 +13,24 @@ import { Readable } from 'node:stream';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { schedules, tasks } from './db/schema';
 import { appRouter } from './trpc/router';
-import { Changes } from './services/changes';
 import { buildServer } from './server';
 import { recordClient } from './services/machines';
 import { archiveStaleDone } from './services/tasks';
 import { plainMachine, plainUi, type MachineAnswer } from './test/client';
 import { sealed } from './test/sealed';
-import { asOwner, caller, question, SEALED, SESSION, sessionNamed, testConfig, useTestDb } from './test/helpers';
+import { createSession } from './services/auth/sessions';
+import {
+  asOwner,
+  caller,
+  question,
+  SEALED,
+  SESSION,
+  sessionNamed,
+  testConfig,
+  testContext,
+  useTestDb,
+  loginConfig,
+} from './test/helpers';
 
 const { db, admin } = useTestDb();
 
@@ -214,30 +225,13 @@ describe('machine API', () => {
     expect(json.result.features).toContain('task.configure');
   });
 
-  it('the UI needs a signed-in user in an allowed group; Remote-* headers do not open the machine API', async () => {
-    expect((await ctx.app.inject({ method: 'GET', url: '/trpc/me' })).statusCode).toBe(403);
-    const outsider = await ctx.app.inject({
-      method: 'GET',
-      url: '/trpc/me',
-      headers: { 'remote-user': 'x', 'remote-groups': 'family-tree' },
-    });
-    expect(outsider.statusCode).toBe(403);
-    const admin = await ctx.app.inject({
-      method: 'GET',
-      url: '/trpc/me',
-      headers: { 'remote-user': 'jascha', 'remote-groups': 'work,admins' },
-    });
-    expect(admin.statusCode).toBe(200);
-    const mixedCase = await ctx.app.inject({
-      method: 'GET',
-      url: '/trpc/me',
-      headers: { 'remote-user': 'Jascha', 'remote-groups': 'admins' },
-    });
-    expect(mixedCase.json().result.data.username).toBe('jascha');
+  it('does not open the machine API for a UI user', async () => {
     const spoof = await ctx.app.inject({
       method: 'POST',
       url: '/api/machine/list-tasks',
-      headers: { 'remote-user': 'jascha', 'remote-groups': 'admins' },
+      headers: {
+        authorization: `Bearer ${await createSession({ root: db, login: loginConfig().auth }, 'jascha', 'passkey')}`,
+      },
       payload: {},
     });
     expect(spoof.statusCode).toBe(401);
@@ -579,7 +573,7 @@ describe('what machines report about their CLI', () => {
   async function advertising(cliVersion: string | null) {
     const config = { ...testConfig, cliVersion };
     const app = await buildServer(config, db);
-    const ui = appRouter.createCaller({ root: db, config, changes: new Changes(), username: 'jascha' });
+    const ui = appRouter.createCaller(testContext(db, 'jascha', { config }));
     const { token } = await ui.machines.issue({ name: 'laptop' });
     const call = (command: string, headers: Record<string, string> = {}) =>
       app.inject({

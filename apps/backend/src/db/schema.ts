@@ -31,6 +31,8 @@ export const taskCreator = pgEnum('task_creator', ['intake', 'user', 'agent']);
 export const noteAuthor = pgEnum('note_author', ['agent', 'user', 'system', 'server']);
 /** Who made a task's last status change: the user in the browser, its agent from inside its run, or a machine (the CLI outside a run). */
 export const taskActor = pgEnum('task_actor', ['user', 'agent', 'machine']);
+/** How a user signed in: a session's method, and the one that owns a board's name. */
+export const sessionMethod = pgEnum('session_method', ['passkey', 'oidc', 'saml']);
 export const noteKind = pgEnum('note_kind', ['comment', 'question', 'answer', 'event', 'polish']);
 
 /** A signed-in user; every row below belongs to one, and a request sees only its own (`app.owner`, see db/scope.ts). */
@@ -42,6 +44,8 @@ export const appUsers = pgTable(
     /** Fingerprint of the user's data key and its wrapped copies; both stay null until encryption is set up. */
     keyId: text('key_id'),
     keySlots: jsonb('key_slots').$type<KeySlot[]>(),
+    /** The sign-in method that created the board, and the only one of OIDC and SAML that signs into it; null for a board from before sign-in. */
+    source: sessionMethod('source'),
   },
   (t) => [
     check('app_user_username_not_empty', sql`${t.username} <> ''`),
@@ -375,6 +379,41 @@ export const machines = pgTable(
   ],
 ).enableRLS();
 
+/** A signed-in browser. The session token goes to the browser as a cookie; only its sha256 (hex) is stored. */
+export const sessions = pgTable(
+  'session',
+  {
+    tokenHash: text('token_hash').primaryKey(),
+    owner: owner(),
+    method: sessionMethod('method').notNull(),
+    createdAt: createdAt(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [index('session_owner_idx').on(t.owner), index('session_expires_idx').on(t.expiresAt), tenant()],
+).enableRLS();
+
+/** A WebAuthn credential of a user. The name is a device label the user chose, clear text like a machine name. */
+export const passkeys = pgTable(
+  'passkey',
+  {
+    credentialId: text('credential_id').primaryKey(),
+    owner: owner(),
+    /** The COSE public key, base64url. */
+    publicKey: text('public_key').notNull(),
+    counter: bigint('counter', { mode: 'number' }).notNull().default(0),
+    transports: jsonb('transports').$type<string[]>().notNull().default([]),
+    name: text('name').notNull(),
+    createdAt: createdAt(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  },
+  (t) => [
+    check('passkey_name_length', sql`char_length(${t.name}) between 1 and 60`),
+    index('passkey_owner_idx').on(t.owner),
+    tenant(),
+  ],
+).enableRLS();
+
 /**
  * The agent definitions the user pushed for every machine (`board agents push`): one sealed document of all of them per user,
  * bound to its version (`agents.shared`, context `agents:v<version>`). The version is clear so that a machine's tick can tell
@@ -394,6 +433,33 @@ export const sharedAgents = pgTable(
     tenant(),
   ],
 ).enableRLS();
+
+export const authFlowKind = pgEnum('auth_flow_kind', [
+  'oidc',
+  'saml',
+  'passkey-login',
+  'passkey-register',
+  'passkey-signup',
+]);
+
+/**
+ * State of a sign-in that is under way, which has no user yet and so no tenant policy: the board_app role reads it
+ * directly. A flow is single use and lives ten minutes.
+ */
+export const authFlows = pgTable(
+  'auth_flow',
+  {
+    id: text('id').primaryKey(),
+    kind: authFlowKind('kind').notNull(),
+    /** For the redirect flows: base64url(sha256(verifier)) of the browser that started it. */
+    challenge: text('challenge'),
+    data: jsonb('data').$type<Record<string, unknown>>().notNull().default({}),
+    /** The signed-in user a passkey-register flow belongs to. */
+    owner: text('owner').references(() => appUsers.username, { onDelete: 'cascade' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [index('auth_flow_expires_idx').on(t.expiresAt)],
+);
 
 export type TaskRow = typeof tasks.$inferSelect;
 export type NoteRow = typeof notes.$inferSelect;

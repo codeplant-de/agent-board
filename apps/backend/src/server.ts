@@ -1,43 +1,24 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { fastifyTRPCPlugin, type FastifyTRPCPluginOptions } from '@trpc/server/adapters/fastify';
-import Fastify, { type FastifyRequest } from 'fastify';
+import Fastify from 'fastify';
 import type { Config } from './config';
 import type { Db } from './db/client';
 import { registerMachineApi, type MachineApiOptions } from './machine-api';
+import { registerSamlAcs } from './saml-acs';
+import type { AuthEnv } from './services/auth/env';
+import { OidcClient } from './services/auth/oidc';
+import { SAML_ACS_PATH } from './services/auth/saml';
+import { cookieValue, hashToken, sessionCookie, sessionOwner, tokenShaped } from './services/auth/sessions';
 import { Changes, CHANGES_DEBOUNCE_MS } from './services/changes';
 import { AppError, type AppErrorCode } from './services/errors';
 import { appRouter, type AppRouter } from './trpc/router';
 
 declare module 'fastify' {
   interface FastifyRequest {
+    /** Who is using the UI; null when nobody is signed in. */
     username: string | null;
+    /** The sha256 of the request's session token, when it carries a live one. */
+    sessionHash: string | null;
   }
-}
-
-const header = (req: FastifyRequest, name: string): string | null => {
-  const value = req.headers[name];
-  const s = Array.isArray(value) ? value[0] : value;
-  return s?.trim() || null;
-};
-
-const sha256 = (value: string): Buffer => createHash('sha256').update(value).digest();
-
-/**
- * Who is using the UI. In production Traefik's Authelia forward-auth sets the Remote-* headers (and strips any
- * a client sends); locally DEV_AUTH_USER stands in. Any pod that reaches :4000 could set
- * Remote-* itself, so they count only together with PROXY_SECRET, which the web container's Caddy adds as
- * Board-Proxy-Secret. Null when the secret is missing or wrong, or the user is not in an allowed group.
- */
-export function userFrom(req: FastifyRequest, config: Config): string | null {
-  if (config.devAuthUser) return config.devAuthUser.toLowerCase();
-  if (config.proxySecret) {
-    const sent = header(req, 'board-proxy-secret');
-    if (!sent || !timingSafeEqual(sha256(sent), sha256(config.proxySecret))) return null;
-  }
-  const username = header(req, 'remote-user');
-  if (!username) return null;
-  const groups = (header(req, 'remote-groups') ?? '').split(',').map((g) => g.trim());
-  return groups.some((group) => config.allowedGroups.includes(group)) ? username.toLowerCase() : null;
 }
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -56,6 +37,8 @@ export interface ServerOptions extends Partial<MachineApiOptions> {
   debounceMs?: number;
   /** Tests hand in their own to look at it. */
   changes?: Changes;
+  /** Lets OIDC talk to an http issuer, for a test's fake one. Never read from the environment. */
+  allowInsecureOidc?: boolean;
 }
 
 export async function buildServer(config: Config, root: Db, options: ServerOptions = {}) {
@@ -64,11 +47,16 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
     logger: config.nodeEnv === 'test' ? false : { level: 'info' },
     // The machine API sets its own limits per route; this is the UI's.
     bodyLimit: 16 * 1024 * 1024,
-    // Behind the auth proxy: makes req.ip, which the request log writes as remoteAddress, the client's address, not the proxy's.
+    // Behind Caddy or the ingress: makes req.ip, which the request log writes as remoteAddress, the client's address, not the proxy's.
     trustProxy: true,
   });
 
+  const oidc = new OidcClient(config.auth.login ? config.auth.oidc : null, {
+    allowInsecure: options.allowInsecureOidc === true && config.nodeEnv !== 'production',
+  });
+
   app.decorateRequest('username', null);
+  app.decorateRequest('sessionHash', null);
   app.addHook('onClose', async () => changes.close());
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof AppError) return reply.status(STATUS[err.code]).send({ error: err.message });
@@ -81,16 +69,9 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
 
   app.get('/healthz', async () => ({ ok: true }));
 
-  // The machine API has its own tokens and is routed past the login; everything else needs a signed-in user.
-  app.addHook('onRequest', async (req, reply) => {
-    if (req.url === '/healthz' || req.url.startsWith('/api/machine/')) return;
-    req.username = userFrom(req, config);
-    if (!req.username) return reply.status(403).send({ error: 'not allowed on this board' });
-  });
-
-  // tRPC's Fastify adapter takes multipart bodies, which a plain HTML form on a sibling subdomain can send with the user's
-  // session cookie: SameSite does not stop a same-site request. Only the JSON the board's own client sends gets through;
-  // a cross-origin JSON POST needs a CORS preflight, which this server never grants. The check goes by the matched route,
+  // First, so that it also covers the public sign-in mutations. tRPC's Fastify adapter takes multipart bodies, which a plain
+  // HTML form on a sibling subdomain can send with the session cookie: SameSite does not stop a same-site request. Only
+  // the JSON the board's own client sends gets through; a cross-origin JSON POST needs a CORS preflight, which this server never grants. The check goes by the matched route,
   // not the raw URL: Fastify routes on the decoded path, so `/%74rpc/...` reaches tRPC too.
   app.addHook('onRequest', async (req, reply) => {
     const route = req.routeOptions.url ?? '';
@@ -100,16 +81,52 @@ export async function buildServer(config: Config, root: Db, options: ServerOptio
       return reply.status(415).send({ error: 'the board takes application/json only' });
   });
 
+  // The machine API has its own tokens and the SAML ACS is the IdP's browser post; everything else may carry a session cookie.
+  // A request without one is not turned away here: tRPC answers UNAUTHORIZED for what needs a user.
+  app.addHook('onRequest', async (req, reply) => {
+    const path = req.url.split('?')[0];
+    if (path === '/healthz' || path?.startsWith('/api/machine/') || path === SAML_ACS_PATH) return;
+    if (!config.auth.login) {
+      req.username = config.auth.user;
+      return;
+    }
+    const sent = cookieValue(req.headers.cookie, config.auth);
+    const token = tokenShaped(sent);
+    req.username = token ? await sessionOwner(root, config.auth, token) : null;
+    if (req.username && token) req.sessionHash = hashToken(token);
+    // A cookie the server does not know is dead weight the browser keeps sending.
+    if (sent !== null && req.username === null) reply.header('set-cookie', sessionCookie(config.auth, null));
+  });
+
   registerMachineApi(app, root, config, changes, {
     pingMs: options.pingMs ?? 25_000,
     ...(options.vocabulary === undefined ? {} : { vocabulary: options.vocabulary }),
   });
 
+  if (config.auth.login && config.auth.saml) {
+    const env: AuthEnv = { root, login: config.auth, log: app.log, oidc };
+    await registerSamlAcs(app, env);
+  }
+
   await app.register(fastifyTRPCPlugin, {
     prefix: '/trpc',
     trpcOptions: {
       router: appRouter,
-      createContext: ({ req }) => ({ root, config, changes, username: req.username! }),
+      createContext: ({ req, res }) => ({
+        root,
+        config,
+        changes,
+        log: app.log,
+        oidc,
+        username: req.username,
+        sessionHash: req.sessionHash,
+        setSessionCookie: (token) => {
+          if (!config.auth.login) return;
+          // Replaces the clearing of a stale cookie that the request may already have queued.
+          res.removeHeader('set-cookie');
+          res.header('set-cookie', sessionCookie(config.auth, token));
+        },
+      }),
       onError: ({ error, path }) => {
         if (error.code === 'INTERNAL_SERVER_ERROR') app.log.error({ err: error, path }, 'tRPC error');
       },

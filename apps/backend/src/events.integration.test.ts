@@ -127,7 +127,7 @@ describe('GET /api/machine/events', () => {
   it('sends nothing for a UI mutation that fails', async () => {
     const stream = await openStream(await issue('laptop'));
     await stream.waitFor(() => stream.text().includes(': connected'));
-    const ui = { 'remote-user': 'jascha', 'remote-groups': 'admins', 'content-type': 'application/json' };
+    const ui = { 'content-type': 'application/json' };
     const failed = await fetch(`${url}/trpc/schedules.remove`, {
       method: 'POST',
       headers: ui,
@@ -148,7 +148,7 @@ describe('GET /api/machine/events', () => {
     await sleep(QUIET_MS);
     const res = await fetch(`${url}/trpc/tasks.setPriority`, {
       method: 'POST',
-      headers: { 'remote-user': 'jascha', 'remote-groups': 'admins', 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id, priority: 'high' }),
     });
     expect(res.ok).toBe(true);

@@ -34,8 +34,10 @@ fi
 if [ -z "${PORT:-}" ]; then
   PORT=$(node -e 'const s = require("node:net").createServer().listen(0, () => { console.log(s.address().port); s.close(); })')
 fi
-export DATABASE_URL APP_DATABASE_URL PORT
-unset DEV_AUTH_USER BACKFILL_OWNER
+# The smoke test only speaks the machine API, which has its own tokens; the backend still wants to know how the UI signs in.
+NO_LOGIN_USER=smoke-ci
+export DATABASE_URL APP_DATABASE_URL PORT NO_LOGIN_USER
+unset DEV_AUTH_USER BACKFILL_OWNER PUBLIC_URL PASSKEYS SESSION_DAYS ALLOWED_GROUPS SIGNUP_TOKEN
 
 work=$(mktemp -d)
 server=
