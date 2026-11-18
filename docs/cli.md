@@ -822,7 +822,7 @@ Examples:
 ### board schedules
 
 ```
-Usage: board schedules [options] [pause|resume|rm <id> | edit <id> <text...|-|--file <path>>]
+Usage: board schedules [options] [pause|resume|rm <id> | edit <id> [text...|-|--file <path>]]
 
 Without arguments, list the repeating schedules: id, rule, next run, runs left,
 paused or ended, the limit if it has one, title; --json prints them as JSON.
@@ -830,29 +830,70 @@ paused or ended, the limit if it has one, title; --json prints them as JSON.
 `pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes
 the next run, `rm <id>` deletes the schedule and its waiting run.
 
-`edit <id> <text...>` changes the schedule's prompt: the text is every word
+`edit <id> [text...]` changes the schedule's prompt: the text is every word
 after the id, `-` reads it from stdin and `--file <path>` from a regular file in
-/tmp, for long text. `--title <title>` sets the title too; without it the title
-stays. Every later run takes the new text. The waiting run takes it too while it
-is in Todo and no worker has claimed it, and the command says which of three
-happened. Runs that already started keep what they had, and the old text is not
-kept. An ended schedule is refused.
+/tmp, for long text; without any text the prompt stays. `--title <title>` sets
+the title too; without it the title stays. Every later run takes the new text.
+The waiting run takes it too while it is in Todo and no worker has claimed it,
+and the command says which of three happened. Runs that already started keep
+what they had, and the old text is not kept. An ended schedule is refused.
+
+The other flags of `edit` change the settings of the schedule, all that the Edit
+schedule dialog on the board changes; what you leave out stays as it is.
+--priority, --model (`default` for claude's default), --auto-done on|off and
+--agent (an agent of this machine's config.json, or `none`). --dir <path> pins
+the schedule to this machine and that directory (listed in `board dirs`; `none`:
+no machine and no directory), as `board task <id> set dir` does for a task.
+
+The repeat: --every <duration>, --cron <expr> (up to 10 times, in this machine's
+time zone) or --after <schedule> with --delay <duration>; the one you give
+replaces the old repeat. --in or --at moves the first run of a schedule that has
+a rule of its own. The end: --times <n> runs left (the waiting one included),
+--until <time> or --forever; give one. --max-concurrent <n|none> limits how many
+tasks of the schedule run at once. Switching to --after removes the waiting
+task, and switching back makes one. These flags need a board server that has
+them; the command says when it has not.
 
 Changing a schedule is not available inside a board run. The id can be the start
 of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.
 
 Arguments:
-  action           pause, resume, rm or edit, and the schedule id
+  action                 pause, resume, rm or edit, and the schedule id
 
 Options:
-  --title <title>  with edit: the new title (default: keep the current one)
-  --file <path>    with edit: the prompt from a regular file in /tmp
-  --json           print JSON on stdout instead of text; a value this machine
-                   cannot decrypt is null there and named in "unreadable" (text
-                   shows "(cannot decrypt: input)" after the task, and "(cannot
-                   decrypt this title)" for a title)
-  --dry-run        read everything, print every write instead of doing it
-  -h, --help       display help for command
+  --title <title>        with edit: the new title (default: keep the current
+                         one)
+  --file <path>          with edit: the prompt from a regular file in /tmp
+  --priority <priority>  with edit: urgent, high, normal, low
+  --model <model>        with edit: a claude model alias or full name, or
+                         default for claude's default
+  --auto-done <on|off>   with edit: let the agent move the tasks to Done itself
+  --agent <name>         with edit: run as this agent of this machine's
+                         config.json, or none
+  --dir <path>           with edit: run on this machine in this directory (a
+                         listed one), or none for no directory
+  --every <duration>     with edit: repeat on a fixed grid (2h)
+  --cron <expr>          with edit: repeat by a 5-field cron expression in this
+                         machine's time zone; give it up to 10 times
+  --after <schedule>     with edit: run after another schedule (its id or the
+                         start of it)
+  --delay <duration>     with edit: start this long after the other schedule's
+                         task finished (10m, 2h)
+  --in <duration>        with edit: the first run, after this long (30m, 2h, 1d)
+  --at <time>            with edit: the first run, then (2027-01-01T12:00,
+                         2027-01-01, 09:30)
+  --times <n>            with edit: runs left, the waiting one included
+  --until <time>         with edit: end after this time
+  --forever              with edit: no end: clears --times and --until
+  --max-concurrent <n>   with edit: at most this many tasks running or waiting
+                         at once, or none
+  --json                 print JSON on stdout instead of text; a value this
+                         machine cannot decrypt is null there and named in
+                         "unreadable" (text shows "(cannot decrypt: input)"
+                         after the task, and "(cannot decrypt this title)" for a
+                         title)
+  --dry-run              read everything, print every write instead of doing it
+  -h, --help             display help for command
 
 Examples:
   board schedules
@@ -861,6 +902,12 @@ Examples:
   board schedules rm s1b
   board schedules edit s1b2c3d4 /sweep the stale branches and the stale worktrees
   board schedules edit s1b --title "Nightly sweep" --file /tmp/prompt.md
+  board schedules edit s1b2c3d4 --priority high --model opus --auto-done on
+  board schedules edit s1b2c3d4 --every 6h --times 10
+  board schedules edit s1b2c3d4 --cron "0 9 * * 1-5" --until 2027-06-30
+  board schedules edit s1b2c3d4 --after s9z8y7x6 --delay 10m --forever
+  board schedules edit s1b2c3d4 --dir ~/workspace/agent-board --agent reviewer
+  board schedules edit s1b2c3d4 --dir none --agent none --max-concurrent none
 ```
 
 ### board delay

@@ -175,6 +175,29 @@ async function sealRequest(command: string, request: Json, sealing: Sealing, raw
       if (typeof body?.input !== 'string') return request;
       const schedule = (await raw('list-schedules')).json.result?.find((found: Json) => found['id'] === id);
       if (schedule === undefined) return request;
+      if (body.settings !== undefined) {
+        // Settings in plaintext: title, prompt, agent and directory are sealed together under the new agent.
+        const { agent, place, ...rest } = body.settings;
+        const sealed = await sealFields(
+          sealing.seal,
+          { kind: 'schedule', id, agent: agent ?? null },
+          { title: body.title, input: body.input, workdir: place?.workdir },
+        );
+        return {
+          ...request,
+          body: {
+            title: sealed.title,
+            input: sealed.input,
+            settings: {
+              ...rest,
+              ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
+              ...(place === undefined
+                ? {}
+                : { place: place === null ? null : { machine: place.machine, workdir: sealed.workdir } }),
+            },
+          },
+        };
+      }
       const row: RowRef = {
         kind: 'schedule',
         id,

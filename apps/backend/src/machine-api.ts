@@ -45,7 +45,7 @@ import {
   serializeSchedule,
   serializeWireNote,
 } from '@agent-board/shared';
-import type { VocabularyFeatures, VocabularyItem, WireSchedule } from '@agent-board/shared';
+import type { VocabularyFeatures, VocabularyItem, WireSchedule, WireScheduleSettings } from '@agent-board/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Config } from './config';
 import type { Db, DbOrTx } from './db/client';
@@ -71,7 +71,9 @@ import {
   removeSchedule,
   setPaused,
   toSchedule,
+  updateSchedule,
 } from './services/schedules';
+import type { ScheduleUpdate } from './services/schedules';
 import { appendTranscript } from './services/transcripts';
 import {
   ackMessages,
@@ -417,8 +419,12 @@ async function handleMachineCall(
       return serializeSchedule(schedule(await setPaused(db, idOf(body, 'schedule'), paused)));
     }
     case 'edit-schedule': {
-      const edit = parsed(() => parseWireScheduleEdit(body['body']));
-      const { schedule: edited, pending } = await editSchedule(db, { id: idOf(body, 'schedule'), ...edit });
+      const { settings, ...edit } = parsed(() => parseWireScheduleEdit(body['body']));
+      const id = idOf(body, 'schedule');
+      const { schedule: edited, pending } =
+        settings === undefined
+          ? await editSchedule(db, { id, ...edit })
+          : await updateSchedule(db, { id, ...edit, ...updateOf(settings) });
       return { schedule: serializeSchedule(schedule(edited)), pending };
     }
     case 'remove-schedule':
@@ -427,6 +433,18 @@ async function handleMachineCall(
     default:
       throw new AppError('NOT_FOUND', `unknown command ${command.slice(0, 40)}`);
   }
+}
+
+/** The schedule update `settings` ask for, the way the browser's Edit schedule form asks for it. */
+function updateOf(settings: WireScheduleSettings): Omit<ScheduleUpdate, 'id' | 'title' | 'input'> {
+  const { agent, place, repeat, at, ...rest } = settings;
+  return {
+    ...rest,
+    ...(agent === undefined ? {} : { agent }),
+    place,
+    rule: repeat,
+    ...(at === undefined ? {} : { startAt: at }),
+  };
 }
 
 /** The commands that change what dispatch decides; heartbeats and transcripts arrive every 15 s per running task and do not. */
