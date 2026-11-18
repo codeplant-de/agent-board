@@ -29,6 +29,7 @@ import type { WatchStore } from '../watch/store.mts';
 import { createWatchStore } from '../watch/store.mts';
 import { collect, runEventsCommand } from './events.mts';
 import type { EventsFlags } from './events.mts';
+import { TASK_ACTORS } from '@agent-board/shared';
 import { EVENT_TYPES } from '../events/diff.mts';
 import { ReportedFailure, UsageError } from '../cli.mts';
 import {
@@ -430,15 +431,17 @@ export function registerTaskCommands(shared: ProgramShared): void {
     .description(
       paragraphs(
         'Print one line per change on your board, as it happens, until interrupted: a script can read them with `board events --json | while read -r line; do ...; done`. The first look at the board prints nothing; only what changes after it does.',
-        `The types: created (a new task, or a closed one reopened; its earlier notes are not reported), moved (the status changed: from, to), changed (title, priority, model, agent, machine, openQuestion, notBefore, wakeAt, prs or promptPrState changed: fields), closed, removed (deleted), and note (a new note in a task's thread; its text is null in JSON when this machine cannot decrypt it). Changes between two looks at the board are joined: a task that went todo, running, needs-me meanwhile prints one move from todo to needs-me.`,
-        '--status keeps the events of tasks that are in one of the statuses after the change, so everything that enters Needs me is `--type moved --status needs-me`. --task, --status and --type can be given more than once. The filters only choose what is printed.',
-        'With --json each line is one JSON object: {"type", "at", "task", "from"?, "to"?, "fields"?, "note"?}. `task` is the task as `board tasks --json` shows it, plus its "url"; `at` is when this CLI saw the change. Connection messages go to stderr. The command reads with this machine\'s token and data key, so titles and notes are plain text here and nowhere else. It ends on Ctrl-C (exit 0), when the pipe it writes to closes, and with 1 when the board refuses the token or the CLI. It is not available inside a board run.',
+        `The types: created (a new task, or a closed one reopened; its earlier notes are not reported), moved (the status changed: from, to, actor), changed (title, priority, model, agent, machine, openQuestion, notBefore, wakeAt, prs or promptPrState changed: fields), closed, removed (deleted), and note (a new note in a task's thread; its text is null in JSON when this machine cannot decrypt it). Changes between two looks at the board are joined: a task that went todo, running, needs-me meanwhile prints one move from todo to needs-me.`,
+        '--status keeps the events of tasks that are in one of the statuses after the change, so everything that enters Needs me is `--type moved --status needs-me`. --task, --status, --type and --actor can be given more than once. The filters only choose what is printed.',
+        `A moved event carries the actor that made the task's last status change: user (you, in the browser), agent (the task's own run: it asked a question, waits, or moves its task itself, for example to Done when the task allows it) or machine (a CLI outside a run: a worker claiming or ending a run, a script, a terminal). Changes between two looks are joined, so the actor is the one of the last move. --actor keeps only moved events of those actors; other events and moves whose actor the board does not say are dropped. It needs a board that says who moved a task.`,
+        'With --json each line is one JSON object: {"type", "at", "task", "from"?, "to"?, "actor"?, "fields"?, "note"?}. `task` is the task as `board tasks --json` shows it, plus its "url"; `at` is when this CLI saw the change. Connection messages go to stderr. The command reads with this machine\'s token and data key, so titles and notes are plain text here and nowhere else. It ends on Ctrl-C (exit 0), when the pipe it writes to closes, and with 1 when the board refuses the token or the CLI. It is not available inside a board run.',
         ID_NOTE,
       ),
     )
     .option('--task <task>', `only this task; repeatable (${TASK_ARGUMENT})`, collect)
     .option('--status <status>', `only tasks in this status after the change; repeatable (${STATUS_LIST})`, collect)
     .option('--type <type>', `only this type of event; repeatable (${EVENT_TYPES.join(', ')})`, collect)
+    .option('--actor <actor>', `only moves made by this actor; repeatable (${TASK_ACTORS.join(', ')})`, collect)
     .option('--machine <name>', 'only tasks of this machine')
     .option('--json', 'print one JSON object per line on stdout instead of text')
     .addHelpText(
@@ -446,6 +449,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
       examples(
         'board events',
         'board events --type moved --status needs-me',
+        'board events --type moved --status done --actor agent',
         'board events --task Ab3 --type note',
         'board events --json --machine laptop',
       ),

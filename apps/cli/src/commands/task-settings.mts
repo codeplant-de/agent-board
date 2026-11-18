@@ -1,5 +1,5 @@
 // `board task <task> [set <key> <value> | unset <key>]`: the settings of a task after it was made. Without an action it prints
-// them; `set` and `unset` change the priority, the model and the directory the task runs in (which pins it to this machine).
+// them; `set` and `unset` change the priority, the model, whether the agent may mark it done and the directory the task runs in (which pins it to this machine).
 import { resolve } from 'node:path';
 import { isModelName, isPriority, isSafeWorkdir, PRIORITIES } from '@agent-board/shared';
 import type { Backend, Task, UnreadableField } from '@agent-board/shared';
@@ -11,7 +11,7 @@ import { pinnedMachine } from '../dispatch/decide.mts';
 import { plainLine } from '../output/terminal.mts';
 import { localTime } from './schedule.mts';
 
-export const SETTING_KEYS = ['priority', 'model', 'dir'] as const;
+export const SETTING_KEYS = ['priority', 'model', 'auto-done', 'dir'] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
 export interface TaskSettingsDeps {
@@ -56,6 +56,7 @@ export function formatSettings(deps: TaskSettingsDeps, task: Task): string[] {
     ['status', `${task.status}${task.closed ? ' (closed)' : ''}`],
     ['priority', task.priority],
     ['model', task.model === null ? 'default' : plainLine(task.model)],
+    ['auto-done', task.autoDone ? 'on: the agent may move it to Done' : 'off'],
     ['agent', isUnreadable(task, 'agent') ? UNREADABLE : task.agent == null ? 'none' : plainLine(task.agent)],
     ['created by', task.createdBy],
     ['machine', machineLine(task)],
@@ -88,7 +89,7 @@ function confirmed(deps: TaskSettingsDeps, line: string): void {
 function noteSchedule(deps: TaskSettingsDeps, task: Task): void {
   if (task.scheduleId !== null)
     deps.print(
-      'note: this card belongs to a schedule; the change applies to it only, and the next occurrence takes priority, model, machine and directory from the schedule again',
+      'note: this card belongs to a schedule; the change applies to it only, and the next occurrence takes priority, model, auto-done, machine and directory from the schedule again',
     );
 }
 
@@ -115,6 +116,22 @@ export async function setModel(deps: TaskSettingsDeps, id: string, model: string
   noteSchedule(deps, task);
   const running = task.status === 'running' ? ' (the run in progress keeps its model)' : '';
   confirmed(deps, `${id} uses ${shown} from its next run on${running}`);
+}
+
+/** The agent may move the task to Done itself (`on`), or only to Needs me (`off`). It takes effect at once, in any status. */
+export async function setAutoDone(deps: TaskSettingsDeps, id: string, value: string | undefined): Promise<void> {
+  if (value !== 'on' && value !== 'off') throw new UsageError('auto-done is on or off');
+  const task = await deps.backend.getTask(id);
+  const on = value === 'on';
+  if (task.autoDone === on) return deps.print(`${id} auto-done is already ${value}`);
+  await deps.backend.configureTask(id, { autoDone: on });
+  noteSchedule(deps, task);
+  confirmed(
+    deps,
+    on
+      ? `${id}: its agent may move it to Done when it judges every acceptance criterion met`
+      : `${id}: its agent moves it to Needs me when it is finished; you mark it done`,
+  );
 }
 
 // What a typed path means: relative to the working directory, `~` expanded; it must be there and, with a `dirs` list, listed.

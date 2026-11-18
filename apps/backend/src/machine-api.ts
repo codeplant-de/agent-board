@@ -210,6 +210,7 @@ async function handleMachineCall(
           db,
           idOf(body, 'task'),
           parsed(() => parseWireTaskPatch(body['body'])),
+          machine,
           runOf(body),
         ),
       );

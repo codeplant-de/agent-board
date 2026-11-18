@@ -653,6 +653,35 @@ test('changing a task’s settings needs the task.configure feature and is refus
   assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { model: null, place: { workdir: 'abe1.dir' } } });
 });
 
+test('the auto-done setting is sent only to a server that names task.auto-done, before anything else is sent', async () => {
+  const without = boardWith(['task.configure'], {});
+  await assert.rejects(
+    without.backend.configureTask('abc', { autoDone: true }),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'task.auto-done' &&
+      error.message ===
+        'the board server does not support letting the agent move a task to Done yet; update the board server',
+  );
+  await assert.rejects(
+    without.backend.addTask({ id: 'abc', title: 'abe1.t', input: 'abe1.i', autoDone: true }),
+    /does not support letting the agent move a task to Done yet/,
+  );
+  await assert.rejects(
+    without.backend.addSchedule({ id: 'abc', title: 'abe1.t', input: 'abe1.i', everyMs: 7_200_000, autoDone: true }),
+    /does not support letting the agent move a task to Done yet/,
+  );
+  assert.deepEqual(
+    without.seen.map((request) => request.command),
+    ['version'],
+  );
+  const withIt = boardWith(['task.configure', 'task.auto-done'], {
+    'configure-task': { body: { result: await taskJson('abc') } },
+  });
+  await withIt.backend.configureTask('abc', { autoDone: false });
+  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { autoDone: false } });
+});
+
 test('PR states go to set-pr-states on a server with task.prs, as given', async () => {
   const states: PrStates = { prompt: 'open', prs: [{ id: 'row1', state: 'merged' }] };
   const withIt = boardWith(['task.prs'], { 'set-pr-states': { body: { result: null } } });

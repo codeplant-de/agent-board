@@ -67,7 +67,7 @@ function harness(
       },
       readNotes: async (id) => board.threads.get(id) ?? [],
     },
-    filter: options.filter ?? { tasks: [], statuses: [], types: [] },
+    filter: options.filter ?? { tasks: [], statuses: [], types: [], actors: [] },
     emit: (event) => {
       if (board.pipe) throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
       out.push(event);
@@ -254,7 +254,7 @@ test('a board without task.note-count works without note events and says so once
 
 test('the filter only decides what is printed: the snapshot holds the whole board', async () => {
   const stream = openStream();
-  const filter: EventFilter = { tasks: [], statuses: ['needs-me'], types: ['moved'] };
+  const filter: EventFilter = { tasks: [], statuses: ['needs-me'], types: ['moved'], actors: [] };
   const { clock, out, board, stop, done } = harness({
     tasks: [task({ id: 'a' }), task({ id: 'b' })],
     plans: [stream],

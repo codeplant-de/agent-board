@@ -30,7 +30,7 @@ import { PriorityPicker } from '../components/PriorityPicker';
 import { PrStateIcon } from '../components/PrStateIcon';
 import { PolishItem } from '../components/PolishItem';
 import { TaskBadges } from '../components/TaskBadges';
-import { ModelPicker, WorkdirSetting } from '../components/TaskSettings';
+import { AutoDoneSetting, ModelPicker, WorkdirSetting } from '../components/TaskSettings';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
 import { skillsFor } from '../lib/catalog';
@@ -140,6 +140,7 @@ function TaskView({ id }: { id: string }) {
             </Text>
           )}
           <WorkdirSetting task={task} unlisted={unlisted} />
+          <AutoDoneSetting task={task} />
           <Group gap="xs">
             <Button
               variant="default"

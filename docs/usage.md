@@ -17,7 +17,7 @@ A task is a prompt, written as you would type it into Claude Code: `/review-pr 1
 | `needs-me` | Your turn.                                                                                |
 | `done`     | Finished. Done tasks nobody touched for 7 days are closed and stay readable under Closed. |
 
-A run ends in `needs-me` with a report or a question. A run that fails, times out or loses its worker also ends there, with the reason and the end of the log. Nothing moves on until you press a button.
+A run ends in `needs-me` with a report or a question. A run that fails, times out or loses its worker also ends there, with the reason and the end of the log. Nothing moves on until you press a button, unless the task lets its agent mark it done (see [Letting the agent mark a task done](#letting-the-agent-mark-a-task-done)).
 
 Backlog is the first column. On a phone the board leaves it out, and the header has a Backlog entry that opens it as its own page. Waiting is a box above Todo in the same column, and it shows only while a task waits.
 
@@ -48,7 +48,7 @@ board schedules
 ### `board schedule`
 
 ```text
-board schedule [--priority p] [--model m] [--agent a] [--title t] [--hold | --backlog]
+board schedule [--priority p] [--model m] [--auto-done] [--agent a] [--title t] [--hold | --backlog]
                [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>"]
                [--times <n> | --until <time>] [--polish] [--new]
                [--key <key> [--version <v>]] <prompt...>
@@ -58,20 +58,21 @@ board schedule [--priority p] [--model m] [--agent a] [--title t] [--hold | --ba
 
 The board's flags come first. Everything from the first other word on is the prompt, flags included. In the example above, `--auto` goes to the skill.
 
-| Flag                           | Effect                                                                                                    |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| `--priority`                   | `urgent`, `high`, `normal` or `low`.                                                                      |
-| `--model`                      | The Claude model of the task's runs. See [Model](#model).                                                 |
-| `--agent`                      | Runs the task as a named agent. See [Choosing an agent](#choosing-an-agent).                              |
-| `--title`                      | The title. It defaults to the prompt's first line.                                                        |
-| `--hold`                       | Lands the task in Needs me instead of Todo.                                                               |
-| `--backlog`                    | Lands the task in Backlog. Cannot be combined with `--hold`.                                              |
-| `--in`, `--at`                 | Holds the task in Todo until then. See [Delays](#delays).                                                 |
-| `--every`, `--cron`            | Makes a repeating schedule. See [Repeating schedules](#repeating-schedules).                              |
-| `--times`, `--until`           | Ends a repeating schedule.                                                                                |
-| `--polish`                     | Parks the task in Backlog and queues a polish task for it. See [Polishing a prompt](#polishing-a-prompt). |
-| `--new`                        | Skips the [duplicate check](#duplicate-check).                                                            |
-| `--key`, `--version`, `--json` | For scripts. See [Scripts](#scripts).                                                                     |
+| Flag                           | Effect                                                                                                                      |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `--priority`                   | `urgent`, `high`, `normal` or `low`.                                                                                        |
+| `--model`                      | The Claude model of the task's runs. See [Model](#model).                                                                   |
+| `--auto-done`                  | Lets the agent move the task to Done itself. See [Letting the agent mark a task done](#letting-the-agent-mark-a-task-done). |
+| `--agent`                      | Runs the task as a named agent. See [Choosing an agent](#choosing-an-agent).                                                |
+| `--title`                      | The title. It defaults to the prompt's first line.                                                                          |
+| `--hold`                       | Lands the task in Needs me instead of Todo.                                                                                 |
+| `--backlog`                    | Lands the task in Backlog. Cannot be combined with `--hold`.                                                                |
+| `--in`, `--at`                 | Holds the task in Todo until then. See [Delays](#delays).                                                                   |
+| `--every`, `--cron`            | Makes a repeating schedule. See [Repeating schedules](#repeating-schedules).                                                |
+| `--times`, `--until`           | Ends a repeating schedule.                                                                                                  |
+| `--polish`                     | Parks the task in Backlog and queues a polish task for it. See [Polishing a prompt](#polishing-a-prompt).                   |
+| `--new`                        | Skips the [duplicate check](#duplicate-check).                                                                              |
+| `--key`, `--version`, `--json` | For scripts. See [Scripts](#scripts).                                                                                       |
 
 When this machine has a `dirs` list, `board schedule` refuses in a directory the list does not allow, before it asks the board anything. That holds for a repeating schedule too. Run `board dirs add` there first.
 
@@ -82,6 +83,26 @@ When this machine has a `dirs` list, `board schedule` refuses in a directory the
 Every run uses claude's default model unless the task names one. `--model <model>` takes an alias (`fable`, `opus`, `sonnet`, `haiku`) or a full name such as `claude-opus-5-5`. With a repeat, every task the schedule makes uses it.
 
 The New task form and the task page have a **Model** select for the same choice.
+
+### Letting the agent mark a task done
+
+By default a run ends in Needs me, and you move the task to Done. A task can instead allow its agent to finish it.
+
+**Setting it.**
+
+- `board schedule --auto-done` sets it on a new task. With a repeat, every task the schedule makes starts with it on.
+- The New task form has an **Agent may mark it done** checkbox for the same choice.
+- The task page has an **Agent may mark it done** switch, and `board task <task> set auto-done on|off` does the same. `unset auto-done` is `off`. A change works in every status, a running task included, and writes no note.
+- A task with the setting on carries an **Auto-done** badge on its card and its page.
+- A fork of a task starts with the setting off, whatever its parent has.
+
+Both `set` and `--auto-done` are refused inside a board run. The refusal is the CLI's, like `board schedule`'s: it holds for an agent that runs `board` the way its run set it up. A call that clears `AGENT_BOARD_RUN` or `AGENT_BOARD_TASK` reaches the board as the machine, which the board cannot tell from your own terminal, and a move made that way is reported with the actor `machine`. An agent's proposal made with `board add` never has it.
+
+**What the agent does.** The board's rules tell the agent of a task with the setting on to post its summary, then to run `board move <task> done` only when it has checked that every acceptance criterion is met and nothing is left for you to decide, answer, review or do. In every other case, and when in doubt, it moves the task to Needs me as before. Every run gets the rules again, so a resumed run follows the setting as it is when it starts.
+
+**What the board does.** The board checks the setting again when the move arrives. A run that moves its task to Done while the setting is off is refused with a message that tells it to move the task to Needs me, so turning the option off during a run takes effect at once. A move to Done that the board accepts puts the task at the top of Done and writes the event "Moved from running to done." into the thread. If you sent a message that the run has not received yet, the task goes back to Todo with that message instead, as for any other end of a run.
+
+The setting concerns the run's own move only. `board move <task> done`, run by a script or in a terminal, and the Done button work as before.
 
 ### Delays
 
@@ -118,6 +139,7 @@ When you requeue the existing task:
 `board task <task>` prints a task's settings:
 
 - status, priority and model (`default` for claude's)
+- whether its agent may mark it done (`auto-done`)
 - agent and who made it
 - the machine it is pinned to and its directory, or "the default directory of the machine that takes it"
 - when it starts and its schedule
@@ -126,15 +148,17 @@ When you requeue the existing task:
 
 A directory on this machine that the `dirs` list does not cover is marked "not listed on this machine". `--json` prints the task as `board tasks --json` does.
 
-| Command                                                      | Effect                                                                                  |
-| ------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
-| `board task <task> set priority <urgent\|high\|normal\|low>` | Changes the priority and writes the usual note.                                         |
-| `board task <task> set model <alias or model id>`            | Applies from the next run on. A run in progress keeps its own model.                    |
-| `board task <task> unset model`                              | Back to claude's default.                                                               |
-| `board task <task> set dir [path]`                           | Pins the task to this machine and a directory. The default is the current one.          |
-| `board task <task> unset dir`                                | Removes the directory and the pin. Any machine takes the task in its default directory. |
+| Command                                                      | Effect                                                                                       |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `board task <task> set priority <urgent\|high\|normal\|low>` | Changes the priority and writes the usual note.                                              |
+| `board task <task> set model <alias or model id>`            | Applies from the next run on. A run in progress keeps its own model.                         |
+| `board task <task> unset model`                              | Back to claude's default.                                                                    |
+| `board task <task> set auto-done <on\|off>`                  | Lets the agent move the task to Done itself, or not. Applies at once, to a running task too. |
+| `board task <task> unset auto-done`                          | Same as `off`.                                                                               |
+| `board task <task> set dir [path]`                           | Pins the task to this machine and a directory. The default is the current one.               |
+| `board task <task> unset dir`                                | Removes the directory and the pin. Any machine takes the task in its default directory.      |
 
-Priority and model changes work in every status. A model or directory change writes no note.
+Priority, model and auto-done changes work in every status. A model, auto-done or directory change writes no note.
 
 `set dir` accepts relative paths and `~`, and resolves symlinks. With a `dirs` list on this machine the directory must be listed, as for `board schedule`.
 
@@ -143,9 +167,9 @@ Priority and model changes work in every status. A model or directory change wri
 - A running or waiting task refuses a directory change. Stop it first.
 - The new directory also becomes the one **Re-run fresh** goes back to.
 
-On a card of a repeating schedule, a change applies to that card only. The next occurrence takes priority, model, machine and directory from the schedule again. The command says so, and so does the task page.
+On a card of a repeating schedule, a change applies to that card only. The next occurrence takes priority, model, auto-done setting, machine and directory from the schedule again. The command says so, and so does the task page.
 
-`set` and `unset` are refused inside a board run, because an agent does not move a task or pick its model. Viewing works there.
+`set` and `unset` are refused inside a board run, because an agent does not move a task, pick its model or grant itself the permission to finish it. Viewing works there.
 
 #### Editing the prompt
 
@@ -224,6 +248,8 @@ The list is advice. A name that is not in it still runs, and a machine that has 
 
 **Model.** The field shows the models the chosen machine listed, or every machine's when none is chosen. When no machine listed any, it shows the built-in aliases. A model picked before the machine changed stays selected.
 
+**Agent may mark it done.** A checkbox, off by default. See [Letting the agent mark a task done](#letting-the-agent-mark-a-task-done). With Repeating it applies to every task the schedule makes.
+
 **Agent.** See [Choosing an agent](#choosing-an-agent).
 
 **When.** The menu offers Now, Later, Repeating, Backlog and Needs me. Repeating takes an interval (`2h`) or a cron expression, an optional first run and an optional number of runs, and opens the first pending card. The form reads a cron expression in your browser's time zone and shows the server's error if the server cannot read it. With Repeating, the Working directory pins the schedule, so every occurrence runs on that machine and in that directory.
@@ -233,6 +259,7 @@ The list is advice. A name that is not in it still runs, and a machine that has 
 The task page changes the same settings after the fact, next to the priority.
 
 - A **Model** select with the options of the New task form for the task's machine, plus the task's own model when it is not among them. It applies from the next run on and works in every status.
+- An **Agent may mark it done** switch. It applies at once and works in every status.
 - A pencil beside the directory that opens the same picker as the New task form. **No directory** removes the directory and the machine pin.
 
 A directory change drops the task's Claude session, as with `board task set dir`. A task that has a session asks you to confirm first. The page refuses the change while the task is Running or Waiting. Choosing the directory the task already has changes nothing.
@@ -675,14 +702,14 @@ The board's event stream says that tasks changed, not what changed. So the comma
 
 ### Event types
 
-| Type      | When                                                                         | Extra               |
-| --------- | ---------------------------------------------------------------------------- | ------------------- |
-| `created` | A task that was not on the board before, or a closed task that was reopened. |                     |
-| `moved`   | The status changed.                                                          | `from`, `to`        |
-| `changed` | One of the fields listed below changed.                                      | `fields`: the names |
-| `closed`  | The task left the open tasks and is closed.                                  |                     |
-| `removed` | The task left the open tasks and was deleted.                                |                     |
-| `note`    | A new note in the thread: a comment, question, answer, event or polish note. | `note`              |
+| Type      | When                                                                         | Extra                 |
+| --------- | ---------------------------------------------------------------------------- | --------------------- |
+| `created` | A task that was not on the board before, or a closed task that was reopened. |                       |
+| `moved`   | The status changed.                                                          | `from`, `to`, `actor` |
+| `changed` | One of the fields listed below changed.                                      | `fields`: the names   |
+| `closed`  | The task left the open tasks and is closed.                                  |                       |
+| `removed` | The task left the open tasks and was deleted.                                |                       |
+| `note`    | A new note in the thread: a comment, question, answer, event or polish note. | `note`                |
 
 `changed` covers the title, priority, model, agent, machine, open question, start time, wake time, pull requests and the state of the prompt's pull request.
 
@@ -697,16 +724,35 @@ The command joins the changes between two looks:
 ### Filters
 
 ```text
-board events [--task <id>]... [--status <status>]... [--type <type>]... [--machine <name>] [--json]
+board events [--task <id>]... [--status <status>]... [--type <type>]... [--actor <actor>]... [--machine <name>] [--json]
 ```
 
 - `--task` takes the same ids, prefixes and links as other commands.
 - `--machine` keeps the tasks of one machine.
 - `--status` keeps the events of tasks that are in one of these statuses after the change. For `closed` and `removed` that is the last status seen. Everything that enters Needs me is `--type moved --status needs-me`.
 - `--type` keeps these types.
-- `--task`, `--status` and `--type` can be repeated.
+- `--actor` keeps `moved` events made by one of these actors: `user`, `agent` or `machine`. Events of other types, and moves whose actor the board does not say, are dropped. See [Who moved a task](#who-moved-a-task).
+- `--task`, `--status`, `--type` and `--actor` can be repeated.
 
 The filters only choose what is printed. The command always follows the whole board.
+
+### Who moved a task
+
+The board records who made each task's last status change, and a `moved` event carries it as `actor`:
+
+| Actor     | Who                                                                                                                                 |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `user`    | You, in the web board: a drag, Done, a reply or an answer that sends the task back, Stop, Take back, Wake now, Re-run.              |
+| `agent`   | The task's own run: it moved its task, asked a question or started a wait.                                                          |
+| `machine` | A `board` command outside the run: a worker claiming a task or ending a run (failed, paused, stopped, woken), a script, a terminal. |
+
+The actor is the one of the task's last move. When the command joins several moves between two looks, it reports the last one. A board that is older than this feature gives no actor, and `--actor` is then refused with the usual "does not support" message.
+
+The agent moves a task to Done only when the task has [auto-done](#letting-the-agent-mark-a-task-done) on, so this lists those moves:
+
+```sh
+board events --type moved --status done --actor agent
+```
 
 ### Output
 
@@ -720,6 +766,7 @@ With `--json` every line is one JSON object, so `read -r` and `jq` work on it:
 
 - `task` is the task as `board tasks --json` shows it, plus its `url`.
 - `at` is when this CLI saw the change, not when it happened.
+- `actor` is on `moved`, when the board says it.
 - `fields` is on `changed`.
 - `note` is on `note`: `{"id", "author", "kind", "text", "createdAt", "unreadable"}`.
 

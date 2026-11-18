@@ -1,4 +1,4 @@
-// `board schedule [--priority p] [--model m] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
+// `board schedule [--priority p] [--model m] [--auto-done] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
 // [--times <n> | --until <time>] [--polish] [--new] [--key <k> [--version <v>]] <prompt...>`: a task from a prompt, written as you
 // would type it into Claude Code, bound to this machine and the directory it was scheduled from. Before it creates one, a quick
 // Haiku call checks whether an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead.
@@ -32,6 +32,8 @@ export interface ScheduleArgs {
   priority: Priority | undefined;
   // The Claude model of the run; undefined is claude's default.
   model: string | undefined;
+  // The agent may move the task to Done itself; false leaves it unset.
+  autoDone: boolean;
   // The agent of this machine's config.json the task runs as; undefined runs it by its creator's rules.
   agent: string | undefined;
   title: string | undefined;
@@ -59,6 +61,7 @@ export interface ScheduleArgs {
 export interface ScheduleFlags {
   priority?: string;
   model?: string;
+  autoDone?: boolean;
   agent?: string;
   title?: string;
   hold?: boolean;
@@ -84,6 +87,10 @@ export function addScheduleOptions(command: Command): Command {
     .option(
       '--model <model>',
       `claude model alias or full name, e.g. ${MODEL_ALIASES.map((alias) => alias.value).join(', ')} (default: claude's default)`,
+    )
+    .option(
+      '--auto-done',
+      'let the agent move the task to Done itself when it judges every acceptance criterion met (default: it ends in needs-me)',
     )
     .option(
       '--agent <name>',
@@ -140,6 +147,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     prompt: '',
     priority: undefined,
     model: undefined,
+    autoDone: flags.autoDone === true,
     agent: undefined,
     title: flags.title?.trim(),
     hold,
@@ -371,6 +379,7 @@ async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<T
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
     ...(args.every !== undefined ? { everyMs: args.every } : { cron: args.cron ?? '', timezone: deps.timezone }),
     ...(args.notBefore ? { startAt: args.notBefore } : {}),
@@ -414,6 +423,7 @@ async function scheduleKeyed(deps: ScheduleDeps, args: ScheduleArgs, key: string
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
     ...(args.version === undefined ? {} : { head: args.version }),
     ...(args.notBefore ? { notBefore: args.notBefore } : {}),
@@ -512,6 +522,10 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
           deps.print(
             `${existing.id} keeps its model (${existing.model ?? 'the default'}); --model applies only to a new task`,
           );
+        if (args.autoDone && !existing.autoDone)
+          deps.print(
+            `${existing.id} keeps its auto-done setting (off); --auto-done applies only to a new task: use \`board task ${existing.id} set auto-done on\``,
+          );
         if (existing.status === 'todo' && args.notBefore) {
           const delayed = await backend.updateTask(existing.id, { notBefore: args.notBefore, expect: 'todo' });
           (deps.confirm ?? deps.print)(
@@ -552,6 +566,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
   });
   if (warning) await backend.addNote(task.id, warning, { author: 'system' });

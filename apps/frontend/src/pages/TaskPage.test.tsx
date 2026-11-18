@@ -61,6 +61,7 @@ const task = (id: string, title: string): BoardTask =>
     sessionId: 's',
     workdir: null,
     model: null,
+    autoDone: false,
     prs: [],
     watches: null,
     watchEvents: 0,

@@ -467,7 +467,7 @@ test('every board command in the run rules, the hook messages and the selftest s
             .join(' ')
             .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( \\[suggest: .*\\])?$`,
         ),
-        move: /^status Zt0Test1 -> needs-me$/,
+        move: /^status Zt0Test1 -> (needs-me|done)$/,
         pr: /^pr Zt0Test1 https:\/\/github\.com\/acme\/app\/pull\/1$/,
         ask: /^ask Zt0Test1: Color$/,
         add: /^create .* \| do the thing \| $/,

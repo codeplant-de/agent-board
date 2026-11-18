@@ -1,6 +1,7 @@
 import { Badge, Group } from '@mantine/core';
 import {
   IconArrowsExchange,
+  IconCircleCheck,
   IconClock,
   IconDeviceDesktop,
   IconEye,
@@ -25,7 +26,7 @@ import { PriorityBadge } from './PriorityPicker';
 
 /**
  * What sets a task apart at a glance: its priority (unless normal), an open question, a proposal, a pending
- * resume, a start time still ahead, the end of a wait, a repeating schedule, where it runs, a hold for usage.
+ * resume, a start time still ahead, the end of a wait, a repeating schedule, where it runs, a hold for usage, and whether its agent may mark it done.
  */
 export function TaskBadges({
   task,
@@ -49,6 +50,18 @@ export function TaskBadges({
       {task.openQuestion && (
         <Badge size="sm" color="orange" variant="filled" leftSection={<IconMessageQuestion size={12} />}>
           Question
+        </Badge>
+      )}
+      {task.autoDone && (
+        <Badge
+          size="sm"
+          color="green"
+          variant="light"
+          tt="none"
+          leftSection={<IconCircleCheck size={12} />}
+          title="Its agent may move it to Done when it judges every acceptance criterion met"
+        >
+          Auto-done
         </Badge>
       )}
       {task.createdBy === 'agent' && (

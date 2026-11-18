@@ -78,6 +78,16 @@ describe('TaskBadges', () => {
     expect(screen.queryByText('Resume')).not.toBeInTheDocument();
   });
 
+  it('marks a task its agent may finish, and no other', () => {
+    renderBadges({ autoDone: true });
+    expect(screen.getByText('Auto-done')).toBeInTheDocument();
+  });
+
+  it('shows no auto-done badge on a task whose agent ends in Needs me', () => {
+    renderBadges({ autoDone: false });
+    expect(screen.queryByText('Auto-done')).not.toBeInTheDocument();
+  });
+
   it('marks a task made by a schedule as a repeat', () => {
     renderBadges({ scheduleId: 'sch1' });
     expect(screen.getByText('Repeat')).toBeInTheDocument();

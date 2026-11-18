@@ -152,6 +152,17 @@ export function buildResumePrompt(
   ].join('\n');
 }
 
+const SUGGEST_RULE = (id: string): string =>
+  `the reply you expect the user to send next, in their voice (for example a go-ahead for your proposed next step): \`board comment --suggest "<reply>" ${id} "<summary>"\`. Skip it when no single reply is obvious, and if the board refuses \`--suggest\`, post the comment without it.`;
+
+// The rule for the end of a run, as the setting is when the run starts (the rules are passed per run). A task the user set to
+// `autoDone` may be moved to Done by its agent, which the server checks again.
+function finishRule(task: Pick<Task, 'id' | 'autoDone'>): string {
+  if (!task.autoDone)
+    return `- When the work is done, post a short summary with \`board comment\`, then \`board move ${task.id} needs-me\`. Attach to that comment ${SUGGEST_RULE(task.id)}`;
+  return `- When the work is done, post a short summary with \`board comment\`, then move the task. If you have checked that every acceptance criterion of the task is met and nothing is left for the user to decide, answer, review or do, run \`board move ${task.id} done\`. In every other case, and whenever you are in doubt, run \`board move ${task.id} needs-me\` and attach to the summary ${SUGGEST_RULE(task.id)}`;
+}
+
 // What every run is told about the board, on top of its prompt. `asAgent`: the run is an agent's, which gets the reduced rules.
 export function boardRules(task: Task, options: { asAgent?: boolean } = {}): string {
   const restricted = options.asAgent === true;
@@ -159,7 +170,7 @@ export function boardRules(task: Task, options: { asAgent?: boolean } = {}): str
     `You are running headless as agent-board task ${task.id}. Nobody watches this terminal; the user reads the task's thread on the board.`,
     `- Report progress and results with \`board comment ${task.id} "<text>"\` (markdown; \`--file <path>\` for long text in /tmp, or \`-\` for stdin).`,
     `- AskUserQuestion is not available in this headless run. Wherever you would use it, also where a skill says to: write the same questions with the Write tool to /tmp/pr-${task.id}-questions.json as {"questions": [{"header": "<at most 16 chars>", "question": "...", "multiSelect": false, "options": [{"label": "...", "description": "...", "recommended": true}, ...]}]} (1 to 4 questions, 2 to 4 options each, at most one recommended), run \`board ask ${task.id} --file /tmp/pr-${task.id}-questions.json\`, then end your turn. The user answers on the board, and you are resumed in this session with the answers.`,
-    `- When the work is done, post a short summary with \`board comment\`, then \`board move ${task.id} needs-me\`. Attach to that comment the reply you expect the user to send next, in their voice (for example a go-ahead for your proposed next step): \`board comment --suggest "<reply>" ${task.id} "<summary>"\`. Skip it when no single reply is obvious, and if the board refuses \`--suggest\`, post the comment without it.`,
+    finishRule(task),
     `- To suggest follow-up work, write it to a file in /tmp and run \`board add --title "<title>" --file <path> --parent ${task.id}\`; the user starts it.`,
     '- Do not end your turn while a background agent or background command you started is still running: this run ends when your turn does. Run subagents in the foreground, or wait for their result before ending your turn.',
     '- If you are told that a pause was requested, post a one-line status with `board comment` and end your turn; you will be resumed here.',
