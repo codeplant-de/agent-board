@@ -36,6 +36,22 @@ export class Changes {
     };
   }
 
+  /** Returns the function that stops listening. */
+  onEnd(owner: string, listener: () => void): () => void {
+    const name = this.endEventName(owner);
+    this.emitter.on(name, listener);
+    return () => {
+      this.emitter.off(name, listener);
+    };
+  }
+
+  /** The owner's board is gone: every open stream of theirs ends. Call after the deletion has committed. */
+  endStreams(owner: string): void {
+    clearTimeout(this.timers.get(owner));
+    this.timers.delete(owner);
+    this.emitter.emit(this.endEventName(owner));
+  }
+
   listenerCount(owner: string): number {
     return this.emitter.listenerCount(this.eventName(owner));
   }
@@ -48,5 +64,9 @@ export class Changes {
   // Prefixed so that an owner named `error` is not the emitter's error event.
   private eventName(owner: string): string {
     return `owner:${owner}`;
+  }
+
+  private endEventName(owner: string): string {
+    return `end:${owner}`;
   }
 }

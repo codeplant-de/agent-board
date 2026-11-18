@@ -36,6 +36,7 @@ import {
   subscribeToDesktopNotificationsPreference,
   writeDesktopNotificationsPreference,
 } from '../lib/desktopNotifications';
+import { YourData } from '../components/YourData';
 import { MachineUsageLines } from '../components/MachineUsageLines';
 import { QueryStatus } from '../components/QueryStatus';
 import { ago } from '../lib/time';
@@ -376,6 +377,7 @@ export function SettingsPage() {
       <Machines />
       <DesktopNotifications />
       <Encryption />
+      <YourData />
     </Stack>
   );
 }

@@ -1,6 +1,7 @@
 import type { KeySetup, Keys } from '@agent-board/shared';
 import {
   Alert,
+  Anchor,
   Button,
   Center,
   Checkbox,
@@ -18,6 +19,7 @@ import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useTRPC } from '../lib/trpc';
 import { PRODUCTION_KDF, type KdfParams } from './kdf';
+import { ImportSetup } from './ImportSetup';
 import { createKeySetup } from './keySlots';
 import { NewPassphraseFields, useNewPassphrase } from './NewPassphraseFields';
 import { PASSPHRASE_ADVICE } from './passphrase';
@@ -36,6 +38,8 @@ interface Ready {
 interface Props {
   owner: string;
   onComplete: (keys: Keys) => Promise<void>;
+  /** Told when an import of an export is under way, so the host keeps this screen until `onComplete`. */
+  onImporting?: (importing: boolean) => void;
   kdf?: KdfParams;
 }
 
@@ -157,8 +161,9 @@ function RecoveryStep({ ready, onComplete }: { ready: Ready; onComplete: (keys: 
 }
 
 /** Nothing reaches the board until the recovery key has been shown and confirmed. */
-export function SetupScreen({ owner, onComplete, kdf = PRODUCTION_KDF }: Props) {
+export function SetupScreen({ owner, onComplete, onImporting, kdf = PRODUCTION_KDF }: Props) {
   const [ready, setReady] = useState<Ready | null>(null);
+  const [importing, setImporting] = useState(false);
   return (
     <Center mih="100vh" p="md">
       <Paper withBorder p="xl" maw={560} w="100%">
@@ -167,8 +172,20 @@ export function SetupScreen({ owner, onComplete, kdf = PRODUCTION_KDF }: Props) 
             <IconLock size={22} />
             <Title order={3}>Set up encryption</Title>
           </Group>
-          {ready === null ? (
-            <PassphraseStep owner={owner} kdf={kdf} onReady={setReady} />
+          {importing ? (
+            <ImportSetup
+              owner={owner}
+              onComplete={onComplete}
+              onBack={() => setImporting(false)}
+              onImporting={(on) => onImporting?.(on)}
+            />
+          ) : ready === null ? (
+            <>
+              <PassphraseStep owner={owner} kdf={kdf} onReady={setReady} />
+              <Anchor component="button" type="button" size="sm" onClick={() => setImporting(true)}>
+                Import a board export instead
+              </Anchor>
+            </>
           ) : (
             <RecoveryStep ready={ready} onComplete={onComplete} />
           )}
