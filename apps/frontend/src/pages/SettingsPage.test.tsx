@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AccountDeletedProvider } from '../components/AccountDeletedProvider';
 import { KeyProvider } from '../crypto/KeyProvider';
 import { createKeySetup } from '../crypto/keySlots';
 import { SettingsPage } from './SettingsPage';
@@ -29,6 +30,26 @@ const stored = vi.hoisted(() => ({ current: null as unknown }));
 
 vi.mock('../lib/trpc', () => ({
   errorMessage: String,
+  useRawTRPC: () => ({
+    account: {
+      summary: {
+        queryOptions: () => ({
+          queryKey: ['account', 'summary'],
+          queryFn: async () => ({
+            tasks: 1,
+            schedules: 0,
+            notes: 0,
+            taskPrs: 0,
+            machines: 0,
+            transcriptRuns: 0,
+            transcriptEvents: 0,
+            running: 0,
+          }),
+        }),
+      },
+    },
+  }),
+  useRawTRPCClient: () => ({}),
   useTRPC: () => ({
     me: {
       queryOptions: () => ({
@@ -67,9 +88,11 @@ function renderPage() {
     <MantineProvider>
       <ModalsProvider>
         <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-          <KeyProvider keys={held} lock={async () => undefined}>
-            <SettingsPage />
-          </KeyProvider>
+          <AccountDeletedProvider>
+            <KeyProvider keys={held} lock={async () => undefined}>
+              <SettingsPage />
+            </KeyProvider>
+          </AccountDeletedProvider>
         </QueryClientProvider>
       </ModalsProvider>
     </MantineProvider>,
@@ -330,5 +353,21 @@ describe('desktop notifications', () => {
     await userEvent.click(await screen.findByRole('switch', { name: 'Notify me when a task needs me' }));
     await waitFor(() => expect(localStorage.getItem('agent-board.desktopNotifications')).toBeNull());
     expect(requestPermission).not.toHaveBeenCalled();
+  });
+});
+
+describe('your data', () => {
+  it('offers an export that includes transcripts unless unchecked, and an import', async () => {
+    renderPage();
+    expect(screen.getByRole('checkbox', { name: /Include transcripts/ })).toBeChecked();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Download export' })).toBeEnabled());
+    expect(screen.getByLabelText('Export file')).toBeInTheDocument();
+  });
+
+  it('opens the delete confirmation, which stays closed to a wrong username', async () => {
+    renderPage();
+    await userEvent.click(await screen.findByRole('button', { name: /Delete account/ }));
+    expect(await screen.findByText('1 task')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete everything' })).toBeDisabled();
   });
 });

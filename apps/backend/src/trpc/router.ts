@@ -1,15 +1,12 @@
 import {
-  ContractError,
   isModelName,
   isSafeMachineName,
   isSafeTaskId,
   isWatchId,
   parseKeyId,
   parseKeySlots,
-  parseSealed,
   PRIORITIES,
   STATUSES,
-  type Field,
   type WireNote,
   type WireScheduleDraft,
   type WireTask,
@@ -22,6 +19,7 @@ import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DbOrTx } from '../db/client';
 import { tasks, type NoteRow, type TaskRow } from '../db/schema';
+import { ACCOUNT_TABLES, deleteAccount, exportPage, importRows, summarize } from '../services/account';
 import { getKeys, replaceSlots, setupKeys } from '../services/keys';
 import { issueToken, listMachineCatalogs, listMachines, revokeMachine } from '../services/machines';
 import {
@@ -65,6 +63,7 @@ import {
   toTask,
   wakeNow,
 } from '../services/tasks';
+import { parsedBy, sealed } from './inputs';
 import { procedure, router } from './trpc';
 
 const id = z.string().refine(isSafeTaskId, 'not a task id');
@@ -102,21 +101,8 @@ const repeat = z
     (when) => when.times === undefined || when.until === undefined,
     'Give a number of runs or an end time, not both',
   );
-/** Runs a shared parser as a zod check, so a bad value is a BAD_REQUEST with the parser's reason. */
-const parsedBy = <S extends z.ZodType, T>(source: S, parse: (value: z.output<S>) => T) =>
-  source.transform((value, ctx) => {
-    try {
-      return parse(value);
-    } catch (error) {
-      if (!(error instanceof ContractError)) throw error;
-      ctx.addIssue({ code: 'custom', message: error.message });
-      return z.NEVER;
-    }
-  });
 const keyId = parsedBy(z.unknown(), parseKeyId);
 const keySlots = parsedBy(z.unknown(), parseKeySlots);
-/** A sealed value (an envelope within the field's size limit): the server checks nothing else about it. */
-const sealed = (field: Field, what: string) => parsedBy(z.string(), (value) => parseSealed(value, field, what));
 /** A note's sealed text and, optionally, the sealed start of it for the board card. */
 const noteInput = z.object({
   body: sealed('note.body', 'message'),
@@ -572,7 +558,29 @@ const keysRouter = router({
     .mutation(({ ctx, input }) => replaceSlots(ctx.db, input)),
 });
 
+const accountRouter = router({
+  /** What the board holds, for the export and the delete confirmation. */
+  summary: procedure.query(({ ctx }) => summarize(ctx.db)),
+  /** One page of a table as stored (sealed fields stay sealed, dates are ISO text, `owner` is left out); page on with `next`. */
+  export: procedure
+    .input(z.object({ table: z.enum(ACCOUNT_TABLES), cursor: z.string().max(1024).nullable().default(null) }))
+    .query(({ ctx, input }) => exportPage(ctx.db, input.table, input.cursor)),
+  /**
+   * Writes rows of an export into this board, only under the key the export was made with. Import `task` before `schedule`,
+   * `note`, `task_pr` and `transcript_run`, and `transcript_run` before `transcript_event`: a row whose task or run is not
+   * there yet is skipped as orphaned.
+   */
+  import: procedure
+    .input(z.object({ keyId, table: z.enum(ACCOUNT_TABLES), rows: z.array(z.unknown()).max(1000) }))
+    .mutation(({ ctx, input }) => importRows(ctx.db, input)),
+  /** Deletes the user and everything of theirs; `username` must be typed as the confirmation. */
+  delete: procedure
+    .input(z.object({ username: z.string() }))
+    .mutation(({ ctx, input }) => deleteAccount(ctx.db, { username: ctx.username, confirm: input.username })),
+});
+
 export const appRouter = router({
+  account: accountRouter,
   transcript: transcriptRouter,
   me: procedure.query(async ({ ctx }) => ({ username: ctx.username, keyId: (await getKeys(ctx.db))?.keyId ?? null })),
   keys: keysRouter,

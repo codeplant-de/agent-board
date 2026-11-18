@@ -2,6 +2,7 @@ import { Badge, Center, Loader, Text } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './AppLayout';
+import { AccountDeletedProvider } from './components/AccountDeletedProvider';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { KeyGate } from './crypto/KeyGate';
 import { errorMessage, POLL_MS, useTRPC } from './lib/trpc';
@@ -11,7 +12,7 @@ import { SchedulesPage } from './pages/SchedulesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskPage } from './pages/TaskPage';
 
-export function App() {
+function Board() {
   const trpc = useTRPC();
   // While the board does not answer, keep asking, so the banner below goes away on its own once it is back.
   const me = useQuery({
@@ -65,5 +66,13 @@ export function App() {
         </ErrorBoundary>
       </KeyGate>
     </>
+  );
+}
+
+export function App() {
+  return (
+    <AccountDeletedProvider>
+      <Board />
+    </AccountDeletedProvider>
   );
 }

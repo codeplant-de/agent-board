@@ -151,6 +151,8 @@ The server deploys on every merge to `main`. The CLI updates only through a `cli
 | A woken task waits for a slot of its lane like any resume                                                                                        | The lane limit stays strict, and an event for a live run needs no slot at all                                                                                                                                                                                                                                                                   | Overbooking a lane by one for a wake                                                                                              |
 
 **The agent's move to Done.** Only you give a task the setting (`autoDone`): the CLI refuses `board task set auto-done` and `board schedule --auto-done` inside a run, as it does `board schedule`, and that refusal binds only an agent that runs `board` as its run set it up. A call without the run's environment reaches the server as the machine's, like your own terminal, and moves the task wherever it names. The server reads the setting when a run's move to Done arrives, not when the run started, so switching it off takes effect during the run. It writes no event text of its own: the move uses the existing `Moved from running to done.` event, which older clients accept. Who made a status change is a clear column (`moved_by`: `user`, `agent` or `machine`), which `board events` reports as the actor of a move.
+| Export is the stored ciphertext, moved by the browser, and sealed again there for another username | The server cannot open anything, so it cannot convert a board. The browser holds the key and can open each value with the old username and seal it again under the same binding. Nothing new is sealed, so rule 2 holds | A plaintext export; a server-side dump |
+| Account deletion removes the `app_user` row and everything cascades. A query no longer creates the row | Nothing of the user is left, and a browser that still polls does not bring the user back. Only a write creates the row again | A soft delete flag |
 
 **Changing a task's directory.** The next run starts fresh in the new directory and reads the thread. The new directory also becomes `home_workdir`, so Re-run fresh keeps it. An agent must not move a task or pick its model. The refusal is the CLI's, like `board schedule`'s, so it has the limit stated in rule 2: an agent that reads the data key and the machine token can call `configure-task` itself.
 
@@ -170,23 +172,24 @@ Break one of these only with a decision recorded here.
 
 ## Where to find things
 
-| Concern                                           | Code                                                                              |
-| ------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Wire types, statuses, `API_VERSION` etc.          | `packages/shared/src/contract.mts`                                                |
-| Sealing bindings, crypto                          | `packages/shared/src/sealing.mts`, `crypto.mts`, `keys.mts`                       |
-| Machine API                                       | `apps/backend/src/machine-api.ts`                                                 |
-| UI API                                            | `apps/backend/src/trpc/router.ts`                                                 |
-| Task logic, schedules, retention                  | `apps/backend/src/services/`                                                      |
-| Schema, RLS scope, migrations                     | `apps/backend/src/db/`, `apps/backend/drizzle/`                                   |
-| Change events                                     | `apps/backend/src/services/changes.ts` (in-process, one replica)                  |
-| Dispatch decisions                                | `apps/cli/src/dispatch/decide.mts`, `dispatch.mts`                                |
-| Run plan, prompts, limits                         | `apps/cli/src/worker/plan.mts`, `prompts.mts`                                     |
-| Running Claude, transcripts                       | `apps/cli/src/worker/worker.mts`, `process.mts`, `transcript-upload.mts`          |
-| Hook                                              | `apps/cli/src/worker/hook.mts`                                                    |
-| PR state lookup                                   | `apps/cli/src/dispatch/pr-states.mts`, `github.mts`                               |
-| systemd units, launchd agents, worker supervision | `apps/cli/src/setup/setup.mts`, `launchd.mts`, `system.mts`, `process-system.mts` |
-| The `board` commands                              | `apps/cli/src/commands/`                                                          |
-| Browser keys                                      | `apps/frontend/src/crypto/`                                                       |
+| Concern                                           | Code                                                                                                                                                                                        |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wire types, statuses, `API_VERSION` etc.          | `packages/shared/src/contract.mts`                                                                                                                                                          |
+| Sealing bindings, crypto                          | `packages/shared/src/sealing.mts`, `crypto.mts`, `keys.mts`                                                                                                                                 |
+| Machine API                                       | `apps/backend/src/machine-api.ts`                                                                                                                                                           |
+| UI API                                            | `apps/backend/src/trpc/router.ts`                                                                                                                                                           |
+| Task logic, schedules, retention                  | `apps/backend/src/services/`                                                                                                                                                                |
+| Schema, RLS scope, migrations                     | `apps/backend/src/db/`, `apps/backend/drizzle/`                                                                                                                                             |
+| Change events                                     | `apps/backend/src/services/changes.ts` (in-process, one replica)                                                                                                                            |
+| Dispatch decisions                                | `apps/cli/src/dispatch/decide.mts`, `dispatch.mts`                                                                                                                                          |
+| Run plan, prompts, limits                         | `apps/cli/src/worker/plan.mts`, `prompts.mts`                                                                                                                                               |
+| Running Claude, transcripts                       | `apps/cli/src/worker/worker.mts`, `process.mts`, `transcript-upload.mts`                                                                                                                    |
+| Hook                                              | `apps/cli/src/worker/hook.mts`                                                                                                                                                              |
+| PR state lookup                                   | `apps/cli/src/dispatch/pr-states.mts`, `github.mts`                                                                                                                                         |
+| systemd units, launchd agents, worker supervision | `apps/cli/src/setup/setup.mts`, `launchd.mts`, `system.mts`, `process-system.mts`                                                                                                           |
+| The `board` commands                              | `apps/cli/src/commands/`                                                                                                                                                                    |
+| Browser keys                                      | `apps/frontend/src/crypto/`                                                                                                                                                                 |
+| Export, import, account deletion                  | `account` router in `apps/backend/src/trpc/router.ts`, `services/account.ts`, `accountRows.ts`; `packages/shared/src/archive.mts`; `apps/frontend/src/lib/boardExport.ts`, `boardImport.ts` |
 
 ## Known limits
 

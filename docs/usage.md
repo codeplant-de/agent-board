@@ -735,6 +735,70 @@ Once granted, the browser shows an OS notification for each task that newly ente
 - Your browser decrypts the title, so there is no server push.
 - The browser needs https or localhost.
 
+## Your data
+
+**Settings → Your data** exports the board to a file, imports such a file, and deletes the account. The browser does the work. The server only pages rows out and takes rows in.
+
+### Export
+
+**Download export** writes one file, `agent-board-<username>-<date>.ndjson`. It holds:
+
+- every task, schedule, note, pull request link and machine, and the transcripts, exactly as the server stores them (encrypted)
+- the wrapped key slots, which only your passphrase or recovery key opens
+- the hashes of the machine tokens
+- the notification setting of this browser
+
+The checkbox **Include transcripts** is on by default. Transcripts are most of a board's size, and a file without them imports to a board with no transcripts. A bar shows the rows read out of the total, and **Cancel** stops the export without writing a file.
+
+The file is as secret as a backup of the database: it opens nothing without the passphrase or recovery key. Keep it where you keep that backup. [Encryption](encryption.md#the-export-file) says what it holds and what a changed file can do.
+
+### Import
+
+An import adds the rows of a file to the board. A row the board already has is skipped, so importing a file twice does no harm. So is a row whose id or machine token another account on the same server holds: those are unique across the server. It works in two places.
+
+- **Settings → Your data → Import** imports into the board you have open. The file must be made with the key this browser uses (the key id on the screen). A file of another key is refused, with a pointer to the setup screen.
+- The **setup screen** of an account with no key has **Import a board export instead**. Choose the file, then enter the passphrase or the recovery key the export was made with. The browser opens the key slots in the file. A wrong secret writes nothing. A right one stores the file's key slots as this account's key, imports the rows, and shows how it went before you continue. If the import stops after that, the key stays. Import the file again from Settings.
+
+Before anything is sent, the screen shows when the file was exported, by which user, its key id and whether it has transcripts. Only import a file you exported yourself. The machines in the file keep their tokens, so they work against this board once their `web.json` points here, and tasks in Todo start on them.
+
+The rows go in file order, a table at a time, in batches of up to 1000 rows or about 4 MB. A bar shows how much of the file is read, and **Cancel** stops the import. The batches already sent stay. At the end the screen adds up the rows added, the rows already on this board or held by another account on this server, the rows that were not well formed, and the rows skipped because their task, run or schedule to run after is not on the board. The notification setting is restored when the whole file went in.
+
+The server checks every row as it does for a normal write and counts one it refuses as not well formed, without stopping the batch. That includes a schedule whose rule adding a schedule would refuse (an interval under a minute, a cron expression or time zone that does not parse, more than one rule), a time outside the years 1 to 9999, and text with a control character.
+
+A task that was running when you exported arrives in Needs me, because its run is not on this board.
+
+A schedule that runs after another needs that schedule on the board, already or earlier in the file. One whose upstream is missing, held by another account or part of a cycle is skipped and counted with the rows whose task is missing, because it has no rule of its own to fall back on.
+
+A schedule whose waiting occurrence is not on the board arrives paused if it was active. **Resume** then makes the next occurrence. A schedule that was already paused or ended keeps that state.
+
+If nothing was added, the rows were already there, and the file was made under another username, the screen says that the old account on this server still holds the rows. Delete that account, then import again.
+
+If the file was made under another username, the browser opens each value with the old username and encrypts it again for the one you are signed in as. A value that does not open is copied as it is, stays unreadable, and is counted at the end ("n values could not be opened and were copied as they are").
+
+### Moving to another server or username
+
+Ids and machine tokens are unique across a server, so an account cannot import rows that another account on the same server still holds.
+
+1. On the old board, export with transcripts if you want them. Keep the passphrase or the recovery key at hand.
+2. On the same server, check the file, then delete the old account (**Delete account**) before you import as the new user. On another server, the old account can stay until you have checked the new board.
+3. Sign in to the new board as the user that should own it. If that account has a key already, delete the account's data first (**Delete account**): a file can only go into an account with no key, or into one that has the file's key.
+4. On the setup screen choose **Import a board export instead** and follow the steps above.
+5. On every worker machine, set `url` in `~/.config/agent-board/web.json` to the new board and restart the listener with `board restart`. Then run `board doctor`. The token and the data key in `env` stay as they are, and the machine learns the new username from the board. See [Setup](setup.md#board-init) for the files.
+
+Until a machine's `web.json` points at the new board, it keeps working against the old one. Once the move to another server is done, delete the account on the old board so that nothing starts there.
+
+### Delete account
+
+**Delete account** removes everything the board holds for you: tasks, schedules, notes, machines with their tokens, transcripts and the key slots. The confirmation shows the counts and asks you to type your username. It recommends an export first. It warns when tasks are running: those runs go on on their machines but can no longer report.
+
+Afterwards the browser forgets the keys and the notification setting, and shows a page that no longer talks to the board. Reloading leads to the setup screen of a new, empty board. Deleting cannot be undone.
+
+It does not remove:
+
+- your sign-in, which belongs to the login proxy in front of the board
+- the files on your worker machines: `~/.config/agent-board`, the state and logs, and Claude's session files
+- the operator's database backups, until they expire
+
 ## Board events
 
 `board events` prints one line per change on your board, as it happens, until you stop it. It is for scripts that react to the board, such as a notification:

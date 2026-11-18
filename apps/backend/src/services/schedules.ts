@@ -77,12 +77,12 @@ function requireCron(expression: string, timezone: string): void {
   }
 }
 
-type RuleDraft = Pick<
+export type RuleDraft = Pick<
   WireScheduleDraft,
   'everyMs' | 'cron' | 'moreCrons' | 'timezone' | 'after' | 'maxConcurrent' | 'id'
 >;
 
-function requireRule(draft: RuleDraft): void {
+export function requireRule(draft: RuleDraft): void {
   if (
     draft.maxConcurrent !== undefined &&
     !(draft.maxConcurrent >= 1 && draft.maxConcurrent <= MAX_SCHEDULE_CONCURRENT)
