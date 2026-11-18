@@ -205,8 +205,8 @@ test('set takes JSON or a string, creates the objects on the way and keeps the k
 
 test('set creates a nested object under a key the file lacks', async (context) => {
   const fx = fixture(context, { machine: 'here' });
-  await runner(fx).go(['config', 'set', 'lanes.reviews.cwd', '"/srv"']);
-  assert.deepEqual(fx.json()['lanes'], { general: { slots: 3, default: true }, reviews: { cwd: '/srv' } });
+  await runner(fx).go(['config', 'set', 'lanes.reviews.slots', '2']);
+  assert.deepEqual(fx.json()['lanes'], { general: { slots: 3, default: true }, reviews: { slots: 2 } });
 });
 
 test('set below lanes in a file without lanes writes the default lane out too, and says so', async (context) => {
