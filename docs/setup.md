@@ -211,7 +211,7 @@ The listener checks the API range each time it connects. When the server no long
 
 ### Changing the repeat of a schedule (CLI 0.30.0)
 
-A new server feature, `schedule.rule-edit`. `board schedules edit <id> --every <duration>` and `--cron <expr>` change the interval or the cron expressions of a schedule, as **Change repeat** on the Schedules page does (see [Repeating schedules](usage.md#repeating-schedules)). Nothing changes in the database, and no version number is raised.
+A new server feature, `schedule.rule-edit`. `board schedules edit <id> --every <duration>` and `--cron <expr>` change the interval or the cron expressions of a schedule, as the repeat in **Edit** on the Schedules page does (see [Repeating schedules](usage.md#repeating-schedules)). Nothing changes in the database, and no version number is raised.
 
 Update the server first. A server without `schedule.rule-edit` makes the command refuse with "the board server does not support changing the repeat of a schedule yet; update the board server", and nothing else changes. A machine on an older CLI has no such flags and runs everything as before.
 

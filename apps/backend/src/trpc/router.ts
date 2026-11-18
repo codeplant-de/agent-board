@@ -24,13 +24,12 @@ import { getKeys, replaceSlots, setupKeys } from '../services/keys';
 import { issueToken, listMachineCatalogs, listMachines, revokeMachine } from '../services/machines';
 import {
   addSchedule,
-  editSchedule,
   heldTaskIds,
   listSchedules,
   removeSchedule,
   setPaused,
-  setScheduleRule,
   toSchedule,
+  updateSchedule,
 } from '../services/schedules';
 import { hasStarted } from '../services/taskRows';
 import { eventOutput, listEvents, listRuns } from '../services/transcripts';
@@ -500,20 +499,55 @@ const schedulesRouter = router({
   setPaused: procedure
     .input(z.object({ id, paused: z.boolean() }))
     .mutation(async ({ ctx, input }) => toSchedule(await setPaused(ctx.db, input.id, input.paused))),
-  /** A new title and prompt (sealed under the schedule); the pending card takes them too while it has not started. */
-  edit: procedure
-    .input(z.object({ id, title: sealed('title', 'title'), input: sealed('input', 'prompt') }))
+  /**
+   * Replaces everything the user sets on a schedule. `title`, `input`, `agent` and the directory are sealed together under the
+   * schedule (the first two are bound to the agent); an absent `agent` is none, and a null `place` is no machine and directory.
+   * `at` is the first run of a rule of its own, absent keeps it; `runsLeft` counts the pending card, null is forever.
+   */
+  update: procedure
+    .input(
+      z
+        .object({
+          id,
+          title: sealed('title', 'title'),
+          input: sealed('input', 'prompt'),
+          agent: sealed('agent', 'agent').optional(),
+          place: z.object({ machine: machineName, workdir: sealed('workdir', 'directory') }).nullable(),
+          priority,
+          model: model.nullable(),
+          autoDone: z.boolean(),
+          repeat: z.union([
+            z.object({ everyMs: intervalRule.every }),
+            z.object(cronRule),
+            z.object({
+              after: z.object({ scheduleId: id, delayMs: z.number().int().min(0).max(MAX_INTERVAL_MS) }),
+            }),
+          ]),
+          at: z.coerce.date().optional(),
+          runsLeft: z.number().int().positive().max(MAX_INT32).nullable(),
+          until: z.coerce.date().nullable(),
+          maxConcurrent: z.number().int().min(1).max(MAX_SCHEDULE_CONCURRENT).nullable(),
+        })
+        .refine(
+          (edit) => edit.runsLeft === null || edit.until === null,
+          'Give a number of runs or an end time, not both',
+        ),
+    )
     .mutation(async ({ ctx, input }) => {
-      const { schedule, pending } = await editSchedule(ctx.db, input);
-      return { schedule: toSchedule(schedule), pending };
-    }),
-  /** A new interval or cron expressions for the schedule; the pending card moves to the new next run while it has not started. */
-  setRule: procedure
-    .input(z.union([z.object({ id, ...intervalRule }), z.object({ id, ...cronRule })]))
-    .mutation(async ({ ctx, input }) => {
-      const { schedule, pending } = await setScheduleRule(ctx.db, {
+      const { schedule, pending } = await updateSchedule(ctx.db, {
         id: input.id,
-        ...ruleOf(input),
+        title: input.title,
+        input: input.input,
+        ...(input.agent === undefined ? {} : { agent: input.agent }),
+        place: input.place,
+        priority: input.priority,
+        model: input.model,
+        autoDone: input.autoDone,
+        rule: 'everyMs' in input.repeat ? { everyMs: input.repeat.everyMs } : ruleOf(input.repeat),
+        ...(input.at === undefined ? {} : { startAt: input.at }),
+        runsLeft: input.runsLeft,
+        until: input.until,
+        maxConcurrent: input.maxConcurrent,
       });
       return { schedule: toSchedule(schedule), pending };
     }),

@@ -1108,7 +1108,7 @@ The user's new title and prompt for a schedule. It needs the `prompt.edit` featu
 - The pending occurrence takes it too when it is in `todo`, open, and no worker ever claimed it. The answer says what became of it in `pending`: `updated`, `started` (it exists but was left alone) or `none` (the schedule is paused, or has nothing waiting).
 - No note is written. A schedule has no thread, so the old text is not kept.
 
-The browser makes the same change with `schedules.edit`.
+The browser changes much more with its own `schedules.update` (the whole schedule, in one step: see [The Schedules page](usage.md#the-schedules-page)); this command stays for the CLI's `board schedules edit`.
 
 #### `set-schedule-rule`
 
@@ -1119,7 +1119,7 @@ The user's new repeat for a schedule. It needs the `schedule.rule-edit` feature.
 - An ended schedule is 409, an unknown one is 404, and a schedule that runs after another is 400, since it has no rule of its own. A cron expression the server cannot read, a repeated one, or a rule with no match before the schedule's end is 400 and changes nothing.
 - The pending occurrence moves to the new next run when it is in `todo`, open, and no worker ever claimed it. `pending` says what became of it, as for `edit-schedule`: `updated`, `started` (the occurrence exists and was left alone, so the next one follows the new rule) or `none`.
 
-The browser makes the same change with `schedules.setRule`.
+The browser changes the rule with `schedules.update`, which replaces every setting of the schedule at once.
 
 #### `remove-schedule`
 
