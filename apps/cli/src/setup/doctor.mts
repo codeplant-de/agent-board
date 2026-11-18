@@ -12,9 +12,13 @@ import {
   isOverrideWarning,
   isSafeMode,
   parseConfig,
+  readBoardAgentsState,
+  boardAgentsDirOf,
   withAgentsDir,
+  withBoardAgents,
   REMOVED_INTAKE,
 } from '../config/config.mts';
+import { catalogAgents, replacedFiles } from '../config/board-agents.mts';
 import type { Config } from '../config/config.mts';
 import { plainLine } from '../output/terminal.mts';
 import {
@@ -375,7 +379,19 @@ async function catalogOnBoardChecks(deps: DoctorDeps, identity: ServerIdentity, 
     return entry?.result ? [{ ...entry, result: entry.result }] : [];
   });
   let trimmed = false;
-  const catalog = composeCatalog(entries, deps.catalogStore.initSkills(), () => (trimmed = true));
+  const composed = composeCatalog(entries, deps.catalogStore.initSkills(), () => (trimmed = true));
+  // The dispatcher sends the agents part with it, so the index is of both.
+  const configFile = join(deps.configDir, 'config.json');
+  const catalog =
+    composed === undefined
+      ? undefined
+      : {
+          ...composed,
+          agents: catalogAgents(
+            configFile,
+            withBoardAgents(withAgentsDir(config, join(deps.configDir, 'agents')), configFile).agents,
+          ),
+        };
   if (catalog === undefined)
     return [ok('catalog on board', 'nothing probed yet: the next dispatch tick asks claude for its skills and models')];
   const count = `${catalog.skills.length + Object.values(catalog.dirs).reduce((sum, list) => sum + list.length, 0)} skills, ${catalog.models.length} models${trimmed ? ', cut to fit the size limit' : ''}`;
@@ -424,6 +440,7 @@ const checkServer: Check = async (deps) => {
         ok('board key', `the board's data key is id ${checked.keys.keyId}, and this machine holds it`),
         ...(await dirsOnBoardChecks(deps, identity, checked.keys)),
         ...(await catalogOnBoardChecks(deps, identity, checked.keys)),
+        ...boardAgentsVersionChecks(deps, identity),
       ];
     return [
       ...results,
@@ -513,6 +530,49 @@ function checkPlugins(
   });
 }
 
+// What the last applies of the board's agents left to look at: a look at the board that changed nothing, and the local
+// definitions they moved aside. Warnings only: the machine runs what it has.
+function checkBoardAgents(configFile: string): CheckResult[] {
+  const state = readBoardAgentsState(boardAgentsDirOf(configFile));
+  const results: CheckResult[] = [];
+  if (state.problem !== undefined)
+    results.push(
+      problem(
+        "board's agents",
+        'warn',
+        plainLine(state.problem),
+        'the dispatcher log says more; the machine keeps the agents it applied last',
+      ),
+    );
+  const moved = Object.values(replacedFiles(configFile)).flat();
+  if (moved.length > 0)
+    results.push(
+      problem(
+        'agents.replaced',
+        'warn',
+        `the board's agents replaced local definitions, kept in ${moved.map((file) => plainLine(file)).join(', ')}`,
+        'delete them once you do not need them; "board agents add <file> --name <other>" restores one under another name',
+      ),
+    );
+  return results;
+}
+
+// Whether this machine applied the version of the board's agents the board holds; a server that hides a newer one is not seen.
+function boardAgentsVersionChecks(deps: DoctorDeps, identity: ServerIdentity): CheckResult[] {
+  if (!identity.features.has('agents.shared') || identity.agentsVersion === undefined) return [];
+  const applied = readBoardAgentsState(boardAgentsDirOf(join(deps.configDir, 'config.json'))).version;
+  if (applied !== null && applied >= identity.agentsVersion)
+    return [ok("board's agents", `this machine applied v${applied}, the version the board holds`)];
+  return [
+    problem(
+      "board's agents",
+      'warn',
+      `the board holds agents v${identity.agentsVersion}, this machine applied ${applied === null ? 'none' : `v${applied}`}`,
+      'the next dispatch tick applies them; if it does not, the dispatcher log says why',
+    ),
+  ];
+}
+
 // What would make an agent's run fail or its rules dead letters: an agent that cannot be read, a plugin it names that does not
 // resolve, an allow rule for a tool its `tools` leave out.
 function checkAgents(config: Config, deps: DoctorDeps): CheckResult[] {
@@ -523,9 +583,11 @@ function checkAgents(config: Config, deps: DoctorDeps): CheckResult[] {
         `agent ${plainLine(name.slice(0, 40))}`,
         'fail',
         `${reason}; tasks that name it are not run`,
-        Object.hasOwn(config.agentFiles ?? {}, name)
-          ? `fix the file, or remove it with "board agents rm ${plainLine(name.slice(0, 40))}"`
-          : 'fix the agent in config.json',
+        config.board?.names.includes(name) === true
+          ? `the board's definition holds a key this CLI does not know ("board self-update"), or push a fixed one with "board agents push"; a local definition that could not be moved aside must be moved or removed by hand`
+          : Object.hasOwn(config.agentFiles ?? {}, name)
+            ? `fix the file, or remove it with "board agents rm ${plainLine(name.slice(0, 40))}"`
+            : 'fix the agent in config.json',
       ),
     ),
     ...(entries.length === 0 ? [] : [ok('agents', entries.map(([name]) => name).join(', '))]),
@@ -566,10 +628,11 @@ const checkConfig: Check = (deps) => {
     ];
   try {
     const raw: unknown = JSON.parse(text);
-    const config = withAgentsDir(parseConfig(raw), join(configDir, 'agents'));
+    const config = withBoardAgents(withAgentsDir(parseConfig(raw), join(configDir, 'agents')), path);
     return [
       ok('config.json', `machine ${config.machine}`),
       ...checkAgents(config, deps),
+      ...checkBoardAgents(path),
       ...configWarnings(raw).map((warning) =>
         warning === REMOVED_INTAKE
           ? problem('config.json', 'fail', warning, 'delete the intake key from config.json')

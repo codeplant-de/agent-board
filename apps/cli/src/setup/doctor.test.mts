@@ -643,7 +643,14 @@ test('doctor says whether the board has the catalogue this machine probed, and n
     models: [{ value: 'opus', label: 'Opus' }],
     commands: [{ name: 'review', builtin: false }],
   };
-  const catalog = { claude: '2.1.326', models: result.models, skills: [{ name: 'review' }], dirs: {} };
+  // With the agents part the dispatcher sends: none applied and none defined here.
+  const catalog = {
+    claude: '2.1.326',
+    models: result.models,
+    skills: [{ name: 'review' }],
+    dirs: {},
+    agents: { version: null, hashes: {}, replaced: [] },
+  };
   const serving = (catalogIndex?: string): Partial<DoctorDeps> => ({
     verifyServer: async () => ({
       owner: OWNER,
@@ -942,5 +949,25 @@ test('doctor shows the last reading with its time, and what is held until when',
       '7-day limit 90%, last reading 95% seen 2026-11-16T20:00:00.000Z, window since reset, so void; ' +
       'tasks below high are held now until 2026-11-17T15:00:00.000Z ' +
       '(5-hour usage 85% (limit 80%, resets 2026-11-17T15:00:00.000Z))',
+  );
+});
+
+test('doctor warns, and does not fail, when this machine applied an older version of the board’s agents than the board holds', async () => {
+  const files = withConfig({ machine: 'box' });
+  const serving = (agentsVersion?: number): Partial<DoctorDeps> => ({
+    verifyServer: async () => ({
+      owner: OWNER,
+      keyId: KEYS.keyId,
+      api: SERVER_API,
+      features: SERVER_HAS,
+      ...(agentsVersion === undefined ? {} : { agentsVersion }),
+    }),
+  });
+  const boardAgents = (results: CheckResult[]) => results.filter((result) => result.name === "board's agents");
+  assert.deepEqual(boardAgents(await runChecks(machine(files, serving()))), []);
+  const behind = boardAgents(await runChecks(machine(files, serving(3))));
+  assert.deepEqual(
+    behind.map(({ level, message }) => [level, message]),
+    [['warn', 'the board holds agents v3, this machine applied none']],
   );
 });

@@ -1,7 +1,17 @@
 import { generateDataKey, wrapDataKey, type KeySlot } from '@agent-board/shared';
 import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { appUsers, machines, notes, schedules, taskPrs, tasks, transcriptEvents, transcriptRuns } from './db/schema';
+import {
+  appUsers,
+  machines,
+  notes,
+  schedules,
+  sharedAgents,
+  taskPrs,
+  tasks,
+  transcriptEvents,
+  transcriptRuns,
+} from './db/schema';
 import { buildServer } from './server';
 import { ACCOUNT_TABLES, exportPage, type AccountTable } from './services/account';
 import { Changes } from './services/changes';
@@ -127,6 +137,7 @@ async function seed(owner = 'jascha'): Promise<{ token: string }> {
       .set({ dirs: SEALED, dirsIndex: BLIND, lastSeenAt: new Date() })
       .where(eq(machines.name, 'laptop')),
   );
+  await asOwner(db, owner, (tx) => tx.insert(sharedAgents).values({ version: 3, document: SEALED }));
   return { token };
 }
 
@@ -136,6 +147,7 @@ const countsOf = async (owner: string) => {
       (select count(*) from task where owner = ${owner}) + (select count(*) from schedule where owner = ${owner}) +
       (select count(*) from note where owner = ${owner}) + (select count(*) from task_pr where owner = ${owner}) +
       (select count(*) from machine where owner = ${owner}) + (select count(*) from transcript_run where owner = ${owner}) +
+      (select count(*) from shared_agents where owner = ${owner}) +
       (select count(*) from transcript_event where owner = ${owner})
     )::int as n`);
   return rows[0]!.n;
@@ -151,6 +163,7 @@ describe('account.summary', () => {
       notes: 3,
       taskPrs: 1,
       machines: 1,
+      sharedAgents: 1,
       transcriptRuns: 1,
       transcriptEvents: 2,
       running: 1,
@@ -164,6 +177,7 @@ describe('account.summary', () => {
       notes: 0,
       taskPrs: 0,
       machines: 0,
+      sharedAgents: 0,
       transcriptRuns: 0,
       transcriptEvents: 0,
       running: 0,
@@ -279,6 +293,7 @@ describe('account.import', () => {
       { inserted: 1, existing: 0, invalid: 0, orphaned: 0 },
       { inserted: 1, existing: 0, invalid: 0, orphaned: 0 },
       { inserted: 1, existing: 0, invalid: 0, orphaned: 0 },
+      { inserted: 1, existing: 0, invalid: 0, orphaned: 0 },
       { inserted: 2, existing: 0, invalid: 0, orphaned: 0 },
     ]);
     const after = await exportEverything(jascha);
@@ -318,11 +333,12 @@ describe('account.import', () => {
       note: data.note.map(named),
       task_pr: data.task_pr.map(named),
       machine: data.machine.map(named),
+      shared_agents: data.shared_agents.map(named),
       transcript_run: data.transcript_run.map(named),
       transcript_event: data.transcript_event.map(named),
     };
     await importEverything(carol, withOwner);
-    expect(await countsOf('carol')).toBe(12);
+    expect(await countsOf('carol')).toBe(13);
     expect(await countsOf('jascha')).toBe(0);
   });
 
@@ -335,6 +351,7 @@ describe('account.import', () => {
       [0, 3],
       [0, 1],
       [0, 3],
+      [0, 1],
       [0, 1],
       [0, 1],
       [0, 1],
@@ -791,7 +808,7 @@ describe('account.delete', () => {
     await seed();
     await expect(caller(db).account.delete({ username: 'carol' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     await expect(caller(db).account.delete({ username: '' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
-    expect(await countsOf('jascha')).toBe(12);
+    expect(await countsOf('jascha')).toBe(13);
   });
 
   it('removes the user and every table of theirs, and leaves another user alone', async () => {
@@ -817,7 +834,7 @@ describe('account.delete', () => {
       expect(await admin.select().from(table).where(eq(table.owner, 'jascha'))).toEqual([]);
     expect(await authenticates(token)).toBe(401);
     expect(await authenticates(other.token)).toBe(200);
-    expect(await countsOf('carol')).toBe(12);
+    expect(await countsOf('carol')).toBe(13);
     await app.close();
   });
 

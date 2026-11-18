@@ -51,7 +51,7 @@ Setup:
                              may run in on this machine
   config [action...]         show or change this machine's config.json
   agents [action...]         list, show, export, add or remove the agents of
-                             this machine
+                             this machine, or push one to every machine
   init                       write web.json, env and config.json for this
                              machine
   doctor                     check this machine: config, token, server, worker
@@ -1046,7 +1046,7 @@ Examples:
 ### board agents
 
 ```
-Usage: board agents [options] [list | show <name> | export <name> | add <file|-|url|example:name> | rm <name>]
+Usage: board agents [options] [list | show <name> | export <name> | add <file|-|url|example:name> | push <name|file|-|url|example:name> | rm [--board] <name>]
 
 Manage the agents of this machine: the named sets of tools and rules a task runs
 as when it names one (see Agents in docs/workers.md). An agent is defined either
@@ -1081,18 +1081,38 @@ pins the file: `add` refuses one whose sha256 differs. The URL is recorded as
 the agent's `source`; nothing updates it later, so run `add --replace` again to
 take a newer version.
 
+`push <name | file | - | https-url | example:name>` puts one agent on the board
+for every machine of yours: an agent this machine defines, or a definition read
+the way `add` reads one. It prints the same definition and grant summary, and
+pushes only after you confirm at a terminal or pass `--yes`. Every machine
+applies the board's agents on its next dispatch tick: it writes them to
+`agents.board/` beside config.json and moves its own definition of the same name
+to `agents.replaced/` (the board wins a name; nothing is deleted). After a push
+the agent is the board's on this machine too: its agents/ file or config.json
+entry goes. The board holds all agents as one sealed document whose version goes
+up with every push; a push that finds another push came first fetches again and
+retries once.
+
 `rm <name>` removes the agent's file, or its entry in config.json (the rest of
-the file stays as it is). `add` and `rm` are not available inside a board run.
+the file stays as it is). `rm --board <name>` takes an agent off the board, and
+every machine drops its copy on its next tick. `add` refuses a name the board
+holds. `add`, `push` and `rm` are not available inside a board run.
+
+The list says where each agent comes from (`config.json`, `agents/<file>` or
+`board v<n>`, the version of the board's agents this machine applied) and the
+first 12 hex digits of its hash: SHA-256 of the keys that decide what a run may
+do, the same on every machine for the same definition.
 
 Arguments:
-  action         list, show, export, add or rm, and a name or a source
+  action         list, show, export, add, push or rm, and a name or a source
 
 Options:
   --json         list, show, export: print JSON instead of text or YAML
   --yaml         show, export: print YAML (the default)
-  --name <name>  add: the name to add the agent under
+  --name <name>  add, push: the name to add or push the agent under
   --replace      add: overwrite an agent of that name
-  -y, --yes      add: write without asking (read the definition first)
+  -y, --yes      add, push: write without asking (read the definition first)
+  --board        rm: take the agent off the board's agents, for every machine
   --dry-run      read everything, print every write instead of doing it
   -h, --help     display help for command
 
@@ -1105,6 +1125,9 @@ Examples:
   board agents add https://example.com/agents/reviewer.yaml#sha256=<hex>
   yq -o json reviewer.yaml | board agents add - --yes
   board agents rm reviewer
+  board agents push reviewer
+  board agents push ./reviewer.yaml
+  board agents rm --board reviewer
 ```
 
 ### board init

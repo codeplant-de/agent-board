@@ -371,6 +371,26 @@ export const machines = pgTable(
   ],
 ).enableRLS();
 
+/**
+ * The agent definitions the user pushed for every machine (`board agents push`): one sealed document of all of them per user,
+ * bound to its version (`agents.shared`, context `agents:v<version>`). The version is clear so that a machine's tick can tell
+ * from the `version` answer whether it has to fetch the document; it only goes up, one per push.
+ */
+export const sharedAgents = pgTable(
+  'shared_agents',
+  {
+    owner: owner().primaryKey(),
+    version: integer('version').notNull(),
+    document: text('document').notNull(),
+    pushedAt: timestamp('pushed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('shared_agents_document_sealed', isEnvelope(t.document)),
+    check('shared_agents_version_positive', sql`${t.version} >= 1`),
+    tenant(),
+  ],
+).enableRLS();
+
 export type TaskRow = typeof tasks.$inferSelect;
 export type NoteRow = typeof notes.$inferSelect;
 export type TaskPrRow = typeof taskPrs.$inferSelect;

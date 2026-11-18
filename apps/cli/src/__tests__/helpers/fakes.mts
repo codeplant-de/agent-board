@@ -31,6 +31,7 @@ import type {
   MachineCatalog,
   MachineDir,
   MachineUsage,
+  SharedAgentsOnBoard,
   Note,
   Schedule,
   Task,
@@ -133,6 +134,15 @@ export interface FakeBackend extends Backend {
   boardCatalog: { supported: boolean; held: MachineCatalog | undefined; failure: Error | undefined };
   // The same for the usage status.
   boardUsage: { supported: boolean; held: MachineUsage | undefined; failure: Error | undefined };
+  // The shared agent definitions the board holds: the document, or a version that does not open; `reported` is the version
+  // the `version` answer names, which a lying server can set apart from what it serves.
+  boardAgents: {
+    supported: boolean;
+    held: SharedAgentsOnBoard;
+    reported?: number | null;
+    // Pushes that fail with 409 before the next one goes through, as if another CLI pushed in between.
+    conflicts: number;
+  };
 }
 
 function parseFirstLine(input: string): string {
@@ -165,6 +175,27 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     boardDirs: { supported: true, held: undefined, failure: undefined },
     boardCatalog: { supported: true, held: undefined, failure: undefined },
     boardUsage: { supported: true, held: undefined, failure: undefined },
+    boardAgents: { supported: true, held: null, conflicts: 0 },
+    async sharedAgentsVersion() {
+      if (!state.boardAgents.supported) return 'unsupported';
+      const { held, reported } = state.boardAgents;
+      return reported !== undefined ? reported : (held?.version ?? null);
+    },
+    async getSharedAgents() {
+      if (!state.boardAgents.supported) throw new BackendError('get-agents: not supported', 404, true);
+      return structuredClone(state.boardAgents.held);
+    },
+    async setSharedAgents(document, expectedVersion) {
+      if (!state.boardAgents.supported) throw new BackendError('set-agents: not supported', 404, true);
+      const current = state.boardAgents.held?.version ?? 0;
+      if (state.boardAgents.conflicts > 0 || current !== expectedVersion) {
+        state.boardAgents.conflicts = Math.max(0, state.boardAgents.conflicts - 1);
+        throw new BackendError(`set-agents: the board holds version ${current}`, 409, true);
+      }
+      state.writes.push(`agents v${document.version}: ${Object.keys(document.agents).sort().join(',')}`);
+      state.boardAgents.held = { version: document.version, document: structuredClone(document) };
+      delete state.boardAgents.reported;
+    },
     async listTasks({ all = false } = {}) {
       return state.tasks.filter((t) => all || !t.closed).map(asBoardShows);
     },

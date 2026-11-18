@@ -13,6 +13,7 @@ import {
   openFields,
   openNote,
   openPrs,
+  openSharedAgents,
   openWatches,
   headIndex,
   parsePolish,
@@ -27,6 +28,7 @@ import {
   sealNote,
   sealPr,
   sealQuestions,
+  sealSharedAgents,
   sealWatches,
   sealTitle,
   sealWorkdir,
@@ -390,6 +392,22 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     async setUsage(machine, usage) {
       const sealed = await checked('set-usage', () => sealMachineUsage(sealer, machine, usage));
       await inner.setUsage({ usage: sealed, index: await machineUsageIndex(await getKeys(), machine, usage) });
+    },
+    async sharedAgentsVersion() {
+      const { supported, version } = await inner.agentsState();
+      return supported ? version : 'unsupported';
+    },
+    async getSharedAgents() {
+      const wire = await inner.getAgents();
+      if (wire === null) return null;
+      const document = await openSharedAgents(openerFor(await getKeys()), wire.version, wire.document);
+      return document === undefined ? { version: wire.version, unreadable: true } : { version: wire.version, document };
+    },
+    async setSharedAgents(document, expectedVersion) {
+      if (document.version !== expectedVersion + 1)
+        throw invalid('set-agents', 'the version must be one more than the version it replaces');
+      const sealed = await checked('set-agents', () => sealSharedAgents(sealer, document));
+      await inner.setAgents({ document: sealed, version: document.version, expectedVersion });
     },
     async pause(id, note) {
       return opened(await inner.pause(id, await noteInput('pause', id, 'system', note.trim())), openTask);

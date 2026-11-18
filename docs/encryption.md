@@ -42,6 +42,7 @@ The operator can read, swap, replay and forge anything in the database and in AP
 | `machine.dirs`               | `machine:<name>`                                                                             | the machine's CLI (`board dirs`, dispatch)                                                                                                      |
 | `machine.catalog`            | `machine:<name>`                                                                             | the machine's CLI (dispatch)                                                                                                                    |
 | `machine.usage`              | `machine:<name>`                                                                             | the machine's CLI (dispatch)                                                                                                                    |
+| `agents.shared`              | `agents:v<version>`                                                                          | the user's CLI (`board agents push`, `board agents rm --board`), outside a board run, one document for all the agents on the board              |
 | `note.body`, `note.preview`  | `note:<taskId>:<author>:<kind>`                                                              | the client of that author                                                                                                                       |
 | `note.suggestion`            | `note:<taskId>:agent:comment`                                                                | the agent's CLI                                                                                                                                 |
 | `note.questions`             | `note:<taskId>:agent:question`                                                               | the agent's CLI                                                                                                                                 |
@@ -57,6 +58,7 @@ The operator can read, swap, replay and forge anything in the database and in AP
   - `machine.dirs` is `{"dirs":[{"path":…,"label":…}]}`, with `label` only when the directory has one.
   - `machine.catalog` is `{"claude":…,"models":[…],"skills":[…],"dirs":{…}}`.
   - `machine.usage` is `{"limits":…,"windows":{…},"reached":[…],"held":[…],"open":[…]}`.
+- `agents.shared` is `{"version":…,"agents":{"<name>":{…}}}`, see [The agents on the board](#the-agents-on-the-board). Its `<version>` is the clear version the server keeps beside it, and the document says the same version inside.
 
 Clients choose the ids of the tasks and schedules they make, because the fields are sealed against them. An id is 12 random characters, and a collision is a 409 whoever holds the id.
 
@@ -335,6 +337,25 @@ Each machine sends the board three sealed documents: its directory list, its cat
 
 A value that fails shows as a neutral placeholder, and the task page says so. The board's own events show as `Board`, apart from the `system` notes of your machines.
 
+### The agents on the board
+
+The board holds the agent definitions the user pushed for every machine (see [Agents on the board](workers.md#agents-on-the-board)) as one sealed document, `agents.shared`, bound to `agents:v<version>`. Unlike the machine documents it is acted on: every machine applies it, and an agent's definition decides what a run as it may do.
+
+- **Only the user's CLI writes it.** `board agents push` and `board agents rm --board` seal it, and both are refused inside a board run. The browser never writes it.
+- **One document, not a row per agent.** Agent names are sealed on tasks and must not appear in the clear; rows keyed by name, or by a blind index of it, would show them. All names and definitions are inside one ciphertext, so the server cannot swap one agent's definition for another's, and a push is atomic.
+- **The version is in the binding.** The server keeps the version clear so that a tick compares it without opening anything, and a document opens only under the version it was sealed as. A machine never applies a version lower than or equal to the one it has.
+- **The operator sees** that the user has shared agents, the version, when it was pushed and the envelope's size. Not how many agents, their names or what they grant.
+
+| The server…                                  | Effect                                                                                                                |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| serves an older document                     | Refused: the version is in the binding, and a machine never applies a version lower than the one it has               |
+| swaps one agent's definition for another's   | Not possible: all names and definitions are inside one ciphertext                                                     |
+| withholds a newer document, or reports none  | Machines keep the version they applied. `board doctor` cannot see a newer version the server hides                    |
+| deletes the row                              | Machines keep their copies. Taking an agent off every machine needs a pushed document without it                      |
+| reports a higher `agentsVersion` than it has | The document does not open under that version, or is not newer; nothing changes, and the tick and `board doctor` warn |
+
+What this gives up is under [What the server can still do](#what-the-server-can-still-do): any run that reads the data key can push a definition every machine applies.
+
 ## The export file
 
 Settings → Your data writes the board to one NDJSON file (see [Your data](usage.md#your-data)). The header is the first line, and every other line is one row of a table. `packages/shared/src/archive.mts` defines the format.
@@ -448,6 +469,7 @@ These limits are inherent to a server that stores ciphertext and cannot sign wha
 - **Fixed event texts.** It can insert any number of them. `Taken back from <machine>` carries a machine name, at most 64 characters of `[A-Za-z0-9_.-]`.
 - **No key rotation.** A passphrase change leaves the old wrapped copy of the key with the server, and the data key is never rotated. A passphrase or a key that has leaked stays leaked, and a recovery key that was kept still opens the board.
 - **The key on worker machines.** Every worker machine keeps the raw data key in `~/.config/agent-board/env`, readable by any process of that user, an agent in `auto` mode included. An agent that reads it can seal what it likes, as any creator.
+- **Shared agents reach every machine.** With the data key, a run can also seal and push a new version of the [agents on the board](#the-agents-on-the-board) with broader grants, and every machine of the user applies it on its next tick, without a reading on each. `board agents push` is refused inside a run, but that is the CLI's refusal: the server cannot tell a run that holds the key and the machine's token from the user's CLI. A run in `auto` mode could already rewrite the agent files of its own machine; the new reach is every other machine. This is accepted as a known limit, without a signing key or a per-machine switch (see [Design decisions](architecture.md#design-decisions)).
 - **An unlocked browser.** It stays unlocked until Lock, per tab, and its derived keys stay in IndexedDB until then.
 - **A dropped directory.** The server can drop a task's directory (`workdir: null`) and withhold the `home_workdir` copy that Re-run fresh restores. The task then runs in the lane's or the default directory of that machine instead of the one the user chose. With a `dirs` list on the machine, that directory must itself be listed, else the run is refused.
 

@@ -6,12 +6,23 @@ import { eq, getTableColumns, inArray, sql, type SQL } from 'drizzle-orm';
 import { PgTimestamp, type PgColumn, type PgTable } from 'drizzle-orm/pg-core';
 import type { z } from 'zod';
 import type { DbOrTx } from '../db/client';
-import { appUsers, machines, notes, schedules, taskPrs, tasks, transcriptEvents, transcriptRuns } from '../db/schema';
+import {
+  appUsers,
+  machines,
+  notes,
+  schedules,
+  sharedAgents,
+  taskPrs,
+  tasks,
+  transcriptEvents,
+  transcriptRuns,
+} from '../db/schema';
 import { AppError } from './errors';
 import {
   machineRowSchema,
   noteRowSchema,
   scheduleRowSchema,
+  sharedAgentsRowSchema,
   taskPrRowSchema,
   taskRowSchema,
   transcriptEventRowSchema,
@@ -26,6 +37,7 @@ export const ACCOUNT_TABLES = [
   'note',
   'task_pr',
   'machine',
+  'shared_agents',
   'transcript_run',
   'transcript_event',
 ] as const;
@@ -37,6 +49,7 @@ export interface AccountSummary {
   notes: number;
   taskPrs: number;
   machines: number;
+  sharedAgents: number;
   transcriptRuns: number;
   transcriptEvents: number;
   running: number;
@@ -52,6 +65,7 @@ export async function summarize(db: DbOrTx): Promise<AccountSummary> {
       notes: total(notes),
       taskPrs: total(taskPrs),
       machines: total(machines),
+      sharedAgents: total(sharedAgents),
       transcriptRuns: total(transcriptRuns),
       transcriptEvents: total(transcriptEvents),
       running: sql<number>`(select count(*) from ${tasks} where ${tasks.status} = 'running')::int`,
@@ -80,6 +94,7 @@ const EXPORT_SPECS: Record<AccountTable, ExportSpec> = {
   note: { table: notes, order: [by('createdAt', notes.createdAt, 'timestamp'), by('id', notes.id, 'text')] },
   task_pr: { table: taskPrs, order: [by('createdAt', taskPrs.createdAt, 'timestamp'), by('id', taskPrs.id, 'text')] },
   machine: { table: machines, order: [by('name', machines.name, 'text')] },
+  shared_agents: { table: sharedAgents, order: [by('version', sharedAgents.version, 'int')] },
   transcript_run: {
     table: transcriptRuns,
     order: [by('startedAt', transcriptRuns.startedAt, 'timestamp'), by('id', transcriptRuns.id, 'text')],
@@ -358,6 +373,17 @@ async function importMachines(db: DbOrTx, rows: unknown[]): Promise<ImportResult
   return outcome(valid.length, added.length, invalid);
 }
 
+/** The user's shared agents, unless the board has its own: the newer of two documents is not this import's to decide. */
+async function importSharedAgents(db: DbOrTx, rows: unknown[]): Promise<ImportResult> {
+  const { valid, invalid } = parseRows(sharedAgentsRowSchema, rows);
+  const [first] = valid;
+  const added =
+    first === undefined
+      ? []
+      : await db.insert(sharedAgents).values(first).onConflictDoNothing().returning({ version: sharedAgents.version });
+  return outcome(valid.length, added.length, invalid);
+}
+
 async function importTranscriptRuns(db: DbOrTx, rows: unknown[]): Promise<ImportResult> {
   const { valid, invalid } = parseRows(transcriptRunRowSchema, rows);
   const onBoard = await presentIds(
@@ -394,6 +420,7 @@ const IMPORTERS: Record<AccountTable, (db: DbOrTx, rows: unknown[]) => Promise<I
   note: importNotes,
   task_pr: importTaskPrs,
   machine: importMachines,
+  shared_agents: importSharedAgents,
   transcript_run: importTranscriptRuns,
   transcript_event: importTranscriptEvents,
 };

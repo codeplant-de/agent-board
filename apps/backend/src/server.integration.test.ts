@@ -208,6 +208,7 @@ describe('machine API', () => {
       dirsIndex: null,
       catalogIndex: null,
       usageIndex: null,
+      agentsVersion: null,
     });
     expect(LEGACY_CONTRACT).toBe(9);
     expect(json.result.features).toContain('task.configure');

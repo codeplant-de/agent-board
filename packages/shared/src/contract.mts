@@ -3,6 +3,7 @@ import type { MachineCatalog } from './catalog.mts';
 import { envelopeLength, isBlindIndex, isEnvelope } from './crypto.mts';
 import type { Field } from './crypto.mts';
 import { isRecord } from './guards.mts';
+import type { SharedAgentsDocument } from './sharedAgents.mts';
 import type { MachineUsage } from './machineUsage.mts';
 import { isKeyId } from './keys.mts';
 import type { Answer, Question } from './questions.mts';
@@ -84,6 +85,10 @@ export const MAX_WAIT_MS = 7 * 24 * 60 * 60_000;
 
 // The largest count the database holds in an `integer` column (a schedule's runs left, a transcript event's seq).
 export const MAX_INT32 = 2_147_483_647;
+
+/** A version of the shared agent definitions: a counter from 1 that only goes up. */
+export const isSharedAgentsVersion = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_INT32;
 
 // The longest interval a schedule may repeat at; far beyond it, the date arithmetic of the next run breaks.
 export const MAX_INTERVAL_MS = 10 * 365 * 24 * 60 * 60_000;
@@ -510,7 +515,19 @@ export interface Backend {
   checkUsage(machine: string, usage: MachineUsage): Promise<UsageOnBoard>;
   // Replaces the board's copy of this machine's usage status. Display only, never read back by a CLI.
   setUsage(machine: string, usage: MachineUsage): Promise<void>;
+  // The version of the agent definitions the board holds (`agents.shared`), as the `version` answer said: null when it holds
+  // none, 'unsupported' for a server without the feature. Costs no call of its own.
+  sharedAgentsVersion(): Promise<number | null | 'unsupported'>;
+  // The board's agent definitions, opened under the version the board names for them; null when it holds none.
+  getSharedAgents(): Promise<SharedAgentsOnBoard>;
+  // Stores `document` (whose version must be `expectedVersion + 1`) while the board's version is still `expectedVersion`, 0 for
+  // none; the server answers 409 when another push came first.
+  setSharedAgents(document: SharedAgentsDocument, expectedVersion: number): Promise<void>;
 }
+
+/** The board's agent definitions: the opened document, or its version alone when it does not open under that version. */
+export type SharedAgentsOnBoard =
+  null | { version: number; document: SharedAgentsDocument } | { version: number; unreadable: true };
 
 /** A directory the machine lists in its config, with the label it gave it (`isSafeDirLabel`). */
 export interface MachineDir {
@@ -726,6 +743,26 @@ export interface WireUsageState {
   index: string | null;
 }
 
+// Answer of get-agents: the sealed agent definitions ("agents.shared") and the version they are sealed as.
+export interface WireSharedAgents {
+  version: number;
+  document: string;
+}
+
+// Body of set-agents: the next version of the document, stored only while the board's is still `expectedVersion` (0: none).
+export interface WireSetAgents {
+  document: string;
+  version: number;
+  expectedVersion: number;
+}
+
+// What the `version` answer says of the shared agent definitions.
+export interface WireAgentsState {
+  supported: boolean;
+  // The version the board holds; null when it holds none.
+  version: number | null;
+}
+
 export interface WireAsk {
   // Sealed empty text: a question note carries its content in `questions`.
   body: string;
@@ -802,6 +839,9 @@ export interface WireBackend {
   catalogState(): Promise<WireCatalogState>;
   setUsage(body: WireUsage): Promise<void>;
   usageState(): Promise<WireUsageState>;
+  getAgents(): Promise<WireSharedAgents | null>;
+  setAgents(body: WireSetAgents): Promise<void>;
+  agentsState(): Promise<WireAgentsState>;
 }
 
 // The characters of a suggested reply the board takes.
@@ -819,6 +859,7 @@ export const SEALED_LIMITS: Record<Field, number> = {
   'machine.dirs': 256 * 1024,
   'machine.catalog': 256 * 1024,
   'machine.usage': 64 * 1024,
+  'agents.shared': 256 * 1024,
   'note.body': 4 * 100_000,
   'note.preview': 4 * 300,
   'note.suggestion': 4 * NOTE_SUGGESTION_CHARS,
@@ -1506,6 +1547,12 @@ export function parseVersionCatalogIndex(value: unknown): string | null {
   return typeof catalogIndex === 'string' && isBlindIndex(catalogIndex) ? catalogIndex : null;
 }
 
+/** The version of the shared agent definitions in a `version` answer. Lenient like `parseVersionDirsIndex`. */
+export function parseVersionAgentsVersion(value: unknown): number | null {
+  const version = isRecord(value) ? value['agentsVersion'] : undefined;
+  return isSharedAgentsVersion(version) ? version : null;
+}
+
 /** The blind index of the calling machine's usage status in a `version` answer. Lenient like `parseVersionDirsIndex`. */
 export function parseVersionUsageIndex(value: unknown): string | null {
   const usageIndex = isRecord(value) ? value['usageIndex'] : undefined;
@@ -1611,6 +1658,31 @@ export function parseWireUsage(value: unknown): WireUsage {
     usage: sealedField(obj, 'usage', 'usage', 'machine.usage'),
     index: parseBlindIndex(obj['index'], 'usage.index'),
   };
+}
+
+// Answer of get-agents: the sealed document and its version, or null when the board holds none.
+export function parseWireSharedAgents(value: unknown): WireSharedAgents | null {
+  if (value === null) return null;
+  const obj = record(value, 'agents');
+  const version = obj['version'];
+  if (!isSharedAgentsVersion(version)) throw new ContractError('agents.version must be a positive integer');
+  return { version, document: sealedField(obj, 'document', 'agents', 'agents.shared') };
+}
+
+// Body of set-agents: a sealed document, its version, and the version it replaces, which must be one lower.
+export function parseWireSetAgents(value: unknown): WireSetAgents {
+  const obj = record(value, 'agents');
+  rejectUnknownKeys(obj, ['document', 'version', 'expectedVersion'], 'agents');
+  const { version, expectedVersion } = obj;
+  if (
+    typeof expectedVersion !== 'number' ||
+    !Number.isInteger(expectedVersion) ||
+    expectedVersion < 0 ||
+    expectedVersion >= MAX_INT32
+  )
+    throw new ContractError('agents.expectedVersion must be a whole number of 0 or more');
+  if (version !== expectedVersion + 1) throw new ContractError('agents.version must be agents.expectedVersion + 1');
+  return { document: sealedField(obj, 'document', 'agents', 'agents.shared'), version, expectedVersion };
 }
 
 // Body of add-task. `id`, `title` and `input` are required.

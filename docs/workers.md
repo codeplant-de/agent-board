@@ -335,6 +335,8 @@ The results are files under `<state dir>/catalog/`, one per directory.
 
 **Sending.** After the probe, the dispatcher composes one document from every directory asked so far. It sends the document when it differs from the one the board holds, and nothing until one directory has an answer.
 
+The document also says what the machine has of the agents: the version of the [board's agents](#agents-on-the-board) it applied, the hash of every agent it has, wherever defined, and the names whose local definition an apply moved aside. A change there sends the document again.
+
 - The board takes at most 256 KiB for a sealed catalogue. A larger document is cut before it is sent: first the descriptions and hints of the skills of single directories, then those of the common skills, then the lists themselves. The log says once what was left out.
 - A failed send costs the tick one log line at most.
 - `--dry-run` starts no probe and prints `DRY probe claude in <dir>` and `DRY set-catalog`.
@@ -409,11 +411,11 @@ A dedicated OS user for the workers, with its own checkouts and a narrowly scope
 
 ## Agents
 
-An agent is a named set of tools and rules on the machine. It is an entry under `agents` in the machine's `config.json`, or a file `<name>.yaml` in the `agents` directory beside it (see [Sharing and importing agents](#sharing-and-importing-agents)). A task that names one runs as that agent, with only what the agent allows, whoever made the task.
+An agent is a named set of tools and rules on the machine. It is an entry under `agents` in the machine's `config.json`, a file `<name>.yaml` in the `agents` directory beside it (see [Sharing and importing agents](#sharing-and-importing-agents)), or a definition the board holds for every machine of yours (see [Agents on the board](#agents-on-the-board)). A task that names one runs as that agent, with only what the agent allows, whoever made the task.
 
 You choose the agent with `board schedule --agent <name>` or the **Agent** field of the New task form (see [Choosing an agent](usage.md#choosing-an-agent)). A repeating schedule hands its agent to every occurrence.
 
-The task holds the name as a sealed `agent` field. The board server stores and returns it but cannot read, change or drop it without making the task unreadable (see [Encryption](encryption.md#encryption)). The definition never leaves the machine. The board holds only the name.
+The task holds the name as a sealed `agent` field. The board server stores and returns it but cannot read, change or drop it without making the task unreadable (see [Encryption](encryption.md#encryption)). The task holds the name only, never a definition or its version: a task, and every occurrence of a schedule, runs as the definition the machine has when the run starts.
 
 ```json
 "agents": {
@@ -455,7 +457,7 @@ The worker copies `env` and `mcpServers` only after the directory has passed the
 - A proposal made from an agent's run carries no agent. Once you start it, it runs in `auto` like any task of yours.
 - `board attach` resumes an agent's task with your own settings.
 - The commands that are refused inside a run rely on `AGENT_BOARD_TASK`. Only the agent's own lists stop a command from unsetting it.
-- The name is the only link to the definition, so machines must define same-named agents the same way.
+- The name is the only link to the definition. Machines that each define an agent of the same name in `config.json` or `agents/` must define it the same way. An agent pushed to the board is the same on every machine that applied it; `board agents` shows a hash of each definition, so you can compare.
 
 ### Sharing and importing agents
 
@@ -503,9 +505,57 @@ It writes `agents/<name>.yaml` (mode 600, the directory mode 700) only after you
 - Nothing fetches the URL again. Run `add --replace` with it to take a newer version.
 - `example:<name>` reads `apps/cli/examples/agents/<name>.yaml`, built into the CLI. `board example agents/reviewer.yaml` prints it.
 - `rm` removes the file, or the entry from `config.json`, keeping every other key and the file's mode. A task that names the agent then does not run on this machine any more.
-- `add` and `rm` are refused inside a board run.
+- `add` refuses a name the board holds; push the new definition instead, or add it under another name.
+- `add`, `push` and `rm` are refused inside a board run.
 
-The definitions stay on each machine, and nothing sends them to the board. Machines that should run the same agent each `add` the same file.
+An agent added with `add` stays on its machine. To give every machine the same agent, push it to the board.
+
+### Agents on the board
+
+The board can hold agent definitions for every machine of yours. Any of your CLIs puts one there, and every machine applies it and its later versions itself, on its next dispatch tick.
+
+```sh
+board agents push reviewer        # put this machine's reviewer on the board: shows every grant, asks, then pushes
+board agents push ./reviewer.yaml # the same from a file (also -, an https URL or example:<name>, read as add reads them)
+board agents                      # each agent with where it came from: config.json, agents/<file> or board v<n>, and its hash
+board agents rm --board reviewer  # take it off the board; every machine drops its copy on its next tick
+```
+
+**`push` shows what it grants.** It reads the definition as `add` does, through the same strict parser, and prints the same definition and grant summary, with the same flags. It pushes only after you confirm at a terminal, or with `--yes`. `--dry-run` prints all of it and pushes nothing. `push` is refused inside a board run, like `add` and `rm`.
+
+There is no `push --all`: you move agents to the board one at a time. To change a board agent, `board agents export <name> > <name>.yaml`, edit the file and push the file.
+
+**How it is held.** All your agents on the board are one sealed document with a version that goes up with every push. The board cannot read it, and it cannot hand an old document out as a newer one (see [Encryption](encryption.md#the-agents-on-the-board)). A push fetches the document, changes its one entry and sends it back as the next version. The server takes it only while its version is still the one the push started from. If another push came first, `push` fetches again and retries once; when that other push changed the same agent, it shows what the board holds now and asks again. `rm --board` works the same way.
+
+**How a machine applies it.**
+
+1. The `version` answer every tick starts with names the board's version. A tick where it is not newer than the one applied here costs nothing more.
+2. When it is newer, the tick fetches the document, opens it under that version and reads every entry with the strict parser of an agent file.
+3. It writes each agent to `~/.config/agent-board/agents.board/<name>.yaml` (mode 600, the directory mode 700), deletes the files of agents the document no longer has, and records the version and each agent's hash in `agents.board/state.json`. The dispatcher logs `APPLIED agents v<n>`.
+4. The apply runs before the tick decides what to start, so a task that names a newly pushed agent can start in the same tick.
+
+Everything that reads agents reads `agents.board/` alongside `config.json` and `agents/`. `board agents` shows a board agent as `board v<n>` and its `source` as `board`. Do not edit the files: the next apply writes them again.
+
+**The board wins a name.** When the board holds a name that `config.json` or `agents/` also defines, the apply moves the machine's own definition aside in the same step, also when the two are the same:
+
+- an `agents/<name>.yaml` file moves to `~/.config/agent-board/agents.replaced/<name>.<time>.yaml` (mode 600, the directory mode 700), which nothing reads;
+- a `config.json` entry is written there too and removed from `config.json` as `board agents rm` removes it, keeping every other key and the file's mode.
+
+The dispatcher logs `REPLACED <name>: local definition moved to <path>`. `board agents` shows the agent as `board v<n>, replaced a local definition` until you delete the moved file, and `board doctor` lists the moved files. A file you drop into `agents/` under a board name later is moved aside on the next tick. To get a moved definition back, add it under another name: `board agents add ~/.config/agent-board/agents.replaced/<file> --name <other>`. Under its old name the next tick would move it aside again.
+
+After a push, the agent is the board's on the pushing machine too: `push` takes the machine's own file or `config.json` entry away, since the board copy holds the same definition.
+
+**What fails, and how.**
+
+- An entry that does not parse (a newer CLI may have pushed a key this one does not know) makes that one agent unusable on this machine and leaves the others. Its local definition is moved aside all the same.
+- A local definition the apply cannot move (a read-only `config.json`, say) makes that agent unusable here until you move it yourself, so the definition a task gets never depends on load order. `board doctor` says why.
+- A document that does not open under the version the board names, or one older than the version applied here, changes nothing: the machine keeps what it has, the dispatcher logs a warning and `board doctor` reports it.
+- A board that holds no document, or deletes it, takes nothing away: the machines keep their copies. To take an agent off every machine, push a document without it (`rm --board`).
+- A CLI from before shared agents ignores them and runs only its local agents. A task that names a board agent waits in Todo for a machine that has it, as for any name a machine lacks.
+
+**Drift.** Each agent's hash is the SHA-256 of the keys that decide what a run may do (`description`, `prompt`, `model`, `tools`, `allowedTools`, `disallowedTools`, `env`, `mcpServers`) as canonical JSON. `version` and `source` are left out. `board agents` shows the first 12 hex digits, and `--json` all of them. `board doctor` warns, and does not fail, when this machine applied an older version than the board holds, when the last look at the board changed nothing, and when local definitions were moved aside. Each machine's [catalogue](#skills-and-models-on-the-board) carries the version it applied, the hash of every agent it has and the names whose local definition it replaced.
+
+**The limit.** Before, an agent's definition changed on a machine only when you read and confirmed it there. Now a push from any one machine reaches all of them within a tick, without a reading on each. A push needs the data key, and `board agents push` is refused inside a run, but the data key sits in `~/.config/agent-board/env` on every worker machine. A run in `auto` mode that reads it can seal and push a definition with broader grants, and every machine applies it. Such a run could always rewrite the agent files of its own machine; the new reach is every other machine. This is accepted, without a signing key or a per-machine switch (see [Design decisions](architecture.md#design-decisions)).
 
 ### An agent's run
 
