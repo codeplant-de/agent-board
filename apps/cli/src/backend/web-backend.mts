@@ -5,6 +5,7 @@ import {
   neededServerFeature,
   parseWireAddScheduleResult,
   parseWireAddTaskResult,
+  parseWireEditScheduleResult,
   parseWireWakeResult,
   parseWireFailResult,
   parseWireNotes,
@@ -77,6 +78,8 @@ const COMMAND_FEATURES: Partial<Record<string, ServerFeature>> = {
   stopped: 'run-inbox',
   'set-dirs': 'machine.dirs',
   'configure-task': 'task.configure',
+  'edit-prompt': 'prompt.edit',
+  'edit-schedule': 'prompt.edit',
   'set-catalog': 'machine.catalog',
   'set-usage': 'machine.usage',
 };
@@ -139,9 +142,28 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     if (draft.model !== undefined) requireFeature((await connect()).features, 'task.model');
   };
 
+  // Refuses to send the auto-done setting to a server that would reject the key.
+  const requireAutoDoneSupport = async (values: { autoDone?: boolean }): Promise<void> => {
+    if (values.autoDone !== undefined) requireFeature((await connect()).features, 'task.auto-done');
+  };
+
   // Refuses to send an agent to a server that would reject the field, or that would not keep it with the task.
   const requireAgentSupport = async (draft: { agent?: string }): Promise<void> => {
     if (draft.agent !== undefined) requireFeature((await connect()).features, 'task.agent');
+  };
+
+  // Refuses to send a schedule capability to a server that would not know it.
+  const requireScheduleSupport = async (
+    draft: Pick<Parameters<WireBackend['addSchedule']>[0], 'moreCrons' | 'maxConcurrent' | 'after'>,
+  ): Promise<void> => {
+    const needed = [
+      ...(draft.moreCrons === undefined ? [] : (['schedule.crons'] as const)),
+      ...(draft.maxConcurrent === undefined ? [] : (['schedule.max-concurrent'] as const)),
+      ...(draft.after === undefined ? [] : (['schedule.after'] as const)),
+    ];
+    if (needed.length === 0) return;
+    const { features } = await connect();
+    for (const feature of needed) requireFeature(features, feature);
   };
 
   // A call of the run for its own task names the run, when the server can check it.
@@ -198,6 +220,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     addTask: async (draft) => {
       await requireSendable(draft);
       await requireModelSupport(draft);
+      await requireAutoDoneSupport(draft);
       await requireAgentSupport(draft);
       return call('add-task', { body: draft }, parseWireAddTaskResult);
     },
@@ -206,7 +229,12 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       await requireSendable(patch);
       return call('update-task', { id: checkedId, body: patch }, parseWireTask);
     },
-    configureTask: async (id, body) => call('configure-task', { id: taskId(id), body }, parseWireTask),
+    configureTask: async (id, body) => {
+      const checkedId = taskId(id);
+      await requireAutoDoneSupport(body);
+      return call('configure-task', { id: checkedId, body }, parseWireTask);
+    },
+    editPrompt: async (id, body) => call('edit-prompt', { id: taskId(id), body }, parseWireTask),
     async claimTask(id, machine) {
       if (!isSafeMachineName(machine))
         throw new BackendError(`"${machine.slice(0, 40)}" is not a valid machine name: use ${MACHINE_NAME_RULE}`);
@@ -283,12 +311,15 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     addSchedule: async (draft) => {
       await requireSendable(draft);
       await requireModelSupport(draft);
+      await requireAutoDoneSupport(draft);
       await requireAgentSupport(draft);
+      await requireScheduleSupport(draft);
       return call('add-schedule', { body: draft }, parseWireAddScheduleResult);
     },
     listSchedules: async () => call('list-schedules', {}, (value) => parseWireSchedules(value, listOptions)),
     updateSchedule: async (id, patch) =>
       call('update-schedule', { id: scheduleId(id), body: patch }, parseWireSchedule),
+    editSchedule: async (id, body) => call('edit-schedule', { id: scheduleId(id), body }, parseWireEditScheduleResult),
     removeSchedule: async (id) => send('remove-schedule', { id: scheduleId(id) }),
   };
 }

@@ -2,6 +2,7 @@ import {
   ContractError,
   defaultTitle,
   newTaskId,
+  previousText,
   QuestionError,
   sealAnswers,
   sealFields,
@@ -9,6 +10,7 @@ import {
   sealNote,
   sealTitle,
   sealWorkdir,
+  textBeforeEdit,
   type Answer,
   type Keys,
   type Priority,
@@ -33,6 +35,8 @@ export interface NewTask {
   priority?: Priority;
   /** An alias or full name; absent is claude's default. */
   model?: string;
+  /** The agent may move the task, or each occurrence of a repeat, to Done itself; absent is off. */
+  autoDone?: boolean;
   when?: CreateInput['when'];
   parentId?: string;
   /** The machine and directory it runs in (every occurrence of a repeat), instead of the default directory of whichever machine takes it. */
@@ -52,7 +56,7 @@ async function checked<T>(work: () => Promise<T>): Promise<T> {
 }
 
 const isRepeat = (when: CreateInput['when']): boolean =>
-  typeof when === 'object' && ('every' in when || 'cron' in when);
+  typeof when === 'object' && ('every' in when || 'cron' in when || 'after' in when);
 
 export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInput> {
   const input = task.input.trim();
@@ -73,6 +77,7 @@ export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInpu
     ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
     ...(task.priority === undefined ? {} : { priority: task.priority }),
     ...(task.model === undefined ? {} : { model: task.model }),
+    ...(task.autoDone === undefined ? {} : { autoDone: task.autoDone }),
     ...(task.when === undefined ? {} : { when: task.when }),
     ...(task.parentId === undefined ? {} : { parentId: task.parentId }),
     ...(task.place === undefined || sealed.workdir === undefined
@@ -164,27 +169,6 @@ export interface PolishTarget {
   unreadable: UnreadableField[];
 }
 
-/** `text` in a code fence long enough that nothing inside it closes the fence. */
-function fenced(text: string): string {
-  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
-  const fence = '`'.repeat(Math.max(3, longest + 1));
-  return `${fence}\n${text}\n${fence}`;
-}
-
-function keptText(label: string, target: Pick<PolishTarget, 'title' | 'input'>): string {
-  return `${label}\n\nTitle: ${target.title}\n\n${fenced(target.input)}`;
-}
-
-/** The note that keeps what a polished prompt replaces, so applying it loses nothing. */
-export function previousText(target: Pick<PolishTarget, 'title' | 'input'>): string {
-  return keptText('Prompt before polishing', target);
-}
-
-/** The note that keeps what an edit of the prompt replaces. */
-export function textBeforeEdit(target: Pick<PolishTarget, 'title' | 'input'>): string {
-  return keptText('Prompt before editing', target);
-}
-
 /**
  * Applying a polished prompt is the user's sealed act: the polished title and prompt, sealed as the task's own and the user's, and
  * the old ones, sealed as a note of the user's. Throws when the old text could not be read, since it could not be kept.
@@ -229,6 +213,7 @@ export interface ConfigureTarget {
 /** The settings to change; absent leaves one alone. A null model is claude's default, a null place is no directory and no machine. */
 export interface Configuration {
   model?: string | null;
+  autoDone?: boolean;
   place?: { machine: string; workdir: string } | null;
 }
 
@@ -237,7 +222,7 @@ export async function sealConfigure(
   keys: Keys,
   options: { task: ConfigureTarget } & Configuration,
 ): Promise<RouterInputs['tasks']['configure']> {
-  const { task, model, place } = options;
+  const { task, model, autoDone, place } = options;
   const row: RowRef = {
     kind: 'task',
     id: task.id,
@@ -248,6 +233,7 @@ export async function sealConfigure(
   return {
     id: task.id,
     ...(model === undefined ? {} : { model }),
+    ...(autoDone === undefined ? {} : { autoDone }),
     ...(place === undefined
       ? {}
       : {

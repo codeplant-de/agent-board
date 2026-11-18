@@ -2,7 +2,7 @@ import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MachineCatalog, MachineDir } from '@agent-board/shared';
 import type { Machine } from '../lib/opening';
@@ -14,11 +14,15 @@ const listed = vi.hoisted(() => ({
   machines: [] as unknown[],
   catalogs: [] as unknown[],
   failure: null as Error | null,
+  schedules: [] as unknown[],
 }));
 
 vi.mock('../lib/trpc', () => ({
   useTRPC: () => ({
     tasks: { create: { mutationOptions: () => ({ mutationFn: create }) } },
+    schedules: {
+      list: { queryOptions: () => ({ queryKey: ['schedules.list'], queryFn: async () => listed.schedules }) },
+    },
     machines: {
       list: {
         queryOptions: () => ({
@@ -54,12 +58,17 @@ vi.mock('./MarkdownEditor', () => ({
 
 const FUTURE = '2099-01-01T10:00';
 
+function Path() {
+  return <output aria-label="Path">{useLocation().pathname}</output>;
+}
+
 async function open(when?: string) {
   render(
     <MemoryRouter>
       <MantineProvider>
         <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
           <NewTaskModal opened onClose={() => undefined} />
+          <Path />
         </QueryClientProvider>
       </MantineProvider>
     </MemoryRouter>,
@@ -79,6 +88,7 @@ beforeEach(() => {
   listed.machines = [];
   listed.catalogs = [];
   listed.failure = null;
+  listed.schedules = [];
 });
 
 describe('NewTaskModal Agent', () => {
@@ -183,6 +193,111 @@ describe('NewTaskModal When', () => {
   });
 });
 
+const cronZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+describe('NewTaskModal repeating with several cron expressions', () => {
+  it('reads one cron expression per line, the first as the rule and the others as more', async () => {
+    await open('Repeating');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * 5#1{Enter}0 9 * * 5#3');
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect((sent() as { when: unknown }).when).toEqual({
+      cron: '0 9 * * 5#1',
+      moreCrons: ['0 9 * * 5#3'],
+      timezone: cronZone(),
+    });
+  });
+
+  it('holds back a repeated expression and a line that is not cron', async () => {
+    await open('Repeating');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * *{Enter}0 9 * * *');
+    expect(await screen.findByText('A cron expression is given twice')).toBeInTheDocument();
+    expect(createButton()).toBeDisabled();
+    await userEvent.clear(screen.getByLabelText(/Repeat/));
+    await userEvent.type(screen.getByLabelText(/Repeat/), '0 9 * * *{Enter}often');
+    expect(await screen.findByText(/does not have 5 cron fields/)).toBeInTheDocument();
+    expect(createButton()).toBeDisabled();
+  });
+});
+
+describe('NewTaskModal repeating with a limit', () => {
+  it('sends no limit by default', async () => {
+    await open('Repeating');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '2h');
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect((sent() as { when: object }).when).not.toHaveProperty('maxConcurrent');
+  });
+
+  it('sends the number given as maxConcurrent', async () => {
+    await open('Repeating');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '2h');
+    await userEvent.type(screen.getByLabelText('At most at once'), '2');
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ when: { every: 7_200_000, maxConcurrent: 2 } });
+  });
+
+  it('refuses a limit above 100', async () => {
+    await open('Repeating');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '2h');
+    fireEvent.change(screen.getByLabelText('At most at once'), { target: { value: '101' } });
+    await waitFor(() => expect(createButton()).toBeDisabled());
+  });
+});
+
+describe('NewTaskModal repeating after another schedule', () => {
+  const upstream = (id: string, title: string, ended = false) => ({ id, title, ended });
+  const chooseAfter = async (title: string) => {
+    await userEvent.click(screen.getByRole('combobox', { name: 'Run after' }));
+    await userEvent.click(await screen.findByRole('option', { name: title, hidden: true }));
+  };
+
+  it('offers the schedules that have not ended, by title, and sends the choice with its delay', async () => {
+    listed.schedules = [upstream('up1', 'Build'), upstream('up2', 'Old', true)];
+    await open('Repeating');
+    await userEvent.click(screen.getByRole('combobox', { name: 'Run after' }));
+    expect(await screen.findByRole('option', { name: 'Build', hidden: true })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Old', hidden: true })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('option', { name: 'Build', hidden: true }));
+    expect(screen.queryByLabelText(/^Repeat/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('First run')).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText('Delay'), '10m');
+    await userEvent.type(screen.getByLabelText('Number of runs'), '3');
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect((sent() as { when: unknown }).when).toEqual({ after: { scheduleId: 'up1', delayMs: 600_000 }, times: 3 });
+  });
+
+  it('is not held back by a past first run that the choice hid', async () => {
+    listed.schedules = [upstream('up1', 'Build')];
+    await open('Repeating');
+    await userEvent.type(screen.getByLabelText(/Repeat/), '2h');
+    fireEvent.change(screen.getByLabelText('First run'), { target: { value: '2020-01-01T10:00' } });
+    expect(createButton()).toBeDisabled();
+    await chooseAfter('Build');
+    await waitFor(() => expect(createButton()).toBeEnabled());
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect((sent() as { when: unknown }).when).toEqual({ after: { scheduleId: 'up1', delayMs: 0 } });
+  });
+
+  it('sends no delay as none, refuses one that is not a duration, and goes to the Schedules page after', async () => {
+    listed.schedules = [upstream('up1', 'Build')];
+    create.mockResolvedValueOnce(null as never);
+    await open('Repeating');
+    await chooseAfter('Build');
+    await userEvent.type(screen.getByLabelText('Delay'), 'soon');
+    expect(await screen.findByText(/A duration such as 10m/)).toBeInTheDocument();
+    expect(createButton()).toBeDisabled();
+    await userEvent.clear(screen.getByLabelText('Delay'));
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect((sent() as { when: unknown }).when).toEqual({ after: { scheduleId: 'up1', delayMs: 0 } });
+    await waitFor(() => expect(screen.getByLabelText('Path')).toHaveTextContent('/schedules'));
+  });
+});
+
 describe('NewTaskModal model', () => {
   it('sends no model by default', async () => {
     await open();
@@ -198,6 +313,23 @@ describe('NewTaskModal model', () => {
     await userEvent.click(createButton());
     await waitFor(() => expect(create).toHaveBeenCalled());
     expect(sent()).toMatchObject({ model: 'opus', when: 'now' });
+  });
+});
+
+describe('NewTaskModal auto-done', () => {
+  it('sends no setting by default', async () => {
+    await open();
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).not.toHaveProperty('autoDone');
+  });
+
+  it('sends autoDone when the box is checked', async () => {
+    await open();
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Agent may mark it done' }));
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ autoDone: true, when: 'now' });
   });
 });
 

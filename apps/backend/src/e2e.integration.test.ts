@@ -298,7 +298,35 @@ describe('a task model', () => {
       everyMs: 3_600_000,
       model: 'haiku',
     });
-    expect([schedule.model, task.model]).toEqual(['haiku', 'haiku']);
+    expect([schedule.model, task?.model]).toEqual(['haiku', 'haiku']);
+  });
+});
+
+describe('a schedule that runs after another', () => {
+  it('is made from the CLI and from the browser, read back by the CLI, and its card follows a finished one', async () => {
+    const { cli, trpc, mutate } = ctx;
+    const upstream = await cli.addSchedule({ title: 'Build', input: '/build', everyMs: 3_600_000 });
+    const after = { scheduleId: upstream.schedule.id, delayMs: 600_000 };
+    const viaCli = await cli.addSchedule({ title: 'Deploy', input: '/deploy', after, maxConcurrent: 1 });
+    expect(viaCli.task).toBeNull();
+    expect(viaCli.schedule).toMatchObject({ title: 'Deploy', after, maxConcurrent: 1, occurrenceTaskId: null });
+    const viaUi = await mutate<unknown, Task | null>(trpc.tasks.create.mutationOptions(), {
+      title: 'Notify',
+      input: '/notify',
+      when: { after: { scheduleId: upstream.schedule.id, delayMs: 0 } },
+    });
+    expect(viaUi).toBeNull();
+    const listed = await cli.listSchedules();
+    expect(listed.map(({ title }) => title).sort()).toEqual(['Build', 'Deploy', 'Notify']);
+    expect(listed.find(({ title }) => title === 'Notify')?.after?.scheduleId).toBe(upstream.schedule.id);
+
+    const first = upstream.task!.id;
+    await cli.claimTask(first, 'laptop');
+    await cli.updateTask(first, { status: 'needs-me' });
+    const cards = (await cli.listTasks()).filter(({ scheduleId }) => scheduleId === viaCli.schedule.id);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ title: 'Deploy', input: '/deploy', status: 'todo' });
+    expect(cards[0]?.notBefore?.getTime()).toBeGreaterThan(Date.now() + 500_000);
   });
 });
 

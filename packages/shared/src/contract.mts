@@ -88,6 +88,15 @@ export const MAX_INT32 = 2_147_483_647;
 // The longest interval a schedule may repeat at; far beyond it, the date arithmetic of the next run breaks.
 export const MAX_INTERVAL_MS = 10 * 365 * 24 * 60 * 60_000;
 
+// How many cron expressions one schedule may have, and the most cards of one schedule that may be under way at once.
+export const MAX_SCHEDULE_CRONS = 10;
+export const MAX_SCHEDULE_CONCURRENT = 100;
+
+// Who made a task's last status change: the user in the browser, its agent from inside its run, or a machine (the CLI
+// outside a run: a claim, a failed run, a script or a terminal).
+export const TASK_ACTORS = ['user', 'agent', 'machine'] as const;
+export type TaskActor = (typeof TASK_ACTORS)[number];
+
 export const TASK_CREATORS = ['intake', 'user', 'agent'] as const;
 export type TaskCreator = (typeof TASK_CREATORS)[number];
 
@@ -112,6 +121,9 @@ export interface Task {
   // The Claude model the runs use (`claude --model`): an alias or a full id; null is claude's default. A clear value from the
   // server, so a worker shape-checks it with `isModelName` again before it reaches argv.
   model: string | null;
+  // The agent may move the task to Done itself (`update-task` with a run and status done) once it judges every acceptance
+  // criterion met; the user can change it in any status. Absent from a server without `task.auto-done`, which reads as false.
+  autoDone: boolean;
   // The agent of the machine's config.json the task runs as, by name; null or absent for none. Sealed on the wire, and part
   // of the context of `input`, so a task whose agent the server dropped or changed is unreadable. A worker that sees one runs
   // only that agent, or not at all.
@@ -150,6 +162,9 @@ export interface Task {
   notBefore: Date | null;
   // The schedule this task is an occurrence of; set by the server, never by a draft or a patch.
   scheduleId: string | null;
+  // Todo only: its schedule runs at its `maxConcurrent` limit, so no worker may claim the task until a card of the schedule
+  // finishes or leaves Running and Waiting. Absent otherwise and from a server without `task.held`.
+  held?: true;
   // The task this one was forked from; absent for any other task. The first run of a fork continues a copy of that task's Claude
   // session. A clear value from the server, so a worker shape-checks it again; it is also part of the context of `input`, so a
   // task whose fork link the server added, dropped or changed is unreadable. Absent from a server without `task.fork`.
@@ -179,6 +194,9 @@ export interface Task {
   // How many notes the task's thread holds; notes are never deleted, so it only grows. Absent from a server without the
   // `task.note-count` feature.
   noteCount?: number;
+  // Who made the last status change; absent before the first change and from a server without `task.moved-by`. A client
+  // skips a value it does not know.
+  movedBy?: TaskActor;
   unreadable: UnreadableField[];
 }
 
@@ -250,6 +268,8 @@ export interface TaskDraft {
   priority?: Priority;
   // Default: claude's default model.
   model?: string;
+  // Default: false.
+  autoDone?: boolean;
   // Unique per board: a second add-task with the same key returns the first task instead of a new one. The CLI sends the
   // blind index of the key, never the key.
   dedupeKey?: string;
@@ -294,9 +314,16 @@ export interface TaskPatch {
   expect?: Status;
 }
 
+// A schedule that runs after another one: its occurrence is made when a card of `scheduleId` finishes, and starts `delayMs` later.
+export interface ScheduleAfter {
+  scheduleId: string;
+  delayMs: number;
+}
+
 // A rule that produces delayed Todo tasks. It always has one pending occurrence: a task in Todo with `notBefore` at the
 // next run time. The next one is created when that task leaves Todo (claimed, moved or closed), so a run that was missed
-// while nothing claimed it is not repeated, and closing the pending task skips that run.
+// while nothing claimed it is not repeated, and closing the pending task skips that run. A schedule that runs after another
+// one has no pending occurrence while it waits for it.
 export interface Schedule {
   id: string;
   title: string;
@@ -304,15 +331,25 @@ export interface Schedule {
   priority: Priority;
   // The model of every occurrence; null is claude's default.
   model: string | null;
+  // Whether every occurrence lets the agent move it to Done itself.
+  autoDone: boolean;
   // Pins the occurrences to a machine and the directory they run in there.
   machine: string | null;
   workdir: string | null;
   // The agent every occurrence runs as, by name; null for none.
   agent?: string | null;
-  // The rule: an interval on the grid `anchorAt + k * everyMs`, or a 5-field cron expression in `timezone`.
+  // The rule, exactly one of: an interval on the grid `anchorAt + k * everyMs`, a 5-field cron expression in `timezone`, or
+  // `after` another schedule. `cron` is the first expression; `moreCrons` holds the others (up to 9), which a CLI that predates
+  // them does not read. Absent when there is only one, and from a server without `schedule.crons`.
   everyMs: number | null;
   cron: string | null;
+  moreCrons?: string[];
   timezone: string | null;
+  // The schedule this one runs after; null for the other rules. A CLI that does not announce `schedule.after` is not shown a
+  // schedule with it.
+  after: ScheduleAfter | null;
+  // At most this many cards of the schedule are under way (Running or Waiting) at once; null: no limit. A missing key reads as null.
+  maxConcurrent: number | null;
   // The first run of an interval; the earliest a cron expression matches.
   anchorAt: Date;
   // The pending occurrence's start time; null while paused (usually) or ended.
@@ -337,15 +374,23 @@ export interface ScheduleDraft {
   priority?: Priority;
   // Default: claude's default model.
   model?: string;
+  // Default: false.
+  autoDone?: boolean;
   machine?: string;
   workdir?: string;
   // The agent every occurrence runs as (sealed on the wire).
   agent?: string;
-  // Exactly one of `everyMs` and `cron`; a cron expression needs its `timezone` (IANA name).
+  // Exactly one of `everyMs`, `cron` and `after`; a cron expression needs its `timezone` (IANA name). `moreCrons` goes with
+  // `cron` only: up to 9 more expressions in the same time zone, none the same as another.
   everyMs?: number;
   cron?: string;
+  moreCrons?: string[];
   timezone?: string;
-  // The first run (interval) or the time to match from (cron). Default: now.
+  // Runs after the schedule `scheduleId`, `delayMs` (default 0) after one of its cards finishes.
+  after?: { scheduleId: string; delayMs?: number };
+  // At most this many cards of the schedule under way at once (1 to 100). Default: no limit.
+  maxConcurrent?: number;
+  // The first run (interval) or the time to match from (cron). Default: now. Not with `after`.
   startAt?: Date;
   // The number of occurrences in all; at most one of `times` and `until`. Default: forever.
   times?: number;
@@ -358,8 +403,8 @@ export interface SchedulePatch {
 
 export interface AddScheduleResult {
   schedule: Schedule;
-  // The pending occurrence.
-  task: Task;
+  // The pending occurrence; null for a schedule that runs after another, which has none until that one finishes.
+  task: Task | null;
 }
 
 export interface AddTaskResult {
@@ -392,6 +437,11 @@ export interface Backend {
   // The user's edit of a task's settings. A new directory is pinned to this machine and drops the session; the server
   // refuses with 409 while the task runs or waits.
   configureTask(id: string, change: TaskConfigChange): Promise<Task>;
+  // The user's new title and prompt for a task of theirs that has not started (the board refuses with 409 otherwise); the
+  // old text stays in a note of the user's on the task. Only the user's own CLI calls this, never a run.
+  editPrompt(id: string, edit: PromptEdit): Promise<Task>;
+  // The user's new title and prompt for a schedule: every later run takes them, and the pending card too while it has not started.
+  editSchedule(id: string, edit: PromptEdit): Promise<EditScheduleResult>;
   // Moves a todo task to running for `machine`; undefined when another caller got it first or it is pinned elsewhere.
   claimTask(id: string, machine: string): Promise<Task | undefined>;
   // A `suggestion` (agent comments only) is the reply the user will most likely send next; a `polish` note is a rewritten prompt.
@@ -556,11 +606,43 @@ export interface TaskConfigChange {
   priority?: Priority;
   // A model name, or null for claude's default. It applies from the next run on.
   model?: string | null;
+  // Whether the agent may move the task to Done itself. Takes effect at once, also while the task runs.
+  autoDone?: boolean;
   // Where the task runs from now on. An object pins it to the directory on the calling machine and drops the session (it
   // cannot be resumed from another directory); null gives the task no directory of its own.
   place?: { workdir: string } | null;
   // Needed for a directory: what the sealer must know of the task.
   seal?: PatchSealing;
+}
+
+// A new title and prompt, as the user wrote them.
+export interface PromptEdit {
+  title: string;
+  input: string;
+}
+
+// What an edit of a schedule did to its pending card: changed too, already started, or there is none.
+export type PendingCardOutcome = 'updated' | 'started' | 'none';
+export const PENDING_CARD_OUTCOMES: readonly PendingCardOutcome[] = ['updated', 'started', 'none'];
+
+export interface EditScheduleResult {
+  schedule: Schedule;
+  pending: PendingCardOutcome;
+}
+
+// The body of edit-prompt: the title and prompt sealed under the task's row, and `previous` the user's note with the old text.
+export interface WirePromptEdit {
+  title: string;
+  input: string;
+  previous: WireNoteInput;
+}
+
+// The body of edit-schedule: the title and prompt sealed under the schedule.
+export type WireScheduleEdit = Omit<WirePromptEdit, 'previous'>;
+
+export interface WireEditScheduleResult {
+  schedule: WireSchedule;
+  pending: PendingCardOutcome;
 }
 
 // The body of configure-task: the directory is sealed.
@@ -675,7 +757,7 @@ export interface WireFailResult {
 
 export interface WireAddScheduleResult {
   schedule: WireSchedule;
-  task: WireTask;
+  task: WireTask | null;
 }
 
 /** `Backend` as the server sees it: the same calls with sealed values. */
@@ -686,6 +768,8 @@ export interface WireBackend {
   addTask(draft: WireTaskDraft): Promise<WireAddTaskResult>;
   updateTask(id: string, patch: WireTaskPatch): Promise<WireTask>;
   configureTask(id: string, body: WireTaskConfig): Promise<WireTask>;
+  editPrompt(id: string, body: WirePromptEdit): Promise<WireTask>;
+  editSchedule(id: string, body: WireScheduleEdit): Promise<WireEditScheduleResult>;
   claimTask(id: string, machine: string): Promise<WireTask | undefined>;
   addNote(
     id: string,
@@ -930,6 +1014,12 @@ function modelOf(obj: Record<string, unknown>, what: string): string | null {
   return value;
 }
 
+/** The `movedBy` of a task: left out when the server does not send it or names an actor this client does not know. */
+function movedByOf(obj: Record<string, unknown>): { movedBy?: TaskActor } {
+  const movedBy = TASK_ACTORS.find((actor) => actor === obj['movedBy']);
+  return movedBy === undefined ? {} : { movedBy };
+}
+
 function modelName(obj: Record<string, unknown>, what: string): string {
   const value = obj['model'];
   if (typeof value !== 'string' || !isModelName(value)) throw new ContractError(`${what}.model is not a model name`);
@@ -1079,6 +1169,7 @@ export function parseWireTask(value: unknown): WireTask {
     status: member(obj, 'status', 'task', STATUSES),
     priority: member(obj, 'priority', 'task', PRIORITIES),
     model: modelOf(obj, 'task'),
+    autoDone: obj['autoDone'] === true,
     closed: boolean(obj, 'closed', 'task'),
     machine,
     sessionId: sessionId(nullableString(obj, 'sessionId', 'task'), 'task'),
@@ -1104,12 +1195,14 @@ export function parseWireTask(value: unknown): WireTask {
     paused: boolean(obj, 'paused', 'task'),
     notBefore: nullableDate(obj, 'notBefore', 'task'),
     scheduleId: obj['scheduleId'] === null ? null : safeId(string(obj, 'scheduleId', 'task'), 'task scheduleId'),
+    ...(obj['held'] === true ? { held: true as const } : {}),
     ...(obj['forkOf'] == null ? {} : { forkOf: safeId(string(obj, 'forkOf', 'task'), 'task forkOf') }),
     wakeAt: nullableDate(obj, 'wakeAt', 'task'),
     waitCheck: boolean(obj, 'waitCheck', 'task'),
     woken: boolean(obj, 'woken', 'task'),
     ...(obj['stopRequested'] === undefined ? {} : { stopRequested: boolean(obj, 'stopRequested', 'task') }),
     ...(obj['noteCount'] === undefined ? {} : { noteCount: count(obj, 'noteCount', 'task') }),
+    ...movedByOf(obj),
   };
 }
 
@@ -1138,14 +1231,49 @@ export function parseWireFailResult(value: unknown): WireFailResult {
   return { applied: boolean(obj, 'applied', 'fail result'), task: parseWireTask(obj['task']) };
 }
 
+/** The `after` of a schedule: a safe id and a delay; a server that predates the key leaves it out, which is null. */
+function wireScheduleAfter(value: unknown): ScheduleAfter | null {
+  if (value === undefined || value === null) return null;
+  const obj = record(value, 'schedule.after');
+  return {
+    scheduleId: safeId(string(obj, 'scheduleId', 'schedule.after'), 'schedule.after scheduleId'),
+    delayMs: delayMs(obj, 'schedule.after'),
+  };
+}
+
+function delayMs(obj: Record<string, unknown>, what: string): number {
+  const value = obj['delayMs'];
+  if (!isWholeNumber(value)) throw new ContractError(`${what}.delayMs must be a non-negative integer`);
+  return value;
+}
+
+/** The delay a draft may ask for; what the server sends is read by shape only. */
+function draftDelayMs(obj: Record<string, unknown>, what: string): number {
+  const value = delayMs(obj, what);
+  if (value > MAX_INTERVAL_MS) throw new ContractError(`${what}.delayMs must be at most ${MAX_INTERVAL_MS}`);
+  return value;
+}
+
+/** A list of cron expressions, each of the shape `isCronExpression` allows. */
+function cronList(value: unknown, what: string): string[] {
+  if (!Array.isArray(value)) throw new ContractError(`${what} must be a list of cron expressions`);
+  if (!value.every((entry): entry is string => typeof entry === 'string' && isCronExpression(entry)))
+    throw new ContractError(`${what} must hold cron expressions`);
+  return value;
+}
+
 export function parseWireSchedule(value: unknown): WireSchedule {
   const obj = record(value, 'schedule');
   const everyMs = nullablePositiveInt(obj, 'everyMs', 'schedule');
   const cron = nullableString(obj, 'cron', 'schedule');
   const timezone = nullableString(obj, 'timezone', 'schedule');
-  if ((everyMs === null) === (cron === null)) throw new ContractError('schedule needs exactly one of everyMs and cron');
+  const after = wireScheduleAfter(obj['after']);
+  if ([everyMs, cron, after].filter((rule) => rule !== null).length !== 1)
+    throw new ContractError('schedule needs exactly one of everyMs, cron and after');
   if (cron !== null && timezone === null) throw new ContractError('schedule.timezone is required with cron');
   if (cron !== null && !isCronExpression(cron)) throw new ContractError('schedule.cron is not a cron expression');
+  const moreCrons = obj['moreCrons'] === undefined ? [] : cronList(obj['moreCrons'], 'schedule.moreCrons');
+  if (moreCrons.length > 0 && cron === null) throw new ContractError('schedule.moreCrons only goes with cron');
   if (timezone !== null && !isTimeZoneName(timezone))
     throw new ContractError('schedule.timezone is not a time zone name');
   const machine = nullableString(obj, 'machine', 'schedule');
@@ -1157,12 +1285,16 @@ export function parseWireSchedule(value: unknown): WireSchedule {
     input: string(obj, 'input', 'schedule'),
     priority: member(obj, 'priority', 'schedule', PRIORITIES),
     model: modelOf(obj, 'schedule'),
+    autoDone: obj['autoDone'] === true,
     machine,
     workdir: nullableString(obj, 'workdir', 'schedule'),
     ...(obj['agent'] == null ? {} : { agent: string(obj, 'agent', 'schedule') }),
     everyMs,
     cron,
+    ...(moreCrons.length === 0 ? {} : { moreCrons }),
     timezone,
+    after,
+    maxConcurrent: obj['maxConcurrent'] == null ? null : positiveInt(obj, 'maxConcurrent', 'schedule'),
     anchorAt: date(obj, 'anchorAt', 'schedule'),
     nextRunAt: nullableDate(obj, 'nextRunAt', 'schedule'),
     remaining: obj['remaining'] === 0 ? 0 : nullablePositiveInt(obj, 'remaining', 'schedule'),
@@ -1184,7 +1316,18 @@ export function parseWireSchedules(value: unknown, options: ListOptions = {}): W
 
 export function parseWireAddScheduleResult(value: unknown): WireAddScheduleResult {
   const obj = record(value, 'add-schedule result');
-  return { schedule: parseWireSchedule(obj['schedule']), task: parseWireTask(obj['task']) };
+  return {
+    schedule: parseWireSchedule(obj['schedule']),
+    task: obj['task'] == null ? null : parseWireTask(obj['task']),
+  };
+}
+
+export function parseWireEditScheduleResult(value: unknown): WireEditScheduleResult {
+  const obj = record(value, 'edit-schedule result');
+  return {
+    schedule: parseWireSchedule(obj['schedule']),
+    pending: member(obj, 'pending', 'edit-schedule result', PENDING_CARD_OUTCOMES),
+  };
 }
 
 // The JSON form of a schedule, as the machine API sends it.
@@ -1482,6 +1625,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
       'status',
       'priority',
       'model',
+      'autoDone',
       'dedupeKey',
       'parentId',
       'createdBy',
@@ -1501,6 +1645,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', 'draft', PRIORITIES);
   if ('model' in obj) draft.model = modelName(obj, 'draft');
+  if ('autoDone' in obj) draft.autoDone = boolean(obj, 'autoDone', 'draft');
   if ('dedupeKey' in obj) draft.dedupeKey = parseBlindIndex(obj['dedupeKey'], 'draft.dedupeKey');
   if ('parentId' in obj) draft.parentId = safeId(string(obj, 'parentId', 'draft'), 'draft.parentId');
   if ('createdBy' in obj) draft.createdBy = member(obj, 'createdBy', 'draft', TASK_CREATORS);
@@ -1524,6 +1669,15 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
   return draft;
 }
 
+// The `moreCrons` of a draft: expressions as the browser and the CLI send them, which the server reads with croner afterwards.
+function draftCronList(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every((entry): entry is string => typeof entry === 'string'))
+    throw new ContractError('schedule draft.moreCrons must be a list of strings');
+  if (value.length > MAX_SCHEDULE_CRONS - 1)
+    throw new ContractError(`schedule draft.moreCrons holds at most ${MAX_SCHEDULE_CRONS - 1} expressions`);
+  return value;
+}
+
 // Body of add-schedule. `id`, `title`, `input` and one rule are required.
 export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   const obj = record(value, 'schedule draft');
@@ -1535,12 +1689,16 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
       'input',
       'priority',
       'model',
+      'autoDone',
       'machine',
       'workdir',
       'agent',
       'everyMs',
       'cron',
+      'moreCrons',
       'timezone',
+      'after',
+      'maxConcurrent',
       'startAt',
       'times',
       'until',
@@ -1555,6 +1713,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', what, PRIORITIES);
   if ('model' in obj) draft.model = modelName(obj, what);
+  if ('autoDone' in obj) draft.autoDone = boolean(obj, 'autoDone', what);
   if ('machine' in obj) {
     draft.machine = string(obj, 'machine', what);
     if (!isSafeMachineName(draft.machine)) throw new ContractError('schedule draft.machine is not a safe name');
@@ -1563,13 +1722,30 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   if ('agent' in obj) draft.agent = sealedField(obj, 'agent', what, 'agent');
   if ((draft.machine === undefined) !== (draft.workdir === undefined))
     throw new ContractError('schedule draft.machine and schedule draft.workdir go together');
-  if ('everyMs' in obj === 'cron' in obj) throw new ContractError('a schedule needs exactly one of everyMs and cron');
+  if (['everyMs', 'cron', 'after'].filter((rule) => rule in obj).length !== 1)
+    throw new ContractError('a schedule needs exactly one of everyMs, cron and after');
   if ('everyMs' in obj) draft.everyMs = positiveInt(obj, 'everyMs', what, MAX_INTERVAL_MS);
   if ('cron' in obj) {
     draft.cron = string(obj, 'cron', what);
     draft.timezone = string(obj, 'timezone', what);
     if (draft.timezone === '') throw new ContractError('schedule draft.timezone must not be empty');
   } else if ('timezone' in obj) throw new ContractError('schedule draft.timezone only goes with cron');
+  if ('moreCrons' in obj) {
+    if (!('cron' in obj)) throw new ContractError('schedule draft.moreCrons only goes with cron');
+    draft.moreCrons = draftCronList(obj['moreCrons']);
+  }
+  if ('after' in obj) {
+    if ('startAt' in obj) throw new ContractError('schedule draft.startAt does not go with after');
+    const after = record(obj['after'], 'schedule draft.after');
+    rejectUnknownKeys(after, ['scheduleId', 'delayMs'], 'schedule draft.after');
+    draft.after = {
+      scheduleId: safeId(string(after, 'scheduleId', 'schedule draft.after'), 'schedule draft.after.scheduleId'),
+      ...('delayMs' in after ? { delayMs: draftDelayMs(after, 'schedule draft.after') } : {}),
+    };
+    if (draft.after.scheduleId === draft.id)
+      throw new ContractError('schedule draft.after cannot name the schedule itself');
+  }
+  if ('maxConcurrent' in obj) draft.maxConcurrent = positiveInt(obj, 'maxConcurrent', what, MAX_SCHEDULE_CONCURRENT);
   if ('startAt' in obj) draft.startAt = date(obj, 'startAt', what);
   if ('times' in obj) draft.times = positiveInt(obj, 'times', what, MAX_INT32);
   if ('until' in obj) draft.until = date(obj, 'until', what);
@@ -1607,12 +1783,13 @@ export function parseWireTaskPatch(value: unknown): WireTaskPatch {
 // Body of configure-task. At least one key. `place` carries the sealed directory only: the machine is the token's.
 export function parseWireTaskConfig(value: unknown): WireTaskConfig {
   const obj = record(value, 'config');
-  const keys = ['priority', 'model', 'place'];
+  const keys = ['priority', 'model', 'autoDone', 'place'];
   rejectUnknownKeys(obj, keys, 'config');
   if (!keys.some((key) => key in obj)) throw new ContractError(`config needs one of ${keys.join(', ')}`);
   const config: WireTaskConfig = {};
   if ('priority' in obj) config.priority = member(obj, 'priority', 'config', PRIORITIES);
   if ('model' in obj) config.model = obj['model'] === null ? null : modelName(obj, 'config');
+  if ('autoDone' in obj) config.autoDone = boolean(obj, 'autoDone', 'config');
   if ('place' in obj) {
     if (obj['place'] === null) config.place = null;
     else {
@@ -1622,6 +1799,27 @@ export function parseWireTaskConfig(value: unknown): WireTaskConfig {
     }
   }
   return config;
+}
+
+// Body of edit-prompt: the sealed title and prompt, and the user's note that keeps the old ones.
+export function parseWirePromptEdit(value: unknown): WirePromptEdit {
+  const obj = record(value, 'prompt edit');
+  rejectUnknownKeys(obj, ['title', 'input', 'previous'], 'prompt edit');
+  return {
+    title: sealedField(obj, 'title', 'prompt edit', 'title'),
+    input: sealedField(obj, 'input', 'prompt edit', 'input'),
+    previous: parseWireNoteInput(obj['previous'], 'prompt edit.previous'),
+  };
+}
+
+// Body of edit-schedule: the sealed title and prompt.
+export function parseWireScheduleEdit(value: unknown): WireScheduleEdit {
+  const obj = record(value, 'schedule edit');
+  rejectUnknownKeys(obj, ['title', 'input'], 'schedule edit');
+  return {
+    title: sealedField(obj, 'title', 'schedule edit', 'title'),
+    input: sealedField(obj, 'input', 'schedule edit', 'input'),
+  };
 }
 
 // Body of add-note, pause and fail: a sealed text and, optionally, the sealed start of it. Only add-note takes a suggestion.

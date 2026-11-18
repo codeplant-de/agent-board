@@ -29,10 +29,14 @@ export function formatDuration(ms: number): string {
   return parts.length > 0 ? parts.join(' ') : '0m';
 }
 
-// "every 2h" or "cron 0 9 * * 1-5 (Europe/Berlin)".
-export function describeRule(schedule: Pick<Schedule, 'everyMs' | 'cron' | 'timezone'>): string {
+// "every 2h", "cron 0 9 * * 1-5 (Europe/Berlin)", "cron 0 9 * * 5#1 | 0 9 * * 5#3 (Europe/Berlin)" or "after Ab3dEf9x +10m".
+export function describeRule(
+  schedule: Pick<Schedule, 'everyMs' | 'cron' | 'timezone'> & Partial<Pick<Schedule, 'moreCrons' | 'after'>>,
+): string {
   if (schedule.everyMs !== null) return `every ${formatDuration(schedule.everyMs)}`;
-  return `cron ${schedule.cron ?? ''} (${schedule.timezone ?? ''})`;
+  if (schedule.after != null)
+    return `after ${schedule.after.scheduleId}${schedule.after.delayMs > 0 ? ` +${formatDuration(schedule.after.delayMs)}` : ''}`;
+  return `cron ${[schedule.cron ?? '', ...(schedule.moreCrons ?? [])].join(' | ')} (${schedule.timezone ?? ''})`;
 }
 
 // Runs the schedule still has, the pending one included; null: forever.

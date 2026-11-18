@@ -1,4 +1,4 @@
-// `board schedule [--priority p] [--model m] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
+// `board schedule [--priority p] [--model m] [--auto-done] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
 // [--times <n> | --until <time>] [--polish] [--new] [--key <k> [--version <v>]] <prompt...>`: a task from a prompt, written as you
 // would type it into Claude Code, bound to this machine and the directory it was scheduled from. Before it creates one, a quick
 // Haiku call checks whether an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead.
@@ -15,6 +15,9 @@ import {
   isModelName,
   isPriority,
   isRecord,
+  isSafeTaskId,
+  MAX_SCHEDULE_CONCURRENT,
+  MAX_SCHEDULE_CRONS,
   MODEL_ALIASES,
   parseDuration,
   parseWhen,
@@ -22,7 +25,7 @@ import {
   PRIORITIES,
 } from '@agent-board/shared';
 import type { Command } from 'commander';
-import type { Backend, DraftStatus, Priority, Task } from '@agent-board/shared';
+import type { Backend, DraftStatus, Priority, Schedule, ScheduleDraft, Task } from '@agent-board/shared';
 import { UsageError } from '../cli.mts';
 import { BackendError } from '../backend/backend.mts';
 import { plainLine } from '../output/terminal.mts';
@@ -32,6 +35,8 @@ export interface ScheduleArgs {
   priority: Priority | undefined;
   // The Claude model of the run; undefined is claude's default.
   model: string | undefined;
+  // The agent may move the task to Done itself; false leaves it unset.
+  autoDone: boolean;
   // The agent of this machine's config.json the task runs as; undefined runs it by its creator's rules.
   agent: string | undefined;
   title: string | undefined;
@@ -41,9 +46,16 @@ export interface ScheduleArgs {
   backlog: boolean;
   // Waits in Todo until then (`--in`, `--at`); with a repeat, the first run.
   notBefore: Date | undefined;
-  // A repeat: the interval in ms (`--every`) or a 5-field cron expression (`--cron`), ending after `times` runs or at `until`.
+  // A repeat: the interval in ms (`--every`), 5-field cron expressions (`--cron`, the first one and the others), or another
+  // schedule to run after (`--after`, an id or the start of one) with a delay in ms (`--delay`), ending after `times` runs or at
+  // `until`.
   every: number | undefined;
   cron: string | undefined;
+  moreCrons: string[];
+  after: string | undefined;
+  delay: number | undefined;
+  // At most this many cards of a repeat under way at once.
+  maxConcurrent: number | undefined;
   times: number | undefined;
   until: Date | undefined;
   // Skips the duplicate check.
@@ -59,6 +71,7 @@ export interface ScheduleArgs {
 export interface ScheduleFlags {
   priority?: string;
   model?: string;
+  autoDone?: boolean;
   agent?: string;
   title?: string;
   hold?: boolean;
@@ -68,7 +81,11 @@ export interface ScheduleFlags {
   in?: string;
   at?: string;
   every?: string;
-  cron?: string;
+  // Repeatable: one string per `--cron`; a caller may also hand over a single one.
+  cron?: string | string[];
+  after?: string;
+  delay?: string;
+  maxConcurrent?: string;
   times?: string;
   until?: string;
   key?: string;
@@ -86,6 +103,10 @@ export function addScheduleOptions(command: Command): Command {
       `claude model alias or full name, e.g. ${MODEL_ALIASES.map((alias) => alias.value).join(', ')} (default: claude's default)`,
     )
     .option(
+      '--auto-done',
+      'let the agent move the task to Done itself when it judges every acceptance criterion met (default: it ends in needs-me)',
+    )
+    .option(
       '--agent <name>',
       "run the task as this agent of this machine's config.json (its tools and lists only, never asking); the board keeps the name sealed",
     )
@@ -98,7 +119,20 @@ export function addScheduleOptions(command: Command): Command {
       'keep it in Todo until then (2027-01-01T12:00, 2027-01-01, 09:30); with a repeat, the first run',
     )
     .option('--every <duration>', 'repeat on a fixed grid from the first run (2h)')
-    .option('--cron <expr>', 'repeat by a 5-field cron expression in this machine\'s time zone ("0 9 * * 1-5")')
+    .option(
+      '--cron <expr>',
+      'repeat by a 5-field cron expression in this machine\'s time zone ("0 9 * * 1-5"); give it up to 10 times to run when any matches',
+      (value: string, previous: string[] = []) => [...previous, value],
+    )
+    .option(
+      '--after <schedule>',
+      "a schedule that runs after another: its task is made when a task of that schedule finishes (the schedule's id or the start of it)",
+    )
+    .option('--delay <duration>', "with --after: start this long after the other schedule's task finished (10m, 2h)")
+    .option(
+      '--max-concurrent <n>',
+      'with a repeat: at most this many tasks of the schedule running or waiting at once; the next one stays in Todo until a slot is free',
+    )
     .option('--times <n>', 'end a repeat after this many runs, the first included')
     .option('--until <time>', 'end a repeat after this time')
     .option('--polish', 'park it in backlog and queue a task that polishes its prompt, as "Polish prompt" on the board')
@@ -120,14 +154,32 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
   // A polished prompt can only be applied to a Backlog task.
   const backlog = flags.backlog === true || polish;
   const { in: delay, at, every, times, until } = flags;
-  const cron = flags.cron?.trim();
+  const crons = [flags.cron ?? []].flat().map((expression) => expression.trim());
+  const cron = crons[0];
+  if (flags.after !== undefined) {
+    const conflicts = [
+      every !== undefined && '--every',
+      crons.length > 0 && '--cron',
+      delay !== undefined && '--in',
+      at !== undefined && '--at',
+      hold && '--hold',
+      flags.backlog === true && '--backlog',
+      flags.key !== undefined && '--key',
+      polish && '--polish',
+    ].filter((flag) => flag !== false);
+    if (conflicts.length > 0)
+      throw new UsageError(
+        `--after makes a schedule that waits for another one; it cannot be combined with ${conflicts.join(', ')}`,
+      );
+  }
+  if (flags.delay !== undefined && flags.after === undefined) throw new UsageError('--delay belongs to --after');
   if (polish) {
     const conflicts = [
       hold && '--hold',
       delay !== undefined && '--in',
       at !== undefined && '--at',
       every !== undefined && '--every',
-      flags.cron !== undefined && '--cron',
+      crons.length > 0 && '--cron',
       times !== undefined && '--times',
       until !== undefined && '--until',
     ].filter((flag) => flag !== false);
@@ -140,6 +192,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     prompt: '',
     priority: undefined,
     model: undefined,
+    autoDone: flags.autoDone === true,
     agent: undefined,
     title: flags.title?.trim(),
     hold,
@@ -147,6 +200,10 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     notBefore: undefined,
     every: undefined,
     cron,
+    moreCrons: crons.slice(1),
+    after: undefined,
+    delay: undefined,
+    maxConcurrent: undefined,
     times: undefined,
     until: undefined,
     forceNew: flags.new === true,
@@ -176,18 +233,40 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
   if ((delay !== undefined || at !== undefined) && (hold || backlog))
     throw new UsageError('--in and --at queue the task in Todo; they cannot be combined with --hold or --backlog');
   if (every !== undefined && cron !== undefined) throw new UsageError('--every and --cron cannot be combined');
-  const repeats = every !== undefined || cron !== undefined;
+  const repeats = every !== undefined || cron !== undefined || flags.after !== undefined;
   if (!repeats && (times !== undefined || until !== undefined))
-    throw new UsageError('--times and --until end a repeat; add --every or --cron');
+    throw new UsageError('--times and --until end a repeat; add --every, --cron or --after');
+  if (!repeats && flags.maxConcurrent !== undefined)
+    throw new UsageError('--max-concurrent limits a repeat; add --every, --cron or --after');
   if (repeats && (hold || backlog))
     throw new UsageError('--every and --cron queue tasks in Todo; they cannot be combined with --hold or --backlog');
   if (times !== undefined && until !== undefined) throw new UsageError('--times and --until cannot be combined');
   result.notBefore = parseStart({ delay, at }, now);
   if (every !== undefined) result.every = parseInterval(every);
-  if (cron !== undefined && cron.split(/\s+/).length !== 5)
-    throw new UsageError(
-      `--cron takes 5 fields (minute hour day month weekday), such as "0 9 * * 1-5"; got "${cron.slice(0, 60)}"`,
-    );
+  for (const expression of crons)
+    if (expression.split(/\s+/).length !== 5)
+      throw new UsageError(
+        `--cron takes 5 fields (minute hour day month weekday), such as "0 9 * * 1-5"; got "${expression.slice(0, 60)}"`,
+      );
+  if (crons.length > MAX_SCHEDULE_CRONS)
+    throw new UsageError(`--cron can be given at most ${MAX_SCHEDULE_CRONS} times`);
+  const normalized = crons.map((expression) => expression.split(/\s+/).join(' '));
+  const repeated = normalized.find((expression, index) => normalized.indexOf(expression) !== index);
+  if (repeated !== undefined) throw new UsageError(`--cron "${repeated.slice(0, 60)}" is given twice`);
+  if (flags.after !== undefined) {
+    if (!/^[A-Za-z0-9_-]{3,64}$/.test(flags.after))
+      throw new UsageError(`--after takes the id of a schedule or the start of it; got "${flags.after.slice(0, 40)}"`);
+    result.after = flags.after;
+  }
+  if (flags.delay !== undefined) result.delay = parseInterval(flags.delay);
+  if (flags.maxConcurrent !== undefined) {
+    const limit = Number(flags.maxConcurrent);
+    if (!/^[1-9]\d{0,2}$/.test(flags.maxConcurrent) || limit > MAX_SCHEDULE_CONCURRENT)
+      throw new UsageError(
+        `--max-concurrent takes a whole number from 1 to ${MAX_SCHEDULE_CONCURRENT}; got "${flags.maxConcurrent.slice(0, 20)}"`,
+      );
+    result.maxConcurrent = limit;
+  }
   if (times !== undefined) {
     if (!/^[1-9]\d{0,5}$/.test(times))
       throw new UsageError(`--times takes a positive whole number; got "${times.slice(0, 20)}"`);
@@ -362,26 +441,60 @@ export interface ScheduleDeps {
   choose: ((duplicate: Duplicate, task: Task) => Promise<Choice>) | undefined;
 }
 
-// A recurring prompt resembles its own earlier runs, so a repeat skips the duplicate check.
-async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<Task> {
-  const { schedule, task } = await deps.backend.addSchedule({
+function ruleDraft(
+  deps: ScheduleDeps,
+  args: ScheduleArgs,
+): Pick<ScheduleDraft, 'everyMs' | 'cron' | 'moreCrons' | 'timezone' | 'after'> {
+  if (args.after !== undefined) {
+    if (!isSafeTaskId(args.after)) throw new UsageError('--after takes the id of a schedule');
+    return { after: { scheduleId: args.after, ...(args.delay === undefined ? {} : { delayMs: args.delay }) } };
+  }
+  if (args.every !== undefined) return { everyMs: args.every };
+  return {
+    cron: args.cron ?? '',
+    ...(args.moreCrons.length === 0 ? {} : { moreCrons: args.moreCrons }),
+    timezone: deps.timezone,
+  };
+}
+
+async function addRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<{ schedule: Schedule; task: Task | null }> {
+  const added = await deps.backend.addSchedule({
     title: args.title || defaultTitle(args.prompt),
     input: args.prompt,
     machine: deps.machine,
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
-    ...(args.every !== undefined ? { everyMs: args.every } : { cron: args.cron ?? '', timezone: deps.timezone }),
+    ...ruleDraft(deps, args),
+    ...(args.maxConcurrent === undefined ? {} : { maxConcurrent: args.maxConcurrent }),
     ...(args.notBefore ? { startAt: args.notBefore } : {}),
     ...(args.times ? { times: args.times } : {}),
     ...(args.until ? { until: args.until } : {}),
   });
   const end = args.times ? `, ${args.times} runs` : args.until ? `, until ${localTime(args.until)}` : '';
+  const limit = added.schedule.maxConcurrent === null ? '' : `, at most ${added.schedule.maxConcurrent} at once`;
+  const first =
+    added.task === null
+      ? '; its first task is made when a task of that schedule finishes'
+      : `; first run ${localTime(added.task.notBefore ?? new Date())} ${deps.link(added.task.id)}`;
   (deps.confirm ?? deps.print)(
-    `scheduled repeat ${schedule.id}: ${describeRule(schedule)}${end}; first run ${localTime(task.notBefore ?? new Date())} ${deps.link(task.id)}`,
+    `scheduled repeat ${added.schedule.id}: ${describeRule(added.schedule)}${end}${limit}${first}`,
   );
+  return added;
+}
+
+// A recurring prompt resembles its own earlier runs, so a repeat skips the duplicate check.
+async function scheduleRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<Task> {
+  const { task } = await addRepeat(deps, args);
+  if (task === null) throw new BackendError('the board made no first task for a repeat that has a start time');
   return task;
+}
+
+/** A schedule that runs after another: it has no task until a task of the other one finishes. */
+export async function scheduleAfter(deps: ScheduleDeps, args: ScheduleArgs): Promise<Schedule> {
+  return (await addRepeat(deps, args)).schedule;
 }
 
 // Why `--key` found a task and left it as it is.
@@ -389,6 +502,11 @@ export type ExistsReason = 'closed' | 'same-version' | 'no-version' | 'busy' | '
 
 export type KeyedOutcome =
   { result: 'created' | 'requeued' | 'rescheduled' } | { result: 'exists'; reason: ExistsReason };
+
+// What `--after` makes: a schedule and no task yet.
+export interface ScheduledAfter {
+  schedule: Schedule;
+}
 
 export interface Scheduled {
   task: Task;
@@ -414,6 +532,7 @@ async function scheduleKeyed(deps: ScheduleDeps, args: ScheduleArgs, key: string
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
     ...(args.version === undefined ? {} : { head: args.version }),
     ...(args.notBefore ? { notBefore: args.notBefore } : {}),
@@ -512,6 +631,10 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
           deps.print(
             `${existing.id} keeps its model (${existing.model ?? 'the default'}); --model applies only to a new task`,
           );
+        if (args.autoDone && !existing.autoDone)
+          deps.print(
+            `${existing.id} keeps its auto-done setting (off); --auto-done applies only to a new task: use \`board task ${existing.id} set auto-done on\``,
+          );
         if (existing.status === 'todo' && args.notBefore) {
           const delayed = await backend.updateTask(existing.id, { notBefore: args.notBefore, expect: 'todo' });
           (deps.confirm ?? deps.print)(
@@ -552,6 +675,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
   });
   if (warning) await backend.addNote(task.id, warning, { author: 'system' });

@@ -18,6 +18,7 @@ import {
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { openQuestionOf } from '../lib/answers';
 import { canTakeBack } from '../lib/liveness';
 import { canPolish, isOpenPolishOf } from '../lib/polish';
 import { isStopHintDue, isStopping, STOP_LABEL, stopKind } from '../lib/stopping';
@@ -36,6 +37,7 @@ function useActions(id: string) {
   const trpc = useTRPC();
   return {
     answer: useMutation(trpc.tasks.answer.mutationOptions()),
+    dismissQuestion: useMutation(trpc.tasks.dismissQuestion.mutationOptions()),
     reply: useMutation(trpc.tasks.reply.mutationOptions()),
     send: useMutation(trpc.tasks.send.mutationOptions()),
     stop: useMutation(trpc.tasks.stop.mutationOptions()),
@@ -260,7 +262,7 @@ export function ActionPanel({
   // One draft for every editor below: when a poll moves the task from running to needs-me, the text stays.
   const [message, setMessage] = useState('');
   const draft = { message, setMessage };
-  const openQuestion = task.openQuestion ? thread.findLast((n) => n.kind === 'question') : undefined;
+  const openQuestion = openQuestionOf(task, thread);
   // An agent's proposal: only starting it, which seals its prompt again as yours, lets a worker run it.
   const isProposal = task.createdBy === 'agent';
   const moveToTodo = () =>
@@ -317,6 +319,8 @@ export function ActionPanel({
         onSubmit={(questions, answers, note) =>
           actions.answer.mutate({ id: task.id, questionNoteId: openQuestion.id, questions, answers, message: note })
         }
+        dismissing={actions.dismissQuestion.isPending}
+        onDismiss={() => actions.dismissQuestion.mutate({ id: task.id, questionNoteId: openQuestion.id })}
       />
     );
   }

@@ -15,17 +15,24 @@ const resolve = async (arg: string): Promise<string> => `resolved-${arg}`;
 test('the flags become a filter: tasks resolved once each, statuses as `board move` reads them, types and machine checked', async () => {
   assert.deepEqual(
     await parseEventsFilter(
-      { task: ['Ab3', 'Zk7'], status: ['needs-me', 'Needs me'], type: ['moved', 'note'], machine: 'laptop' },
+      {
+        task: ['Ab3', 'Zk7'],
+        status: ['needs-me', 'Needs me'],
+        type: ['moved', 'note'],
+        actor: ['agent', ' Machine'],
+        machine: 'laptop',
+      },
       resolve,
     ),
     {
       tasks: ['resolved-Ab3', 'resolved-Zk7'],
       statuses: ['needs-me', 'needs-me'],
       types: ['moved', 'note'],
+      actors: ['agent', 'machine'],
       machine: 'laptop',
     },
   );
-  assert.deepEqual(await parseEventsFilter({}, resolve), { tasks: [], statuses: [], types: [] });
+  assert.deepEqual(await parseEventsFilter({}, resolve), { tasks: [], statuses: [], types: [], actors: [] });
 });
 
 test('a status, a type or a machine that does not exist is a usage error', async () => {
@@ -33,6 +40,10 @@ test('a status, a type or a machine that does not exist is a usage error', async
   await assert.rejects(
     parseEventsFilter({ type: ['nope'] }, resolve),
     /unknown event type "nope"; use one of created, moved/,
+  );
+  await assert.rejects(
+    parseEventsFilter({ actor: ['robot'] }, resolve),
+    /unknown actor "robot"; use one of user, agent, machine/,
   );
   await assert.rejects(parseEventsFilter({ machine: 'a b' }, resolve), /not a valid machine name/);
   await assert.rejects(parseEventsFilter({ machine: '../x' }, resolve), UsageError);
@@ -105,6 +116,30 @@ test('board events --json prints one line per change, only the changes after the
   assert.equal(event.task.id, 'Zt0Test1');
   assert.equal(event.task.url, linkTo('Zt0Test1'));
   assert.deepEqual(err, ['board events: connected\n']);
+});
+
+test('--actor keeps the moves of that actor and prints it in the text and the JSON', async () => {
+  const { backend, out, clock, stop, stream, go } = setup(['events', 'task.moved-by']);
+  const running = go(['events', '--type', 'moved', '--status', 'done', '--actor', 'agent']);
+  await clock.advance(0);
+  Object.assign(backend.tasks[0] ?? {}, { status: 'done', movedBy: 'agent' });
+  Object.assign(backend.tasks[1] ?? {}, { status: 'done', movedBy: 'user' });
+  stream.push('event: tasks\ndata:\n\n');
+  await clock.advance(300);
+  stop.abort();
+  await running;
+  assert.equal(out.length, 1);
+  assert.match(out[0] ?? '', /^\d\d:\d\d:\d\d {2}moved {4}Zt0Test1 +todo → done by agent {2}task Zt0Test1\n$/);
+});
+
+test('--actor on a board that does not say who moved a task is refused before anything is read', async () => {
+  const { go, stream, backend } = setup(['events', 'task.note-count']);
+  await assert.rejects(
+    go(['events', '--actor', 'agent']),
+    (error: unknown) => error instanceof BackendError && error.missingFeature === 'task.moved-by',
+  );
+  assert.deepEqual(backend.writes, []);
+  stream.end();
 });
 
 test('board events prints a readable line without --json', async () => {

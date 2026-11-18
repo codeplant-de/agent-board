@@ -30,9 +30,10 @@ import { PriorityPicker } from '../components/PriorityPicker';
 import { PrStateIcon } from '../components/PrStateIcon';
 import { PolishItem } from '../components/PolishItem';
 import { TaskBadges } from '../components/TaskBadges';
-import { ModelPicker, WorkdirSetting } from '../components/TaskSettings';
+import { AutoDoneSetting, ModelPicker, WorkdirSetting } from '../components/TaskSettings';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
+import { openQuestionOf } from '../lib/answers';
 import { skillsFor } from '../lib/catalog';
 import { canFork } from '../lib/sealing';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
@@ -44,6 +45,19 @@ import { unlistedMachine } from '../lib/workingDirectories';
 
 const UNREADABLE_LABEL = (field: UnreadableField): string =>
   field === 'input' ? 'prompt' : field === 'workdir' ? 'directory' : field;
+
+/** Why a card in Todo is not started although it is due: its schedule has all the slots it allows in use. */
+function HeldNotice({ scheduleId }: { scheduleId: string }) {
+  const trpc = useTRPC();
+  const schedules = useQuery({ ...trpc.schedules.list.queryOptions(), refetchInterval: POLL_MS });
+  const limit = schedules.data?.find(({ id }) => id === scheduleId)?.maxConcurrent ?? null;
+  return (
+    <Text size="sm" c="dimmed">
+      Waits for a free slot: its schedule runs{limit === null ? ' only a limited number of cards' : ` at most ${limit}`}{' '}
+      at once. It starts when one of them finishes or leaves Running and Waiting.
+    </Text>
+  );
+}
 
 export function TaskPage() {
   const { id = '' } = useParams();
@@ -89,6 +103,7 @@ function TaskView({ id }: { id: string }) {
   }
 
   const { task, thread, followUps, parent } = query.data;
+  const openQuestion = openQuestionOf(task, thread);
   const unlisted = unlistedMachine(task, machines.data ?? []);
   const skills = skillsFor(catalogs.data ?? [], task);
   const prs = prsOf(task);
@@ -140,6 +155,7 @@ function TaskView({ id }: { id: string }) {
             </Text>
           )}
           <WorkdirSetting task={task} unlisted={unlisted} />
+          <AutoDoneSetting task={task} />
           <Group gap="xs">
             <Button
               variant="default"
@@ -214,6 +230,10 @@ function TaskView({ id }: { id: string }) {
             </Group>
           )}
         </Stack>
+
+        {task.status === 'todo' && task.held === true && task.scheduleId !== null && (
+          <HeldNotice scheduleId={task.scheduleId} />
+        )}
 
         {task.invalid.length > 0 && (
           <Alert
@@ -308,7 +328,7 @@ function TaskView({ id }: { id: string }) {
             note.kind === 'polish' && !note.unreadable ? (
               <PolishItem key={index} note={note} task={task} parent={parent} />
             ) : (
-              <ThreadItem key={index} note={note} thread={thread} />
+              <ThreadItem key={index} note={note} thread={thread} openQuestionId={openQuestion?.id} />
             ),
           )}
         </Stack>

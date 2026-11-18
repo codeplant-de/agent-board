@@ -8,6 +8,7 @@ import {
   parseDuplicateAnswer,
   parseScheduleArgs as toScheduleArgs,
   schedule,
+  scheduleAfter,
 } from './schedule.mts';
 import type { Duplicate, ScheduleArgs, ScheduleDeps, ScheduleFlags } from './schedule.mts';
 import { BackendError } from '../backend/backend.mts';
@@ -35,6 +36,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     prompt: '/review-pr 17741 --auto',
     priority: 'high',
     model: undefined,
+    autoDone: false,
     agent: undefined,
     title: undefined,
     hold: false,
@@ -42,6 +44,10 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     notBefore: undefined,
     every: undefined,
     cron: undefined,
+    moreCrons: [],
+    after: undefined,
+    delay: undefined,
+    maxConcurrent: undefined,
     times: undefined,
     until: undefined,
     forceNew: false,
@@ -53,6 +59,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     prompt: 'Find out why',
     priority: undefined,
     model: undefined,
+    autoDone: false,
     agent: undefined,
     title: 'Export',
     hold: true,
@@ -60,6 +67,10 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     notBefore: undefined,
     every: undefined,
     cron: undefined,
+    moreCrons: [],
+    after: undefined,
+    delay: undefined,
+    maxConcurrent: undefined,
     times: undefined,
     until: undefined,
     forceNew: true,
@@ -272,7 +283,7 @@ test('repeat flags that cannot go together, or are malformed, are usage errors',
   const bad = (flags: string[], message: RegExp) =>
     assert.throws(() => parseScheduleArgs([...flags, 'x'], NOW), message, flags.join(' '));
   bad(['--every', '1h', '--cron', '0 9 * * *'], /--every and --cron cannot be combined/);
-  bad(['--times', '3'], /end a repeat; add --every or --cron/);
+  bad(['--times', '3'], /end a repeat; add --every, --cron or --after/);
   bad(['--until', '2027-01-01'], /end a repeat/);
   bad(['--every', '1h', '--times', '2', '--until', '2027-01-01'], /--times and --until cannot be combined/);
   bad(['--every', '1h', '--hold'], /cannot be combined with --hold or --backlog/);
@@ -312,6 +323,90 @@ test('a repeat creates a schedule bound to this machine, skips the duplicate che
   );
 });
 
+test('--cron can be given several times: the first is cron, the others more', async () => {
+  const args = parseScheduleArgs(['--cron', '0 9 * * 5#1', '--cron', ' 0  9 * * 5#3 ', 'x'], NOW);
+  assert.deepEqual([args.cron, args.moreCrons], ['0 9 * * 5#1', ['0  9 * * 5#3']]);
+  assert.deepEqual(toScheduleArgs({ cron: '0 9 * * *' }, ['x'], NOW).moreCrons, []);
+  const { deps, backend, printed } = setup(undefined);
+  await schedule(deps, args);
+  assert.ok(backend.writes[0]?.includes('| 0 9 * * 5#1 Europe/Berlin'));
+  assert.ok(backend.writes[0]?.includes('| more 0  9 * * 5#3'));
+  assert.match(printed[0] ?? '', /^scheduled repeat sched: cron 0 9 \* \* 5#1 \| 0 {2}9 \* \* 5#3 \(Europe\/Berlin\);/);
+});
+
+test('several --cron are checked: five fields each, at most ten, none twice', () => {
+  const bad = (flags: string[], message: RegExp) =>
+    assert.throws(() => parseScheduleArgs([...flags, 'x'], NOW), message, flags.join(' '));
+  bad(['--cron', '0 9 * * *', '--cron', '0 9 * *'], /5 fields/);
+  bad(['--cron', '0 9 * * *', '--cron', '0 9  * * *'], /given twice/);
+  const eleven = Array.from({ length: 11 }, (_, hour) => ['--cron', `0 ${hour} * * *`]).flat();
+  bad(eleven, /at most 10 times/);
+  assert.equal(parseScheduleArgs([...eleven.slice(0, 20), 'x'], NOW).moreCrons.length, 9);
+  bad(['--every', '1h', '--cron', '0 9 * * *'], /--every and --cron cannot be combined/);
+});
+
+test('--max-concurrent limits a repeat and nothing else', async () => {
+  assert.equal(parseScheduleArgs(['--every', '1h', '--max-concurrent', '2', 'x'], NOW).maxConcurrent, 2);
+  assert.equal(parseScheduleArgs(['--cron', '0 9 * * *', '--max-concurrent', '100', 'x'], NOW).maxConcurrent, 100);
+  assert.equal(parseScheduleArgs(['--after', 's1b', '--max-concurrent', '1', 'x'], NOW).maxConcurrent, 1);
+  const bad = (flags: string[], message: RegExp) =>
+    assert.throws(() => parseScheduleArgs([...flags, 'x'], NOW), message, flags.join(' '));
+  bad(['--max-concurrent', '2'], /limits a repeat; add --every, --cron or --after/);
+  bad(['--every', '1h', '--max-concurrent', '0'], /from 1 to 100/);
+  bad(['--every', '1h', '--max-concurrent', '101'], /from 1 to 100/);
+  bad(['--every', '1h', '--max-concurrent', '1.5'], /from 1 to 100/);
+  bad(['--every', '1h', '--max-concurrent', 'many'], /from 1 to 100/);
+  const { deps, backend, printed } = setup(undefined);
+  await schedule(deps, parseScheduleArgs(['--every', '1h', '--max-concurrent', '2', '/sweep'], NOW));
+  assert.ok(backend.writes[0]?.endsWith('| max 2'));
+  assert.equal(printed.length, 1);
+});
+
+test('--after makes a schedule with no task, with an optional delay', async () => {
+  const args = parseScheduleArgs(['--after', 's1b2c3d4', '--delay', '10m', '--times', '3', '/deploy'], NOW);
+  assert.deepEqual(
+    [args.after, args.delay, args.times, args.every, args.cron],
+    ['s1b2c3d4', 600_000, 3, undefined, undefined],
+  );
+  assert.equal(parseScheduleArgs(['--after', 's1b2c3d4', 'x'], NOW).delay, undefined);
+  const { deps, backend, printed, asked } = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
+  const made = await scheduleAfter(deps, args);
+  assert.deepEqual(asked, [], 'no duplicate check');
+  assert.equal(made.after?.scheduleId, 's1b2c3d4');
+  assert.ok(backend.writes[0]?.startsWith('add-schedule /deploy | /deploy | after'));
+  assert.ok(backend.writes[0]?.includes('| after s1b2c3d4 +600000'));
+  assert.ok(backend.writes[0]?.includes('| times 3'));
+  assert.equal(printed.length, 1);
+  assert.match(
+    printed[0] ?? '',
+    /^scheduled repeat sched: after s1b2c3d4 \+10m, 3 runs; its first task is made when a task of that schedule finishes$/,
+  );
+});
+
+test('--after excludes the other ways to say when, --delay goes with --after', () => {
+  const bad = (flags: string[], message: RegExp) =>
+    assert.throws(() => parseScheduleArgs([...flags, 'x'], NOW), message, flags.join(' '));
+  for (const flags of [
+    ['--every', '1h'],
+    ['--cron', '0 9 * * *'],
+    ['--in', '1h'],
+    ['--at', '09:00'],
+    ['--hold'],
+    ['--backlog'],
+    ['--key', 'k'],
+    ['--polish'],
+  ])
+    bad(
+      ['--after', 's1b', ...flags],
+      new RegExp(`--after makes a schedule that waits for another one; it cannot be combined with ${flags[0]}`),
+    );
+  bad(['--delay', '10m'], /--delay belongs to --after/);
+  bad(['--every', '1h', '--delay', '10m'], /--delay belongs to --after/);
+  bad(['--after', 's1b', '--delay', 'soon'], /not a duration/);
+  bad(['--after', 's1'], /id of a schedule/);
+  bad(['--after', '../x'], /id of a schedule/);
+});
+
 test('a cron repeat sends the machine time zone and says nothing about duplicates', async () => {
   const { deps, backend, printed } = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
   await schedule(deps, parseScheduleArgs(['--cron', '0 9 * * 1-5', 'daily', 'sweep'], NOW));
@@ -338,6 +433,38 @@ test('--model is checked and sent for a plain task and for a repeat', async () =
     ?.task;
   assert.equal(first?.model, 'fable');
   assert.ok(repeat.backend.writes[0]?.endsWith('| here:/work/cosuno | model fable'));
+});
+
+test('--auto-done is sent for a plain task, a keyed one and a repeat, and only when given', async () => {
+  assert.equal(parseScheduleArgs(['--auto-done', 'x']).autoDone, true);
+  assert.equal(parseScheduleArgs(['x']).autoDone, false);
+
+  const plain = setup(undefined);
+  assert.equal(
+    (await schedule(plain.deps, parseScheduleArgs(['--auto-done', '--new', '/sweep'])))?.task.autoDone,
+    true,
+  );
+  const none = setup(undefined);
+  assert.equal((await schedule(none.deps, parseScheduleArgs(['--new', '/sweep'])))?.task.autoDone, false);
+
+  const keyed = setup(undefined);
+  const made = await schedule(keyed.deps, parseScheduleArgs(['--auto-done', '--key', 'k1', '/sweep']));
+  assert.equal(made?.task.autoDone, true);
+
+  const repeat = setup(undefined);
+  await schedule(repeat.deps, parseScheduleArgs(['--auto-done', '--every', '2h', '/sweep'], NOW));
+  assert.ok(repeat.backend.writes[0]?.endsWith('| auto-done'));
+  const off = setup(undefined);
+  await schedule(off.deps, parseScheduleArgs(['--every', '2h', '/sweep'], NOW));
+  assert.ok(!off.backend.writes[0]?.includes('auto-done'));
+});
+
+test('a requeue keeps the existing task auto-done setting and says --auto-done was not applied', async () => {
+  const requeue = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
+  await schedule(requeue.deps, parseScheduleArgs(['--auto-done', '/review-pr', '17741']));
+  assert.ok(
+    requeue.printed.some((line) => line.startsWith('old keeps its auto-done setting (off); --auto-done applies')),
+  );
 });
 
 test('--agent is checked and sent for a plain task and for a repeat', async () => {

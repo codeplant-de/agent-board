@@ -31,7 +31,9 @@ import {
   parseWirePrStates,
   parseWireWatches,
   parseWireWatchStopAck,
+  parseWirePromptEdit,
   parseWireScheduleDraft,
+  parseWireScheduleEdit,
   parseWireTaskConfig,
   parseWireTaskDraft,
   parseWireTaskPatch,
@@ -43,7 +45,7 @@ import {
   serializeSchedule,
   serializeWireNote,
 } from '@agent-board/shared';
-import type { VocabularyFeatures, VocabularyItem } from '@agent-board/shared';
+import type { VocabularyFeatures, VocabularyItem, WireSchedule } from '@agent-board/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Config } from './config';
 import type { Db, DbOrTx } from './db/client';
@@ -61,7 +63,15 @@ import {
   setMachineDirs,
   setMachineUsage,
 } from './services/machines';
-import { addSchedule, listSchedules, removeSchedule, setPaused, toSchedule } from './services/schedules';
+import {
+  addSchedule,
+  editSchedule,
+  heldTaskIds,
+  listSchedules,
+  removeSchedule,
+  setPaused,
+  toSchedule,
+} from './services/schedules';
 import { appendTranscript } from './services/transcripts';
 import {
   ackMessages,
@@ -71,6 +81,7 @@ import {
   attachSession,
   claimTask,
   configureTask,
+  editPrompt,
   failTask,
   getTask,
   heartbeat,
@@ -134,10 +145,27 @@ const MACHINE_BODY_LIMIT = 2 * 1024 * 1024;
 /** A transcript batch can carry a few large tool results. */
 const TRANSCRIPT_BODY_LIMIT = 16 * 1024 * 1024;
 
+/** A schedule that runs after another is not for a CLI that did not announce `schedule.after`: its parser reads one of everyMs and cron. */
+function isHiddenSchedule(schedule: Pick<WireSchedule, 'after'>, clientFeatures: ReadonlySet<string>): boolean {
+  return schedule.after !== null && !clientFeatures.has('schedule.after');
+}
+
 /** What a client that sent these features can be shown: an item with an enum value it has no feature for is left out. */
 function knownTo(clientFeatures: ReadonlySet<string>, vocabulary: VocabularyFeatures | undefined) {
   const unknownTo = (item: VocabularyItem) => findUnknownVocabulary(item, clientFeatures, vocabulary);
   return {
+    /** A list of schedules also leaves out those that run after another, for a client that cannot parse them. */
+    onlySchedules: (items: WireSchedule[]): WireSchedule[] =>
+      items.filter((item) => unknownTo(item) === undefined && !isHiddenSchedule(item, clientFeatures)),
+    /** A single schedule the client cannot read is a refusal, like `one`. */
+    oneSchedule: (item: WireSchedule): WireSchedule => {
+      if (isHiddenSchedule(item, clientFeatures))
+        throw new AppError(
+          'UNPROCESSABLE',
+          'this schedule runs after another schedule, which this CLI does not know; update the CLI',
+        );
+      return item;
+    },
     /** A list leaves out what the client cannot read. */
     only: <T extends VocabularyItem>(items: T[]): T[] => items.filter((item) => unknownTo(item) === undefined),
     /** A single object the client cannot read is a refusal, and the write behind it rolls back with the request. */
@@ -165,10 +193,14 @@ async function handleMachineCall(
   const visible = knownTo(client.features, client.vocabulary);
   const task = async (row: Parameters<typeof toTask>[0]) =>
     visible.one(
-      toTask(row, (await listTaskPrs(db, [row.id])).get(row.id), (await countTaskNotes(db, [row.id])).get(row.id) ?? 0),
+      toTask(row, (await listTaskPrs(db, [row.id])).get(row.id), {
+        noteCount: (await countTaskNotes(db, [row.id])).get(row.id) ?? 0,
+        held: (await heldTaskIds(db, [row])).has(row.id),
+      }),
       'task',
     );
-  const schedule = (row: Parameters<typeof toSchedule>[0]) => visible.one(toSchedule(row), 'schedule');
+  const schedule = (row: Parameters<typeof toSchedule>[0]) =>
+    visible.oneSchedule(visible.one(toSchedule(row), 'schedule'));
   switch (command) {
     case 'version':
       return {
@@ -193,7 +225,12 @@ async function handleMachineCall(
         db,
         rows.map(({ id }) => id),
       );
-      return visible.only(rows.map((row) => toTask(row, prs.get(row.id), noteCounts.get(row.id) ?? 0)));
+      const held = await heldTaskIds(db, rows);
+      return visible.only(
+        rows.map((row) =>
+          toTask(row, prs.get(row.id), { noteCount: noteCounts.get(row.id) ?? 0, held: held.has(row.id) }),
+        ),
+      );
     }
     case 'get-task':
       return task(await getTask(db, idOf(body, 'task')));
@@ -210,6 +247,7 @@ async function handleMachineCall(
           db,
           idOf(body, 'task'),
           parsed(() => parseWireTaskPatch(body['body'])),
+          machine,
           runOf(body),
         ),
       );
@@ -218,6 +256,11 @@ async function handleMachineCall(
       // A machine pins a task to itself only: the token names the machine, never the body.
       const pinned = place === undefined ? {} : { place: place === null ? null : { machine, workdir: place.workdir } };
       return task(await configureTask(db, idOf(body, 'task'), { ...config, ...pinned }, machine));
+    }
+    // The one place a machine stores a note of the user's: the user's own CLI edits a prompt, and refuses to inside a run.
+    case 'edit-prompt': {
+      const edit = parsed(() => parseWirePromptEdit(body['body']));
+      return task(await editPrompt(db, { taskId: idOf(body, 'task'), ...edit, by: machine }));
     }
     case 'claim-task': {
       const id = idOf(body, 'task');
@@ -365,13 +408,18 @@ async function handleMachineCall(
     case 'add-schedule': {
       const draft = parsed(() => parseWireScheduleDraft(body['body']));
       const { schedule: created, task: pending } = await addSchedule(db, draft);
-      return { schedule: serializeSchedule(schedule(created)), task: await task(pending) };
+      return { schedule: serializeSchedule(schedule(created)), task: pending === null ? null : await task(pending) };
     }
     case 'list-schedules':
-      return visible.only((await listSchedules(db)).map(toSchedule)).map(serializeSchedule);
+      return visible.onlySchedules((await listSchedules(db)).map(toSchedule)).map(serializeSchedule);
     case 'update-schedule': {
       const { paused } = parsed(() => parseSchedulePatch(body['body']));
       return serializeSchedule(schedule(await setPaused(db, idOf(body, 'schedule'), paused)));
+    }
+    case 'edit-schedule': {
+      const edit = parsed(() => parseWireScheduleEdit(body['body']));
+      const { schedule: edited, pending } = await editSchedule(db, { id: idOf(body, 'schedule'), ...edit });
+      return { schedule: serializeSchedule(schedule(edited)), pending };
     }
     case 'remove-schedule':
       await removeSchedule(db, idOf(body, 'schedule'));
@@ -386,6 +434,7 @@ const DISPATCH_WRITES = new Set([
   'add-task',
   'update-task',
   'configure-task',
+  'edit-prompt',
   'claim-task',
   'add-note',
   'set-pr',
@@ -399,6 +448,7 @@ const DISPATCH_WRITES = new Set([
   'wake',
   'add-schedule',
   'update-schedule',
+  'edit-schedule',
   'remove-schedule',
 ]);
 

@@ -1,4 +1,4 @@
-import { ActionIcon, Button, Group, Modal, Select, Stack, Text } from '@mantine/core';
+import { ActionIcon, Button, Group, Modal, Select, Stack, Switch, Text } from '@mantine/core';
 import { IconPencil } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -28,6 +28,22 @@ export function ModelPicker({ task }: { task: BoardTask }) {
       data={options}
       value={task.model ?? DEFAULT_MODEL}
       onChange={(value) => value !== null && configure.mutate({ task, model: modelFromOption(value) })}
+      disabled={configure.isPending}
+    />
+  );
+}
+
+/** Whether the agent may move the task to Done itself. A change takes effect at once, in every status. */
+export function AutoDoneSetting({ task }: { task: BoardTask }) {
+  const trpc = useTRPC();
+  const configure = useMutation(trpc.tasks.configure.mutationOptions());
+  return (
+    <Switch
+      size="xs"
+      label="Agent may mark it done"
+      description={`When it judges every acceptance criterion met and nothing is left for you, the agent moves the task to Done instead of Needs me.${task.scheduleId === null ? '' : ` ${SCHEDULE_HINT}`}`}
+      checked={task.autoDone}
+      onChange={(event) => configure.mutate({ task, autoDone: event.currentTarget.checked })}
       disabled={configure.isPending}
     />
   );

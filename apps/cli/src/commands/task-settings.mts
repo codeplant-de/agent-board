@@ -1,7 +1,7 @@
 // `board task <task> [set <key> <value> | unset <key>]`: the settings of a task after it was made. Without an action it prints
-// them; `set` and `unset` change the priority, the model and the directory the task runs in (which pins it to this machine).
+// them; `set` and `unset` change the priority, the model, whether the agent may mark it done and the directory the task runs in (which pins it to this machine).
 import { resolve } from 'node:path';
-import { isModelName, isPriority, isSafeWorkdir, PRIORITIES } from '@agent-board/shared';
+import { defaultTitle, isModelName, isPriority, isSafeWorkdir, PRIORITIES } from '@agent-board/shared';
 import type { Backend, Task, UnreadableField } from '@agent-board/shared';
 import { UsageError } from '../cli.mts';
 import { expandHome } from '../config/config.mts';
@@ -11,11 +11,11 @@ import { pinnedMachine } from '../dispatch/decide.mts';
 import { plainLine } from '../output/terminal.mts';
 import { localTime } from './schedule.mts';
 
-export const SETTING_KEYS = ['priority', 'model', 'dir'] as const;
+export const SETTING_KEYS = ['priority', 'model', 'auto-done', 'dir', 'prompt'] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
 export interface TaskSettingsDeps {
-  backend: Pick<Backend, 'getTask' | 'configureTask'>;
+  backend: Pick<Backend, 'getTask' | 'configureTask' | 'editPrompt'>;
   // This machine's name and its `dirs` list (undefined: nothing is limited).
   machine: Config['machine'];
   dirs: Config['dirs'];
@@ -56,12 +56,18 @@ export function formatSettings(deps: TaskSettingsDeps, task: Task): string[] {
     ['status', `${task.status}${task.closed ? ' (closed)' : ''}`],
     ['priority', task.priority],
     ['model', task.model === null ? 'default' : plainLine(task.model)],
+    ['auto-done', task.autoDone ? 'on: the agent may move it to Done' : 'off'],
     ['agent', isUnreadable(task, 'agent') ? UNREADABLE : task.agent == null ? 'none' : plainLine(task.agent)],
     ['created by', task.createdBy],
     ['machine', machineLine(task)],
     ['directory', directoryLine(deps, task)],
     ['starts', task.notBefore === null ? 'when a worker is free' : localTime(task.notBefore)],
-    ['schedule', task.scheduleId === null ? 'none' : plainLine(task.scheduleId)],
+    [
+      'schedule',
+      task.scheduleId === null
+        ? 'none'
+        : `${plainLine(task.scheduleId)}${task.held ? ' (at its limit: waits for a free slot)' : ''}`,
+    ],
     ...(task.forkOf === undefined ? [] : [['fork of', plainLine(task.forkOf)] satisfies [string, string]]),
     ['session', sessionLine(task)],
     ['pr', task.prs.length === 0 ? 'none' : task.prs.map((pr) => plainLine(pr.url)).join(', ')],
@@ -88,7 +94,7 @@ function confirmed(deps: TaskSettingsDeps, line: string): void {
 function noteSchedule(deps: TaskSettingsDeps, task: Task): void {
   if (task.scheduleId !== null)
     deps.print(
-      'note: this card belongs to a schedule; the change applies to it only, and the next occurrence takes priority, model, machine and directory from the schedule again',
+      'note: this card belongs to a schedule; the change applies to it only, and the next occurrence takes priority, model, auto-done, machine and directory from the schedule again',
     );
 }
 
@@ -115,6 +121,22 @@ export async function setModel(deps: TaskSettingsDeps, id: string, model: string
   noteSchedule(deps, task);
   const running = task.status === 'running' ? ' (the run in progress keeps its model)' : '';
   confirmed(deps, `${id} uses ${shown} from its next run on${running}`);
+}
+
+/** The agent may move the task to Done itself (`on`), or only to Needs me (`off`). It takes effect at once, in any status. */
+export async function setAutoDone(deps: TaskSettingsDeps, id: string, value: string | undefined): Promise<void> {
+  if (value !== 'on' && value !== 'off') throw new UsageError('auto-done is on or off');
+  const task = await deps.backend.getTask(id);
+  const on = value === 'on';
+  if (task.autoDone === on) return deps.print(`${id} auto-done is already ${value}`);
+  await deps.backend.configureTask(id, { autoDone: on });
+  noteSchedule(deps, task);
+  confirmed(
+    deps,
+    on
+      ? `${id}: its agent may move it to Done when it judges every acceptance criterion met`
+      : `${id}: its agent moves it to Needs me when it is finished; you mark it done`,
+  );
 }
 
 // What a typed path means: relative to the working directory, `~` expanded; it must be there and, with a `dirs` list, listed.
@@ -168,4 +190,38 @@ export async function setDirectory(deps: TaskSettingsDeps, id: string, path: str
       ? `${id} has no directory of its own now: any machine may take it, in its default directory`
       : `${id} now runs only on ${deps.machine}, in ${plainLine(directory)}`,
   );
+}
+
+/** Why the prompt of `task` cannot be edited, by the server's rules; undefined when it can. */
+function promptEditRefusal(task: Task): string | undefined {
+  if (task.createdBy !== 'user') return 'only a task you created has a prompt you can edit';
+  if (task.scheduleId !== null)
+    return 'this card is the next run of a schedule: edit the schedule with `board schedules edit <schedule> <text...>`';
+  if (task.lastActiveAt !== null || task.sessionId !== null)
+    return 'a worker has started it, so its prompt is in its thread now: reply with `board comment` instead';
+  if (task.closed || (task.status !== 'todo' && task.status !== 'backlog'))
+    return `it is ${task.closed ? 'closed' : task.status}: a prompt can only be edited while the task waits in Todo or Backlog`;
+  return undefined;
+}
+
+/**
+ * The user's new prompt for a task no worker has claimed, and a new title (`undefined` keeps the current one; an empty one
+ * is made from the prompt). The old title and prompt stay in a note on the task.
+ */
+export async function setPrompt(
+  deps: TaskSettingsDeps,
+  id: string,
+  options: { text: string; title?: string | undefined },
+): Promise<void> {
+  const input = options.text.trim();
+  if (input === '') throw new UsageError('the prompt is missing');
+  const task = await deps.backend.getTask(id);
+  const refusal = promptEditRefusal(task);
+  if (refusal !== undefined) throw new UsageError(`${id}: ${refusal}`);
+  if (task.unreadable.some((field) => field !== 'watches'))
+    throw new UsageError(`${id} cannot be decrypted here, so what it says now could not be kept`);
+  const title = options.title === undefined ? task.title : options.title.trim() || defaultTitle(input);
+  if (title === task.title && input === task.input) return deps.print(`${id} already has this title and prompt`);
+  await deps.backend.editPrompt(id, { title, input });
+  confirmed(deps, `${id} prompt updated; the old prompt is kept in a note on the task`);
 }

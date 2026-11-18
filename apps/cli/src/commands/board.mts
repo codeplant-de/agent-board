@@ -9,6 +9,7 @@ import type { Config } from '../config/config.mts';
 import { isAllowedDir, isDirectory, tryRealpath } from '../config/dirs.mts';
 import {
   ContractError,
+  defaultTitle,
   formatAnswers,
   formatDuration,
   MAX_WAIT_MS,
@@ -29,14 +30,15 @@ import {
   STATUSES,
   UNREADABLE_TEXT,
 } from '@agent-board/shared';
-import type { Note, Priority, Schedule, Status, Task } from '@agent-board/shared';
+import type { Note, PendingCardOutcome, Priority, Schedule, Status, Task } from '@agent-board/shared';
 import { createStyle } from '../output/style.mts';
 import { SystemError } from '../setup/system.mts';
 import { requireTaskId } from '../task-id.mts';
 import { plainLine, plainText } from '../output/terminal.mts';
 import type { Style } from '../output/style.mts';
-import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule } from './schedule.mts';
-import type { Choice, Scheduled, ScheduleFlags } from './schedule.mts';
+import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule, scheduleAfter } from './schedule.mts';
+import { resolveScheduleId } from './ids.mts';
+import type { Choice, Scheduled, ScheduledAfter, ScheduleFlags } from './schedule.mts';
 import { publishWatches } from '../watch/publish.mts';
 import { newWatchId } from '../watch/store.mts';
 import type { WatchStore } from '../watch/store.mts';
@@ -167,6 +169,7 @@ export function formatTasks(found: Task[], flags: TasksFlags, style: Style): str
         const labels = task.labels.length > 0 ? `  [${plainLine(task.labels.join(','))}]` : '';
         const hints = [
           task.notBefore ? `starts ${localTime(task.notBefore)}` : undefined,
+          task.held ? 'waits for a free slot of its schedule' : undefined,
           task.wakeAt ? `${task.waitCheck ? 'checks, gives up' : 'wakes'} ${localTime(task.wakeAt)}` : undefined,
           task.closed ? 'closed' : undefined,
           task.unreadable.length > 0 ? `cannot decrypt: ${task.unreadable.join(', ')}` : undefined,
@@ -430,6 +433,9 @@ export async function move(
       throw new UsageError(
         `${id} was not moved: ${error.message}. From inside a run the board moves the run's task only while that run holds it. If you are that run, it was taken back or has ended: do not move it again, end your turn.`,
       );
+    // The board's own reason: this task is not set to finish by itself, or it is a proposal.
+    if (error instanceof BackendError && error.fromApi && error.status === 403 && status === 'done')
+      throw new UsageError(`${id} was not moved: ${error.message}`);
     if (error instanceof BackendError && error.status === 403)
       throw new UsageError(`${id} is a proposal: only the user can start it. Leave it in Backlog.`);
     throw error;
@@ -609,6 +615,7 @@ export function formatSchedule(schedule: Schedule): string {
     `next ${nextRun(schedule)}`,
     left !== null ? `${left} left` : schedule.until ? `until ${localTime(schedule.until)}` : 'forever',
     state,
+    ...(schedule.maxConcurrent === null ? [] : [`max ${schedule.maxConcurrent}`]),
     plainLine(schedule.title),
     ...(schedule.unreadable.length > 0 ? [`(cannot decrypt: ${schedule.unreadable.join(', ')})`] : []),
   ].join('  ');
@@ -623,7 +630,7 @@ export async function schedules(context: Context, args: string[]): Promise<void>
     return;
   }
   if ((action !== 'pause' && action !== 'resume' && action !== 'rm') || id === undefined || extra.length > 0)
-    throw new UsageError('schedules takes nothing, or pause, resume or rm and a schedule id');
+    throw new UsageError('schedules takes nothing, or pause, resume, rm or edit and a schedule id');
   if (action === 'rm') {
     await context.backend.removeSchedule(id);
     return confirm(context, `removed ${id}`);
@@ -631,6 +638,34 @@ export async function schedules(context: Context, args: string[]): Promise<void>
   const schedule = await context.backend.updateSchedule(id, { paused: action === 'pause' });
   if (action === 'pause') return confirm(context, `paused ${id}`);
   confirm(context, `resumed ${id}${schedule.nextRunAt ? `, next run ${localTime(schedule.nextRunAt)}` : ''}`);
+}
+
+const PENDING_CARD_LINES: Record<PendingCardOutcome, string> = {
+  updated: 'The pending card was updated too',
+  started: 'The pending card has already started; the change applies from the next run',
+  none: 'The schedule has no pending card; its next run takes the change',
+};
+
+/**
+ * The user's new prompt for a schedule, and a new title (`undefined` keeps the current one; an empty one is made from the
+ * prompt). Every later run takes them; the pending card too while it has not started. The old text is not kept.
+ */
+export async function editSchedulePrompt(
+  context: Context,
+  id: string,
+  options: { text: string; title?: string | undefined },
+): Promise<void> {
+  const input = options.text.trim();
+  if (input === '') throw new UsageError('the prompt is missing');
+  const current = (await context.backend.listSchedules()).find((schedule) => schedule.id === id);
+  if (current === undefined) throw new UsageError(`no schedule ${plainLine(id).slice(0, 40)}`);
+  if (current.ended) throw new UsageError(`${id} has ended; an ended schedule can only be deleted`);
+  if (current.unreadable.length > 0) throw new UsageError(`${id} cannot be decrypted here, so it is not edited here`);
+  const title = options.title === undefined ? current.title : options.title.trim() || defaultTitle(input);
+  if (title === current.title && input === current.input)
+    return context.print(`${id} already has this title and prompt`);
+  const { pending } = await context.backend.editSchedule(id, { title, input });
+  confirm(context, `${id} prompt updated. ${PENDING_CARD_LINES[pending]}.`);
 }
 
 // The question goes to stderr, so a JSON document on stdout stays alone.
@@ -663,28 +698,31 @@ export async function scheduleCommand(
   flags: ScheduleFlags,
   words: string[],
   cwd: string,
-): Promise<Scheduled | undefined> {
-  const args = parseScheduleArgs(flags, words);
+): Promise<Scheduled | ScheduledAfter | undefined> {
+  const parsed = parseScheduleArgs(flags, words);
+  const args =
+    parsed.after === undefined
+      ? parsed
+      : { ...parsed, after: await resolveScheduleId(context.backend, parsed.after, { inRun: false }) };
   if (args.agent !== undefined) requireLocalAgent(context.config, args.agent);
   if (!isAllowedDir(context.config.dirs, cwd))
     throw new UsageError(
       `${plainLine(cwd)} is not a listed directory on ${context.config.machine}, so a task scheduled here would stop in Needs me. Run "board dirs add" here first, or schedule from a listed directory.`,
     );
-  return schedule(
-    {
-      backend: context.backend,
-      machine: context.config.machine,
-      workdir: cwd,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      print: context.print,
-      confirm: (line) => confirm(context, line),
-      link: context.taskLink,
-      check: haikuDuplicateCheck(
-        context.print,
-        process.stderr.isTTY ? (line) => void process.stderr.write(`${line}\n`) : undefined,
-      ),
-      choose: process.stdin.isTTY && process.stderr.isTTY ? chooseInTerminal : undefined,
-    },
-    args,
-  );
+  const deps = {
+    backend: context.backend,
+    machine: context.config.machine,
+    workdir: cwd,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    print: context.print,
+    confirm: (line: string) => confirm(context, line),
+    link: context.taskLink,
+    check: haikuDuplicateCheck(
+      context.print,
+      process.stderr.isTTY ? (line) => void process.stderr.write(`${line}\n`) : undefined,
+    ),
+    choose: process.stdin.isTTY && process.stderr.isTTY ? chooseInTerminal : undefined,
+  };
+  if (args.after !== undefined) return { schedule: await scheduleAfter(deps, args) };
+  return schedule(deps, args);
 }

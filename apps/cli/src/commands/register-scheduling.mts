@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { Command } from 'commander';
-import { delay, scheduleCommand, schedules, scheduleJson } from './board.mts';
+import { delay, editSchedulePrompt, scheduleCommand, schedules, scheduleJson } from './board.mts';
 import type { DelayFlags } from './board.mts';
 import { UsageError } from '../cli.mts';
 import { resolveScheduleId } from './ids.mts';
@@ -21,6 +21,7 @@ export function registerScheduleCommands(shared: ProgramShared): void {
     jsonOptionReadable,
     dryRunOption,
     notInRun,
+    textOf,
   } = shared;
   const schedule = program
     .command('schedule')
@@ -29,6 +30,7 @@ export function registerScheduleCommands(shared: ProgramShared): void {
     .description(
       paragraphs(
         'Make a task of the prompt, written as you would type it into Claude Code, bound to this machine and this directory. Prints its URL. A quick Haiku call first checks whether an open task already covers it; --new skips that.',
+        '--auto-done lets the agent move the task to Done itself when it judges that every acceptance criterion is met and nothing is left for you; without it the task ends in Needs me. A repeating schedule hands the setting to each task it makes. `board task <id> set auto-done on|off` changes it later.',
         'The flags come first; everything from the first other word on is the prompt, flags included (`--auto` below goes to the skill). To start the prompt with dashes, put -- before it.',
         '--in or --at keeps the task in Todo until then. --every or --cron makes a repeating schedule instead, starting at --in/--at (default now), for --times runs or until --until, else forever.',
         '--polish parks the task in Backlog and queues a second task, "Polish prompt: <title>", that asks an agent to turn the prompt into a complete plan, as the Polish prompt button on the board does. Apply the result from that task\'s page. It cannot be combined with --hold, --in, --at or a repeat.',
@@ -46,12 +48,16 @@ export function registerScheduleCommands(shared: ProgramShared): void {
       examples(
         'board schedule /review-pr 17741',
         'board schedule --priority high /review-pr acme/app#17741 --auto',
+        'board schedule --auto-done "Bump the patch version of every package and open a PR"',
         'board schedule --model opus "Find out why the bidder export is slow and propose a fix"',
         'board schedule "Find out why the bidder export is slow and propose a fix"',
         'board schedule --in 2h /review-pr 17741',
         'board schedule --at 09:00 /grill the plan in docs/x.md',
         'board schedule --every 2h --times 5 /sweep the stale branches',
         'board schedule --cron "0 9 * * 1-5" /review-pr --auto',
+        'board schedule --cron "0 9 * * 5#1" --cron "0 9 * * 5#3" /sprint report',
+        'board schedule --every 1h --max-concurrent 2 /sweep the stale branches',
+        'board schedule --after s1b2c3d4 --delay 10m /deploy the release',
         'board schedule --polish "bidder export should include postal codes"',
         'board schedule --hold -- --weird prompt',
         'board schedule --json /review-pr 17741',
@@ -70,6 +76,7 @@ export function registerScheduleCommands(shared: ProgramShared): void {
       const scheduled = await scheduleCommand(context, flags, words, options.cwd ?? realpathSync(process.cwd()));
       if (flags.json) {
         if (scheduled === undefined) return writeJson(null);
+        if (!('task' in scheduled)) return writeJson({ scheduleId: scheduled.schedule.id });
         const { task, polish, keyed } = scheduled;
         writeJson({
           id: task.id,
@@ -88,15 +95,19 @@ export function registerScheduleCommands(shared: ProgramShared): void {
       program
         .command('schedules')
         .helpGroup(SCHEDULING)
-        .summary('list, pause, resume or delete repeating schedules')
+        .summary('list, edit, pause, resume or delete repeating schedules')
         .description(
           paragraphs(
-            'Without arguments, list the repeating schedules: id, rule, next run, runs left, paused or ended, title; --json prints them as JSON.',
-            '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run. Changing a schedule is not available inside a board run. The id can be the start of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.',
+            'Without arguments, list the repeating schedules: id, rule, next run, runs left, paused or ended, the limit if it has one, title; --json prints them as JSON.',
+            '`pause <id>` drops the waiting run and stops the schedule, `resume <id>` makes the next run, `rm <id>` deletes the schedule and its waiting run.',
+            "`edit <id> <text...>` changes the schedule's prompt: the text is every word after the id, `-` reads it from stdin and `--file <path>` from a regular file in /tmp, for long text. `--title <title>` sets the title too; without it the title stays. Every later run takes the new text. The waiting run takes it too while it is in Todo and no worker has claimed it, and the command says which of three happened. Runs that already started keep what they had, and the old text is not kept. An ended schedule is refused.",
+            'Changing a schedule is not available inside a board run. The id can be the start of it (3 to 7 or 9 to 11 characters; 8 and 12 are whole ids) outside a run.',
           ),
         )
-        .usage('[options] [pause|resume|rm <id>]')
-        .argument('[action...]', 'pause, resume or rm, and the schedule id')
+        .usage('[options] [pause|resume|rm <id> | edit <id> <text...|-|--file <path>>]')
+        .argument('[action...]', 'pause, resume, rm or edit, and the schedule id')
+        .option('--title <title>', 'with edit: the new title (default: keep the current one)')
+        .option('--file <path>', 'with edit: the prompt from a regular file in /tmp')
         .addHelpText(
           'after',
           examples(
@@ -104,10 +115,12 @@ export function registerScheduleCommands(shared: ProgramShared): void {
             'board schedules --json',
             'board schedules pause s1b2c3d4',
             'board schedules rm s1b',
+            'board schedules edit s1b2c3d4 /sweep the stale branches and the stale worktrees',
+            'board schedules edit s1b --title "Nightly sweep" --file /tmp/prompt.md',
           ),
         ),
     ),
-  ).action(async (words: string[], flags: { json?: boolean }, command: Command) => {
+  ).action(async (words: string[], flags: { json?: boolean; title?: string; file?: string }, command: Command) => {
     if (words.length > 0) notInRun('board schedules changes are not available inside a board run');
     const context = contextOf(command, { json: flags.json === true });
     if (flags.json) {
@@ -115,8 +128,16 @@ export function registerScheduleCommands(shared: ProgramShared): void {
       return writeJson((await context.backend.listSchedules()).map(scheduleJson));
     }
     const [action, arg, ...rest] = words;
-    const changes = action === 'pause' || action === 'resume' || action === 'rm';
+    if ((flags.title !== undefined || flags.file !== undefined) && action !== 'edit')
+      throw new UsageError('--title and --file belong to board schedules edit');
+    const changes = action === 'pause' || action === 'resume' || action === 'rm' || action === 'edit';
     const id = arg === undefined || !changes ? undefined : await resolveScheduleId(context.backend, arg, { inRun });
+    if (action === 'edit' && id !== undefined) {
+      if (flags.file !== undefined && rest.length > 0)
+        throw new UsageError('give the prompt as words or with --file, not both');
+      const text = await textOf(flags.file === undefined ? rest : ['--file', flags.file]);
+      return editSchedulePrompt(context, id, { text, ...(flags.title === undefined ? {} : { title: flags.title }) });
+    }
     return schedules(context, id === undefined ? words : [action ?? '', id, ...rest]);
   });
 }

@@ -624,6 +624,8 @@ describe('opening what arrives', () => {
       machine: null,
       everyMs: 60_000,
       cron: null,
+      after: null,
+      maxConcurrent: null,
       timezone: null,
       anchorAt: NOW,
       nextRunAt: NOW,
@@ -896,6 +898,8 @@ describe('what the board sends in the clear', () => {
         machine: PROSE,
         everyMs: null,
         cron: PROSE,
+        after: null,
+        maxConcurrent: null,
         timezone: PROSE,
         anchorAt: NOW,
         nextRunAt: null,
@@ -927,6 +931,8 @@ describe('what the board sends in the clear', () => {
       machine: null,
       everyMs: 3_600_000,
       cron: null,
+      after: null,
+      maxConcurrent: null,
       timezone: null,
       anchorAt: NOW,
       nextRunAt: null,
@@ -950,6 +956,35 @@ describe('what the board sends in the clear', () => {
       remaining: 0,
       invalid: [],
     });
+
+    const checked = async (overrides: Record<string, unknown>) => {
+      queryClient.clear();
+      handle.mockResolvedValue([wire({ everyMs: null, cron: '0 9 * * 5#1', timezone: 'UTC', ...overrides })]);
+      return (await queryClient.fetchQuery(trpc.schedules.list.queryOptions()))[0];
+    };
+    expect(await checked({ moreCrons: ['0 9 * * 5#3'], maxConcurrent: 2 })).toMatchObject({
+      moreCrons: ['0 9 * * 5#3'],
+      maxConcurrent: 2,
+      invalid: [],
+    });
+    expect(await checked({ moreCrons: ['0 9 * * 5#3', PROSE] })).toMatchObject({
+      moreCrons: ['0 9 * * 5#3'],
+      invalid: ['moreCrons'],
+    });
+    for (const bad of [0, 101, 1.5, -2])
+      expect(await checked({ maxConcurrent: bad })).toMatchObject({ maxConcurrent: null, invalid: ['maxConcurrent'] });
+    expect(await checked({ cron: null, timezone: null, after: { scheduleId: 'up1', delayMs: 5 } })).toMatchObject({
+      after: { scheduleId: 'up1', delayMs: 5 },
+      invalid: [],
+    });
+    for (const after of [
+      { scheduleId: '../x', delayMs: 0 },
+      { scheduleId: 'up1', delayMs: -1 },
+    ])
+      expect(await checked({ cron: null, timezone: null, after })).toMatchObject({
+        after: { scheduleId: '(invalid)', delayMs: 0 },
+        invalid: ['after'],
+      });
 
     const run = (eventCount: unknown) => [
       {

@@ -108,28 +108,35 @@ Capabilities and vocabulary have names. An additive change then needs no version
 
 `features` in the `version` answer lists what the server can do.
 
-| Feature           | What it adds                                                                                                                   | Baseline |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------- |
-| `attach-session`  | The `attach-session` command.                                                                                                  | yes      |
-| `events`          | The event stream.                                                                                                              | yes      |
-| `note.polish`     | Polish notes: `kind: "polish"` on `add-note`.                                                                                  | yes      |
-| `note.suggestion` | The `suggestion` key of `add-note`.                                                                                            | yes      |
-| `wait`            | The `wait` and `wake` commands.                                                                                                | yes      |
-| `task.model`      | The `model` key of `add-task` and `add-schedule`.                                                                              |          |
-| `task.pr`         | The `set-pr` command and the task's `pr` field.                                                                                |          |
-| `task.pr-state`   | The `set-pr-state` command and the task's `prState` field.                                                                     |          |
-| `task.prs`        | Several PRs on a task: the `add-pr` and `set-pr-states` commands, and the `prs` and `promptPrState` fields.                    |          |
-| `task.pr-remove`  | The `remove-pr` command.                                                                                                       |          |
-| `run-inbox`       | The `run-inbox`, `ack-messages` and `stopped` commands, and the `stopRequested`, `pending`, `queued` and `deliveredAt` fields. |          |
-| `machine.dirs`    | The `set-dirs` command and `dirsIndex` in the `version` answer.                                                                |          |
-| `machine.catalog` | The `set-catalog` command and `catalogIndex` in the `version` answer.                                                          |          |
-| `machine.usage`   | The `set-usage` command and `usageIndex` in the `version` answer.                                                              |          |
-| `task.agent`      | The sealed `agent` key of `add-task` and `add-schedule`, and of a task and a schedule.                                         |          |
-| `task.run`        | The task's `run` field and the `run` key of a request, see [Runs](#runs).                                                      |          |
-| `task.configure`  | The `configure-task` command.                                                                                                  |          |
-| `task.note-count` | The task's `noteCount` field.                                                                                                  |          |
-| `task.watches`    | The `set-watches` and `ack-watch-stops` commands, and the `watches` and `watchStops` fields.                                   |          |
-| `task.fork`       | The task's `forkOf` field, see [Forks](#forks).                                                                                |          |
+| Feature                   | What it adds                                                                                                                                | Baseline |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| `attach-session`          | The `attach-session` command.                                                                                                               | yes      |
+| `events`                  | The event stream.                                                                                                                           | yes      |
+| `note.polish`             | Polish notes: `kind: "polish"` on `add-note`.                                                                                               | yes      |
+| `note.suggestion`         | The `suggestion` key of `add-note`.                                                                                                         | yes      |
+| `wait`                    | The `wait` and `wake` commands.                                                                                                             | yes      |
+| `task.model`              | The `model` key of `add-task` and `add-schedule`.                                                                                           |          |
+| `task.pr`                 | The `set-pr` command and the task's `pr` field.                                                                                             |          |
+| `task.pr-state`           | The `set-pr-state` command and the task's `prState` field.                                                                                  |          |
+| `task.prs`                | Several PRs on a task: the `add-pr` and `set-pr-states` commands, and the `prs` and `promptPrState` fields.                                 |          |
+| `task.pr-remove`          | The `remove-pr` command.                                                                                                                    |          |
+| `run-inbox`               | The `run-inbox`, `ack-messages` and `stopped` commands, and the `stopRequested`, `pending`, `queued` and `deliveredAt` fields.              |          |
+| `machine.dirs`            | The `set-dirs` command and `dirsIndex` in the `version` answer.                                                                             |          |
+| `machine.catalog`         | The `set-catalog` command and `catalogIndex` in the `version` answer.                                                                       |          |
+| `machine.usage`           | The `set-usage` command and `usageIndex` in the `version` answer.                                                                           |          |
+| `task.agent`              | The sealed `agent` key of `add-task` and `add-schedule`, and of a task and a schedule.                                                      |          |
+| `task.run`                | The task's `run` field and the `run` key of a request, see [Runs](#runs).                                                                   |          |
+| `task.configure`          | The `configure-task` command.                                                                                                               |          |
+| `task.note-count`         | The task's `noteCount` field.                                                                                                               |          |
+| `task.watches`            | The `set-watches` and `ack-watch-stops` commands, and the `watches` and `watchStops` fields.                                                |          |
+| `task.fork`               | The task's `forkOf` field, see [Forks](#forks).                                                                                             |          |
+| `task.held`               | The task's `held` field, see [State](#state).                                                                                               |          |
+| `schedule.crons`          | The `moreCrons` key of `add-schedule` and of a schedule, see [Schedule](#schedule).                                                         |          |
+| `schedule.max-concurrent` | The `maxConcurrent` key of `add-schedule` and of a schedule.                                                                                |          |
+| `schedule.after`          | The `after` key of `add-schedule` and of a schedule, a schedule that runs after another.                                                    |          |
+| `task.auto-done`          | The `autoDone` key of `add-task`, `add-schedule` and `configure-task`, and the field of a task and a schedule, see [Auto-done](#auto-done). |          |
+| `task.moved-by`           | The task's `movedBy` field, see [Who moved a task](#who-moved-a-task).                                                                      |          |
+| `prompt.edit`             | The `edit-prompt` and `edit-schedule` commands.                                                                                             |          |
 
 - The baseline (`BASELINE_SERVER_FEATURES`) is what the server of contract 9 has. A server that answers no `features` key is taken to have exactly the baseline.
 - A new server capability appends its name to `ADDED_SERVER_FEATURES` in the same commit that implements it.
@@ -140,7 +147,7 @@ Capabilities and vocabulary have names. An additive change then needs no version
 
 #### Client vocabulary
 
-The CLI sends `X-Board-Features: <names>` on every request. The names are the features of the enum values it understands.
+The CLI sends `X-Board-Features: <names>` on every request. The names are the features of the enum values it understands, and the capabilities of this build (`CLIENT_CAPABILITIES`, see [Client capabilities](#client-capabilities)).
 
 `VOCABULARY_FEATURES` in `features.mts` maps an enum value added after the baseline to such a feature. The enum fields are `status`, `priority`, `next` and `createdBy` of a task or schedule, and `author` and `kind` of a note. Every value there is today is baseline, so the table is empty and the header is too.
 
@@ -158,6 +165,11 @@ A CLI of 0.8.0 or newer goes on after the 422:
 Rules for adding a row:
 
 - CLI 0.7.0 does not survive the 422. So the first row waits until every machine runs 0.8.0 or newer, or it comes with a raised `MIN_CLIENT`.
+
+#### Client capabilities
+
+A capability is something a CLI can read that is not an enum value. Today there is one: `schedule.after`, sent by every CLI that parses a schedule with an `after` rule. A CLI that predates it parses a schedule strictly, exactly one of `everyMs` and `cron`, and would fail the whole `list-schedules` on one that runs after another. So a request without `schedule.after` is not shown such a schedule: `list-schedules` leaves it out, and a single one (`update-schedule`, or the result of `add-schedule`) is a 422 with `this schedule runs after another schedule, which this CLI does not know; update the CLI`. The cards such a schedule makes are ordinary tasks and need no gate. A new capability is added to `CLIENT_CAPABILITIES` and the server withholds what needs it in the same way.
+
 - A request without the header, which is what a CLI up to 0.7.0 sends, knows the baseline only.
 - A row for a note `author` or `kind` must also make the server's `noteCount` leave out the notes that `read-notes` leaves out.
 - The change needs both halves in the same pull request: the row, and the CLI sending the new name. The CLI sends it by being in the table.
@@ -204,7 +216,7 @@ The stream says "look at the board again" and carries no data. The CLI then read
 
 **What sends an event.** `event: tasks` with an empty `data:` follows a committed change to a task or a schedule:
 
-- these commands: `add-task`, `update-task`, `configure-task`, `claim-task`, `add-note`, `add-pr`, `remove-pr`, `set-pr`, `ask`, `pause`, `stopped`, `fail`, `wait`, `wake`, `add-schedule`, `update-schedule` and `remove-schedule`;
+- these commands: `add-task`, `update-task`, `configure-task`, `claim-task`, `add-note`, `add-pr`, `remove-pr`, `set-pr`, `ask`, `pause`, `stopped`, `fail`, `wait`, `wake`, `edit-prompt`, `add-schedule`, `update-schedule`, `edit-schedule` and `remove-schedule`;
 - any change to a task or schedule from the UI.
 
 A failed or rolled back call sends nothing.
@@ -270,6 +282,7 @@ The machine is checked first, so another machine still gets its own answer. That
 - It is refused with 409 while the task runs in another run.
 - A status change also needs the run to hold the task. Once the task left `running`, the answer is 409 `the task is <status>, no longer running in this run`, and nothing changes. The agent asked, or the user took the task back or moved it.
 - The other keys still go through on a task that left `running`, so the worker can store the directory the session ended in.
+- A move to `done` also needs the task to be set to `autoDone`. Otherwise the answer is 403 `This task is not set to finish by itself: move it to needs-me, and the user marks it done.`, and nothing changes. See [Auto-done](#auto-done).
 - `board move` from inside a run, on its own task, reports the 409 as a usage error. The error tells the agent not to move the task again and to end its turn.
 
 **Without `run`.** A call without `run` is checked by status and machine only. That covers older CLIs, the browser, `board move` from outside a run, and runs that started before the server had `task.run`. A `run` that is not a run id is 400.
@@ -285,6 +298,7 @@ The machine is checked first, so another machine still gets its own answer. That
   "createdBy": "user",
   "priority": "normal",
   "model": null,
+  "autoDone": false,
   "closed": false,
   "machine": "laptop",
   "sessionId": "591d2ec1-d4ab-4e26-ac04-ed303f8fa44a",
@@ -312,39 +326,43 @@ The machine is checked first, so another machine still gets its own answer. That
 
 The fields of the example are required, with these exceptions:
 
-| Key                    | Absent when                               | A client reads absent as        |
-| ---------------------- | ----------------------------------------- | ------------------------------- |
-| `model`                | the server lacks `task.model`             | `null`                          |
-| `pr`                   | the server lacks `task.pr`                | `null`                          |
-| `prState`              | the server lacks `task.pr-state`          | `null`                          |
-| `prs`, `promptPrState` | the server lacks `task.prs`               | `pr` and `prState` as one entry |
-| `agent`                | the task has no agent                     | no agent                        |
-| `run`                  | the task is not running, or no `task.run` | no run                          |
-| `stopRequested`        | the server lacks `run-inbox`              | `false`                         |
-| `noteCount`            | the server lacks `task.note-count`        | unknown                         |
-| `watches`              | the task has none, or no `task.watches`   | `null`                          |
-| `watchStops`           | the server lacks `task.watches`           | `[]`                            |
-| `forkOf`               | the task is no fork, or no `task.fork`    | not a fork                      |
+| Key                    | Absent when                                 | A client reads absent as        |
+| ---------------------- | ------------------------------------------- | ------------------------------- |
+| `model`                | the server lacks `task.model`               | `null`                          |
+| `autoDone`             | the server lacks `task.auto-done`           | `false`                         |
+| `movedBy`              | no status change yet, or no `task.moved-by` | no actor                        |
+| `pr`                   | the server lacks `task.pr`                  | `null`                          |
+| `prState`              | the server lacks `task.pr-state`            | `null`                          |
+| `prs`, `promptPrState` | the server lacks `task.prs`                 | `pr` and `prState` as one entry |
+| `agent`                | the task has no agent                       | no agent                        |
+| `run`                  | the task is not running, or no `task.run`   | no run                          |
+| `stopRequested`        | the server lacks `run-inbox`                | `false`                         |
+| `noteCount`            | the server lacks `task.note-count`          | unknown                         |
+| `watches`              | the task has none, or no `task.watches`     | `null`                          |
+| `watchStops`           | the server lacks `task.watches`             | `[]`                            |
+| `forkOf`               | the task is no fork, or no `task.fork`      | not a fork                      |
 
 The CLI's plaintext `Task` adds `labels` and `unreadable`.
 
 ### Identity and content
 
-| Field       | Meaning                                                                                                                 |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `id`        | Opaque and stable for the life of the task. The client that makes the task chooses it: 12 random characters.            |
-| `title`     | Sealed for the task, or for its schedule on an occurrence. One line, shown in lists.                                    |
-| `input`     | Sealed for the task and its creator, or for its schedule and `user` on an occurrence. What to work on.                  |
-| `createdBy` | `user`, `agent` or `intake`. Part of the context of `input`, so a changed value makes the task unreadable.              |
-| `agent`     | Sealed, or absent. The name of the agent the task runs as. Needs `task.agent`.                                          |
-| `model`     | The Claude model of the task's runs, or `null` for claude's default. Clear, not sealed: it is a choice, not content.    |
-| `head`      | The blind index (`abh1.…`) of `head:<sha>` for the version a task was made for (`board schedule --version`), or `null`. |
-| `forkOf`    | The id of the task this one was forked from, or absent. Clear. Needs `task.fork`.                                       |
+| Field       | Meaning                                                                                                                      |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `id`        | Opaque and stable for the life of the task. The client that makes the task chooses it: 12 random characters.                 |
+| `title`     | Sealed for the task, or for its schedule on an occurrence. One line, shown in lists.                                         |
+| `input`     | Sealed for the task and its creator, or for its schedule and `user` on an occurrence. What to work on.                       |
+| `createdBy` | `user`, `agent` or `intake`. Part of the context of `input`, so a changed value makes the task unreadable.                   |
+| `agent`     | Sealed, or absent. The name of the agent the task runs as. Needs `task.agent`.                                               |
+| `model`     | The Claude model of the task's runs, or `null` for claude's default. Clear, not sealed: it is a choice, not content.         |
+| `head`      | The blind index (`abh1.…`) of `head:<sha>` for the version a task was made for (`board schedule --version`), or `null`.      |
+| `autoDone`  | Whether the task's agent may move it to Done itself. Clear, not sealed: it is a choice, not content. Needs `task.auto-done`. |
+| `forkOf`    | The id of the task this one was forked from, or absent. Clear. Needs `task.fork`.                                            |
 
 - **`id`.** The client chooses it because the sealed fields are bound to it. It ends up in a systemd unit name, a log file name and argv. So the core refuses any id that does not match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, and the ids `dispatch` and `intake`.
 - **`createdBy`.** `agent` is a proposal the user has not started. No worker runs it, and starting it changes it to `user` with the prompt sealed again. `intake` is only on the tasks of the removed built-in intake: with an agent they run as it, and without one no worker runs them.
 - **`agent`.** The name matches `^[a-z0-9][a-z0-9-]{0,31}$` and names an agent the machine defines. It is sealed under the row's origin, which is `task:<id>`, or `schedule:<scheduleId>` for an occurrence. It is also written into the context of `input`, so a task whose agent was dropped or changed is unreadable (see [Encryption](encryption.md#encryption)). A client that opens it sets `agent` on its plaintext task. A task whose `agent` is unreadable lists `agent` in `unreadable` and is never run.
 - **`model`.** An alias such as `fable`, `opus`, `sonnet` or `haiku`, or a full name such as `claude-opus-5-5` or `claude-sonnet-5-5[1m]`. It must match `^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$`, else the CLI refuses the answer. The worker checks it again before it reaches argv as `claude --model`. A schedule's occurrences all take the schedule's model.
+- **`autoDone`.** See [Auto-done](#auto-done).
 - **`forkOf`.** A task id (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`), checked again by the client. Only the browser sets it, through `tasks.fork`; `add-task` has no such key and a draft that names one is 400, so an agent can never make a fork. See [Forks](#forks).
 - **`head`.** A script compares it with the blind index of the PR's head (`Backend.indexHead`) to see that the head moved. The sha itself is never stored.
 
@@ -364,6 +382,7 @@ The CLI's plaintext `Task` adds `labels` and `unreadable`.
 | `wakeAt`       | Waiting only: when the wait ends at the latest, ISO 8601. Otherwise `null`.               |
 | `waitCheck`    | Waiting only: a check on `machine` may end the wait earlier. Otherwise `false`.           |
 | `noteCount`    | Optional. The number of notes `read-notes` gives for this client, a non-negative integer. |
+| `held`         | Optional, `true` only. A Todo task whose schedule is at its `maxConcurrent` limit.        |
 
 - **`closed`.** The core never starts, requeues or writes to a closed task.
 - **`notBefore`.** The server clears it whenever the task leaves Todo, the claim included.
@@ -371,6 +390,7 @@ The CLI's plaintext `Task` adds `labels` and `unreadable`.
 - **`paused` and `woken`.** Both stay `true` through the claim, so the worker that resumes the task can tell the agent. The worker's first `update-task` of the run clears them, as does the task leaving Running another way. `woken` is also cleared when the task leaves Todo another way. The board's "Paused" badge is narrower than `paused`: it shows only in Todo. A wait ends into Todo by `wake`, Wake now, a reply or a drag.
 - **`wakeAt`.** A timer's end or a check's timeout. The server clears it whenever the task leaves Waiting.
 - **`waitCheck`.** The check's command is never sent to the board.
+- **`held`.** Present, as `true`, on a task in Todo that is not closed and whose schedule has a `maxConcurrent` limit that other tasks of it already use (Running or Waiting), whether the task is due or not. `claim-task` refuses it then, and a dispatcher need not try. Absent otherwise, and from a server without `task.held`. `list-tasks` computes it for the whole list with one query.
 - **`noteCount`.** Notes are never deleted, so it only grows. A client that keeps the number sees that the thread grew when it rises, and reads `read-notes` (oldest first) from the old count up to the new one. `list-tasks`, `get-task` and every command that returns a task answer it. The browser's own API does not carry it.
 
 ### Run
@@ -392,6 +412,32 @@ The CLI's plaintext `Task` adds `labels` and `unreadable`.
 - **`lane`.** A value of the shape of a machine name.
 - **`run`.** 16 to 64 characters of `A-Z`, `a-z`, `0-9`, `_` and `-`. The server makes 22 from 16 random bytes.
 - **`stopRequested`.** A worker acknowledges the request with `ack-messages` and `stop`.
+
+### Auto-done
+
+`autoDone` is a boolean on a task and on a schedule, `false` by default. When it is `true`, the task's agent may move the task from `running` to `done` itself. The user sets it: in the browser, with `configure-task` (`board task set auto-done`) or with the `autoDone` key of `add-task` and `add-schedule`. A schedule copies it into every occurrence it makes. A fork does not inherit it.
+
+The setting changes in any status, a running task included, and writes no note. It is a clear field, so the CLI of a machine reads it without opening anything.
+
+**What the server does with a move to Done.** Only an `update-task` that names a `run` is the agent's. It is the one case where the setting counts:
+
+- With `autoDone` `false`, the server answers 403 `This task is not set to finish by itself: move it to needs-me, and the user marks it done.` and changes nothing. The message is for the agent. It reads the setting when the call arrives, so turning the option off during a run takes effect at once.
+- With `autoDone` `true`, the server moves the task to the top of Done and writes the plain server event `Moved from running to done.` into the thread. There is no event text of its own. The rule about pending messages comes first: with messages the run never received, the task goes to the top of Todo instead and no `moved` event is written.
+- A call without `run`, from a script or a terminal, moves the task as before, whatever the setting.
+
+The CLI sends `autoDone` only to a server that lists `task.auto-done`, and refuses with "the board server does not support letting the agent move a task to Done yet" otherwise. It never sends `false` unasked.
+
+### Who moved a task
+
+`movedBy` is one of `user`, `agent` and `machine`: who made the task's last status change. It is clear, and absent until the first change. A change that keeps the status leaves it as it was. A client reads a value it does not know as absent, so a later actor does not break it. Needs `task.moved-by`.
+
+| Actor     | Set by                                                                                                                                                                                |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `user`    | Everything in the browser: a drag, Done, a reply or an answer that resumes the task, Stop, Take back, Wake now and Re-run.                                                            |
+| `agent`   | `update-task` with a `run` that changes the status, `ask` and `wait`.                                                                                                                 |
+| `machine` | `claim-task`, `wake`, `fail`, `pause` and `stopped`, and `update-task` without `run`, which covers a script's `board move`, a keyed requeue of `board schedule --key` and a terminal. |
+
+`board events` prints it as the `actor` of a `moved` event.
 
 ### Pull requests
 
@@ -434,7 +480,7 @@ A client shows an entry only when it has that shape. A list that does not open i
 
 ### Forks
 
-A fork is a task whose first run continues a copy of another task's Claude session. It has `forkOf` (the parent's id), a `parentId` of the same value that the board shows as its parent while the parent exists, the parent's `machine` and `model`, and the parent's directory as `workdir`. Its `agent` is the parent's, sealed again for it.
+A fork is a task whose first run continues a copy of another task's Claude session. It has `forkOf` (the parent's id), a `parentId` of the same value that the board shows as its parent while the parent exists, the parent's `machine` and `model`, and the parent's directory as `workdir`. It does not take the parent's `autoDone`: that is `false`. Its `agent` is the parent's, sealed again for it.
 
 - **The prompt is bound to the link.** `input` is sealed under `<origin>:<creator>:fork:<parentId>`, and with an agent `<origin>:<creator>:fork:<parentId>:agent:<name>`. A client opens it under the `forkOf` the board shows (see [Forks](encryption.md#forks)), so a task whose link the server dropped, added or changed is unreadable. A CLI that does not know the field cannot open the prompt, and its dispatcher skips the task.
 - **What the worker does.** A start-over of a fork reads the parent with `get-task` and requires its `sessionId` to be one this machine started for it. It then runs `claude -p --resume=<parent session> --fork-session --session-id=<new uuid>` and stores the new id on the fork with `update-task`, as a fresh run does (see [Workers](workers.md#how-a-task-runs)). A parent that is gone (404), has no session or ran on another machine blocks the run, and the worker fails the task with the reason.
@@ -457,11 +503,14 @@ Pickup order is the order of the array that `list-tasks` returns. Within a statu
   "input": "abe1.…",
   "priority": "normal",
   "model": null,
+  "autoDone": false,
   "machine": "laptop",
   "workdir": "abe1.…",
   "everyMs": 7200000,
   "cron": null,
   "timezone": null,
+  "after": null,
+  "maxConcurrent": null,
   "anchorAt": "2027-01-01T08:00:00.000Z",
   "nextRunAt": "2027-01-01T10:00:00.000Z",
   "remaining": 3,
@@ -473,7 +522,7 @@ Pickup order is the order of the array that `list-tasks` returns. Within a statu
 }
 ```
 
-The fields of the example are required. A missing `model`, from a server without `task.model`, reads as `null`. A schedule with an agent adds a sealed `agent`, which a server without `task.agent` leaves out.
+The fields of the example are required. A missing `model`, from a server without `task.model`, reads as `null`, and so do a missing `after` and `maxConcurrent`. A missing `autoDone`, from a server without `task.auto-done`, reads as `false`. A schedule with an agent adds a sealed `agent`, which a server without `task.agent` leaves out.
 
 | Field                       | Meaning                                                                                   |
 | --------------------------- | ----------------------------------------------------------------------------------------- |
@@ -482,6 +531,9 @@ The fields of the example are required. A missing `model`, from a server without
 | `machine`, `workdir`        | Pin the occurrences. Both set, or both `null`.                                            |
 | `everyMs`                   | An interval in ms, at least one minute, on the grid `anchorAt + k * everyMs`.             |
 | `cron`, `timezone`          | A 5-field expression, read in the IANA zone `timezone`. A cron rule needs its zone.       |
+| `moreCrons`                 | Optional: up to 9 more expressions, read in the same zone. Absent with one expression.    |
+| `after`                     | `{"scheduleId", "delayMs"}`: the schedule this one runs after, and the delay in ms.       |
+| `maxConcurrent`             | At most this many of its tasks Running or Waiting at once, 1 to 100. `null`: no limit.    |
 | `anchorAt`                  | The first run of an interval, or the time a cron rule matches from.                       |
 | `nextRunAt`                 | The start time of the pending occurrence, read from its task, so a changed delay shows.   |
 | `occurrenceTaskId`          | The task of the pending occurrence.                                                       |
@@ -489,9 +541,9 @@ The fields of the example are required. A missing `model`, from a server without
 | `until`                     | The last time an occurrence may start.                                                    |
 | `paused`, `ended`           | A paused schedule makes no occurrence until it is resumed. An ended one makes none again. |
 
-Exactly one of `everyMs` and `cron` is set.
+Exactly one of `everyMs`, `cron` and `after` is set. A schedule with several cron expressions runs whenever any of them matches: `cron` is the first, so a CLI that predates `moreCrons` still parses and lists it (and shows the first only), and `moreCrons` goes only with `cron`. `schedule.crons` names the key.
 
-`nextRunAt` and `occurrenceTaskId` are both `null` while the schedule is paused with nothing waiting, and once it has ended. `nextRunAt` alone is `null` when the pending task has no start time any more, because it was told to run now. It is due now.
+`nextRunAt` and `occurrenceTaskId` are both `null` while the schedule is paused with nothing waiting, while a schedule that runs after another waits for it, and once it has ended. `nextRunAt` alone is `null` when the pending task has no start time any more, because it was told to run now. It is due now.
 
 ### Occurrences
 
@@ -506,6 +558,10 @@ When that task leaves Todo, the server makes the next one in the same transactio
 With nothing left, the schedule ends (`ended: true`) and makes no more. That is when `remaining` is used up, or the next match lies after `until`.
 
 A task that was an occurrence and returns to Todo later does not trigger another. Only the pending one does.
+
+**A limit.** With `maxConcurrent`, `claim-task` of any task of the schedule (a first start and a resume) is refused with 409, like a lost claim, while that many other tasks of it are Running or Waiting. The server takes the schedule's row lock for the count, after the task's lock, so two machines claiming two cards at once cannot both pass. The pending card stays in Todo, due, with `held: true`, and the next occurrence is made when it is claimed. A card whose schedule was deleted is never held. The limit is not part of a schedule's rule and cannot be changed.
+
+**After another schedule.** A schedule with `after` has no pending occurrence while it waits. When `update-task` moves a task of the upstream schedule from Running to Needs me or Done, which is how a run hands the card back as done work, the server makes the dependent's occurrence in the same transaction: a Todo task with `notBefore` at the finish time plus `delayMs`, and none when the delay is 0. Any `update-task` that moves a Running task to Needs me or Done counts, which includes `board move <id> done` typed in a terminal. A question, `fail`, `stopped`, `pause`, `wait`, the browser's moves and stops, and a card that never ran do not count. The server stores when a task first finished (`occurrence_finished_at`, never sent), so each task triggers once, however often it is replied to. An upstream that has ended still triggers when a task of it that was under way finishes. A dependent that is paused or ended, or that already has a pending occurrence, makes none. `remaining` counts the occurrences made, and an occurrence that would start after `until` ends the schedule instead. When the pending occurrence leaves Todo the server makes nothing and clears `occurrenceTaskId`, ending the schedule when `remaining` is 0. Resuming a paused dependent makes no occurrence.
 
 ## Note
 
@@ -553,42 +609,44 @@ A resume prompt is built from the `user` notes after the last `agent` note. Two 
 
 ## Commands
 
-| Command           | Request                                                                                                                                                                | `result`                                                     |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `version`         | -                                                                                                                                                                      | See [Version handshake](#version-handshake)                  |
-| `list-tasks`      | `all?`                                                                                                                                                                 | `[Task, ...]` in pickup order                                |
-| `get-task`        | `id`                                                                                                                                                                   | `Task`                                                       |
-| `attach-session`  | `id`                                                                                                                                                                   | `Task`                                                       |
-| `add-task`        | `body`: `{"id", "title", "input", "status"?, "priority"?, "model"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "agent"?, "head"?, "notBefore"?}` | `{"task": Task, "created": bool}`                            |
-| `update-task`     | `id`, `body`: `{"status"?, "priority"?, "input"?, "sessionId"?, "workdir"?, "next"?, "head"?, "notBefore"?, "expect"?}`                                                | the updated `Task`, or 409                                   |
-| `configure-task`  | `id`, `body`: `{"priority"?, "model"?, "place"?}`                                                                                                                      | the updated `Task`, or 409                                   |
-| `claim-task`      | `id`, `machine`                                                                                                                                                        | the claimed `Task`, or 409                                   |
-| `add-note`        | `id`, `author?`, `kind?`, `body`: `{"body", "preview"?, "suggestion"?}`                                                                                                | `null`                                                       |
-| `read-notes`      | `id`                                                                                                                                                                   | `[Note, ...]`, oldest first                                  |
-| `ask`             | `id`, `body`: `{"body", "questions"}`                                                                                                                                  | `null`                                                       |
-| `add-pr`          | `id`, `body`: `{"pr"}`, the sealed PR URL                                                                                                                              | `null`                                                       |
-| `remove-pr`       | `id`, `body`: `{"pr"}`, the id of an entry of `prs`                                                                                                                    | `null`                                                       |
-| `set-pr-states`   | `id`, `body`: `{"prompt"?, "prs"?: [{"id", "state"}]}`                                                                                                                 | `null`                                                       |
-| `set-pr`          | Legacy. `id`, `body`: `{"pr"}`, the sealed PR URL                                                                                                                      | `null`                                                       |
-| `set-pr-state`    | Legacy. `id`, `body`: `{"prState"}`                                                                                                                                    | `null`                                                       |
-| `set-watches`     | `id`, `body`: `{"watches"}`, the sealed document, or `null` to clear                                                                                                   | `null`                                                       |
-| `ack-watch-stops` | `id`, `body`: `{"ids"}`, watch ids, at most 32                                                                                                                         | `null`                                                       |
-| `set-dirs`        | `body`: `{"dirs", "index"}`                                                                                                                                            | `null`                                                       |
-| `set-catalog`     | `body`: `{"catalog", "index"}`                                                                                                                                         | `null`                                                       |
-| `set-usage`       | `body`: `{"usage", "index"}`                                                                                                                                           | `null`                                                       |
-| `heartbeat`       | `id`, `body`: `{"lane": string, "borrowed": bool}`                                                                                                                     | `null`                                                       |
-| `pause`           | `id`, `body`: `{"body", "preview"?}`                                                                                                                                   | the updated `Task`                                           |
-| `fail`            | `id`, `body`: `{"body", "preview"?}`                                                                                                                                   | `{"applied": bool, "task": Task}`                            |
-| `stopped`         | `id`, `body`: `{"body", "preview"?}`                                                                                                                                   | the updated `Task`                                           |
-| `run-inbox`       | `id`                                                                                                                                                                   | `{"stop": bool, "stopMessage"?: noteId, "messages": [Note]}` |
-| `ack-messages`    | `id`, `body`: `{"ids": [noteId, ...], "stop"?: bool}`                                                                                                                  | `null`                                                       |
-| `wait`            | `id`, `body`: `{"body", "preview"?, "wakeAt", "check"}`                                                                                                                | the updated `Task`                                           |
-| `wake`            | `id`, `body`: `{"body", "preview"?}`                                                                                                                                   | `{"applied": bool, "task": Task}`                            |
-| `transcript`      | `id`, `body`: `{"runId", "startedAt", "sessionId", "resumed", "events": [...]}`                                                                                        | `null`                                                       |
-| `add-schedule`    | `body`: `{"id", "title", "input", "everyMs"? \| "cron"? + "timezone", "priority"?, "model"?, "machine"?, "workdir"?, "agent"?, "startAt"?, "times"?, "until"?}`        | `{"schedule": Schedule, "task": Task}`                       |
-| `list-schedules`  | -                                                                                                                                                                      | `[Schedule, ...]`: running first, then paused, then ended    |
-| `update-schedule` | `id`, `body`: `{"paused": bool}`                                                                                                                                       | the updated `Schedule`                                       |
-| `remove-schedule` | `id`                                                                                                                                                                   | `null`                                                       |
+| Command           | Request                                                                                                                                                                                                                   | `result`                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `version`         | -                                                                                                                                                                                                                         | See [Version handshake](#version-handshake)                                   |
+| `list-tasks`      | `all?`                                                                                                                                                                                                                    | `[Task, ...]` in pickup order                                                 |
+| `get-task`        | `id`                                                                                                                                                                                                                      | `Task`                                                                        |
+| `attach-session`  | `id`                                                                                                                                                                                                                      | `Task`                                                                        |
+| `add-task`        | `body`: `{"id", "title", "input", "status"?, "priority"?, "model"?, "autoDone"?, "dedupeKey"?, "parentId"?, "createdBy"?, "machine"?, "workdir"?, "agent"?, "head"?, "notBefore"?}`                                       | `{"task": Task, "created": bool}`                                             |
+| `update-task`     | `id`, `body`: `{"status"?, "priority"?, "input"?, "sessionId"?, "workdir"?, "next"?, "head"?, "notBefore"?, "expect"?}`                                                                                                   | the updated `Task`, or 409                                                    |
+| `configure-task`  | `id`, `body`: `{"priority"?, "model"?, "autoDone"?, "place"?}`                                                                                                                                                            | the updated `Task`, or 409                                                    |
+| `edit-prompt`     | `id`, `body`: `{"title", "input", "previous"}`                                                                                                                                                                            | the updated `Task`, or 403 or 409                                             |
+| `claim-task`      | `id`, `machine`                                                                                                                                                                                                           | the claimed `Task`, or 409                                                    |
+| `add-note`        | `id`, `author?`, `kind?`, `body`: `{"body", "preview"?, "suggestion"?}`                                                                                                                                                   | `null`                                                                        |
+| `read-notes`      | `id`                                                                                                                                                                                                                      | `[Note, ...]`, oldest first                                                   |
+| `ask`             | `id`, `body`: `{"body", "questions"}`                                                                                                                                                                                     | `null`                                                                        |
+| `add-pr`          | `id`, `body`: `{"pr"}`, the sealed PR URL                                                                                                                                                                                 | `null`                                                                        |
+| `remove-pr`       | `id`, `body`: `{"pr"}`, the id of an entry of `prs`                                                                                                                                                                       | `null`                                                                        |
+| `set-pr-states`   | `id`, `body`: `{"prompt"?, "prs"?: [{"id", "state"}]}`                                                                                                                                                                    | `null`                                                                        |
+| `set-pr`          | Legacy. `id`, `body`: `{"pr"}`, the sealed PR URL                                                                                                                                                                         | `null`                                                                        |
+| `set-pr-state`    | Legacy. `id`, `body`: `{"prState"}`                                                                                                                                                                                       | `null`                                                                        |
+| `set-watches`     | `id`, `body`: `{"watches"}`, the sealed document, or `null` to clear                                                                                                                                                      | `null`                                                                        |
+| `ack-watch-stops` | `id`, `body`: `{"ids"}`, watch ids, at most 32                                                                                                                                                                            | `null`                                                                        |
+| `set-dirs`        | `body`: `{"dirs", "index"}`                                                                                                                                                                                               | `null`                                                                        |
+| `set-catalog`     | `body`: `{"catalog", "index"}`                                                                                                                                                                                            | `null`                                                                        |
+| `set-usage`       | `body`: `{"usage", "index"}`                                                                                                                                                                                              | `null`                                                                        |
+| `heartbeat`       | `id`, `body`: `{"lane": string, "borrowed": bool}`                                                                                                                                                                        | `null`                                                                        |
+| `pause`           | `id`, `body`: `{"body", "preview"?}`                                                                                                                                                                                      | the updated `Task`                                                            |
+| `fail`            | `id`, `body`: `{"body", "preview"?}`                                                                                                                                                                                      | `{"applied": bool, "task": Task}`                                             |
+| `stopped`         | `id`, `body`: `{"body", "preview"?}`                                                                                                                                                                                      | the updated `Task`                                                            |
+| `run-inbox`       | `id`                                                                                                                                                                                                                      | `{"stop": bool, "stopMessage"?: noteId, "messages": [Note]}`                  |
+| `ack-messages`    | `id`, `body`: `{"ids": [noteId, ...], "stop"?: bool}`                                                                                                                                                                     | `null`                                                                        |
+| `wait`            | `id`, `body`: `{"body", "preview"?, "wakeAt", "check"}`                                                                                                                                                                   | the updated `Task`                                                            |
+| `wake`            | `id`, `body`: `{"body", "preview"?}`                                                                                                                                                                                      | `{"applied": bool, "task": Task}`                                             |
+| `transcript`      | `id`, `body`: `{"runId", "startedAt", "sessionId", "resumed", "events": [...]}`                                                                                                                                           | `null`                                                                        |
+| `add-schedule`    | `body`: `{"id", "title", "input", "everyMs"? \| "cron"? + "timezone" + "moreCrons"? \| "after"?, "maxConcurrent"?, "priority"?, "model"?, "autoDone"?, "machine"?, "workdir"?, "agent"?, "startAt"?, "times"?, "until"?}` | `{"schedule": Schedule, "task": Task \| null}`                                |
+| `list-schedules`  | -                                                                                                                                                                                                                         | `[Schedule, ...]`: running first, then paused, then ended                     |
+| `update-schedule` | `id`, `body`: `{"paused": bool}`                                                                                                                                                                                          | the updated `Schedule`                                                        |
+| `edit-schedule`   | `id`, `body`: `{"title", "input"}`                                                                                                                                                                                        | `{"schedule": Schedule, "pending": "updated" \| "started" \| "none"}`, or 409 |
+| `remove-schedule` | `id`                                                                                                                                                                                                                      | `null`                                                                        |
 
 Every body is strict. An unknown key, a missing required key or a value of the wrong shape is a 400, and nothing is written. A sealed key that holds plain text, or an envelope over its limit (`SEALED_LIMITS`), is a 400 too. An unknown task or schedule is a 404.
 
@@ -613,7 +671,7 @@ A leaked token, with the data key from the same `env` file, controls the whole b
 
 #### Pending messages when a run ends
 
-A run can end while the user's messages are still pending, because the worker never got to them. It had closed the agent's stdin, or it crashed. Those messages must not be lost. The server handles it in one place for every way out of Running: `update-task`, `ask`, `wait`, `pause` and `fail`.
+A run can end while the user's messages are still pending, because the worker never got to them. It had closed the agent's stdin, or it crashed. Those messages must not be lost. The server handles it in one place for every way out of Running: `update-task` (a move to Done by the agent included), `ask`, `wait`, `pause` and `fail`.
 
 - The pending notes stop being pending. They are replies now, with no `deliveredAt`, so the resume prompt carries them.
 - A task that would have gone to `needs-me`, `done` or `waiting` goes to the top of Todo instead, with `next: resume`, or `fresh` without a session.
@@ -649,6 +707,7 @@ Creates a task at the bottom of its status.
 | `status`             | `backlog`, `todo` (the default) or `needs-me`. Anything else is 400: a task gets into `running`, `waiting` and `done` only through `claim-task`, `wait` and a close. |
 | `priority`           | Defaults to the parent's with a `parentId`, and to `normal` without.                                                                                                 |
 | `model`              | A model name. Defaults to none, which is claude's default. Only for a server that lists `task.model`.                                                                |
+| `autoDone`           | A boolean, default `false`. Only for a server that lists `task.auto-done`.                                                                                           |
 | `createdBy`          | `intake`, `user` or `agent`. Defaults to `user`.                                                                                                                     |
 | `machine`, `workdir` | Come together and pin the task there. `workdir` is sealed.                                                                                                           |
 | `agent`              | Sealed. Only for a server that lists `task.agent`. The CLI refuses to send it otherwise.                                                                             |
@@ -687,6 +746,7 @@ The user's edit of a task's settings, in one atomic step. It needs the `task.con
 
 - **`priority`** works as the board's priority picker does. The task goes to the bottom of its new band, and the server writes the `Priority a → b.` note. The same priority changes nothing.
 - **`model`** is a model name (`isModelName`), or `null` for claude's default. It applies from the next run on and is allowed in any status.
+- **`autoDone`** is a boolean. It applies at once and is allowed in any status, a running task included. It needs `task.auto-done`; the CLI refuses without it.
 - **`place`** is `{"workdir": <sealed>}` or `null`. The directory is sealed under the task's `workdir` binding.
 
 What `place` does:
@@ -696,13 +756,36 @@ What `place` does:
 - With `null`, it clears `workdir`, `home_workdir` and `machine`.
 - Either way it drops the session: `sessionId` is null, `next` is `fresh`, and pause and wake flags go.
 - The status stays, so an open question in Needs me stays open.
-- On a `running` or `waiting` task the whole request is refused with 409. Nothing is written, `priority` and `model` in it included. Without `place`, model and priority go through in any status.
+- On a `running` or `waiting` task the whole request is refused with 409. Nothing is written, `priority` and `model` in it included. Without `place`, model, auto-done and priority go through in any status.
 
 There is no run fence. A run is not a caller of this command, and the CLI refuses it inside one.
 
 The server writes no note for a model or directory change. A server event text unknown to an installed CLI would not pass that CLI's check, and the priority note is the one text that exists.
 
 The browser makes the same change with `tasks.configure`.
+
+#### `edit-prompt`
+
+The user's new title and prompt for a task that has not started, in one atomic step. It needs the `prompt.edit` feature, and the CLI refuses without it.
+
+| Key        | Rule                                                                                                                               |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `title`    | Sealed under the task's own row.                                                                                                   |
+| `input`    | Sealed under the task's own row, its creator `user`, its fork link and its agent, as the task's prompt is (see [Forks](#forks)).   |
+| `previous` | A `{"body", "preview"?}` note input: the old title and prompt as a note of the `user`'s, kind `event`. `suggestion` is a 400 here. |
+
+The step is refused, and nothing is written, with:
+
+- 403 for a task whose `createdBy` is not `user`, and for a proposal;
+- 409 for a card of a schedule, which takes its prompt from the schedule;
+- 409 for a task a worker ever claimed (`lastActiveAt` or `sessionId` is set), even when it is back in Todo;
+- 409 for a closed task, and for one that is not in `todo` or `backlog`.
+
+On success the server stores the `previous` note and replaces `title` and `input`. The status, the position and the session stay.
+
+This is the one command where a machine stores a note of the user's. `add-note` still refuses `author: "user"`. The server cannot tell the user from an agent that holds the token, so the CLI is what keeps an agent out: it refuses `board task set prompt` inside a board run. See [Encryption](encryption.md#what-the-bindings-stop), "Editing a prompt".
+
+The browser makes the same change with `tasks.edit`.
 
 #### `claim-task`
 
@@ -978,25 +1061,33 @@ Appends a run's condensed events (see `packages/shared/src/transcript.mts`). An 
 
 Makes the schedule and its first card in one transaction.
 
-| Key                         | Rule                                                                                           |
-| --------------------------- | ---------------------------------------------------------------------------------------------- |
-| `id`                        | The client's, as for `add-task`. 409 when taken.                                               |
-| `title`, `input`, `workdir` | Sealed.                                                                                        |
-| `agent`                     | Sealed. Only for a server that lists `task.agent`. The server copies it into every occurrence. |
-| `machine`, `workdir`        | Come together.                                                                                 |
-| `everyMs`, `cron`           | Exactly one of them. `cron` needs its `timezone`, and `timezone` goes only with `cron`.        |
-| `startAt`                   | ISO 8601, default now. The first run of an interval, and the earliest match of a cron rule.    |
-| `times`                     | A positive integer up to 2147483647: the number of occurrences in all.                         |
-| `until`                     | ISO 8601.                                                                                      |
+| Key                         | Rule                                                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `id`                        | The client's, as for `add-task`. 409 when taken.                                                              |
+| `title`, `input`, `workdir` | Sealed.                                                                                                       |
+| `agent`                     | Sealed. Only for a server that lists `task.agent`. The server copies it into every occurrence.                |
+| `autoDone`                  | A boolean, default `false`. Only for a server that lists `task.auto-done`. Copied into every occurrence.      |
+| `machine`, `workdir`        | Come together.                                                                                                |
+| `everyMs`, `cron`, `after`  | Exactly one of them. `cron` needs its `timezone`, and `timezone` goes only with `cron`.                       |
+| `moreCrons`                 | Only with `cron`, only for a server that lists `schedule.crons`: up to 9 expressions.                         |
+| `after`                     | `{"scheduleId", "delayMs"?}`, only for a server that lists `schedule.after`. Delay 0 to 10 years, default 0.  |
+| `maxConcurrent`             | 1 to 100, only for a server that lists `schedule.max-concurrent`.                                             |
+| `startAt`                   | ISO 8601, default now. The first run of an interval, and the earliest match of a cron rule. Not with `after`. |
+| `times`                     | A positive integer up to 2147483647: the number of occurrences in all.                                        |
+| `until`                     | ISO 8601.                                                                                                     |
 
 `times` and `until` exclude each other. Neither means forever.
+
+With `after` the answer's `task` is `null`: the schedule has no occurrence until a task of the other one finishes.
 
 The answer is 400, and nothing is written, for:
 
 - a cron expression the server cannot read, 6-field patterns included;
 - an unknown time zone;
 - an interval under a minute or over 10 years (`MAX_INTERVAL_MS`);
-- a rule with no run before `until`.
+- a rule with no run before `until`;
+- a `moreCrons` entry the server cannot read, one that repeats another expression (compared field by field, ignoring spaces), or more than 10 expressions in all;
+- an `after` that names the schedule itself, a schedule that does not exist or one that has ended (a paused one is fine, and so is one that itself runs after another).
 
 #### `update-schedule`
 
@@ -1005,6 +1096,18 @@ The answer is 400, and nothing is written, for:
 - An ended schedule is 409.
 - Pausing a paused schedule, or resuming a running one, changes nothing.
 
+#### `edit-schedule`
+
+The user's new title and prompt for a schedule. It needs the `prompt.edit` feature.
+
+- `title` and `input` are sealed under the schedule, with its agent, as `add-schedule` seals them.
+- An ended schedule is 409, and an unknown one is 404.
+- Every later occurrence copies the new ciphertext.
+- The pending occurrence takes it too when it is in `todo`, open, and no worker ever claimed it. The answer says what became of it in `pending`: `updated`, `started` (it exists but was left alone) or `none` (the schedule is paused, or has nothing waiting).
+- No note is written. A schedule has no thread, so the old text is not kept.
+
+The browser makes the same change with `schedules.edit`.
+
 #### `remove-schedule`
 
-Deletes the schedule and a pending occurrence that never ran. Tasks that ran stay and keep their `scheduleId`. An unknown schedule is 404.
+Deletes the schedule and a pending occurrence that never ran. Tasks that ran stay and keep their `scheduleId`. An unknown schedule is 404. A schedule that others run after is 409, naming them (up to 5 ids): delete those first. That holds for an ended one too.

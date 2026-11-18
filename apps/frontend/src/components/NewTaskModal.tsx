@@ -1,6 +1,16 @@
-import { AGENT_NAME_RULE, isAgentName, PRIORITIES, type Priority } from '@agent-board/shared';
+import {
+  AGENT_NAME_RULE,
+  ContractError,
+  isAgentName,
+  MAX_INTERVAL_MS,
+  MAX_SCHEDULE_CONCURRENT,
+  parseDuration,
+  PRIORITIES,
+  type Priority,
+} from '@agent-board/shared';
 import {
   Button,
+  Checkbox,
   Code,
   Group,
   Modal,
@@ -9,6 +19,7 @@ import {
   Select,
   Stack,
   Text,
+  Textarea,
   TextInput,
 } from '@mantine/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -24,6 +35,18 @@ import { DirectorySelect } from './DirectorySelect';
 import { MarkdownEditor } from './MarkdownEditor';
 import { useDirectoryChoices } from './useDirectoryChoices';
 import { useModelOptions } from './useModelOptions';
+
+/** The delay of a schedule that runs after another: empty is none, else a duration the board may hold. */
+function parseDelay(text: string): number | undefined {
+  if (text.trim() === '') return 0;
+  try {
+    const ms = parseDuration(text);
+    return ms <= MAX_INTERVAL_MS ? ms : undefined;
+  } catch (error) {
+    if (error instanceof ContractError) return undefined;
+    throw error;
+  }
+}
 
 const WHEN_LABEL = { now: 'Now', later: 'Later', repeat: 'Repeating', backlog: 'Backlog', hold: 'Needs me' } as const;
 type When = keyof typeof WHEN_LABEL;
@@ -47,13 +70,18 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const [at, setAt] = useState('');
   const [rule, setRule] = useState('');
   const [times, setTimes] = useState<number | string>('');
+  const [limit, setLimit] = useState<number | string>('');
+  const [after, setAfter] = useState<string | null>(null);
+  const [delay, setDelay] = useState('');
   const [priority, setPriority] = useState<Priority>('normal');
   const [model, setModel] = useState(DEFAULT_MODEL);
+  const [autoDone, setAutoDone] = useState(false);
   const [directory, setDirectory] = useState<string | null>(null);
   const [agent, setAgent] = useState('');
   const directories = useDirectoryChoices();
   const catalogs = useQuery(trpc.machines.catalogs.queryOptions());
   const create = useMutation(trpc.tasks.create.mutationOptions());
+  const schedules = useQuery({ ...trpc.schedules.list.queryOptions(), enabled: opened && when === 'repeat' });
 
   const now = useNow(30_000);
   const start = new Date(at);
@@ -71,19 +99,35 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const atError = startsLater && at !== '' && !(start.getTime() > now) ? 'Pick a time in the future' : undefined;
   const timesError =
     times !== '' && !(Number.isInteger(times) && Number(times) > 0) ? 'A whole number, 1 or more' : undefined;
-  const ruleError = when === 'repeat' && rule.trim() !== '' && 'error' in parsedRule ? parsedRule.error : undefined;
-  const repeat = 'error' in parsedRule ? undefined : parsedRule;
+  const limitError =
+    limit !== '' && !(Number.isInteger(limit) && Number(limit) >= 1 && Number(limit) <= MAX_SCHEDULE_CONCURRENT)
+      ? `A whole number from 1 to ${MAX_SCHEDULE_CONCURRENT}`
+      : undefined;
+  const afterOptions = (schedules.data ?? [])
+    .filter(({ ended }) => !ended)
+    .map(({ id, title }) => ({ value: id, label: title }));
+  const delayMs = parseDelay(delay);
+  const delayError = after !== null && delayMs === undefined ? 'A duration such as 10m, 2h or 1d' : undefined;
+  const afterRule = after !== null && delayMs !== undefined ? { after: { scheduleId: after, delayMs } } : undefined;
+  const ruleError =
+    when === 'repeat' && after === null && rule.trim() !== '' && 'error' in parsedRule ? parsedRule.error : undefined;
+  const repeat = after !== null ? afterRule : 'error' in parsedRule ? undefined : parsedRule;
   const ready =
     input.trim() !== '' &&
     agentError === undefined &&
     (when !== 'later' || (at !== '' && atError === undefined)) &&
-    (when !== 'repeat' || (repeat !== undefined && atError === undefined && timesError === undefined));
+    (when !== 'repeat' ||
+      (repeat !== undefined &&
+        (after !== null || atError === undefined) &&
+        timesError === undefined &&
+        limitError === undefined));
   const submit = () => {
     if (!ready || create.isPending) return;
     const schedule = repeat && {
       ...repeat,
-      ...(at !== '' ? { at: start } : {}),
+      ...(at !== '' && after === null ? { at: start } : {}),
       ...(times !== '' ? { times: Number(times) } : {}),
+      ...(limit !== '' ? { maxConcurrent: Number(limit) } : {}),
     };
     const payload = when === 'later' ? { at: start } : when === 'repeat' ? schedule : when;
     if (payload === undefined) return;
@@ -94,6 +138,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
         when: payload,
         priority,
         ...(model === DEFAULT_MODEL ? {} : { model }),
+        ...(autoDone ? { autoDone } : {}),
         ...(place === undefined ? {} : { place: { machine: place.machine, workdir: place.path } }),
         ...(agentName === '' ? {} : { agent: agentName }),
       },
@@ -105,13 +150,17 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           setPriority('normal');
           setWhen('now');
           setModel(DEFAULT_MODEL);
+          setAutoDone(false);
           setDirectory(null);
           setAgent('');
           setAt('');
           setRule('');
           setTimes('');
+          setLimit('');
+          setAfter(null);
+          setDelay('');
           onClose();
-          navigate(`/t/${task.id}`);
+          navigate(task === null ? '/schedules' : `/t/${task.id}`);
         },
       },
     );
@@ -178,6 +227,12 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
               : 'Default is the model claude picks on the machine that runs it'
           }
         />
+        <Checkbox
+          label="Agent may mark it done"
+          description="When it judges every acceptance criterion met and nothing is left for you, the agent moves the task to Done instead of Needs me. A repeat gives this to each task it makes."
+          checked={autoDone}
+          onChange={(event) => setAutoDone(event.currentTarget.checked)}
+        />
         <div>
           <Text size="sm" fw={500} mb={4}>
             When
@@ -203,26 +258,56 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           )}
           {when === 'repeat' && (
             <Stack gap="xs" mt="xs">
-              <TextInput
-                label="Repeat"
-                required
-                placeholder="2h, or a cron expression such as 0 9 * * 1-5"
-                value={rule}
-                onChange={(e) => {
+              <Select
+                label="Run after"
+                placeholder="Not after another schedule"
+                clearable
+                searchable
+                value={after}
+                onChange={(value) => {
                   create.reset();
-                  setRule(e.currentTarget.value);
+                  setAfter(value);
                 }}
-                error={ruleError ?? (create.error ? errorMessage(create.error) : undefined)}
-                description={`An interval (30m, 2h, 1d, 1w) or 5 cron fields, read in ${timezone}`}
+                data={afterOptions}
+                nothingFoundMessage="No schedule that has not ended"
+                description="Instead of a rule: a card is made each time a card of that schedule finishes, in Needs me or Done"
               />
-              <TextInput
-                type="datetime-local"
-                label="First run"
-                value={at}
-                onChange={(e) => setAt(e.currentTarget.value)}
-                error={atError}
-                description="Default: now"
-              />
+              {after === null ? (
+                <>
+                  <Textarea
+                    label="Repeat"
+                    required
+                    autosize
+                    minRows={1}
+                    maxRows={6}
+                    placeholder="2h, or a cron expression such as 0 9 * * 1-5"
+                    value={rule}
+                    onChange={(e) => {
+                      create.reset();
+                      setRule(e.currentTarget.value);
+                    }}
+                    error={ruleError ?? (create.error ? errorMessage(create.error) : undefined)}
+                    description={`An interval (30m, 2h, 1d, 1w) or 5 cron fields, read in ${timezone}. One cron expression per line (up to 10) runs whenever any matches`}
+                  />
+                  <TextInput
+                    type="datetime-local"
+                    label="First run"
+                    value={at}
+                    onChange={(e) => setAt(e.currentTarget.value)}
+                    error={atError}
+                    description="Default: now"
+                  />
+                </>
+              ) : (
+                <TextInput
+                  label="Delay"
+                  placeholder="10m"
+                  value={delay}
+                  onChange={(e) => setDelay(e.currentTarget.value)}
+                  error={delayError ?? (create.error ? errorMessage(create.error) : undefined)}
+                  description="How long after that card finished the next one starts. Default: at once"
+                />
+              )}
               <NumberInput
                 label="Number of runs"
                 min={1}
@@ -233,8 +318,21 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
                 error={timesError}
                 description="Default: it repeats until you delete it"
               />
+              <NumberInput
+                label="At most at once"
+                min={1}
+                max={MAX_SCHEDULE_CONCURRENT}
+                allowDecimal={false}
+                allowNegative={false}
+                value={limit}
+                onChange={setLimit}
+                error={limitError}
+                description="Cards of the schedule running or waiting at once. A card over the limit stays in Todo until one finishes. Default: no limit"
+              />
               <Text size="xs" c="dimmed">
-                One pending card is on the board at a time; the next appears when it is started, moved or closed.
+                {after === null
+                  ? 'One pending card is on the board at a time; the next appears when it is started, moved or closed.'
+                  : 'No card is on the board until a card of that schedule finishes; then one waits in Todo for the delay.'}
               </Text>
             </Stack>
           )}

@@ -1,5 +1,6 @@
 import type { EventEmitter } from 'node:events';
-import { isSafeMachineName, MACHINE_NAME_RULE } from '@agent-board/shared';
+import { isSafeMachineName, MACHINE_NAME_RULE, TASK_ACTORS } from '@agent-board/shared';
+import type { TaskActor } from '@agent-board/shared';
 import { BackendError, requireFeature } from '../backend/backend.mts';
 import { verifyContract } from '../backend/contract-check.mts';
 import { realTimers } from '../backend/event-stream.mts';
@@ -15,11 +16,12 @@ import type { EventsDeps, EventsTarget } from '../events/run.mts';
 import { createStyle } from '../output/style.mts';
 import { parseStatus } from './board.mts';
 
-// `--task`, `--status` and `--type` repeat, and commander hands every value over as a list.
+// `--task`, `--status`, `--type` and `--actor` repeat, and commander hands every value over as a list.
 export interface EventsFlags {
   task?: string[];
   status?: string[];
   type?: string[];
+  actor?: string[];
   machine?: string;
   json?: boolean;
 }
@@ -30,6 +32,13 @@ function parseEventType(name: string): EventType {
   const found = EVENT_TYPES.find((type) => type === name.trim().toLowerCase());
   if (found === undefined)
     throw new UsageError(`unknown event type "${name.slice(0, 40)}"; use one of ${EVENT_TYPES.join(', ')}`);
+  return found;
+}
+
+function parseActor(name: string): TaskActor {
+  const found = TASK_ACTORS.find((actor) => actor === name.trim().toLowerCase());
+  if (found === undefined)
+    throw new UsageError(`unknown actor "${name.slice(0, 40)}"; use one of ${TASK_ACTORS.join(', ')}`);
   return found;
 }
 
@@ -45,6 +54,7 @@ export async function parseEventsFilter(
     tasks: await Promise.all((flags.task ?? []).map(resolveTask)),
     statuses: (flags.status ?? []).map(parseStatus),
     types: (flags.type ?? []).map(parseEventType),
+    actors: (flags.actor ?? []).map(parseActor),
     ...(machine === undefined ? {} : { machine }),
   };
 }
@@ -106,6 +116,14 @@ export async function runEventsCommand(command: EventsCommand): Promise<void> {
       requireFeature((await verify()).features, 'task.note-count');
     } catch (error) {
       if (error instanceof BackendError && error.missingFeature === 'task.note-count') throw error;
+    }
+  }
+  // An actor filter on a board that does not say who moved a task would never match: refuse it too.
+  if (filter.actors.length > 0) {
+    try {
+      requireFeature((await verify()).features, 'task.moved-by');
+    } catch (error) {
+      if (error instanceof BackendError && error.missingFeature === 'task.moved-by') throw error;
     }
   }
   const style = createStyle(context.color === true);

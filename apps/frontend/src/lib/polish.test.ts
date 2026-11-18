@@ -1,7 +1,7 @@
-import { deriveKeys, open } from '@agent-board/shared';
+import { deriveKeys, open, previousText } from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
 import { canPolish, isOpenPolishOf, polishTask } from './polish';
-import { InputError, previousText, sealApply, sealNewTask, type PolishTarget } from './sealing';
+import { InputError, sealApply, sealNewTask, type PolishTarget } from './sealing';
 import type { BoardTask } from './trpc';
 
 const keys = await deriveKeys(

@@ -32,6 +32,17 @@ test('a line has the time, the type, the id, what happened and the title', () =>
   );
 });
 
+test('a move shows its actor after the statuses, and nothing when the board names none', () => {
+  assert.equal(
+    eventLine(event({ type: 'moved', from: 'running', to: 'done', actor: 'agent' }), plain),
+    '14:02:11  moved    Ab3dEf9x      running → done by agent  Fix the export',
+  );
+  const json = eventJson(event({ type: 'moved', from: 'running', to: 'done', actor: 'machine' }), link);
+  assert.deepEqual(Object.keys(json), ['type', 'at', 'task', 'from', 'to', 'actor']);
+  assert.equal(json['actor'], 'machine');
+  assert.ok(!('actor' in eventJson(event({ type: 'moved', from: 'todo', to: 'done' }), link)));
+});
+
 test('a note shows its author and kind and the first line of its text, cut', () => {
   const text = `\n\nfirst line ${'x'.repeat(200)}\nsecond line`;
   const line = eventLine(event({ type: 'note', note: note(text, AT, { kind: 'question' }) }), plain);

@@ -4,7 +4,7 @@ import {
   CLIENT_API_HEADER,
   CLIENT_FEATURES_HEADER,
   CLIENT_VERSION_HEADER,
-  clientVocabulary,
+  announcedClientFeatures,
   ContractError,
   isRecord,
   QuestionError,
@@ -61,7 +61,7 @@ export function machineHeaders(token: string): Record<string, string> {
   identifying ??= {
     [CLIENT_VERSION_HEADER]: cliVersion(),
     [CLIENT_API_HEADER]: String(API_VERSION),
-    [CLIENT_FEATURES_HEADER]: clientVocabulary().join(','),
+    [CLIENT_FEATURES_HEADER]: announcedClientFeatures().join(','),
   };
   return { authorization: `Bearer ${token}`, ...identifying };
 }
@@ -143,7 +143,18 @@ export function asBackendError(command: string, error: unknown): Error {
 
 // The task an add-task would have made.
 function dryTask(draft: TaskDraft): Task {
-  const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, model, ...fields } = draft;
+  const {
+    dedupeKey: _key,
+    parentId: _parent,
+    createdBy,
+    machine,
+    workdir,
+    head,
+    notBefore,
+    model,
+    autoDone,
+    ...fields
+  } = draft;
   return {
     ...fields,
     labels: taskLabels({ input: draft.input, createdBy: createdBy ?? 'user' }),
@@ -151,6 +162,7 @@ function dryTask(draft: TaskDraft): Task {
     status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
     priority: draft.priority ?? 'normal',
     model: model ?? null,
+    autoDone: autoDone ?? false,
     id: 'dry',
     closed: false,
     machine: machine ?? null,
@@ -188,37 +200,46 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     },
     async addSchedule(draft) {
       print(`DRY add-schedule ${oneLine(JSON.stringify(draft), 160)}`);
-      const task = dryTask({
-        title: draft.title,
-        input: draft.input,
-        ...(draft.priority ? { priority: draft.priority } : {}),
-        ...(draft.model === undefined ? {} : { model: draft.model }),
-        ...(draft.agent === undefined ? {} : { agent: draft.agent }),
-        ...(draft.machine !== undefined && draft.workdir !== undefined
-          ? { machine: draft.machine, workdir: draft.workdir }
-          : {}),
-        notBefore: draft.startAt ?? new Date(),
-      });
-      task.scheduleId = 'dry';
+      const task =
+        draft.after !== undefined
+          ? null
+          : dryTask({
+              title: draft.title,
+              input: draft.input,
+              ...(draft.priority ? { priority: draft.priority } : {}),
+              ...(draft.model === undefined ? {} : { model: draft.model }),
+              ...(draft.autoDone === undefined ? {} : { autoDone: draft.autoDone }),
+              ...(draft.agent === undefined ? {} : { agent: draft.agent }),
+              ...(draft.machine !== undefined && draft.workdir !== undefined
+                ? { machine: draft.machine, workdir: draft.workdir }
+                : {}),
+              notBefore: draft.startAt ?? new Date(),
+            });
+      if (task !== null) task.scheduleId = 'dry';
       const schedule: Schedule = {
         id: 'dry',
         title: draft.title,
         input: draft.input,
         priority: draft.priority ?? 'normal',
         model: draft.model ?? null,
+        autoDone: draft.autoDone ?? false,
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
         ...(draft.agent === undefined ? {} : { agent: draft.agent }),
         everyMs: draft.everyMs ?? null,
         cron: draft.cron ?? null,
+        ...(draft.moreCrons === undefined || draft.moreCrons.length === 0 ? {} : { moreCrons: draft.moreCrons }),
         timezone: draft.timezone ?? null,
+        after:
+          draft.after === undefined ? null : { scheduleId: draft.after.scheduleId, delayMs: draft.after.delayMs ?? 0 },
+        maxConcurrent: draft.maxConcurrent ?? null,
         anchorAt: draft.startAt ?? new Date(),
-        nextRunAt: draft.startAt ?? new Date(),
-        remaining: draft.times === undefined ? null : draft.times - 1,
+        nextRunAt: task === null ? null : (draft.startAt ?? new Date()),
+        remaining: draft.times === undefined ? null : draft.times - (task === null ? 0 : 1),
         until: draft.until ?? null,
         paused: false,
         ended: false,
-        occurrenceTaskId: task.id,
+        occurrenceTaskId: task?.id ?? null,
         createdAt: new Date(),
         unreadable: [],
       };
@@ -229,6 +250,12 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
       const found = (await inner.listSchedules()).find((schedule) => schedule.id === id);
       if (!found) throw new BackendError(`update-schedule: no schedule ${id.slice(0, 40)}`, 404);
       return { ...found, ...patch };
+    },
+    async editSchedule(id, edit) {
+      print(`DRY edit-schedule ${id} ${oneLine(JSON.stringify(edit), 160)}`);
+      const found = (await inner.listSchedules()).find((schedule) => schedule.id === id);
+      if (!found) throw new BackendError(`edit-schedule: no schedule ${id.slice(0, 40)}`, 404);
+      return { schedule: { ...found, ...edit }, pending: 'none' };
     },
     async removeSchedule(id) {
       print(`DRY remove-schedule ${id}`);
@@ -241,14 +268,19 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     async configureTask(id, change) {
       const { seal: _seal, ...fields } = change;
       print(`DRY configure-task ${id} ${oneLine(JSON.stringify(fields), 160)}`);
-      const { priority, model, place } = change;
+      const { priority, model, autoDone, place } = change;
       const task = await inner.getTask(id);
       return {
         ...task,
         ...(priority === undefined ? {} : { priority }),
         ...(model === undefined ? {} : { model }),
+        ...(autoDone === undefined ? {} : { autoDone }),
         ...(place === undefined ? {} : { workdir: place?.workdir ?? null, sessionId: null, next: 'fresh' as const }),
       };
+    },
+    async editPrompt(id, edit) {
+      print(`DRY edit-prompt ${id} ${oneLine(JSON.stringify(edit), 160)}`);
+      return { ...(await inner.getTask(id)), ...edit };
     },
     async claimTask(id, machine) {
       print(`DRY claim-task ${id} --machine ${machine}`);

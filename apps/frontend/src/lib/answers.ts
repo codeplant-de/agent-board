@@ -14,3 +14,8 @@ export function answerTo(thread: ThreadNote[], question: ThreadNote): ThreadNote
       JSON.stringify(note.questions) === asked,
   );
 }
+
+/** The note of the question the task waits on: the last question note, while the board says the task has an open one. */
+export function openQuestionOf(task: { openQuestion: boolean }, thread: ThreadNote[]): ThreadNote | undefined {
+  return task.openQuestion ? thread.findLast((note) => note.kind === 'question') : undefined;
+}

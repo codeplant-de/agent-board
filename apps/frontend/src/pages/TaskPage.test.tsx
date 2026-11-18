@@ -21,6 +21,7 @@ vi.mock('../lib/trpc', () => {
         removePr: idle,
         stopWatch: idle,
         answer: idle,
+        dismissQuestion: idle,
         reply: idle,
         send: idle,
         stop: idle,
@@ -36,6 +37,7 @@ vi.mock('../lib/trpc', () => {
         fork: idle,
         edit: idle,
       },
+      schedules: { list: { queryOptions: () => ({ queryKey: ['schedules.list'] }) } },
       machines: {
         list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => [] }) },
         catalogs: { queryOptions: () => ({ queryKey: ['machines.catalogs'], queryFn: async () => [] }) },
@@ -61,6 +63,7 @@ const task = (id: string, title: string): BoardTask =>
     sessionId: 's',
     workdir: null,
     model: null,
+    autoDone: false,
     prs: [],
     watches: null,
     watchEvents: 0,
@@ -116,6 +119,33 @@ describe('TaskPage', () => {
     expect(screen.getByRole('heading', { name: 'Task B' })).toBeInTheDocument();
     expect(screen.getByRole('textbox')).toHaveValue('');
     expect(screen.getByRole('button', { name: 'Send & continue' })).toBeDisabled();
+  });
+
+  it('says a card waits for a free slot of its schedule, with the limit', async () => {
+    const held = { ...task('aaaa1111', 'Task A'), status: 'todo', scheduleId: 'sch1', held: true } as BoardTask;
+    const free = { ...task('bbbb2222', 'Task B'), status: 'todo', scheduleId: 'sch1' } as BoardTask;
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    client.setQueryData(['schedules.list'], [{ id: 'sch1', maxConcurrent: 3 }]);
+    client.setQueryData(['tasks.get', held.id], { task: held, thread: [], followUps: [], parent: null });
+    client.setQueryData(['tasks.get', free.id], { task: free, thread: [], followUps: [], parent: null });
+    const view = (id: string) => (
+      <MemoryRouter initialEntries={[`/t/${id}`]}>
+        <MantineProvider>
+          <ModalsProvider>
+            <QueryClientProvider client={client}>
+              <Routes>
+                <Route path="/t/:id" element={<TaskPage />} />
+              </Routes>
+            </QueryClientProvider>
+          </ModalsProvider>
+        </MantineProvider>
+      </MemoryRouter>
+    );
+    const first = render(view(held.id));
+    expect(screen.getByText(/Waits for a free slot: its schedule runs at most 3 at once/)).toBeInTheDocument();
+    first.unmount();
+    render(view(free.id));
+    expect(screen.queryByText(/Waits for a free slot/)).not.toBeInTheDocument();
   });
 
   it('shows the agent a task runs as, and nothing for a task without one', async () => {

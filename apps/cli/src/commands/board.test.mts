@@ -378,6 +378,26 @@ test('board tasks shows when a delayed task starts', async () => {
   assert.ok(printed.some((line) => line.endsWith('task p1')));
 });
 
+test('board tasks says a task waits for a free slot of its schedule', async () => {
+  const backend = fakeBackend([
+    task({ id: 'h1', scheduleId: 'sch', held: true }),
+    task({ id: 'p1', scheduleId: 'sch' }),
+  ]);
+  const printed: string[] = [];
+  const context: LinkingContext = {
+    config: CONFIG,
+    backend,
+    dryRun: false,
+    taskLink: linkTo,
+    print: (line) => printed.push(line),
+  };
+  await tasks(context);
+  assert.ok(
+    printed.some((line) => line.includes('task h1') && line.endsWith('(waits for a free slot of its schedule)')),
+  );
+  assert.ok(printed.some((line) => line.endsWith('task p1')));
+});
+
 function schedulesContext(items: ReturnType<typeof schedule>[]) {
   const backend = fakeBackend([]);
   backend.schedules = items;
@@ -412,6 +432,43 @@ test('board schedules lists id, rule, next run, runs left, state and title', asy
   assert.match(printed[1] ?? '', /^ {2}s1 {2}every 2h {2}next \d{4}-\d{2}-\d{2} \d{2}:\d{2} {2}3 left {2}- {2}Sweep$/);
   assert.equal(printed[2], '  s2  cron 0 9 * * 1-5 (Europe/Berlin)  next -  forever  paused  Mornings');
   assert.match(printed[3] ?? '', /^ {2}s3 {2}every 2h {2}next - {2}0 left {2}ended {2}Done$/);
+});
+
+test('board schedules shows every cron expression, the limit, and what a schedule runs after', async () => {
+  const { context, printed } = schedulesContext([
+    schedule({
+      id: 's1',
+      title: 'Fridays',
+      everyMs: null,
+      cron: '0 9 * * 5#1',
+      moreCrons: ['0 9 * * 5#3'],
+      timezone: 'Europe/Berlin',
+      maxConcurrent: 2,
+    }),
+    schedule({
+      id: 's2',
+      title: 'Deploy',
+      everyMs: null,
+      after: { scheduleId: 's1', delayMs: 600_000 },
+      nextRunAt: null,
+      occurrenceTaskId: null,
+    }),
+    schedule({
+      id: 's3',
+      title: 'Notify',
+      everyMs: null,
+      after: { scheduleId: 's2', delayMs: 0 },
+      nextRunAt: null,
+      occurrenceTaskId: null,
+    }),
+  ]);
+  await schedules(context, []);
+  assert.match(
+    printed[1] ?? '',
+    /^ {2}s1 {2}cron 0 9 \* \* 5#1 \| 0 9 \* \* 5#3 \(Europe\/Berlin\) {2}next .* {2}forever {2}- {2}max 2 {2}Fridays$/,
+  );
+  assert.equal(printed[2], '  s2  after s1 +10m  next -  forever  -  Deploy');
+  assert.equal(printed[3], '  s3  after s2  next -  forever  -  Notify');
 });
 
 test('board schedules shows until instead of forever, and now for a card that is due', async () => {

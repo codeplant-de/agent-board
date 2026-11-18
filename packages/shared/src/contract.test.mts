@@ -72,6 +72,7 @@ const task = {
   status: 'todo',
   priority: 'normal',
   model: null,
+  autoDone: false,
   closed: false,
   machine: null,
   sessionId: null,
@@ -269,7 +270,7 @@ test('a task config takes a priority, a model or null, and a place with a sealed
     priority: 'high',
     model: 'opus',
   });
-  assert.throws(() => parseWireTaskConfig({}), /config needs one of priority, model, place/);
+  assert.throws(() => parseWireTaskConfig({}), /config needs one of priority, model, autoDone, place/);
   assert.throws(() => parseWireTaskConfig([]), /must be a JSON object/);
   assert.throws(() => parseWireTaskConfig({ priority: 'asap' }), /priority must be one of/);
   for (const model of ['', 'not a model', '-x', 5, undefined])
@@ -412,10 +413,13 @@ const schedule = {
   input: INPUT,
   priority: 'normal',
   model: null,
+  autoDone: false,
   machine: null,
   workdir: null,
   everyMs: 7_200_000,
   cron: null,
+  after: null,
+  maxConcurrent: null,
   timezone: null,
   anchorAt: '2027-01-01T08:00:00.000Z',
   nextRunAt: '2027-01-01T08:00:00.000Z',
@@ -478,7 +482,71 @@ test('a schedule has exactly one rule, and a cron rule a time zone', () => {
 test('add-schedule results carry the schedule and its pending task', () => {
   const result = parseWireAddScheduleResult({ schedule, task: { ...task, scheduleId: 'Sc3dEf9x' } });
   assert.equal(result.schedule.id, 'Sc3dEf9x');
-  assert.equal(result.task.scheduleId, 'Sc3dEf9x');
+  assert.equal(result.task?.scheduleId, 'Sc3dEf9x');
+});
+
+test('an add-schedule result has no task for a schedule that waits for another', () => {
+  assert.equal(parseWireAddScheduleResult({ schedule, task: null }).task, null);
+  assert.equal(parseWireAddScheduleResult({ schedule }).task, null);
+});
+
+test('a schedule carries several cron expressions, a limit and the schedule it runs after', () => {
+  const crons = {
+    ...schedule,
+    everyMs: null,
+    cron: '0 9 * * 5#1',
+    moreCrons: ['0 9 * * 5#3'],
+    timezone: 'Europe/Berlin',
+    maxConcurrent: 2,
+  };
+  assert.deepEqual(serializeSchedule(parseWireSchedule(crons)), crons);
+  const after = {
+    ...schedule,
+    everyMs: null,
+    after: { scheduleId: 'Up3dEf9x', delayMs: 600_000 },
+    nextRunAt: null,
+    occurrenceTaskId: null,
+  };
+  assert.deepEqual(serializeSchedule(parseWireSchedule(after)), after);
+});
+
+test('a schedule from a server that predates these keys has no more crons, no limit and no schedule to follow', () => {
+  const { after: _after, maxConcurrent: _limit, ...old } = schedule;
+  const parsed = parseWireSchedule(old);
+  assert.deepEqual([parsed.after, parsed.maxConcurrent, 'moreCrons' in parsed], [null, null, false]);
+  assert.equal(
+    'moreCrons' in parseWireSchedule({ ...schedule, everyMs: null, cron: '0 9 * * *', timezone: 'UTC', moreCrons: [] }),
+    false,
+  );
+});
+
+test('the new keys of a schedule are shape-checked', () => {
+  const cron = { ...schedule, everyMs: null, cron: '0 9 * * *', timezone: 'UTC' };
+  assert.throws(() => parseWireSchedule({ ...schedule, moreCrons: ['0 9 * * *'] }), /moreCrons only goes with cron/);
+  assert.throws(() => parseWireSchedule({ ...cron, moreCrons: ['rm -rf /'] }), /must hold cron expressions/);
+  assert.throws(() => parseWireSchedule({ ...cron, moreCrons: 'x' }), /must be a list/);
+  assert.equal(
+    parseWireSchedule({ ...cron, moreCrons: Array.from({ length: 12 }, () => '0 9 * * *') }).moreCrons?.length,
+    12,
+    'the limits are the server’s to enforce, not the reader’s',
+  );
+  assert.throws(() => parseWireSchedule({ ...schedule, maxConcurrent: 0 }), /positive integer/);
+  assert.equal(parseWireSchedule({ ...schedule, maxConcurrent: 500 }).maxConcurrent, 500);
+  const after = { ...schedule, everyMs: null, after: { scheduleId: 'Up3dEf9x', delayMs: 0 } };
+  assert.throws(() => parseWireSchedule({ ...after, after: { scheduleId: '../x', delayMs: 0 } }), /not safe/);
+  assert.throws(() => parseWireSchedule({ ...after, after: { scheduleId: 'Up3dEf9x', delayMs: -1 } }), /delayMs/);
+  assert.equal(
+    parseWireSchedule({ ...after, after: { scheduleId: 'Up3dEf9x', delayMs: MAX_INTERVAL_MS + 1 } }).after?.delayMs,
+    MAX_INTERVAL_MS + 1,
+  );
+  assert.throws(() => parseWireSchedule({ ...after, cron: '0 9 * * *', timezone: 'UTC' }), /exactly one/);
+  assert.throws(() => parseWireSchedule({ ...after, everyMs: 60_000 }), /exactly one/);
+});
+
+test('a task carries held only when it waits for a free slot of its schedule', () => {
+  assert.equal(parseWireTask({ ...task, held: true }).held, true);
+  assert.equal('held' in parseWireTask({ ...task, held: false }), false);
+  assert.equal('held' in parseWireTask(task), false);
 });
 
 test('a schedule draft needs sealed title and input and one rule', () => {
@@ -506,7 +574,7 @@ test('a schedule draft needs sealed title and input and one rule', () => {
   );
   assert.throws(
     () => parseWireScheduleDraft({ id: ID, title: TITLE, input: INPUT }),
-    /exactly one of everyMs and cron/,
+    /exactly one of everyMs, cron and after/,
   );
   assert.throws(() => parseWireScheduleDraft({ ...draft, cron: '* * * * *', timezone: 'UTC' }), /exactly one/);
   assert.throws(
@@ -526,6 +594,52 @@ test('a schedule draft needs sealed title and input and one rule', () => {
   );
   assert.throws(() => parseWireScheduleDraft({ ...draft, machine: 'laptop' }), /go together/);
   assert.throws(() => parseWireScheduleDraft({ ...draft, rank: 1 }), /unknown key "rank"/);
+});
+
+test('a schedule draft takes more crons, a limit and an after rule, each checked', () => {
+  const cron = { id: ID, title: TITLE, input: INPUT, cron: '0 9 * * 5#1', timezone: 'UTC' };
+  assert.deepEqual(parseWireScheduleDraft({ ...cron, moreCrons: ['0 9 * * 5#3'], maxConcurrent: 3 }), {
+    ...cron,
+    moreCrons: ['0 9 * * 5#3'],
+    maxConcurrent: 3,
+  });
+  assert.throws(
+    () => parseWireScheduleDraft({ id: ID, title: TITLE, input: INPUT, everyMs: 60_000, moreCrons: ['0 9 * * *'] }),
+    /moreCrons only goes with cron/,
+  );
+  assert.throws(() => parseWireScheduleDraft({ ...cron, moreCrons: 'x' }), /list of strings/);
+  assert.throws(
+    () => parseWireScheduleDraft({ ...cron, moreCrons: Array.from({ length: 10 }, () => '0 9 * * *') }),
+    /at most 9/,
+  );
+  assert.throws(() => parseWireScheduleDraft({ ...cron, maxConcurrent: 0 }), /positive integer/);
+  assert.throws(() => parseWireScheduleDraft({ ...cron, maxConcurrent: 101 }), /at most 100/);
+  const base = { id: ID, title: TITLE, input: INPUT };
+  assert.deepEqual(parseWireScheduleDraft({ ...base, after: { scheduleId: 'Up3dEf9x' }, times: 2 }), {
+    ...base,
+    after: { scheduleId: 'Up3dEf9x' },
+    times: 2,
+  });
+  assert.deepEqual(parseWireScheduleDraft({ ...base, after: { scheduleId: 'Up3dEf9x', delayMs: 0 } }).after, {
+    scheduleId: 'Up3dEf9x',
+    delayMs: 0,
+  });
+  const after = { ...base, after: { scheduleId: 'Up3dEf9x', delayMs: 600_000 } };
+  assert.throws(() => parseWireScheduleDraft({ ...after, everyMs: 60_000 }), /exactly one/);
+  assert.throws(() => parseWireScheduleDraft({ ...after, cron: '0 9 * * *', timezone: 'UTC' }), /exactly one/);
+  assert.throws(() => parseWireScheduleDraft({ ...after, timezone: 'UTC' }), /only goes with cron/);
+  assert.throws(() => parseWireScheduleDraft({ ...after, startAt: '2027-01-01T00:00:00Z' }), /startAt does not go/);
+  assert.throws(
+    () => parseWireScheduleDraft({ ...after, after: { scheduleId: ID } }),
+    /cannot name the schedule itself/,
+  );
+  assert.throws(() => parseWireScheduleDraft({ ...after, after: { scheduleId: '../x' } }), /not safe/);
+  assert.throws(() => parseWireScheduleDraft({ ...after, after: { scheduleId: 'Up3dEf9x', delayMs: -1 } }), /delayMs/);
+  assert.throws(
+    () => parseWireScheduleDraft({ ...after, after: { scheduleId: 'Up3dEf9x', delayMs: MAX_INTERVAL_MS + 1 } }),
+    /delayMs/,
+  );
+  assert.throws(() => parseWireScheduleDraft({ ...after, after: { scheduleId: 'Up3dEf9x', x: 1 } }), /unknown key "x"/);
 });
 
 test('a schedule patch is a paused flag', () => {
@@ -885,6 +999,37 @@ test('a draft carries a model that is checked, in add-task and add-schedule', ()
   const rule = { id: ID, title: TITLE, input: INPUT, everyMs: 60_000 };
   assert.equal(parseWireScheduleDraft({ ...rule, model: 'opus' }).model, 'opus');
   assert.throws(() => parseWireScheduleDraft({ ...rule, model: 'a b' }), /schedule draft.model is not a model name/);
+});
+
+test('autoDone is a boolean in a config and in the drafts, and a server that sends none means false', () => {
+  assert.deepEqual(parseWireTaskConfig({ autoDone: true }), { autoDone: true });
+  assert.deepEqual(parseWireTaskConfig({ autoDone: false, priority: 'low' }), { autoDone: false, priority: 'low' });
+  for (const autoDone of ['yes', 1, null])
+    assert.throws(() => parseWireTaskConfig({ autoDone }), /config.autoDone must be a boolean/, String(autoDone));
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, autoDone: true }).autoDone, true);
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT }).autoDone, undefined);
+  assert.throws(
+    () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, autoDone: 'on' }),
+    /draft.autoDone must be a boolean/,
+  );
+  const rule = { id: ID, title: TITLE, input: INPUT, everyMs: 60_000 };
+  assert.equal(parseWireScheduleDraft({ ...rule, autoDone: true }).autoDone, true);
+  assert.throws(() => parseWireScheduleDraft({ ...rule, autoDone: 1 }), /schedule draft.autoDone must be a boolean/);
+  const { autoDone: _task, ...legacyTask } = { ...task, autoDone: true };
+  assert.equal(parseWireTask(legacyTask).autoDone, false);
+  assert.equal(parseWireTask({ ...task, autoDone: true }).autoDone, true);
+  const { autoDone: _schedule, ...legacySchedule } = { ...schedule, autoDone: true };
+  assert.equal(parseWireSchedule(legacySchedule).autoDone, false);
+  assert.equal(parseWireSchedule({ ...schedule, autoDone: true }).autoDone, true);
+});
+
+test('movedBy is read when it names a known actor and left out otherwise, so a later actor does not break an old client', () => {
+  assert.equal(parseWireTask({ ...task, movedBy: 'agent' }).movedBy, 'agent');
+  for (const movedBy of ['user', 'machine']) assert.equal(parseWireTask({ ...task, movedBy }).movedBy, movedBy);
+  for (const movedBy of ['robot', 5, null, undefined]) {
+    const parsed = parseWireTask({ ...task, movedBy });
+    assert.ok(!('movedBy' in parsed), String(movedBy));
+  }
 });
 
 const SEALED_TEXT = `abe1.${'A'.repeat(40)}`;

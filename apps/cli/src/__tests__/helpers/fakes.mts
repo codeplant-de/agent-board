@@ -23,6 +23,7 @@ import {
   sealPr,
   sealWatches,
   taskLabels,
+  textBeforeEdit,
 } from '@agent-board/shared';
 import type { Sealer } from '@agent-board/shared';
 import type {
@@ -45,6 +46,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     status: 'todo',
     priority: 'normal',
     model: null,
+    autoDone: false,
     closed: false,
     machine: null,
     sessionId: null,
@@ -92,10 +94,13 @@ export function schedule(overrides: Partial<Schedule> & { id: string }): Schedul
     input: '/sweep',
     priority: 'normal',
     model: null,
+    autoDone: false,
     machine: null,
     workdir: null,
     everyMs: 7_200_000,
     cron: null,
+    after: null,
+    maxConcurrent: null,
     timezone: null,
     anchorAt: new Date('2027-01-01T08:00:00Z'),
     nextRunAt: new Date('2027-01-01T08:00:00Z'),
@@ -235,17 +240,19 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     async configureTask(id, change) {
       const found = state.tasks.find((t) => t.id === id);
       if (!found) throw new BackendError(`configure-task: no task ${id}`, 404, true);
-      const { priority, model, place } = change;
+      const { priority, model, autoDone, place } = change;
       if (place !== undefined && (found.status === 'running' || found.status === 'waiting')) {
         state.writes.push(`configure ${id} refused: ${found.status}`);
         throw new BackendError(`the task is ${found.status}. Stop it first, then move it.`, 409, true);
       }
       if (priority !== undefined) state.writes.push(`priority ${id}: ${priority}`);
       if (model !== undefined) state.writes.push(`model ${id}: ${model ?? 'default'}`);
+      if (autoDone !== undefined) state.writes.push(`auto-done ${id}: ${autoDone ? 'on' : 'off'}`);
       if (place !== undefined) state.writes.push(`place ${id}: ${place === null ? 'none' : place.workdir}`);
       Object.assign(found, {
         ...(priority === undefined ? {} : { priority }),
         ...(model === undefined ? {} : { model }),
+        ...(autoDone === undefined ? {} : { autoDone }),
         ...(place === undefined
           ? {}
           : {
@@ -257,6 +264,39 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
               woken: false,
             }),
       });
+      return { ...found };
+    },
+    // The server's rules for the user's edit of a prompt, minus the sealing: the old text lands in a note of the user's.
+    async editPrompt(id, edit) {
+      const found = state.tasks.find((t) => t.id === id);
+      if (!found) throw new BackendError(`edit-prompt: no task ${id}`, 404, true);
+      const refusal =
+        found.createdBy !== 'user'
+          ? 'only a task you created has a prompt you can edit'
+          : found.scheduleId !== null
+            ? 'a scheduled occurrence takes its prompt from its schedule'
+            : found.lastActiveAt !== null || found.sessionId !== null
+              ? 'the task has started'
+              : found.closed || (found.status !== 'todo' && found.status !== 'backlog')
+                ? 'the prompt can only be edited while the task waits in Todo or Backlog'
+                : undefined;
+      if (refusal !== undefined) {
+        state.writes.push(`edit-prompt ${id} refused: ${refusal}`);
+        throw new BackendError(refusal, 409, true);
+      }
+      state.writes.push(`edit-prompt ${id}: ${edit.title} | ${edit.input}`);
+      state.notes.set(id, [
+        ...(state.notes.get(id) ?? []),
+        {
+          id: `edit-${(state.notes.get(id) ?? []).length}`,
+          createdAt: new Date(),
+          kind: 'event',
+          author: 'user',
+          text: textBeforeEdit(found),
+          unreadable: false,
+        },
+      ]);
+      Object.assign(found, edit);
       return { ...found };
     },
     async claimTask(id, machine) {
@@ -440,33 +480,44 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     },
     async addSchedule(draft) {
       state.writes.push(
-        `add-schedule ${draft.title} | ${draft.input} | ${draft.everyMs ?? `${draft.cron} ${draft.timezone}`}` +
+        `add-schedule ${draft.title} | ${draft.input} | ${draft.everyMs ?? (draft.after ? 'after' : `${draft.cron} ${draft.timezone}`)}` +
           `${draft.startAt ? ` | start ${draft.startAt.toISOString()}` : ''}${draft.times ? ` | times ${draft.times}` : ''}` +
           `${draft.until ? ` | until ${draft.until.toISOString()}` : ''}${draft.machine ? ` | ${draft.machine}:${draft.workdir}` : ''}` +
-          `${draft.model ? ` | model ${draft.model}` : ''}${draft.agent ? ` | agent ${draft.agent}` : ''}`,
+          `${draft.model ? ` | model ${draft.model}` : ''}${draft.agent ? ` | agent ${draft.agent}` : ''}${draft.autoDone ? ' | auto-done' : ''}` +
+          `${draft.moreCrons ? ` | more ${draft.moreCrons.join(' ; ')}` : ''}` +
+          `${draft.after ? ` | after ${draft.after.scheduleId} +${draft.after.delayMs ?? 0}` : ''}` +
+          `${draft.maxConcurrent ? ` | max ${draft.maxConcurrent}` : ''}`,
       );
-      const pending = task({
-        id: 'pending',
-        title: draft.title,
-        input: draft.input,
-        model: draft.model ?? null,
-        agent: draft.agent ?? null,
-        machine: draft.machine ?? null,
-        workdir: draft.workdir ?? null,
-        notBefore: draft.startAt ?? new Date('2027-01-01T08:00:00Z'),
-        scheduleId: 'sched',
-      });
+      const pending = draft.after
+        ? null
+        : task({
+            id: 'pending',
+            title: draft.title,
+            input: draft.input,
+            model: draft.model ?? null,
+            autoDone: draft.autoDone ?? false,
+            agent: draft.agent ?? null,
+            machine: draft.machine ?? null,
+            workdir: draft.workdir ?? null,
+            notBefore: draft.startAt ?? new Date('2027-01-01T08:00:00Z'),
+            scheduleId: 'sched',
+          });
       const added = schedule({
         id: 'sched',
         title: draft.title,
         input: draft.input,
         model: draft.model ?? null,
+        autoDone: draft.autoDone ?? false,
         agent: draft.agent ?? null,
         everyMs: draft.everyMs ?? null,
         cron: draft.cron ?? null,
+        ...(draft.moreCrons ? { moreCrons: draft.moreCrons } : {}),
         timezone: draft.timezone ?? null,
-        nextRunAt: pending.notBefore,
-        remaining: draft.times === undefined ? null : draft.times - 1,
+        after: draft.after ? { scheduleId: draft.after.scheduleId, delayMs: draft.after.delayMs ?? 0 } : null,
+        maxConcurrent: draft.maxConcurrent ?? null,
+        nextRunAt: pending?.notBefore ?? null,
+        occurrenceTaskId: pending?.id ?? null,
+        remaining: draft.times === undefined ? null : draft.times - (pending === null ? 0 : 1),
       });
       state.schedules.push(added);
       return { schedule: added, task: pending };
@@ -480,6 +531,18 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       if (!found) throw new BackendError(`no schedule ${id}`, 404);
       Object.assign(found, patch);
       return { ...found };
+    },
+    async editSchedule(id, edit) {
+      const found = state.schedules.find((s) => s.id === id);
+      if (!found) throw new BackendError(`no schedule ${id}`, 404);
+      if (found.ended) throw new BackendError('The schedule has ended.', 409);
+      state.writes.push(`edit-schedule ${id}: ${edit.title} | ${edit.input}`);
+      Object.assign(found, edit);
+      const card = state.tasks.find((t) => t.id === found.occurrenceTaskId);
+      if (card === undefined) return { schedule: { ...found }, pending: 'none' };
+      const editable = card.status === 'todo' && !card.closed && card.lastActiveAt === null && card.sessionId === null;
+      if (editable) Object.assign(card, edit);
+      return { schedule: { ...found }, pending: editable ? 'updated' : 'started' };
     },
     async removeSchedule(id) {
       state.writes.push(`remove-schedule ${id}`);

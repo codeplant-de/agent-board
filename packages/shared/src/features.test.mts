@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { VocabularyFeatures } from './index.mts';
 import {
+  announcedClientFeatures,
   BASELINE_SERVER_FEATURES,
+  CLIENT_CAPABILITIES,
   clientVocabulary,
   ContractError,
   findUnknownVocabulary,
@@ -39,6 +41,25 @@ test('today the client vocabulary is empty: every enum value is the baseline', (
   assert.deepEqual(VOCABULARY_FEATURES, {});
   assert.deepEqual(clientVocabulary(), []);
   assert.equal(findUnknownVocabulary({ status: 'waiting', kind: 'polish', priority: 'low' }, new Set()), undefined);
+});
+
+test('a client announces the capabilities of this build besides its vocabulary', () => {
+  assert.deepEqual(announcedClientFeatures(), ['schedule.after']);
+  assert.deepEqual(announcedClientFeatures(ADDED, ['b.cap', 'schedule.after']), [
+    'b.cap',
+    'note.event',
+    'schedule.after',
+    'status.backlog',
+  ]);
+  assert.deepEqual(CLIENT_CAPABILITIES, ['schedule.after']);
+  assert.equal(parseClientFeatures(announcedClientFeatures().join(',')).has('schedule.after'), true);
+});
+
+test('the schedule capabilities of the server are named and labelled', () => {
+  for (const name of ['task.held', 'schedule.crons', 'schedule.max-concurrent', 'schedule.after'] as const) {
+    assert.ok(SERVER_FEATURES.includes(name), name);
+    assert.ok(SERVER_FEATURE_LABELS[name].length > 0, name);
+  }
 });
 
 test('the client vocabulary lists each feature of the table once', () => {

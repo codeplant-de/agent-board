@@ -1,5 +1,6 @@
 import { MantineProvider } from '@mantine/core';
-import { render, screen } from '@testing-library/react';
+import { ModalsProvider } from '@mantine/modals';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { QuestionPanel } from './QuestionPanel';
@@ -25,10 +26,18 @@ const questions = [
   },
 ];
 
-const renderPanel = (onSubmit = vi.fn()) => {
+const renderPanel = (onSubmit = vi.fn(), onDismiss = vi.fn()) => {
   render(
     <MantineProvider>
-      <QuestionPanel questions={questions} submitting={false} onSubmit={onSubmit} />
+      <ModalsProvider>
+        <QuestionPanel
+          questions={questions}
+          submitting={false}
+          onSubmit={onSubmit}
+          onDismiss={onDismiss}
+          dismissing={false}
+        />
+      </ModalsProvider>
     </MantineProvider>,
   );
   return onSubmit;
@@ -85,5 +94,60 @@ describe('QuestionPanel', () => {
     await userEvent.type(screen.getAllByPlaceholderText(/Other…/)[0]!, 'something else');
     await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
     expect(onSubmit.mock.calls[0]?.[1][0]).toEqual({ selected: [], other: 'something else' });
+  });
+
+  it('dismisses the questions only after the user confirms', async () => {
+    const onDismiss = vi.fn();
+    const onSubmit = renderPanel(vi.fn(), onDismiss);
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss questions' }));
+    expect(await screen.findByText('Dismiss the questions?')).toBeInTheDocument();
+    expect(onDismiss).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Dismiss questions' }));
+    await waitFor(() => expect(onDismiss).toHaveBeenCalledTimes(1));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('does not dismiss when the user cancels the confirmation', async () => {
+    const onDismiss = vi.fn();
+    renderPanel(vi.fn(), onDismiss);
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss questions' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByText('Dismiss the questions?')).not.toBeInTheDocument());
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it('offers the dismissal also when the question changed', async () => {
+    const onDismiss = vi.fn();
+    const view = render(
+      <MantineProvider>
+        <ModalsProvider>
+          <QuestionPanel
+            questions={questions}
+            submitting={false}
+            onSubmit={vi.fn()}
+            onDismiss={onDismiss}
+            dismissing={false}
+          />
+        </ModalsProvider>
+      </MantineProvider>,
+    );
+    view.rerender(
+      <MantineProvider>
+        <ModalsProvider>
+          <QuestionPanel
+            questions={questions.slice(0, 1)}
+            submitting={false}
+            onSubmit={vi.fn()}
+            onDismiss={onDismiss}
+            dismissing={false}
+          />
+        </ModalsProvider>
+      </MantineProvider>,
+    );
+    expect(screen.getByText('The question changed')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss questions' }));
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Dismiss questions' }));
+    await waitFor(() => expect(onDismiss).toHaveBeenCalledTimes(1));
   });
 });

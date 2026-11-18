@@ -53,6 +53,26 @@ test('a changed status is a move with from and to, and the event holds the new t
   assert.equal(events[0]?.task.status, 'needs-me');
 });
 
+test('a move carries the actor the board names after the change, and none when it names none; the actor alone is no change', async () => {
+  const todo = task({ id: 'a', status: 'todo' });
+  const [agent] = await diffTasks([todo], [task({ id: 'a', status: 'done', movedBy: 'agent' })], deps());
+  assert.equal(agent?.actor, 'agent');
+  const [unsaid] = await diffTasks([todo], [task({ id: 'a', status: 'done' })], deps());
+  assert.equal(unsaid?.actor, undefined);
+  assert.ok(unsaid !== undefined && !('actor' in unsaid));
+  const joined = await diffTasks(
+    [task({ id: 'a', status: 'todo', movedBy: 'user' })],
+    [task({ id: 'a', status: 'needs-me', movedBy: 'machine' })],
+    deps(),
+  );
+  assert.equal(joined[0]?.actor, 'machine');
+  assert.deepEqual(
+    await diffTasks([task({ id: 'a', movedBy: 'user' })], [task({ id: 'a', movedBy: 'agent' })], deps()),
+    [],
+  );
+  assert.deepEqual(changedFields(task({ id: 'a', movedBy: 'user' }), task({ id: 'a', movedBy: 'agent' })), []);
+});
+
 test('each watched field is a change, and only those', () => {
   const base = task({ id: 'a' });
   const changes: Partial<Task>[] = [
@@ -245,7 +265,7 @@ test('the order is the list order; per task created, notes, moved, changed; then
   assert.ok(events.every((event) => event.at === AT));
 });
 
-const FILTER: EventFilter = { tasks: [], statuses: [], types: [] };
+const FILTER: EventFilter = { tasks: [], statuses: [], types: [], actors: [] };
 const moved = (to: Task['status'], overrides: Partial<Task> = {}): BoardEvent => ({
   type: 'moved',
   at: AT,
@@ -266,7 +286,21 @@ test('an empty filter passes everything; each flag narrows, all of them together
   assert.ok(matchesFilter(moved('needs-me', { machine: 'laptop' }), { ...FILTER, machine: 'laptop' }));
   assert.ok(!matchesFilter(moved('needs-me', { machine: 'other' }), { ...FILTER, machine: 'laptop' }));
   assert.ok(!matchesFilter(moved('needs-me'), { ...FILTER, machine: 'laptop' }));
-  assert.ok(!matchesFilter(moved('needs-me'), { tasks: ['a'], statuses: ['needs-me'], types: ['created'] }));
+  assert.ok(
+    !matchesFilter(moved('needs-me'), { tasks: ['a'], statuses: ['needs-me'], types: ['created'], actors: [] }),
+  );
+});
+
+test('--actor keeps moves by those actors; other events and moves without an actor do not match', () => {
+  const by = (actor: 'user' | 'agent' | 'machine'): BoardEvent => ({ ...moved('done'), actor });
+  const agents = { ...FILTER, actors: ['agent' as const] };
+  assert.ok(matchesFilter(by('agent'), agents));
+  assert.ok(!matchesFilter(by('user'), agents));
+  assert.ok(matchesFilter(by('machine'), { ...FILTER, actors: ['user', 'machine'] }));
+  assert.ok(!matchesFilter(moved('done'), agents));
+  const created: BoardEvent = { type: 'created', at: AT, task: task({ id: 'a' }), status: 'todo' };
+  assert.ok(!matchesFilter({ ...created, actor: 'agent' }, agents));
+  assert.ok(matchesFilter(moved('done'), FILTER));
 });
 
 test('--status matches the last status seen for a closed task', () => {

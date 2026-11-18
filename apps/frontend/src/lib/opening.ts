@@ -1,9 +1,12 @@
 import {
   ContractError,
   INVALID_VALUE,
+  MAX_SCHEDULE_CONCURRENT,
+  isCronExpression,
   isEnvelope,
   isPriority,
   isSafeNoteId,
+  isSafeTaskId,
   isSessionId,
   openFields,
   openMachineCatalog,
@@ -290,6 +293,12 @@ export async function openSchedule(keys: Keys, wire: WireSchedule): Promise<Sche
   const fields = await openFields(openerFor(keys), { kind: 'schedule', id }, wire);
   const remainingOk = wire.remaining === null || isCount(wire.remaining);
   const everyOk = wire.everyMs === null || (isCount(wire.everyMs) && wire.everyMs > 0);
+  const moreCrons = (wire.moreCrons ?? []).filter(isCronExpression);
+  const moreCronsOk = moreCrons.length === (wire.moreCrons ?? []).length;
+  const afterOk = wire.after === null || (isSafeTaskId(wire.after.scheduleId) && isCount(wire.after.delayMs));
+  const limitOk =
+    wire.maxConcurrent === null ||
+    (isCount(wire.maxConcurrent) && wire.maxConcurrent >= 1 && wire.maxConcurrent <= MAX_SCHEDULE_CONCURRENT);
   return {
     ...wire,
     ...fields,
@@ -299,7 +308,16 @@ export async function openSchedule(keys: Keys, wire: WireSchedule): Promise<Sche
     ...shownRule(wire),
     remaining: remainingOk ? wire.remaining : null,
     everyMs: everyOk ? wire.everyMs : null,
-    invalid: [...(remainingOk ? [] : ['remaining']), ...(everyOk ? [] : ['everyMs'])],
+    moreCrons,
+    after: afterOk ? wire.after : { scheduleId: INVALID_VALUE, delayMs: 0 },
+    maxConcurrent: limitOk ? wire.maxConcurrent : null,
+    invalid: [
+      ...(remainingOk ? [] : ['remaining']),
+      ...(everyOk ? [] : ['everyMs']),
+      ...(moreCronsOk ? [] : ['moreCrons']),
+      ...(afterOk ? [] : ['after']),
+      ...(limitOk ? [] : ['maxConcurrent']),
+    ],
     occurrenceTaskId: safeNullableId(wire.occurrenceTaskId, 'occurrence id'),
   };
 }

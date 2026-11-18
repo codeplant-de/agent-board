@@ -1,6 +1,7 @@
 import { Badge, Group } from '@mantine/core';
 import {
   IconArrowsExchange,
+  IconCircleCheck,
   IconClock,
   IconDeviceDesktop,
   IconEye,
@@ -11,6 +12,7 @@ import {
   IconPlayerStop,
   IconPlayerTrackNext,
   IconRepeat,
+  IconUsers,
   IconSparkles,
 } from '@tabler/icons-react';
 import { startsIn, wakesIn } from '../lib/startsIn';
@@ -25,7 +27,7 @@ import { PriorityBadge } from './PriorityPicker';
 
 /**
  * What sets a task apart at a glance: its priority (unless normal), an open question, a proposal, a pending
- * resume, a start time still ahead, the end of a wait, a repeating schedule, where it runs, a hold for usage.
+ * resume, a start time still ahead, the end of a wait, a repeating schedule, a wait for a free slot of it, where it runs, a hold for usage, and whether its agent may mark it done.
  */
 export function TaskBadges({
   task,
@@ -49,6 +51,18 @@ export function TaskBadges({
       {task.openQuestion && (
         <Badge size="sm" color="orange" variant="filled" leftSection={<IconMessageQuestion size={12} />}>
           Question
+        </Badge>
+      )}
+      {task.autoDone && (
+        <Badge
+          size="sm"
+          color="green"
+          variant="light"
+          tt="none"
+          leftSection={<IconCircleCheck size={12} />}
+          title="Its agent may move it to Done when it judges every acceptance criterion met"
+        >
+          Auto-done
         </Badge>
       )}
       {task.createdBy === 'agent' && (
@@ -112,6 +126,18 @@ export function TaskBadges({
           title={hold.machines.map((machine) => describeHolding(machine, now)).join('\n')}
         >
           Held until {clock(hold.until, now)}
+        </Badge>
+      )}
+      {task.status === 'todo' && task.held === true && (
+        <Badge
+          size="sm"
+          color="yellow"
+          variant="light"
+          tt="none"
+          leftSection={<IconUsers size={12} />}
+          title="Its schedule runs at its limit of cards at once; this card starts when one of them finishes or leaves Running and Waiting"
+        >
+          Waits for a slot
         </Badge>
       )}
       {task.scheduleId !== null && (

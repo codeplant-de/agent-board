@@ -17,7 +17,7 @@ A task is a prompt, written as you would type it into Claude Code: `/review-pr 1
 | `needs-me` | Your turn.                                                                                |
 | `done`     | Finished. Done tasks nobody touched for 7 days are closed and stay readable under Closed. |
 
-A run ends in `needs-me` with a report or a question. A run that fails, times out or loses its worker also ends there, with the reason and the end of the log. Nothing moves on until you press a button.
+A run ends in `needs-me` with a report or a question. A run that fails, times out or loses its worker also ends there, with the reason and the end of the log. Nothing moves on until you press a button, unless the task lets its agent mark it done (see [Letting the agent mark a task done](#letting-the-agent-mark-a-task-done)).
 
 Backlog is the first column. On a phone the board leaves it out, and the header has a Backlog entry that opens it as its own page. Waiting is a box above Todo in the same column, and it shows only while a task waits.
 
@@ -40,17 +40,21 @@ board schedule --at 09:00 /grill the plan in docs/x.md
 board schedule --polish "CSV export should include postal codes"
 board delay Ab3dEf9x --in 1d
 board task Ab3dEf9x set dir ~/workspace/agent-board
+board task Ab3dEf9x set prompt Find out why the CSV export is slow
 board schedule --every 2h --times 5 /sweep the stale branches
 board schedule --cron "0 9 * * 1-5" /review-pr --auto
+board schedule --cron "0 9 * * 5#1" --cron "0 9 * * 5#3" /sprint report
+board schedule --every 1h --max-concurrent 2 /sweep the stale branches
+board schedule --after s1b2c3d4 --delay 10m /deploy the release
 board schedules
 ```
 
 ### `board schedule`
 
 ```text
-board schedule [--priority p] [--model m] [--agent a] [--title t] [--hold | --backlog]
-               [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>"]
-               [--times <n> | --until <time>] [--polish] [--new]
+board schedule [--priority p] [--model m] [--auto-done] [--agent a] [--title t] [--hold | --backlog]
+               [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>" ... | --after <schedule> [--delay <dur>]]
+               [--times <n> | --until <time>] [--max-concurrent <n>] [--polish] [--new]
                [--key <key> [--version <v>]] <prompt...>
 ```
 
@@ -58,20 +62,23 @@ board schedule [--priority p] [--model m] [--agent a] [--title t] [--hold | --ba
 
 The board's flags come first. Everything from the first other word on is the prompt, flags included. In the example above, `--auto` goes to the skill.
 
-| Flag                           | Effect                                                                                                    |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| `--priority`                   | `urgent`, `high`, `normal` or `low`.                                                                      |
-| `--model`                      | The Claude model of the task's runs. See [Model](#model).                                                 |
-| `--agent`                      | Runs the task as a named agent. See [Choosing an agent](#choosing-an-agent).                              |
-| `--title`                      | The title. It defaults to the prompt's first line.                                                        |
-| `--hold`                       | Lands the task in Needs me instead of Todo.                                                               |
-| `--backlog`                    | Lands the task in Backlog. Cannot be combined with `--hold`.                                              |
-| `--in`, `--at`                 | Holds the task in Todo until then. See [Delays](#delays).                                                 |
-| `--every`, `--cron`            | Makes a repeating schedule. See [Repeating schedules](#repeating-schedules).                              |
-| `--times`, `--until`           | Ends a repeating schedule.                                                                                |
-| `--polish`                     | Parks the task in Backlog and queues a polish task for it. See [Polishing a prompt](#polishing-a-prompt). |
-| `--new`                        | Skips the [duplicate check](#duplicate-check).                                                            |
-| `--key`, `--version`, `--json` | For scripts. See [Scripts](#scripts).                                                                     |
+| Flag                           | Effect                                                                                                                      |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `--priority`                   | `urgent`, `high`, `normal` or `low`.                                                                                        |
+| `--model`                      | The Claude model of the task's runs. See [Model](#model).                                                                   |
+| `--auto-done`                  | Lets the agent move the task to Done itself. See [Letting the agent mark a task done](#letting-the-agent-mark-a-task-done). |
+| `--agent`                      | Runs the task as a named agent. See [Choosing an agent](#choosing-an-agent).                                                |
+| `--title`                      | The title. It defaults to the prompt's first line.                                                                          |
+| `--hold`                       | Lands the task in Needs me instead of Todo.                                                                                 |
+| `--backlog`                    | Lands the task in Backlog. Cannot be combined with `--hold`.                                                                |
+| `--in`, `--at`                 | Holds the task in Todo until then. See [Delays](#delays).                                                                   |
+| `--every`, `--cron`            | Makes a repeating schedule. See [Repeating schedules](#repeating-schedules).                                                |
+| `--after`, `--delay`           | Makes a schedule that runs after another. See [After another schedule](#after-another-schedule).                            |
+| `--times`, `--until`           | Ends a repeating schedule.                                                                                                  |
+| `--max-concurrent`             | Limits how many tasks of a repeat are under way at once. See [Limiting a schedule](#limiting-a-schedule).                   |
+| `--polish`                     | Parks the task in Backlog and queues a polish task for it. See [Polishing a prompt](#polishing-a-prompt).                   |
+| `--new`                        | Skips the [duplicate check](#duplicate-check).                                                                              |
+| `--key`, `--version`, `--json` | For scripts. See [Scripts](#scripts).                                                                                       |
 
 When this machine has a `dirs` list, `board schedule` refuses in a directory the list does not allow, before it asks the board anything. That holds for a repeating schedule too. Run `board dirs add` there first.
 
@@ -82,6 +89,26 @@ When this machine has a `dirs` list, `board schedule` refuses in a directory the
 Every run uses claude's default model unless the task names one. `--model <model>` takes an alias (`fable`, `opus`, `sonnet`, `haiku`) or a full name such as `claude-opus-5-5`. With a repeat, every task the schedule makes uses it.
 
 The New task form and the task page have a **Model** select for the same choice.
+
+### Letting the agent mark a task done
+
+By default a run ends in Needs me, and you move the task to Done. A task can instead allow its agent to finish it.
+
+**Setting it.**
+
+- `board schedule --auto-done` sets it on a new task. With a repeat, every task the schedule makes starts with it on.
+- The New task form has an **Agent may mark it done** checkbox for the same choice.
+- The task page has an **Agent may mark it done** switch, and `board task <task> set auto-done on|off` does the same. `unset auto-done` is `off`. A change works in every status, a running task included, and writes no note.
+- A task with the setting on carries an **Auto-done** badge on its card and its page.
+- A fork of a task starts with the setting off, whatever its parent has.
+
+Both `set` and `--auto-done` are refused inside a board run. The refusal is the CLI's, like `board schedule`'s: it holds for an agent that runs `board` the way its run set it up. A call that clears `AGENT_BOARD_RUN` or `AGENT_BOARD_TASK` reaches the board as the machine, which the board cannot tell from your own terminal, and a move made that way is reported with the actor `machine`. An agent's proposal made with `board add` never has it.
+
+**What the agent does.** The board's rules tell the agent of a task with the setting on to post its summary, then to run `board move <task> done` only when it has checked that every acceptance criterion is met and nothing is left for you to decide, answer, review or do. In every other case, and when in doubt, it moves the task to Needs me as before. Every run gets the rules again, so a resumed run follows the setting as it is when it starts.
+
+**What the board does.** The board checks the setting again when the move arrives. A run that moves its task to Done while the setting is off is refused with a message that tells it to move the task to Needs me, so turning the option off during a run takes effect at once. A move to Done that the board accepts puts the task at the top of Done and writes the event "Moved from running to done." into the thread. If you sent a message that the run has not received yet, the task goes back to Todo with that message instead, as for any other end of a run.
+
+The setting concerns the run's own move only. `board move <task> done`, run by a script or in a terminal, and the Done button work as before.
 
 ### Delays
 
@@ -118,6 +145,7 @@ When you requeue the existing task:
 `board task <task>` prints a task's settings:
 
 - status, priority and model (`default` for claude's)
+- whether its agent may mark it done (`auto-done`)
 - agent and who made it
 - the machine it is pinned to and its directory, or "the default directory of the machine that takes it"
 - when it starts and its schedule
@@ -126,15 +154,17 @@ When you requeue the existing task:
 
 A directory on this machine that the `dirs` list does not cover is marked "not listed on this machine". `--json` prints the task as `board tasks --json` does.
 
-| Command                                                      | Effect                                                                                  |
-| ------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
-| `board task <task> set priority <urgent\|high\|normal\|low>` | Changes the priority and writes the usual note.                                         |
-| `board task <task> set model <alias or model id>`            | Applies from the next run on. A run in progress keeps its own model.                    |
-| `board task <task> unset model`                              | Back to claude's default.                                                               |
-| `board task <task> set dir [path]`                           | Pins the task to this machine and a directory. The default is the current one.          |
-| `board task <task> unset dir`                                | Removes the directory and the pin. Any machine takes the task in its default directory. |
+| Command                                                      | Effect                                                                                       |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `board task <task> set priority <urgent\|high\|normal\|low>` | Changes the priority and writes the usual note.                                              |
+| `board task <task> set model <alias or model id>`            | Applies from the next run on. A run in progress keeps its own model.                         |
+| `board task <task> unset model`                              | Back to claude's default.                                                                    |
+| `board task <task> set auto-done <on\|off>`                  | Lets the agent move the task to Done itself, or not. Applies at once, to a running task too. |
+| `board task <task> unset auto-done`                          | Same as `off`.                                                                               |
+| `board task <task> set dir [path]`                           | Pins the task to this machine and a directory. The default is the current one.               |
+| `board task <task> unset dir`                                | Removes the directory and the pin. Any machine takes the task in its default directory.      |
 
-Priority and model changes work in every status. A model or directory change writes no note.
+Priority, model and auto-done changes work in every status. A model, auto-done or directory change writes no note.
 
 `set dir` accepts relative paths and `~`, and resolves symlinks. With a `dirs` list on this machine the directory must be listed, as for `board schedule`.
 
@@ -143,9 +173,9 @@ Priority and model changes work in every status. A model or directory change wri
 - A running or waiting task refuses a directory change. Stop it first.
 - The new directory also becomes the one **Re-run fresh** goes back to.
 
-On a card of a repeating schedule, a change applies to that card only. The next occurrence takes priority, model, machine and directory from the schedule again. The command says so, and so does the task page.
+On a card of a repeating schedule, a change applies to that card only. The next occurrence takes priority, model, auto-done setting, machine and directory from the schedule again. The command says so, and so does the task page.
 
-`set` and `unset` are refused inside a board run, because an agent does not move a task or pick its model. Viewing works there.
+`set` and `unset` are refused inside a board run, because an agent does not move a task, pick its model or grant itself the permission to finish it. Viewing works there.
 
 #### Editing the prompt
 
@@ -158,16 +188,32 @@ Until a worker claims a task, you can change its title and prompt on its page: *
 
 Once a worker claimed it, even if it went back to Todo, the prompt is in its thread. Reply to it instead. If a worker claims the task while the editor is open, the editor stays with your text and saving fails with "The task has started; its prompt is in its thread now. Reply to it instead." Copy your text out before you close it.
 
-A card of a repeating schedule has no **Edit prompt**: its prompt belongs to the schedule. Its page links to the Schedules page, where an edit reaches the card too while it has not started. There is no command for editing a prompt yet.
+A card of a repeating schedule has no **Edit prompt**: its prompt belongs to the schedule. Its page links to the Schedules page, where an edit reaches the card too while it has not started.
+
+The same edit is a command:
+
+| Command                                              | Effect                                                                                       |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `board task <task> set prompt <text...>`             | New prompt, the title stays. The text is every word after `prompt`.                          |
+| `board task <task> set prompt -`                     | Reads the prompt from stdin.                                                                 |
+| `board task <task> set prompt --file <path>`         | Reads it from a regular file in `/tmp`, for a long prompt.                                   |
+| `board task <task> set prompt --title <title> <...>` | Sets the title too. An empty `--title ""` makes the title from the first line of the prompt. |
+
+The CLI seals the new text as yours, as the browser does, and keeps the old title and prompt in a note on the task. It checks the rules above first and says which one stops it: a task of an agent, a card of a schedule (it points to `board schedules edit`), a task a worker started (it points to `board comment`), a closed task or one outside Todo and Backlog. The same title and prompt change nothing. The server checks the same rules again, so a task claimed in between is refused. `--dry-run` prints what would be sent.
+
+`set prompt` needs the server feature `prompt.edit`, and is refused inside a board run like the other `set` commands: an agent's rewrite of your prompt is a suggestion you apply yourself, never your own words.
+
+On a prompt that starts with dashes, put `--` before it.
 
 ### Repeating schedules
 
-`--every <dur>` or `--cron "<expr>"` makes a schedule instead of one task. A schedule is a rule that keeps producing delayed Todo cards. Use one or the other, not both. `--in` or `--at` sets the first run. Without one it starts now.
+`--every <dur>`, `--cron "<expr>"` or `--after <schedule>` makes a schedule instead of one task. A schedule is a rule that keeps producing delayed Todo cards. Use one of the three. `--in` or `--at` sets the first run of the first two. Without one it starts now.
 
 **The rule.**
 
 - `--every 2h` runs on a fixed grid from the first run, whatever time the cards actually start at. The interval is between 1 minute and 10 years.
 - `--cron "0 9 * * 1-5"` is a 5-field expression: minute, hour, day of month, month, weekday. The CLI reads it in the time zone of the machine that made the schedule and stores the zone with it, so `0 9 * * *` stays at 9:00 local across a change to summer time. Its first run is the first match at or after `--in` or `--at`, or now. A 6-field expression with seconds is refused, as is anything that does not parse.
+- `--cron` can be given up to 10 times: `--cron "0 9 * * 5#1" --cron "0 9 * * 5#3"` runs on the first and the third Friday. The schedule runs whenever any expression matches, so its next run is the earliest next match of all of them. They are all read in the one time zone. An expression given twice is refused. `board schedules` lists them joined by `|`.
 
 **The end.**
 
@@ -186,24 +232,48 @@ The board makes the next card when the pending one leaves Todo: a worker claims 
 
 A repeat skips the duplicate check, since a recurring prompt resembles its own earlier runs. The confirmation names the schedule id, its rule, the first run and the card's URL.
 
+#### Limiting a schedule
+
+`--max-concurrent <n>` (1 to 100) keeps at most `n` tasks of a repeat under way at once. A task is under way while it is Running or Waiting. Without it a schedule has no limit, and a slow run does not stop the next one from starting on its time.
+
+The board checks the limit when a worker claims a card, for a first start and for a resume. While `n` other tasks of the schedule are under way, the claim is refused. The card stays in Todo, due, and starts when a task finishes or leaves Running and Waiting. It carries a **Waits for a slot** badge, and `board tasks` and `board show` say so. The next card of the schedule is made when the waiting one is claimed, as always, so a schedule that cannot keep up still has only one pending card. It needs `--every`, `--cron` or `--after`, and cannot be changed later.
+
+#### After another schedule
+
+`--after <schedule>` makes a schedule that has no times of its own. `<schedule>` is the id of another schedule or the start of it, as for `board schedules pause`. Each time a task of that schedule finishes, the board makes a card of this one in Todo, starting `--delay <dur>` later (default: at once). It has no card until then, and `board schedules` shows `after <id> +10m` and `next -`.
+
+- A task finishes when its run hands it back as done work: it moves from Running to Needs me or Done, which is what the worker's normal end and `board move <task> needs-me` do. A question, a failure, a stop, a pause or a wait does not count, and neither does a card you move or close without it running. The rule is the command, not who typed it: any `update-task` that moves a Running task to Needs me or Done counts, so `board move <task> done` in a terminal does too. Moves and stops in the browser do not.
+- Each task triggers at most once. A task you reply to that finishes again makes no second card.
+- The schedule keeps one pending card at most. A task that finishes while the card waits in Todo makes no second one. When that card is claimed, nothing follows until the next task of the other schedule finishes.
+- A paused or ended schedule makes none, and resuming one makes none. `--times` counts the cards made, and `--until` is the last moment one may start: a card that would start later ends the schedule instead.
+- The other schedule must exist and must not have ended; it may be paused or itself run after another, so schedules chain. Deleting a schedule that others run after is refused, and the error names them: delete those first. An upstream that ended makes no new cards, so it triggers only through a task of it that is still under way and finishes later.
+- `--after` cannot be combined with `--every`, `--cron`, `--in`, `--at`, `--hold`, `--backlog`, `--key` or `--polish`. `--delay` goes only with `--after`. `--times`, `--until`, `--max-concurrent`, `--model`, `--agent` and `--priority` do.
+
+The confirmation names the schedule and says its first task is made when a task of the other one finishes; with `--json` the output is `{"scheduleId"}`, as there is no task yet.
+
 **Managing schedules.**
 
-| Command                       | Effect                                                                          |
-| ----------------------------- | ------------------------------------------------------------------------------- |
-| `board schedules`             | Lists id, rule, next run, runs left including the pending one, state and title. |
-| `board schedules pause <id>`  | Takes the pending card off the board and stops the schedule.                    |
-| `board schedules resume <id>` | Makes the next card, at the first run on the rule from now.                     |
-| `board schedules rm <id>`     | Deletes the schedule and its pending card. Cards that already ran stay.         |
+| Command                               | Effect                                                                                                                  |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `board schedules`                     | Lists id, rule, next run, runs left including the pending one, state, `max N` when limited, and title.                  |
+| `board schedules pause <id>`          | Takes the pending card off the board and stops the schedule.                                                            |
+| `board schedules resume <id>`         | Makes the next card, at the first run on the rule from now.                                                             |
+| `board schedules rm <id>`             | Deletes the schedule and its pending card. Cards that already ran stay.                                                 |
+| `board schedules edit <id> <text...>` | Changes the prompt, see below. `-` reads stdin, `--file <path>` a file in `/tmp`, `--title <title>` sets the title too. |
 
-`pause`, `resume` and `rm` are refused inside a board run, like `board schedule`.
+`edit` keeps the current title without `--title`. Every later run takes the new text. The pending card takes it too while it waits in Todo and no worker has claimed it, and the command says which of three happened, in the web's words: "The pending card was updated too", "The pending card has already started; the change applies from the next run", or "The schedule has no pending card; its next run takes the change". An ended schedule is refused, and the old text is not kept. `edit` needs the server feature `prompt.edit`.
+
+`pause`, `resume`, `rm` and `edit` are refused inside a board run, like `board schedule`.
 
 ### The Schedules page
 
-The **Schedules** page of the web board lists each schedule with its title and prompt, rule, next run, runs left (`forever` without an end), machine and a link to the pending card. You can edit, pause, resume and delete from there. An ended schedule is dimmed and can only be deleted.
+The **Schedules** page of the web board lists each schedule with its title and prompt, rule (every cron expression, and "At most N at once" when it is limited), next run, runs left (`forever` without an end), machine and a link to the pending card. You can edit, pause, resume and delete from there, as `board schedules edit` does. An ended schedule is dimmed and can only be deleted.
+
+A schedule that runs after another shows "after <title>" and its delay, and "waits for <title>" where the next run would be. The page shows the id when it cannot find or read the other schedule.
 
 **Edit** changes the schedule's title and prompt. Every later run takes them. The pending card takes them too while it waits in Todo and no worker has claimed it, and the page says which of three happened: "The pending card was updated too", "The pending card has already started; the change applies from the next run", or "The schedule has no pending card; its next run takes the change" (a paused schedule has none). Cards that already ran or moved on keep what they had. The old text is not kept: a schedule has no thread.
 
-A pending card carries a **Repeat** badge, and its page says it is the next run of a schedule.
+A pending card carries a **Repeat** badge, and its page says it is the next run of a schedule. A card that waits for a free slot of a limited schedule also carries **Waits for a slot**, and its page says: "Waits for a free slot: its schedule runs at most N at once".
 
 ### The New task form
 
@@ -224,15 +294,18 @@ The list is advice. A name that is not in it still runs, and a machine that has 
 
 **Model.** The field shows the models the chosen machine listed, or every machine's when none is chosen. When no machine listed any, it shows the built-in aliases. A model picked before the machine changed stays selected.
 
+**Agent may mark it done.** A checkbox, off by default. See [Letting the agent mark a task done](#letting-the-agent-mark-a-task-done). With Repeating it applies to every task the schedule makes.
+
 **Agent.** See [Choosing an agent](#choosing-an-agent).
 
-**When.** The menu offers Now, Later, Repeating, Backlog and Needs me. Repeating takes an interval (`2h`) or a cron expression, an optional first run and an optional number of runs, and opens the first pending card. The form reads a cron expression in your browser's time zone and shows the server's error if the server cannot read it. With Repeating, the Working directory pins the schedule, so every occurrence runs on that machine and in that directory.
+**When.** The menu offers Now, Later, Repeating, Backlog and Needs me. Repeating takes an interval (`2h`) or cron expressions, one per line (up to 10, run whenever any matches), an optional first run, an optional number of runs and an optional **At most at once**, and opens the first pending card. Or pick **Run after** another schedule that has not ended, by title, with an optional delay such as `10m`: the first run, the interval and the cron field give way to it, no card is made yet and the form goes to the Schedules page. The form reads a cron expression in your browser's time zone and shows the server's error if the server cannot read it. With Repeating, the Working directory pins the schedule, so every occurrence runs on that machine and in that directory.
 
 ### Settings on the task page
 
 The task page changes the same settings after the fact, next to the priority.
 
 - A **Model** select with the options of the New task form for the task's machine, plus the task's own model when it is not among them. It applies from the next run on and works in every status.
+- An **Agent may mark it done** switch. It applies at once and works in every status.
 - A pencil beside the directory that opens the same picker as the New task form. **No directory** removes the directory and the machine pin.
 
 A directory change drops the task's Claude session, as with `board task set dir`. A task that has a session asks you to confirm first. The page refuses the change while the task is Running or Waiting. Choosing the directory the task already has changes nothing.
@@ -477,6 +550,8 @@ On the task page you pick options, add text where none fits, and press **Answer 
 
 Both put the task at the top of its priority in Todo with `next: resume`. The next dispatch tick on the machine that ran the session starts `claude -p --resume=<session>` with your reply on stdin, so the agent keeps its context. A machine resumes only a session it started for the task.
 
+**Dismiss questions** sits beside **Answer & continue**. Use it when the conversation went off course and the questions no longer make sense. After you confirm, the agent's questions are dropped without an answer. The task stays in Needs me, where the usual panel appears: reply with **Send & continue**, re-run it fresh or mark it done. The thread keeps the question and marks it **not answered**. If you then reply and continue, the agent is told that you dismissed its questions and sent that reply instead. Nothing is added to the thread for the dismissal itself.
+
 Typing `/` at the start of a reply offers the skills of the task's machine and directory, as in the New task form. The message to a running agent, a comment and the text beside an answer do not offer skills.
 
 ### While a task runs
@@ -509,6 +584,7 @@ Other tasks have no Stop.
 | Start / Discard            | On a task an agent proposed. See [Proposals](#proposals).                                      |
 | Polish prompt              | On a Backlog task you wrote. See [Polishing a prompt](#polishing-a-prompt).                    |
 | Take back                  | On a running task whose agent has been quiet for 20 minutes. Moves it to Needs me with a note. |
+| Dismiss questions          | Drops an open question. See [Answering and replying](#answering-and-replying).                 |
 
 **Re-run fresh** starts in the directory the task was created with, on that machine, whatever worktree the last run ended in. That directory came from `board schedule`, from a proposing agent or from the form's Working directory. A task created without one starts in the default directory of whichever machine takes it.
 
@@ -636,7 +712,7 @@ Dragging a card moves it the way the matching button would, minus the reply.
 
 - Nothing can be dropped into Running or Waiting.
 - A card dragged out of Waiting into Todo is woken. Into any other column it loses its wait.
-- Into Todo or Done, a card drops its open question. The question note stays in the thread.
+- Into Todo or Done, a card drops its open question. The question note stays in the thread, marked **not answered**.
 - Into Todo, a task with a session keeps its `next`. A resume with nothing to answer starts a fresh run.
 
 ### Old Done tasks
@@ -728,14 +804,14 @@ The board's event stream says that tasks changed, not what changed. So the comma
 
 ### Event types
 
-| Type      | When                                                                         | Extra               |
-| --------- | ---------------------------------------------------------------------------- | ------------------- |
-| `created` | A task that was not on the board before, or a closed task that was reopened. |                     |
-| `moved`   | The status changed.                                                          | `from`, `to`        |
-| `changed` | One of the fields listed below changed.                                      | `fields`: the names |
-| `closed`  | The task left the open tasks and is closed.                                  |                     |
-| `removed` | The task left the open tasks and was deleted.                                |                     |
-| `note`    | A new note in the thread: a comment, question, answer, event or polish note. | `note`              |
+| Type      | When                                                                         | Extra                 |
+| --------- | ---------------------------------------------------------------------------- | --------------------- |
+| `created` | A task that was not on the board before, or a closed task that was reopened. |                       |
+| `moved`   | The status changed.                                                          | `from`, `to`, `actor` |
+| `changed` | One of the fields listed below changed.                                      | `fields`: the names   |
+| `closed`  | The task left the open tasks and is closed.                                  |                       |
+| `removed` | The task left the open tasks and was deleted.                                |                       |
+| `note`    | A new note in the thread: a comment, question, answer, event or polish note. | `note`                |
 
 `changed` covers the title, priority, model, agent, machine, open question, start time, wake time, pull requests and the state of the prompt's pull request.
 
@@ -750,16 +826,35 @@ The command joins the changes between two looks:
 ### Filters
 
 ```text
-board events [--task <id>]... [--status <status>]... [--type <type>]... [--machine <name>] [--json]
+board events [--task <id>]... [--status <status>]... [--type <type>]... [--actor <actor>]... [--machine <name>] [--json]
 ```
 
 - `--task` takes the same ids, prefixes and links as other commands.
 - `--machine` keeps the tasks of one machine.
 - `--status` keeps the events of tasks that are in one of these statuses after the change. For `closed` and `removed` that is the last status seen. Everything that enters Needs me is `--type moved --status needs-me`.
 - `--type` keeps these types.
-- `--task`, `--status` and `--type` can be repeated.
+- `--actor` keeps `moved` events made by one of these actors: `user`, `agent` or `machine`. Events of other types, and moves whose actor the board does not say, are dropped. See [Who moved a task](#who-moved-a-task).
+- `--task`, `--status`, `--type` and `--actor` can be repeated.
 
 The filters only choose what is printed. The command always follows the whole board.
+
+### Who moved a task
+
+The board records who made each task's last status change, and a `moved` event carries it as `actor`:
+
+| Actor     | Who                                                                                                                                 |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `user`    | You, in the web board: a drag, Done, a reply or an answer that sends the task back, Stop, Take back, Wake now, Re-run.              |
+| `agent`   | The task's own run: it moved its task, asked a question or started a wait.                                                          |
+| `machine` | A `board` command outside the run: a worker claiming a task or ending a run (failed, paused, stopped, woken), a script, a terminal. |
+
+The actor is the one of the task's last move. When the command joins several moves between two looks, it reports the last one. A board that is older than this feature gives no actor, and `--actor` is then refused with the usual "does not support" message.
+
+The agent moves a task to Done only when the task has [auto-done](#letting-the-agent-mark-a-task-done) on, so this lists those moves:
+
+```sh
+board events --type moved --status done --actor agent
+```
 
 ### Output
 
@@ -773,6 +868,7 @@ With `--json` every line is one JSON object, so `read -r` and `jq` work on it:
 
 - `task` is the task as `board tasks --json` shows it, plus its `url`.
 - `at` is when this CLI saw the change, not when it happened.
+- `actor` is on `moved`, when the board says it.
 - `fields` is on `changed`.
 - `note` is on `note`: `{"id", "author", "kind", "text", "createdAt", "unreadable"}`.
 

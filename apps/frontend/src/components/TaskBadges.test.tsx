@@ -43,6 +43,14 @@ describe('TaskBadges', () => {
     expect(screen.queryByText('Stopping…')).not.toBeInTheDocument();
   });
 
+  it('shows that a task in Todo waits for a free slot of its schedule, and only then', () => {
+    const { unmount } = renderBadges({ scheduleId: 'sch1', held: true });
+    expect(screen.getByText('Waits for a slot')).toBeInTheDocument();
+    unmount();
+    renderBadges({ scheduleId: 'sch1' });
+    expect(screen.queryByText('Waits for a slot')).not.toBeInTheDocument();
+  });
+
   it('shows Paused on a task waiting in Todo', () => {
     renderBadges({ paused: true });
     expect(screen.getByText('Paused')).toBeInTheDocument();
@@ -76,6 +84,16 @@ describe('TaskBadges', () => {
     renderBadges({ next: 'resume', woken: true });
     expect(screen.getByText('Woken')).toBeInTheDocument();
     expect(screen.queryByText('Resume')).not.toBeInTheDocument();
+  });
+
+  it('marks a task its agent may finish, and no other', () => {
+    renderBadges({ autoDone: true });
+    expect(screen.getByText('Auto-done')).toBeInTheDocument();
+  });
+
+  it('shows no auto-done badge on a task whose agent ends in Needs me', () => {
+    renderBadges({ autoDone: false });
+    expect(screen.queryByText('Auto-done')).not.toBeInTheDocument();
   });
 
   it('marks a task made by a schedule as a repeat', () => {

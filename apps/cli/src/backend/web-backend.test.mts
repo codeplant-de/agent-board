@@ -318,7 +318,7 @@ test('a dry run reads through and prints every write instead of sending it', asy
   await dry.addNote('a', 'done', { suggestion: 'Yes' });
   assert.equal((await dry.claimTask('a', 'laptop'))?.status, 'running');
   const added = await dry.addSchedule({ title: 't', input: 'i', cron: '0 9 * * *', timezone: 'UTC', times: 3 });
-  assert.deepEqual([added.schedule.cron, added.schedule.remaining, added.task.scheduleId], ['0 9 * * *', 2, 'dry']);
+  assert.deepEqual([added.schedule.cron, added.schedule.remaining, added.task?.scheduleId], ['0 9 * * *', 2, 'dry']);
   await dry.removeSchedule('sch1');
   const configured = await dry.configureTask('a', { place: { workdir: '/srv/new' }, seal: sealing });
   assert.deepEqual([configured.workdir, configured.sessionId, configured.next], ['/srv/new', null, 'fresh']);
@@ -465,14 +465,14 @@ test('a server that names features it has and this CLI has no name for is fine, 
   await assert.rejects(unclean.backend.listTasks(), /version.features must be a list of feature names/);
 });
 
-test('every request names this CLI, its API level and the client vocabulary, which is empty while the baseline is all there is', async () => {
+test('every request names this CLI, its API level and its client features: the capabilities, and a vocabulary that is empty while the baseline is all there is', async () => {
   const { backend, seen } = board({ 'list-tasks': { body: { result: [] } } });
   await backend.listTasks();
   assert.equal(seen.length, 2);
   for (const { headers } of seen) {
     assert.match(headers.get('x-board-client') ?? '', /^\d+\.\d+\.\d+(-dev)?$/);
     assert.equal(headers.get('x-board-client-api'), String(API_VERSION));
-    assert.equal(headers.get(CLIENT_FEATURES_HEADER), '');
+    assert.equal(headers.get(CLIENT_FEATURES_HEADER), 'schedule.after');
   }
 });
 
@@ -579,6 +579,49 @@ test('an agent is sent only to a server that names task.agent, and refused befor
   assert.deepEqual(having.seen, ['version', 'add-task', 'add-schedule']);
 });
 
+test('several crons, a limit and an after rule are sent only to a server that names the feature, and refused before anything is sent otherwise', async () => {
+  const make = (features: string[]) => {
+    const seen: string[] = [];
+    const fetcher: Fetch = async (url) => {
+      const command = url.slice(`${config.url}/api/machine/`.length);
+      seen.push(command);
+      const result =
+        command === 'version'
+          ? { ...VERSION_ANSWER, features }
+          : { schedule: serializeSchedule(await wireSchedule({ id: 'sch1' })), task: null };
+      return new Response(JSON.stringify({ result }));
+    };
+    return { seen, backend: createWebBackend({ loadConfig: () => config, fetch: fetcher }) };
+  };
+  const base = { id: 'abc', title: 'abe1.t', input: 'abe1.i' };
+  const cron = { ...base, cron: '0 9 * * *', timezone: 'UTC' };
+  const refusal = (feature: string, label: string) => (error: unknown) =>
+    error instanceof BackendError &&
+    error.missingFeature === feature &&
+    error.message === `the board server does not support ${label} yet; update the board server`;
+  const lacking = make(['task.model']);
+  await assert.rejects(
+    lacking.backend.addSchedule({ ...cron, moreCrons: ['0 18 * * *'] }),
+    refusal('schedule.crons', 'several cron expressions in one schedule'),
+  );
+  await assert.rejects(
+    lacking.backend.addSchedule({ ...base, everyMs: 60_000, maxConcurrent: 2 }),
+    refusal('schedule.max-concurrent', 'a limit on how many cards of a schedule run at once'),
+  );
+  await assert.rejects(
+    lacking.backend.addSchedule({ ...base, after: { scheduleId: 'up1' } }),
+    refusal('schedule.after', 'a schedule that runs after another'),
+  );
+  assert.deepEqual(lacking.seen, ['version'], 'nothing else was sent');
+  await lacking.backend.addSchedule(cron);
+  assert.deepEqual(lacking.seen, ['version', 'add-schedule']);
+  const having = make(['schedule.crons', 'schedule.max-concurrent', 'schedule.after']);
+  const added = await having.backend.addSchedule({ ...cron, moreCrons: ['0 18 * * *'], maxConcurrent: 2 });
+  await having.backend.addSchedule({ ...base, after: { scheduleId: 'up1', delayMs: 600_000 } });
+  assert.equal(added.task, null);
+  assert.deepEqual(having.seen, ['version', 'add-schedule', 'add-schedule']);
+});
+
 test('a PR is added with add-pr on a server with task.prs, and replaces the earlier one with set-pr on one without', async () => {
   const withIt = boardWith(['task.pr', 'task.prs'], { 'add-pr': { body: { result: null } } });
   await withIt.backend.addPr('abc', { pr: 'abe1.pr' });
@@ -651,6 +694,35 @@ test('changing a task’s settings needs the task.configure feature and is refus
   const withIt = boardWith(['task.configure'], { 'configure-task': { body: { result: answer } } });
   await withIt.backend.configureTask('abc', { model: null, place: { workdir: 'abe1.dir' } });
   assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { model: null, place: { workdir: 'abe1.dir' } } });
+});
+
+test('the auto-done setting is sent only to a server that names task.auto-done, before anything else is sent', async () => {
+  const without = boardWith(['task.configure'], {});
+  await assert.rejects(
+    without.backend.configureTask('abc', { autoDone: true }),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'task.auto-done' &&
+      error.message ===
+        'the board server does not support letting the agent move a task to Done yet; update the board server',
+  );
+  await assert.rejects(
+    without.backend.addTask({ id: 'abc', title: 'abe1.t', input: 'abe1.i', autoDone: true }),
+    /does not support letting the agent move a task to Done yet/,
+  );
+  await assert.rejects(
+    without.backend.addSchedule({ id: 'abc', title: 'abe1.t', input: 'abe1.i', everyMs: 7_200_000, autoDone: true }),
+    /does not support letting the agent move a task to Done yet/,
+  );
+  assert.deepEqual(
+    without.seen.map((request) => request.command),
+    ['version'],
+  );
+  const withIt = boardWith(['task.configure', 'task.auto-done'], {
+    'configure-task': { body: { result: await taskJson('abc') } },
+  });
+  await withIt.backend.configureTask('abc', { autoDone: false });
+  assert.deepEqual(withIt.seen[1]?.body, { id: 'abc', body: { autoDone: false } });
 });
 
 test('PR states go to set-pr-states on a server with task.prs, as given', async () => {

@@ -10,6 +10,7 @@ import {
   sealInput,
   sealNote,
   sealQuestions,
+  sealTitle,
   sealWorkdir,
   transcriptBinding,
   type Answer,
@@ -144,6 +145,39 @@ async function sealRequest(command: string, request: Json, sealing: Sealing, raw
       if (wire === undefined) return request;
       const workdir = await sealWorkdir(sealing.seal, taskRowOf(wire), body.place.workdir);
       return { ...request, body: { ...body, place: { ...body.place, workdir } } };
+    }
+    case 'edit-prompt': {
+      // The user's edit, sealed as the CLI does it: the new text under the task's row, the old text as a note of the user's.
+      if (typeof body?.input !== 'string') return request;
+      const wire = (await raw('get-task', { id })).json.result;
+      if (wire === undefined) return request;
+      const before = await openFields(sealing.open, taskRowOf(wire), wire);
+      const row = { ...taskRowOf(wire), agent: before.agent };
+      return {
+        ...request,
+        body: {
+          title: await sealTitle(sealing.seal, row, body.title),
+          input: await sealInput(sealing.seal, row, body.input),
+          previous: await sealNote(sealing.seal, { taskId: id, author: 'user', kind: 'event' }, body.previous),
+        },
+      };
+    }
+    case 'edit-schedule': {
+      if (typeof body?.input !== 'string') return request;
+      const schedule = (await raw('list-schedules')).json.result?.find((found: Json) => found['id'] === id);
+      if (schedule === undefined) return request;
+      const row: RowRef = {
+        kind: 'schedule',
+        id,
+        agent: (await openFields(sealing.open, { kind: 'schedule', id }, schedule)).agent,
+      };
+      return {
+        ...request,
+        body: {
+          title: await sealTitle(sealing.seal, row, body.title),
+          input: await sealInput(sealing.seal, row, body.input),
+        },
+      };
     }
     case 'add-note':
       return typeof body === 'string'
@@ -290,7 +324,8 @@ export function plainUi(db: Db, owner = 'jascha') {
       },
       create: async ({ id: chosen, title, input, place, agent: agentName, ...rest }: CreateInput) => {
         const id = chosen ?? newTaskId();
-        const repeats = typeof rest.when === 'object' && ('every' in rest.when || 'cron' in rest.when);
+        const repeats =
+          typeof rest.when === 'object' && ('every' in rest.when || 'cron' in rest.when || 'after' in rest.when);
         const agent = agentName ?? null;
         const row: RowRef = repeats
           ? { kind: 'schedule', id, agent }
@@ -302,7 +337,10 @@ export function plainUi(db: Db, owner = 'jascha') {
         });
         const placed =
           place === undefined || workdir === undefined ? {} : { place: { machine: place.machine, workdir } };
-        return openTask(await raw.tasks.create({ id, ...fields, ...rest, ...placed }));
+        const created = await raw.tasks.create({ id, ...fields, ...rest, ...placed });
+        if (created === null)
+          throw new Error('this schedule has no first task: it waits for the schedule it runs after');
+        return openTask(created);
       },
       // As the browser does: the prompt sealed for the fork link, the parent's directory and agent for the new task.
       fork: async ({
@@ -355,6 +393,7 @@ export function plainUi(db: Db, owner = 'jascha') {
           }),
         );
       },
+      dismissQuestion: mutation(raw.tasks.dismissQuestion),
       reply: async (input: { id: string; message: string; resume: boolean }) =>
         openTask(
           await raw.tasks.reply({

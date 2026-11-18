@@ -26,7 +26,7 @@ function detail(event: BoardEvent): string {
     case 'created':
       return event.task.status;
     case 'moved':
-      return `${event.from} → ${event.to}`;
+      return `${event.from} → ${event.to}${event.actor === undefined ? '' : ` by ${event.actor}`}`;
     case 'changed':
       return (event.fields ?? []).join(', ');
     case 'closed':
@@ -54,6 +54,7 @@ export function eventJson(event: BoardEvent, taskLink: (id: string) => string): 
     task: { ...taskJson(event.task), url: taskLink(event.task.id) },
     ...(event.from === undefined ? {} : { from: event.from }),
     ...(event.to === undefined ? {} : { to: event.to }),
+    ...(event.actor === undefined ? {} : { actor: event.actor }),
     ...(event.fields === undefined ? {} : { fields: event.fields }),
     ...(note === undefined
       ? {}

@@ -13,7 +13,9 @@ import {
   parseWireUsage,
   parseWireNoteInput,
   parseWirePr,
+  parseWirePromptEdit,
   parseWireScheduleDraft,
+  parseWireScheduleEdit,
   parseWireTaskConfig,
   parseWireTaskDraft,
   parseWireTaskPatch,
@@ -23,6 +25,7 @@ import {
   parseWireWatches,
   seal,
   serializePolish,
+  textBeforeEdit,
   UNREADABLE_TITLE,
 } from '@agent-board/shared';
 import type {
@@ -135,6 +138,13 @@ function fakeWire(): FakeWire {
       if (sent.place !== undefined) Object.assign(found, { workdir: sent.place?.workdir ?? null });
       return found;
     },
+    async editPrompt(id, body) {
+      const sent = parseWirePromptEdit(JSON.parse(record(state, body)));
+      const found = state.tasks.find((t) => t.id === id)!;
+      Object.assign(found, { title: sent.title, input: sent.input });
+      push(state, id, sent.previous, 'user', 'event');
+      return found;
+    },
     async claimTask(id) {
       return state.tasks.find((t) => t.id === id);
     },
@@ -243,6 +253,12 @@ function fakeWire(): FakeWire {
     },
     async updateSchedule() {
       return state.schedules[0]!;
+    },
+    async editSchedule(id, body) {
+      const sent = parseWireScheduleEdit(JSON.parse(record(state, body)));
+      const found = state.schedules.find((s) => s.id === id)!;
+      Object.assign(found, sent);
+      return { schedule: found, pending: 'updated' };
     },
     async removeSchedule() {},
   };
@@ -1255,4 +1271,69 @@ test('a schedule is sealed with its agent, and its occurrences open it', async (
   const copied = { ...(await wireTask({ id: 'occ1', scheduleId: made.id })), input, agent };
   const occurrence = await sealingBackend({ ...wire, getTask: async () => copied }, KEYS).getTask('occ1');
   assert.deepEqual([occurrence.agent, occurrence.input, occurrence.unreadable], ['sweeper', '/sweep', []]);
+});
+
+test('an edited prompt is sealed as the user’s under the task’s row, and the old text is kept in a note of the user’s', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  wire.tasks.push(await wireTask({ id: 'e1', title: TITLE, input: INPUT }));
+  const edited = await board.editPrompt('e1', { title: ` ${TITLE} 2 `, input: ' MARKER-new prompt\n' });
+  assert.deepEqual([edited.title, edited.input, edited.unreadable], [`${TITLE} 2`, 'MARKER-new prompt', []]);
+  const [kept] = await board.readNotes('e1');
+  assert.deepEqual(
+    [kept?.author, kept?.kind, kept?.unreadable, kept?.text],
+    ['user', 'event', false, textBeforeEdit({ title: TITLE, input: INPUT })],
+  );
+  assert.ok(kept?.text.startsWith('Prompt before editing\n\nTitle: '));
+  noMarkers(wire);
+});
+
+test('an edited prompt of a task with an agent and of a fork is sealed for them, so it stays readable', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  wire.tasks.push(
+    await wireTask({ id: 'a1', agent: 'reviewer' }),
+    await wireTask({ id: 'f1', forkOf: 'par1', agent: 'reviewer' }),
+  );
+  for (const id of ['a1', 'f1']) {
+    const edited = await board.editPrompt(id, { title: 'new', input: 'new prompt' });
+    assert.deepEqual([edited.input, edited.agent, edited.unreadable], ['new prompt', 'reviewer', []]);
+  }
+  assert.equal((await board.getTask('f1')).forkOf, 'par1');
+});
+
+test('an edit is refused before anything is sent: a task of an agent, an occurrence, one that cannot be read, an empty text', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  wire.tasks.push(
+    await wireTask({ id: 'ag1', createdBy: 'agent' }),
+    await wireTask({ id: 'oc1', scheduleId: 'sch1' }),
+    await wireTask({ id: 'ok1' }),
+    { ...(await wireTask({ id: 'bad1' })), input: 'not sealed' },
+  );
+  const refused = async (id: string, edit: { title: string; input: string }, message: RegExp) =>
+    assert.rejects(board.editPrompt(id, edit), (error) => error instanceof BackendError && message.test(error.message));
+  await refused('ag1', { title: 't', input: 'x' }, /only a task you created/);
+  await refused('oc1', { title: 't', input: 'x' }, /edit the schedule/);
+  await refused('bad1', { title: 't', input: 'x' }, /cannot be read/);
+  await refused('ok1', { title: 't', input: '  ' }, /prompt must not be empty/);
+  await refused('ok1', { title: ' ', input: 'x' }, /title must not be empty/);
+  assert.deepEqual(wire.requests, []);
+});
+
+test('an edited schedule is sealed under the schedule and its agent, and an unreadable or unknown one is refused', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  wire.schedules.push(await wireSchedule({ id: 's1', agent: 'sweeper' }), {
+    ...(await wireSchedule({ id: 's2' })),
+    input: 'not sealed',
+  });
+  const { schedule: edited, pending } = await board.editSchedule('s1', { title: 'MARKER-t', input: 'MARKER-i' });
+  assert.deepEqual(
+    [edited.title, edited.input, edited.agent, edited.unreadable, pending],
+    ['MARKER-t', 'MARKER-i', 'sweeper', [], 'updated'],
+  );
+  noMarkers(wire);
+  await assert.rejects(board.editSchedule('s2', { title: 't', input: 'x' }), /cannot be read/);
+  await assert.rejects(board.editSchedule('nothere1', { title: 't', input: 'x' }), /no schedule/);
 });
