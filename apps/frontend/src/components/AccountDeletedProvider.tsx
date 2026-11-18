@@ -10,8 +10,8 @@ function AccountDeletedScreen() {
         <Stack>
           <Title order={3}>Your account and its data are deleted</Title>
           <Text size="sm">
-            This page no longer talks to the board. You can close it. If you reload it, you get the setup screen for a
-            new, empty board.
+            This page no longer talks to the board. You can close it. If you reload it, you get the sign-in page, or on
+            a board without login the setup screen for a new, empty board.
           </Text>
         </Stack>
       </Paper>

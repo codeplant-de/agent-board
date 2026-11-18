@@ -63,6 +63,7 @@ import {
   toTask,
   wakeNow,
 } from '../services/tasks';
+import { authRouter, passkeysRouter } from './auth';
 import { parsedBy, sealed } from './inputs';
 import { procedure, router } from './trpc';
 
@@ -626,6 +627,8 @@ const accountRouter = router({
 export const appRouter = router({
   account: accountRouter,
   transcript: transcriptRouter,
+  auth: authRouter,
+  passkeys: passkeysRouter,
   me: procedure.query(async ({ ctx }) => ({ username: ctx.username, keyId: (await getKeys(ctx.db))?.keyId ?? null })),
   keys: keysRouter,
   tasks: tasksRouter,

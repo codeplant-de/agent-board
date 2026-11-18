@@ -23,6 +23,10 @@ const cleanup = () => cleanupAllBoards(db, app.log).catch((err: unknown) => app.
 void cleanup();
 setInterval(cleanup, 60 * 60_000).unref();
 await app.listen({ host: '0.0.0.0', port: config.port });
+if (!config.auth.login)
+  app.log.warn(
+    `Login is off (NO_LOGIN_USER): anyone who can reach port ${config.port} is the user "${config.auth.user}".`,
+  );
 
 // A second signal while closing must not call `pool.end()` again, which rejects.
 let closing: Promise<void> | undefined;

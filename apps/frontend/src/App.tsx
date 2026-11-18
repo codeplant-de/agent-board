@@ -1,24 +1,36 @@
 import { Badge, Center, Loader, Text } from '@mantine/core';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './AppLayout';
+import { LoginPage } from './auth/LoginPage';
+import { RedirectReturn } from './auth/RedirectReturn';
 import { AccountDeletedProvider } from './components/AccountDeletedProvider';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { KeyGate } from './crypto/KeyGate';
+import { subscribeToSession } from './lib/session';
 import { errorMessage, POLL_MS, useTRPC } from './lib/trpc';
+import { isUnauthorized } from './lib/unauthorized';
 import { BacklogPage, BoardPage } from './pages/BoardPage';
 import { ClosedPage } from './pages/ClosedPage';
 import { SchedulesPage } from './pages/SchedulesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskPage } from './pages/TaskPage';
 
-function Board() {
+function SignedInApp() {
   const trpc = useTRPC();
-  // While the board does not answer, keep asking, so the banner below goes away on its own once it is back.
+  const queryClient = useQueryClient();
+  // While the board does not answer, keep asking, so the banner below goes away on its own once it is back. A refusal to a
+  // user nobody has signed in is not that: asking again every few seconds would change nothing.
   const me = useQuery({
     ...trpc.me.queryOptions(),
-    refetchInterval: (query) => (query.state.status === 'error' ? POLL_MS : false),
+    refetchInterval: (query) =>
+      query.state.status === 'error' && !isUnauthorized(query.state.error) ? POLL_MS : false,
   });
+  const signedOut = isUnauthorized(me.error);
+  // Another tab signing in or out changes what this one is allowed to see.
+  useEffect(() => subscribeToSession(() => void queryClient.resetQueries()), [queryClient]);
+
   if (me.isLoading) {
     return (
       <Center h="100vh">
@@ -26,6 +38,8 @@ function Board() {
       </Center>
     );
   }
+  // Before the stale answer below: a session that ended while the app was open leaves the last good answer in place.
+  if (signedOut) return <LoginPage />;
   // Only a sign-in that never answered stops here. A failed background refetch keeps the last good answer, so the
   // unlocked keys and whatever is being typed survive a backend restart.
   if (me.data === undefined) {
@@ -69,10 +83,15 @@ function Board() {
   );
 }
 
+/** The way back from an identity provider is a page of its own: nobody is signed in yet when it finishes the sign-in. */
 export function App() {
   return (
     <AccountDeletedProvider>
-      <Board />
+      <Routes>
+        <Route path="login/oidc" element={<RedirectReturn method="oidc" />} />
+        <Route path="login/saml" element={<RedirectReturn method="saml" />} />
+        <Route path="*" element={<SignedInApp />} />
+      </Routes>
     </AccountDeletedProvider>
   );
 }
