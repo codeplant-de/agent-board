@@ -10,6 +10,7 @@ import {
 import { mutationOptions, queryOptions, type QueryKey } from '@tanstack/react-query';
 import type { TRPCClient } from '@trpc/client';
 import {
+  openBoardAgents,
   openBoardTask,
   openEvents,
   openListedTasks,
@@ -179,6 +180,16 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
             queryKey: plainKey(raw.machines.catalogs.queryKey()),
             queryFn: async ({ signal }) =>
               openCatalogs(need(), await client.machines.catalogs.query(undefined, { signal })),
+          }),
+      },
+    },
+    agents: {
+      shared: {
+        queryOptions: () =>
+          queryOptions({
+            queryKey: plainKey(raw.agents.shared.queryKey()),
+            queryFn: async ({ signal }) =>
+              openBoardAgents(need(), await client.agents.shared.query(undefined, { signal })),
           }),
       },
     },

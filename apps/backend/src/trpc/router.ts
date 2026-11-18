@@ -23,6 +23,7 @@ import { tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { ACCOUNT_TABLES, deleteAccount, exportPage, importRows, summarize } from '../services/account';
 import { getKeys, replaceSlots, setupKeys } from '../services/keys';
 import { issueToken, listMachineCatalogs, listMachines, revokeMachine } from '../services/machines';
+import { sharedAgentsForBrowser } from '../services/sharedAgents';
 import {
   addSchedule,
   heldTaskIds,
@@ -581,6 +582,14 @@ const machinesRouter = router({
     .mutation(async ({ ctx, input }) => revokeMachine(ctx.db, input.name)),
 });
 
+const agentsRouter = router({
+  /**
+   * The agent definitions pushed for every machine: the sealed document, its version and when it was pushed, or null. Read
+   * only: the CLI's `board agents push` is the one writer.
+   */
+  shared: procedure.query(({ ctx }) => sharedAgentsForBrowser(ctx.db)),
+});
+
 const transcriptRouter = router({
   /** A task's runs, newest first. */
   runs: procedure.input(z.object({ id })).query(({ ctx, input }) => listRuns(ctx.db, input.id)),
@@ -636,6 +645,7 @@ export const appRouter = router({
   tasks: tasksRouter,
   schedules: schedulesRouter,
   machines: machinesRouter,
+  agents: agentsRouter,
 });
 
 export type AppRouter = typeof appRouter;

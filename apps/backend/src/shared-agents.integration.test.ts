@@ -116,3 +116,19 @@ describe('get-agents and set-agents', () => {
     expect(told).toBeGreaterThan(0);
   });
 });
+
+describe('the browser read', () => {
+  it("serves the user's own document with its version and push time, and null before any push", async () => {
+    const laptop = await machine('laptop');
+    await machine('laptop', 'other');
+    expect(await caller(db).agents.shared()).toBeNull();
+    const before = Date.now();
+    const sent = await body(1);
+    await laptop('set-agents', { body: sent });
+    const read = await caller(db).agents.shared();
+    expect(read).toMatchObject({ version: 1, document: sent.document });
+    expect(read?.pushedAt.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    expect(await openSharedAgents(sealed.open, 1, read?.document ?? '')).toEqual(doc(1));
+    expect(await caller(db, 'other').agents.shared()).toBeNull();
+  });
+});

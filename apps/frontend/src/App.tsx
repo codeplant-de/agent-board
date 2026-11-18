@@ -13,6 +13,7 @@ import { errorMessage, POLL_MS, useTRPC } from './lib/trpc';
 import { isUnauthorized } from './lib/unauthorized';
 import { BacklogPage, BoardPage } from './pages/BoardPage';
 import { ClosedPage } from './pages/ClosedPage';
+import { AgentsPage } from './pages/AgentsPage';
 import { SchedulesPage } from './pages/SchedulesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskPage } from './pages/TaskPage';
@@ -74,6 +75,7 @@ function SignedInApp() {
               <Route path="schedules" element={<SchedulesPage />} />
               <Route path="closed" element={<ClosedPage />} />
               <Route path="settings" element={<SettingsPage />} />
+              <Route path="settings/agents" element={<AgentsPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

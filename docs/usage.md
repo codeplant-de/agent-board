@@ -773,6 +773,10 @@ If single sign-on is refused with "This name belongs to an account with a differ
 
 **Passkeys in Settings.** The Sign-in card lists your passkeys with when each was added and last used. Add one under a name for the device, such as `laptop` or `phone`. You can rename or remove one, and removing asks first. Keep two, so that losing a device does not lock you out: if you created your account with a passkey, the board refuses to remove your last one, and says so. Accounts that sign in through single sign-on may remove all of theirs. The card shows only on a board where passkeys are on. Your passkeys belong to the board's address and stop working if the board moves to another hostname.
 
+## Agents on the board
+
+**Settings → Agents** lists the agent definitions you pushed with `board agents push`, which every machine of yours applies by itself. For each one it shows the full definition, the same grant flags `push` prints, and which machines run it: the version each machine applied, whether its hash matches the board's, and which machines replaced a local definition of that name. The page is read only. To change an agent, push it again from a CLI, or take it off with `board agents rm --board`. See [Agents on the board](workers.md#agents-on-the-board).
+
 ## Desktop notifications
 
 Settings has a **Desktop notifications** switch, off by default. Turning it on asks the browser for permission.

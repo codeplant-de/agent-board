@@ -22,7 +22,7 @@ import type { TestContext } from 'node:test';
 import { ConfigError, loadConfig, parseConfig } from '../config/config.mts';
 import { parseAgentDocument } from '../config/agent-document.mts';
 import { parseAgentUrl, sha256Hex } from '../config/agent-fetch.mts';
-import { agentsAdd, agentsPush, agentsRemoveFromBoard, broadRule, grantSummary, looksSecret } from './agents.mts';
+import { agentsAdd, agentsPush, agentsRemoveFromBoard, grantSummary } from './agents.mts';
 import { fakeBackend } from '../__tests__/helpers/fakes.mts';
 import type { SharedAgentsOnBoard } from '@agent-board/shared';
 import { readBoardAgentsState } from '../config/config.mts';
@@ -225,36 +225,6 @@ test('the summary before writing lists every tool, allow rule, deny rule, env na
   for (const rule of ['Read(~/.ssh/**)', 'Bash(git push *)'])
     assert.ok(summary.lines.some((line) => line.includes(rule)));
   assert.ok(!summary.warnings.some((warning) => warning.includes('deny list is empty')));
-});
-
-test('broadRule and looksSecret', () => {
-  for (const rule of [
-    'Bash',
-    'Bash(*)',
-    'Bash(**)',
-    'Bash(bash -c *)',
-    'Bash(python3 *)',
-    'Bash(* foo)',
-    'Read',
-    'WebFetch',
-    'Read(//**)',
-    'Edit(~/**)',
-    'mcp__shortcut',
-  ])
-    assert.ok(broadRule(rule) !== undefined, rule);
-  for (const rule of [
-    'Grep',
-    'Bash(git status)',
-    'Bash(gh pr view *)',
-    'Bash(board comment *)',
-    'Edit(//tmp/pr-*)',
-    'Read(~/.ssh/**)',
-    'mcp__shortcut__get_story',
-  ])
-    assert.equal(broadRule(rule), undefined, rule);
-  for (const name of ['GITHUB_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'API_KEY', 'DB_PASSWORD', 'SESSION_COOKIE'])
-    assert.ok(looksSecret(name), name);
-  for (const name of ['REGION', 'APP_REPLICA_ENDPOINT', 'KEYBOARD_LAYOUT']) assert.ok(!looksSecret(name), name);
 });
 
 test('add refuses unknown keys, a bad name, a tool pattern, an existing name without --replace, and a name config.json defines', async (context) => {

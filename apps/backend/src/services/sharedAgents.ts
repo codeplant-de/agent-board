@@ -20,6 +20,16 @@ export async function getSharedAgents(db: DbOrTx): Promise<WireSharedAgents | nu
   return row ?? null;
 }
 
+/** The sealed document with its version and when it was pushed, or null: what the browser's Agents page opens and shows. */
+export async function sharedAgentsForBrowser(
+  db: DbOrTx,
+): Promise<{ version: number; document: string; pushedAt: Date } | null> {
+  const [row] = await db
+    .select({ version: sharedAgents.version, document: sharedAgents.document, pushedAt: sharedAgents.pushedAt })
+    .from(sharedAgents);
+  return row ?? null;
+}
+
 /**
  * Stores the next version of the document while the stored one is still `expectedVersion` (0: none is stored); a conflict
  * when another push came first. The parser has checked that `version` is `expectedVersion + 1`.

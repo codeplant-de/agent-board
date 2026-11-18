@@ -562,6 +562,16 @@ After a push, the agent is the board's on the pushing machine too: `push` takes 
 
 **Drift.** Each agent's hash is the SHA-256 of the keys that decide what a run may do (`description`, `prompt`, `model`, `tools`, `allowedTools`, `disallowedTools`, `env`, `mcpServers`) as canonical JSON. `version` and `source` are left out. `board agents` shows the first 12 hex digits, and `--json` all of them. `board doctor` warns, and does not fail, when this machine applied an older version than the board holds, when the last look at the board changed nothing, and when local definitions were moved aside. Each machine's [catalogue](#skills-and-models-on-the-board) carries the version it applied, the hash of every agent it has and the names whose local definition it replaced.
 
+**In the browser.** **Settings → Agents** (`/settings/agents`) shows the board's definitions and changes nothing: it has no edit and no push, and changes go through `board agents push` and `rm --board`. The browser opens the document with your key and shows:
+
+- the version and when it was pushed;
+- each definition: its description, `version` and `source`, model, every list (`tools`, `allowedTools`, `disallowedTools`, `env`, `mcpServers`), the prompt, the hash's first 12 hex digits, and the definition as pushed;
+- the flags `push` prints, in the same words: broad allow rules, an empty deny list, env variables that look like secrets, and allow rules for tools that `tools` leaves out. A key of the wrong shape, which every machine refuses, shows in red;
+- per machine, from its catalogue: the version it applied (marked `behind` when older than the board's) and the agents whose local definition it replaced;
+- per agent and machine: `runs this definition` when the machine reports the same hash as the browser computes, `runs another definition` with the machine's hash, `does not have it`, or, for a CLI from before shared agents, that the machine does not report its agents.
+
+A document that does not open under the version the board names shows as unreadable, as it is to the machines. A revoked machine has no catalogue and is not listed. The page refreshes every few seconds; a machine's catalogue changes when it sends a new one.
+
 **The limit.** Before, an agent's definition changed on a machine only when you read and confirmed it there. Now a push from any one machine reaches all of them within a tick, without a reading on each. A push needs the data key, and `board agents push` is refused inside a run, but the data key sits in `~/.config/agent-board/env` on every worker machine. A run in `auto` mode that reads it can seal and push a definition with broader grants, and every machine applies it. Such a run could always rewrite the agent files of its own machine; the new reach is every other machine. This is accepted, without a signing key or a per-machine switch (see [Design decisions](architecture.md#design-decisions)).
 
 ### An agent's run

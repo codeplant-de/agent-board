@@ -2,7 +2,7 @@
 // grant (what a restricted run may do here), so `add` shows all of it and asks before it writes.
 import { readFileSync, rmSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { AGENT_NAME_RULE, isAgentName, isRecord } from '@agent-board/shared';
+import { AGENT_NAME_RULE, broadRule, deadAllowTools, isAgentName, isRecord, looksSecret } from '@agent-board/shared';
 import type { Backend, SharedAgentsDocument } from '@agent-board/shared';
 import { BackendError } from '../backend/backend.mts';
 import { UsageError } from '../cli.mts';
@@ -177,39 +177,6 @@ export function agentsShow(deps: AgentsDeps, name: string, format: AgentFormat, 
 // ---------------------------------------------------------------------------------------------------------------------
 // What a definition grants
 
-const BROAD_TOOLS = new Set(['Bash', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'Read']);
-const EVERYTHING = new Set(['*', '**', '/**', '//**', '~', '~/', '~/*', '~/**', '//', '/']);
-// Commands that run whatever they are given, or reach out of the machine: a rule that allows them allows nearly anything.
-const RUNS_ANYTHING =
-  /^(?:bash|sh|zsh|fish|dash|python3?|node|bun|deno|perl|ruby|php|eval|exec|env|xargs|sudo|su|doas|ssh|scp|curl|wget|nc|npx|pnpx|bunx)(?:[\s:]|$)/;
-
-/** Why an allow rule is broad, or undefined when it is narrow enough to read for itself. */
-export function broadRule(rule: string): string | undefined {
-  const open = rule.indexOf('(');
-  if (open === -1) {
-    if (BROAD_TOOLS.has(rule))
-      return rule === 'Read' ? 'reads every file the deny list does not name' : `allows every ${rule} call`;
-    if (/^mcp__[^_]+(?:__\*)?$/.test(rule) || /^mcp__.+__\*$/.test(rule)) return 'allows every tool of the MCP server';
-    return undefined;
-  }
-  const tool = rule.slice(0, open);
-  const argument = rule.slice(open + 1, rule.endsWith(')') ? -1 : undefined).trim();
-  if (EVERYTHING.has(argument)) return `allows ${tool} on everything`;
-  if (tool === 'Bash') {
-    if (argument.startsWith('*')) return 'starts with *: matches any command that merely contains the rest';
-    if (/^board(?::\*|\s+\*)/.test(argument))
-      return 'covers every board command: board schedule and board agents add too, which start or grant work';
-    if (RUNS_ANYTHING.test(argument)) return `runs ${argument.split(/[\s:]/)[0]}, which can run or reach anything`;
-  }
-  if ((tool === 'Read' || tool === 'Edit' || tool === 'Write') && /^(?:~\/?|\/\/?)\*\*?$/.test(argument))
-    return `allows ${tool} on a whole tree`;
-  return undefined;
-}
-
-const SECRET_NAME = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE|COOKIE|SESSION|AUTH|(?:^|_)KEY(?:_|$)|APIKEY/i;
-
-export const looksSecret = (name: string): boolean => SECRET_NAME.test(name);
-
 /** Every line a person must see before the agent is written: what it may do, flagged where it is broad. */
 export function grantSummary(name: string, agent: AgentConfig, home: string): { lines: string[]; warnings: string[] } {
   const lines: string[] = [];
@@ -249,13 +216,7 @@ export function grantSummary(name: string, agent: AgentConfig, home: string): { 
       );
     }
   }
-  const dead = [
-    ...new Set(
-      agent.allowedTools
-        .map((rule) => rule.split('(')[0] ?? rule)
-        .filter((tool) => !tool.startsWith('mcp__') && !agent.tools.includes(tool)),
-    ),
-  ];
+  const dead = deadAllowTools(agent);
   if (dead.length > 0) warnings.push(`allowedTools has rules for ${dead.join(', ')}, which tools leaves out`);
   return { lines, warnings: warnings.map(plainLine) };
 }
