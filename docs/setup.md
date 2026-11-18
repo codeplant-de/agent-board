@@ -209,6 +209,15 @@ Stopping the listener waits for a dispatch tick that is running. The unit's `Tim
 
 The listener checks the API range each time it connects. When the server no longer serves this CLI, the listener logs that and exits, and systemd restarts it every 10 seconds until the CLI matches. When the server is older than the CLI, the listener logs that once and keeps reconnecting with its usual backoff.
 
+### Schedule rules and limits (CLI 0.29.0)
+
+Four new server features: `schedule.crons`, `schedule.max-concurrent`, `schedule.after` and `task.held`. `board schedule` takes `--cron` several times, `--max-concurrent <n>` and `--after <schedule> [--delay <dur>]` (see [Repeating schedules](usage.md#repeating-schedules)). A migration adds columns to `schedule` and `task`. Nothing changes for the schedules you have, and no version number is raised.
+
+Update the server first. A server without the feature makes the flag refuse with "the board server does not support … yet", and nothing else changes.
+
+- A machine on an older CLI does not see a schedule that runs after another: `board schedules` leaves it out there. Its tasks run on any worker.
+- An older worker does not know that a task waits for a free slot of its schedule. It tries to claim the task, the board refuses, and it moves on, so the limit holds.
+
 ### Editing a prompt (CLI 0.28.0)
 
 A new server feature, `prompt.edit`. `board task <task> set prompt` and `board schedules edit` change the prompt of a task that has not started and of a schedule, as the task page and the Schedules page do (see [Editing the prompt](usage.md#editing-the-prompt)). Nothing changes in the database, and no version number is raised.
