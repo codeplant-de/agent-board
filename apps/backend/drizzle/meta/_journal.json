@@ -288,6 +288,13 @@
       "when": 1794990658728,
       "tag": "0040_schedule-capabilities",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1794998636715,
+      "tag": "0041_login",
+      "breakpoints": true
     }
   ]
 }

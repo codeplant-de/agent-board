@@ -721,6 +721,22 @@ Done tasks nobody touched for 7 days are closed, with a note in the thread. They
 
 A task made with a key (`board schedule --key`) is left open. A closed task is "never again" for its key, so closing one would block the PR's next review request.
 
+## Signing in and out
+
+A board that signs users in shows a login page when nobody is signed in. It has one button for each way the operator set up. How to set them up is in [operations.md](operations.md#sign-in).
+
+- **Sign in with a passkey.** Press the button and confirm on your device. The passkey says who you are, so you type no name.
+- **The single sign-on button** (its text is the operator's choice, and there can be one for OIDC and one for SAML). It takes you to the identity provider and back. Finish in the same tab. The browser keeps a secret in the tab that started the sign-in, so a link opened in another tab or browser fails with "started in another browser". Start again from the board.
+- **Create an account** shows only while the operator has a sign-up token set. Enter a name, the token and a name for the passkey. The name is lower case letters, digits, dots, dashes, underscores and `@`, up to 64, and a name that is taken is refused, whichever way the other account signs in.
+
+After signing in you land on the page you first asked for. Your keys are separate from the session. Signing in does not unlock them, and a session that merely ends does not lock them, so only after a sign-out does the board ask for your passphrase again. A board that runs without login has no login page and no sign-out.
+
+If single sign-on is refused with "This name belongs to an account with a different sign-in method", your name was first used through another method, such as a passkey sign-up, and only that method opens it. Ask the operator, who can move the account ([operations.md](operations.md#environment-of-the-backend)). If a SAML sign-in comes back to the login page with a message, the identity provider's answer was refused; start again from the board. A session is not re-checked at the identity provider, so losing access there takes effect when your session ends.
+
+**Sign out** is the icon in the header, the entry in its menu, and the Session card in Settings. It ends the session on the board and locks the board on this device. A session lasts 30 days after its last use unless the operator chose another number.
+
+**Passkeys in Settings.** The Sign-in card lists your passkeys with when each was added and last used. Add one under a name for the device, such as `laptop` or `phone`. You can rename or remove one, and removing asks first. Keep two, so that losing a device does not lock you out: if you created your account with a passkey, the board refuses to remove your last one, and says so. Accounts that sign in through single sign-on may remove all of theirs. The card shows only on a board where passkeys are on. Your passkeys belong to the board's address and stop working if the board moves to another hostname.
+
 ## Desktop notifications
 
 Settings has a **Desktop notifications** switch, off by default. Turning it on asks the browser for permission.

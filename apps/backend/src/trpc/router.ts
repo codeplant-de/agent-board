@@ -64,6 +64,7 @@ import {
   toTask,
   wakeNow,
 } from '../services/tasks';
+import { authRouter, passkeysRouter } from './auth';
 import { procedure, router } from './trpc';
 
 const id = z.string().refine(isSafeTaskId, 'not a task id');
@@ -567,6 +568,8 @@ const keysRouter = router({
 
 export const appRouter = router({
   transcript: transcriptRouter,
+  auth: authRouter,
+  passkeys: passkeysRouter,
   me: procedure.query(async ({ ctx }) => ({ username: ctx.username, keyId: (await getKeys(ctx.db))?.keyId ?? null })),
   keys: keysRouter,
   tasks: tasksRouter,

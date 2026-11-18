@@ -34,7 +34,8 @@ import { createMemoryKeyStore } from '../../frontend/src/test/memoryKeyStore';
 import { openerFor } from '../../frontend/src/lib/opening';
 import { notes, tasks } from './db/schema';
 import { buildServer } from './server';
-import { caller, question, SESSION, testConfig, useTestDb } from './test/helpers';
+import { createSession } from './services/auth/sessions';
+import { caller, loginConfig, question, SESSION, testConfig, useTestDb } from './test/helpers';
 import { MARKERS, sealed, useDataKey } from './test/sealed';
 
 const { db, admin } = useTestDb();
@@ -99,7 +100,7 @@ async function setup() {
     },
   });
 
-  // The browser's requests go through the server's HTTP adapter and sign-in check, with the headers Authelia would set.
+  // The browser's requests go through the server's HTTP adapter and sign-in check, as the no-login user.
   const { trpc, fetchQuery, mutate } = createBrowserHarness({
     keys: made.keys,
     fetch: async (url, init) => {
@@ -108,7 +109,7 @@ async function setup() {
       const answer = await app.inject({
         method: init.method as 'GET' | 'POST',
         url: `${pathname}${search}`,
-        headers: { ...init.headers, 'remote-user': OWNER, 'remote-groups': 'work,admins' },
+        headers: init.headers,
         ...(init.body === undefined ? {} : { payload: init.body }),
       });
       const json = answer.json() as { result?: { data?: unknown } };
@@ -644,31 +645,38 @@ describe('the answer the user gives', () => {
 });
 
 describe('the browser’s requests over HTTP', () => {
-  it('are refused by the server’s sign-in check without the Authelia headers, and answered with them', async () => {
-    const { app, keys } = ctx;
-    const through = (headers: Record<string, string>) =>
-      createBrowserHarness({
-        keys,
-        fetch: async (url, init) => {
-          const { pathname, search } = new URL(url);
-          const answer = await app.inject({
-            method: init.method as 'GET' | 'POST',
-            url: `${pathname}${search}`,
-            headers: { ...init.headers, ...headers },
-            ...(init.body === undefined ? {} : { payload: init.body }),
-          });
-          return new Response(answer.body, { status: answer.statusCode });
-        },
+  it('are refused by the server’s sign-in check without a session cookie, and answered with one', async () => {
+    const { keys } = ctx;
+    const config = loginConfig();
+    const app = await buildServer(config, db);
+    try {
+      const through = (headers: Record<string, string>) =>
+        createBrowserHarness({
+          keys,
+          fetch: async (url, init) => {
+            const { pathname, search } = new URL(url);
+            const answer = await app.inject({
+              method: init.method as 'GET' | 'POST',
+              url: `${pathname}${search}`,
+              headers: { ...init.headers, ...headers },
+              ...(init.body === undefined ? {} : { payload: init.body }),
+            });
+            return new Response(answer.body, { status: answer.statusCode });
+          },
+        });
+      const anonymous = through({});
+      await expect(anonymous.fetchQuery(anonymous.trpc.me.queryOptions())).rejects.toThrow();
+      const wrong = through({ cookie: `board-session=abs_${'x'.repeat(43)}` });
+      await expect(wrong.fetchQuery(wrong.trpc.me.queryOptions())).rejects.toThrow();
+      const token = await createSession({ root: db, login: config.auth }, OWNER, 'passkey');
+      const signedIn = through({ cookie: `board-session=${token}` });
+      expect(await signedIn.fetchQuery(signedIn.trpc.me.queryOptions())).toEqual({
+        username: OWNER,
+        keyId: keys.keyId,
       });
-    const anonymous = through({});
-    await expect(anonymous.fetchQuery(anonymous.trpc.me.queryOptions())).rejects.toThrow();
-    const outsider = through({ 'remote-user': OWNER, 'remote-groups': 'family' });
-    await expect(outsider.fetchQuery(outsider.trpc.me.queryOptions())).rejects.toThrow();
-    const signedIn = through({ 'remote-user': 'Jascha', 'remote-groups': 'work,admins' });
-    expect(await signedIn.fetchQuery(signedIn.trpc.me.queryOptions())).toEqual({
-      username: OWNER,
-      keyId: keys.keyId,
-    });
+    } finally {
+      await app.close();
+    }
   });
 });
 

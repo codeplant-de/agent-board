@@ -22,6 +22,9 @@ import { notifications } from '@mantine/notifications';
 import { IconCheck, IconCopy, IconKey } from '@tabler/icons-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useSyncExternalStore } from 'react';
+import { Passkeys } from '../auth/Passkeys';
+import { useAuthConfig } from '../auth/useAuthConfig';
+import { useSignOut } from '../auth/useSignOut';
 import { KeyError } from '../crypto/kdf';
 import { exportDataKey, replacePassphrase } from '../crypto/keySlots';
 import { useKeys } from '../crypto/KeyContext';
@@ -369,13 +372,46 @@ function DesktopNotifications() {
   );
 }
 
+function Session() {
+  const signOut = useSignOut();
+  const [busy, setBusy] = useState(false);
+  if (signOut === null) return null;
+  return (
+    <Paper withBorder p="md">
+      <Stack>
+        <div>
+          <Title order={5}>Session</Title>
+          <Text size="sm" c="dimmed">
+            Signing out also locks the board on this device, so the passphrase is asked for again.
+          </Text>
+        </div>
+        <Group>
+          <Button
+            variant="default"
+            loading={busy}
+            onClick={() => {
+              setBusy(true);
+              void signOut().finally(() => setBusy(false));
+            }}
+          >
+            Sign out
+          </Button>
+        </Group>
+      </Stack>
+    </Paper>
+  );
+}
+
 export function SettingsPage() {
+  const config = useAuthConfig();
   return (
     <Stack maw={900} mx="auto">
       <Title order={3}>Settings</Title>
       <Machines />
       <DesktopNotifications />
       <Encryption />
+      {config.data?.login === true && config.data.passkeys && <Passkeys />}
+      <Session />
     </Stack>
   );
 }

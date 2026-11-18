@@ -9,11 +9,22 @@ mise install
 pnpm install
 docker compose up -d postgres        # local Postgres on :54331 (board_dev, board_test)
 cp apps/backend/.env.example apps/backend/.env
-pnpm dev:backend                     # :4000, as DEV_AUTH_USER
+pnpm dev:backend                     # :4000, no login: everyone is NO_LOGIN_USER
 pnpm dev:frontend                    # :5173, proxies /trpc and /api
 ```
 
 Migrations run when the backend starts, so restart it after a schema change.
+
+`.env.example` sets `NO_LOGIN_USER=dev`, so every request is the user `dev` and there is no login page. The older name `DEV_AUTH_USER` still works as an alias outside production. The backend logs a warning at start that anyone who reaches the port is that user.
+
+To try the login page, edit `apps/backend/.env`, comment out `NO_LOGIN_USER` and set:
+
+```sh
+PUBLIC_URL=http://localhost:5173
+SIGNUP_TOKEN=<32 or more characters>
+```
+
+Restart the backend and open http://localhost:5173 (not `127.0.0.1`: a passkey is bound to the hostname in `PUBLIC_URL`). **Create an account** takes a name, the token and a passkey. The backend refuses to start with `NO_LOGIN_USER` next to `PUBLIC_URL`, `PASSKEYS`, `SESSION_DAYS`, `SIGNUP_TOKEN`, `ALLOWED_GROUPS`, `OIDC_*` or `SAML_*`, so unset one side. `ALLOWED_GROUPS` needs `OIDC_ISSUER` too. Outside production `OIDC_ISSUER` and `SAML_ENTRY_POINT` may be http URLs, for an identity provider on your machine. Vite proxies `/trpc` and `/api`, so the browser sees one origin, and the session cookie is `board-session` because the address is http.
 
 To point a worker at the local board, take a token and the data key from http://localhost:5173/settings and write a `web.json` with `"url": "http://localhost:4000"`. Point `AGENT_BOARD_CONFIG_DIR` and `AGENT_BOARD_STATE_DIR` at scratch directories, so your real config and logs stay untouched. To run the CLI from source: `mise exec -- node apps/cli/src/main.mts <command>`.
 
@@ -27,7 +38,7 @@ pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
 
 `pnpm format` fixes formatting. Put a pure formatting change in its own commit, so the logic diff stays readable.
 
-- **Backend tests** are integration tests against `board_test`. They use `app.inject` for the machine API and tRPC callers for the UI. The global setup drops and recreates the schema on every run, so two worktrees testing at the same time need separate databases (`TEST_DATABASE_URL`). They still share the Postgres cluster. The role `board_app` is cluster-wide, so `ensureAppRole` retries when another suite alters it at the same moment. And `drop database` forces a checkpoint of the whole cluster, which takes seconds while other suites write. So the migration tests create a new scratch database per test and drop them all in one `afterAll` with a long timeout (`src/test/scratch.ts`). Follow that pattern, and do not drop a database in a `beforeEach`.
+- **Backend tests** are integration tests against `board_test`. They use `app.inject` for the machine API and tRPC callers for the UI. The sign-in tests (`auth-*.integration.test.ts`, with `auth-sources` for which method owns a name) run against a fake OIDC provider, a fake SAML provider and a software passkey authenticator in `src/test/`. The global setup drops and recreates the schema on every run, so two worktrees testing at the same time need separate databases (`TEST_DATABASE_URL`). They still share the Postgres cluster. The role `board_app` is cluster-wide, so `ensureAppRole` retries when another suite alters it at the same moment. And `drop database` forces a checkpoint of the whole cluster, which takes seconds while other suites write. So the migration tests create a new scratch database per test and drop them all in one `afterAll` with a long timeout (`src/test/scratch.ts`). Follow that pattern, and do not drop a database in a `beforeEach`.
 - **CLI tests** use `node --test`. The decision logic (`apps/cli/src/dispatch/decide.mts`, `worker/plan.mts`, the `run*` functions) takes the backend, GitHub and the system as arguments, and tests pass fakes from `apps/cli/src/__tests__/helpers/fakes.mts`. Where a test goes is in [CLI layout](#cli-layout). A fake backend must behave like the real one. For example, the server clears `runStartedAt` when a task leaves Running.
 - **Shared package tests** (`packages/shared`) use `node --test` and follow the same layout as the CLI's: `src/<module>.test.mts` next to the module, fixtures in `src/__tests__/fixtures/`.
 - **Completion tests** need zsh and fish and skip without them, so CI may be their first real run.
