@@ -622,6 +622,53 @@ test('several crons, a limit and an after rule are sent only to a server that na
   assert.deepEqual(having.seen, ['version', 'add-schedule', 'add-schedule']);
 });
 
+test('an edit of a schedule with settings needs schedule.update; one with only title and prompt keeps working on a server with prompt.edit', async () => {
+  const answer = async () => ({
+    body: { result: { schedule: serializeSchedule(await wireSchedule({ id: 'sch1' })), pending: 'created' } },
+  });
+  const text = { title: 'abe1.t', input: 'abe1.i' };
+  const settings = {
+    place: null,
+    priority: 'normal' as const,
+    model: null,
+    autoDone: false,
+    repeat: { everyMs: 60_000 },
+    runsLeft: null,
+    until: null,
+    maxConcurrent: null,
+  };
+  const older = boardWith(['prompt.edit'], { 'edit-schedule': await answer() });
+  await assert.rejects(
+    older.backend.editSchedule('sch1', { ...text, settings }),
+    (error: unknown) =>
+      error instanceof BackendError &&
+      error.missingFeature === 'schedule.update' &&
+      error.message ===
+        'the board server does not support changing every setting of a schedule yet; update the board server',
+  );
+  assert.deepEqual(
+    older.seen.map((request) => request.command),
+    ['version'],
+    'nothing else was sent',
+  );
+  assert.equal((await older.backend.editSchedule('sch1', text)).pending, 'created');
+  assert.deepEqual(older.seen.at(-1)?.body, { id: 'sch1', body: text });
+  const newer = boardWith(['prompt.edit', 'schedule.update'], { 'edit-schedule': await answer() });
+  await newer.backend.editSchedule('sch1', { ...text, settings });
+  assert.deepEqual(newer.seen.at(-1)?.body, { id: 'sch1', body: { ...text, settings } });
+  await assert.rejects(
+    newer.backend.editSchedule('sch1', { ...text, settings: { ...settings, lane: null } }),
+    (error: unknown) => error instanceof BackendError && error.missingFeature === 'task.lane',
+  );
+  assert.equal(newer.seen.filter((request) => request.command === 'edit-schedule').length, 1, 'the lane was not sent');
+  const withLanes = boardWith(['prompt.edit', 'schedule.update', 'task.lane'], { 'edit-schedule': await answer() });
+  await withLanes.backend.editSchedule('sch1', { ...text, settings: { ...settings, lane: 'review' } });
+  assert.deepEqual(withLanes.seen.at(-1)?.body, {
+    id: 'sch1',
+    body: { ...text, settings: { ...settings, lane: 'review' } },
+  });
+});
+
 test('a PR is added with add-pr on a server with task.prs, and replaces the earlier one with set-pr on one without', async () => {
   const withIt = boardWith(['task.pr', 'task.prs'], { 'add-pr': { body: { result: null } } });
   await withIt.backend.addPr('abc', { pr: 'abe1.pr' });

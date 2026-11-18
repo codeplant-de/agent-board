@@ -15,7 +15,7 @@ async function setup() {
     const res = await app.inject({
       method: 'POST',
       url: `/api/machine/${command}`,
-      headers: { authorization: `Bearer ${token}` },
+      headers: { authorization: `Bearer ${token}`, 'x-board-features': 'schedule.after' },
       payload: body,
     });
     return { status: res.statusCode, json: res.json() as MachineAnswer['json'] };
@@ -171,5 +171,197 @@ describe('edit-schedule', () => {
     const ended = await ctx.ui.tasks.create({ title: 'once', input: 'x', when: { every: HOUR, times: 1 } });
     await ctx.ui.tasks.move({ id: ended.id, status: 'backlog' });
     expect((await editSchedule(ended.scheduleId!)).status).toBe(409);
+  });
+});
+
+describe('edit-schedule with settings', () => {
+  const settings = (overrides: Record<string, unknown> = {}) => ({
+    place: null,
+    priority: 'normal',
+    model: null,
+    autoDone: false,
+    repeat: { everyMs: HOUR },
+    runsLeft: null,
+    until: null,
+    maxConcurrent: null,
+    ...overrides,
+  });
+  const update = (id: string, overrides: Record<string, unknown> = {}, title = 'Nightly', input = 'new') =>
+    ctx.call('edit-schedule', { id, body: { title, input, settings: settings(overrides) } });
+  async function scheduled() {
+    const card = await ctx.ui.tasks.create({ title: 'Sweep', input: 'old', when: { every: HOUR } });
+    return { card, scheduleId: card.scheduleId! };
+  }
+
+  it('replaces every setting of the schedule and its pending card, sealed together under the new agent', async () => {
+    const { card, scheduleId } = await scheduled();
+    const { status, json } = await update(scheduleId, {
+      agent: 'reviewer',
+      place: { machine: 'laptop', workdir: '/home/me/repo' },
+      priority: 'high',
+      model: 'opus',
+      autoDone: true,
+      repeat: { cron: '0 9 * * 1-5', moreCrons: ['0 17 * * 1-5'], timezone: 'Europe/Berlin' },
+      runsLeft: 5,
+      maxConcurrent: 2,
+    });
+    expect(status).toBe(200);
+    expect(json.result.pending).toBe('updated');
+    expect(json.result.schedule).toMatchObject({
+      title: 'Nightly',
+      input: 'new',
+      agent: 'reviewer',
+      machine: 'laptop',
+      workdir: '/home/me/repo',
+      priority: 'high',
+      model: 'opus',
+      autoDone: true,
+      everyMs: null,
+      cron: '0 9 * * 1-5',
+      moreCrons: ['0 17 * * 1-5'],
+      timezone: 'Europe/Berlin',
+      remaining: 4,
+      maxConcurrent: 2,
+    });
+    expect((await ctx.ui.tasks.get({ id: card.id })).task).toMatchObject({
+      title: 'Nightly',
+      input: 'new',
+      agent: 'reviewer',
+      workdir: '/home/me/repo',
+      priority: 'high',
+      model: 'opus',
+      autoDone: true,
+    });
+  });
+
+  it('sets the lane of the schedule and its pending card, and keeps it when the settings leave the lane out', async () => {
+    const { card, scheduleId } = await scheduled();
+    const set = await update(scheduleId, { lane: 'review' });
+    expect(set.json.result.schedule).toMatchObject({ requestedLane: 'review' });
+    expect((await ctx.ui.tasks.get({ id: card.id })).task).toMatchObject({ requestedLane: 'review' });
+    const kept = await update(scheduleId, { priority: 'high' });
+    expect(kept.json.result.schedule).toMatchObject({ requestedLane: 'review' });
+    expect((await ctx.ui.tasks.get({ id: card.id })).task).toMatchObject({ requestedLane: 'review' });
+    const cleared = await update(scheduleId, { lane: null });
+    expect(cleared.json.result.schedule).toMatchObject({ requestedLane: null });
+    expect((await ctx.ui.tasks.get({ id: card.id })).task).toMatchObject({ requestedLane: null });
+    expect((await update(scheduleId, { lane: 'a b' })).status).toBe(400);
+  });
+
+  it('clears what the settings leave out: the agent, the directory, the limit and the end', async () => {
+    const { scheduleId } = await scheduled();
+    await update(scheduleId, {
+      agent: 'reviewer',
+      place: { machine: 'laptop', workdir: '/home/me/repo' },
+      maxConcurrent: 3,
+      until: new Date(Date.now() + 5 * HOUR).toISOString(),
+    });
+    const { json } = await update(scheduleId);
+    expect(json.result.schedule.agent ?? null).toBeNull();
+    expect(json.result.schedule).toMatchObject({
+      machine: null,
+      workdir: null,
+      maxConcurrent: null,
+      until: null,
+      remaining: null,
+    });
+  });
+
+  it('takes the first run from `at` and ends after `until`', async () => {
+    const { scheduleId } = await scheduled();
+    const at = new Date(Date.now() + 3 * HOUR);
+    const { json } = await update(scheduleId, { at: at.toISOString() });
+    expect(new Date(json.result.schedule.anchorAt).getTime()).toBe(at.getTime());
+    expect(new Date(json.result.schedule.nextRunAt).getTime()).toBe(at.getTime());
+  });
+
+  it('removes the pending card for a schedule that now runs after another, and makes one when it no longer does', async () => {
+    const { scheduleId } = await scheduled();
+    const upstream = (await ctx.ui.tasks.create({ title: 'Build', input: 'b', when: { every: HOUR } })).scheduleId!;
+    const toAfter = await update(scheduleId, { repeat: { after: { scheduleId: upstream, delayMs: 600_000 } } });
+    expect(toAfter.status).toBe(200);
+    expect(toAfter.json.result.pending).toBe('removed');
+    expect(toAfter.json.result.schedule).toMatchObject({ after: { scheduleId: upstream, delayMs: 600_000 } });
+    expect(toAfter.json.result.schedule.everyMs).toBeNull();
+    const back = await update(scheduleId, { repeat: { everyMs: 2 * HOUR } });
+    expect(back.json.result.pending).toBe('created');
+    expect(back.json.result.schedule).toMatchObject({ everyMs: 2 * HOUR, after: null });
+  });
+
+  it('leaves a pending card that started alone', async () => {
+    const { card, scheduleId } = await scheduled();
+    await admin.update(tasks).set({ lastActiveAt: new Date() }).where(eq(tasks.id, card.id));
+    expect((await update(scheduleId, { priority: 'high' })).json.result.pending).toBe('started');
+    expect((await ctx.ui.tasks.get({ id: card.id })).task).toMatchObject({ title: 'Sweep', priority: 'normal' });
+    expect((await ctx.ui.schedules.list())[0]).toMatchObject({ title: 'Nightly', priority: 'high' });
+  });
+
+  it('refuses an ended schedule with 409 and an unknown one with 404', async () => {
+    const ended = await ctx.ui.tasks.create({ title: 'once', input: 'x', when: { every: HOUR, times: 1 } });
+    await ctx.ui.tasks.move({ id: ended.id, status: 'backlog' });
+    expect((await update(ended.scheduleId!)).status).toBe(409);
+    const { title, input } = (await admin.select().from(tasks))[0]!;
+    const body = { title, input, settings: settings() };
+    expect((await ctx.raw('edit-schedule', { id: 'nothere1', body })).status).toBe(404);
+  });
+
+  it('refuses a body the parser or the rules do not take, and writes nothing', async () => {
+    const { scheduleId } = await scheduled();
+    const other = (await ctx.ui.tasks.create({ title: 'o', input: 'o', when: { every: HOUR } })).scheduleId!;
+    const refused: Record<string, unknown>[] = [
+      { extra: 1 },
+      { place: { machine: 'bad name', workdir: undefined } },
+      { priority: 'bogus' },
+      { model: 'not a model!' },
+      { autoDone: 'yes' },
+      { repeat: { everyMs: HOUR, cron: '0 9 * * *', timezone: 'UTC' } },
+      { repeat: { everyMs: 1000 } },
+      { repeat: { everyMs: 11 * 365 * 24 * HOUR } },
+      { repeat: { cron: '0 9 * * *' } },
+      { repeat: { cron: 'not cron', timezone: 'UTC' } },
+      { repeat: { cron: '0 9 * * *', timezone: 'Nowhere/Land' } },
+      { repeat: { cron: '0 9 * * *', timezone: 'UTC', extra: 1 } },
+      { repeat: { after: { scheduleId: other } } },
+      { repeat: { after: { scheduleId: other, delayMs: -1 } } },
+      { repeat: { after: { scheduleId, delayMs: 0 } } },
+      { repeat: { after: { scheduleId: other, delayMs: 0 } }, at: new Date().toISOString() },
+      { at: 'yesterday-ish' },
+      { runsLeft: 0 },
+      { runsLeft: 2_147_483_648 },
+      { until: 'soon' },
+      { runsLeft: 3, until: new Date(Date.now() + 5 * HOUR).toISOString() },
+      { maxConcurrent: 0 },
+      { maxConcurrent: 101 },
+    ];
+    for (const overrides of refused) {
+      const { status } = await update(scheduleId, overrides);
+      expect(status, JSON.stringify(overrides)).toBe(400);
+    }
+    expect((await ctx.ui.schedules.list()).find((found) => found.id === scheduleId)).toMatchObject({
+      title: 'Sweep',
+      input: 'old',
+    });
+  });
+
+  it('refuses settings that are not an object, and a body with settings but no sealed text', async () => {
+    const { scheduleId } = await scheduled();
+    const { title, input } = (await admin.select().from(tasks))[0]!;
+    expect((await ctx.raw('edit-schedule', { id: scheduleId, body: { title, input, settings: 'x' } })).status).toBe(
+      400,
+    );
+    expect((await ctx.raw('edit-schedule', { id: scheduleId, body: { title, input, settings: null } })).status).toBe(
+      400,
+    );
+    expect((await ctx.raw('edit-schedule', { id: scheduleId, body: { settings: settings() } })).status).toBe(400);
+  });
+
+  it('refuses an agent and a directory that are not sealed', async () => {
+    const { scheduleId } = await scheduled();
+    const { title, input } = (await admin.select().from(tasks))[0]!;
+    for (const overrides of [{ agent: 'plain-agent' }, { place: { machine: 'laptop', workdir: '/plain' } }])
+      expect(
+        (await ctx.raw('edit-schedule', { id: scheduleId, body: { title, input, settings: settings(overrides) } }))
+          .status,
+      ).toBe(400);
   });
 });

@@ -327,7 +327,13 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     listSchedules: async () => call('list-schedules', {}, (value) => parseWireSchedules(value, listOptions)),
     updateSchedule: async (id, patch) =>
       call('update-schedule', { id: scheduleId(id), body: patch }, parseWireSchedule),
-    editSchedule: async (id, body) => call('edit-schedule', { id: scheduleId(id), body }, parseWireEditScheduleResult),
+    editSchedule: async (id, body) => {
+      if (body.settings !== undefined) {
+        requireFeature((await connect()).features, 'schedule.update');
+        await requireLaneSupport(body.settings);
+      }
+      return call('edit-schedule', { id: scheduleId(id), body }, parseWireEditScheduleResult);
+    },
     removeSchedule: async (id) => send('remove-schedule', { id: scheduleId(id) }),
   };
 }

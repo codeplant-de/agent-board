@@ -14,6 +14,7 @@ import {
 import type { Backend, Schedule, ServerFeature, Task, TaskDraft } from '@agent-board/shared';
 import { errorText, oneLine } from '../output/text.mts';
 import { cliVersion } from '../self/version.mts';
+import { withScheduleSettings } from './schedule-settings.mts';
 import type { WebConfig } from './web-config.mts';
 
 const REQUEST_TIMEOUT_MS = 45_000;
@@ -259,7 +260,9 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
       print(`DRY edit-schedule ${id} ${oneLine(JSON.stringify(edit), 160)}`);
       const found = (await inner.listSchedules()).find((schedule) => schedule.id === id);
       if (!found) throw new BackendError(`edit-schedule: no schedule ${id.slice(0, 40)}`, 404);
-      return { schedule: { ...found, ...edit }, pending: 'none' };
+      const { settings, ...text } = edit;
+      const edited = { ...found, ...text };
+      return { schedule: settings === undefined ? edited : withScheduleSettings(edited, settings), pending: 'none' };
     },
     async removeSchedule(id) {
       print(`DRY remove-schedule ${id}`);

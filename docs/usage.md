@@ -266,15 +266,31 @@ The confirmation names the schedule and says its first task is made when a task 
 
 **Managing schedules.**
 
-| Command                               | Effect                                                                                                                  |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `board schedules`                     | Lists id, rule, next run, runs left including the pending one, state, `max N` when limited, and title.                  |
-| `board schedules pause <id>`          | Takes the pending card off the board and stops the schedule.                                                            |
-| `board schedules resume <id>`         | Makes the next card, at the first run on the rule from now.                                                             |
-| `board schedules rm <id>`             | Deletes the schedule and its pending card. Cards that already ran stay.                                                 |
-| `board schedules edit <id> <text...>` | Changes the prompt, see below. `-` reads stdin, `--file <path>` a file in `/tmp`, `--title <title>` sets the title too. |
+| Command                               | Effect                                                                                                                                   |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `board schedules`                     | Lists id, rule, next run, runs left including the pending one, state, `max N` when limited, and title.                                   |
+| `board schedules pause <id>`          | Takes the pending card off the board and stops the schedule.                                                                             |
+| `board schedules resume <id>`         | Makes the next card, at the first run on the rule from now.                                                                              |
+| `board schedules rm <id>`             | Deletes the schedule and its pending card. Cards that already ran stay.                                                                  |
+| `board schedules edit <id> [text...]` | Changes the prompt and the settings, see below. `-` reads stdin, `--file <path>` a file in `/tmp`, `--title <title>` sets the title too. |
 
 `edit` keeps the current title without `--title`. Every later run takes the new text. The pending card takes it too while it waits in Todo and no worker has claimed it, and the command says which of three happened, in the web's words: "The pending card was updated too", "The pending card has already started; the change applies from the next run", or "The schedule has no pending card; its next run takes the change". An ended schedule is refused, and the old text is not kept. `edit` needs the server feature `prompt.edit`.
+
+`edit` changes every setting that the Edit schedule dialog on the board changes. The text is optional then, and what a flag leaves out stays as the schedule has it.
+
+| Flag                                                                             | Sets                                                                                                                                                                                                              |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--priority <p>`, `--model <m>`                                                  | Priority and model (`--model default` for claude's default).                                                                                                                                                      |
+| `--lane <name>`                                                                  | The lane of the machine that runs the tasks; `default` is that machine's default lane. Needs the server feature `task.lane` besides `schedule.update`.                                                            |
+| `--auto-done on\|off`                                                            | Whether the agent may move the cards to Done itself.                                                                                                                                                              |
+| `--agent <name>`                                                                 | The agent, from this machine's `config.json` when the schedule runs here; `none` clears it.                                                                                                                       |
+| `--dir <path>`                                                                   | Pins the schedule to this machine and that directory, which must be listed in `board dirs` (as `board task <id> set dir` does); `none` is no machine and no directory.                                            |
+| `--every <duration>`, `--cron <expr>`, `--after <schedule> [--delay <duration>]` | The repeat; give at most one, and it replaces the old repeat. `--cron` can be given up to 10 times, in this machine's time zone. `--delay` alone changes the delay of a schedule that already runs after another. |
+| `--in <duration>`, `--at <time>`                                                 | The first run of a schedule with a rule of its own.                                                                                                                                                               |
+| `--times <n>`, `--until <time>`, `--forever`                                     | The end: `n` runs left (the pending card included, as the dialog counts), a time, or never. Give one; it replaces the other.                                                                                      |
+| `--max-concurrent <n\|none>`                                                     | At most this many cards of the schedule running or waiting at once.                                                                                                                                               |
+
+The command says what changed ("s1b2c3d4 updated: priority high, repeat every 6h"), and what became of the pending card: besides the three above, "The pending card was removed; the next one is made when a card of the schedule it runs after finishes" and "A card now waits for the schedule's next run". Settings that are already as asked change nothing: "<id> already has these settings". The setting flags need the server feature `schedule.update`; a title and prompt alone still work against a server with `prompt.edit`.
 
 `pause`, `resume`, `rm` and `edit` are refused inside a board run, like `board schedule`.
 
@@ -286,7 +302,7 @@ The **Schedules** page of the web board lists each schedule with its title and p
 
 Every later run takes the change. The pending card takes the prompt, title, agent, directory, priority, model, lane and auto-done too while it waits in Todo and no worker has claimed it. It moves to the new next run when the repeat, the first run or the end changed; saving a new title alone leaves its start time alone. A card a worker started, a closed one, and cards that already ran keep what they had. The page says what happened to the pending card: "The pending card was updated too", "The pending card has already started; the change applies from the next run", "The schedule has no pending card; its next run takes the change" (a paused schedule has none, and stays paused), "The pending card was removed; the next one is made when a card of the schedule it runs after finishes" (a rule of its own became **Run after**; a card that was started stays), or "A card now waits for the schedule's next run" (**Run after** became a rule of its own). A rule that would never run before the schedule's end is refused and nothing changes. The old text is not kept: a schedule has no thread.
 
-The CLI changes only the prompt and title of a schedule (`board schedules edit`); for anything else delete the schedule and make a new one.
+`board schedules edit` changes the same settings from a terminal, see [Managing schedules](#repeating-schedules).
 
 A schedule that runs after another shows "after <title>" and its delay, and "waits for <title>" where the next run would be. The page shows the id when it cannot find or read the other schedule.
 

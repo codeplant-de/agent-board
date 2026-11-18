@@ -7,6 +7,7 @@ import type { TaskFile, TaskFileStore } from '../../dispatch/task-files.mts';
 import type { UpdateState } from '../../self/update-state.mts';
 import type { WaitCheck, WaitStore } from '../../dispatch/waits.mts';
 import { BackendError } from '../../backend/backend.mts';
+import { withScheduleSettings } from '../../backend/schedule-settings.mts';
 import {
   API_VERSION,
   LEGACY_CONTRACT,
@@ -557,12 +558,24 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       const found = state.schedules.find((s) => s.id === id);
       if (!found) throw new BackendError(`no schedule ${id}`, 404);
       if (found.ended) throw new BackendError('The schedule has ended.', 409);
+      const { settings, ...text } = edit;
       state.writes.push(`edit-schedule ${id}: ${edit.title} | ${edit.input}`);
-      Object.assign(found, edit);
+      if (settings !== undefined) state.writes.push(`edit-schedule ${id} settings: ${JSON.stringify(settings)}`);
+      const wasAfter = found.after !== null;
+      Object.assign(found, text, settings === undefined ? {} : withScheduleSettings(found, settings));
       const card = state.tasks.find((t) => t.id === found.occurrenceTaskId);
+      if (settings !== undefined && 'after' in settings.repeat && !wasAfter && card !== undefined) {
+        state.tasks = state.tasks.filter((t) => t !== card);
+        found.occurrenceTaskId = null;
+        return { schedule: { ...found }, pending: 'removed' };
+      }
+      if (settings !== undefined && !('after' in settings.repeat) && wasAfter && card === undefined) {
+        found.occurrenceTaskId = `${found.id}-next`;
+        return { schedule: { ...found }, pending: 'created' };
+      }
       if (card === undefined) return { schedule: { ...found }, pending: 'none' };
       const editable = card.status === 'todo' && !card.closed && card.lastActiveAt === null && card.sessionId === null;
-      if (editable) Object.assign(card, edit);
+      if (editable) Object.assign(card, text);
       return { schedule: { ...found }, pending: editable ? 'updated' : 'started' };
     },
     async removeSchedule(id) {

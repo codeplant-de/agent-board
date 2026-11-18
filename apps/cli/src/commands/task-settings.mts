@@ -170,7 +170,10 @@ export async function setAutoDone(deps: TaskSettingsDeps, id: string, value: str
 }
 
 // What a typed path means: relative to the working directory, `~` expanded; it must be there and, with a `dirs` list, listed.
-function chosenDirectory(deps: TaskSettingsDeps, path: string | undefined): string {
+export function chosenDirectory(
+  deps: Pick<TaskSettingsDeps, 'machine' | 'dirs' | 'cwd'>,
+  path: string | undefined,
+): string {
   const wanted = path === undefined ? deps.cwd : resolve(deps.cwd, expandHome(path));
   const real = tryRealpath(wanted);
   if (real === undefined || !isDirectory(real)) throw new UsageError(`${plainLine(wanted)} is not a directory`);

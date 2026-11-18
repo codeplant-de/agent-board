@@ -451,8 +451,9 @@ export interface Backend {
   // The user's new title and prompt for a task of theirs that has not started (the board refuses with 409 otherwise); the
   // old text stays in a note of the user's on the task. Only the user's own CLI calls this, never a run.
   editPrompt(id: string, edit: PromptEdit): Promise<Task>;
-  // The user's new title and prompt for a schedule: every later run takes them, and the pending card too while it has not started.
-  editSchedule(id: string, edit: PromptEdit): Promise<EditScheduleResult>;
+  // The user's new title and prompt for a schedule, and with `settings` every other setting too: every later run takes them,
+  // and the pending card too while it has not started.
+  editSchedule(id: string, edit: ScheduleEdit): Promise<EditScheduleResult>;
   // Moves a todo task to running for `machine`; undefined when another caller got it first or it is pinned elsewhere.
   claimTask(id: string, machine: string): Promise<Task | undefined>;
   // A `suggestion` (agent comments only) is the reply the user will most likely send next; a `polish` note is a rewritten prompt.
@@ -634,9 +635,50 @@ export interface PromptEdit {
   input: string;
 }
 
-// What an edit of a schedule did to its pending card: changed too, already started, or there is none.
-export type PendingCardOutcome = 'updated' | 'started' | 'none';
-export const PENDING_CARD_OUTCOMES: readonly PendingCardOutcome[] = ['updated', 'started', 'none'];
+// What an edit of a schedule did to its pending card: changed too, already started, or there is none. Only an edit with
+// `settings` can remove the card (the schedule now runs after another) or create one (it no longer does).
+export type PendingCardOutcome = 'updated' | 'started' | 'none' | 'removed' | 'created';
+export const PENDING_CARD_OUTCOMES: readonly PendingCardOutcome[] = [
+  'updated',
+  'started',
+  'none',
+  'removed',
+  'created',
+];
+
+// The repeat of a schedule edit: an interval, cron expressions (the first and up to nine more) in a time zone, or running
+// after another schedule.
+export type ScheduleRepeat =
+  | { everyMs: number }
+  | { cron: string; moreCrons?: string[]; timezone: string }
+  | { after: { scheduleId: string; delayMs: number } };
+
+// Every setting of a schedule besides title and prompt, as the user edits them: the edit replaces all of them.
+export interface ScheduleSettings {
+  // The agent by name; absent is none.
+  agent?: string;
+  // The machine and directory the occurrences run in; null is no machine and no directory.
+  place: { machine: string; workdir: string } | null;
+  priority: Priority;
+  // A model name; null is claude's default.
+  model: string | null;
+  // A lane name (`isSafeLane`); null is the default lane. Absent keeps the schedule's. Needs the `task.lane` feature.
+  lane?: string | null;
+  autoDone: boolean;
+  repeat: ScheduleRepeat;
+  // The first run of a rule of its own; absent keeps the schedule's.
+  at?: Date;
+  // Runs the schedule still has, the pending card included; null is forever. Not with `until`.
+  runsLeft: number | null;
+  until: Date | null;
+  // At most this many cards under way at once (1 to 100); null is no limit.
+  maxConcurrent: number | null;
+}
+
+// A new title and prompt for a schedule, and with `settings` a replacement of every other setting too.
+export interface ScheduleEdit extends PromptEdit {
+  settings?: ScheduleSettings;
+}
 
 export interface EditScheduleResult {
   schedule: Schedule;
@@ -650,8 +692,17 @@ export interface WirePromptEdit {
   previous: WireNoteInput;
 }
 
-// The body of edit-schedule: the title and prompt sealed under the schedule.
-export type WireScheduleEdit = Omit<WirePromptEdit, 'previous'>;
+// The settings of an edit-schedule body: the agent and the directory are sealed under the schedule, with the title and prompt.
+export type WireScheduleSettings = Omit<ScheduleSettings, 'agent' | 'place'> & {
+  agent?: string;
+  place: { machine: string; workdir: string } | null;
+};
+
+// The body of edit-schedule: the title and prompt sealed under the schedule, and optionally `settings` (a full replacement
+// of every other setting, which needs the `schedule.update` feature).
+export interface WireScheduleEdit extends Omit<WirePromptEdit, 'previous'> {
+  settings?: WireScheduleSettings;
+}
 
 export interface WireEditScheduleResult {
   schedule: WireSchedule;
@@ -1081,8 +1132,8 @@ function count(obj: Record<string, unknown>, key: string, what: string): number 
   return value;
 }
 
-function nullablePositiveInt(obj: Record<string, unknown>, key: string, what: string): number | null {
-  return obj[key] === null ? null : positiveInt(obj, key, what);
+function nullablePositiveInt(obj: Record<string, unknown>, key: string, what: string, max?: number): number | null {
+  return obj[key] === null ? null : positiveInt(obj, key, what, max);
 }
 
 function boolean(obj: Record<string, unknown>, key: string, what: string): boolean {
@@ -1701,11 +1752,11 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
 }
 
 // The `moreCrons` of a draft: expressions as the browser and the CLI send them, which the server reads with croner afterwards.
-function draftCronList(value: unknown): string[] {
+function draftCronList(value: unknown, what: string): string[] {
   if (!Array.isArray(value) || !value.every((entry): entry is string => typeof entry === 'string'))
-    throw new ContractError('schedule draft.moreCrons must be a list of strings');
+    throw new ContractError(`${what}.moreCrons must be a list of strings`);
   if (value.length > MAX_SCHEDULE_CRONS - 1)
-    throw new ContractError(`schedule draft.moreCrons holds at most ${MAX_SCHEDULE_CRONS - 1} expressions`);
+    throw new ContractError(`${what}.moreCrons holds at most ${MAX_SCHEDULE_CRONS - 1} expressions`);
   return value;
 }
 
@@ -1765,7 +1816,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   } else if ('timezone' in obj) throw new ContractError('schedule draft.timezone only goes with cron');
   if ('moreCrons' in obj) {
     if (!('cron' in obj)) throw new ContractError('schedule draft.moreCrons only goes with cron');
-    draft.moreCrons = draftCronList(obj['moreCrons']);
+    draft.moreCrons = draftCronList(obj['moreCrons'], 'schedule draft');
   }
   if ('after' in obj) {
     if ('startAt' in obj) throw new ContractError('schedule draft.startAt does not go with after');
@@ -1846,13 +1897,81 @@ export function parseWirePromptEdit(value: unknown): WirePromptEdit {
   };
 }
 
-// Body of edit-schedule: the sealed title and prompt.
+function parseScheduleRepeat(value: unknown, what: string): ScheduleRepeat {
+  const obj = record(value, what);
+  const rules = ['everyMs', 'cron', 'after'].filter((key) => key in obj);
+  if (rules.length !== 1) throw new ContractError(`${what} needs exactly one of everyMs, cron and after`);
+  if ('everyMs' in obj) {
+    rejectUnknownKeys(obj, ['everyMs'], what);
+    return { everyMs: positiveInt(obj, 'everyMs', what, MAX_INTERVAL_MS) };
+  }
+  if ('cron' in obj) {
+    rejectUnknownKeys(obj, ['cron', 'moreCrons', 'timezone'], what);
+    const timezone = string(obj, 'timezone', what);
+    if (timezone === '') throw new ContractError(`${what}.timezone must not be empty`);
+    return {
+      cron: string(obj, 'cron', what),
+      ...('moreCrons' in obj ? { moreCrons: draftCronList(obj['moreCrons'], what) } : {}),
+      timezone,
+    };
+  }
+  rejectUnknownKeys(obj, ['after'], what);
+  const after = record(obj['after'], `${what}.after`);
+  rejectUnknownKeys(after, ['scheduleId', 'delayMs'], `${what}.after`);
+  return {
+    after: {
+      scheduleId: safeId(string(after, 'scheduleId', `${what}.after`), `${what}.after.scheduleId`),
+      delayMs: draftDelayMs(after, `${what}.after`),
+    },
+  };
+}
+
+function parseWireScheduleSettings(value: unknown, what: string): WireScheduleSettings {
+  const obj = record(value, what);
+  rejectUnknownKeys(
+    obj,
+    ['agent', 'place', 'priority', 'model', 'lane', 'autoDone', 'repeat', 'at', 'runsLeft', 'until', 'maxConcurrent'],
+    what,
+  );
+  let place: WireScheduleSettings['place'] = null;
+  if (obj['place'] !== null) {
+    const placeObj = record(obj['place'], `${what}.place`);
+    rejectUnknownKeys(placeObj, ['machine', 'workdir'], `${what}.place`);
+    const machine = string(placeObj, 'machine', `${what}.place`);
+    if (!isSafeMachineName(machine)) throw new ContractError(`${what}.place.machine is not a safe name`);
+    place = { machine, workdir: sealedField(placeObj, 'workdir', `${what}.place`, 'workdir') };
+  }
+  const settings: WireScheduleSettings = {
+    place,
+    priority: member(obj, 'priority', what, PRIORITIES),
+    model: obj['model'] === null ? null : modelName(obj, what),
+    autoDone: boolean(obj, 'autoDone', what),
+    repeat: parseScheduleRepeat(obj['repeat'], `${what}.repeat`),
+    runsLeft: nullablePositiveInt(obj, 'runsLeft', what, MAX_INT32),
+    until: nullableDate(obj, 'until', what),
+    maxConcurrent:
+      obj['maxConcurrent'] === null ? null : positiveInt(obj, 'maxConcurrent', what, MAX_SCHEDULE_CONCURRENT),
+  };
+  if ('agent' in obj) settings.agent = sealedField(obj, 'agent', what, 'agent');
+  if ('lane' in obj) settings.lane = obj['lane'] === null ? null : laneName(obj, what);
+  if ('at' in obj) {
+    if ('after' in settings.repeat)
+      throw new ContractError(`${what}.at does not go with a repeat after another schedule`);
+    settings.at = date(obj, 'at', what);
+  }
+  if (settings.runsLeft !== null && settings.until !== null)
+    throw new ContractError(`${what}.runsLeft and ${what}.until exclude each other`);
+  return settings;
+}
+
+// Body of edit-schedule: the sealed title and prompt, and optionally `settings`, which replace every other setting.
 export function parseWireScheduleEdit(value: unknown): WireScheduleEdit {
   const obj = record(value, 'schedule edit');
-  rejectUnknownKeys(obj, ['title', 'input'], 'schedule edit');
+  rejectUnknownKeys(obj, ['title', 'input', 'settings'], 'schedule edit');
   return {
     title: sealedField(obj, 'title', 'schedule edit', 'title'),
     input: sealedField(obj, 'input', 'schedule edit', 'input'),
+    ...('settings' in obj ? { settings: parseWireScheduleSettings(obj['settings'], 'schedule edit.settings') } : {}),
   };
 }
 
