@@ -54,6 +54,21 @@ test('a catalogue document parses back to the catalogue', () => {
   assert.deepEqual(parseMachineCatalog({}), { models: [], skills: [], dirs: {} });
 });
 
+test('the lane names of a machine are part of the document, in order, and are checked when it is read', () => {
+  const withLanes = { ...CATALOG, lanes: ['general', 'reviews'] };
+  assert.ok(machineCatalogJson(withLanes).endsWith(',"lanes":["general","reviews"]}'));
+  assert.deepEqual(parseMachineCatalog(JSON.parse(machineCatalogJson(withLanes))), withLanes);
+  assert.equal(machineCatalogJson({ ...CATALOG, lanes: [] }), machineCatalogJson(CATALOG), 'none leaves the key out');
+  assert.deepEqual(parseMachineCatalog({ lanes: ['ok', 'not a lane', 3, 'x;y', 'fine-2'] })?.lanes, ['ok', 'fine-2']);
+  assert.equal(parseMachineCatalog({ lanes: 'general' }), undefined);
+  assert.equal(parseMachineCatalog({ lanes: Array.from({ length: 21 }, (_, i) => `l${i}`) }), undefined);
+  assert.equal(
+    catalogProblem({ ...CATALOG, lanes: Array.from({ length: 21 }, (_, i) => `l${i}`) }),
+    'more than 20 lanes',
+  );
+  assert.match(catalogProblem({ ...CATALOG, lanes: ['not a lane'] }) ?? '', /not of its shape/);
+});
+
 test('a document of another shape or over a cap is unreadable', () => {
   for (const bad of [
     null,
@@ -118,4 +133,32 @@ test('a catalogue the board would not take has a problem, one it takes has none'
   assert.match(catalogProblem({ ...CATALOG, dirs: { relative: [{ name: 'a' }] } }) ?? '', /not of its shape/);
   assert.match(catalogProblem({ ...CATALOG, dirs: { '/a': [] } }) ?? '', /not of its shape/);
   assert.match(catalogProblem({ ...CATALOG, claude: '' }) ?? '', /not of its shape/);
+});
+
+test('the agents part carries the applied version, a hash per agent and the replaced names, and loses only itself when broken', () => {
+  const hash = 'a'.repeat(64);
+  const catalog: MachineCatalog = {
+    models: [],
+    skills: [],
+    dirs: {},
+    agents: { version: 3, hashes: { writer: hash, reviewer: hash }, replaced: ['writer'] },
+  };
+  assert.equal(catalogProblem(catalog), undefined);
+  const json = machineCatalogJson(catalog);
+  assert.match(json, /"agents":\{"version":3,"hashes":\{"reviewer":"a+","writer":"a+"\},"replaced":\["writer"\]\}/);
+  assert.deepEqual(parseMachineCatalog(JSON.parse(json))?.agents, {
+    version: 3,
+    hashes: { reviewer: hash, writer: hash },
+    replaced: ['writer'],
+  });
+  const kept = parseMachineCatalog({
+    models: [],
+    agents: { version: null, hashes: { ok: hash, 'Bad Name': hash, short: 'abc' }, replaced: ['ok', 7] },
+  });
+  assert.deepEqual(kept?.agents, { version: null, hashes: { ok: hash }, replaced: ['ok'] });
+  assert.equal(
+    parseMachineCatalog({ models: [], agents: { version: 0, hashes: {}, replaced: [] } })?.agents,
+    undefined,
+  );
+  assert.ok(parseMachineCatalog({ models: [], agents: 'x' }) !== undefined, 'a broken agents part loses only itself');
 });

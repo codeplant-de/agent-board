@@ -64,6 +64,7 @@ export const taskRowSchema = z.object({
   status: z.enum(taskStatus.enumValues).default('todo'),
   priority: z.enum(taskPriority.enumValues).default('normal'),
   model: nullable(z.string().refine(isModelName, 'not a model name')),
+  requestedLane: nullable(machineName),
   autoDone: z.boolean().default(false),
   movedBy: nullable(z.enum(taskActor.enumValues)),
   position: z.number().finite(),
@@ -110,6 +111,7 @@ const scheduleRowShape = z.object({
   input: sealed('input', 'input'),
   priority: z.enum(taskPriority.enumValues).default('normal'),
   model: nullable(z.string().refine(isModelName, 'not a model name')),
+  requestedLane: nullable(machineName),
   autoDone: z.boolean().default(false),
   machine: nullable(machineName),
   workdir: nullable(sealed('workdir', 'workdir')),
@@ -214,6 +216,13 @@ export const machineRowSchema = z.object({
   usage: nullable(sealed('machine.usage', 'usage')),
   usageIndex: nullable(blindIndex('usageIndex')),
   usageUpdatedAt: nullable(timestamp),
+});
+
+/** The version is in the binding of the document, so it comes in as it was; a board that has its own keeps it. */
+export const sharedAgentsRowSchema = z.object({
+  version: z.number().int().min(1).max(MAX_INT32),
+  document: sealed('agents.shared', 'document'),
+  pushedAt: timestamp,
 });
 
 export const transcriptRunRowSchema = z.object({

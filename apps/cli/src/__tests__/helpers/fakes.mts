@@ -7,6 +7,7 @@ import type { TaskFile, TaskFileStore } from '../../dispatch/task-files.mts';
 import type { UpdateState } from '../../self/update-state.mts';
 import type { WaitCheck, WaitStore } from '../../dispatch/waits.mts';
 import { BackendError } from '../../backend/backend.mts';
+import { withScheduleSettings } from '../../backend/schedule-settings.mts';
 import {
   API_VERSION,
   LEGACY_CONTRACT,
@@ -31,6 +32,7 @@ import type {
   MachineCatalog,
   MachineDir,
   MachineUsage,
+  SharedAgentsOnBoard,
   Note,
   Schedule,
   Task,
@@ -46,6 +48,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     status: 'todo',
     priority: 'normal',
     model: null,
+    requestedLane: null,
     autoDone: false,
     closed: false,
     machine: null,
@@ -77,7 +80,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
 
 export const CONFIG: Config = {
   machine: 'here',
-  lanes: [{ name: 'general', skills: ['*'], slots: 2 }],
+  lanes: [{ name: 'general', slots: 2, default: true }],
   defaultCwd: '/home/me',
   pauseAfterMinutes: 5,
   inactivityMinutes: 15,
@@ -94,6 +97,7 @@ export function schedule(overrides: Partial<Schedule> & { id: string }): Schedul
     input: '/sweep',
     priority: 'normal',
     model: null,
+    requestedLane: null,
     autoDone: false,
     machine: null,
     workdir: null,
@@ -133,6 +137,15 @@ export interface FakeBackend extends Backend {
   boardCatalog: { supported: boolean; held: MachineCatalog | undefined; failure: Error | undefined };
   // The same for the usage status.
   boardUsage: { supported: boolean; held: MachineUsage | undefined; failure: Error | undefined };
+  // The shared agent definitions the board holds: the document, or a version that does not open; `reported` is the version
+  // the `version` answer names, which a lying server can set apart from what it serves.
+  boardAgents: {
+    supported: boolean;
+    held: SharedAgentsOnBoard;
+    reported?: number | null;
+    // Pushes that fail with 409 before the next one goes through, as if another CLI pushed in between.
+    conflicts: number;
+  };
 }
 
 function parseFirstLine(input: string): string {
@@ -165,6 +178,27 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     boardDirs: { supported: true, held: undefined, failure: undefined },
     boardCatalog: { supported: true, held: undefined, failure: undefined },
     boardUsage: { supported: true, held: undefined, failure: undefined },
+    boardAgents: { supported: true, held: null, conflicts: 0 },
+    async sharedAgentsVersion() {
+      if (!state.boardAgents.supported) return 'unsupported';
+      const { held, reported } = state.boardAgents;
+      return reported !== undefined ? reported : (held?.version ?? null);
+    },
+    async getSharedAgents() {
+      if (!state.boardAgents.supported) throw new BackendError('get-agents: not supported', 404, true);
+      return structuredClone(state.boardAgents.held);
+    },
+    async setSharedAgents(document, expectedVersion) {
+      if (!state.boardAgents.supported) throw new BackendError('set-agents: not supported', 404, true);
+      const current = state.boardAgents.held?.version ?? 0;
+      if (state.boardAgents.conflicts > 0 || current !== expectedVersion) {
+        state.boardAgents.conflicts = Math.max(0, state.boardAgents.conflicts - 1);
+        throw new BackendError(`set-agents: the board holds version ${current}`, 409, true);
+      }
+      state.writes.push(`agents v${document.version}: ${Object.keys(document.agents).sort().join(',')}`);
+      state.boardAgents.held = { version: document.version, document: structuredClone(document) };
+      delete state.boardAgents.reported;
+    },
     async listTasks({ all = false } = {}) {
       return state.tasks.filter((t) => all || !t.closed).map(asBoardShows);
     },
@@ -204,11 +238,22 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         return keyed === undefined ? parseFirstLine(candidate.input).includes(dedupeKey) : keyed === dedupeKey;
       });
       if (existing) return { task: asBoardShows(existing), created: false };
-      const { dedupeKey: _key, parentId: _parent, createdBy, machine, workdir, head, notBefore, ...fields } = draft;
+      const {
+        dedupeKey: _key,
+        parentId: _parent,
+        createdBy,
+        machine,
+        workdir,
+        head,
+        notBefore,
+        lane,
+        ...fields
+      } = draft;
       return {
         task: task({
           id: 'new',
           ...fields,
+          requestedLane: lane ?? null,
           createdBy: createdBy ?? 'user',
           machine: machine ?? null,
           workdir: workdir ?? null,
@@ -240,18 +285,24 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     async configureTask(id, change) {
       const found = state.tasks.find((t) => t.id === id);
       if (!found) throw new BackendError(`configure-task: no task ${id}`, 404, true);
-      const { priority, model, autoDone, place } = change;
+      const { priority, model, lane, autoDone, place } = change;
+      if (lane !== undefined && found.status === 'running') {
+        state.writes.push(`configure ${id} refused: running`);
+        throw new BackendError('the task is running: it keeps its lane until its next start.', 409, true);
+      }
       if (place !== undefined && (found.status === 'running' || found.status === 'waiting')) {
         state.writes.push(`configure ${id} refused: ${found.status}`);
         throw new BackendError(`the task is ${found.status}. Stop it first, then move it.`, 409, true);
       }
       if (priority !== undefined) state.writes.push(`priority ${id}: ${priority}`);
       if (model !== undefined) state.writes.push(`model ${id}: ${model ?? 'default'}`);
+      if (lane !== undefined) state.writes.push(`lane ${id}: ${lane ?? 'default'}`);
       if (autoDone !== undefined) state.writes.push(`auto-done ${id}: ${autoDone ? 'on' : 'off'}`);
       if (place !== undefined) state.writes.push(`place ${id}: ${place === null ? 'none' : place.workdir}`);
       Object.assign(found, {
         ...(priority === undefined ? {} : { priority }),
         ...(model === undefined ? {} : { model }),
+        ...(lane === undefined ? {} : { requestedLane: lane }),
         ...(autoDone === undefined ? {} : { autoDone }),
         ...(place === undefined
           ? {}
@@ -483,7 +534,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         `add-schedule ${draft.title} | ${draft.input} | ${draft.everyMs ?? (draft.after ? 'after' : `${draft.cron} ${draft.timezone}`)}` +
           `${draft.startAt ? ` | start ${draft.startAt.toISOString()}` : ''}${draft.times ? ` | times ${draft.times}` : ''}` +
           `${draft.until ? ` | until ${draft.until.toISOString()}` : ''}${draft.machine ? ` | ${draft.machine}:${draft.workdir}` : ''}` +
-          `${draft.model ? ` | model ${draft.model}` : ''}${draft.agent ? ` | agent ${draft.agent}` : ''}${draft.autoDone ? ' | auto-done' : ''}` +
+          `${draft.model ? ` | model ${draft.model}` : ''}${draft.lane ? ` | lane ${draft.lane}` : ''}${draft.agent ? ` | agent ${draft.agent}` : ''}${draft.autoDone ? ' | auto-done' : ''}` +
           `${draft.moreCrons ? ` | more ${draft.moreCrons.join(' ; ')}` : ''}` +
           `${draft.after ? ` | after ${draft.after.scheduleId} +${draft.after.delayMs ?? 0}` : ''}` +
           `${draft.maxConcurrent ? ` | max ${draft.maxConcurrent}` : ''}`,
@@ -495,6 +546,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
             title: draft.title,
             input: draft.input,
             model: draft.model ?? null,
+            requestedLane: draft.lane ?? null,
             autoDone: draft.autoDone ?? false,
             agent: draft.agent ?? null,
             machine: draft.machine ?? null,
@@ -507,6 +559,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         title: draft.title,
         input: draft.input,
         model: draft.model ?? null,
+        requestedLane: draft.lane ?? null,
         autoDone: draft.autoDone ?? false,
         agent: draft.agent ?? null,
         everyMs: draft.everyMs ?? null,
@@ -536,12 +589,24 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       const found = state.schedules.find((s) => s.id === id);
       if (!found) throw new BackendError(`no schedule ${id}`, 404);
       if (found.ended) throw new BackendError('The schedule has ended.', 409);
+      const { settings, ...text } = edit;
       state.writes.push(`edit-schedule ${id}: ${edit.title} | ${edit.input}`);
-      Object.assign(found, edit);
+      if (settings !== undefined) state.writes.push(`edit-schedule ${id} settings: ${JSON.stringify(settings)}`);
+      const wasAfter = found.after !== null;
+      Object.assign(found, text, settings === undefined ? {} : withScheduleSettings(found, settings));
       const card = state.tasks.find((t) => t.id === found.occurrenceTaskId);
+      if (settings !== undefined && 'after' in settings.repeat && !wasAfter && card !== undefined) {
+        state.tasks = state.tasks.filter((t) => t !== card);
+        found.occurrenceTaskId = null;
+        return { schedule: { ...found }, pending: 'removed' };
+      }
+      if (settings !== undefined && !('after' in settings.repeat) && wasAfter && card === undefined) {
+        found.occurrenceTaskId = `${found.id}-next`;
+        return { schedule: { ...found }, pending: 'created' };
+      }
       if (card === undefined) return { schedule: { ...found }, pending: 'none' };
       const editable = card.status === 'todo' && !card.closed && card.lastActiveAt === null && card.sessionId === null;
-      if (editable) Object.assign(card, edit);
+      if (editable) Object.assign(card, text);
       return { schedule: { ...found }, pending: editable ? 'updated' : 'started' };
     },
     async removeSchedule(id) {

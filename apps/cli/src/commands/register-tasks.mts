@@ -492,9 +492,16 @@ export function registerTaskCommands(shared: ProgramShared): void {
         .requiredOption('--file <path>', 'the prompt, a regular file in /tmp')
         .option('--parent <task>', `the task this follows from (${TASK_ARGUMENT})`)
         .option('--priority <priority>', 'urgent, high, normal or low (default normal)')
+        .option(
+          '--lane <name>',
+          "the lane the task asks for once you start it (default: the default lane; it does not inherit this run's lane)",
+        )
         .addHelpText(
           'after',
-          examples('board add --title "Fix the flaky test" --file /tmp/prompt.md --parent Ab3dEf9x'),
+          examples(
+            'board add --title "Fix the flaky test" --file /tmp/prompt.md --parent Ab3dEf9x',
+            'board add --title "Review the fix" --file /tmp/prompt.md --lane reviews',
+          ),
         ),
     ),
   ).action(async (flags: AddFlags & { json?: boolean }, command: Command) => {

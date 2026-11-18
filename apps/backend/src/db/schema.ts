@@ -112,6 +112,8 @@ export const tasks = pgTable(
     priority: taskPriority('priority').notNull().default('normal'),
     /** The Claude model of its runs (a clear choice, not content); null is claude's default. */
     model: text('model'),
+    /** The lane of a machine the user wants the task to run in (routing, clear like the priority); null is the machine's default lane. */
+    requestedLane: text('requested_lane'),
     /** The agent may move the task to Done itself, when it judges every acceptance criterion met (a clear setting, not content). */
     autoDone: boolean('auto_done').notNull().default(false),
     /** Who made the last status change; null for a task that has not changed status since it was created. */
@@ -217,6 +219,8 @@ export const schedules = pgTable(
     priority: taskPriority('priority').notNull().default('normal'),
     /** The model of every occurrence; null is claude's default. */
     model: text('model'),
+    /** The lane every occurrence asks for; null is the machine's default lane. */
+    requestedLane: text('requested_lane'),
     /** Whether every occurrence lets the agent move it to Done itself. */
     autoDone: boolean('auto_done').notNull().default(false),
     machine: text('machine'),
@@ -367,6 +371,26 @@ export const machines = pgTable(
     check('machine_catalog_index_blind', isBlindIndex(t.catalogIndex)),
     check('machine_usage_sealed', isEnvelope(t.usage)),
     check('machine_usage_index_blind', isBlindIndex(t.usageIndex)),
+    tenant(),
+  ],
+).enableRLS();
+
+/**
+ * The agent definitions the user pushed for every machine (`board agents push`): one sealed document of all of them per user,
+ * bound to its version (`agents.shared`, context `agents:v<version>`). The version is clear so that a machine's tick can tell
+ * from the `version` answer whether it has to fetch the document; it only goes up, one per push.
+ */
+export const sharedAgents = pgTable(
+  'shared_agents',
+  {
+    owner: owner().primaryKey(),
+    version: integer('version').notNull(),
+    document: text('document').notNull(),
+    pushedAt: timestamp('pushed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('shared_agents_document_sealed', isEnvelope(t.document)),
+    check('shared_agents_version_positive', sql`${t.version} >= 1`),
     tenant(),
   ],
 ).enableRLS();

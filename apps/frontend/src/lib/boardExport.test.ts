@@ -55,7 +55,7 @@ describe('buildExport', () => {
       prefs: base.prefs,
     });
     const parsed = rows.map(parseExportRowLine);
-    expect(parsed).toHaveLength(21);
+    expect(parsed).toHaveLength(24);
     expect([...new Set(parsed.map(({ table }) => table))]).toEqual([...EXPORT_TABLES]);
     expect(parsed.slice(0, 3).map(({ row }) => row['id'])).toEqual(['task-1', 'task-2', 'task-3']);
     expect(fetchPage).toHaveBeenCalledWith('task', 'more', base.signal);
@@ -74,7 +74,7 @@ describe('buildExport', () => {
     const onProgress = vi.fn();
     await buildExport({ ...base, includeTranscripts: false, fetchPage: pager(), onProgress });
     expect(onProgress.mock.calls[0]).toEqual([{ rows: 0, total: 21 }]);
-    expect(onProgress.mock.calls.at(-1)).toEqual([{ rows: 15, total: 21 }]);
+    expect(onProgress.mock.calls.at(-1)).toEqual([{ rows: 18, total: 21 }]);
   });
 
   it('stops when cancelled and fetches nothing more', async () => {
@@ -97,14 +97,15 @@ describe('export counts and names', () => {
     notes: 3,
     taskPrs: 4,
     machines: 5,
+    sharedAgents: 1,
     transcriptRuns: 6,
     transcriptEvents: 7,
     running: 0,
   };
 
   it('counts the transcript rows only when they are exported', () => {
-    expect(exportRowCount(summary, true)).toBe(28);
-    expect(exportRowCount(summary, false)).toBe(15);
+    expect(exportRowCount(summary, true)).toBe(29);
+    expect(exportRowCount(summary, false)).toBe(16);
     expect(tablesOfExport(false)).not.toContain('transcript_run');
   });
 

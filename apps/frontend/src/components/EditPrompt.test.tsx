@@ -3,18 +3,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BoardTask, Schedule } from '../lib/trpc';
-import { EditSchedulePrompt, EditTaskPrompt } from './EditPrompt';
+import type { BoardTask } from '../lib/trpc';
+import { EditTaskPrompt } from './EditPrompt';
 
 const editTask = vi.hoisted(() => vi.fn(async (_: unknown) => ({})));
-const editSchedule = vi.hoisted(() =>
-  vi.fn(async (_: unknown): Promise<{ pending: 'updated' | 'started' | 'none' }> => ({ pending: 'updated' })),
-);
 
 vi.mock('../lib/trpc', () => ({
   useTRPC: () => ({
     tasks: { edit: { mutationOptions: () => ({ mutationFn: editTask }) } },
-    schedules: { edit: { mutationOptions: () => ({ mutationFn: editSchedule }) } },
   }),
   errorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 }));
@@ -41,9 +37,6 @@ const task = (overrides: Partial<BoardTask> = {}): BoardTask =>
     ...overrides,
   }) as BoardTask;
 
-const schedule = (overrides: Partial<Schedule> = {}): Schedule =>
-  ({ id: 'sched001', title: 'Nightly', input: 'sweep', agent: undefined, unreadable: [], ...overrides }) as Schedule;
-
 function renderWith(ui: React.ReactNode) {
   render(
     <MantineProvider>
@@ -62,7 +55,6 @@ const retype = async (label: string, text: string) => {
 
 beforeEach(() => {
   editTask.mockReset().mockResolvedValue({});
-  editSchedule.mockReset().mockResolvedValue({ pending: 'updated' as const });
 });
 
 describe('EditTaskPrompt', () => {
@@ -124,48 +116,5 @@ describe('EditTaskPrompt', () => {
   it('shows no button for a task that cannot be edited', () => {
     renderWith(<EditTaskPrompt task={task({ started: true })} />);
     expect(screen.queryByRole('button', { name: 'Edit prompt' })).not.toBeInTheDocument();
-  });
-});
-
-describe('EditSchedulePrompt', () => {
-  it('sends the schedule and the new text, then says the pending card was updated', async () => {
-    renderWith(<EditSchedulePrompt schedule={schedule()} onClose={() => undefined} />);
-    expect(screen.getByLabelText('Title')).toHaveValue('Nightly');
-    await retype('Prompt', 'sweep harder');
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(await screen.findByText('The pending card was updated too.')).toBeInTheDocument();
-    expect(editSchedule.mock.calls[0]?.[0]).toMatchObject({
-      schedule: { id: 'sched001', agent: null },
-      title: 'Nightly',
-      input: 'sweep harder',
-    });
-  });
-
-  it('says when the schedule has no pending card', async () => {
-    editSchedule.mockResolvedValue({ pending: 'none' as const });
-    renderWith(<EditSchedulePrompt schedule={schedule()} onClose={() => undefined} />);
-    await retype('Prompt', 'sweep harder');
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(
-      await screen.findByText('The schedule has no pending card; its next run takes the change.'),
-    ).toBeInTheDocument();
-  });
-
-  it('says when the pending card had already started', async () => {
-    editSchedule.mockResolvedValue({ pending: 'started' as const });
-    renderWith(<EditSchedulePrompt schedule={schedule()} onClose={() => undefined} />);
-    await retype('Prompt', 'sweep harder');
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(
-      await screen.findByText('The pending card has already started; the change applies from the next run.'),
-    ).toBeInTheDocument();
-  });
-
-  it('shows an error inline, for example an ended schedule', async () => {
-    editSchedule.mockRejectedValue(new Error('The schedule has ended.'));
-    renderWith(<EditSchedulePrompt schedule={schedule()} onClose={() => undefined} />);
-    await retype('Prompt', 'x');
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(await screen.findByText('The schedule has ended.')).toBeInTheDocument();
   });
 });

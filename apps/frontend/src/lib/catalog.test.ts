@@ -1,6 +1,6 @@
 import type { CatalogSkill, MachineCatalog } from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
-import { acceptSkill, matchSkills, modelsFor, skillCompletion, skillsFor } from './catalog';
+import { acceptSkill, lanesFor, matchSkills, modelsFor, skillCompletion, skillsFor } from './catalog';
 import type { OpenedCatalog } from './opening';
 
 const skill = (name: string, description?: string): CatalogSkill => ({
@@ -27,6 +27,19 @@ const desktop = machine('desktop', {
   dirs: { '/srv': [skill('cron')] },
 });
 const silent = machine('silent', null);
+
+describe('lanesFor', () => {
+  const withLanes = (name: string, lanes: string[]) => machine(name, { lanes });
+
+  it('offers the lanes of every machine once, in the order they were published, or those of the chosen machine', () => {
+    const machines = [withLanes('laptop', ['general', 'reviews']), withLanes('desktop', ['general', 'docs']), silent];
+    expect(lanesFor(machines, undefined)).toEqual(['general', 'reviews', 'docs']);
+    expect(lanesFor(machines, null)).toEqual(['general', 'reviews', 'docs']);
+    expect(lanesFor(machines, 'desktop')).toEqual(['general', 'docs']);
+    expect(lanesFor(machines, 'nowhere')).toEqual([]);
+    expect(lanesFor([laptop], undefined)).toEqual([]);
+  });
+});
 
 describe('skillsFor', () => {
   it('offers a machine its common skills and those of the directory that is the workdir', () => {

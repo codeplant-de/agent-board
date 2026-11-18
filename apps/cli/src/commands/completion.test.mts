@@ -86,8 +86,8 @@ test('task completes its id, then set or unset, then the setting', () => {
     'task-key',
   ]);
   assert.ok(script('bash').includes('compgen -W "set unset"'));
-  assert.ok(script('bash').includes('compgen -W "priority model auto-done dir prompt"'));
-  assert.ok(script('fish').includes("'__board_at 3 task' -a 'priority model auto-done dir prompt'"));
+  assert.ok(script('bash').includes('compgen -W "priority model lane auto-done dir prompt"'));
+  assert.ok(script('fish').includes("'__board_at 3 task' -a 'priority model lane auto-done dir prompt'"));
 });
 
 for (const shell of SHELLS) {
@@ -328,7 +328,7 @@ test('the zsh script completes ids, statuses, schedule actions and files', (cont
   assert.deepEqual(zshOffers(['move', 'Ab3dEf9x', '']), ['backlog', 'todo', 'running', 'waiting', 'needs-me', 'done']);
   assert.deepEqual(zshOffers(['schedules', '']), ['pause', 'resume', 'rm', 'edit']);
   assert.deepEqual(zshOffers(['dirs', '']), ['list', 'add', 'rm', 'set', 'unset']);
-  assert.deepEqual(zshOffers(['dirs', 'set', '']), ['label', 'repo', 'default', 'lane']);
+  assert.deepEqual(zshOffers(['dirs', 'set', '']), ['label', 'repo', 'default', 'lane', 'ciIgnore']);
   assert.deepEqual(zshOffers(['dirs', 'add', '']), []);
   assert.equal(zshOffers(['schedules', 'rm', ''])[0], 'describe ids');
   assert.deepEqual(zshOffers(['schedules', 'stop', '']), [], 'the id of an unknown action is not offered');
@@ -379,7 +379,7 @@ test('the fish script completes ids, statuses, schedule actions and files, and n
   ]);
   assert.deepEqual(fishOffers('board schedules '), ['edit', 'pause', 'resume', 'rm']);
   assert.deepEqual(fishOffers('board dirs '), ['add', 'list', 'rm', 'set', 'unset']);
-  assert.deepEqual(fishOffers('board dirs unset '), ['default', 'label', 'lane', 'repo']);
+  assert.deepEqual(fishOffers('board dirs unset '), ['ciIgnore', 'default', 'label', 'lane', 'repo']);
   assert.deepEqual(fishOffers('board dirs add '), []);
   assert.deepEqual(fishOffers('board schedules rm '), ['Sc1aBcDe\tSweep']);
   assert.deepEqual(fishOffers('board delay Ab3dEf9x --at '), []);

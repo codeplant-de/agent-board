@@ -1,6 +1,9 @@
 // An agent definition as a document of its own, YAML or JSON: what `board agents export` prints, `board agents add` reads
 // and the files of the agents/ directory hold. The keys are those of a config.json `agents` entry plus `name`.
+import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { parse, stringify } from 'yaml';
+import type { AgentConfig } from './config.mts';
 import { ConfigError } from './config-error.mts';
 
 export type AgentFormat = 'yaml' | 'json';
@@ -37,4 +40,38 @@ export function parseAgentDocument(text: string, label: string): unknown {
 export function renderAgentDocument(document: Record<string, unknown>, format: AgentFormat): string {
   if (format === 'json') return `${JSON.stringify(document, null, 2)}\n`;
   return stringify(document, { lineWidth: 0, blockQuote: 'literal' });
+}
+
+/** The shareable document of an agent: its keys in a fixed order, empty optional lists left out. */
+export function agentDocument(name: string, agent: AgentConfig, { withSource = true } = {}): Record<string, unknown> {
+  return {
+    name,
+    ...(agent.version === undefined ? {} : { version: agent.version }),
+    description: agent.description,
+    ...(agent.model === undefined ? {} : { model: agent.model }),
+    tools: agent.tools,
+    allowedTools: agent.allowedTools,
+    disallowedTools: agent.disallowedTools,
+    ...(agent.env.length === 0 ? {} : { env: agent.env }),
+    ...(agent.mcpServers.length === 0 ? {} : { mcpServers: agent.mcpServers }),
+    ...(agent.prompt === undefined ? {} : { prompt: agent.prompt }),
+    ...(withSource && agent.source !== undefined ? { source: agent.source } : {}),
+  };
+}
+
+/** Writes `<dir>/<name>.yaml` beside a temp file and renames it into place, mode 0600; another file for the name goes. */
+export function writeAgentFile(dir: string, name: string, text: string): string {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const target = join(dir, `${name}.yaml`);
+  const temp = join(dir, `.${name}.tmp-${process.pid}`);
+  try {
+    rmSync(temp, { force: true });
+    writeFileSync(temp, text, { mode: 0o600, flag: 'wx' });
+    chmodSync(temp, 0o600);
+    renameSync(temp, target);
+  } finally {
+    rmSync(temp, { force: true });
+  }
+  for (const other of [`${name}.yml`, `${name}.json`]) rmSync(join(dir, other), { force: true });
+  return target;
 }

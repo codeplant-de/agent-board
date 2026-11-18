@@ -2,7 +2,14 @@
 // board as one sealed document (`machine.catalog`, see sealing.mts) so the browser can complete `/skill` and offer the models.
 // It is advice for what a form offers and is never acted on. Everything in it came from a program's output, so every text is
 // cleaned before it is sent and shape-checked again when it is opened.
-import { hasControlCharacter, isModelName, isSafeWorkdir } from './contract.mts';
+import {
+  hasControlCharacter,
+  isAgentName,
+  isModelName,
+  isSafeLane,
+  isSafeWorkdir,
+  isSharedAgentsVersion,
+} from './contract.mts';
 import { isRecord } from './guards.mts';
 
 export interface CatalogModel {
@@ -17,25 +24,41 @@ export interface CatalogSkill {
   argumentHint?: string;
 }
 
+/** What a machine has of the agents: which version of the board's definitions it applied, and the hash of each agent it has. */
+export interface CatalogAgents {
+  // The version of the board's agent definitions the machine applied last; null when it applied none.
+  version: number | null;
+  // `agentHash` of every agent the machine has, wherever it is defined, by name: the browser tells from it who runs what.
+  hashes: Record<string, string>;
+  // The agents whose definition on the machine an apply moved aside for the board's, while the moved file is kept.
+  replaced: string[];
+}
+
 /**
  * `skills` are those every probed directory has; `dirs[path]` are the skills only that directory has (a path with none is
- * left out). With one probed directory everything is in `skills`.
+ * left out). With one probed directory everything is in `skills`. `lanes` are the names of the machine's lanes, for the lane
+ * field of the forms; absent from a CLI that predates them.
  */
 export interface MachineCatalog {
   claude?: string;
   models: CatalogModel[];
   skills: CatalogSkill[];
   dirs: Record<string, CatalogSkill[]>;
+  lanes?: string[];
+  // Absent from a CLI before shared agents.
+  agents?: CatalogAgents;
 }
 
 export const MAX_CATALOG_MODELS = 50;
 export const MAX_CATALOG_SKILLS = 500;
 export const MAX_CATALOG_DIRS = 200;
 export const MAX_CATALOG_DIR_SKILLS = 200;
+export const MAX_CATALOG_LANES = 20;
 export const MAX_CATALOG_VERSION_CHARS = 64;
 export const MAX_CATALOG_LABEL_CHARS = 64;
 export const MAX_CATALOG_DESCRIPTION_CHARS = 200;
 export const MAX_CATALOG_HINT_CHARS = 100;
+export const MAX_CATALOG_AGENTS = 500;
 
 const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/;
 
@@ -90,12 +113,35 @@ function parseModel(entry: unknown): CatalogModel | undefined {
   };
 }
 
+function parseLane(entry: unknown): string | undefined {
+  return typeof entry === 'string' && isSafeLane(entry) ? entry : undefined;
+}
+
 // A list of entries `parse` keeps or drops one by one; undefined when it is not a list or has more than `max` entries.
 function parseList<T>(value: unknown, max: number, parse: (entry: unknown) => T | undefined): T[] | undefined {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > max) return undefined;
   const entries: unknown[] = value;
   return entries.flatMap((entry) => parse(entry) ?? []);
+}
+
+const isHash = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+
+// The agents part of a catalogue: undefined when it is absent or not of its shape, which loses only this part.
+function parseAgents(value: unknown): CatalogAgents | undefined {
+  if (!isRecord(value)) return undefined;
+  const { version, hashes, replaced } = value;
+  if (version !== null && !isSharedAgentsVersion(version)) return undefined;
+  if (!isRecord(hashes) || Object.keys(hashes).length > MAX_CATALOG_AGENTS) return undefined;
+  if (!Array.isArray(replaced) || replaced.length > MAX_CATALOG_AGENTS) return undefined;
+  const names: unknown[] = replaced;
+  return {
+    version,
+    hashes: Object.fromEntries(
+      Object.entries(hashes).flatMap(([name, hash]) => (isAgentName(name) && isHash(hash) ? [[name, hash]] : [])),
+    ),
+    replaced: names.filter((name): name is string => typeof name === 'string' && isAgentName(name)),
+  };
 }
 
 /**
@@ -119,8 +165,18 @@ export function parseMachineCatalog(json: unknown): MachineCatalog | undefined {
     if (list === undefined) return undefined;
     if (list.length > 0) dirs[path] = list;
   }
+  const lanes = parseList(json['lanes'], MAX_CATALOG_LANES, parseLane);
+  if (lanes === undefined) return undefined;
   const claude = optionalText(json['claude'], MAX_CATALOG_VERSION_CHARS);
-  return { ...(claude === undefined ? {} : { claude }), models, skills, dirs };
+  const agents = parseAgents(json['agents']);
+  return {
+    ...(claude === undefined ? {} : { claude }),
+    models,
+    skills,
+    dirs,
+    ...(lanes.length === 0 ? {} : { lanes }),
+    ...(agents === undefined ? {} : { agents }),
+  };
 }
 
 /** The one document a catalogue is sealed as, and the bytes its blind index is made of: known fields only, in a fixed order. */
@@ -139,6 +195,20 @@ export function machineCatalogJson(catalog: MachineCatalog): string {
     })),
     skills: catalog.skills.map(skill),
     dirs: Object.fromEntries(Object.entries(catalog.dirs).map(([path, list]) => [path, list.map(skill)])),
+    ...(catalog.lanes === undefined || catalog.lanes.length === 0 ? {} : { lanes: catalog.lanes }),
+    ...(catalog.agents === undefined
+      ? {}
+      : {
+          agents: {
+            version: catalog.agents.version,
+            hashes: Object.fromEntries(
+              Object.keys(catalog.agents.hashes)
+                .sort()
+                .map((name) => [name, catalog.agents?.hashes[name]]),
+            ),
+            replaced: [...catalog.agents.replaced].sort(),
+          },
+        }),
   });
 }
 
@@ -146,10 +216,13 @@ export function machineCatalogJson(catalog: MachineCatalog): string {
 export function catalogProblem(catalog: MachineCatalog): string | undefined {
   if (catalog.models.length > MAX_CATALOG_MODELS) return `more than ${MAX_CATALOG_MODELS} models`;
   if (catalog.skills.length > MAX_CATALOG_SKILLS) return `more than ${MAX_CATALOG_SKILLS} skills`;
+  if ((catalog.lanes?.length ?? 0) > MAX_CATALOG_LANES) return `more than ${MAX_CATALOG_LANES} lanes`;
   const paths = Object.keys(catalog.dirs);
   if (paths.length > MAX_CATALOG_DIRS) return `more than ${MAX_CATALOG_DIRS} directories`;
   if (paths.some((path) => (catalog.dirs[path]?.length ?? 0) > MAX_CATALOG_DIR_SKILLS))
     return `a directory with more than ${MAX_CATALOG_DIR_SKILLS} skills`;
+  if (catalog.agents !== undefined && Object.keys(catalog.agents.hashes).length > MAX_CATALOG_AGENTS)
+    return `more than ${MAX_CATALOG_AGENTS} agents`;
   // What a round trip through the document keeps is what the board will show; anything it would drop is a mistake of the sender.
   const kept = parseMachineCatalog(JSON.parse(machineCatalogJson(catalog)));
   if (kept === undefined || machineCatalogJson(kept) !== machineCatalogJson(catalog)) {

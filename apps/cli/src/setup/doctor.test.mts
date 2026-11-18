@@ -202,6 +202,29 @@ test('a dirs setting over a different old path is a warning that says the settin
   assert.match(warned[0]?.hint ?? '', /the directory setting is the one that counts/);
 });
 
+test('a lane that still has skills is a warning that says to set default instead, and the config still loads', async () => {
+  const text =
+    '{"machine": "box", "lanes": {"reviews": {"skills": ["review-pr"], "slots": 2}, "general": {"skills": ["*"]}}}';
+  const results = await runChecks(machine({ ...GOOD, [`${CONFIG_DIR}/config.json`]: { text } }));
+  const config = results.filter((result) => result.name === 'config.json');
+  assert.deepEqual(
+    config.map((result) => [result.level, result.message]),
+    [
+      ['ok', 'machine box'],
+      [
+        'warn',
+        'lanes.reviews.skills is ignored: a task\'s lane is set with --lane, and the lane for every other task is the one marked "default": true',
+      ],
+      [
+        'warn',
+        'lanes.general.skills is ignored: a task\'s lane is set with --lane, and the lane for every other task is the one marked "default": true',
+      ],
+    ],
+  );
+  assert.match(config[1]?.hint ?? '', /set "default": true/);
+  assert.equal(hasFailure(results), false);
+});
+
 test('on a system that is neither Linux nor macOS the worker checks are left out and one line says so', async () => {
   const results = await runChecks(
     machine(GOOD, { platform: 'freebsd', whichInUnits: () => undefined, exists: (path) => path in GOOD }),
@@ -540,7 +563,7 @@ test('the dirs list is counted, and a listed directory that is gone or a route n
   const files = withConfig({
     machine: 'box',
     defaultCwd: '/work/app/sub',
-    lanes: { general: { skills: ['*'], cwd: '/work/lane' } },
+    lanes: { general: { default: true, cwd: '/work/lane' } },
     repos: { 'a/b': '/work/repo', 'a/c': '/work/appx' },
     dirs: { '/work/app': {}, '/work/gone': {} },
   });
@@ -643,7 +666,14 @@ test('doctor says whether the board has the catalogue this machine probed, and n
     models: [{ value: 'opus', label: 'Opus' }],
     commands: [{ name: 'review', builtin: false }],
   };
-  const catalog = { claude: '2.1.326', models: result.models, skills: [{ name: 'review' }], dirs: {} };
+  // With the agents part the dispatcher sends: none applied and none defined here.
+  const catalog = {
+    claude: '2.1.326',
+    models: result.models,
+    skills: [{ name: 'review' }],
+    dirs: {},
+    agents: { version: null, hashes: {}, replaced: [] },
+  };
   const serving = (catalogIndex?: string): Partial<DoctorDeps> => ({
     verifyServer: async () => ({
       owner: OWNER,
@@ -891,7 +921,7 @@ test('on macOS checkouts under the protected folders are warned about', async ()
     defaultCwd: `${MAC_HOME}/code`,
     dirs: { [`${MAC_HOME}/Documents/work`]: {}, [`${MAC_HOME}/Library/Mobile Documents/x`]: {} },
     repos: { 'acme/app': `${MAC_HOME}/Downloads/app` },
-    lanes: { desk: { skills: ['*'], slots: 1, cwd: `${MAC_HOME}/Desktop` } },
+    lanes: { desk: { default: true, slots: 1, cwd: `${MAC_HOME}/Desktop` } },
   };
   const results = await runChecks(mac(agentFiles(), config));
   const folders = results.filter((result) => result.name === 'folders');
@@ -942,5 +972,25 @@ test('doctor shows the last reading with its time, and what is held until when',
       '7-day limit 90%, last reading 95% seen 2026-11-16T20:00:00.000Z, window since reset, so void; ' +
       'tasks below high are held now until 2026-11-17T15:00:00.000Z ' +
       '(5-hour usage 85% (limit 80%, resets 2026-11-17T15:00:00.000Z))',
+  );
+});
+
+test('doctor warns, and does not fail, when this machine applied an older version of the board’s agents than the board holds', async () => {
+  const files = withConfig({ machine: 'box' });
+  const serving = (agentsVersion?: number): Partial<DoctorDeps> => ({
+    verifyServer: async () => ({
+      owner: OWNER,
+      keyId: KEYS.keyId,
+      api: SERVER_API,
+      features: SERVER_HAS,
+      ...(agentsVersion === undefined ? {} : { agentsVersion }),
+    }),
+  });
+  const boardAgents = (results: CheckResult[]) => results.filter((result) => result.name === "board's agents");
+  assert.deepEqual(boardAgents(await runChecks(machine(files, serving()))), []);
+  const behind = boardAgents(await runChecks(machine(files, serving(3))));
+  assert.deepEqual(
+    behind.map(({ level, message }) => [level, message]),
+    [['warn', 'the board holds agents v3, this machine applied none']],
   );
 });

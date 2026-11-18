@@ -4,7 +4,7 @@
 #   github-reviews.sh owner/name=dir [owner/name=dir ...]
 #
 # For every open, non-draft PR in those repositories that asks for your review (review-requested:@me) and whose head commit
-# is at least 10 minutes old, it runs `board schedule --agent reviewer --key <PR URL> --version <head sha>` in the repository's
+# is at least 10 minutes old, it runs `board schedule --agent reviewer --lane reviews --key <PR URL> --version <head sha>` in the repository's
 # directory `dir` (its checkout on this machine; `~` is expanded, and the directory must be one that `board dirs` lists): the
 # board makes one task per PR, bound to this machine and that directory, and a new head sends a task that waits in Needs me or
 # is Done back to Todo. A task still waiting in Todo for a PR that no longer asks for the review is moved to Done.
@@ -12,6 +12,7 @@
 #
 # Environment:
 #   BOARD_AGENT   the agent of this machine's config.json the reviews run as (default: reviewer)
+#   BOARD_LANE    the lane the reviews ask for (default: reviews); a machine without that lane runs them in its default lane
 #   KEY_PREFIX    put in front of the PR URL to make the task's key (default: none, the bare URL)
 #
 # The task of every PR it scheduled is remembered in ${XDG_STATE_HOME:-~/.local/state}/agent-board/github-reviews.tsv (PR URL,
@@ -25,6 +26,7 @@
 set -u
 
 agent=${BOARD_AGENT:-reviewer}
+lane=${BOARD_LANE:-reviews}
 key_prefix=${KEY_PREFIX-}
 settle_seconds=600
 
@@ -139,7 +141,7 @@ while IFS=$tab read -r url number sha committed author title; do
     continue
   fi
   # In the repository's own directory: the task is bound to the directory `board schedule` runs in.
-  if out=$({ cd "$dir" && board schedule --agent "$agent" --key "$key_prefix$url" --version "$sha" \
+  if out=$({ cd "$dir" && board schedule --agent "$agent" --lane "$lane" --key "$key_prefix$url" --version "$sha" \
     --title "#$number $title ($author)" --json -- /review-pr "$url" --auto; } 2>"$work/board.err" </dev/null); then
     one=$(printf '%s' "$out" | tr -d '\n')
     id=$(printf '%s' "$one" | sed -n 's/.*"id": *"\([A-Za-z0-9]\{1,16\}\)".*/\1/p')

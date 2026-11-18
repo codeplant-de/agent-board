@@ -32,6 +32,9 @@ export const ADDED_SERVER_FEATURES = [
   'task.auto-done',
   'task.moved-by',
   'prompt.edit',
+  'task.lane',
+  'schedule.update',
+  'agents.shared',
 ] as const;
 
 export const SERVER_FEATURES = [...BASELINE_SERVER_FEATURES, ...ADDED_SERVER_FEATURES] as const;
@@ -65,6 +68,9 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'task.auto-done': 'letting the agent move a task to Done',
   'task.moved-by': 'who moved a task',
   'prompt.edit': 'editing a prompt',
+  'task.lane': 'choosing the lane a task runs in',
+  'schedule.update': 'changing every setting of a schedule',
+  'agents.shared': 'agent definitions held on the board',
   wait: 'waiting',
 };
 

@@ -46,6 +46,7 @@ const wireTask = async (
     openQuestion: false,
     machine: null,
     lane: null,
+    requestedLane: null,
     sessionId: null,
     next: 'fresh',
     head: null,

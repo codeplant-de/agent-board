@@ -207,6 +207,25 @@ test('a tick probes one directory, sends what is cached so far, and the next tic
   assert.equal(store.entries.get('/a')?.probedAt, NOW.toISOString());
 });
 
+test('the lane names of this machine go with the catalogue, at most twenty, and a change of them sends it again', async () => {
+  const lanes = (names: string[]) => names.map((name, index) => ({ name, slots: 1, default: index === 0 }));
+  const { deps, backend } = syncSetup({}, { dirs: [{ path: '/a' }], lanes: lanes(['general', 'reviews']) });
+  await syncCatalog(deps);
+  assert.deepEqual(await syncCatalog(deps), { result: 'unchanged' });
+  deps.config = { ...deps.config, lanes: lanes(['general', 'reviews', 'docs']) };
+  assert.deepEqual(await syncCatalog(deps), { result: 'sent', skills: 1, models: 1 });
+  assert.equal(backend.writes.filter((w) => w.startsWith('catalog ')).length, 2);
+  const entry = { ...here('/a', probed([cmd('review')])) };
+  const many = composeCatalog(
+    [entry],
+    new Set(),
+    undefined,
+    Array.from({ length: 30 }, (_, i) => `l${i}`),
+  );
+  assert.equal(many?.lanes?.length, 20);
+  assert.equal(composeCatalog([entry], new Set())?.lanes, undefined);
+});
+
 test('a changed fingerprint, or a run that reported other skills, probes the directory again and sends the new catalogue', async () => {
   const { deps, backend, probes, answer, store } = syncSetup({}, { dirs: [{ path: '/a' }] });
   await syncCatalog(deps);

@@ -28,6 +28,7 @@ import {
   parseWirePrStates,
   parseWireSchedule,
   parseWireScheduleDraft,
+  parseWireScheduleEdit,
   parseWireNotes,
   parseWireRunInbox,
   parseWireSchedules,
@@ -60,6 +61,7 @@ const [TITLE, INPUT, WORKDIR, BODY, PREVIEW, QUESTIONS] = await Promise.all([
   sealed('note.preview'),
   sealed('note.questions'),
 ]);
+const AGENT = await sealed('agent');
 const KEY = await blindIndex(keys, 'https://github.com/o/r/pull/1');
 const HEAD = await blindIndex(keys, 'head:56120dc60b');
 const ID = 'Ab3dEf9x';
@@ -72,6 +74,7 @@ const task = {
   status: 'todo',
   priority: 'normal',
   model: null,
+  requestedLane: null,
   autoDone: false,
   closed: false,
   machine: null,
@@ -270,7 +273,7 @@ test('a task config takes a priority, a model or null, and a place with a sealed
     priority: 'high',
     model: 'opus',
   });
-  assert.throws(() => parseWireTaskConfig({}), /config needs one of priority, model, autoDone, place/);
+  assert.throws(() => parseWireTaskConfig({}), /config needs one of priority, model, lane, autoDone, place/);
   assert.throws(() => parseWireTaskConfig([]), /must be a JSON object/);
   assert.throws(() => parseWireTaskConfig({ priority: 'asap' }), /priority must be one of/);
   for (const model of ['', 'not a model', '-x', 5, undefined])
@@ -413,6 +416,7 @@ const schedule = {
   input: INPUT,
   priority: 'normal',
   model: null,
+  requestedLane: null,
   autoDone: false,
   machine: null,
   workdir: null,
@@ -1001,6 +1005,44 @@ test('a draft carries a model that is checked, in add-task and add-schedule', ()
   assert.throws(() => parseWireScheduleDraft({ ...rule, model: 'a b' }), /schedule draft.model is not a model name/);
 });
 
+test('a lane is a name of a safe shape, and a server that sends none means the default lane', () => {
+  const { requestedLane: _lane, ...legacyTask } = task;
+  assert.equal(parseWireTask(legacyTask).requestedLane, null);
+  assert.equal(parseWireTask({ ...task, requestedLane: 'reviews' }).requestedLane, 'reviews');
+  assert.equal(parseWireSchedule({ ...schedule, requestedLane: 'a.b-c_1' }).requestedLane, 'a.b-c_1');
+  assert.equal(parseWireSchedule(schedule).requestedLane, null);
+  for (const bad of ['a b', '', '-x', 'x'.repeat(65), 'a\n', 5])
+    assert.throws(
+      () => parseWireTask({ ...task, requestedLane: bad }),
+      /task.requestedLane is not a safe name/,
+      String(bad),
+    );
+  assert.throws(() => parseWireSchedule({ ...schedule, requestedLane: '$(x)' }), /schedule.requestedLane/);
+  assert.equal(parseWireTask({ ...task, lane: 'running-here', requestedLane: 'asked' }).lane, 'running-here');
+});
+
+test('a draft and a config carry a lane that is checked, and a config may clear it', () => {
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, lane: 'reviews' }).lane, 'reviews');
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT }).lane, undefined);
+  for (const lane of ['a b', '', null, 3])
+    assert.throws(
+      () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, lane }),
+      /draft.lane is not a safe name/,
+      String(lane),
+    );
+  const rule = { id: ID, title: TITLE, input: INPUT, everyMs: 60_000 };
+  assert.equal(parseWireScheduleDraft({ ...rule, lane: 'docs' }).lane, 'docs');
+  assert.throws(() => parseWireScheduleDraft({ ...rule, lane: 'a b' }), /schedule draft.lane is not a safe name/);
+  assert.deepEqual(parseWireTaskConfig({ lane: 'reviews' }), { lane: 'reviews' });
+  assert.deepEqual(parseWireTaskConfig({ lane: null }), { lane: null });
+  for (const lane of ['', 'a b', 5, undefined])
+    assert.throws(
+      () => parseWireTaskConfig({ lane }),
+      /config.lane is not a safe name|config needs one of/,
+      String(lane),
+    );
+});
+
 test('autoDone is a boolean in a config and in the drafts, and a server that sends none means false', () => {
   assert.deepEqual(parseWireTaskConfig({ autoDone: true }), { autoDone: true });
   assert.deepEqual(parseWireTaskConfig({ autoDone: false, priority: 'low' }), { autoDone: false, priority: 'low' });
@@ -1133,4 +1175,94 @@ test('the run inbox answer and the acknowledgement are checked', () => {
   assert.throws(() => parseAckMessages({ ids: ['not an id!'] }), ContractError);
   assert.throws(() => parseAckMessages({ ids: Array.from({ length: 101 }, (_, i) => `n${i}`) }), ContractError);
   assert.throws(() => parseAckMessages({ ids: [], extra: 1 }), ContractError);
+});
+
+test('an edit-schedule body is the sealed title and prompt, and with settings a full replacement', () => {
+  const text = { title: TITLE, input: INPUT };
+  assert.deepEqual(parseWireScheduleEdit(text), text);
+  const settings = {
+    place: null,
+    priority: 'normal',
+    model: null,
+    autoDone: false,
+    repeat: { everyMs: 60_000 },
+    runsLeft: null,
+    until: null,
+    maxConcurrent: null,
+  };
+  assert.deepEqual(parseWireScheduleEdit({ ...text, settings }), { ...text, settings });
+  const full = {
+    ...settings,
+    agent: AGENT,
+    place: { machine: 'laptop', workdir: WORKDIR },
+    model: 'opus',
+    repeat: { cron: '0 9 * * *', moreCrons: ['0 17 * * *'], timezone: 'Europe/Berlin' },
+    at: '2027-01-01T09:00:00.000Z',
+    runsLeft: 4,
+    maxConcurrent: 100,
+  };
+  const parsed = parseWireScheduleEdit({ ...text, settings: full });
+  assert.deepEqual(parsed.settings, { ...full, at: new Date('2027-01-01T09:00:00.000Z') });
+  assert.equal('lane' in (parseWireScheduleEdit({ ...text, settings }).settings ?? {}), false);
+  assert.equal(parseWireScheduleEdit({ ...text, settings: { ...settings, lane: 'review' } }).settings?.lane, 'review');
+  assert.equal(parseWireScheduleEdit({ ...text, settings: { ...settings, lane: null } }).settings?.lane, null);
+  const after = { after: { scheduleId: 'Up3dEf9x', delayMs: 0 } };
+  assert.deepEqual(
+    parseWireScheduleEdit({ ...text, settings: { ...settings, repeat: after } }).settings?.repeat,
+    after,
+  );
+});
+
+test('an edit-schedule body refuses what the tRPC update refuses', () => {
+  const text = { title: TITLE, input: INPUT };
+  const settings = {
+    place: null,
+    priority: 'normal',
+    model: null,
+    autoDone: false,
+    repeat: { everyMs: 60_000 },
+    runsLeft: null,
+    until: null,
+    maxConcurrent: null,
+  };
+  const refuse = (overrides: Record<string, unknown>, message: RegExp): void =>
+    assert.throws(
+      () => parseWireScheduleEdit({ ...text, settings: { ...settings, ...overrides } }),
+      message,
+      JSON.stringify(overrides),
+    );
+  assert.throws(() => parseWireScheduleEdit({ ...text, extra: 1 }), /unknown key "extra"/);
+  assert.throws(() => parseWireScheduleEdit({ ...text, settings: null }), /settings must be a JSON object/);
+  refuse({ extra: 1 }, /unknown key "extra"/);
+  const { priority: _priority, ...noPriority } = settings;
+  assert.throws(() => parseWireScheduleEdit({ ...text, settings: noPriority }), /priority must be one of/);
+  refuse({ agent: 'plain' }, /settings.agent/);
+  refuse({ place: { machine: 'laptop', workdir: 'plain' } }, /place.workdir/);
+  refuse({ place: { machine: 'a b', workdir: WORKDIR } }, /not a safe name/);
+  refuse({ place: { machine: 'laptop', workdir: WORKDIR, extra: 1 } }, /unknown key "extra"/);
+  refuse({ model: 'a b' }, /model is not a model name/);
+  refuse({ autoDone: 1 }, /autoDone must be a boolean/);
+  refuse({ repeat: {} }, /exactly one of everyMs, cron and after/);
+  refuse({ repeat: { everyMs: 60_000, cron: '* * * * *' } }, /exactly one/);
+  refuse({ repeat: { everyMs: MAX_INTERVAL_MS + 1 } }, /everyMs must be at most/);
+  refuse({ repeat: { cron: '0 9 * * *' } }, /timezone must be a string/);
+  refuse({ repeat: { cron: '0 9 * * *', timezone: '' } }, /timezone must not be empty/);
+  refuse({ repeat: { cron: '0 9 * * *', timezone: 'UTC', moreCrons: 'x' } }, /moreCrons must be a list/);
+  refuse(
+    { repeat: { cron: '0 9 * * *', timezone: 'UTC', moreCrons: Array.from({ length: 10 }, () => '0 9 * * *') } },
+    /at most 9 expressions/,
+  );
+  refuse({ repeat: { after: { scheduleId: 'Up3dEf9x' } } }, /delayMs must be a non-negative integer/);
+  refuse({ repeat: { after: { scheduleId: 'Up3dEf9x', delayMs: MAX_INTERVAL_MS + 1 } } }, /delayMs must be at most/);
+  refuse({ repeat: { after: { scheduleId: 'a b', delayMs: 0 } } }, /scheduleId/);
+  refuse({ repeat: { after: { scheduleId: 'Up3dEf9x', delayMs: 0 } }, at: '2027-01-01' }, /at does not go with/);
+  refuse({ at: 'later' }, /at is not a date/);
+  refuse({ runsLeft: 0 }, /runsLeft must be a positive integer/);
+  refuse({ runsLeft: 2_147_483_648 }, /runsLeft must be at most/);
+  refuse({ until: 'soon' }, /until is not a date/);
+  refuse({ runsLeft: 2, until: '2027-01-01' }, /exclude each other/);
+  refuse({ lane: 'a b' }, /lane is not a safe name/);
+  refuse({ lane: 3 }, /lane is not a safe name/);
+  refuse({ maxConcurrent: 0 }, /maxConcurrent must be a positive integer/);
+  refuse({ maxConcurrent: 101 }, /maxConcurrent must be at most 100/);
 });
