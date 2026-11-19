@@ -628,6 +628,7 @@ Other tasks have no Stop.
 | Mark done                  | Moves the task to Done.                                                                        |
 | Re-run fresh               | Back to Todo with a new session. The agent sees the thread, not the old context.               |
 | Comment without continuing | Adds a note to the thread and runs nothing. Works while a task runs too.                       |
+| Move to Backlog            | Parks the task. No worker takes it until you move it to Todo. In the More menu.                |
 | Close / Reopen             | Takes the task out of the workflow, or brings it back. Workers ignore a closed task.           |
 | Start / Discard            | On a task an agent proposed. See [Proposals](#proposals).                                      |
 | Polish prompt              | On a Backlog task you wrote. See [Polishing a prompt](#polishing-a-prompt).                    |
