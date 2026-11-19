@@ -2,7 +2,9 @@ import { Button, Group, Paper, Stack, Switch, Text, Title } from '@mantine/core'
 import { useState, useSyncExternalStore } from 'react';
 import {
   isNotificationSupported,
+  notificationWorker,
   readDesktopNotificationsPreference,
+  showNotification,
   subscribeToDesktopNotificationsPreference,
   writeDesktopNotificationsPreference,
 } from '../../lib/desktopNotifications';
@@ -18,6 +20,7 @@ export function NotificationsSettings() {
     if (!next) return writeDesktopNotificationsPreference(false);
     const result = await Notification.requestPermission();
     setPermission(result);
+    if (result === 'granted') void notificationWorker();
     writeDesktopNotificationsPreference(result === 'granted');
   };
 
@@ -27,7 +30,8 @@ export function NotificationsSettings() {
         <div>
           <Title order={5}>Desktop notifications</Title>
           <Text size="sm" c="dimmed">
-            Get a notification when a task needs you. It works while a board tab is open, in the background too.
+            Get a notification when a task needs you. It works while a board tab is open, in the background too. On a
+            phone it works while the app is open or was left a moment ago.
           </Text>
         </div>
         <Switch
@@ -38,7 +42,8 @@ export function NotificationsSettings() {
         />
         {!supported && (
           <Text size="sm" c="dimmed">
-            This browser does not offer notifications here. They need https or localhost.
+            This browser does not offer notifications here. They need https or localhost, and on an iPhone or iPad the
+            board must be added to the Home Screen first.
           </Text>
         )}
         {blocked && (
@@ -51,7 +56,7 @@ export function NotificationsSettings() {
             <Button
               size="xs"
               variant="default"
-              onClick={() => new Notification('Agent Board', { body: 'Notifications work.', icon: '/favicon.svg' })}
+              onClick={() => void showNotification('Agent Board', { body: 'Notifications work.' })}
             >
               Send a test
             </Button>

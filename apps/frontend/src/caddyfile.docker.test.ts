@@ -415,9 +415,9 @@ describe.skipIf(!available)(`the Caddyfile in front of a hostile backend (${IMAG
     expect(response.headers.has('service-worker-allowed')).toBe(false);
   });
 
-  it('does not let the app register a worker at all', async () => {
+  it('lets the app register only a worker of its own origin', async () => {
     const response = await get('/');
-    expect(response.headers.get('content-security-policy')).toContain("worker-src 'none'");
+    expect(response.headers.get('content-security-policy')).toContain("worker-src 'self';");
   });
 
   it('serves the app itself from the static files, with its own headers', async () => {

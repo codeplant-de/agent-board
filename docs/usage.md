@@ -821,6 +821,15 @@ Once granted, the browser shows an OS notification for each task that newly ente
 - Your browser decrypts the title, so there is no server push.
 - The browser needs https or localhost.
 
+### On a phone
+
+Phone browsers show notifications only through a service worker, which the board registers when you turn the switch on. Install the board as an app first:
+
+- **iPhone and iPad:** open the board in Safari, tap Share, then **Add to Home Screen**. iOS offers notifications only to an app added this way. If the icon opens the board with Safari's address bar, it was added as a bookmark: remove it and add it again.
+- **Android:** use the browser's **Install app** or **Add to Home screen** entry.
+
+Open the installed app and turn the switch on there. A phone pauses an app soon after you leave it, and there is no server push, so notifications arrive while the app is open or was left a moment ago.
+
 ## Your data
 
 **Settings › Account › Your data** exports the board to a file, imports such a file, and deletes the account. The browser does the work. The server only pages rows out and takes rows in.

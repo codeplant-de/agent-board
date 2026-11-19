@@ -40,10 +40,11 @@
 	# The app is a static SPA with no inline scripts. 'wasm-unsafe-eval' is for Argon2 (WebAssembly, compiled from bytes in
 	# the bundle); 'unsafe-inline' for styles is Mantine's <style> tags for its theme variables. Images from other origins
 	# are refused on purpose: a markdown image in an agent's note would otherwise send a request to a stranger's server.
-	# `worker-src 'none'`: the app registers no service or web worker, and none can be added.
+	# `worker-src 'self'`: the app registers one service worker, /sw.js from the static files, which only handles clicks on
+	# notifications and has no fetch handler. A backend path cannot be registered as a worker (see data_headers).
 	# Cross-Origin-Opener-Policy keeps other windows from holding a reference to the app's window.
 	header {
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; worker-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		Referrer-Policy "no-referrer"
 		X-Content-Type-Options "nosniff"
 		Cross-Origin-Opener-Policy "same-origin"

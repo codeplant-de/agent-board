@@ -26,7 +26,7 @@ Cross-Origin-Resource-Policy: same-origin
 
 An error Caddy makes itself on a backend path, such as a 502 when the backend is down, gets the same headers through `handle_errors`.
 
-The result is that a hostile backend cannot serve a page under `/api` or `/trpc` that runs script with the app's access to the keys in IndexedDB. The browser treats whatever comes from those paths as JSON. The app's own CSP has `worker-src 'none'`, so no service worker can be registered either. The app itself is served with `Cross-Origin-Opener-Policy: same-origin`.
+The result is that a hostile backend cannot serve a page under `/api` or `/trpc` that runs script with the app's access to the keys in IndexedDB. The browser treats whatever comes from those paths as JSON. The app's own CSP has `worker-src 'self'`, but the only worker it registers is its own `/sw.js` from the static image, which handles notification clicks and no requests. A backend answer cannot become a worker: it is JSON with `sandbox`. The app itself is served with `Cross-Origin-Opener-Policy: same-origin`.
 
 Two answers are not dropped entirely, because signing in needs them:
 
