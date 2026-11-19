@@ -282,6 +282,27 @@ describe('a task link is the CLI’s own', () => {
   });
 });
 
+describe('a task effort', () => {
+  it('goes from the browser and from the CLI to the CLI that reads it back', async () => {
+    const { cli, trpc, mutate } = ctx;
+    const viaUi = await mutate<unknown, Task>(trpc.tasks.create.mutationOptions(), {
+      title: 'Think',
+      input: '/x',
+      effort: 'high',
+    });
+    expect((await cli.getTask(viaUi.id)).effort).toBe('high');
+    const viaCli = await cli.addTask({ title: 'Think', input: '/x', effort: 'xhigh' });
+    expect(viaCli.task.effort).toBe('xhigh');
+    const { schedule, task } = await cli.addSchedule({
+      title: 'Think',
+      input: '/x',
+      everyMs: 3_600_000,
+      effort: 'low',
+    });
+    expect([schedule.effort, task?.effort]).toEqual(['low', 'low']);
+  });
+});
+
 describe('a task model', () => {
   it('goes from the browser and from the CLI to the CLI that reads it back', async () => {
     const { cli, trpc, mutate } = ctx;

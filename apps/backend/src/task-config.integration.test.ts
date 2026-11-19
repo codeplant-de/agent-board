@@ -70,6 +70,23 @@ describe('configuring a task from the UI', () => {
     expect(await threadOf(task.id)).toHaveLength(1);
   });
 
+  it('an effort is set and cleared in any status, writes no note, and leaves a run alone', async () => {
+    const id = await started();
+    expect(await ctx.ui.tasks.configure({ id, effort: 'xhigh' })).toMatchObject({
+      effort: 'xhigh',
+      status: 'needs-me',
+    });
+    const running = await ctx.ui.tasks.create({ title: 'r', input: 'x' });
+    await ctx.call('claim-task', { id: running.id, machine: 'laptop' });
+    expect(await ctx.ui.tasks.configure({ id: running.id, effort: 'low' })).toMatchObject({
+      effort: 'low',
+      status: 'running',
+    });
+    expect(await ctx.ui.tasks.configure({ id: running.id, effort: null })).toMatchObject({ effort: null });
+    expect(await threadOf(id)).toEqual([]);
+    expect(await threadOf(running.id)).toEqual([]);
+  });
+
   it('a model is set and cleared in any status, writes no note, and leaves a run alone', async () => {
     const id = await started();
     expect(await ctx.ui.tasks.configure({ id, model: 'opus' })).toMatchObject({ model: 'opus', status: 'needs-me' });
@@ -215,6 +232,7 @@ describe('configuring a task from the UI', () => {
     const raw = ctx.ui.raw.tasks;
     await expect(raw.configure({ id })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     await expect(raw.configure({ id, model: 'not a model' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(raw.configure({ id, effort: 'huge' as 'low' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     await expect(raw.configure({ id, place: { machine: 'laptop', workdir: '/plain/path' } })).rejects.toMatchObject({
       code: 'BAD_REQUEST',
     });
@@ -262,6 +280,8 @@ describe('configure-task on the machine API', () => {
     expect(answer.json.result).toMatchObject({ priority: 'urgent', model: 'haiku', machine: null, workdir: null });
     expect(await threadOf(id)).toEqual(['Priority normal → urgent.']);
     expect((await ctx.call('configure-task', { id, body: { model: null } })).json.result.model).toBeNull();
+    expect((await ctx.call('configure-task', { id, body: { effort: 'max' } })).json.result.effort).toBe('max');
+    expect((await ctx.call('configure-task', { id, body: { effort: null } })).json.result.effort).toBeNull();
   });
 
   it('answers 409 while the task runs or waits, and 404 for an unknown task', async () => {
@@ -281,6 +301,8 @@ describe('configure-task on the machine API', () => {
       { priority: 'soon' },
       { model: 'not a model' },
       { model: 5 },
+      { effort: 'huge' },
+      { effort: 5 },
       { place: { workdir: '/plain/path' } },
       { place: { workdir: 5 } },
       { place: {} },
@@ -293,6 +315,6 @@ describe('configure-task on the machine API', () => {
       expect((await ctx.raw('configure-task', { id, body })).status, JSON.stringify(body)).toBe(400);
     expect((await ctx.raw('configure-task', { id })).status).toBe(400);
     const stored = await row(id);
-    expect([stored.machine, stored.priority, stored.model]).toEqual(['laptop', 'normal', null]);
+    expect([stored.machine, stored.priority, stored.model, stored.effort]).toEqual(['laptop', 'normal', null, null]);
   });
 });

@@ -1,5 +1,6 @@
 import { AGENT_NAME_RULE, isAgentName, PRIORITIES, type Priority } from '@agent-board/shared';
 import { Checkbox, SegmentedControl, Select, Text, TextInput } from '@mantine/core';
+import { EFFORT_OPTIONS } from '../lib/effort';
 import type { LaneOption } from '../lib/lane';
 import { PRIORITY_LABEL } from '../lib/priority';
 import type { ModelChoices } from './useModelOptions';
@@ -60,6 +61,20 @@ export function ModelField({
           ? 'The models claude lists on the chosen machine, or on any machine. Default is the model claude picks on the machine that runs it'
           : 'Default is the model claude picks on the machine that runs it'
       }
+    />
+  );
+}
+
+/** The effort as a select value: `DEFAULT_EFFORT` is claude's default. */
+export function EffortField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <Select
+      label="Effort"
+      allowDeselect={false}
+      value={value}
+      onChange={(next) => next && onChange(next)}
+      data={EFFORT_OPTIONS}
+      description="How hard claude thinks. Default is claude's own setting"
     />
   );
 }

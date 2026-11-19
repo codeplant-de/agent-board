@@ -1,4 +1,4 @@
-import { isModelName, isSafeWorkdir, isSessionId, parsePrUrl, prUrlIn } from '@agent-board/shared';
+import { isEffort, isModelName, isSafeWorkdir, isSessionId, parsePrUrl, prUrlIn } from '@agent-board/shared';
 import type { Note, Task } from '@agent-board/shared';
 import type { AgentConfig } from '../config/config.mts';
 import { agentFor, neverRun, removedIntakeProblem } from '../task-rules.mts';
@@ -304,6 +304,8 @@ export function buildInvocation(input: {
     return { ok: false, reason: 'The task directory is not an absolute path.' };
   if (task.model !== null && !isModelName(task.model))
     return { ok: false, reason: 'The task model is not a model name.' };
+  if (task.effort !== null && !isEffort(task.effort))
+    return { ok: false, reason: 'The task effort is not an effort level.' };
 
   // Where it runs: a resume where the session stopped; a scheduled task in its own directory; a task whose prompt
   // names a PR in that repo's checkout; else its lane's directory, else the default one.
@@ -333,6 +335,7 @@ export function buildInvocation(input: {
     ...session,
     // One argument, like the session id.
     ...(task.model === null ? [] : [`--model=${task.model}`]),
+    ...(task.effort === null ? [] : [`--effort=${task.effort}`]),
     // Every event as a JSON line: the worker keeps a readable log and sends the transcript to the board.
     '--output-format',
     'stream-json',

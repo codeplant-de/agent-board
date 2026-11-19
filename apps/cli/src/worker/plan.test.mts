@@ -133,6 +133,33 @@ test('a task model that is not a model name refuses the run instead of being dro
   }
 });
 
+test('a task effort becomes one --effort= argument, on a fresh run and a resume', () => {
+  const none = invoke({ id: 'abc', input: '/grill' });
+  assert.ok(none.ok);
+  assert.ok(!none.invocation.args.some((arg) => arg.startsWith('--effort')));
+  const fresh = invoke({ id: 'abc', input: '/grill', model: 'opus', effort: 'xhigh' });
+  assert.ok(fresh.ok);
+  assert.deepEqual(fresh.invocation.args.slice(0, 4), [
+    '-p',
+    `--session-id=${SESSION}`,
+    '--model=opus',
+    '--effort=xhigh',
+  ]);
+  const resumed = invoke(
+    { id: 'abc', input: '/grill', effort: 'low' },
+    { kind: 'resume', sessionId: SESSION, prompt: 'the reply' },
+  );
+  assert.ok(resumed.ok);
+  assert.deepEqual(resumed.invocation.args.slice(0, 3), ['-p', `--resume=${SESSION}`, '--effort=low']);
+});
+
+test('a task effort that is not a level refuses the run instead of being dropped', () => {
+  for (const effort of ['--dangerously-skip-permissions', 'huge', '', 'high\n']) {
+    const plan = invoke({ id: 'abc', input: '/grill', effort } as unknown as Parameters<typeof task>[0]);
+    assert.ok(!plan.ok && /not an effort level/.test(plan.reason), JSON.stringify(effort));
+  }
+});
+
 test('a resume passes the reply and continues where the session stopped', () => {
   const plan = invoke(
     { id: 'abc', input: '/grill', workdir: '/repo/.claude/worktrees/x' },

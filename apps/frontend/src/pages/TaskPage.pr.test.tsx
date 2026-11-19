@@ -72,6 +72,7 @@ const task = (overrides: Partial<BoardTask>): BoardTask =>
     watchEvents: 0,
     watchStops: [],
     model: null,
+    effort: null,
     autoDone: false,
     promptPrState: null,
     status: 'needs-me',

@@ -1563,6 +1563,44 @@ describe('schedules', () => {
     }
   });
 
+  it('a schedule keeps its effort and every card it creates inherits it', async () => {
+    const { json } = await addSchedule({ effort: 'xhigh', times: 3 });
+    expect(json.result.schedule.effort).toBe('xhigh');
+    expect(json.result.task.effort).toBe('xhigh');
+    expect((await listed())[0]).toMatchObject({ effort: 'xhigh' });
+    expect((await claim(json.result.task.id)).status).toBe(200);
+    const [, second] = await scheduled(json.result.schedule.id);
+    expect(second?.effort).toBe('xhigh');
+    const plain = await addSchedule({});
+    expect(plain.json.result).toMatchObject({ schedule: { effort: null }, task: { effort: null } });
+  });
+
+  it('an effort that is not a level is refused, for a schedule and a task', async () => {
+    for (const effort of ['--x', 'huge', 'High', '', null, 5]) {
+      expect((await addSchedule({ effort })).status, JSON.stringify(effort)).toBe(400);
+      const refused = await ctx.call('laptop', 'add-task', { body: { title: 't', input: 'x', effort } });
+      expect(refused.status, JSON.stringify(effort)).toBe(400);
+    }
+  });
+
+  it('a task made through the machine API or the browser keeps its effort; none is the default', async () => {
+    const viaApi = await ctx.call('laptop', 'add-task', { body: { title: 't', input: 'x', effort: 'medium' } });
+    expect(viaApi.json.result.task.effort).toBe('medium');
+    expect((await ctx.call('laptop', 'get-task', { id: viaApi.json.result.task.id })).json.result.effort).toBe(
+      'medium',
+    );
+    expect(
+      (await ctx.call('laptop', 'add-task', { body: { title: 't', input: 'x' } })).json.result.task.effort,
+    ).toBeNull();
+    const ui = plainUi(db);
+    expect((await ui.tasks.create({ title: 'ui', input: 'x', effort: 'low' })).effort).toBe('low');
+    expect((await ui.tasks.create({ title: 'ui', input: 'x' })).effort).toBeNull();
+    const repeating = await ui.tasks.create({ title: 'ui', input: 'x', effort: 'max', when: { every: hour } });
+    expect(repeating.effort).toBe('max');
+    expect((await listed()).find((row) => row.id === repeating.scheduleId)).toMatchObject({ effort: 'max' });
+    await expect(ui.tasks.create({ title: 'ui', input: 'x', effort: '--bad' as 'low' })).rejects.toThrow();
+  });
+
   it('a task made through the machine API or the browser keeps its model; none is the default', async () => {
     const viaApi = await ctx.call('laptop', 'add-task', { body: { title: 't', input: 'x', model: 'sonnet' } });
     expect(viaApi.json.result.task.model).toBe('sonnet');

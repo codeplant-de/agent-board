@@ -56,6 +56,7 @@ export async function insertTask(
       status,
       priority: draft.priority ?? parent?.priority ?? DEFAULT_PRIORITY,
       model: draft.model ?? null,
+      effort: draft.effort ?? null,
       requestedLane: draft.lane ?? null,
       autoDone: draft.autoDone ?? false,
       position: await edgePosition(tx, status, extra.forkOf === undefined ? 'bottom' : 'top'),

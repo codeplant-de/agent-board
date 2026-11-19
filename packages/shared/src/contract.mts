@@ -76,6 +76,10 @@ export const MODEL_ALIASES = [
   { value: 'haiku', label: 'Haiku' },
 ] as const;
 
+// The levels of `claude --effort`; a task without one runs at claude's default.
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type Effort = (typeof EFFORTS)[number];
+
 // A running task whose agent has been quiet this long looks stuck: the board shows it red.
 export const QUIET_LIMIT_MS = 10 * 60_000;
 
@@ -129,6 +133,9 @@ export interface Task {
   // The Claude model the runs use (`claude --model`): an alias or a full id; null is claude's default. A clear value from the
   // server, so a worker shape-checks it with `isModelName` again before it reaches argv.
   model: string | null;
+  // The effort level of the runs (`claude --effort`); null is claude's default. A clear value from the server, so a worker
+  // checks it with `isEffort` again before it reaches argv.
+  effort: Effort | null;
   // The lane the user asked for, by name; null for the default lane of whichever machine takes it. Routing, like the
   // priority: clear, not sealed. A machine without a lane of that name runs the task in its default lane, and the worker
   // shape-checks it with `isSafeLane` again. Not the lane it runs in (`lane`). Absent from a server without `task.lane`,
@@ -281,6 +288,8 @@ export interface TaskDraft {
   priority?: Priority;
   // Default: claude's default model.
   model?: string;
+  // Default: claude's default effort.
+  effort?: Effort;
   // The lane to run in (`isSafeLane`). Default: the default lane of the machine that takes it.
   lane?: string;
   // Default: false.
@@ -346,6 +355,8 @@ export interface Schedule {
   priority: Priority;
   // The model of every occurrence; null is claude's default.
   model: string | null;
+  // The effort of every occurrence; null is claude's default.
+  effort: Effort | null;
   // The lane every occurrence asks for (`Task.requestedLane`); null for the default lane.
   requestedLane: string | null;
   // Whether every occurrence lets the agent move it to Done itself.
@@ -391,6 +402,8 @@ export interface ScheduleDraft {
   priority?: Priority;
   // Default: claude's default model.
   model?: string;
+  // Default: claude's default effort.
+  effort?: Effort;
   // The lane every occurrence asks for (`isSafeLane`). Default: the default lane.
   lane?: string;
   // Default: false.
@@ -638,6 +651,8 @@ export interface TaskConfigChange {
   priority?: Priority;
   // A model name, or null for claude's default. It applies from the next run on.
   model?: string | null;
+  // An effort level, or null for claude's default. It applies from the next run on.
+  effort?: Effort | null;
   // A lane name (`isSafeLane`), or null for the default lane. Refused while the task runs: a run keeps its lane.
   lane?: string | null;
   // Whether the agent may move the task to Done itself. Takes effect at once, also while the task runs.
@@ -682,6 +697,8 @@ export interface ScheduleSettings {
   priority: Priority;
   // A model name; null is claude's default.
   model: string | null;
+  // An effort level; null is claude's default. Absent keeps the schedule's. Needs the `task.effort` feature.
+  effort?: Effort | null;
   // A lane name (`isSafeLane`); null is the default lane. Absent keeps the schedule's. Needs the `task.lane` feature.
   lane?: string | null;
   autoDone: boolean;
@@ -1074,6 +1091,7 @@ export const isWireNoteAuthor = oneOf(WIRE_NOTE_AUTHORS);
 export const isNoteKind = oneOf(NOTE_KINDS);
 export const isTaskCreator = oneOf(TASK_CREATORS);
 export const isPriority = oneOf(PRIORITIES);
+export const isEffort = oneOf(EFFORTS);
 
 // The characters carry the protection: a model name reaches argv as one `--model=` argument and is shown in the UI. It fits
 // the aliases (`opus`) and full ids (`claude-opus-5-5`, `claude-sonnet-5-5[1m]`).
@@ -1123,6 +1141,14 @@ function modelOf(obj: Record<string, unknown>, what: string): string | null {
   return value;
 }
 
+/** The `effort` of a task or schedule; a server that predates the key leaves it out, which means claude's default. */
+function effortOf(obj: Record<string, unknown>, what: string): Effort | null {
+  const value = obj['effort'] ?? null;
+  if (value === null) return null;
+  if (!isEffort(value)) throw new ContractError(`${what}.effort is not an effort level`);
+  return value;
+}
+
 /** The `requestedLane` of a task or schedule; a server that predates the key leaves it out, which means the default lane. */
 function requestedLaneOf(obj: Record<string, unknown>, what: string): string | null {
   const value = obj['requestedLane'] ?? null;
@@ -1146,6 +1172,12 @@ function movedByOf(obj: Record<string, unknown>): { movedBy?: TaskActor } {
 function modelName(obj: Record<string, unknown>, what: string): string {
   const value = obj['model'];
   if (typeof value !== 'string' || !isModelName(value)) throw new ContractError(`${what}.model is not a model name`);
+  return value;
+}
+
+function effortLevel(obj: Record<string, unknown>, what: string): Effort {
+  const value = obj['effort'];
+  if (!isEffort(value)) throw new ContractError(`${what}.effort is not an effort level`);
   return value;
 }
 
@@ -1292,6 +1324,7 @@ export function parseWireTask(value: unknown): WireTask {
     status: member(obj, 'status', 'task', STATUSES),
     priority: member(obj, 'priority', 'task', PRIORITIES),
     model: modelOf(obj, 'task'),
+    effort: effortOf(obj, 'task'),
     requestedLane: requestedLaneOf(obj, 'task'),
     autoDone: obj['autoDone'] === true,
     closed: boolean(obj, 'closed', 'task'),
@@ -1409,6 +1442,7 @@ export function parseWireSchedule(value: unknown): WireSchedule {
     input: string(obj, 'input', 'schedule'),
     priority: member(obj, 'priority', 'schedule', PRIORITIES),
     model: modelOf(obj, 'schedule'),
+    effort: effortOf(obj, 'schedule'),
     requestedLane: requestedLaneOf(obj, 'schedule'),
     autoDone: obj['autoDone'] === true,
     machine,
@@ -1781,6 +1815,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
       'status',
       'priority',
       'model',
+      'effort',
       'lane',
       'autoDone',
       'dedupeKey',
@@ -1802,6 +1837,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', 'draft', PRIORITIES);
   if ('model' in obj) draft.model = modelName(obj, 'draft');
+  if ('effort' in obj) draft.effort = effortLevel(obj, 'draft');
   if ('lane' in obj) draft.lane = laneName(obj, 'draft');
   if ('autoDone' in obj) draft.autoDone = boolean(obj, 'autoDone', 'draft');
   if ('dedupeKey' in obj) draft.dedupeKey = parseBlindIndex(obj['dedupeKey'], 'draft.dedupeKey');
@@ -1847,6 +1883,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
       'input',
       'priority',
       'model',
+      'effort',
       'lane',
       'autoDone',
       'machine',
@@ -1872,6 +1909,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   };
   if ('priority' in obj) draft.priority = member(obj, 'priority', what, PRIORITIES);
   if ('model' in obj) draft.model = modelName(obj, what);
+  if ('effort' in obj) draft.effort = effortLevel(obj, what);
   if ('lane' in obj) draft.lane = laneName(obj, what);
   if ('autoDone' in obj) draft.autoDone = boolean(obj, 'autoDone', what);
   if ('machine' in obj) {
@@ -1943,12 +1981,13 @@ export function parseWireTaskPatch(value: unknown): WireTaskPatch {
 // Body of configure-task. At least one key. `place` carries the sealed directory only: the machine is the token's.
 export function parseWireTaskConfig(value: unknown): WireTaskConfig {
   const obj = record(value, 'config');
-  const keys = ['priority', 'model', 'lane', 'autoDone', 'place'];
+  const keys = ['priority', 'model', 'effort', 'lane', 'autoDone', 'place'];
   rejectUnknownKeys(obj, keys, 'config');
   if (!keys.some((key) => key in obj)) throw new ContractError(`config needs one of ${keys.join(', ')}`);
   const config: WireTaskConfig = {};
   if ('priority' in obj) config.priority = member(obj, 'priority', 'config', PRIORITIES);
   if ('model' in obj) config.model = obj['model'] === null ? null : modelName(obj, 'config');
+  if ('effort' in obj) config.effort = obj['effort'] === null ? null : effortLevel(obj, 'config');
   if ('lane' in obj) config.lane = obj['lane'] === null ? null : laneName(obj, 'config');
   if ('autoDone' in obj) config.autoDone = boolean(obj, 'autoDone', 'config');
   if ('place' in obj) {
@@ -2006,7 +2045,20 @@ function parseWireScheduleSettings(value: unknown, what: string): WireScheduleSe
   const obj = record(value, what);
   rejectUnknownKeys(
     obj,
-    ['agent', 'place', 'priority', 'model', 'lane', 'autoDone', 'repeat', 'at', 'runsLeft', 'until', 'maxConcurrent'],
+    [
+      'agent',
+      'place',
+      'priority',
+      'model',
+      'effort',
+      'lane',
+      'autoDone',
+      'repeat',
+      'at',
+      'runsLeft',
+      'until',
+      'maxConcurrent',
+    ],
     what,
   );
   let place: WireScheduleSettings['place'] = null;
@@ -2029,6 +2081,7 @@ function parseWireScheduleSettings(value: unknown, what: string): WireScheduleSe
       obj['maxConcurrent'] === null ? null : positiveInt(obj, 'maxConcurrent', what, MAX_SCHEDULE_CONCURRENT),
   };
   if ('agent' in obj) settings.agent = sealedField(obj, 'agent', what, 'agent');
+  if ('effort' in obj) settings.effort = obj['effort'] === null ? null : effortLevel(obj, what);
   if ('lane' in obj) settings.lane = obj['lane'] === null ? null : laneName(obj, what);
   if ('at' in obj) {
     if ('after' in settings.repeat)

@@ -15,6 +15,7 @@ import {
   sealWorkdir,
   transcriptBinding,
   type Answer,
+  type Effort,
   type NoteKind,
   type Question,
   type RowRef,
@@ -37,6 +38,8 @@ type ScheduleChanges = Partial<
     place: { machine: string; workdir: string } | null;
     /** A lane name, or null for the default lane; left out it keeps the schedule's. */
     lane: string | null;
+    /** An effort level, or null for claude's default; left out it keeps the schedule's. */
+    effort: Effort | null;
   }
 >;
 // Machine API bodies and answers are untyped JSON.
@@ -536,7 +539,7 @@ export function plainUi(db: Db, owner = 'jascha') {
           ({ id }) => id === changes.id,
         );
         // A schedule that is not there gets a valid edit, so the board's answer is the refusal under test.
-        const kept: Required<Omit<ScheduleChanges, 'at' | 'lane'>> =
+        const kept: Required<Omit<ScheduleChanges, 'at' | 'lane' | 'effort'>> =
           current === undefined
             ? {
                 title: 'title',
@@ -576,7 +579,7 @@ export function plainUi(db: Db, owner = 'jascha') {
                 until: current.until,
                 maxConcurrent: current.maxConcurrent,
               };
-        const { id, at, lane, ...next } = { ...kept, ...changes };
+        const { id, at, lane, effort, ...next } = { ...kept, ...changes };
         const fields = await sealFields(
           sealing.seal,
           { kind: 'schedule', id, agent: next.agent },
@@ -593,6 +596,7 @@ export function plainUi(db: Db, owner = 'jascha') {
               : { machine: next.place.machine, workdir: fields.workdir },
           priority: next.priority,
           model: next.model,
+          ...(effort === undefined ? {} : { effort }),
           ...(lane === undefined ? {} : { lane }),
           autoDone: next.autoDone,
           repeat: next.repeat,

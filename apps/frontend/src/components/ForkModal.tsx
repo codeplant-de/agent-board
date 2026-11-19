@@ -41,8 +41,8 @@ export function ForkModal({ opened, onClose, parent }: Props) {
       <Stack>
         <Text size="sm" c="dimmed">
           A new task continues a copy of this task&apos;s Claude session
-          {parent.machine === null ? '' : ` on ${parent.machine}`}, in the same directory, with the same agent and
-          model. This task stays as it is, also while it runs: the copy is the session as it was last written.
+          {parent.machine === null ? '' : ` on ${parent.machine}`}, in the same directory, with the same agent, model
+          and effort. This task stays as it is, also while it runs: the copy is the session as it was last written.
         </Text>
         {problem !== undefined && (
           <Alert color="orange" variant="light">

@@ -217,6 +217,12 @@ The CLI alone changes: `--ignore <pattern>` on `board watch --ci`, and the `ciIg
 - An older CLI refuses a config that has `ciIgnore`: `parseConfig` throws `has no setting "ciIgnore"`, and every command that reads the config stops with that error. That includes each dispatch tick (the timer's and the ones the listener starts), every worker, `board watch`, `board dirs` and `board doctor`, so a machine with a stale CLI stops dispatching. The listener and the watch unit themselves do not read config.json, so they keep running, but the ticks the listener starts fail. Add `ciIgnore` only after every CLI on the machine runs the new version: `board self-update`, or on a checkout install `git pull`, `pnpm install` and `board restart`.
 - `--ignore` alone needs no config change.
 
+### A task names its effort (the next CLI release)
+
+A new server feature, `task.effort`. A task and a schedule take an effort level (`low`, `medium`, `high`, `xhigh` or `max`) that the worker passes to `claude` as `--effort`. `board schedule --effort`, `board schedules edit --effort` and `board task <task> set effort` set it, and the New task form, the task page and the schedule editor have an **Effort** select (see [Effort](usage.md#effort)). A migration adds an `effort` column to `task` and `schedule`. Nothing changes for the tasks you have, and no version number is raised.
+
+Update the server first. A server without `task.effort` makes the flags refuse with "the board server does not support choosing an effort level yet; update the board server", and nothing else changes. A machine on an older CLI ignores the field and runs every task at claude's default effort.
+
 ### Agents on the board (the next CLI release)
 
 A new server feature, `agents.shared`: `board agents push` puts an agent on the board, and every machine applies it on its next tick (see [Agents on the board](workers.md#agents-on-the-board)). A migration adds the table `shared_agents`. No version number is raised.

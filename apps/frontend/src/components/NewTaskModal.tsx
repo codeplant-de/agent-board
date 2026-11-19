@@ -4,6 +4,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { skillsFor } from '../lib/catalog';
+import { DEFAULT_EFFORT, effortFromOption } from '../lib/effort';
 import { DEFAULT_LANE } from '../lib/lane';
 import { DEFAULT_MODEL } from '../lib/model';
 import { parseDelay, parseRepeatRule } from '../lib/repeat';
@@ -12,7 +13,15 @@ import { useNow } from '../lib/useNow';
 import { DirectorySelect } from './DirectorySelect';
 import { MarkdownEditor } from './MarkdownEditor';
 import { RepeatFields, limitError, timesError } from './RepeatFields';
-import { AgentField, AutoDoneField, LaneField, ModelField, PriorityField, agentNameError } from './TaskFields';
+import {
+  AgentField,
+  AutoDoneField,
+  EffortField,
+  LaneField,
+  ModelField,
+  PriorityField,
+  agentNameError,
+} from './TaskFields';
 import { useDirectoryChoices } from './useDirectoryChoices';
 import { useLaneOptions } from './useLaneOptions';
 import { useModelOptions } from './useModelOptions';
@@ -44,6 +53,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const [delay, setDelay] = useState('');
   const [priority, setPriority] = useState<Priority>('normal');
   const [model, setModel] = useState(DEFAULT_MODEL);
+  const [effort, setEffort] = useState(DEFAULT_EFFORT);
   const [lane, setLane] = useState(DEFAULT_LANE);
   const [autoDone, setAutoDone] = useState(false);
   const [directory, setDirectory] = useState<string | null>(null);
@@ -95,6 +105,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
       ...(times !== '' ? { times: Number(times) } : {}),
       ...(limit !== '' ? { maxConcurrent: Number(limit) } : {}),
     };
+    const chosenEffort = effortFromOption(effort);
     const payload = when === 'later' ? { at: start } : when === 'repeat' ? schedule : when;
     if (payload === undefined) return;
     create.mutate(
@@ -104,6 +115,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
         when: payload,
         priority,
         ...(model === DEFAULT_MODEL ? {} : { model }),
+        ...(chosenEffort === null ? {} : { effort: chosenEffort }),
         ...(lane === DEFAULT_LANE ? {} : { lane }),
         ...(autoDone ? { autoDone } : {}),
         ...(place === undefined ? {} : { place: { machine: place.machine, workdir: place.path } }),
@@ -117,6 +129,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           setPriority('normal');
           setWhen('now');
           setModel(DEFAULT_MODEL);
+          setEffort(DEFAULT_EFFORT);
           setLane(DEFAULT_LANE);
           setAutoDone(false);
           setDirectory(null);
@@ -166,6 +179,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
         />
         <PriorityField value={priority} onChange={setPriority} />
         <ModelField value={model} onChange={setModel} models={models} />
+        <EffortField value={effort} onChange={setEffort} />
         <LaneField value={lane} onChange={setLane} lanes={lanes} />
         <AutoDoneField value={autoDone} onChange={setAutoDone} />
         <div>

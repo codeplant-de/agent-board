@@ -46,6 +46,7 @@ const schedule = (overrides: Partial<Schedule> = {}): Schedule =>
     agent: 'reviewer',
     priority: 'high',
     model: null,
+    effort: null,
     requestedLane: null,
     autoDone: false,
     machine: 'laptop',
@@ -103,7 +104,7 @@ beforeEach(() => {
 
 describe('EditScheduleModal', () => {
   it('opens with every value of the schedule and sends them all back unchanged', async () => {
-    open(schedule({ remaining: 4, maxConcurrent: 2, model: 'opus', autoDone: true }));
+    open(schedule({ remaining: 4, maxConcurrent: 2, model: 'opus', effort: 'xhigh', autoDone: true }));
     expect(await screen.findByLabelText('Title')).toHaveValue('Nightly');
     expect(screen.getByLabelText('Prompt')).toHaveValue('sweep');
     expect(screen.getByLabelText('Agent')).toHaveValue('reviewer');
@@ -122,6 +123,7 @@ describe('EditScheduleModal', () => {
       place: { machine: 'laptop', workdir: '/work/a' },
       priority: 'high',
       model: 'opus',
+      effort: 'xhigh',
       lane: null,
       autoDone: true,
       repeat: { everyMs: 7_200_000 },
@@ -167,7 +169,7 @@ describe('EditScheduleModal', () => {
     open(schedule({ machine: null, workdir: null, agent: undefined }));
     await save();
     await waitFor(() => expect(update).toHaveBeenCalled());
-    expect(sent()).toMatchObject({ place: null, agent: null, model: null });
+    expect(sent()).toMatchObject({ place: null, agent: null, model: null, effort: null });
     expect(sent()).not.toHaveProperty('at');
   });
 

@@ -4,6 +4,7 @@
  * default or that may be null can be left out of a row; ids, sealed text, positions and timestamps cannot.
  */
 import {
+  EFFORTS,
   hasControlCharacter,
   isCronExpression,
   isModelName,
@@ -64,6 +65,7 @@ export const taskRowSchema = z.object({
   status: z.enum(taskStatus.enumValues).default('todo'),
   priority: z.enum(taskPriority.enumValues).default('normal'),
   model: nullable(z.string().refine(isModelName, 'not a model name')),
+  effort: nullable(z.enum(EFFORTS)),
   requestedLane: nullable(machineName),
   autoDone: z.boolean().default(false),
   movedBy: nullable(z.enum(taskActor.enumValues)),
@@ -111,6 +113,7 @@ const scheduleRowShape = z.object({
   input: sealed('input', 'input'),
   priority: z.enum(taskPriority.enumValues).default('normal'),
   model: nullable(z.string().refine(isModelName, 'not a model name')),
+  effort: nullable(z.enum(EFFORTS)),
   requestedLane: nullable(machineName),
   autoDone: z.boolean().default(false),
   machine: nullable(machineName),

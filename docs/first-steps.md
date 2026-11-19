@@ -37,7 +37,7 @@ There is no sandbox. A task you made runs Claude Code as you, in auto mode, with
 - **Let it open a PR.** A prompt that asks for a code change ends in a PR. The agent works on a new branch, pushes, opens the PR, waits for CI with a watch and fixes what fails. The PR shows as an icon on the card, and **Move merged to Done** clears merged work from Needs me.
 - **Park an idea.** `board schedule --backlog "CSV export should include postal codes"` keeps a rough idea out of the workers' reach. **Polish prompt** on the card has an agent turn it into a complete prompt, which you apply or ignore. `--polish` does both in one call.
 - **Start later.** `board schedule --in 2h ...` or `--at 09:00 ...` holds a task in Todo until then.
-- **Pick a model or a priority.** `--model opus`, `--priority high`. Both are also fields of the New task form.
+- **Pick a model, an effort level or a priority.** `--model opus`, `--effort high`, `--priority high`. All three are also fields of the New task form.
 - **Take over a session.** `board attach <task>` opens the task's Claude session in your terminal, in its directory. With `--fork` the board's session stays as it was.
 - **Use the browser only.** **New task** takes the same prompt. Its Working directory field offers every directory your machines listed with `board dirs add`, and typing `/` completes the skills of that directory.
 

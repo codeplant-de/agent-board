@@ -38,7 +38,8 @@ Tasks:
   add                        propose a follow-up task
   polish <task>              post a polished title and prompt for a task
   task <task> [action...]    show a task's settings, or change its priority,
-                             model, lane, auto-done setting, directory or prompt
+                             model, effort, lane, auto-done setting, directory
+                             or prompt
 
 Scheduling:
   schedule <prompt...>       a task from a prompt, run here on this machine
@@ -630,15 +631,17 @@ Examples:
 ```
 Usage: board task [options] <task> [set <key> <value> | unset <key>]
 
-Without an action, print a task's settings: status, priority, model, the lane it
-asks for, whether the agent may mark it done, agent, who made it, the machine it
-is pinned to and its directory, when it starts, its schedule, the task it was
-forked from, whether its next run resumes a session, and its PR. With --json,
-print the task as `board tasks --json` does.
+Without an action, print a task's settings: status, priority, model, effort, the
+lane it asks for, whether the agent may mark it done, agent, who made it, the
+machine it is pinned to and its directory, when it starts, its schedule, the
+task it was forked from, whether its next run resumes a session, and its PR.
+With --json, print the task as `board tasks --json` does.
 
 `set priority <urgent|high|normal|low>` and `set model <alias or model id>`
-change the setting, `unset model` goes back to claude's default model. A model
-applies from the next run on; a run in progress keeps its own.
+change the setting, `unset model` goes back to claude's default model. `set
+effort <low|medium|high|xhigh|max>` and `unset effort` do the same for claude's
+effort level. A model or an effort applies from the next run on; a run in
+progress keeps its own.
 
 `set lane <name>` makes the task ask for that lane of the machine that runs it,
 `unset lane` for the default lane. A machine without a lane of that name runs
@@ -671,9 +674,9 @@ and a task a worker started has its prompt in its thread: reply with `board
 comment`. Start a prompt that begins with dashes after `--`.
 
 On a card of a repeating schedule a change applies to that card only: the next
-occurrence takes its priority, model, auto-done setting, machine and directory
-from the schedule again, which the command says. `set dir` needs this machine's
-config.json, since it pins the task to the machine's name.
+occurrence takes its priority, model, effort, auto-done setting, machine and
+directory from the schedule again, which the command says. `set dir` needs this
+machine's config.json, since it pins the task to the machine's name.
 
 `set` and `unset` are not available inside a board run: only you change where a
 task runs, in which lane, with what, and whether its agent may mark it done, and
@@ -687,8 +690,8 @@ accepted.
 
 Arguments:
   task             the task: its id, a board task link or the start of its id
-  action           set priority|model|lane|auto-done|dir|prompt <value>, or
-                   unset model|lane|auto-done|dir
+  action           set priority|model|effort|lane|auto-done|dir|prompt <value>,
+                   or unset model|effort|lane|auto-done|dir
 
 Options:
   --title <title>  with set prompt: the new title (default: keep the current
@@ -707,6 +710,7 @@ Examples:
   board task Ab3 set priority high
   board task Ab3 set model opus
   board task Ab3 unset model
+  board task Ab3 set effort high
   board task Ab3 set lane reviews
   board task Ab3 unset lane
   board task Ab3 set auto-done on
@@ -779,6 +783,8 @@ Options:
   --priority <priority>  urgent, high, normal, low (default normal)
   --model <model>        claude model alias or full name, e.g. fable, opus,
                          sonnet, haiku (default: claude's default)
+  --effort <level>       claude effort level: low, medium, high, xhigh, max
+                         (default: claude's default)
   --lane <name>          the lane of the machine that runs the task (default:
                          that machine's default lane; a machine without the lane
                          uses its default one)
@@ -862,11 +868,12 @@ what they had, and the old text is not kept. An ended schedule is refused.
 
 The other flags of `edit` change the settings of the schedule, all that the Edit
 schedule dialog on the board changes; what you leave out stays as it is.
---priority, --model (`default` for claude's default), --lane <name> (`default`
-for the default lane of the machine that runs it), --auto-done on|off and
---agent (an agent of this machine's config.json, or `none`). --dir <path> pins
-the schedule to this machine and that directory (listed in `board dirs`; `none`:
-no machine and no directory), as `board task <id> set dir` does for a task.
+--priority, --model and --effort (`default` for claude's default), --lane <name>
+(`default` for the default lane of the machine that runs it), --auto-done on|off
+and --agent (an agent of this machine's config.json, or `none`). --dir <path>
+pins the schedule to this machine and that directory (listed in `board dirs`;
+`none`: no machine and no directory), as `board task <id> set dir` does for a
+task.
 
 The repeat: --every <duration>, --cron <expr> (up to 10 times, in this machine's
 time zone) or --after <schedule> with --delay <duration>; the one you give
@@ -890,6 +897,8 @@ Options:
   --priority <priority>  with edit: urgent, high, normal, low
   --model <model>        with edit: a claude model alias or full name, or
                          default for claude's default
+  --effort <level>       with edit: low, medium, high, xhigh, max, or default
+                         for claude's default effort
   --lane <name>          with edit: the lane of the machine that runs the tasks,
                          or default for that machine's default lane
   --auto-done <on|off>   with edit: let the agent move the tasks to Done itself

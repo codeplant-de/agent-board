@@ -621,6 +621,7 @@ in the task's directory (see [Where a task runs](#where-a-task-runs)).
 - The hook is the [heartbeat hook](#liveness-and-limits).
 - `--input-format stream-json` keeps stdin open for [messages, pauses and interrupts](#talking-to-a-running-agent).
 - A task that names a model adds `--model=<model>` as one argument, on a fresh run and on a resume. Without one, `claude` uses its own default. A name that does not have the shape of a model name refuses the run.
+- A task that names an effort level adds `--effort=<level>` as one argument in the same way. A value that is not one of `low`, `medium`, `high`, `xhigh` or `max` refuses the run.
 
 A resumed run is `claude -p --resume=<session>` with the same flags and your reply on stdin (see [Ask and resume](usage.md#ask-and-resume)).
 

@@ -15,6 +15,7 @@ import {
   sealWorkdir,
   textBeforeEdit,
   type Answer,
+  type Effort,
   type Keys,
   type LinkRule,
   type Priority,
@@ -39,6 +40,8 @@ export interface NewTask {
   priority?: Priority;
   /** An alias or full name; absent is claude's default. */
   model?: string;
+  /** An effort level; absent is claude's default. */
+  effort?: Effort;
   /** The lane of the machine that runs it; absent is the machine's default lane. */
   lane?: string;
   /** The agent may move the task, or each occurrence of a repeat, to Done itself; absent is off. */
@@ -83,6 +86,7 @@ export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInpu
     ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
     ...(task.priority === undefined ? {} : { priority: task.priority }),
     ...(task.model === undefined ? {} : { model: task.model }),
+    ...(task.effort === undefined ? {} : { effort: task.effort }),
     ...(task.lane === undefined ? {} : { lane: task.lane }),
     ...(task.autoDone === undefined ? {} : { autoDone: task.autoDone }),
     ...(task.when === undefined ? {} : { when: task.when }),
@@ -217,9 +221,10 @@ export interface ConfigureTarget {
   forkOf?: string;
 }
 
-/** The settings to change; absent leaves one alone. A null model is claude's default, a null place is no directory and no machine. */
+/** The settings to change; absent leaves one alone. A null model or effort is claude's default, a null place is no directory and no machine. */
 export interface Configuration {
   model?: string | null;
+  effort?: Effort | null;
   /** A lane name, or null for the machine's default lane. */
   lane?: string | null;
   autoDone?: boolean;
@@ -231,7 +236,7 @@ export async function sealConfigure(
   keys: Keys,
   options: { task: ConfigureTarget } & Configuration,
 ): Promise<RouterInputs['tasks']['configure']> {
-  const { task, model, lane, autoDone, place } = options;
+  const { task, model, effort, lane, autoDone, place } = options;
   const row: RowRef = {
     kind: 'task',
     id: task.id,
@@ -242,6 +247,7 @@ export async function sealConfigure(
   return {
     id: task.id,
     ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
     ...(lane === undefined ? {} : { lane }),
     ...(autoDone === undefined ? {} : { autoDone }),
     ...(place === undefined

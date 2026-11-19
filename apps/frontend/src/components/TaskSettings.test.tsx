@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Machine } from '../lib/opening';
 import type { BoardTask } from '../lib/trpc';
-import { AutoDoneSetting, LanePicker, ModelPicker, WorkdirSetting } from './TaskSettings';
+import { AutoDoneSetting, EffortPicker, LanePicker, ModelPicker, WorkdirSetting } from './TaskSettings';
 
 const configure = vi.hoisted(() => vi.fn(async (_: unknown) => ({})));
 const listed = vi.hoisted(() => ({
@@ -57,6 +57,7 @@ const task = (extra: Partial<BoardTask> = {}): BoardTask =>
     workdir: '/work/app',
     sessionId: null,
     model: null,
+    effort: null,
     autoDone: false,
     unreadable: [],
     ...extra,
@@ -116,6 +117,33 @@ describe('ModelPicker', () => {
     await userEvent.click(await screen.findByRole('option', { name: 'Default', hidden: true }));
     await waitFor(() => expect(configure).toHaveBeenCalled());
     expect(sent()).toMatchObject({ model: null });
+  });
+});
+
+describe('EffortPicker', () => {
+  it('shows the level of the task, and sends the level picked', async () => {
+    renderWith(<EffortPicker task={task({ effort: 'high' })} />);
+    expect(screen.getByRole('combobox', { name: 'Effort' })).toHaveValue('High');
+    await userEvent.click(screen.getByRole('combobox', { name: 'Effort' }));
+    expect(screen.getAllByRole('option', { hidden: true }).map((option) => option.textContent)).toEqual([
+      'Default',
+      'Low',
+      'Medium',
+      'High',
+      'Extra high',
+      'Max',
+    ]);
+    await userEvent.click(await screen.findByRole('option', { name: 'Extra high', hidden: true }));
+    await waitFor(() => expect(configure).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ effort: 'xhigh' });
+  });
+
+  it('sends null for Default', async () => {
+    renderWith(<EffortPicker task={task({ effort: 'max' })} />);
+    await userEvent.click(screen.getByRole('combobox', { name: 'Effort' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'Default', hidden: true }));
+    await waitFor(() => expect(configure).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ effort: null });
   });
 });
 

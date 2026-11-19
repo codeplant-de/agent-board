@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   ContractError,
+  isEffort,
   isModelName,
   MAX_INTERVAL_MS,
   MAX_TASK_PRS,
@@ -74,6 +75,7 @@ const task = {
   status: 'todo',
   priority: 'normal',
   model: null,
+  effort: null,
   requestedLane: null,
   autoDone: false,
   closed: false,
@@ -273,11 +275,15 @@ test('a task config takes a priority, a model or null, and a place with a sealed
     priority: 'high',
     model: 'opus',
   });
-  assert.throws(() => parseWireTaskConfig({}), /config needs one of priority, model, lane, autoDone, place/);
+  assert.throws(() => parseWireTaskConfig({}), /config needs one of priority, model, effort, lane, autoDone, place/);
   assert.throws(() => parseWireTaskConfig([]), /must be a JSON object/);
   assert.throws(() => parseWireTaskConfig({ priority: 'asap' }), /priority must be one of/);
   for (const model of ['', 'not a model', '-x', 5, undefined])
     assert.throws(() => parseWireTaskConfig({ model }), /model is not a model name/, String(model));
+  assert.deepEqual(parseWireTaskConfig({ effort: null }), { effort: null });
+  assert.deepEqual(parseWireTaskConfig({ effort: 'xhigh', model: 'opus' }), { effort: 'xhigh', model: 'opus' });
+  for (const effort of ['', 'huge', 'HIGH', 5, undefined])
+    assert.throws(() => parseWireTaskConfig({ effort }), /config.effort is not an effort level/, String(effort));
   for (const place of [{}, { workdir: '/home/me' }, { workdir: 5 }, { workdir: null }, 'x', []])
     assert.throws(() => parseWireTaskConfig({ place }), ContractError, JSON.stringify(place));
   assert.throws(() => parseWireTaskConfig({ place: { workdir: WORKDIR, machine: 'laptop' } }), /unknown key "machine"/);
@@ -416,6 +422,7 @@ const schedule = {
   input: INPUT,
   priority: 'normal',
   model: null,
+  effort: null,
   requestedLane: null,
   autoDone: false,
   machine: null,
@@ -982,6 +989,35 @@ test('a model is a name of a safe shape, and a server that sends none means the 
   assert.throws(() => parseWireSchedule({ ...schedule, model: '-x' }), /schedule.model is not a model name/);
 });
 
+test('an effort is one of the levels, and a server that sends none means the default', () => {
+  const { effort: _effort, ...legacyTask } = task;
+  assert.equal(parseWireTask(legacyTask).effort, null);
+  const { effort: _scheduleEffort, ...legacySchedule } = schedule;
+  assert.equal(parseWireSchedule(legacySchedule).effort, null);
+  assert.equal(parseWireTask({ ...task, effort: 'xhigh' }).effort, 'xhigh');
+  assert.equal(parseWireSchedule({ ...schedule, effort: 'max' }).effort, 'max');
+  for (const bad of ['', 'huge', 'High', '--max', 5])
+    assert.throws(() => parseWireTask({ ...task, effort: bad }), /task.effort is not an effort level/, String(bad));
+  assert.throws(() => parseWireSchedule({ ...schedule, effort: 'x' }), /schedule.effort is not an effort level/);
+  assert.ok(isEffort('low') && !isEffort('extra'));
+});
+
+test('a draft carries an effort that is checked, in add-task and add-schedule', () => {
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, effort: 'low' }).effort, 'low');
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT }).effort, undefined);
+  for (const effort of ['--x', null])
+    assert.throws(
+      () => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, effort }),
+      /draft.effort is not an effort level/,
+    );
+  const rule = { id: ID, title: TITLE, input: INPUT, everyMs: 60_000 };
+  assert.equal(parseWireScheduleDraft({ ...rule, effort: 'high' }).effort, 'high');
+  assert.throws(
+    () => parseWireScheduleDraft({ ...rule, effort: 'a b' }),
+    /schedule draft.effort is not an effort level/,
+  );
+});
+
 test('isModelName accepts aliases and full ids only', () => {
   for (const good of ['fable', 'opus', 'opusplan', 'claude-opus-5-5', 'claude-sonnet-5-5[1m]', 'a.b_c-d'])
     assert.ok(isModelName(good), good);
@@ -1206,6 +1242,9 @@ test('an edit-schedule body is the sealed title and prompt, and with settings a 
   assert.equal('lane' in (parseWireScheduleEdit({ ...text, settings }).settings ?? {}), false);
   assert.equal(parseWireScheduleEdit({ ...text, settings: { ...settings, lane: 'review' } }).settings?.lane, 'review');
   assert.equal(parseWireScheduleEdit({ ...text, settings: { ...settings, lane: null } }).settings?.lane, null);
+  assert.equal('effort' in (parseWireScheduleEdit({ ...text, settings }).settings ?? {}), false);
+  assert.equal(parseWireScheduleEdit({ ...text, settings: { ...settings, effort: 'max' } }).settings?.effort, 'max');
+  assert.equal(parseWireScheduleEdit({ ...text, settings: { ...settings, effort: null } }).settings?.effort, null);
   const after = { after: { scheduleId: 'Up3dEf9x', delayMs: 0 } };
   assert.deepEqual(
     parseWireScheduleEdit({ ...text, settings: { ...settings, repeat: after } }).settings?.repeat,
@@ -1241,6 +1280,7 @@ test('an edit-schedule body refuses what the tRPC update refuses', () => {
   refuse({ place: { machine: 'a b', workdir: WORKDIR } }, /not a safe name/);
   refuse({ place: { machine: 'laptop', workdir: WORKDIR, extra: 1 } }, /unknown key "extra"/);
   refuse({ model: 'a b' }, /model is not a model name/);
+  refuse({ effort: 'huge' }, /effort is not an effort level/);
   refuse({ autoDone: 1 }, /autoDone must be a boolean/);
   refuse({ repeat: {} }, /exactly one of everyMs, cron and after/);
   refuse({ repeat: { everyMs: 60_000, cron: '* * * * *' } }, /exactly one/);
