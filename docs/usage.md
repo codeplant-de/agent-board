@@ -720,7 +720,7 @@ The file is the new task's prompt. Without `--priority` a proposal takes its par
 
 A proposal lands in Backlog with a **Proposed** badge and runs only after you start it. So a run that a PR's text turned against you cannot queue work by itself.
 
-**Starting.** Press **Start**, drag the card into Todo, or use Move to Todo from Backlog. **Discard** closes the proposal. Every way of starting shows the proposal's whole prompt as plain text and asks you to confirm. Your browser then seals the prompt as yours, the Proposed badge goes, and a worker runs the task with your permissions.
+**Starting.** Press **Start**, drag the card into Todo, or use Move to Todo from Backlog. **Discard** closes the proposal. Every way of starting shows the proposal's whole prompt as plain text, in a box where you can edit it, and asks you to confirm. Your browser then seals the prompt as you confirmed it, edits included, as yours, the Proposed badge goes, and a worker runs the task with your permissions.
 
 - **Send & continue** and **Re-run fresh** wait until the proposal is started. **Reopen** leaves a proposal a proposal.
 - No CLI command starts a proposal. `board move <task> todo` is refused for it, and an agent in a run cannot do what only you can.
