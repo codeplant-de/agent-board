@@ -48,7 +48,7 @@ Every request carries three headers, the event stream's included:
 
 The server reads all three leniently and never answers 400 for them. The version must match `^\d+\.\d+\.\d+(-[0-9A-Za-z.]{1,20})?$` in at most 40 characters, and the level is an integer from 1 to 10000. Anything else is ignored.
 
-The server stores version and level on the machine from `version` calls only, and writes only when they changed. A worker that started before an update keeps sending the old headers with its heartbeats, and those must not undo what the machine's next `version` call reported. Settings and the board's banner judge a machine from the stored values: it is incompatible when its level is below `MIN_CLIENT`. See [Updating the CLI](setup.md#updating-the-cli).
+The server stores version and level on the machine from `version` calls only, and writes only when they changed. A worker that started before an update keeps sending the old headers with its heartbeats, and those must not undo what the machine's next `version` call reported. Settings › Machines and the board's banner judge a machine from the stored values: it is incompatible when its level is below `MIN_CLIENT`. See [Updating the CLI](setup.md#updating-the-cli).
 
 ## Versioning
 
@@ -686,7 +686,7 @@ Every body is strict. An unknown key, a missing required key or a value of the w
 - `add-task`, schedules, notes, `add-pr`, `remove-pr` and `set-pr` by design. The binding, not the token, says whose value a sealed field is.
 - `update-task` without `run` on any task, a running one included, so that `board move` works from any machine.
 
-A leaked token, with the data key from the same `env` file, controls the whole board until it is revoked on the Settings page.
+A leaked token, with the data key from the same `env` file, controls the whole board until it is revoked on Settings › Machines.
 
 **Entering `waiting`.** Only `wait` takes a task into `waiting`. `update-task` and `add-task` with that status are 400.
 
@@ -982,7 +982,7 @@ The browser reads catalogues with `machines.catalogs`, a call of its own. It ret
 
 #### `set-usage`
 
-The machine's usage status, for the Held badge on a card and the usage line in Settings (see [Usage limits](workers.md#usage-limits)).
+The machine's usage status, for the Held badge on a card and the usage line in Settings › Machines (see [Usage limits](workers.md#usage-limits)).
 
 ```json
 {

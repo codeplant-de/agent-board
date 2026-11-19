@@ -86,7 +86,7 @@ Machine settings are in `~/.config/agent-board/config.json`. [Config](setup.md#c
 | Run limits            | `"inactivityMinutes": 15`, `"maxRunHours": 6`                                                                                              | A run with no tool call for 15 minutes, or longer than 6 hours, is stopped. Raise them for long jobs. [Liveness](workers.md#liveness-and-limits)      |
 | CLI updates           | `"autoUpdate": "always"`, or `board self-update` by hand                                                                                   | The default only updates when the board refuses the CLI as too old. `always` follows every release. [Updating the CLI](setup.md#updating-the-cli)     |
 | Runs after logout     | `loginctl enable-linger $USER` on Linux                                                                                                    | User units stop when you log out otherwise. A Mac runs tasks only while you are logged in and awake.                                                  |
-| Desktop notifications | The switch on the board's **Settings** page                                                                                                | An OS notification when a task enters Needs me. [Desktop notifications](usage.md#desktop-notifications)                                               |
+| Desktop notifications | The switch on **Settings › Notifications**                                                                                                 | An OS notification when a task enters Needs me. [Desktop notifications](usage.md#desktop-notifications)                                               |
 | Shell completion      | `board completion bash`, `zsh` or `fish`                                                                                                   | Completes commands and flags.                                                                                                                         |
 
 Two things about `dirs` surprise people:
@@ -94,7 +94,7 @@ Two things about `dirs` surprise people:
 - **The list is enforced as soon as it has one entry.** From then on `board schedule` refuses in an unlisted directory, and a task that would start in one ends in Needs me with the path and the fix.
 - **The default directory has to be listed too.** A fresh config has `defaultCwd` set to `~`. After the first `board dirs add`, `board doctor` fails until you run `board dirs set default true` in one checkout. `board dirs add --from-config` also clears the failure, but it lists your whole home directory.
 
-A second machine needs its own token from **Settings** and the same data key. A task stays on the machine it was scheduled from, since its directory and session live there. See [Two machines](workers.md#two-machines).
+A second machine needs its own token from **Settings › Machines** and the same data key. A task stays on the machine it was scheduled from, since its directory and session live there. See [Two machines](workers.md#two-machines).
 
 ## When something looks wrong
 

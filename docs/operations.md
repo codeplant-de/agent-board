@@ -107,7 +107,7 @@ The sign-in variables come in four groups. The backend starts in one of two mode
 | `SAML_USERNAME_ATTRIBUTE` | An assertion attribute that names the user. Default: the NameID.                              |
 | `SAML_LABEL`              | The text of the login button, at most 40 characters. Default `SAML sign-on`.                  |
 
-**Who the user is.** The board's user name owns the board and is bound into every sealed value. It is lower case, at most 128 characters, without whitespace. A passkey sign-up picks a tighter one: lower case letters, digits, dots, dashes, underscores and `@`, up to 64. **A name belongs to the method that created it.** A board records the method of its first sign-in as its `source`: `passkey`, `oidc` or `saml`. A passkey sign-up creates a board only for a free name. An OIDC or SAML sign-in creates a missing board, signs in to one with its own source, and is refused one with another source ("This name belongs to an account with a different sign-in method."; the log has the detail). Without this, whoever holds the sign-up token could register `alice` before Alice's first OIDC sign-in and then hold a passkey for the board she lands on. A board from before sign-in (`source` null, such as every board of the auth proxy) is claimed by the first OIDC or SAML sign-in, which sets it. A passkey never looks at the source: it is tied to its owner when it is registered, and an OIDC user may add passkeys in Settings. A board without login has no source. To move a board to another method, set the source as the database owner: `update app_user set source = 'saml' where username = 'alice'`, or `source = null` to let the next OIDC or SAML sign-in claim it. The sign-up token lets its holder take any free name, which is why it is meant to be removed once the accounts exist.
+**Who the user is.** The board's user name owns the board and is bound into every sealed value. It is lower case, at most 128 characters, without whitespace. A passkey sign-up picks a tighter one: lower case letters, digits, dots, dashes, underscores and `@`, up to 64. **A name belongs to the method that created it.** A board records the method of its first sign-in as its `source`: `passkey`, `oidc` or `saml`. A passkey sign-up creates a board only for a free name. An OIDC or SAML sign-in creates a missing board, signs in to one with its own source, and is refused one with another source ("This name belongs to an account with a different sign-in method."; the log has the detail). Without this, whoever holds the sign-up token could register `alice` before Alice's first OIDC sign-in and then hold a passkey for the board she lands on. A board from before sign-in (`source` null, such as every board of the auth proxy) is claimed by the first OIDC or SAML sign-in, which sets it. A passkey never looks at the source: it is tied to its owner when it is registered, and an OIDC user may add passkeys in Settings › Account. A board without login has no source. To move a board to another method, set the source as the database owner: `update app_user set source = 'saml' where username = 'alice'`, or `source = null` to let the next OIDC or SAML sign-in claim it. The sign-up token lets its holder take any free name, which is why it is meant to be removed once the accounts exist.
 
 **Passkeys belong to the host.** A passkey is bound to the hostname of `PUBLIC_URL`. A board that moves to another hostname loses every passkey.
 
@@ -119,9 +119,9 @@ Two limits are known. A session is not checked against the identity provider aga
 
 Every row belongs to the signed-in user, by the name the sign-in gave. Requests run as the unprivileged `board_app` role with row-level security, so a query sees only its owner's rows even if it forgets a `WHERE`.
 
-Deleting an account (Settings → Your data) removes its rows from the database and nothing else. Backups and volume snapshots keep the data until they expire, so the operator decides how long that is.
+Deleting an account (Settings › Account › Your data) removes its rows from the database and nothing else. Backups and volume snapshots keep the data until they expire, so the operator decides how long that is.
 
-A machine token belongs to the user who made it on the Settings page, and the machine API works on that user's board. Two users may use the same machine name or dedupe key.
+A machine token belongs to the user who made it on Settings › Machines, and the machine API works on that user's board. Two users may use the same machine name or dedupe key.
 
 ### Two ways in
 
@@ -134,7 +134,7 @@ The cookie is also the reason for two rules against cross-site writes:
 
 The SAML assertion consumer is the one route that takes a form, because the identity provider posts it. It does not read the session cookie.
 
-**The machine API** (`POST /api/machine/<command>`). It has nothing to do with the session. The backend looks the bearer token up by its sha256 and refuses a revoked one. Tokens are shown once, on the Settings page. A token claims tasks only under its own machine name. No proxy in front needs a login exemption for this path, because the backend checks the token itself.
+**The machine API** (`POST /api/machine/<command>`). It has nothing to do with the session. The backend looks the bearer token up by its sha256 and refuses a revoked one. Tokens are shown once, on Settings › Machines. A token claims tasks only under its own machine name. No proxy in front needs a login exemption for this path, because the backend checks the token itself.
 
 ## Sign-in
 
@@ -210,9 +210,9 @@ Passkeys need nothing but `PUBLIC_URL`. Nobody can sign in until an account exis
 1. Set `PUBLIC_URL` and `SIGNUP_TOKEN` (`openssl rand -hex 32` makes one) and start the backend.
 2. Open the board. The login page offers **Create an account**. Enter a name, the token and, if you like, a name for the passkey, then confirm with the device.
 3. Remove `SIGNUP_TOKEN` and restart. Sign-up is closed from then on.
-4. In Settings, add a passkey for a second device. A user with one passkey and no other method has no way back in once it is lost.
+4. In Settings › Account, add a passkey for a second device. A user with one passkey and no other method has no way back in once it is lost.
 
-A name that is in use is refused, so a sign-up cannot take over a board that already exists, whichever method created it. A user whose board a passkey created cannot remove their last passkey, because it is their only way in: Settings shows the refusal, and adding a second one first lifts it. To add a user later, set the token again, give it to them, and remove it afterwards. Passkeys are discoverable and require user verification, so the device asks for a fingerprint, a face or a PIN and the user types no name.
+A name that is in use is refused, so a sign-up cannot take over a board that already exists, whichever method created it. A user whose board a passkey created cannot remove their last passkey, because it is their only way in: Settings › Account shows the refusal, and adding a second one first lifts it. To add a user later, set the token again, give it to them, and remove it afterwards. Passkeys are discoverable and require user verification, so the device asks for a fingerprint, a face or a PIN and the user types no name.
 
 ### No login
 
@@ -231,7 +231,7 @@ Until this version the backend had no login. An auth proxy (Traefik with Autheli
 3. **Deploy this version.** A backend with neither `PUBLIC_URL` nor `NO_LOGIN_USER` refuses to start, so the old pod keeps serving if step 2 was missed. A backend with `PUBLIC_URL` alone starts and offers passkeys only, which nobody can use yet, so check that the login page shows the OIDC button. With the forward-auth still in front you sign in twice, once at the proxy and once at the board, usually without a second prompt.
 4. **Take the proxy out.** Remove the forward-auth middleware from the UI route, and the separate machine-API route that skipped it. The machine API needs no exemption any more. Remove the NetworkPolicy that kept other pods off port 4000 and `PROXY_SECRET` from both containers' env. The backend ignores a leftover `PROXY_SECRET`, and Caddy no longer sends the header.
 5. **Check the user name.** The claim must give the same name `Remote-User` did, since the name owns the board and is bound into every sealed value. With Authelia, `preferred_username` is that name. A user who arrives under another name lands on an empty board, and the old content stays out of reach. If the claim differs, set `OIDC_USERNAME_CLAIM` before anyone signs in. The existing boards have no `source`, so the first OIDC sign-in under each name claims it for OIDC.
-6. **Optionally add passkeys.** Users add them in Settings once signed in. Set `PASSKEYS=off` if the identity provider should be the only way in. A passkey keeps working after its owner loses access at the identity provider, so leave passkeys off where that matters.
+6. **Optionally add passkeys.** Users add them in Settings › Account once signed in. Set `PASSKEYS=off` if the identity provider should be the only way in. A passkey keeps working after its owner loses access at the identity provider, so leave passkeys off where that matters.
 
 ## Removing the Slack app
 

@@ -292,11 +292,11 @@ Each machine sends the board three sealed documents: its directory list, its cat
 - **Nothing reads it back into a decision.** The copy never reaches a path, argv or a decision on any machine, and no CLI reads one back from the board.
 - **A hostile board can withhold a document or serve an older one of the same machine.** That changes only what the browser offers or shows.
 
-| Document          | What it holds                                                                                       | Used for                                      | Blind index of                 | Index in `version` |
-| ----------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------ | ------------------ |
-| `machine.dirs`    | the listed directories that exist, each with its label                                              | the New task form's Working directory field   | `dirs:<machine>:<document>`    | `dirsIndex`        |
-| `machine.catalog` | the skills and models `claude` reports on the machine, and the names of its lanes                   | completing `/skill` and offering models       | `catalog:<machine>:<document>` | `catalogIndex`     |
-| `machine.usage`   | the usage limits, the last readings, and the ids of Todo tasks the machine held back or could serve | a badge on a task card and a line in Settings | `usage:<machine>:<document>`   | `usageIndex`       |
+| Document          | What it holds                                                                                       | Used for                                                 | Blind index of                 | Index in `version` |
+| ----------------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------- | ------------------------------ | ------------------ |
+| `machine.dirs`    | the listed directories that exist, each with its label                                              | the New task form's Working directory field              | `dirs:<machine>:<document>`    | `dirsIndex`        |
+| `machine.catalog` | the skills and models `claude` reports on the machine, and the names of its lanes                   | completing `/skill` and offering models                  | `catalog:<machine>:<document>` | `catalogIndex`     |
+| `machine.usage`   | the usage limits, the last readings, and the ids of Todo tasks the machine held back or could serve | a badge on a task card and a line in Settings › Machines | `usage:<machine>:<document>`   | `usageIndex`       |
 
 **The directory list.** `board dirs` keeps the list that is enforced in the machine's own `config.json`. The copy is for the form to offer (see [Scheduling](usage.md#scheduling)).
 
@@ -316,7 +316,7 @@ Each machine sends the board three sealed documents: its directory list, its cat
 
 - The operator learns no task id, percentage or limit from it.
 - A reader checks it with `parseMachineUsage`. A task id passes `isSafeTaskId`, and numbers and times are in range. An entry that fails is dropped and the rest opens. A list over its cap makes the document unreadable.
-- The browser shows it as plain text, in the badge and the Settings line only.
+- The browser shows it as plain text, in the badge and the Settings › Machines line only.
 
 ## Keys in the browser
 
@@ -324,7 +324,7 @@ Each machine sends the board three sealed documents: its directory list, its cat
 
 **Setup with no key in the browser.** The warning cannot protect a browser that holds no key at all (after Lock, in a private window, in a new browser) when the board reports none. The setup screen then says that if the board was already in use, setting up again creates a new key that the worker machines do not hold and that cannot read anything stored under the old one. It requires ticking a confirmation that this is a first-time setup.
 
-**Settings.** The Settings page shows and re-wraps a key only when it is the one the browser is using, whatever the board reports.
+**Settings.** Settings › Machines and Settings › Encryption show and re-wrap a key only when it is the one the browser is using, whatever the board reports.
 
 **Passphrases.** A passphrase is trimmed and NFKC-normalised in one place before it is checked and hashed, so setup, unlock and change treat it alike.
 
@@ -358,7 +358,7 @@ What this gives up is under [What the server can still do](#what-the-server-can-
 
 ## The export file
 
-Settings → Your data writes the board to one NDJSON file (see [Your data](usage.md#your-data)). The header is the first line, and every other line is one row of a table. `packages/shared/src/archive.mts` defines the format.
+Settings › Account › Your data writes the board to one NDJSON file (see [Your data](usage.md#your-data)). The header is the first line, and every other line is one row of a table. `packages/shared/src/archive.mts` defines the format.
 
 **What is in it.**
 

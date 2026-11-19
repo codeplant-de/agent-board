@@ -16,7 +16,7 @@ A machine that only uses the board, without running tasks, needs just `board ini
 
 ### From a release
 
-Set up encryption in the browser first (see [Encryption](encryption.md#encryption)). On the board's **Settings** page, create a token for this machine and copy your data key. Then:
+Set up encryption in the browser first (see [Encryption](encryption.md#encryption)). On the board's **Settings › Machines** page, create a token for this machine and copy your data key. Then:
 
 ```sh
 gh release download --repo codeplant-de/agent-board --pattern install.sh -O - | sh
@@ -33,7 +33,7 @@ The checksum catches a broken or partial download. It is not a signature. Anyone
 
 #### board init
 
-`board init` asks for four things: the board's URL, the machine token, the data key and the machine name. It does not show the token or the data key as you type. At each prompt, paste one line: the bare value, or the `AGENT_BOARD_TOKEN=…` or `AGENT_BOARD_DATA_KEY=…` line as the Settings page offers it.
+`board init` asks for four things: the board's URL, the machine token, the data key and the machine name. It does not show the token or the data key as you type. At each prompt, paste one line: the bare value, or the `AGENT_BOARD_TOKEN=…` or `AGENT_BOARD_DATA_KEY=…` line as Settings › Machines offers it.
 
 It writes three files into `~/.config/agent-board`:
 
@@ -343,7 +343,7 @@ Two new commands. `board config` shows and changes this machine's `config.json`.
 
 ### Usage status on the board (CLI 0.19.0)
 
-A new server feature, `machine.usage`. The CLI sends a sealed usage status at the end of every dispatch tick, whether or not the machine has `usageLimits`. The board shows a badge on held Todo cards and a usage line in Settings (see [Usage limits](workers.md#usage-limits)). No worker reads the status.
+A new server feature, `machine.usage`. The CLI sends a sealed usage status at the end of every dispatch tick, whether or not the machine has `usageLimits`. The board shows a badge on held Todo cards and a usage line in Settings › Machines (see [Usage limits](workers.md#usage-limits)). No worker reads the status.
 
 Update the server first. A migration adds three columns to `machine`.
 
@@ -452,7 +452,7 @@ The board server knows the newest CLI release (`CLI_VERSION`, see [The board ser
 
 #### On the board
 
-**Settings** lists each machine's CLI as the machine last reported it:
+**Settings › Machines** lists each machine's CLI as the machine last reported it:
 
 | Shown                                          | Meaning                                                                                    |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -522,7 +522,7 @@ An `intake` key is ignored with a warning, and `board doctor` fails on it. See [
 
 A name is 1 to 64 characters of letters, digits, `.`, `-` and `_`, starting with a letter or digit. The CLI states this when it refuses a name.
 
-An older token may carry a name outside that shape. It keeps working for what the machine API allows. The Settings page shows its name as `(invalid)` and still offers **Revoke**. To use the machine again, issue it a token under a valid name and set `machine` to it.
+An older token may carry a name outside that shape. It keeps working for what the machine API allows. Settings › Machines shows its name as `(invalid)` and still offers **Revoke**. To use the machine again, issue it a token under a valid name and set `machine` to it.
 
 ### usageLimits
 

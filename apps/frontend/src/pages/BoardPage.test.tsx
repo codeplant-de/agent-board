@@ -348,7 +348,7 @@ describe('BoardPage banner for machines whose CLI the board refuses', () => {
     const alert = banner.closest('[role="alert"]') as HTMLElement;
     expect(alert.textContent).toContain('laptop, workstation');
     expect(alert.textContent).not.toMatch(/old-box|revoked-box|never-seen|fine/);
-    expect(within(alert).getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings');
+    expect(within(alert).getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings/machines');
   });
 
   it('shows nothing while every machine is compatible', async () => {

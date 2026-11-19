@@ -15,7 +15,11 @@ import { BacklogPage, BoardPage } from './pages/BoardPage';
 import { ClosedPage } from './pages/ClosedPage';
 import { AgentsPage } from './pages/AgentsPage';
 import { SchedulesPage } from './pages/SchedulesPage';
-import { SettingsPage } from './pages/SettingsPage';
+import { AccountSettings } from './pages/settings/AccountSettings';
+import { EncryptionSettings } from './pages/settings/EncryptionSettings';
+import { MachinesSettings } from './pages/settings/MachinesSettings';
+import { NotificationsSettings } from './pages/settings/NotificationsSettings';
+import { SettingsLayout } from './pages/settings/SettingsLayout';
 import { TaskPage } from './pages/TaskPage';
 
 function SignedInApp() {
@@ -74,8 +78,15 @@ function SignedInApp() {
               <Route path="t/:id" element={<TaskPage />} />
               <Route path="schedules" element={<SchedulesPage />} />
               <Route path="closed" element={<ClosedPage />} />
-              <Route path="settings" element={<SettingsPage />} />
-              <Route path="settings/agents" element={<AgentsPage />} />
+              <Route path="settings" element={<SettingsLayout />}>
+                <Route index element={<Navigate to="/settings/machines" replace />} />
+                <Route path="machines" element={<MachinesSettings />} />
+                <Route path="notifications" element={<NotificationsSettings />} />
+                <Route path="encryption" element={<EncryptionSettings />} />
+                <Route path="agents" element={<AgentsPage />} />
+                <Route path="account" element={<AccountSettings />} />
+                <Route path="*" element={<Navigate to="/settings/machines" replace />} />
+              </Route>
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

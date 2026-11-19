@@ -25,7 +25,7 @@ A task moves through `backlog → todo → running → needs-me → done`, with 
 
 You need Linux with systemd, or macOS. You also need `claude` and `gh`, both logged in. On macOS the worker runs as launchd agents while you are logged in (see [macOS](docs/setup.md#macos)).
 
-1. Open the board in the browser and set up encryption (passphrase and recovery key). On **Settings**, create a token for this machine and copy the data key.
+1. Open the board in the browser and set up encryption (passphrase and recovery key). On **Settings › Machines**, create a token for this machine and copy the data key.
 2. Install the CLI from the newest release:
 
    ```sh

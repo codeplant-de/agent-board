@@ -4,15 +4,19 @@ import { ModalsProvider } from '@mantine/modals';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
-import { SESSION_MARKER_KEY } from '../lib/session';
+import { MemoryRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { SESSION_MARKER_KEY } from '../../lib/session';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AccountDeletedProvider } from '../components/AccountDeletedProvider';
-import { KeyProvider } from '../crypto/KeyProvider';
-import { createKeySetup } from '../crypto/keySlots';
-import { SettingsPage } from './SettingsPage';
-import { openAs, sealerFor } from '../lib/contexts';
-import { openMachines } from '../lib/opening';
+import { AccountDeletedProvider } from '../../components/AccountDeletedProvider';
+import { KeyProvider } from '../../crypto/KeyProvider';
+import { createKeySetup } from '../../crypto/keySlots';
+import { AccountSettings } from './AccountSettings';
+import { EncryptionSettings } from './EncryptionSettings';
+import { MachinesSettings } from './MachinesSettings';
+import { NotificationsSettings } from './NotificationsSettings';
+import { SettingsLayout } from './SettingsLayout';
+import { openAs, sealerFor } from '../../lib/contexts';
+import { openMachines } from '../../lib/opening';
 
 const TITLE = { field: 'title', context: 'task:abc' } as const;
 
@@ -36,7 +40,7 @@ const revision = vi.hoisted(() => ({ current: null as string | null }));
 const logout = vi.hoisted(() => vi.fn(async () => undefined));
 const lock = vi.hoisted(() => vi.fn(async () => undefined));
 
-vi.mock('../lib/trpc', () => ({
+vi.mock('../../lib/trpc', () => ({
   errorMessage: String,
   useRawTRPC: () => ({
     account: {
@@ -106,15 +110,24 @@ let setup: KeySetup;
 let held: Keys;
 let sealedByBrowser: string;
 
-function renderPage() {
+function renderPage(path = '/settings/machines') {
   render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <MantineProvider>
         <ModalsProvider>
           <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
             <AccountDeletedProvider>
               <KeyProvider keys={held} lock={lock}>
-                <SettingsPage />
+                <Routes>
+                  <Route path="settings" element={<SettingsLayout />}>
+                    <Route index element={<Navigate to="/settings/machines" replace />} />
+                    <Route path="machines" element={<MachinesSettings />} />
+                    <Route path="notifications" element={<NotificationsSettings />} />
+                    <Route path="encryption" element={<EncryptionSettings />} />
+                    <Route path="account" element={<AccountSettings />} />
+                    <Route path="*" element={<Navigate to="/settings/machines" replace />} />
+                  </Route>
+                </Routes>
               </KeyProvider>
             </AccountDeletedProvider>
           </QueryClientProvider>
@@ -250,7 +263,7 @@ describe('machine enrolment', () => {
   it('shows the key id this browser uses, not the one the board reports', async () => {
     const second = await createKeySetup({ owner: 'jascha', passphrase: PASSPHRASE, kdf: { m: 8192, t: 1, p: 1 } });
     stored.current = second.setup;
-    renderPage();
+    renderPage('/settings/encryption');
     expect(await screen.findByText(held.keyId)).toBeInTheDocument();
     expect(screen.queryByText(second.setup.keyId)).not.toBeInTheDocument();
   });
@@ -345,7 +358,7 @@ describe('desktop notifications', () => {
   it('turns on after the browser grants permission, and remembers it', async () => {
     mockNotification('default');
     requestPermission.mockResolvedValue('granted');
-    renderPage();
+    renderPage('/settings/notifications');
     await userEvent.click(await screen.findByRole('switch', { name: 'Notify me when a task needs me' }));
     await waitFor(() => expect(screen.getByRole('switch', { name: 'Notify me when a task needs me' })).toBeChecked());
     expect(localStorage.getItem('agent-board.desktopNotifications')).toBe('on');
@@ -355,7 +368,7 @@ describe('desktop notifications', () => {
   it('stays off when the browser refuses permission', async () => {
     mockNotification('default');
     requestPermission.mockResolvedValue('denied');
-    renderPage();
+    renderPage('/settings/notifications');
     await userEvent.click(await screen.findByRole('switch', { name: 'Notify me when a task needs me' }));
     expect(await screen.findByText(/blocks notifications for this site/)).toBeInTheDocument();
     expect(localStorage.getItem('agent-board.desktopNotifications')).toBeNull();
@@ -363,14 +376,14 @@ describe('desktop notifications', () => {
 
   it('is disabled and says why when notifications are blocked', async () => {
     mockNotification('denied');
-    renderPage();
+    renderPage('/settings/notifications');
     expect(await screen.findByRole('switch', { name: 'Notify me when a task needs me' })).toBeDisabled();
     expect(screen.getByText(/blocks notifications for this site/)).toBeInTheDocument();
   });
 
   it('explains that a browser without notifications needs https or localhost', async () => {
     vi.stubGlobal('Notification', undefined);
-    renderPage();
+    renderPage('/settings/notifications');
     expect(await screen.findByRole('switch', { name: 'Notify me when a task needs me' })).toBeDisabled();
     expect(screen.getByText(/need https or localhost/)).toBeInTheDocument();
   });
@@ -378,7 +391,7 @@ describe('desktop notifications', () => {
   it('turns off without asking the browser again', async () => {
     mockNotification('granted');
     localStorage.setItem('agent-board.desktopNotifications', 'on');
-    renderPage();
+    renderPage('/settings/notifications');
     await userEvent.click(await screen.findByRole('switch', { name: 'Notify me when a task needs me' }));
     await waitFor(() => expect(localStorage.getItem('agent-board.desktopNotifications')).toBeNull());
     expect(requestPermission).not.toHaveBeenCalled();
@@ -389,28 +402,28 @@ describe('signing in and out', () => {
   beforeEach(() => localStorage.clear());
 
   it('offers neither passkeys nor sign out on a board without login', async () => {
-    renderPage();
-    await screen.findByText('laptop');
+    renderPage('/settings/account');
+    await screen.findByRole('heading', { name: 'Export' });
     expect(screen.queryByText('Sign-in')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument();
   });
 
   it('shows the passkeys section only when passkeys are on', async () => {
     authConfig.current = { login: true, passkeys: false };
-    renderPage();
+    renderPage('/settings/account');
     expect(await screen.findByRole('button', { name: 'Sign out' })).toBeInTheDocument();
     expect(screen.queryByText('Sign-in')).not.toBeInTheDocument();
   });
 
   it('shows the passkeys section when login and passkeys are on', async () => {
     authConfig.current = { login: true, passkeys: true };
-    renderPage();
+    renderPage('/settings/account');
     expect(await screen.findByText('Sign-in')).toBeInTheDocument();
   });
 
   it('signs out on the board, tells the other tabs and locks the keys', async () => {
     authConfig.current = { login: true, passkeys: false };
-    renderPage();
+    renderPage('/settings/account');
     await userEvent.click(await screen.findByRole('button', { name: 'Sign out' }));
     await waitFor(() => expect(lock).toHaveBeenCalled());
     expect(logout).toHaveBeenCalledTimes(1);
@@ -420,7 +433,7 @@ describe('signing in and out', () => {
   it('stays signed in and unlocked when the board could not end the session', async () => {
     authConfig.current = { login: true, passkeys: false };
     logout.mockRejectedValueOnce(new Error('502'));
-    renderPage();
+    renderPage('/settings/account');
     await userEvent.click(await screen.findByRole('button', { name: 'Sign out' }));
     await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
     expect(lock).not.toHaveBeenCalled();
@@ -430,14 +443,14 @@ describe('signing in and out', () => {
 
 describe('your data', () => {
   it('offers an export that includes transcripts unless unchecked, and an import', async () => {
-    renderPage();
+    renderPage('/settings/account');
     expect(screen.getByRole('checkbox', { name: /Include transcripts/ })).toBeChecked();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Download export' })).toBeEnabled());
     expect(screen.getByLabelText('Export file')).toBeInTheDocument();
   });
 
   it('opens the delete confirmation, which stays closed to a wrong username', async () => {
-    renderPage();
+    renderPage('/settings/account');
     await userEvent.click(await screen.findByRole('button', { name: /Delete account/ }));
     expect(await screen.findByText('1 task')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete everything' })).toBeDisabled();
@@ -456,5 +469,29 @@ describe('revision', () => {
   it('says unknown for a server built without a commit', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByTestId('revision')).toHaveTextContent('Server unknown'));
+  });
+});
+
+describe('the settings subpages', () => {
+  it('sends /settings to the machines subpage', async () => {
+    renderPage('/settings');
+    expect(await screen.findByRole('heading', { name: 'Worker machines' })).toBeInTheDocument();
+  });
+
+  it('sends an unknown subpage to the machines subpage', async () => {
+    renderPage('/settings/nothing-here');
+    expect(await screen.findByRole('heading', { name: 'Worker machines' })).toBeInTheDocument();
+  });
+
+  it('lists every subpage and shows the one that is clicked', async () => {
+    renderPage();
+    // jsdom applies Mantine's visibleFrom and hiddenFrom rules to both navs, so neither has a computed role to query by.
+    const nav = screen.getAllByLabelText('Settings sections', { selector: 'nav' })[0] as HTMLElement;
+    for (const name of ['Machines', 'Notifications', 'Encryption', 'Account']) {
+      expect(within(nav).getByRole('link', { hidden: true, name })).toBeInTheDocument();
+    }
+    await userEvent.click(within(nav).getByRole('link', { hidden: true, name: 'Encryption' }));
+    expect(await screen.findByRole('heading', { name: 'Encryption' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Worker machines' })).not.toBeInTheDocument();
   });
 });

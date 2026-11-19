@@ -15,7 +15,7 @@ export function IncompatibleMachinesBanner() {
     <Alert color="orange" icon={<IconAlertTriangle size={18} />} title="A machine needs a CLI update" mb="md">
       The board no longer accepts the CLI on {stuck.map((m) => m.shown).join(', ')}, so{' '}
       {stuck.length === 1 ? 'it starts' : 'they start'} no tasks. Run <Code>board self-update</Code> there. See{' '}
-      <Anchor component={Link} to="/settings">
+      <Anchor component={Link} to="/settings/machines">
         Settings
       </Anchor>
       .

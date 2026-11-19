@@ -757,6 +757,10 @@ Done tasks nobody touched for 7 days are closed, with a note in the thread. They
 
 A task made with a key (`board schedule --key`) is left open. A closed task is "never again" for its key, so closing one would block the PR's next review request.
 
+## Settings
+
+**Settings** has five pages, listed beside the content (above it on a phone). **Machines** lists the worker machines with their CLI versions and usage, and issues and revokes their tokens. **Agents** shows the agent definitions on the board and which machines run them ([Agents on the board](workers.md#agents-on-the-board)). **Notifications** has the desktop notifications switch. **Encryption** changes the passphrase. **Account** has the passkeys, sign out, and your data (export, import, delete). The web and server revisions show at the bottom of each page. `/settings` opens Machines.
+
 ## Signing in and out
 
 A board that signs users in shows a login page when nobody is signed in. It has one button for each way the operator set up. How to set them up is in [operations.md](operations.md#sign-in).
@@ -769,17 +773,17 @@ After signing in you land on the page you first asked for. Your keys are separat
 
 If single sign-on is refused with "This name belongs to an account with a different sign-in method", your name was first used through another method, such as a passkey sign-up, and only that method opens it. Ask the operator, who can move the account ([operations.md](operations.md#environment-of-the-backend)). If a SAML sign-in comes back to the login page with a message, the identity provider's answer was refused; start again from the board. A session is not re-checked at the identity provider, so losing access there takes effect when your session ends.
 
-**Sign out** is the icon in the header, the entry in its menu, and the Session card in Settings. It ends the session on the board and locks the board on this device. A session lasts 30 days after its last use unless the operator chose another number.
+**Sign out** is the icon in the header, the entry in its menu, and the Session card in Settings › Account. It ends the session on the board and locks the board on this device. A session lasts 30 days after its last use unless the operator chose another number.
 
-**Passkeys in Settings.** The Sign-in card lists your passkeys with when each was added and last used. Add one under a name for the device, such as `laptop` or `phone`. You can rename or remove one, and removing asks first. Keep two, so that losing a device does not lock you out: if you created your account with a passkey, the board refuses to remove your last one, and says so. Accounts that sign in through single sign-on may remove all of theirs. The card shows only on a board where passkeys are on. Your passkeys belong to the board's address and stop working if the board moves to another hostname.
+**Passkeys in Settings › Account.** The Sign-in card lists your passkeys with when each was added and last used. Add one under a name for the device, such as `laptop` or `phone`. You can rename or remove one, and removing asks first. Keep two, so that losing a device does not lock you out: if you created your account with a passkey, the board refuses to remove your last one, and says so. Accounts that sign in through single sign-on may remove all of theirs. The card shows only on a board where passkeys are on. Your passkeys belong to the board's address and stop working if the board moves to another hostname.
 
 ## Agents on the board
 
-**Settings → Agents** lists the agent definitions you pushed with `board agents push`, which every machine of yours applies by itself. For each one it shows the full definition, the same grant flags `push` prints, and which machines run it: the version each machine applied, whether its hash matches the board's, and which machines replaced a local definition of that name. The page is read only. To change an agent, push it again from a CLI, or take it off with `board agents rm --board`. See [Agents on the board](workers.md#agents-on-the-board).
+**Settings › Agents** lists the agent definitions you pushed with `board agents push`, which every machine of yours applies by itself. For each one it shows the full definition, the same grant flags `push` prints, and which machines run it: the version each machine applied, whether its hash matches the board's, and which machines replaced a local definition of that name. The page is read only. To change an agent, push it again from a CLI, or take it off with `board agents rm --board`. See [Agents on the board](workers.md#agents-on-the-board).
 
 ## Desktop notifications
 
-Settings has a **Desktop notifications** switch, off by default. Turning it on asks the browser for permission.
+**Settings › Notifications** has a **Desktop notifications** switch, off by default. Turning it on asks the browser for permission.
 
 Once granted, the browser shows an OS notification for each task that newly enters Needs me. It reads "Asked you a question" when an agent asked one and "Needs you" otherwise. Clicking it opens the task.
 
@@ -791,7 +795,7 @@ Once granted, the browser shows an OS notification for each task that newly ente
 
 ## Your data
 
-**Settings → Your data** exports the board to a file, imports such a file, and deletes the account. The browser does the work. The server only pages rows out and takes rows in.
+**Settings › Account › Your data** exports the board to a file, imports such a file, and deletes the account. The browser does the work. The server only pages rows out and takes rows in.
 
 ### Export
 
@@ -810,8 +814,8 @@ The file is as secret as a backup of the database: it opens nothing without the 
 
 An import adds the rows of a file to the board. A row the board already has is skipped, so importing a file twice does no harm. So is a row whose id or machine token another account on the same server holds: those are unique across the server. It works in two places.
 
-- **Settings → Your data → Import** imports into the board you have open. The file must be made with the key this browser uses (the key id on the screen). A file of another key is refused, with a pointer to the setup screen.
-- The **setup screen** of an account with no key has **Import a board export instead**. Choose the file, then enter the passphrase or the recovery key the export was made with. The browser opens the key slots in the file. A wrong secret writes nothing. A right one stores the file's key slots as this account's key, imports the rows, and shows how it went before you continue. If the import stops after that, the key stays. Import the file again from Settings.
+- **Settings › Account › Your data → Import** imports into the board you have open. The file must be made with the key this browser uses (the key id on the screen). A file of another key is refused, with a pointer to the setup screen.
+- The **setup screen** of an account with no key has **Import a board export instead**. Choose the file, then enter the passphrase or the recovery key the export was made with. The browser opens the key slots in the file. A wrong secret writes nothing. A right one stores the file's key slots as this account's key, imports the rows, and shows how it went before you continue. If the import stops after that, the key stays. Import the file again from Settings › Account.
 
 Before anything is sent, the screen shows when the file was exported, by which user, its key id and whether it has transcripts. Only import a file you exported yourself. The machines in the file keep their tokens, so they work against this board once their `web.json` points here, and tasks in Todo start on them.
 
@@ -1141,7 +1145,7 @@ laptop holds tasks below urgent: 5-hour usage 85% (limit 80%) until 14:05
 
 ### The machine's row in Settings
 
-A machine's row in **Settings** shows the readings it last saw (`5-hour 85% · 7-day 40%`, with the reset times on hover) and its limits. While it holds tasks, the row adds `Holding tasks below urgent until 14:05: 5-hour usage 85% (limit 80%)` and the number of held tasks.
+A machine's row in **Settings › Machines** shows the readings it last saw (`5-hour 85% · 7-day 40%`, with the reset times on hover) and its limits. While it holds tasks, the row adds `Holding tasks below urgent until 14:05: 5-hour usage 85% (limit 80%)` and the number of held tasks.
 
 - Readings of a window that has already reset are left out.
 - For a machine that sent nothing for 10 minutes, because it is switched off or its dispatcher is failing, the line says `as of` when it last sent a status.
