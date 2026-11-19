@@ -1,4 +1,5 @@
 import {
+  EFFORTS,
   isModelName,
   isSafeLane,
   isSafeMachineName,
@@ -73,6 +74,7 @@ const id = z.string().refine(isSafeTaskId, 'not a task id');
 const status = z.enum(STATUSES);
 const priority = z.enum(PRIORITIES);
 const model = z.string().refine(isModelName, 'not a model name');
+const effort = z.enum(EFFORTS);
 const lane = z.string().refine(isSafeLane, 'not a lane name');
 const repeatEnd = {
   times: z.number().int().positive().max(MAX_INT32).optional(),
@@ -216,6 +218,8 @@ const tasksRouter = router({
         priority: priority.default('normal'),
         /** The Claude model of its runs; absent is claude's default. */
         model: model.optional(),
+        /** The effort level of its runs; absent is claude's default. */
+        effort: effort.optional(),
         /** The lane of the machine that should run the task, or each occurrence of its schedule; absent is the default lane. */
         lane: lane.optional(),
         /** The agent may move the task, or each occurrence of its schedule, to Done itself; absent is off. */
@@ -238,6 +242,7 @@ const tasksRouter = router({
           input: input.input,
           priority: input.priority,
           ...(input.model === undefined ? {} : { model: input.model }),
+          ...(input.effort === undefined ? {} : { effort: input.effort }),
           ...(input.lane === undefined ? {} : { lane: input.lane }),
           ...(input.autoDone === undefined ? {} : { autoDone: input.autoDone }),
           ...(place === undefined ? {} : { machine: place.machine, workdir: place.workdir }),
@@ -256,6 +261,7 @@ const tasksRouter = router({
         input: input.input,
         priority: input.priority,
         ...(input.model === undefined ? {} : { model: input.model }),
+        ...(input.effort === undefined ? {} : { effort: input.effort }),
         ...(input.lane === undefined ? {} : { lane: input.lane }),
         ...(input.autoDone === undefined ? {} : { autoDone: input.autoDone }),
         status: typeof when === 'string' ? createStatus[when] : 'todo',
@@ -418,7 +424,7 @@ const tasksRouter = router({
 
   /**
    * Changes a task's settings after creation. A `place` pins it to the machine and the sealed directory (null: none) and drops
-   * its session, so the next run starts fresh there; a running or waiting task is refused with CONFLICT. A model applies from the next run on; a lane is refused (CONFLICT) while the task runs; `autoDone` applies at once, in any status.
+   * its session, so the next run starts fresh there; a running or waiting task is refused with CONFLICT. A model or an effort applies from the next run on; a lane is refused (CONFLICT) while the task runs; `autoDone` applies at once, in any status.
    */
   configure: procedure
     .input(
@@ -427,6 +433,7 @@ const tasksRouter = router({
           id,
           priority: priority.optional(),
           model: model.nullable().optional(),
+          effort: effort.nullable().optional(),
           lane: lane.nullable().optional(),
           autoDone: z.boolean().optional(),
           place: z
@@ -435,9 +442,14 @@ const tasksRouter = router({
             .optional(),
         })
         .refine(
-          ({ priority: p, model: m, lane: l, autoDone, place }) =>
-            p !== undefined || m !== undefined || l !== undefined || autoDone !== undefined || place !== undefined,
-          'change at least one of priority, model, lane, autoDone and place',
+          ({ priority: p, model: m, effort: e, lane: l, autoDone, place }) =>
+            p !== undefined ||
+            m !== undefined ||
+            e !== undefined ||
+            l !== undefined ||
+            autoDone !== undefined ||
+            place !== undefined,
+          'change at least one of priority, model, effort, lane, autoDone and place',
         ),
     )
     .mutation(async ({ ctx, input: { id: taskId, ...config } }) =>
@@ -525,6 +537,8 @@ const schedulesRouter = router({
           place: z.object({ machine: machineName, workdir: sealed('workdir', 'directory') }).nullable(),
           priority,
           model: model.nullable(),
+          /** An effort level, or null for claude's default; absent keeps the schedule's. */
+          effort: effort.nullable().optional(),
           /** A lane name, or null for the default lane; absent keeps the schedule's. */
           lane: lane.nullable().optional(),
           autoDone: z.boolean(),
@@ -554,6 +568,7 @@ const schedulesRouter = router({
         place: input.place,
         priority: input.priority,
         model: input.model,
+        ...(input.effort === undefined ? {} : { effort: input.effort }),
         ...(input.lane === undefined ? {} : { lane: input.lane }),
         autoDone: input.autoDone,
         rule: 'everyMs' in input.repeat ? { everyMs: input.repeat.everyMs } : ruleOf(input.repeat),

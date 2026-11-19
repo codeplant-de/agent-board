@@ -2,6 +2,7 @@ import { ActionIcon, Button, Group, Modal, Select, Stack, Switch, Text } from '@
 import { IconPencil } from '@tabler/icons-react';
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
+import { DEFAULT_EFFORT, EFFORT_OPTIONS, effortFromOption } from '../lib/effort';
 import { DEFAULT_LANE, laneFromOption } from '../lib/lane';
 import { DEFAULT_MODEL, modelFromOption } from '../lib/model';
 import { useTRPC, type BoardTask } from '../lib/trpc';
@@ -30,6 +31,25 @@ export function ModelPicker({ task }: { task: BoardTask }) {
       data={options}
       value={task.model ?? DEFAULT_MODEL}
       onChange={(value) => value !== null && configure.mutate({ task, model: modelFromOption(value) })}
+      disabled={configure.isPending}
+    />
+  );
+}
+
+/** A change applies from the next run on, in every status. */
+export function EffortPicker({ task }: { task: BoardTask }) {
+  const trpc = useTRPC();
+  const configure = useMutation(trpc.tasks.configure.mutationOptions());
+  return (
+    <Select
+      aria-label="Effort"
+      title={`How hard claude thinks in its runs, from the next run on${task.scheduleId === null ? '' : `. ${SCHEDULE_HINT}`}`}
+      size="xs"
+      w={110}
+      allowDeselect={false}
+      data={EFFORT_OPTIONS}
+      value={task.effort ?? DEFAULT_EFFORT}
+      onChange={(value) => value !== null && configure.mutate({ task, effort: effortFromOption(value) })}
       disabled={configure.isPending}
     />
   );

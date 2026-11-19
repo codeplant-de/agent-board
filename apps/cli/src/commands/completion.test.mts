@@ -65,6 +65,7 @@ test('the model lists the visible commands only, with their flags', () => {
   );
   assert.deepEqual(model.flagValues['--priority'], ['urgent', 'high', 'normal', 'low']);
   assert.deepEqual(model.flagValues['--model'], ['fable', 'opus', 'sonnet', 'haiku']);
+  assert.deepEqual(model.flagValues['--effort'], ['low', 'medium', 'high', 'xhigh', 'max']);
   assert.deepEqual(model.flagValues['--type'], ['created', 'moved', 'changed', 'closed', 'removed', 'note']);
   assert.ok(model.taskFlags.includes('--task') && model.taskFlags.includes('--parent'));
 });
@@ -86,8 +87,8 @@ test('task completes its id, then set or unset, then the setting', () => {
     'task-key',
   ]);
   assert.ok(script('bash').includes('compgen -W "set unset"'));
-  assert.ok(script('bash').includes('compgen -W "priority model lane auto-done dir prompt"'));
-  assert.ok(script('fish').includes("'__board_at 3 task' -a 'priority model lane auto-done dir prompt'"));
+  assert.ok(script('bash').includes('compgen -W "priority model effort lane auto-done dir prompt"'));
+  assert.ok(script('fish').includes("'__board_at 3 task' -a 'priority model effort lane auto-done dir prompt'"));
 });
 
 for (const shell of SHELLS) {

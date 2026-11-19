@@ -1,8 +1,10 @@
 // `board task <task> [set <key> <value> | unset <key>]`: the settings of a task after it was made. Without an action it prints
-// them; `set` and `unset` change the priority, the model, the lane, whether the agent may mark it done and the directory the task runs in (which pins it to this machine).
+// them; `set` and `unset` change the priority, the model, the effort, the lane, whether the agent may mark it done and the directory the task runs in (which pins it to this machine).
 import { resolve } from 'node:path';
 import {
   defaultTitle,
+  EFFORTS,
+  isEffort,
   isModelName,
   isPriority,
   isSafeLane,
@@ -19,7 +21,7 @@ import { pinnedMachine } from '../dispatch/decide.mts';
 import { plainLine } from '../output/terminal.mts';
 import { localTime } from './schedule.mts';
 
-export const SETTING_KEYS = ['priority', 'model', 'lane', 'auto-done', 'dir', 'prompt'] as const;
+export const SETTING_KEYS = ['priority', 'model', 'effort', 'lane', 'auto-done', 'dir', 'prompt'] as const;
 export type SettingKey = (typeof SETTING_KEYS)[number];
 
 export interface TaskSettingsDeps {
@@ -69,6 +71,7 @@ export function formatSettings(deps: TaskSettingsDeps, task: Task): string[] {
     ['status', `${task.status}${task.closed ? ' (closed)' : ''}`],
     ['priority', task.priority],
     ['model', task.model === null ? 'default' : plainLine(task.model)],
+    ['effort', task.effort ?? 'default'],
     ['lane', laneLine(task)],
     ['auto-done', task.autoDone ? 'on: the agent may move it to Done' : 'off'],
     ['agent', isUnreadable(task, 'agent') ? UNREADABLE : task.agent == null ? 'none' : plainLine(task.agent)],
@@ -108,7 +111,7 @@ function confirmed(deps: TaskSettingsDeps, line: string): void {
 function noteSchedule(deps: TaskSettingsDeps, task: Task): void {
   if (task.scheduleId !== null)
     deps.print(
-      'note: this card belongs to a schedule; the change applies to it only, and the next occurrence takes priority, model, lane, auto-done, machine and directory from the schedule again',
+      'note: this card belongs to a schedule; the change applies to it only, and the next occurrence takes priority, model, effort, lane, auto-done, machine and directory from the schedule again',
     );
 }
 
@@ -134,6 +137,19 @@ export async function setModel(deps: TaskSettingsDeps, id: string, model: string
   await deps.backend.configureTask(id, { model: model ?? null });
   noteSchedule(deps, task);
   const running = task.status === 'running' ? ' (the run in progress keeps its model)' : '';
+  confirmed(deps, `${id} uses ${shown} from its next run on${running}`);
+}
+
+/** An effort level, or undefined for claude's default. */
+export async function setEffort(deps: TaskSettingsDeps, id: string, effort: string | undefined): Promise<void> {
+  if (effort !== undefined && !isEffort(effort))
+    throw new UsageError(`effort is one of ${EFFORTS.join(', ')}, not "${plainLine(effort).slice(0, 40)}"`);
+  const task = await deps.backend.getTask(id);
+  const shown = effort ?? 'the default effort';
+  if (task.effort === (effort ?? null)) return deps.print(`${id} already uses ${shown}`);
+  await deps.backend.configureTask(id, { effort: effort ?? null });
+  noteSchedule(deps, task);
+  const running = task.status === 'running' ? ' (the run in progress keeps its effort)' : '';
   confirmed(deps, `${id} uses ${shown} from its next run on${running}`);
 }
 

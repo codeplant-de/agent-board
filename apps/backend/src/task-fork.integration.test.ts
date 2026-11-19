@@ -36,7 +36,9 @@ const row = async (id: string) => {
 
 let sessions = 0;
 /** A task on the laptop in DIR that ran once and waits in Needs me with its session. */
-async function started(options: { agent?: string; model?: string; priority?: 'high' } = {}): Promise<string> {
+async function started(
+  options: { agent?: string; model?: string; effort?: 'high'; priority?: 'high' } = {},
+): Promise<string> {
   const task = await ctx.ui.tasks.create({
     title: 'parent',
     input: 'go',
@@ -53,8 +55,8 @@ const fork = (parentId: string, input = 'look into the flaky test') =>
   ctx.ui.tasks.fork({ parentId, title: 'Fork of parent', input });
 
 describe('forking a task from the UI', () => {
-  it('makes a task in Todo that follows the parent and takes its machine, directory, model and priority', async () => {
-    const parentId = await started({ model: 'opus', priority: 'high' });
+  it('makes a task in Todo that follows the parent and takes its machine, directory, model, effort and priority', async () => {
+    const parentId = await started({ model: 'opus', effort: 'high', priority: 'high' });
     const before = await row(parentId);
     const forked = await fork(parentId);
     expect(forked).toMatchObject({
@@ -64,6 +66,7 @@ describe('forking a task from the UI', () => {
       machine: 'laptop',
       workdir: DIR,
       model: 'opus',
+      effort: 'high',
       priority: 'high',
       createdBy: 'user',
       forkOf: parentId,

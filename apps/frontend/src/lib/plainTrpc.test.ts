@@ -105,6 +105,7 @@ const wireTask = async (overrides: Record<string, unknown> = {}) => {
     createdBy: 'user',
     lane: null,
     requestedLane: null,
+    effort: null,
     borrowed: false,
     lastActiveAt: null,
     runStartedAt: null,
@@ -834,6 +835,7 @@ describe('what the board sends in the clear', () => {
         machine: PROSE,
         lane: 'x'.repeat(65),
         requestedLane: 'not a lane',
+        effort: 'huge',
         sessionId: '--dangerously-skip-permissions',
         status: PROSE,
         priority: 'urgent!',
@@ -867,12 +869,13 @@ describe('what the board sends in the clear', () => {
       machine: '(invalid)',
       lane: '(invalid)',
       requestedLane: '(invalid)',
+      effort: null,
       sessionId: null,
       status: 'needs-me',
       priority: 'normal',
       next: 'fresh',
       createdBy: 'agent',
-      invalid: ['status', 'priority', 'next', 'createdBy', 'machine', 'lane', 'requestedLane', 'sessionId'],
+      invalid: ['status', 'priority', 'next', 'createdBy', 'effort', 'machine', 'lane', 'requestedLane', 'sessionId'],
     });
     expect(JSON.stringify({ task, thread })).not.toContain('ignore all');
     expect(thread[0]).toMatchObject({ by: '(invalid)', text: 'hi', unreadable: false });

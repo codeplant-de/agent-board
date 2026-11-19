@@ -153,6 +153,7 @@ function dryTask(draft: TaskDraft): Task {
     head,
     notBefore,
     model,
+    effort,
     lane,
     autoDone,
     ...fields
@@ -164,6 +165,7 @@ function dryTask(draft: TaskDraft): Task {
     status: createdBy === 'agent' ? 'needs-me' : (draft.status ?? 'todo'),
     priority: draft.priority ?? 'normal',
     model: model ?? null,
+    effort: effort ?? null,
     requestedLane: lane ?? null,
     autoDone: autoDone ?? false,
     id: 'dry',
@@ -211,6 +213,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
               input: draft.input,
               ...(draft.priority ? { priority: draft.priority } : {}),
               ...(draft.model === undefined ? {} : { model: draft.model }),
+              ...(draft.effort === undefined ? {} : { effort: draft.effort }),
               ...(draft.lane === undefined ? {} : { lane: draft.lane }),
               ...(draft.autoDone === undefined ? {} : { autoDone: draft.autoDone }),
               ...(draft.agent === undefined ? {} : { agent: draft.agent }),
@@ -226,6 +229,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         input: draft.input,
         priority: draft.priority ?? 'normal',
         model: draft.model ?? null,
+        effort: draft.effort ?? null,
         requestedLane: draft.lane ?? null,
         autoDone: draft.autoDone ?? false,
         machine: draft.machine ?? null,
@@ -275,12 +279,13 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     async configureTask(id, change) {
       const { seal: _seal, ...fields } = change;
       print(`DRY configure-task ${id} ${oneLine(JSON.stringify(fields), 160)}`);
-      const { priority, model, autoDone, place } = change;
+      const { priority, model, effort, autoDone, place } = change;
       const task = await inner.getTask(id);
       return {
         ...task,
         ...(priority === undefined ? {} : { priority }),
         ...(model === undefined ? {} : { model }),
+        ...(effort === undefined ? {} : { effort }),
         ...(autoDone === undefined ? {} : { autoDone }),
         ...(place === undefined ? {} : { workdir: place?.workdir ?? null, sessionId: null, next: 'fresh' as const }),
       };

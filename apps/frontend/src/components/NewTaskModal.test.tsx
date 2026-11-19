@@ -345,6 +345,24 @@ describe('NewTaskModal model', () => {
   });
 });
 
+describe('NewTaskModal effort', () => {
+  it('sends no effort by default', async () => {
+    await open();
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).not.toHaveProperty('effort');
+  });
+
+  it('sends the chosen level', async () => {
+    await open();
+    await userEvent.click(screen.getByRole('combobox', { name: 'Effort' }));
+    await userEvent.click(await screen.findByRole('option', { name: 'Extra high', hidden: true }));
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ effort: 'xhigh', when: 'now' });
+  });
+});
+
 describe('NewTaskModal lane', () => {
   it('sends no lane by default, and does not say that the prompt picks the lane', async () => {
     await open();

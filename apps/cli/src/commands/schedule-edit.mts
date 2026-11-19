@@ -1,10 +1,17 @@
-// `board schedules edit <id> [text...] [--title t] [--priority p] [--model m] [--lane l] [--auto-done on|off] [--agent a] [--dir d]
+// `board schedules edit <id> [text...] [--title t] [--priority p] [--model m] [--effort e] [--lane l] [--auto-done on|off] [--agent a] [--dir d]
 // [--every d | --cron e | --after s [--delay d]] [--in d | --at t] [--times n | --until t | --forever] [--max-concurrent n]`:
 // the prompt and every setting of a schedule, the ones the browser's Edit schedule form changes. What a flag leaves out stays
 // as the schedule has it, and a new repeat replaces the old one.
 import { isDeepStrictEqual } from 'node:util';
 import { defaultTitle, describeRule, runsLeft } from '@agent-board/shared';
-import type { PendingCardOutcome, Priority, Schedule, ScheduleRepeat, ScheduleSettings } from '@agent-board/shared';
+import type {
+  Effort,
+  PendingCardOutcome,
+  Priority,
+  Schedule,
+  ScheduleRepeat,
+  ScheduleSettings,
+} from '@agent-board/shared';
 import { UsageError } from '../cli.mts';
 import type { Context } from '../cli.mts';
 import { plainLine } from '../output/terminal.mts';
@@ -15,6 +22,7 @@ import {
   checkedAfter,
   checkedAgent,
   checkedLane,
+  checkedEffort,
   checkedModel,
   checkedPriority,
   localTime,
@@ -29,6 +37,7 @@ import { chosenDirectory } from './task-settings.mts';
 export interface ScheduleEditFlags {
   priority?: string;
   model?: string;
+  effort?: string;
   lane?: string;
   autoDone?: string;
   agent?: string;
@@ -50,6 +59,8 @@ export interface ScheduleEditFlags {
 export interface ScheduleChanges {
   priority?: Priority;
   model?: string | null;
+  // null for claude's default effort.
+  effort?: Effort | null;
   // null for the default lane.
   lane?: string | null;
   autoDone?: boolean;
@@ -78,6 +89,7 @@ const PENDING_CARD_LINES: Record<PendingCardOutcome, string> = {
 const SETTING_FLAGS = [
   'priority',
   'model',
+  'effort',
   'lane',
   'autoDone',
   'agent',
@@ -141,6 +153,7 @@ export function parseScheduleChanges(flags: ScheduleEditFlags, now: Date = new D
   const changes: ScheduleChanges = {};
   if (flags.priority !== undefined) changes.priority = checkedPriority(flags.priority);
   if (flags.model !== undefined) changes.model = flags.model === 'default' ? null : checkedModel(flags.model);
+  if (flags.effort !== undefined) changes.effort = flags.effort === 'default' ? null : checkedEffort(flags.effort);
   if (flags.lane !== undefined) changes.lane = flags.lane === 'default' ? null : checkedLane(flags.lane);
   if (flags.autoDone !== undefined) changes.autoDone = onOff(flags.autoDone);
   if (flags.agent !== undefined) changes.agent = flags.agent === NONE ? null : checkedAgent(flags.agent);
@@ -193,6 +206,7 @@ export function settingsOf(schedule: Schedule): ScheduleSettings {
         : null,
     priority: schedule.priority,
     model: schedule.model,
+    ...(schedule.effort === null ? {} : { effort: schedule.effort }),
     autoDone: schedule.autoDone,
     repeat,
     runsLeft: runsLeft(schedule),
@@ -221,6 +235,7 @@ function applyChanges(before: ScheduleSettings, changes: ScheduleChanges, resolv
     ...(agent === undefined ? {} : { agent }),
     ...(changes.priority === undefined ? {} : { priority: changes.priority }),
     ...(changes.model === undefined ? {} : { model: changes.model }),
+    ...(changes.effort === undefined ? {} : { effort: changes.effort }),
     ...(resolved.lane === undefined ? {} : { lane: resolved.lane }),
     ...(changes.autoDone === undefined ? {} : { autoDone: changes.autoDone }),
     ...(changes.maxConcurrent === undefined ? {} : { maxConcurrent: changes.maxConcurrent }),
@@ -288,6 +303,7 @@ function differences(before: ScheduleSettings, after: ScheduleSettings, startAt:
       : []),
     ...(changed('priority') ? [`priority ${after.priority}`] : []),
     ...(changed('model') ? [`model ${plainLine(after.model ?? 'default')}`] : []),
+    ...((before.effort ?? null) === (after.effort ?? null) ? [] : [`effort ${after.effort ?? 'default'}`]),
     ...(after.lane === undefined ? [] : [`lane ${plainLine(after.lane ?? 'default')}`]),
     ...(changed('autoDone') ? [`auto-done ${after.autoDone ? 'on' : 'off'}`] : []),
     ...(changed('repeat') ? [`repeat ${plainLine(ruleLine(after.repeat))}`] : []),

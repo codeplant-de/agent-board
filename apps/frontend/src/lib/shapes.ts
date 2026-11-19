@@ -6,6 +6,7 @@ import {
   INVALID_VALUE,
   isBlindIndex,
   isCronExpression,
+  isEffort,
   isKeyId,
   isModelName,
   isNextRun,
@@ -21,6 +22,7 @@ import {
   isTimeZoneName,
   isWireNoteAuthor,
   hasControlCharacter,
+  type Effort,
   type NextRun,
   type NoteKind,
   type Priority,
@@ -72,6 +74,7 @@ export interface TaskShapes {
   next: NextRun;
   createdBy: TaskCreator;
   model: string | null;
+  effort: Effort | null;
   machine: string | null;
   lane: string | null;
   /** The lane the user asked for; the lane it runs in is `lane`. */
@@ -94,6 +97,7 @@ export function checkTaskShapes(wire: {
   next: unknown;
   createdBy: unknown;
   model: string | null;
+  effort: unknown;
   machine: string | null;
   lane: string | null;
   requestedLane: string | null;
@@ -109,6 +113,11 @@ export function checkTaskShapes(wire: {
   const next = guarded(wire.next, isNextRun, NEUTRAL_NEXT);
   const createdBy = guarded(wire.createdBy, isTaskCreator, NEUTRAL_CREATOR);
   const model = checked(wire.model === null || isModelName(wire.model), wire.model, null);
+  const effort = guarded<Effort | null>(
+    wire.effort,
+    (value): value is Effort | null => value === null || isEffort(value),
+    null,
+  );
   const machine = checked(wire.machine === null || isSafeMachineName(wire.machine), wire.machine, INVALID_VALUE);
   const lane = checked(wire.lane === null || isSafeLane(wire.lane), wire.lane, INVALID_VALUE);
   const requestedLane = checked(
@@ -124,6 +133,7 @@ export function checkTaskShapes(wire: {
     ['next', next],
     ['createdBy', createdBy],
     ['model', model],
+    ['effort', effort],
     ['machine', machine],
     ['lane', lane],
     ['requestedLane', requestedLane],
@@ -136,6 +146,7 @@ export function checkTaskShapes(wire: {
     next: next.value,
     createdBy: createdBy.value,
     model: model.value,
+    effort: effort.value,
     machine: machine.value,
     lane: lane.value,
     requestedLane: requestedLane.value,

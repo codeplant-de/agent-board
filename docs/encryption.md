@@ -7,7 +7,7 @@ Board content is end-to-end encrypted. The server stores and returns ciphertext 
 The operator of the server and database sees:
 
 - ids, statuses, priorities and positions
-- the model and the lane a task names
+- the model, the effort level and the lane a task names
 - machine and lane names, session ids and usernames
 - timestamps, activity timing and schedule rules
 - the state of each of a task's pull requests (open, merged or closed), without which PR it is
@@ -236,6 +236,7 @@ Three kinds of clear value become arguments, one argument each:
 
 - the session id, as `--resume=<uuid>`; for a fork also the parent's, as `--resume=<uuid>`, and the copy's own as `--session-id=<uuid>`
 - a task's model, as `--model=<name>`, held to `isModelName`, so it never starts with `-`
+- a task's effort, as `--effort=<level>`, held to `isEffort`: one of five fixed words
 
 Every other clear value that reaches an argument, a path, a unit name, an environment variable or a shell is checked to a tight shape when it is parsed. That covers ids, machine and lane names, a schedule's cron expression and time zone, note ids, the key id and the user name. The sealed directory is checked after opening: an absolute path without control characters.
 
@@ -254,6 +255,7 @@ Every other clear string the board sends is one of the following. Nothing else i
 | times (`notBefore`, `createdAt`, `nextRunAt`, ...)                   | `board tasks`, `board show`, `board schedules`                     | parsed to a date, printed by the CLI                                                               |
 | a schedule's cron expression and time zone                           | `board schedules`, the confirmation of `board schedule`            | five fields of digits, cron symbols and month and day abbreviations; a zone name the runtime knows |
 | a task's or schedule's model                                         | `--model=<name>`, `board show`                                     | `^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,63}$`                                                           |
+| a task's or schedule's effort                                        | `--effort=<level>`, `board show`                                   | one of `low`, `medium`, `high`, `xhigh`, `max`                                                     |
 | key id                                                               | the message when a machine holds another key                       | 16 lower-case hex characters                                                                       |
 | a server event's text                                                | `board show`                                                       | one of the fixed texts, printed under `from the board server, not board content`                   |
 | the reason of a refusal, and what a parser quotes of a refused value | the error of a `board` command, the hook's answer to the agent     | JSON-quoted, one line, at most 200 (refusal) or 40 (parser) characters, marked as the server's     |

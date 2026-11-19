@@ -122,6 +122,20 @@ test('default, off and none clear a model, auto-done, the agent, the directory a
   ]);
 });
 
+test('--effort sends the level, default sends null, and a schedule without one sends none', async () => {
+  const run = runner([schedule({ id: 's1' })]);
+  await run.go(['schedules', 'edit', 's1', '--effort', 'xhigh']);
+  assert.deepEqual(sentSettings(run), { ...BASE, effort: 'xhigh' });
+  assert.deepEqual(run.printed, ['s1 updated: effort xhigh. The pending card was updated too.']);
+  const keeping = runner([schedule({ id: 's1', effort: 'low' })]);
+  await keeping.go(['schedules', 'edit', 's1', '--priority', 'high']);
+  assert.deepEqual(sentSettings(keeping), { ...BASE, priority: 'high', effort: 'low' });
+  await keeping.go(['schedules', 'edit', 's1', '--effort', 'default']);
+  assert.deepEqual(sentSettings(keeping), { ...BASE, priority: 'high', effort: null });
+  assert.deepEqual(keeping.printed[1], 's1 updated: effort default. The pending card was updated too.');
+  await assert.rejects(run.go(['schedules', 'edit', 's1', '--effort', 'huge']), /unknown effort "huge"/);
+});
+
 test('--lane sends the lane, default sends null, and without the flag no lane is sent', async () => {
   const run = runner([schedule({ id: 's1', requestedLane: 'old' })]);
   await run.go(['schedules', 'edit', 's1', '--lane', 'review']);
@@ -327,6 +341,8 @@ test('parseScheduleChanges reads each flag once, with none, default and off as c
     repeat: { crons: ['0 9 * * *', '0 10 * * *'] },
   });
   assert.deepEqual(parseScheduleChanges({ lane: 'default' }, NOW), { lane: null });
+  assert.deepEqual(parseScheduleChanges({ effort: 'default' }, NOW), { effort: null });
+  assert.deepEqual(parseScheduleChanges({ effort: 'max' }, NOW), { effort: 'max' });
   assert.deepEqual(parseScheduleChanges({ lane: 'review' }, NOW), { lane: 'review' });
   assert.deepEqual(parseScheduleChanges({}, NOW), {});
 });

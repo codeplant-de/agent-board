@@ -1,4 +1,4 @@
-// `board schedule [--priority p] [--model m] [--lane l] [--auto-done] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
+// `board schedule [--priority p] [--model m] [--effort e] [--lane l] [--auto-done] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
 // [--times <n> | --until <time>] [--polish] [--new] [--key <k> [--version <v>]] <prompt...>`: a task from a prompt, written as you
 // would type it into Claude Code, bound to this machine and the directory it was scheduled from. Before it creates one, a quick
 // Haiku call checks whether an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead.
@@ -11,7 +11,9 @@ import {
   ContractError,
   defaultTitle,
   describeRule,
+  EFFORTS,
   isAgentName,
+  isEffort,
   isModelName,
   isPriority,
   isRecord,
@@ -27,7 +29,7 @@ import {
   PRIORITIES,
 } from '@agent-board/shared';
 import type { Command } from 'commander';
-import type { Backend, DraftStatus, Priority, Schedule, ScheduleDraft, Task } from '@agent-board/shared';
+import type { Backend, DraftStatus, Effort, Priority, Schedule, ScheduleDraft, Task } from '@agent-board/shared';
 import { UsageError } from '../cli.mts';
 import { BackendError } from '../backend/backend.mts';
 import { plainLine } from '../output/terminal.mts';
@@ -37,6 +39,8 @@ export interface ScheduleArgs {
   priority: Priority | undefined;
   // The Claude model of the run; undefined is claude's default.
   model: string | undefined;
+  // The effort level of the run; undefined is claude's default.
+  effort: Effort | undefined;
   // The lane the task asks for; undefined is the default lane of the machine that takes it.
   lane: string | undefined;
   // The agent may move the task to Done itself; false leaves it unset.
@@ -75,6 +79,7 @@ export interface ScheduleArgs {
 export interface ScheduleFlags {
   priority?: string;
   model?: string;
+  effort?: string;
   lane?: string;
   autoDone?: boolean;
   agent?: string;
@@ -107,6 +112,7 @@ export function addScheduleOptions(command: Command): Command {
       '--model <model>',
       `claude model alias or full name, e.g. ${MODEL_ALIASES.map((alias) => alias.value).join(', ')} (default: claude's default)`,
     )
+    .option('--effort <level>', `claude effort level: ${EFFORTS.join(', ')} (default: claude's default)`)
     .option(
       '--lane <name>',
       "the lane of the machine that runs the task (default: that machine's default lane; a machine without the lane uses its default one)",
@@ -201,6 +207,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     prompt: '',
     priority: undefined,
     model: undefined,
+    effort: undefined,
     lane: undefined,
     autoDone: flags.autoDone === true,
     agent: undefined,
@@ -223,6 +230,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
   };
   if (flags.priority !== undefined) result.priority = checkedPriority(flags.priority);
   if (flags.model !== undefined) result.model = checkedModel(flags.model);
+  if (flags.effort !== undefined) result.effort = checkedEffort(flags.effort);
   if (flags.lane !== undefined) result.lane = checkedLane(flags.lane);
   if (flags.agent !== undefined) result.agent = checkedAgent(flags.agent);
   if (hold && backlog) throw new UsageError('--hold and --backlog cannot be combined');
@@ -265,6 +273,12 @@ export function checkedModel(value: string): string {
     throw new UsageError(
       `"${value.slice(0, 70)}" is not a model name (a claude alias such as opus, or a full name such as claude-opus-5-5)`,
     );
+  return value;
+}
+
+export function checkedEffort(value: string): Effort {
+  if (!isEffort(value))
+    throw new UsageError(`unknown effort "${value.slice(0, 20)}"; use one of ${EFFORTS.join(', ')}`);
   return value;
 }
 
@@ -498,6 +512,7 @@ async function addRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<{ sche
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.effort === undefined ? {} : { effort: args.effort }),
     ...(args.lane === undefined ? {} : { lane: args.lane }),
     ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
@@ -566,6 +581,7 @@ async function scheduleKeyed(deps: ScheduleDeps, args: ScheduleArgs, key: string
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.effort === undefined ? {} : { effort: args.effort }),
     ...(args.lane === undefined ? {} : { lane: args.lane }),
     ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
@@ -666,6 +682,10 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
           deps.print(
             `${existing.id} keeps its model (${existing.model ?? 'the default'}); --model applies only to a new task`,
           );
+        if (args.effort !== undefined && args.effort !== existing.effort)
+          deps.print(
+            `${existing.id} keeps its effort (${existing.effort ?? 'the default'}); --effort applies only to a new task`,
+          );
         if (args.lane !== undefined && args.lane !== existing.requestedLane)
           deps.print(
             `${existing.id} keeps its lane (${existing.requestedLane ?? 'the default'}); --lane applies only to a new task: use \`board task ${existing.id} set lane ${args.lane}\``,
@@ -714,6 +734,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     workdir: deps.workdir,
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
+    ...(args.effort === undefined ? {} : { effort: args.effort }),
     ...(args.lane === undefined ? {} : { lane: args.lane }),
     ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),

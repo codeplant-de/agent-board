@@ -1,5 +1,6 @@
 import {
   formatServerEvent,
+  isEffort,
   MAX_TASK_PRS,
   MAX_TASK_WATCHES,
   MAX_WAIT_MS,
@@ -7,6 +8,7 @@ import {
   PRIORITIES,
   TAKE_BACK_AFTER_MS,
   type ServerEvent,
+  type Effort,
   type Heartbeat,
   type Priority,
   type PrState,
@@ -78,6 +80,7 @@ export function toTask(
     status: row.status,
     priority: row.priority,
     model: row.model,
+    effort: isEffort(row.effort) ? row.effort : null,
     requestedLane: row.requestedLane,
     autoDone: row.autoDone,
     closed: row.closed,
@@ -220,7 +223,7 @@ export interface ForkRequest {
 
 /**
  * A new task in Todo whose first run continues a copy of the parent's Claude session, on the parent's machine, with the parent's
- * model and agent. The parent stays as it is. Only the user forks: the prompt is bound to the fork link by the browser, so a
+ * model, effort and agent. The parent stays as it is. Only the user forks: the prompt is bound to the fork link by the browser, so a
  * server cannot make one up, and a machine's `add-task` has no way to name a parent to fork.
  */
 export async function forkTask(db: DbOrTx, request: ForkRequest): Promise<TaskRow> {
@@ -250,6 +253,7 @@ export async function forkTask(db: DbOrTx, request: ForkRequest): Promise<TaskRo
         machine: parent.machine,
         workdir: request.workdir,
         ...(parent.model === null ? {} : { model: parent.model }),
+        ...(isEffort(parent.effort) ? { effort: parent.effort } : {}),
         ...(parent.requestedLane === null ? {} : { lane: parent.requestedLane }),
         ...(request.agent === undefined ? {} : { agent: request.agent }),
       },
@@ -989,13 +993,14 @@ export async function setPriority(db: DbOrTx, taskId: string, priority: Priority
 export interface TaskConfig {
   priority?: Priority | undefined;
   model?: string | null | undefined;
+  effort?: Effort | null | undefined;
   lane?: string | null | undefined;
   autoDone?: boolean | undefined;
   place?: { machine: string; workdir: string } | null | undefined;
 }
 
 /**
- * The user's edit of a task's settings, in one step. A priority works as `setPriority`. A model applies from the next run. A lane is refused while the task runs, which keeps the lane it started in. `autoDone` applies at once, in any status. A
+ * The user's edit of a task's settings, in one step. A priority works as `setPriority`. A model or an effort applies from the next run. A lane is refused while the task runs, which keeps the lane it started in. `autoDone` applies at once, in any status. A
  * new place (the machine and the sealed directory, or null for none) replaces the directory the task was created with and
  * drops the session: Claude Code keeps a session under its working directory, so it cannot be resumed from another one, and
  * the next run starts fresh there and reads the thread. A running or waiting task keeps its place, since a run holds it.
@@ -1003,7 +1008,7 @@ export interface TaskConfig {
 export async function configureTask(db: DbOrTx, taskId: string, config: TaskConfig, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    const { priority, model, lane, autoDone, place } = config;
+    const { priority, model, effort, lane, autoDone, place } = config;
     if (lane !== undefined && task.status === 'running')
       throw new AppError('CONFLICT', 'The task is running: it keeps its lane until its next start.');
     if (place !== undefined) {
@@ -1013,6 +1018,7 @@ export async function configureTask(db: DbOrTx, taskId: string, config: TaskConf
     }
     const set: TaskValues = {};
     if (model !== undefined) set.model = model;
+    if (effort !== undefined) set.effort = effort;
     if (lane !== undefined) set.requestedLane = lane;
     if (autoDone !== undefined) set.autoDone = autoDone;
     if (place !== undefined) {

@@ -36,6 +36,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     prompt: '/review-pr 17741 --auto',
     priority: 'high',
     model: undefined,
+    effort: undefined,
     lane: undefined,
     autoDone: false,
     agent: undefined,
@@ -60,6 +61,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     prompt: 'Find out why',
     priority: undefined,
     model: undefined,
+    effort: undefined,
     lane: undefined,
     autoDone: false,
     agent: undefined,
@@ -437,6 +439,29 @@ test('--model is checked and sent for a plain task and for a repeat', async () =
   assert.ok(repeat.backend.writes[0]?.endsWith('| here:/work/cosuno | model fable'));
 });
 
+test('--effort is checked and sent for a plain task and for a repeat', async () => {
+  assert.equal(parseScheduleArgs(['--effort', 'xhigh', 'x']).effort, 'xhigh');
+  assert.equal(parseScheduleArgs(['x']).effort, undefined);
+  for (const bad of ['huge', 'High', '--x', ''])
+    assert.throws(
+      () => parseScheduleArgs(['--effort', bad, 'x']),
+      /unknown effort .*low, medium, high, xhigh, max|argument missing/,
+      bad,
+    );
+
+  const plain = setup(undefined);
+  const created = (await schedule(plain.deps, parseScheduleArgs(['--effort', 'low', '--new', '/sweep'])))?.task;
+  assert.equal(created?.effort, 'low');
+  const none = setup(undefined);
+  assert.equal((await schedule(none.deps, parseScheduleArgs(['--new', '/sweep'])))?.task.effort, null);
+
+  const repeat = setup(undefined);
+  const first = (await schedule(repeat.deps, parseScheduleArgs(['--effort', 'max', '--every', '2h', '/sweep'], NOW)))
+    ?.task;
+  assert.equal(first?.effort, 'max');
+  assert.ok(repeat.backend.writes[0]?.endsWith('| here:/work/cosuno | effort max'));
+});
+
 test('--lane is checked and sent for a plain task, a keyed one and a repeat, and only when given', async () => {
   assert.equal(parseScheduleArgs(['--lane', 'reviews', 'x']).lane, 'reviews');
   assert.equal(parseScheduleArgs(['x']).lane, undefined);
@@ -552,6 +577,12 @@ test('only a task with the same agent can be a duplicate of a new one', async ()
   await schedule(make(null).deps, parseScheduleArgs(['--agent', 'reviewer', '/review-pr', '17741']));
   await schedule(make(null).deps, parseScheduleArgs(['/review-pr', '17741']));
   assert.deepEqual(seen, [['old'], [], [], [], ['old']]);
+});
+
+test('a requeue keeps the existing task effort and says --effort was not applied', async () => {
+  const requeue = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
+  await schedule(requeue.deps, parseScheduleArgs(['--effort', 'high', '/review-pr', '17741']));
+  assert.ok(requeue.printed.includes('old keeps its effort (the default); --effort applies only to a new task'));
 });
 
 test('a requeue keeps the existing task model and says --model was not applied', async () => {

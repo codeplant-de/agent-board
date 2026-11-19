@@ -3,6 +3,8 @@ import {
   MAX_SCHEDULE_CONCURRENT,
   MAX_SCHEDULE_CRONS,
   isCronExpression,
+  isEffort,
+  type Effort,
   type Priority,
   type WireSchedule,
   type WireScheduleDraft,
@@ -133,6 +135,7 @@ export function toSchedule(row: ScheduleView): WireSchedule {
     input: row.input,
     priority: row.priority,
     model: row.model,
+    effort: isEffort(row.effort) ? row.effort : null,
     requestedLane: row.requestedLane,
     autoDone: row.autoDone,
     machine: row.machine,
@@ -185,6 +188,7 @@ async function insertOccurrence(tx: DbOrTx, schedule: ScheduleRow, at: Date | nu
       status: 'todo',
       priority: schedule.priority,
       ...(schedule.model === null ? {} : { model: schedule.model }),
+      ...(isEffort(schedule.effort) ? { effort: schedule.effort } : {}),
       ...(schedule.requestedLane === null ? {} : { lane: schedule.requestedLane }),
       ...(schedule.autoDone ? { autoDone: true } : {}),
       ...(at === null ? {} : { notBefore: at }),
@@ -277,6 +281,7 @@ export async function addSchedule(
         input: draft.input,
         priority: draft.priority ?? 'normal',
         model: draft.model ?? null,
+        effort: draft.effort ?? null,
         requestedLane: draft.lane ?? null,
         autoDone: draft.autoDone ?? false,
         machine: draft.machine ?? null,
@@ -523,6 +528,8 @@ export interface ScheduleUpdate {
   place: { machine: string; workdir: string } | null;
   priority: Priority;
   model: string | null;
+  /** An effort level, or null for claude's default; absent keeps the schedule's. */
+  effort?: Effort | null;
   /** A lane name, or null for the default lane; absent keeps the schedule's. */
   lane?: string | null;
   autoDone: boolean;
@@ -558,7 +565,7 @@ async function requireNoCycle(tx: DbOrTx, scheduleId: string, upstreamId: string
 
 /**
  * Replaces everything the user can set on a schedule, as the browser's Edit schedule form does. The pending card takes the
- * text, agent, directory, priority, model, lane and auto-done while it waits in Todo and has not started, and moves to the new next
+ * text, agent, directory, priority, model, effort, lane and auto-done while it waits in Todo and has not started, and moves to the new next
  * run when the rule, the first run or the end changed; otherwise the next card takes the change. Moving between a rule of its
  * own and running after another schedule removes or creates the pending card to fit. The caller seals `title`, `input`, `agent`
  * and the directory together, because the first two are bound to the agent.
@@ -605,6 +612,7 @@ export async function updateSchedule(
       workdir: place?.workdir ?? null,
       priority: update.priority,
       model: update.model,
+      effort: update.effort === undefined ? schedule.effort : update.effort,
       requestedLane: update.lane === undefined ? schedule.requestedLane : update.lane,
       autoDone: update.autoDone,
       maxConcurrent: update.maxConcurrent,
@@ -650,6 +658,7 @@ export async function updateSchedule(
           agent: update.agent ?? null,
           priority: update.priority,
           model: update.model,
+          effort: update.effort === undefined ? schedule.effort : update.effort,
           requestedLane: update.lane === undefined ? schedule.requestedLane : update.lane,
           autoDone: update.autoDone,
           machine: pinned ? place.machine : null,

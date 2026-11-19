@@ -55,7 +55,7 @@ describe('editing every property of a schedule', () => {
   it('replaces each field, and the pending card takes them, opened under the new agent', async () => {
     const { card, scheduleId } = await scheduled(
       { every: HOUR, times: 5 },
-      { agent: 'reviewer', place: { machine: 'laptop', workdir: '/work/a' }, model: 'sonnet' },
+      { agent: 'reviewer', place: { machine: 'laptop', workdir: '/work/a' }, model: 'sonnet', effort: 'low' },
     );
     const { schedule, pending } = await ctx.ui.schedules.update({
       id: scheduleId,
@@ -65,6 +65,7 @@ describe('editing every property of a schedule', () => {
       place: { machine: 'desktop', workdir: '/work/b' },
       priority: 'high',
       model: 'opus',
+      effort: 'max',
       autoDone: true,
       maxConcurrent: 2,
       runsLeft: 3,
@@ -78,6 +79,7 @@ describe('editing every property of a schedule', () => {
       workdir: '/work/b',
       priority: 'high',
       model: 'opus',
+      effort: 'max',
       autoDone: true,
       maxConcurrent: 2,
       everyMs: HOUR,
@@ -92,6 +94,7 @@ describe('editing every property of a schedule', () => {
       workdir: '/work/b',
       priority: 'high',
       model: 'opus',
+      effort: 'max',
       autoDone: true,
     });
     const row = await taskRow(card.id);
@@ -101,22 +104,36 @@ describe('editing every property of a schedule', () => {
   it('clears the agent, the directory, the model, the limit and the run count', async () => {
     const { card, scheduleId } = await scheduled(
       { every: HOUR, times: 4, maxConcurrent: 3 },
-      { agent: 'reviewer', place: { machine: 'laptop', workdir: '/work' }, model: 'sonnet', autoDone: true },
+      {
+        agent: 'reviewer',
+        place: { machine: 'laptop', workdir: '/work' },
+        model: 'sonnet',
+        effort: 'high',
+        autoDone: true,
+      },
     );
     const { schedule } = await ctx.ui.schedules.update({
       id: scheduleId,
       agent: null,
       place: null,
       model: null,
+      effort: null,
       autoDone: false,
       maxConcurrent: null,
       runsLeft: null,
     });
-    expect(schedule).toMatchObject({ machine: null, workdir: null, model: null, autoDone: false, maxConcurrent: null });
+    expect(schedule).toMatchObject({
+      machine: null,
+      workdir: null,
+      model: null,
+      effort: null,
+      autoDone: false,
+      maxConcurrent: null,
+    });
     expect(schedule.agent ?? null).toBeNull();
     expect(schedule.remaining).toBeNull();
     const task = (await ctx.ui.tasks.get({ id: card.id })).task;
-    expect(task).toMatchObject({ machine: null, workdir: null, model: null, autoDone: false });
+    expect(task).toMatchObject({ machine: null, workdir: null, model: null, effort: null, autoDone: false });
     expect(task.agent ?? null).toBeNull();
   });
 

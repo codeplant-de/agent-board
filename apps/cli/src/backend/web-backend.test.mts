@@ -545,6 +545,49 @@ test('a model is sent only to a server that names task.model', async () => {
   assert.deepEqual(having.seen, ['version', 'add-task', 'add-schedule']);
 });
 
+test('an effort is sent only to a server that names task.effort', async () => {
+  const make = (features: string[]) => {
+    const seen: string[] = [];
+    const fetcher: Fetch = async (url) => {
+      const command = url.slice(`${config.url}/api/machine/`.length);
+      seen.push(command);
+      const result =
+        command === 'version'
+          ? { ...VERSION_ANSWER, features }
+          : command === 'add-task'
+            ? { task: await taskJson('abc'), created: true }
+            : command === 'configure-task'
+              ? await taskJson('abc')
+              : { schedule: serializeSchedule(await wireSchedule({ id: 'sch1' })), task: await taskJson('abc') };
+      return new Response(JSON.stringify({ result }));
+    };
+    return { seen, backend: createWebBackend({ loadConfig: () => config, fetch: fetcher }) };
+  };
+  const task = { id: 'abc', title: 'abe1.t', input: 'abe1.i' };
+  const schedule = { ...task, everyMs: 7_200_000 };
+  const lacking = make(['events', 'task.configure']);
+  await assert.rejects(
+    lacking.backend.addTask({ ...task, effort: 'high' }),
+    /does not support choosing an effort level yet/,
+  );
+  await assert.rejects(
+    lacking.backend.addSchedule({ ...schedule, effort: 'high' }),
+    /does not support choosing an effort level yet/,
+  );
+  await assert.rejects(
+    lacking.backend.configureTask('abc', { effort: null }),
+    /does not support choosing an effort level yet/,
+  );
+  await lacking.backend.addTask(task);
+  await lacking.backend.addSchedule(schedule);
+  assert.deepEqual(lacking.seen, ['version', 'add-task', 'add-schedule']);
+  const having = make(['task.effort', 'task.configure']);
+  await having.backend.addTask({ ...task, effort: 'high' });
+  await having.backend.addSchedule({ ...schedule, effort: 'high' });
+  await having.backend.configureTask('abc', { effort: 'low' });
+  assert.deepEqual(having.seen, ['version', 'add-task', 'add-schedule', 'configure-task']);
+});
+
 test('an agent is sent only to a server that names task.agent, and refused before anything is sent otherwise', async () => {
   const make = (features: string[]) => {
     const seen: string[] = [];
