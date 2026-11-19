@@ -267,7 +267,7 @@ export function ActionPanel({
   // An agent's proposal: only starting it, which seals its prompt again as yours, lets a worker run it.
   const isProposal = task.createdBy === 'agent';
   const moveToTodo = () =>
-    moveConfirmed(task, 'todo', () => actions.move.mutate({ id: task.id, status: 'todo', task }));
+    moveConfirmed(task, 'todo', (sent) => actions.move.mutate({ id: task.id, status: 'todo', task: sent }));
 
   if (task.closed) {
     return (
@@ -511,7 +511,9 @@ export function ActionPanel({
                   size="xs"
                   color="grape"
                   leftSection={<IconPlayerPlay size={14} />}
-                  onClick={() => confirmStart(task, () => actions.move.mutate({ id: task.id, status: 'todo', task }))}
+                  onClick={() =>
+                    confirmStart(task, (sent) => actions.move.mutate({ id: task.id, status: 'todo', task: sent }))
+                  }
                   loading={actions.move.isPending}
                 >
                   Start

@@ -145,11 +145,28 @@ describe('BoardPage drag and drop', () => {
     renderBoard();
     await drag('proposal', 'Todo');
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByTestId('proposal-prompt').textContent).toBe('delete everything');
+    expect(within(dialog).getByTestId('proposal-prompt')).toHaveValue('delete everything');
     expect(move).not.toHaveBeenCalled();
     await userEvent.click(within(dialog).getByRole('button', { name: 'Start as mine' }));
     await waitFor(() => expect(move).toHaveBeenCalledTimes(1));
     expect(move.mock.calls[0]?.[0]).toMatchObject({ id: 'p1', status: 'todo', task: { createdBy: 'agent' } });
+  });
+
+  it('starts a dragged proposal with the prompt as the user edited it', async () => {
+    listed.tasks = [task({})];
+    renderBoard();
+    await drag('proposal', 'Todo');
+    const dialog = await screen.findByRole('dialog');
+    const prompt = within(dialog).getByTestId('proposal-prompt');
+    await userEvent.clear(prompt);
+    await userEvent.type(prompt, 'list the build directory');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Start as mine' }));
+    await waitFor(() => expect(move).toHaveBeenCalledTimes(1));
+    expect(move.mock.calls[0]?.[0]).toMatchObject({
+      id: 'p1',
+      status: 'todo',
+      task: { input: 'list the build directory' },
+    });
   });
 
   it('does not ask, and does not start anything, when an agent’s task the board put in Todo is reordered there', async () => {

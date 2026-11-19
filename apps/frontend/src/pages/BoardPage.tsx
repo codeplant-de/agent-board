@@ -11,6 +11,7 @@ import { usePolish } from '../components/usePolish';
 import { beforeIdOver, dropNeighbors } from '../lib/dropPosition';
 import { canMoveMergedToDone } from '../lib/mergedPrs';
 import { canPolish, isOpenPolishOf } from '../lib/polish';
+import type { Proposal } from '../lib/sealing';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
 import { POLL_MS, useTRPC, type ListedTask } from '../lib/trpc';
 import { heldTask } from '../lib/usageHold';
@@ -85,7 +86,7 @@ function BoardColumns({ only }: { only?: Status }) {
     const neighbors = isRecentFirst(status)
       ? {}
       : dropNeighbors(ids, dragId, over?.status === status ? over.beforeId : undefined);
-    const run = () => move.mutate({ id: dragId, status, ...neighbors, task });
+    const run = (sent: Proposal | undefined = task) => move.mutate({ id: dragId, status, ...neighbors, task: sent });
     if (task === undefined) run();
     else moveConfirmed(task, status, run);
   };
