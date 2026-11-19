@@ -760,6 +760,20 @@ describe('priority', () => {
     expect((await ui.tasks.move({ id: n2.id, status: 'todo', beforeId: n1.id })).priority).toBe('normal');
   });
 
+  it('Needs me and Done list the task updated last on top, whatever its priority; a drop there keeps it', async () => {
+    const ui = plainUi(db);
+    const urgent = await ui.tasks.create({ title: 'urgent', input: 'do it', priority: 'urgent', when: 'hold' });
+    const low = await ui.tasks.create({ title: 'low', input: 'do it', priority: 'low', when: 'hold' });
+    const normal = await ui.tasks.create({ title: 'normal', input: 'do it', when: 'hold' });
+    expect(titles(await ui.tasks.list(), 'needs-me')).toEqual(['normal', 'low', 'urgent']);
+    await ui.tasks.reply({ id: urgent.id, message: 'still there?', resume: false });
+    expect(titles(await ui.tasks.list(), 'needs-me')).toEqual(['urgent', 'normal', 'low']);
+    await ui.tasks.move({ id: low.id, status: 'done' });
+    const dropped = await ui.tasks.move({ id: normal.id, status: 'done', afterId: low.id });
+    expect(dropped.priority).toBe('normal');
+    expect(titles(await ui.tasks.list(), 'done')).toEqual(['normal', 'low']);
+  });
+
   it('the notes of one move stay in write order, in the thread and on the card', async () => {
     const ui = plainUi(db);
     const normal = await ui.tasks.create({ title: 'normal', input: 'do it' });
@@ -1801,24 +1815,24 @@ describe('waiting', () => {
   }
   const inMinutes = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
 
-  it('a running task waits with the agent’s comment, frees Running, sorts by its end, and is never claimed', async () => {
+  it('a running task waits with the agent’s comment, frees Running, sorts the latest on top, and is never claimed', async () => {
     const ui = plainUi(db);
-    const later = await running('later');
-    const sooner = await running('sooner');
+    const first = await running('first');
+    const second = await running('second');
     const waited = await ctx.call('laptop', 'wait', {
-      id: later,
-      body: { text: 'Waiting for CI on #1.', wakeAt: inMinutes(60), check: true },
+      id: first,
+      body: { text: 'Waiting for CI on #1.', wakeAt: inMinutes(5), check: true },
     });
     expect(waited.json.result).toMatchObject({ status: 'waiting', waitCheck: true, next: 'resume', machine: 'laptop' });
     expect(waited.json.result.runStartedAt).toBeNull();
-    await ctx.call('laptop', 'wait', { id: sooner, body: { text: 'A timer.', wakeAt: inMinutes(5) } });
+    await ctx.call('laptop', 'wait', { id: second, body: { text: 'A timer.', wakeAt: inMinutes(60) } });
     const list = await ui.tasks.list();
     expect(list.filter((t) => t.status === 'waiting').map((t) => [t.title, t.waitCheck])).toEqual([
-      ['sooner', false],
-      ['later', true],
+      ['second', false],
+      ['first', true],
     ]);
-    expect((await ctx.call('laptop', 'claim-task', { id: sooner, machine: 'laptop' })).status).toBe(409);
-    const { thread } = await ui.tasks.get({ id: later });
+    expect((await ctx.call('laptop', 'claim-task', { id: second, machine: 'laptop' })).status).toBe(409);
+    const { thread } = await ui.tasks.get({ id: first });
     expect(thread.at(-1)).toMatchObject({ author: 'agent', kind: 'comment', text: 'Waiting for CI on #1.' });
   });
 
