@@ -1,7 +1,6 @@
-import { Alert, Anchor, Badge, Code, Group, List, Paper, Spoiler, Stack, Table, Text, Title } from '@mantine/core';
+import { Alert, Badge, Code, Group, List, Paper, Spoiler, Stack, Table, Text, Title } from '@mantine/core';
 import { IconAlertTriangle } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
 import { QueryStatus } from '../components/QueryStatus';
 import { ago, stamp } from '../lib/time';
 import { POLL_MS, useTRPC } from '../lib/trpc';
@@ -266,12 +265,9 @@ export function AgentsPage() {
   const board = shared.data;
 
   return (
-    <Stack maw={900} mx="auto">
+    <Stack>
       <div>
-        <Anchor component={Link} to="/settings" size="sm">
-          Settings
-        </Anchor>
-        <Title order={3}>Agents</Title>
+        <Title order={5}>Agents</Title>
         <Text size="sm" c="dimmed">
           The agent definitions on the board. Every machine of yours applies them by itself. This page only shows them:
           change them with <Code>board agents push</Code> and <Code>board agents rm --board</Code>.

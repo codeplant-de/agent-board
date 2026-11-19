@@ -12,9 +12,9 @@ vi.mock('./auth/useSignOut', () => ({ useSignOut: () => signOut.current }));
 vi.mock('./components/NewTaskModal', () => ({ NewTaskModal: () => null }));
 vi.mock('./components/useDesktopNotifications', () => ({ useDesktopNotifications: () => undefined }));
 
-function renderLayout() {
+function renderLayout(path = '/') {
   render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <MantineProvider>
         <AppLayout />
       </MantineProvider>
@@ -35,6 +35,12 @@ describe('AppLayout', () => {
     // jsdom applies Mantine's hiddenFrom rule: the phone-only link is hidden, so it has no computed name to query by.
     expect(screen.getByRole('link', { hidden: true, name: '' })).toHaveAttribute('aria-label', 'Backlog');
     expect(screen.getByRole('button', { name: 'New task' })).toBeInTheDocument();
+  });
+
+  it('marks Settings as the current page on a settings subpage', () => {
+    renderLayout('/settings/encryption');
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('data-variant', 'light');
+    expect(screen.getByRole('link', { name: 'Board' })).toHaveAttribute('data-variant', 'subtle');
   });
 
   it('has no sign out where the board has no sign-in', () => {

@@ -24,7 +24,7 @@ PUBLIC_URL=http://localhost:5173
 SIGNUP_TOKEN=<32 or more characters>
 ```
 
-Restart the backend and open http://localhost:5173 (not `127.0.0.1`: a passkey is bound to the hostname in `PUBLIC_URL`). **Create an account** takes a name, the token and a passkey. The backend refuses to start with `NO_LOGIN_USER` next to `PUBLIC_URL`, `PASSKEYS`, `SESSION_DAYS`, `SIGNUP_TOKEN`, `ALLOWED_GROUPS`, `OIDC_*` or `SAML_*`, so unset one side. `ALLOWED_GROUPS` needs `OIDC_ISSUER` too. Outside production `OIDC_ISSUER` and `SAML_ENTRY_POINT` may be http URLs, for an identity provider on your machine. Vite proxies `/trpc` and `/api`, so the browser sees one origin, and the session cookie is `board-session` because the address is http.
+Restart the backend and open http://localhost:5173/settings/machines (not `127.0.0.1`: a passkey is bound to the hostname in `PUBLIC_URL`). **Create an account** takes a name, the token and a passkey. The backend refuses to start with `NO_LOGIN_USER` next to `PUBLIC_URL`, `PASSKEYS`, `SESSION_DAYS`, `SIGNUP_TOKEN`, `ALLOWED_GROUPS`, `OIDC_*` or `SAML_*`, so unset one side. `ALLOWED_GROUPS` needs `OIDC_ISSUER` too. Outside production `OIDC_ISSUER` and `SAML_ENTRY_POINT` may be http URLs, for an identity provider on your machine. Vite proxies `/trpc` and `/api`, so the browser sees one origin, and the session cookie is `board-session` because the address is http.
 
 To point a worker at the local board, take a token and the data key from http://localhost:5173/settings and write a `web.json` with `"url": "http://localhost:4000"`. Point `AGENT_BOARD_CONFIG_DIR` and `AGENT_BOARD_STATE_DIR` at scratch directories, so your real config and logs stay untouched. To run the CLI from source: `mise exec -- node apps/cli/src/main.mts <command>`.
 

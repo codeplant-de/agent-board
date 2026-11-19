@@ -84,7 +84,7 @@ At the end of each tick the machine builds its usage status and sends it to the 
 
 Machines without `usageLimits` send it too, because their list of open tasks tells the browser which tasks are not held. A dry run only prints. The dispatcher logs `USAGE sent` only when the status changed or tasks are held.
 
-The browser turns this into a `Held until <time>` badge on a Todo card and a usage line per machine in Settings (see [Usage limits on the board](usage.md#usage-limits)). Two rules decide what shows:
+The browser turns this into a `Held until <time>` badge on a Todo card and a usage line per machine in Settings › Machines (see [Usage limits on the board](usage.md#usage-limits)). Two rules decide what shows:
 
 - **A task counts as held only when no machine can still run it.** If one machine holds it and another lists it as open, the task is waiting for a slot there, and no badge shows.
 - **Only fresh machines count.** A status counts for 10 minutes after the board last received it, and never for a revoked machine. The dispatcher ticks at least every 2 minutes, so a machine that is off, or whose dispatcher is failing, neither holds nor opens tasks.
@@ -562,7 +562,7 @@ After a push, the agent is the board's on the pushing machine too: `push` takes 
 
 **Drift.** Each agent's hash is the SHA-256 of the keys that decide what a run may do (`description`, `prompt`, `model`, `tools`, `allowedTools`, `disallowedTools`, `env`, `mcpServers`) as canonical JSON. `version` and `source` are left out. `board agents` shows the first 12 hex digits, and `--json` all of them. `board doctor` warns, and does not fail, when this machine applied an older version than the board holds, when the last look at the board changed nothing, and when local definitions were moved aside. Each machine's [catalogue](#skills-and-models-on-the-board) carries the version it applied, the hash of every agent it has and the names whose local definition it replaced.
 
-**In the browser.** **Settings → Agents** (`/settings/agents`) shows the board's definitions and changes nothing: it has no edit and no push, and changes go through `board agents push` and `rm --board`. The browser opens the document with your key and shows:
+**In the browser.** **Settings › Agents** (`/settings/agents`) shows the board's definitions and changes nothing: it has no edit and no push, and changes go through `board agents push` and `rm --board`. The browser opens the document with your key and shows:
 
 - the version and when it was pushed;
 - each definition: its description, `version` and `source`, model, every list (`tools`, `allowedTools`, `disallowedTools`, `env`, `mcpServers`), the prompt, the hash's first 12 hex digits, and the definition as pushed;
