@@ -1,4 +1,4 @@
-import type { Status } from '@agent-board/shared';
+import { isRecentFirst, type Status } from '@agent-board/shared';
 import { Badge, Box, Button, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
 import { IconGitMerge } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -21,8 +21,8 @@ const HINT: Record<Status, string> = {
   todo: 'By priority; top runs first',
   running: 'On a worker machine',
   waiting: 'On CI and the like; back to Todo by itself',
-  'needs-me': 'Waiting for you',
-  done: '',
+  'needs-me': 'Waiting for you; latest on top',
+  done: 'Latest on top',
 };
 
 interface DropTarget {
@@ -76,14 +76,18 @@ function BoardColumns({ only }: { only?: Status }) {
 
   const drop = (status: Status) => {
     if (!dragId || !canDrop(status)) return;
-    const ids = byStatus(status).map((t) => t.id);
-    const neighbors = dropNeighbors(ids, dragId, over?.status === status ? over.beforeId : undefined);
     const task = tasks.data?.find((t) => t.id === dragId);
+    setDragId(null);
+    setOver(null);
+    // A column sorted by recency has no order to change, so a drop back into it changes nothing.
+    if (isRecentFirst(status) && task?.status === status) return;
+    const ids = byStatus(status).map((t) => t.id);
+    const neighbors = isRecentFirst(status)
+      ? {}
+      : dropNeighbors(ids, dragId, over?.status === status ? over.beforeId : undefined);
     const run = () => move.mutate({ id: dragId, status, ...neighbors, task });
     if (task === undefined) run();
     else moveConfirmed(task, status, run);
-    setDragId(null);
-    setOver(null);
   };
 
   const renderColumn = (status: Status) => {
@@ -167,6 +171,10 @@ function BoardColumns({ only }: { only?: Status }) {
                     if (!dragId || !canDrop(status)) return;
                     event.preventDefault();
                     event.stopPropagation();
+                    if (isRecentFirst(status)) {
+                      if (over?.status !== status) setOver({ status });
+                      return;
+                    }
                     const rect = event.currentTarget.getBoundingClientRect();
                     const ids = column.map((t) => t.id);
                     const beforeId = beforeIdOver(ids, dragId, task.id, event.clientY < rect.top + rect.height / 2);

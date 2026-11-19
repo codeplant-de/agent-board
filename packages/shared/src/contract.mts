@@ -29,6 +29,9 @@ export type Status = (typeof STATUSES)[number];
 // Where a new task may start. Running and Waiting need a run behind them and Done a close, which only their own commands do.
 export const DRAFT_STATUSES = ['backlog', 'todo', 'needs-me'] as const satisfies readonly Status[];
 export type DraftStatus = (typeof DRAFT_STATUSES)[number];
+// Columns that list the task updated last on top, instead of by priority and the order cards were dragged into.
+export const RECENT_FIRST_STATUSES = ['waiting', 'needs-me', 'done'] as const satisfies readonly Status[];
+export const isRecentFirst = (status: Status): boolean => (RECENT_FIRST_STATUSES as readonly Status[]).includes(status);
 
 // What the next run of a task does: start over, or resume the Claude session of the last run with the user's reply.
 export const NEXT_RUNS = ['fresh', 'resume'] as const;

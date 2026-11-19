@@ -25,7 +25,7 @@ Backlog is the first column. On a phone the board leaves it out, and the header 
 
 There are four priorities: `urgent`, `high`, `normal` (the default) and `low`.
 
-Every column except Waiting lists its tasks by priority, then in the order you dragged them into. Workers take Todo from the top, so an urgent task runs before anything else that waits. Waiting lists the wait that ends first on top.
+Backlog, Todo and Running list their tasks by priority, then in the order you dragged them into. Workers take Todo from the top, so an urgent task runs before anything else that waits. Waiting, Needs me and Done list the task updated last on top, whatever its priority: a move, a comment, a reply or an edit counts as an update. A card dropped into one of these lands on top and keeps its priority, and dragging a card within one changes nothing.
 
 Dropping a card among tasks of another priority gives it their priority. The task page has a picker for it.
 
