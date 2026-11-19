@@ -3,6 +3,7 @@ import {
   parseKeySetup,
   type Answer,
   type Keys,
+  type LinkRule,
   type Question,
   type Polish,
   type TranscriptEventView,
@@ -11,6 +12,7 @@ import { mutationOptions, queryOptions, type QueryKey } from '@tanstack/react-qu
 import type { TRPCClient } from '@trpc/client';
 import {
   openBoardAgents,
+  openBoardLinks,
   openBoardTask,
   openEvents,
   openListedTasks,
@@ -28,6 +30,7 @@ import {
   sealApply,
   sealConfigure,
   sealFork,
+  sealLinks,
   sealEdit,
   sealNewTask,
   sealReply,
@@ -97,6 +100,12 @@ export interface EditVariables {
   target: EditTarget;
   title: string;
   input: string;
+}
+
+export interface SetLinksVariables {
+  rules: LinkRule[];
+  /** The version the page loaded (0: none saved yet); the save is refused when the board holds another by now. */
+  expectedVersion: number;
 }
 
 export type UpdateScheduleVariables = ScheduleUpdate;
@@ -190,6 +199,23 @@ export function createPlainTRPC(raw: RawTRPC, client: RawClient, keys: Keys | nu
             queryKey: plainKey(raw.agents.shared.queryKey()),
             queryFn: async ({ signal }) =>
               openBoardAgents(need(), await client.agents.shared.query(undefined, { signal })),
+          }),
+      },
+    },
+    links: {
+      get: {
+        queryOptions: () =>
+          queryOptions({
+            queryKey: plainKey(raw.links.get.queryKey()),
+            queryFn: async ({ signal }) => openBoardLinks(need(), await client.links.get.query(undefined, { signal })),
+          }),
+      },
+      set: {
+        mutationOptions: () =>
+          mutationOptions({
+            mutationKey: raw.links.set.mutationKey(),
+            mutationFn: async ({ rules, expectedVersion }: SetLinksVariables) =>
+              client.links.set.mutate(await sealLinks(need(), rules, expectedVersion)),
           }),
       },
     },

@@ -24,6 +24,7 @@ const SUMMARY = {
   taskPrs: 3,
   machines: 2,
   sharedAgents: 1,
+  linkRules: 1,
   transcriptRuns: 7,
   transcriptEvents: 900,
   running: 0,

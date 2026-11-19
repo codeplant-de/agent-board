@@ -22,6 +22,7 @@ import type { DbOrTx } from '../db/client';
 import { tasks, type NoteRow, type TaskRow } from '../db/schema';
 import { ACCOUNT_TABLES, deleteAccount, exportPage, importRows, summarize } from '../services/account';
 import { getKeys, replaceSlots, setupKeys } from '../services/keys';
+import { getLinkRules, setLinkRules } from '../services/linkRules';
 import { issueToken, listMachineCatalogs, listMachines, revokeMachine } from '../services/machines';
 import { sharedAgentsForBrowser } from '../services/sharedAgents';
 import {
@@ -590,6 +591,25 @@ const agentsRouter = router({
   shared: procedure.query(({ ctx }) => sharedAgentsForBrowser(ctx.db)),
 });
 
+const linksRouter = router({
+  /** The sealed link rules with their version and when they were saved, or null before the first save. */
+  get: procedure.query(({ ctx }) => getLinkRules(ctx.db)),
+  /** Stores the next version while the board's is still `expectedVersion` (0: none); CONFLICT when another save came first. */
+  set: procedure
+    .input(
+      z
+        .object({
+          document: sealed('links', 'links'),
+          version: z.number().int().min(1).max(MAX_INT32),
+          expectedVersion: z.number().int().min(0).lt(MAX_INT32),
+        })
+        .refine(({ version, expectedVersion }) => version === expectedVersion + 1, {
+          message: 'version must be expectedVersion + 1',
+        }),
+    )
+    .mutation(({ ctx, input }) => setLinkRules(ctx.db, input)),
+});
+
 const transcriptRouter = router({
   /** A task's runs, newest first. */
   runs: procedure.input(z.object({ id })).query(({ ctx, input }) => listRuns(ctx.db, input.id)),
@@ -646,6 +666,7 @@ export const appRouter = router({
   schedules: schedulesRouter,
   machines: machinesRouter,
   agents: agentsRouter,
+  links: linksRouter,
 });
 
 export type AppRouter = typeof appRouter;

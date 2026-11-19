@@ -5,6 +5,7 @@ import type { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 import { SEALED_COLUMNS } from '../db/sealedColumns';
 import {
+  linkRules,
   machines,
   notes,
   schedules,
@@ -16,6 +17,7 @@ import {
 } from '../db/schema';
 import { ACCOUNT_TABLES, type AccountTable } from './account';
 import {
+  linkRulesRowSchema,
   machineRowSchema,
   noteRowSchema,
   scheduleRowSchema,
@@ -33,6 +35,7 @@ const TABLES: Record<AccountTable, { table: PgTable; schema: z.ZodObject }> = {
   task_pr: { table: taskPrs, schema: taskPrRowSchema },
   machine: { table: machines, schema: machineRowSchema },
   shared_agents: { table: sharedAgents, schema: sharedAgentsRowSchema },
+  link_rules: { table: linkRules, schema: linkRulesRowSchema },
   transcript_run: { table: transcriptRuns, schema: transcriptRunRowSchema },
   transcript_event: { table: transcriptEvents, schema: transcriptEventRowSchema },
 };
@@ -59,6 +62,7 @@ const IGNORED: Record<AccountTable, Record<string, string>> = {
   task_pr: { owner: 'the signed-in user, whatever the file says' },
   machine: { owner: 'the signed-in user, whatever the file says' },
   shared_agents: { owner: 'the signed-in user, whatever the file says' },
+  link_rules: { owner: 'the signed-in user, whatever the file says' },
   transcript_run: { owner: 'the signed-in user, whatever the file says' },
   transcript_event: { owner: 'the signed-in user, whatever the file says' },
 };

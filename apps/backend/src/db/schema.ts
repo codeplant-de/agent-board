@@ -434,6 +434,25 @@ export const sharedAgents = pgTable(
   ],
 ).enableRLS();
 
+/**
+ * The link rules the user set in the browser: one sealed document of all of them per user, bound to its version (`links`,
+ * context `links:v<version>`). The version is clear so that a save is compare-and-set; it only goes up, one per save.
+ */
+export const linkRules = pgTable(
+  'link_rules',
+  {
+    owner: owner().primaryKey(),
+    version: integer('version').notNull(),
+    document: text('document').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('link_rules_document_sealed', isEnvelope(t.document)),
+    check('link_rules_version_positive', sql`${t.version} >= 1`),
+    tenant(),
+  ],
+).enableRLS();
+
 export const authFlowKind = pgEnum('auth_flow_kind', [
   'oidc',
   'saml',

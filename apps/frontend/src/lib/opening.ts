@@ -14,6 +14,8 @@ import {
   openMachineUsage,
   openNote,
   openSharedAgents,
+  openLinkRules,
+  isLinkRulesVersion,
   isSharedAgentsVersion,
   openPrs,
   openPreview,
@@ -26,6 +28,7 @@ import {
   type Answer,
   type Binding,
   type Keys,
+  type LinkRule,
   type MachineCatalog,
   type MachineDir,
   type MachineUsage,
@@ -397,6 +400,25 @@ export async function openBoardAgents(
     version: isSharedAgentsVersion(version) ? version : 0,
     pushedAt: typeof pushedAt === 'string' ? pushedAt : '',
     agents: opened === undefined ? null : await viewSharedAgents(opened.agents),
+  };
+}
+
+/** The user's link rules: `rules` is null when the document does not open, which leaves every text without links. */
+export interface BoardLinks {
+  version: number;
+  updatedAt: string;
+  rules: LinkRule[] | null;
+}
+
+/** Null when no rule was ever saved; a version or time of the wrong shape leaves the document unopened. */
+export async function openBoardLinks(keys: Keys, wire: RouterOutputs['links']['get']): Promise<BoardLinks | null> {
+  if (wire === null) return null;
+  const { version, document, updatedAt } = wire;
+  const opened = isLinkRulesVersion(version) ? await openLinkRules(openerFor(keys), version, document) : undefined;
+  return {
+    version: isLinkRulesVersion(version) ? version : 0,
+    updatedAt: typeof updatedAt === 'string' ? updatedAt : '',
+    rules: opened?.rules ?? null,
   };
 }
 

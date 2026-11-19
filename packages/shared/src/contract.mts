@@ -924,6 +924,7 @@ export const SEALED_LIMITS: Record<Field, number> = {
   'machine.catalog': 256 * 1024,
   'machine.usage': 64 * 1024,
   'agents.shared': 256 * 1024,
+  links: 512 * 1024,
   'note.body': 4 * 100_000,
   'note.preview': 4 * 300,
   'note.suggestion': 4 * NOTE_SUGGESTION_CHARS,

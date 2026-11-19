@@ -40,6 +40,7 @@ import {
   workdirOpenBindings,
 } from './sealing.mts';
 import type { Binding, Opener, RowRef, Sealer } from './sealing.mts';
+import { isLinkRulesVersion, linkRulesBinding } from './linkRules.mts';
 import { sharedAgentsBinding } from './sharedAgents.mts';
 
 export const EXPORT_FORMAT = 'agent-board-export';
@@ -53,6 +54,7 @@ export const EXPORT_TABLES = [
   'task_pr',
   'machine',
   'shared_agents',
+  'link_rules',
   'transcript_run',
   'transcript_event',
 ] as const;
@@ -184,6 +186,7 @@ export const SEALED_ROW_COLUMNS: Record<ExportTable, readonly string[]> = {
   task_pr: ['pr'],
   machine: ['dirs', 'catalog', 'usage'],
   shared_agents: ['document'],
+  link_rules: ['document'],
   transcript_run: [],
   transcript_event: ['data', 'output'],
 };
@@ -287,6 +290,10 @@ async function planOf(ctx: ResealContext, table: ExportTable, row: Record<string
     case 'shared_agents': {
       const { version } = row;
       return isSharedAgentsVersion(version) ? { document: [sharedAgentsBinding(version)] } : {};
+    }
+    case 'link_rules': {
+      const { version } = row;
+      return isLinkRulesVersion(version) ? { document: [linkRulesBinding(version)] } : {};
     }
     case 'transcript_run':
       return {};

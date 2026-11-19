@@ -9,12 +9,14 @@ import {
   sealAnswers,
   sealFields,
   sealInput,
+  sealLinkRules,
   sealNote,
   sealTitle,
   sealWorkdir,
   textBeforeEdit,
   type Answer,
   type Keys,
+  type LinkRule,
   type Priority,
   type Question,
   type RowRef,
@@ -422,4 +424,13 @@ export async function sealScheduleUpdate(keys: Keys, update: ScheduleUpdate): Pr
     ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
     place: place === null || sealed.workdir === undefined ? null : { machine: place.machine, workdir: sealed.workdir },
   };
+}
+
+export type LinkRulesInput = RouterInputs['links']['set'];
+
+/** The next version of the link rules, sealed under its own version, for a save over `expectedVersion` (0: none saved yet). */
+export async function sealLinks(keys: Keys, rules: LinkRule[], expectedVersion: number): Promise<LinkRulesInput> {
+  const version = expectedVersion + 1;
+  const document = await checked(() => sealLinkRules(sealerFor(keys), { version, rules }));
+  return { document, version, expectedVersion };
 }
