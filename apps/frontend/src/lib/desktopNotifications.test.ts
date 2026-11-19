@@ -1,7 +1,10 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   idsNeedingMe,
   newlyNeedingMe,
+  resetNotificationWorkerForTests,
+  showNotification,
+  subscribeToNotificationClicks,
   readDesktopNotificationsPreference,
   subscribeToDesktopNotificationsPreference,
   writeDesktopNotificationsPreference,
@@ -52,5 +55,80 @@ describe('the preference', () => {
     unsubscribe();
     writeDesktopNotificationsPreference(false);
     expect(calls).toBe(1);
+  });
+});
+
+describe('showNotification', () => {
+  const stubServiceWorker = (value: unknown) => vi.stubGlobal('navigator', { serviceWorker: value });
+
+  beforeEach(() => resetNotificationWorkerForTests());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('shows through the service worker with the path and the tag', async () => {
+    const show = vi.fn().mockResolvedValue(undefined);
+    stubServiceWorker({ register: vi.fn().mockResolvedValue({}), ready: Promise.resolve({ showNotification: show }) });
+    await showNotification('Title', { body: 'Needs you', tag: 'a', path: '/t/a' });
+    expect(show).toHaveBeenCalledWith('Title', {
+      body: 'Needs you',
+      tag: 'a',
+      icon: '/favicon.svg',
+      data: { path: '/t/a' },
+    });
+  });
+
+  it('falls back to the constructor without a service worker, and a click opens the path', async () => {
+    const instance: { onclick?: () => void; close: () => void } = { close: vi.fn() };
+    const constructor = vi.fn(function () {
+      return instance;
+    });
+    vi.stubGlobal('Notification', constructor);
+    stubServiceWorker(undefined);
+    vi.stubGlobal('navigator', {});
+    const open = vi.fn();
+    await showNotification('Title', { body: 'Needs you', tag: 'a', path: '/t/a', open });
+    expect(constructor).toHaveBeenCalledWith('Title', { body: 'Needs you', tag: 'a', icon: '/favicon.svg' });
+    instance.onclick?.();
+    expect(open).toHaveBeenCalledWith('/t/a');
+    expect(instance.close).toHaveBeenCalled();
+  });
+
+  it('falls back when the worker fails to register', async () => {
+    const constructor = vi.fn(function () {
+      return { close: vi.fn() };
+    });
+    vi.stubGlobal('Notification', constructor);
+    stubServiceWorker({
+      register: vi.fn().mockRejectedValue(new Error('refused')),
+      ready: new Promise(() => undefined),
+    });
+    await showNotification('Title', { body: 'Needs you' });
+    expect(constructor).toHaveBeenCalledOnce();
+  });
+});
+
+describe('subscribeToNotificationClicks', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('opens a valid path, ignores anything else, and stops after unsubscribing', () => {
+    const target = new EventTarget();
+    vi.stubGlobal('navigator', { serviceWorker: target });
+    const open = vi.fn();
+    const unsubscribe = subscribeToNotificationClicks(open);
+    const send = (data: unknown) => target.dispatchEvent(new MessageEvent('message', { data }));
+    send({ type: 'agent-board:open', path: '/t/abc_1' });
+    send({ type: 'agent-board:open', path: '/settings' });
+    send({ type: 'agent-board:open', path: 'https://evil.example/t/a' });
+    send({ type: 'other', path: '/t/abc' });
+    send('/t/abc');
+    send(null);
+    expect(open.mock.calls).toEqual([['/t/abc_1']]);
+    unsubscribe();
+    send({ type: 'agent-board:open', path: '/t/abc' });
+    expect(open).toHaveBeenCalledOnce();
+  });
+
+  it('does nothing without a service worker', () => {
+    vi.stubGlobal('navigator', {});
+    expect(subscribeToNotificationClicks(vi.fn())()).toBeUndefined();
   });
 });

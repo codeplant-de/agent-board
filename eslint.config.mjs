@@ -34,4 +34,8 @@ export default tseslint.config(
     extends: [reactHooks.configs.flat.recommended],
     languageOptions: { globals: globals.browser },
   },
+  {
+    files: ['apps/frontend/public/sw.js'],
+    languageOptions: { globals: globals.serviceworker },
+  },
 );

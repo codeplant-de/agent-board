@@ -5,8 +5,11 @@ import {
   idsNeedingMe,
   isNotificationSupported,
   newlyNeedingMe,
+  notificationWorker,
   readDesktopNotificationsPreference,
+  showNotification,
   subscribeToDesktopNotificationsPreference,
+  subscribeToNotificationClicks,
 } from '../lib/desktopNotifications';
 import { POLL_MS, useTRPC, type ListedTask } from '../lib/trpc';
 
@@ -29,6 +32,12 @@ export function useDesktopNotifications(): void {
   });
   const remembered = useRef<Set<string> | null>(null);
 
+  useEffect(() => subscribeToNotificationClicks((path) => void navigate(path)), [navigate]);
+
+  useEffect(() => {
+    if (enabled && canNotify()) void notificationWorker();
+  }, [enabled]);
+
   useEffect(() => {
     if (!tasks.data) return;
     const previous = remembered.current;
@@ -39,14 +48,10 @@ export function useDesktopNotifications(): void {
 }
 
 function notify({ id, title, openQuestion }: ListedTask, open: (path: string) => void): void {
-  const notification = new Notification(title, {
+  void showNotification(title, {
     body: openQuestion ? 'Asked you a question' : 'Needs you',
     tag: id,
-    icon: '/favicon.svg',
+    path: `/t/${id}`,
+    open,
   });
-  notification.onclick = () => {
-    window.focus();
-    open(`/t/${id}`);
-    notification.close();
-  };
 }

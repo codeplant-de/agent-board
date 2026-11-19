@@ -147,7 +147,7 @@ describe('the web container’s Caddyfile', () => {
     expect(handler.match(/redir/g)).toHaveLength(1);
   });
 
-  it('allows no worker in the app, so no service worker can be registered, from a backend path or elsewhere', () => {
-    expect(code).toMatch(/Content-Security-Policy "[^"]*worker-src 'none'/);
+  it('allows workers only from the app’s own origin, and a backend path is data, not a script', () => {
+    expect(code).toMatch(/Content-Security-Policy "[^"]*worker-src 'self'[;"]/);
   });
 });
