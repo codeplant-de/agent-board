@@ -700,10 +700,10 @@ The dispatcher of every machine where `gh` is installed looks the state up on Gi
 An agent can propose follow-up work:
 
 ```text
-board add --title <t> --file <path> --parent <task> [--priority <p>] [--lane <name>]
+board add --title <t> --file <path> --parent <task> [--priority <p>] [--lane <name>] [--here]
 ```
 
-The file is the new task's prompt. Without `--priority` a proposal takes its parent's priority. It runs where the proposing agent worked, on that machine. Without `--lane` it asks for no lane, so it runs in the default lane once you start it: it does not take the lane of the task that proposed it.
+The file is the new task's prompt. Without `--priority` a proposal takes its parent's priority. It runs on the proposing agent's machine, in the working directory of its parent: the directory the parent's run started in when the parent is the proposing run's own task, else the parent's directory on the board. So a proposal made from a worktree runs in the checkout the parent belongs to. `--here` proposes in the agent's current directory instead, and so does a proposal without `--parent`, or one whose parent has no directory on this machine, one that no longer exists or one outside the machine's `dirs` list. Without `--lane` it asks for no lane, so it runs in the default lane once you start it: it does not take the lane of the task that proposed it.
 
 A proposal lands in Backlog with a **Proposed** badge and runs only after you start it. So a run that a PR's text turned against you cannot queue work by itself.
 

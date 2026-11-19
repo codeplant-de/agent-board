@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { linkSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -155,6 +155,62 @@ test('board add sends no status: the board puts a proposal in Backlog itself', a
   assert.ok(!('status' in (drafts[0] as object)));
   assert.equal((drafts[0] as { createdBy: string }).createdBy, 'agent');
   assert.deepEqual(printed, ['proposed p1 https://board.test/t/p1']);
+});
+
+// Proposes with `add` from `cwd` and returns the directory the draft was sealed with.
+async function proposedIn(
+  parents: ReturnType<typeof task>[],
+  flags: { parent?: string; here?: boolean },
+  where: { cwd: string; startDir?: string; runTask?: string },
+  config = CONFIG,
+): Promise<string> {
+  const backend = fakeBackend(parents);
+  let workdir = '';
+  backend.addTask = async (draft) => {
+    workdir = (draft as { workdir: string }).workdir;
+    return { task: task({ id: 'p1' }), created: true };
+  };
+  const context: LinkingContext = { config, backend, dryRun: false, print: () => {}, taskLink: linkTo };
+  const file = join(mkdtempSync('/tmp/pr-add-test-'), 'p.md');
+  try {
+    writeFileSync(file, 'do the thing');
+    await add(context, { title: 'Do it', file, ...flags }, where);
+  } finally {
+    rmSync(dirname(file), { recursive: true });
+  }
+  return workdir;
+}
+
+test('board add runs a follow-up in its parent’s directory, not where the agent stands', async () => {
+  const root = realpathSync(mkdtempSync('/tmp/pr-add-dirs-'));
+  const [checkout, worktree, other] = ['checkout', 'worktree', 'other'].map((name) => join(root, name));
+  for (const dir of [checkout!, worktree!, other!]) mkdirSync(dir);
+  try {
+    // The run's own task: the directory its run started in.
+    assert.equal(
+      await proposedIn([], { parent: 'run1' }, { cwd: worktree!, startDir: checkout!, runTask: 'run1' }),
+      checkout,
+    );
+    // Another task of this machine: its directory on the board.
+    const sibling = task({ id: 'sib', machine: CONFIG.machine, workdir: other! });
+    assert.equal(await proposedIn([sibling], { parent: 'sib' }, { cwd: worktree!, runTask: 'run1' }), other);
+    // --here keeps the agent's directory.
+    assert.equal(
+      await proposedIn([], { parent: 'run1', here: true }, { cwd: worktree!, startDir: checkout!, runTask: 'run1' }),
+      worktree,
+    );
+    // Nothing to inherit: another machine's task, one without a directory, a gone directory, an unknown task.
+    const elsewhere = task({ id: 'far', machine: 'laptop', workdir: other! });
+    const none = task({ id: 'none', machine: CONFIG.machine, workdir: null });
+    const gone = task({ id: 'gone', machine: CONFIG.machine, workdir: join(root, 'removed') });
+    for (const parent of ['far', 'none', 'gone', 'unknown'])
+      assert.equal(await proposedIn([elsewhere, none, gone], { parent }, { cwd: worktree! }), worktree, parent);
+    // A parent's directory outside the machine's list is not inherited.
+    const listed = { ...CONFIG, dirs: [{ path: worktree! }] };
+    assert.equal(await proposedIn([sibling], { parent: 'sib' }, { cwd: worktree! }, listed), worktree);
+  } finally {
+    rmSync(root, { recursive: true });
+  }
 });
 
 test('board polish posts a polish note on the run’s own task, naming the target, and changes nothing else', async () => {

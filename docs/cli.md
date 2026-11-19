@@ -568,8 +568,9 @@ Examples:
 Usage: board add [options]
 
 Propose a follow-up task; the file is its prompt. It waits in backlog until the
-user starts it, and runs in this directory on this machine. With --json, print
-{"id", "url"} on stdout.
+user starts it, and runs on this machine: with --parent in the directory of the
+parent when it has one here, else in this directory. With --json, print {"id",
+"url"} on stdout.
 
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
@@ -585,6 +586,7 @@ Options:
   --priority <priority>  urgent, high, normal or low (default normal)
   --lane <name>          the lane the task asks for once you start it (default:
                          the default lane; it does not inherit this run's lane)
+  --here                 run in this directory instead of the parent's
   --json                 print JSON on stdout instead of text
   --dry-run              read everything, print every write instead of doing it
   -h, --help             display help for command
