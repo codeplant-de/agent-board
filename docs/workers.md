@@ -206,7 +206,7 @@ What waits for a board that is down is bounded at 20,000 events and 32 MB of JSO
 
 ### On the board
 
-**Transcript** on a task page, or the terminal icon on a card, opens the runs, newest first, live while one runs. Tool calls are one line each. A click shows the input and loads the output. A tool result over 256 KB is cut with a note, and the full one stays in the session file on the machine. Claude Code passes thinking on without its text, so a thinking block shows as a marker with its token estimate.
+**Transcript** on a task page, or the terminal icon on a card, opens the runs, newest first, live while one runs. Tool calls are one line each, and a Bash call with a description shows the description with its command under it. A click shows the input and loads the output. A tool result over 256 KB is cut with a note, and the full one stays in the session file on the machine. Claude Code passes thinking on without its text, so a thinking block shows as a marker with its token estimate.
 
 The board loads a run's events in pages of 2000, and afterwards only those after the last one it has. Long runs show in full, and a live run costs one small request per poll.
 

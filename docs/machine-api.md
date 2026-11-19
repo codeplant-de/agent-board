@@ -519,7 +519,7 @@ Pickup order is the order of the array that `list-tasks` returns. Within a statu
 
 - **Todo.** Resumes (`next: resume`) come first, then `priority`, then manual order. The lanes pick from that order.
 - **Delayed tasks.** A task with `notBefore` in the future comes last in Todo, by `notBefore`. Once due it sorts like any other. The dispatcher does not try to claim a delayed task.
-- **Waiting.** The wait that ends first is on top. Nothing claims a task there.
+- **Waiting, Needs me, Done.** The task updated last (`updatedAt`) is on top, whatever its priority. Nothing claims a task in Waiting.
 
 ## Schedule
 

@@ -199,6 +199,31 @@ describe('BoardPage drop position', () => {
     expect(move.mock.calls[0]?.[0]).toMatchObject({ id: 'A', afterId: 'D' });
     expect(move.mock.calls[0]?.[0]).not.toHaveProperty('beforeId');
   });
+
+  it('moves a card into Done without neighbours, since Done lists the latest on top', async () => {
+    listed.tasks = [...todo, task({ id: 'E', title: 'card E', status: 'done', proposed: false })];
+    renderBoard();
+    const dataTransfer = { effectAllowed: '', dropEffect: '' };
+    fireEvent.dragStart(await cardOf('card A'), { dataTransfer });
+    fireEvent.dragOver(await cardOf('card E'), { dataTransfer, clientY: -1 });
+    fireEvent.drop(await cardOf('card E'), { dataTransfer });
+    await waitFor(() => expect(move).toHaveBeenCalledTimes(1));
+    expect(move.mock.calls[0]?.[0]).toMatchObject({ id: 'A', status: 'done' });
+    expect(move.mock.calls[0]?.[0]).not.toHaveProperty('beforeId');
+    expect(move.mock.calls[0]?.[0]).not.toHaveProperty('afterId');
+  });
+
+  it('moves nothing when a card is dropped back into Needs me', async () => {
+    listed.tasks = ['E', 'F'].map((id) => task({ id, title: `card ${id}`, status: 'needs-me', proposed: false }));
+    renderBoard();
+    const dataTransfer = { effectAllowed: '', dropEffect: '' };
+    fireEvent.dragStart(await cardOf('card F'), { dataTransfer });
+    fireEvent.dragOver(await cardOf('card E'), { dataTransfer, clientY: -1 });
+    fireEvent.drop(await cardOf('card E'), { dataTransfer });
+    await drag('card E', 'Done');
+    await waitFor(() => expect(move).toHaveBeenCalledTimes(1));
+    expect(move.mock.calls[0]?.[0]).toMatchObject({ id: 'E', status: 'done' });
+  });
 });
 
 describe('BoardPage move merged to Done', () => {

@@ -1,4 +1,4 @@
-import { toolSummary, type TranscriptEventView } from '@agent-board/shared';
+import { isRecord, toolSummary, type TranscriptEventView } from '@agent-board/shared';
 import {
   Alert,
   Badge,
@@ -44,6 +44,13 @@ function formatSize(chars: number | null | undefined): string {
   return chars < 1024 ? `${chars} chars` : `${(chars / 1024).toFixed(1)} KB`;
 }
 
+/** What a Bash call says it does, in the agent's words; the command line goes under it. */
+function bashDescription(use: ToolUse): string {
+  if (use.name !== 'Bash' || !isRecord(use.input)) return '';
+  const description = use.input['description'];
+  return typeof description === 'string' ? description.trim() : '';
+}
+
 /** A tool call with its result: one line, expanded on click; the output loads only then. */
 function ToolCall({
   taskId,
@@ -58,6 +65,8 @@ function ToolCall({
 }) {
   const trpc = useTRPC();
   const [open, setOpen] = useState(false);
+  const summary = toolSummary(use.name, use.input);
+  const description = bashDescription(use);
   const output = useQuery({
     ...trpc.transcript.output.queryOptions({ taskId, runId, seq: result?.seq ?? -1 }),
     enabled: open && result !== undefined && (result.outputSize ?? 0) > 0,
@@ -83,15 +92,37 @@ function ToolCall({
           <Badge size="sm" variant="light" color={result?.isError ? 'red' : 'gray'} tt="none" style={{ flexShrink: 0 }}>
             {use.name}
           </Badge>
-          <Text
-            size="xs"
-            ff="monospace"
-            c={result?.isError ? 'red' : undefined}
-            style={{ overflowWrap: 'anywhere' }}
-            lineClamp={open ? undefined : 1}
-          >
-            {toolSummary(use.name, use.input)}
-          </Text>
+          {description ? (
+            <Stack gap={0} style={{ minWidth: 0 }}>
+              <Text
+                size="xs"
+                c={result?.isError ? 'red' : undefined}
+                style={{ overflowWrap: 'anywhere' }}
+                lineClamp={open ? undefined : 1}
+              >
+                {description}
+              </Text>
+              <Text
+                size="xs"
+                ff="monospace"
+                c="dimmed"
+                style={{ overflowWrap: 'anywhere' }}
+                lineClamp={open ? undefined : 1}
+              >
+                {summary}
+              </Text>
+            </Stack>
+          ) : (
+            <Text
+              size="xs"
+              ff="monospace"
+              c={result?.isError ? 'red' : undefined}
+              style={{ overflowWrap: 'anywhere' }}
+              lineClamp={open ? undefined : 1}
+            >
+              {summary}
+            </Text>
+          )}
         </Group>
       </UnstyledButton>
       <Collapse expanded={open}>

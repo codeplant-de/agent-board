@@ -1,11 +1,13 @@
 import {
   formatServerEvent,
   isEffort,
+  isRecentFirst,
   MAX_TASK_PRS,
   MAX_TASK_WATCHES,
   MAX_WAIT_MS,
   newTaskId,
   PRIORITIES,
+  RECENT_FIRST_STATUSES,
   TAKE_BACK_AFTER_MS,
   type ServerEvent,
   type Effort,
@@ -140,11 +142,11 @@ export function toNote(row: NoteRow): WireNote {
 /**
  * Columns by status, then priority (urgent first), then manual order. In Todo, delayed cards (not yet due) come
  * last, by their start; resumes (answered, replied to, paused) come before the rest: that work is already under way.
- * Waiting lists the wait that ends first on top.
+ * Waiting, Needs me and Done list the task updated last on top, whatever its priority.
  */
 const taskOrder = () => [
   asc(tasks.status),
-  asc(sql`case when ${tasks.status} = 'waiting' then ${tasks.wakeAt} end`),
+  desc(sql`case when ${inArray(tasks.status, [...RECENT_FIRST_STATUSES])} then ${tasks.updatedAt} end`),
   sql`case when ${tasks.status} = 'todo' and ${tasks.notBefore} > now() then 1 else 0 end`,
   asc(sql`case when ${tasks.status} = 'todo' and ${tasks.notBefore} > now() then ${tasks.notBefore} end`),
   sql`case when ${tasks.status} = 'todo' and ${tasks.next} = 'resume' then 0 else 1 end`,
@@ -852,8 +854,10 @@ export async function moveTask(
         .where(and(eq(tasks.id, id), eq(tasks.status, input.status), ne(tasks.id, task.id)));
       return row;
     };
-    const above = await neighbour(input.afterId);
-    const below = await neighbour(input.beforeId);
+    // A column sorted by recency has no place to drop into, so a drop there takes no neighbour's priority either.
+    const placed = !isRecentFirst(input.status);
+    const above = placed ? await neighbour(input.afterId) : undefined;
+    const below = placed ? await neighbour(input.beforeId) : undefined;
     // Columns sort by priority first, so a card dropped among tasks of another priority takes theirs.
     const priority = droppedPriority(task.priority, above?.priority, below?.priority);
     const upper = above?.priority === priority ? above.position : undefined;

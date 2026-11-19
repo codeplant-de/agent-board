@@ -113,6 +113,29 @@ describe('TranscriptDrawer', () => {
     expect(screen.getByRole('button', { name: 'Reload' })).toBeInTheDocument();
   });
 
+  it('shows a Bash call’s description with its command under it, and the command alone without one', async () => {
+    const bash = (seq: number, input: Record<string, unknown>) => ({
+      seq,
+      at: NOW,
+      kind: 'tool_use',
+      parent: null,
+      toolUseId: `t${seq}`,
+      name: 'Bash',
+      input,
+    });
+    fetchPage
+      .mockReset()
+      .mockResolvedValueOnce([
+        bash(0, { command: 'git status -sb', description: 'Show working tree status' }),
+        bash(1, { command: 'ls -la' }),
+      ])
+      .mockResolvedValue([]);
+    renderDrawer({ opened: true, live: false });
+    expect(await screen.findByText('Show working tree status')).toBeInTheDocument();
+    expect(screen.getByText('git status -sb')).toBeInTheDocument();
+    expect(screen.getByText('ls -la')).toBeInTheDocument();
+  });
+
   it('says so while a run’s events load', async () => {
     fetchPage.mockReset().mockReturnValue(new Promise(() => undefined));
     renderDrawer({ opened: true, live: false });
