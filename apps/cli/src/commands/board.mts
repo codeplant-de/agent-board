@@ -330,6 +330,8 @@ export interface AddFlags {
   parent?: string;
   priority?: string;
   lane?: string;
+  // Propose in the working directory instead of the parent's.
+  here?: boolean;
 }
 
 export function parseAddFlags(flags: AddFlags): {
@@ -364,17 +366,47 @@ export function proposalDir(config: Config, { cwd, startDir }: { cwd: string; st
   );
 }
 
+/**
+ * The parent's directory on this machine, for a proposal that follows from it; undefined when it has none here. The run's
+ * own task is where its run started (AGENT_BOARD_START_DIR), which the worker stored as its `workdir`; another task is
+ * read from the board. A directory that is gone, unsafe or not allowed here is not inherited.
+ */
+async function parentDir(
+  context: LinkingContext,
+  parent: string,
+  where: { startDir?: string; runTask?: string },
+): Promise<string | undefined> {
+  let dir: string | null | undefined;
+  if (parent === where.runTask && where.startDir !== undefined) dir = where.startDir;
+  else {
+    try {
+      const task = await context.backend.getTask(parent);
+      // A directory of another machine means nothing here; an unreadable one is null.
+      if (task.machine === context.config.machine) dir = task.workdir;
+    } catch (error) {
+      if (error instanceof BackendError && error.fromApi) return undefined;
+      throw error;
+    }
+  }
+  if (dir === null || dir === undefined || !isSafeWorkdir(dir)) return undefined;
+  const real = tryRealpath(dir);
+  if (real === undefined || !isDirectory(real) || !isAllowedDir(context.config.dirs, real)) return undefined;
+  return real;
+}
+
 // The board puts a proposal in Backlog itself, so no status is sent.
 export async function add(
   context: LinkingContext,
   flags: AddFlags,
-  // `cwd`: the real path of the working directory; `startDir`: AGENT_BOARD_START_DIR, where the run started.
-  where: { cwd: string; startDir?: string },
+  // `cwd`: the real path of the working directory; `startDir`: AGENT_BOARD_START_DIR, where the run started;
+  // `runTask`: AGENT_BOARD_TASK, the task of the run that proposes.
+  where: { cwd: string; startDir?: string; runTask?: string },
 ): Promise<Task> {
   const { title, file, parent, priority, lane } = parseAddFlags(flags);
-  const workdir = proposalDir(context.config, where);
-  // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs where the
-  // proposing agent works, on this machine.
+  // A follow-up runs where its parent does, unless --here asks for this directory.
+  const inherited = parent === undefined || flags.here === true ? undefined : await parentDir(context, parent, where);
+  const workdir = inherited ?? proposalDir(context.config, where);
+  // An agent proposes; the user starts it. A prompt-injected run must not queue work by itself. It runs on this machine.
   const draft = {
     title,
     input: readNoteFile(file),

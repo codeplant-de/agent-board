@@ -484,7 +484,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
         .summary('propose a follow-up task')
         .description(
           paragraphs(
-            'Propose a follow-up task; the file is its prompt. It waits in backlog until the user starts it, and runs in this directory on this machine. With --json, print {"id", "url"} on stdout.',
+            'Propose a follow-up task; the file is its prompt. It waits in backlog until the user starts it, and runs on this machine: with --parent in the directory of the parent when it has one here, else in this directory. With --json, print {"id", "url"} on stdout.',
             ID_NOTE,
           ),
         )
@@ -496,6 +496,7 @@ export function registerTaskCommands(shared: ProgramShared): void {
           '--lane <name>',
           "the lane the task asks for once you start it (default: the default lane; it does not inherit this run's lane)",
         )
+        .option('--here', "run in this directory instead of the parent's")
         .addHelpText(
           'after',
           examples(
@@ -508,10 +509,15 @@ export function registerTaskCommands(shared: ProgramShared): void {
     const context = contextOf(command, { strictConfig: true, json: flags.json === true });
     const parent = flags.parent === undefined ? undefined : await taskIdOf(context, flags.parent);
     const startDir = env['AGENT_BOARD_START_DIR'];
+    const runTask = env['AGENT_BOARD_TASK'];
     const task = await add(
       context,
       { ...flags, ...(parent === undefined ? {} : { parent }) },
-      { cwd: options.cwd ?? realpathSync(process.cwd()), ...(startDir ? { startDir } : {}) },
+      {
+        cwd: options.cwd ?? realpathSync(process.cwd()),
+        ...(startDir ? { startDir } : {}),
+        ...(runTask ? { runTask } : {}),
+      },
     );
     if (flags.json) writeJson({ id: task.id, url: context.taskLink(task.id) });
   });

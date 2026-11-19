@@ -292,7 +292,7 @@ An entry's settings (`repo`, `default`, `lane`) only say where tasks run. They c
 - The worker checks every start, after it checked that the directory exists. That covers a task with its own directory, a task in `defaultCwd` or its lane's `cwd`, and a resume in the stored `workdir`.
 - A directory outside the list ends the task in `needs-me` with the path and the way out: `board dirs add` in it on that machine, then **Re-run fresh** or **Send & continue**.
 - A running task is not stopped when the list changes.
-- `board schedule` refuses with a usage error in an unlisted directory. `board add` first tries `AGENT_BOARD_START_DIR`, the directory the run started in, and refuses only when that is not allowed either.
+- `board schedule` refuses with a usage error in an unlisted directory. `board add` with `--parent` inherits the parent's directory only when it is allowed. Otherwise it takes the current directory, then `AGENT_BOARD_START_DIR`, the directory the run started in, and refuses only when that is not allowed either.
 - The dispatcher does not look at the list. It claims a task whose directory is not listed and the worker fails it, so the task shows in Needs me instead of sitting in Todo.
 - `board attach` and command watches are not limited. They stay on the machine.
 - `board doctor` fails for a `defaultCwd`, lane `cwd` or `repos` checkout that no entry covers, since tasks routed there stop. `board dirs add --from-config` lists them.
