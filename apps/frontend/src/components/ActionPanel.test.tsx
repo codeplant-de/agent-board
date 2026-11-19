@@ -632,6 +632,18 @@ describe('ActionPanel of a backlog task', () => {
   });
 });
 
+describe('ActionPanel More menu', () => {
+  it('moves a task that waits for you to the Backlog', async () => {
+    move.mockClear();
+    const task = running({ status: 'needs-me', runStartedAt: null });
+    renderPanel(task);
+    await userEvent.click(screen.getByRole('button', { name: 'More' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Move to Backlog' }));
+    await waitFor(() => expect(move).toHaveBeenCalled());
+    expect(move.mock.calls[0]?.[0]).toEqual({ id: 'abc12345', status: 'backlog', task });
+  });
+});
+
 describe('ActionPanel of a delayed task', () => {
   it('says when it starts and Run now clears the delay', async () => {
     setNotBefore.mockClear();

@@ -8,6 +8,7 @@ import {
   IconAlarm,
   IconCheck,
   IconChevronDown,
+  IconInbox,
   IconMessage,
   IconPlayerPlay,
   IconPlayerStop,
@@ -585,6 +586,12 @@ export function ActionPanel({
                   }
                 >
                   Comment without continuing
+                </Menu.Item>
+                <Menu.Item
+                  leftSection={<IconInbox size={14} />}
+                  onClick={() => actions.move.mutate({ id: task.id, status: 'backlog', task })}
+                >
+                  Move to Backlog
                 </Menu.Item>
                 <Menu.Item
                   leftSection={<IconArchive size={14} />}
