@@ -42,6 +42,7 @@ export const SEALED_COLUMNS: readonly SealedColumn[] = [
   envelope('machine', 'usage'),
   blindIndex('machine', 'usage_index'),
   envelope('shared_agents', 'document'),
+  envelope('link_rules', 'document'),
   blindIndex('task', 'dedupe_key'),
   blindIndex('task', 'head'),
   envelope('schedule', 'title'),

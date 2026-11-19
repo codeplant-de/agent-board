@@ -14,6 +14,7 @@
 //   machine.catalog machine:<name> (the skills and models the machine's CLI found, one JSON document)
 //   machine.usage  machine:<name> (the usage limits, readings and held tasks the machine's CLI found, one JSON document)
 //   agents.shared  agents:v<version> (every agent definition the user pushed to the board, one JSON document; see sharedAgents.mts)
+//   links          links:v<version> (the link rules the user set in the browser, one JSON document; see linkRules.mts)
 //   note.*         note:<taskId>:<author>:<kind>
 //   tr.*           <taskId>:<runId>:<seq>
 //

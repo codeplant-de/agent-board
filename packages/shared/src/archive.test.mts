@@ -16,6 +16,7 @@ import { ContractError } from './contract.mts';
 import { deriveKeys, generateDataKey, open, seal, wrapDataKey } from './crypto.mts';
 import type { Keys } from './crypto.mts';
 import { serializePolish } from './polish.mts';
+import { linkRulesBinding, linkRulesJson, sealLinkRules } from './linkRules.mts';
 import { sealSharedAgents, sharedAgentsBinding, sharedAgentsJson } from './sharedAgents.mts';
 import type { Question } from './questions.mts';
 import {
@@ -452,6 +453,18 @@ test('the shared agents are sealed again under the version of the row; another v
   const relabelled = await reseal('shared_agents', { ...row, version: 5 });
   assert.deepEqual(relabelled.unreadable, ['document']);
   assert.deepEqual((await reseal('shared_agents', { ...row, version: 'four' })).unreadable, ['document']);
+});
+
+test('the link rules are sealed again under the version of the row; another version leaves them unreadable', async () => {
+  const document = { version: 2, rules: [{ pattern: 'sc-(\\d+)', url: 'https://app.shortcut.com/acme/story/$1' }] };
+  const row = { version: 2, document: await sealLinkRules(sealA, document), updatedAt: '2026-11-18T10:00:00Z' };
+  const { row: out, unreadable } = await reseal('link_rules', row);
+  assert.deepEqual(unreadable, []);
+  await assertMoved(row, out, 'document', linkRulesBinding(2), linkRulesJson(document));
+  assert.equal(out['version'], 2);
+  const relabelled = await reseal('link_rules', { ...row, version: 3 });
+  assert.deepEqual(relabelled.unreadable, ['document']);
+  assert.deepEqual((await reseal('link_rules', { ...row, version: 'two' })).unreadable, ['document']);
 });
 
 test('a transcript run has nothing to seal', async () => {

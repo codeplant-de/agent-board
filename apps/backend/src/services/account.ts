@@ -8,6 +8,7 @@ import type { z } from 'zod';
 import type { DbOrTx } from '../db/client';
 import {
   appUsers,
+  linkRules,
   machines,
   notes,
   schedules,
@@ -19,6 +20,7 @@ import {
 } from '../db/schema';
 import { AppError } from './errors';
 import {
+  linkRulesRowSchema,
   machineRowSchema,
   noteRowSchema,
   scheduleRowSchema,
@@ -38,6 +40,7 @@ export const ACCOUNT_TABLES = [
   'task_pr',
   'machine',
   'shared_agents',
+  'link_rules',
   'transcript_run',
   'transcript_event',
 ] as const;
@@ -50,6 +53,7 @@ export interface AccountSummary {
   taskPrs: number;
   machines: number;
   sharedAgents: number;
+  linkRules: number;
   transcriptRuns: number;
   transcriptEvents: number;
   running: number;
@@ -66,6 +70,7 @@ export async function summarize(db: DbOrTx): Promise<AccountSummary> {
       taskPrs: total(taskPrs),
       machines: total(machines),
       sharedAgents: total(sharedAgents),
+      linkRules: total(linkRules),
       transcriptRuns: total(transcriptRuns),
       transcriptEvents: total(transcriptEvents),
       running: sql<number>`(select count(*) from ${tasks} where ${tasks.status} = 'running')::int`,
@@ -95,6 +100,7 @@ const EXPORT_SPECS: Record<AccountTable, ExportSpec> = {
   task_pr: { table: taskPrs, order: [by('createdAt', taskPrs.createdAt, 'timestamp'), by('id', taskPrs.id, 'text')] },
   machine: { table: machines, order: [by('name', machines.name, 'text')] },
   shared_agents: { table: sharedAgents, order: [by('version', sharedAgents.version, 'int')] },
+  link_rules: { table: linkRules, order: [by('version', linkRules.version, 'int')] },
   transcript_run: {
     table: transcriptRuns,
     order: [by('startedAt', transcriptRuns.startedAt, 'timestamp'), by('id', transcriptRuns.id, 'text')],
@@ -384,6 +390,17 @@ async function importSharedAgents(db: DbOrTx, rows: unknown[]): Promise<ImportRe
   return outcome(valid.length, added.length, invalid);
 }
 
+/** The user's link rules, unless the board has its own: the newer of two documents is not this import's to decide. */
+async function importLinkRules(db: DbOrTx, rows: unknown[]): Promise<ImportResult> {
+  const { valid, invalid } = parseRows(linkRulesRowSchema, rows);
+  const [first] = valid;
+  const added =
+    first === undefined
+      ? []
+      : await db.insert(linkRules).values(first).onConflictDoNothing().returning({ version: linkRules.version });
+  return outcome(valid.length, added.length, invalid);
+}
+
 async function importTranscriptRuns(db: DbOrTx, rows: unknown[]): Promise<ImportResult> {
   const { valid, invalid } = parseRows(transcriptRunRowSchema, rows);
   const onBoard = await presentIds(
@@ -421,6 +438,7 @@ const IMPORTERS: Record<AccountTable, (db: DbOrTx, rows: unknown[]) => Promise<I
   task_pr: importTaskPrs,
   machine: importMachines,
   shared_agents: importSharedAgents,
+  link_rules: importLinkRules,
   transcript_run: importTranscriptRuns,
   transcript_event: importTranscriptEvents,
 };

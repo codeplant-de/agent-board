@@ -43,6 +43,7 @@ The operator can read, swap, replay and forge anything in the database and in AP
 | `machine.catalog`            | `machine:<name>`                                                                             | the machine's CLI (dispatch)                                                                                                                    |
 | `machine.usage`              | `machine:<name>`                                                                             | the machine's CLI (dispatch)                                                                                                                    |
 | `agents.shared`              | `agents:v<version>`                                                                          | the user's CLI (`board agents push`, `board agents rm --board`), outside a board run, one document for all the agents on the board              |
+| `links`                      | `links:v<version>`                                                                           | the user's browser (Settings › Links), one document for all the link rules                                                                      |
 | `note.body`, `note.preview`  | `note:<taskId>:<author>:<kind>`                                                              | the client of that author                                                                                                                       |
 | `note.suggestion`            | `note:<taskId>:agent:comment`                                                                | the agent's CLI                                                                                                                                 |
 | `note.questions`             | `note:<taskId>:agent:question`                                                               | the agent's CLI                                                                                                                                 |
@@ -59,6 +60,7 @@ The operator can read, swap, replay and forge anything in the database and in AP
   - `machine.catalog` is `{"claude":…,"models":[…],"skills":[…],"dirs":{…},"lanes":[…]}`, with `lanes` only when the machine has some: the names of its lanes.
   - `machine.usage` is `{"limits":…,"windows":{…},"reached":[…],"held":[…],"open":[…]}`.
 - `agents.shared` is `{"version":…,"agents":{"<name>":{…}}}`, see [The agents on the board](#the-agents-on-the-board). Its `<version>` is the clear version the server keeps beside it, and the document says the same version inside.
+- `links` is `{"version":…,"rules":[{"pattern":…,"url":…,"flags":…}]}`, with `flags` (`i`) only on a case-insensitive rule, see [The link rules](#the-link-rules). Its `<version>` works as that of `agents.shared`.
 
 Clients choose the ids of the tasks and schedules they make, because the fields are sealed against them. An id is 12 random characters, and a collision is a 409 whoever holds the id.
 
@@ -356,6 +358,15 @@ The board holds the agent definitions the user pushed for every machine (see [Ag
 
 What this gives up is under [What the server can still do](#what-the-server-can-still-do): any run that reads the data key can push a definition every machine applies.
 
+### The link rules
+
+The link rules (see [Link rules](usage.md#link-rules)) are one sealed document, `links`, bound to `links:v<version>`. Only the browser seals and opens it: no machine, no agent and no CLI command reads or writes it.
+
+- **One document, not a row per rule.** The patterns and URLs often name a tracker and a project, so they stay inside one ciphertext, and a save is atomic.
+- **The version is in the binding**, as for the agents on the board. A save is compare-and-set on the clear version (`links.set` with `expectedVersion`; a lost race is a CONFLICT), so two tabs cannot overwrite each other unseen. The server can serve an older document, but it cannot make it open as a newer version.
+- **The browser checks the content.** The server checks that the value is an envelope within the size limit. The browser opens the document only when it says the version it is bound to, has at most 50 rules, each with a pattern that compiles and a URL that starts with `https://` or `http://`. Anything else is unreadable and no rule applies.
+- **The operator sees** that the user has link rules, the version, when they were saved and the envelope's size. Not how many rules, what they match or where they point.
+
 ## The export file
 
 Settings › Account › Your data writes the board to one NDJSON file (see [Your data](usage.md#your-data)). The header is the first line, and every other line is one row of a table. `packages/shared/src/archive.mts` defines the format.
@@ -472,6 +483,7 @@ These limits are inherent to a server that stores ciphertext and cannot sign wha
 - **No key rotation.** A passphrase change leaves the old wrapped copy of the key with the server, and the data key is never rotated. A passphrase or a key that has leaked stays leaked, and a recovery key that was kept still opens the board.
 - **The key on worker machines.** Every worker machine keeps the raw data key in `~/.config/agent-board/env`, readable by any process of that user, an agent in `auto` mode included. An agent that reads it can seal what it likes, as any creator.
 - **Shared agents reach every machine.** With the data key, a run can also seal and push a new version of the [agents on the board](#the-agents-on-the-board) with broader grants, and every machine of the user applies it on its next tick, without a reading on each. `board agents push` is refused inside a run, but that is the CLI's refusal: the server cannot tell a run that holds the key and the machine's token from the user's CLI. A run in `auto` mode could already rewrite the agent files of its own machine; the new reach is every other machine. This is accepted as a known limit, without a signing key or a per-machine switch (see [Design decisions](architecture.md#design-decisions)).
+- **Link rules are written by anything that holds the data key.** A run could seal a new version of the [link rules](#the-link-rules) too, and the browser would apply it: text in the board then links to an address the run chose (always `http` or `https`; the browser never makes a `javascript:` link). The rules add no way to run anything, but a pattern with catastrophic backtracking (the user's own typo, or one sealed by anything that holds the key) can freeze the tab that renders markdown; there is no guard against it. The browser opens a link only when you click it.
 - **An unlocked browser.** It stays unlocked until Lock, per tab, and its derived keys stay in IndexedDB until then.
 - **A dropped directory.** The server can drop a task's directory (`workdir: null`) and withhold the `home_workdir` copy that Re-run fresh restores. The task then runs in the lane's or the default directory of that machine instead of the one the user chose. With a `dirs` list on the machine, that directory must itself be listed, else the run is refused.
 

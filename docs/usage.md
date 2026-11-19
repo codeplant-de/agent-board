@@ -759,7 +759,7 @@ A task made with a key (`board schedule --key`) is left open. A closed task is "
 
 ## Settings
 
-**Settings** has five pages, listed beside the content (above it on a phone). **Machines** lists the worker machines with their CLI versions and usage, and issues and revokes their tokens. **Agents** shows the agent definitions on the board and which machines run them ([Agents on the board](workers.md#agents-on-the-board)). **Notifications** has the desktop notifications switch. **Encryption** changes the passphrase. **Account** has the passkeys, sign out, and your data (export, import, delete). The web and server revisions show at the bottom of each page. `/settings` opens Machines.
+**Settings** has six pages, listed beside the content (above it on a phone). **Machines** lists the worker machines with their CLI versions and usage, and issues and revokes their tokens. **Agents** shows the agent definitions on the board and which machines run them ([Agents on the board](workers.md#agents-on-the-board)). **Links** has the link rules ([Link rules](#link-rules)). **Notifications** has the desktop notifications switch. **Encryption** changes the passphrase. **Account** has the passkeys, sign out, and your data (export, import, delete). The web and server revisions show at the bottom of each page. `/settings` opens Machines.
 
 ## Signing in and out
 
@@ -781,6 +781,34 @@ If single sign-on is refused with "This name belongs to an account with a differ
 
 **Settings › Agents** lists the agent definitions you pushed with `board agents push`, which every machine of yours applies by itself. For each one it shows the full definition, the same grant flags `push` prints, and which machines run it: the version each machine applied, whether its hash matches the board's, and which machines replaced a local definition of that name. The page is read only. To change an agent, push it again from a CLI, or take it off with `board agents rm --board`. See [Agents on the board](workers.md#agents-on-the-board).
 
+## Link rules
+
+**Settings › Links** holds rules that turn text into links wherever the board shows markdown in your browser: prompts, comments, answers, the questions of an agent and transcripts. A rule has a pattern, a JavaScript regular expression, and a URL.
+
+With the pattern `sc-(\d+)` and the URL `https://app.shortcut.com/acme/story/$1`, the text "sc-72195" becomes a link to `https://app.shortcut.com/acme/story/72195`.
+
+**The URL.** It must start with `https://` or `http://`. These parts of it are replaced by what the pattern matched:
+
+| In the URL | Becomes                             |
+| ---------- | ----------------------------------- |
+| `$1`..`$9` | the text of that capture group      |
+| `$<name>`  | the text of the named capture group |
+| `$&`       | the whole match                     |
+| `$$`       | a dollar sign                       |
+
+What a capture inserts is percent-encoded, so it cannot add a slash, a query or another host to the address. A group that took no part in the match inserts nothing. If the filled URL is not a valid `http` or `https` URL, the text stays as it was.
+
+**Matching.**
+
+- A rule matches everywhere in a text, not only once. **Ignore case** makes its pattern case-insensitive.
+- Where rules overlap, the match that starts first wins, and the rule higher in the list wins on the same start. A match that is empty never links. A pattern with catastrophic backtracking, such as `(a+)+$`, can freeze the tab on some texts, so keep patterns simple.
+- Text in code (`` `inline` `` and fenced blocks), text that is already a link, and raw HTML are left as they are.
+- The match must sit in one piece of text: it does not link across `*emphasis*` or other formatting inside the match.
+
+**On the page.** Each rule is a pattern, a URL and **Ignore case**; **Add rule** adds a row and the bin removes one. A pattern that does not compile or a URL that does not start with `https://` or `http://` shows its problem under the field, and **Save** stays off until every rule works. At most 50 rules, a pattern of up to 300 characters and a URL of up to 1000. **Try it** shows a text as the board would, with the rules as they stand on the page, saved or not. **Save** applies them at once. If the page says the rules changed somewhere else, reload it and make your change again: another tab or browser saved first.
+
+The rules are sealed with your key and only your browser reads them (see [The link rules](encryption.md#the-link-rules)). They never reach an agent or a machine: the prompt a task runs with is the text you wrote, not the links it shows as. If the saved rules cannot be read with this key, no rule applies and the page says so. They go with an export and an import of the board.
+
 ## Desktop notifications
 
 **Settings › Notifications** has a **Desktop notifications** switch, off by default. Turning it on asks the browser for permission.
@@ -801,7 +829,7 @@ Once granted, the browser shows an OS notification for each task that newly ente
 
 **Download export** writes one file, `agent-board-<username>-<date>.ndjson`. It holds:
 
-- every task, schedule, note, pull request link and machine, and the transcripts, exactly as the server stores them (encrypted)
+- every task, schedule, note, pull request link and machine, the agents on the board, your link rules, and the transcripts, exactly as the server stores them (encrypted)
 - the wrapped key slots, which only your passphrase or recovery key opens
 - the hashes of the machine tokens
 - the notification setting of this browser
@@ -847,7 +875,7 @@ Until a machine's `web.json` points at the new board, it keeps working against t
 
 ### Delete account
 
-**Delete account** removes everything the board holds for you: tasks, schedules, notes, machines with their tokens, transcripts, the key slots, your passkeys and your sessions in every browser. The confirmation shows the counts and asks you to type your username. It recommends an export first. It warns when tasks are running: those runs go on on their machines but can no longer report.
+**Delete account** removes everything the board holds for you: tasks, schedules, notes, machines with their tokens, link rules, transcripts, the key slots, your passkeys and your sessions in every browser. The confirmation shows the counts and asks you to type your username. It recommends an export first. It warns when tasks are running: those runs go on on their machines but can no longer report.
 
 Afterwards the browser forgets the keys and the notification setting, and shows a page that no longer talks to the board. Reloading leads to the sign-in page, or on a board without login to the setup screen of a new, empty board. Signing in again under the same name starts a new, empty board. Deleting cannot be undone.
 

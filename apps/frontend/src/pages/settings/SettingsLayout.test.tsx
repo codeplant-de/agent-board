@@ -54,6 +54,7 @@ vi.mock('../../lib/trpc', () => ({
             taskPrs: 0,
             machines: 0,
             sharedAgents: 0,
+            linkRules: 0,
             transcriptRuns: 0,
             transcriptEvents: 0,
             running: 0,
