@@ -229,6 +229,7 @@ export interface Configuration {
   lane?: string | null;
   autoDone?: boolean;
   place?: { machine: string; workdir: string } | null;
+  title?: string;
 }
 
 /** A new directory is sealed as the user's under the row's own binding, the one the page opens it under; a schedule's occurrence is bound to both. */
@@ -237,6 +238,10 @@ export async function sealConfigure(
   options: { task: ConfigureTarget } & Configuration,
 ): Promise<RouterInputs['tasks']['configure']> {
   const { task, model, effort, lane, autoDone, place } = options;
+  const title = options.title?.trim();
+  if (title === '') throw new InputError('Write a title first.');
+  if (title !== undefined && task.scheduleId !== null)
+    throw new InputError('This card is a run of a schedule; rename it on the Schedules page.');
   const row: RowRef = {
     kind: 'task',
     id: task.id,
@@ -250,6 +255,7 @@ export async function sealConfigure(
     ...(effort === undefined ? {} : { effort }),
     ...(lane === undefined ? {} : { lane }),
     ...(autoDone === undefined ? {} : { autoDone }),
+    ...(title === undefined ? {} : { title: await checked(() => sealTitle(sealerFor(keys), row, title)) }),
     ...(place === undefined
       ? {}
       : {
