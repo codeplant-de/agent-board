@@ -78,6 +78,14 @@ describe('QuestionPanel', () => {
     expect(onSubmit.mock.calls[0]?.[1][0]).toEqual({ selected: ['Blocking'], other: 'only if cheap' });
   });
 
+  it('Enter in the Other text adds a line and mod+Enter there sends', async () => {
+    const onSubmit = renderPanel();
+    await userEvent.type(screen.getAllByPlaceholderText(/Other…/)[0]!, 'first{Enter}second');
+    expect(onSubmit).not.toHaveBeenCalled();
+    await userEvent.keyboard('{Control>}{Enter}{/Control}');
+    expect(onSubmit.mock.calls[0]?.[1][0]).toEqual({ selected: ['Blocking'], other: 'first\nsecond' });
+  });
+
   it('None of these drops the single choice, so the Other text is the whole answer', async () => {
     const onSubmit = renderPanel();
     await userEvent.click(screen.getByRole('button', { name: 'None of these' }));
