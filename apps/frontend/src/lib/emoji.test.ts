@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   loadEmojiGroups,
   MAX_RECENT_EMOJIS,
+  readEmojiGroups,
   readRecentEmojis,
   RECENT_EMOJIS_KEY,
   rememberRecentEmoji,
@@ -46,6 +47,13 @@ describe('the emoji list', () => {
     expect(all.every(({ emoji }) => isEmojiIcon(emoji))).toBe(true);
     expect(all.some(({ emoji }) => emoji === '🏻')).toBe(false);
     expect(groups[0]?.emojis[0]?.emoji).toBe('😀');
+  });
+
+  it('leaves out an emoji the system font cannot draw', async () => {
+    const groups = await readEmojiGroups((emoji) => emoji !== '🫠');
+    const all = groups.flatMap(({ emojis }) => emojis.map(({ emoji }) => emoji));
+    expect(all).not.toContain('🫠');
+    expect(all).toContain('😀');
   });
 
   it('finds an emoji by every word of its name or tags', async () => {

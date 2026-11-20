@@ -30,6 +30,9 @@ interface Props {
   disabled?: boolean;
 }
 
+// A Modal closes on any Escape it sees on window, before the popover can take it, unless the focused element carries this.
+const KEEP_ESCAPE = { 'data-mantine-stop-propagation': true } as const;
+
 const stop = (event: SyntheticEvent) => {
   event.preventDefault();
   event.stopPropagation();
@@ -42,6 +45,7 @@ function EmojiGrid({ emojis, onPick }: { emojis: readonly EmojiEntry[]; onPick: 
         <UnstyledButton
           key={emoji}
           className="emoji-option"
+          {...KEEP_ESCAPE}
           aria-label={label}
           title={label}
           onClick={() => onPick(emoji)}
@@ -143,6 +147,7 @@ export function EmojiPicker({
         <Stack gap="xs">
           <TextInput
             data-autofocus
+            {...KEEP_ESCAPE}
             size="xs"
             placeholder="Search emoji"
             aria-label="Search emoji"
@@ -192,6 +197,7 @@ export function EmojiPicker({
               size="xs"
               variant="subtle"
               color="red"
+              {...KEEP_ESCAPE}
               onClick={() => {
                 close();
                 onChange(null);

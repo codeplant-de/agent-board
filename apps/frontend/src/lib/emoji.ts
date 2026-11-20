@@ -24,8 +24,47 @@ const GROUP_LABELS: Record<string, string> = {
   flags: 'Flags',
 };
 
+const PROBE_SIZE = 32;
+const PROBE_FONT = `${PROBE_SIZE * 0.75}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+
+function drawn(context: OffscreenCanvasRenderingContext2D, emoji: string, color: string): Uint8ClampedArray {
+  context.clearRect(0, 0, PROBE_SIZE, PROBE_SIZE);
+  context.fillStyle = color;
+  context.fillText(emoji, 0, PROBE_SIZE / 2);
+  return context.getImageData(0, 0, PROBE_SIZE, PROBE_SIZE).data;
+}
+
+/**
+ * Whether this system's emoji font draws `emoji` as one colour glyph. A font without it falls back to a monochrome
+ * placeholder that takes the fill colour, and a ZWJ sequence it does not know is drawn as its parts side by side.
+ */
+export function systemEmojiProbe(): (emoji: string) => boolean {
+  if (typeof OffscreenCanvas === 'undefined') return () => true;
+  const context = new OffscreenCanvas(PROBE_SIZE * 2, PROBE_SIZE).getContext('2d', { willReadFrequently: true });
+  if (context === null) return () => true;
+  context.font = PROBE_FONT;
+  context.textBaseline = 'middle';
+  const single = context.measureText('😀').width;
+  return (emoji) => {
+    if (context.measureText(emoji).width > single * 1.5) return false;
+    const red = drawn(context, emoji, '#f00');
+    const blue = drawn(context, emoji, '#00f');
+    return red.some((value) => value !== 0) && red.every((value, index) => value === blue[index]);
+  };
+}
+
+let loaded: Promise<EmojiGroup[]> | undefined;
+
+export function loadEmojiGroups(): Promise<EmojiGroup[]> {
+  loaded ??= readEmojiGroups(systemEmojiProbe()).catch((error: unknown) => {
+    loaded = undefined;
+    throw error;
+  });
+  return loaded;
+}
+
 /** The component group (skin tones, hair) is left out: those are parts of an emoji, not one a task can carry. */
-export async function loadEmojiGroups(): Promise<EmojiGroup[]> {
+export async function readEmojiGroups(canRender: (emoji: string) => boolean): Promise<EmojiGroup[]> {
   const [{ default: emojis }, { default: meta }] = await Promise.all([
     import('emojibase-data/en/compact.json'),
     import('emojibase-data/meta/groups.json'),
@@ -37,7 +76,7 @@ export async function loadEmojiGroups(): Promise<EmojiGroup[]> {
   }
   for (const entry of [...emojis].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))) {
     const group = entry.group === undefined ? undefined : groups.get(entry.group);
-    if (group !== undefined && isEmojiIcon(entry.unicode))
+    if (group !== undefined && isEmojiIcon(entry.unicode) && canRender(entry.unicode))
       group.emojis.push({ emoji: entry.unicode, label: entry.label, tags: entry.tags ?? [] });
   }
   return [...groups.values()].filter((group) => group.emojis.length > 0);
