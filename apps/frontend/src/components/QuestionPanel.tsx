@@ -264,10 +264,14 @@ function QuestionForm({ questions, submitting, onSubmit, onDismiss, dismissing }
                   size="xs"
                   style={{ flex: 1 }}
                   placeholder={
-                    question.multiSelect || draft.selected.length === 0 ? 'Other…' : 'Other… (added to your choice)'
+                    question.multiSelect || draft.selected.length === 0 ? 'Other…' : 'Other… (replaces your choice)'
                   }
                   value={draft.other}
-                  onChange={(event) => update(index, { other: event.currentTarget.value })}
+                  onChange={(event) => {
+                    const other = event.currentTarget.value;
+                    const startsTyping = !question.multiSelect && draft.other === '' && other !== '';
+                    update(index, startsTyping ? { other, selected: [] } : { other });
+                  }}
                 />
                 {!question.multiSelect && draft.selected.length > 0 && (
                   <Button

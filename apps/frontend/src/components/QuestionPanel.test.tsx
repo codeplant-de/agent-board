@@ -71,11 +71,37 @@ describe('QuestionPanel', () => {
     expect(onSubmit.mock.calls[0]?.[1][0]).toEqual({ selected: ['Blocking'] });
   });
 
-  it('the Other text goes with the answer', async () => {
+  it('focusing the Other field keeps the single choice', async () => {
     const onSubmit = renderPanel();
-    await userEvent.type(screen.getAllByPlaceholderText(/Other…/)[0]!, 'only if cheap');
+    await userEvent.click(screen.getAllByPlaceholderText(/Other…/)[0]!);
     await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
-    expect(onSubmit.mock.calls[0]?.[1][0]).toEqual({ selected: ['Blocking'], other: 'only if cheap' });
+    expect(onSubmit.mock.calls[0]?.[1][0]).toEqual({ selected: ['Blocking'] });
+  });
+
+  it('typing in the Other field drops the single choice', async () => {
+    const onSubmit = renderPanel();
+    await userEvent.type(screen.getAllByPlaceholderText(/Other…/)[0]!, 'neither, ask the author');
+    expect(screen.queryByRole('button', { name: 'None of these' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
+    expect(onSubmit.mock.calls[0]?.[1][0]).toEqual({ selected: [], other: 'neither, ask the author' });
+  });
+
+  it('an option picked after typing goes with the Other text', async () => {
+    const onSubmit = renderPanel();
+    const other = screen.getAllByPlaceholderText(/Other…/)[0]!;
+    await userEvent.type(other, 'only if');
+    await userEvent.click(screen.getByText('Nit'));
+    await userEvent.type(other, ' cheap');
+    await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
+    expect(onSubmit.mock.calls[0]?.[1][0]).toEqual({ selected: ['Nit'], other: 'only if cheap' });
+  });
+
+  it('typing in the Other field keeps the multi-select picks', async () => {
+    const onSubmit = renderPanel();
+    await userEvent.click(screen.getByText('Audit'));
+    await userEvent.type(screen.getAllByPlaceholderText(/Other…/)[1]!, 'and the docs');
+    await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
+    expect(onSubmit.mock.calls[0]?.[1][1]).toEqual({ selected: ['Audit'], other: 'and the docs' });
   });
 
   it('None of these drops the single choice, so the Other text is the whole answer', async () => {
@@ -91,9 +117,10 @@ describe('QuestionPanel', () => {
   it('picking the chosen single option again drops it', async () => {
     const onSubmit = renderPanel();
     await userEvent.keyboard('1');
-    await userEvent.type(screen.getAllByPlaceholderText(/Other…/)[0]!, 'something else');
+    expect(screen.getByRole('button', { name: /Answer & continue/ })).toBeDisabled();
+    await userEvent.keyboard('2');
     await userEvent.click(screen.getByRole('button', { name: /Answer & continue/ }));
-    expect(onSubmit.mock.calls[0]?.[1][0]).toEqual({ selected: [], other: 'something else' });
+    expect(onSubmit.mock.calls[0]?.[1][0]).toEqual({ selected: ['Nit'] });
   });
 
   it('dismisses the questions only after the user confirms', async () => {

@@ -594,7 +594,7 @@ The questions land on the board, one to four of them, each with options and the 
 
 ### Answering and replying
 
-On the task page you pick options, add text where none fits, and press **Answer & continue**. The number keys pick options. On a task without a question, write a reply and press **Send & continue**.
+On the task page you pick options, add text where none fits, and press **Answer & continue**. The number keys pick options. Typing in a single-choice question's **Other** field drops its picked option, so the text is the whole answer. Pick an option after typing to send both. On a task without a question, write a reply and press **Send & continue**.
 
 Both put the task at the top of its priority in Todo with `next: resume`. The next dispatch tick on the machine that ran the session starts `claude -p --resume=<session>` with your reply on stdin, so the agent keeps its context. A machine resumes only a session it started for the task.
 
