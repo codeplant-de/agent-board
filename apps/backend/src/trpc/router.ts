@@ -424,7 +424,7 @@ const tasksRouter = router({
 
   /**
    * Changes a task's settings after creation. A `place` pins it to the machine and the sealed directory (null: none) and drops
-   * its session, so the next run starts fresh there; a running or waiting task is refused with CONFLICT. A model or an effort applies from the next run on; a lane is refused (CONFLICT) while the task runs; `autoDone` applies at once, in any status.
+   * its session, so the next run starts fresh there; a running or waiting task is refused with CONFLICT. A model or an effort applies from the next run on; a lane is refused (CONFLICT) while the task runs; `autoDone` and a sealed `title` apply at once, in any status; a title is refused (CONFLICT) on a schedule's occurrence.
    */
   configure: procedure
     .input(
@@ -440,16 +440,18 @@ const tasksRouter = router({
             .object({ machine: machineName, workdir: sealed('workdir', 'directory') })
             .nullable()
             .optional(),
+          title: sealed('title', 'title').optional(),
         })
         .refine(
-          ({ priority: p, model: m, effort: e, lane: l, autoDone, place }) =>
+          ({ priority: p, model: m, effort: e, lane: l, autoDone, place, title }) =>
             p !== undefined ||
             m !== undefined ||
             e !== undefined ||
             l !== undefined ||
             autoDone !== undefined ||
-            place !== undefined,
-          'change at least one of priority, model, effort, lane, autoDone and place',
+            place !== undefined ||
+            title !== undefined,
+          'change at least one of priority, model, effort, lane, autoDone, place and title',
         ),
     )
     .mutation(async ({ ctx, input: { id: taskId, ...config } }) =>
