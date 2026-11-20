@@ -160,6 +160,10 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
     if (values.effort !== undefined) requireFeature((await connect()).features, 'task.effort');
   };
 
+  const requireIconSupport = async (values: { icon?: string | null }): Promise<void> => {
+    if (values.icon !== undefined) requireFeature((await connect()).features, 'task.icon');
+  };
+
   // Refuses to send a lane (or its removal) to a server that would reject the key.
   const requireLaneSupport = async (values: { lane?: string | null }): Promise<void> => {
     if (values.lane !== undefined) requireFeature((await connect()).features, 'task.lane');
@@ -244,6 +248,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       await requireSendable(draft);
       await requireModelSupport(draft);
       await requireEffortSupport(draft);
+      await requireIconSupport(draft);
       await requireLaneSupport(draft);
       await requireAutoDoneSupport(draft);
       await requireAgentSupport(draft);
@@ -258,6 +263,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       const checkedId = taskId(id);
       await requireAutoDoneSupport(body);
       await requireEffortSupport(body);
+      await requireIconSupport(body);
       await requireLaneSupport(body);
       return call('configure-task', { id: checkedId, body }, parseWireTask);
     },
@@ -345,6 +351,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       await requireSendable(draft);
       await requireModelSupport(draft);
       await requireEffortSupport(draft);
+      await requireIconSupport(draft);
       await requireLaneSupport(draft);
       await requireAutoDoneSupport(draft);
       await requireAgentSupport(draft);
@@ -358,6 +365,7 @@ export function createWebBackend(options: WebBackendOptions): WebBackend {
       if (body.settings !== undefined) {
         requireFeature((await connect()).features, 'schedule.update');
         await requireEffortSupport(body.settings);
+        await requireIconSupport(body.settings);
         await requireLaneSupport(body.settings);
       }
       return call('edit-schedule', { id: scheduleId(id), body }, parseWireEditScheduleResult);

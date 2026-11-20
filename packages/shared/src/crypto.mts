@@ -18,6 +18,7 @@ export type Field =
   | 'input'
   | 'workdir'
   | 'agent'
+  | 'icon'
   | 'pr'
   | 'watches'
   | 'machine.dirs'

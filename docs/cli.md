@@ -38,8 +38,8 @@ Tasks:
   add                        propose a follow-up task
   polish <task>              post a polished title and prompt for a task
   task <task> [action...]    show a task's settings, or change its priority,
-                             model, effort, lane, auto-done setting, directory
-                             or prompt
+                             model, effort, lane, auto-done setting, icon,
+                             directory or prompt
 
 Scheduling:
   schedule <prompt...>       a task from a prompt, run here on this machine
@@ -587,6 +587,8 @@ Options:
   --priority <priority>  urgent, high, normal or low (default normal)
   --lane <name>          the lane the task asks for once you start it (default:
                          the default lane; it does not inherit this run's lane)
+  --icon <emoji>         one emoji shown at the left of the title on the board
+                         card (default: none)
   --here                 run in this directory instead of the parent's
   --json                 print JSON on stdout instead of text
   --dry-run              read everything, print every write instead of doing it
@@ -595,6 +597,7 @@ Options:
 Examples:
   board add --title "Fix the flaky test" --file /tmp/prompt.md --parent Ab3dEf9x
   board add --title "Review the fix" --file /tmp/prompt.md --lane reviews
+  board add --title "Bump the CLI" --file /tmp/prompt.md --icon 📦
 ```
 
 ### board polish
@@ -632,9 +635,9 @@ Examples:
 Usage: board task [options] <task> [set <key> <value> | unset <key>]
 
 Without an action, print a task's settings: status, priority, model, effort, the
-lane it asks for, whether the agent may mark it done, agent, who made it, the
-machine it is pinned to and its directory, when it starts, its schedule, the
-task it was forked from, whether its next run resumes a session, and its PR.
+lane it asks for, whether the agent may mark it done, its icon, agent, who made
+it, the machine it is pinned to and its directory, when it starts, its schedule,
+the task it was forked from, whether its next run resumes a session, and its PR.
 With --json, print the task as `board tasks --json` does.
 
 `set priority <urgent|high|normal|low>` and `set model <alias or model id>`
@@ -655,6 +658,10 @@ agent ends in Needs me. It applies at once, also to a run in progress: an agent
 that tries to finish a task set to off is refused and moves it to Needs me
 instead.
 
+`set icon <emoji>` shows one emoji at the left of the title on the board card,
+`unset icon` removes it. It applies at once, in any status, and nothing else
+reads it: the board applies no icon by itself.
+
 `set dir [path]` pins the task to this machine and the directory (default: the
 current one; a path is relative to it and `~` expands). `unset dir` removes the
 directory and the pin: any machine takes the task, in its default directory.
@@ -674,9 +681,9 @@ and a task a worker started has its prompt in its thread: reply with `board
 comment`. Start a prompt that begins with dashes after `--`.
 
 On a card of a repeating schedule a change applies to that card only: the next
-occurrence takes its priority, model, effort, auto-done setting, machine and
-directory from the schedule again, which the command says. `set dir` needs this
-machine's config.json, since it pins the task to the machine's name.
+occurrence takes its priority, model, effort, auto-done setting, icon, machine
+and directory from the schedule again, which the command says. `set dir` needs
+this machine's config.json, since it pins the task to the machine's name.
 
 `set` and `unset` are not available inside a board run: only you change where a
 task runs, in which lane, with what, and whether its agent may mark it done, and
@@ -690,8 +697,8 @@ accepted.
 
 Arguments:
   task             the task: its id, a board task link or the start of its id
-  action           set priority|model|effort|lane|auto-done|dir|prompt <value>,
-                   or unset model|effort|lane|auto-done|dir
+  action           set priority|model|effort|lane|auto-done|icon|dir|prompt
+                   <value>, or unset model|effort|lane|auto-done|icon|dir
 
 Options:
   --title <title>  with set prompt: the new title (default: keep the current
@@ -715,6 +722,8 @@ Examples:
   board task Ab3 unset lane
   board task Ab3 set auto-done on
   board task Ab3 unset auto-done
+  board task Ab3 set icon 🚀
+  board task Ab3 unset icon
   board task Ab3 set dir
   board task Ab3 set dir ~/workspace/agent-board
   board task Ab3 unset dir
@@ -785,6 +794,8 @@ Options:
                          sonnet, haiku (default: claude's default)
   --effort <level>       claude effort level: low, medium, high, xhigh, max
                          (default: claude's default)
+  --icon <emoji>         one emoji shown at the left of the title on the board
+                         card (default: none)
   --lane <name>          the lane of the machine that runs the task (default:
                          that machine's default lane; a machine without the lane
                          uses its default one)
@@ -869,11 +880,11 @@ what they had, and the old text is not kept. An ended schedule is refused.
 The other flags of `edit` change the settings of the schedule, all that the Edit
 schedule dialog on the board changes; what you leave out stays as it is.
 --priority, --model and --effort (`default` for claude's default), --lane <name>
-(`default` for the default lane of the machine that runs it), --auto-done on|off
-and --agent (an agent of this machine's config.json, or `none`). --dir <path>
-pins the schedule to this machine and that directory (listed in `board dirs`;
-`none`: no machine and no directory), as `board task <id> set dir` does for a
-task.
+(`default` for the default lane of the machine that runs it), --auto-done
+on|off, --icon <emoji> (`none` for no icon) and --agent (an agent of this
+machine's config.json, or `none`). --dir <path> pins the schedule to this
+machine and that directory (listed in `board dirs`; `none`: no machine and no
+directory), as `board task <id> set dir` does for a task.
 
 The repeat: --every <duration>, --cron <expr> (up to 10 times, in this machine's
 time zone) or --after <schedule> with --delay <duration>; the one you give
@@ -899,6 +910,8 @@ Options:
                          default for claude's default
   --effort <level>       with edit: low, medium, high, xhigh, max, or default
                          for claude's default effort
+  --icon <emoji>         with edit: one emoji for the cards of the schedule, or
+                         none for no icon
   --lane <name>          with edit: the lane of the machine that runs the tasks,
                          or default for that machine's default lane
   --auto-done <on|off>   with edit: let the agent move the tasks to Done itself
@@ -938,6 +951,7 @@ Examples:
   board schedules edit s1b --title "Nightly sweep" --file /tmp/prompt.md
   board schedules edit s1b2c3d4 --priority high --model opus --auto-done on
   board schedules edit s1b2c3d4 --lane review
+  board schedules edit s1b2c3d4 --icon 🧹
   board schedules edit s1b2c3d4 --every 6h --times 10
   board schedules edit s1b2c3d4 --cron "0 9 * * 1-5" --until 2027-06-30
   board schedules edit s1b2c3d4 --after s9z8y7x6 --delay 10m --forever

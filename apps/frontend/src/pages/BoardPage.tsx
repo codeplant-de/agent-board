@@ -63,6 +63,7 @@ function BoardColumns({ only }: { only?: Status }) {
   const now = useNow(30_000);
   const move = useMutation(trpc.tasks.move.mutationOptions());
   const done = useMutation(trpc.tasks.done.mutationOptions());
+  const configure = useMutation(trpc.tasks.configure.mutationOptions());
   const polish = usePolish();
   const [dragId, setDragId] = useState<string | null>(null);
   const [over, setOver] = useState<DropTarget | null>(null);
@@ -157,6 +158,7 @@ function BoardColumns({ only }: { only?: Status }) {
                   dragging={dragId === task.id}
                   hold={heldTask(task, machines.data ?? [], now)}
                   {...(canPolish(task) ? { onPolish: () => polish.polish(task) } : {})}
+                  onIconChange={(icon) => configure.mutate({ task, icon })}
                   polishDisabled={
                     polish.isPending || (tasks.data ?? []).some((child) => isOpenPolishOf(child, task.id))
                   }

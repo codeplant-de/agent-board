@@ -90,6 +90,7 @@ export function toTask(
     sessionId: row.sessionId,
     workdir: row.workdir,
     ...(row.agent === null ? {} : { agent: row.agent }),
+    icon: row.icon,
     ...(row.forkOf === null ? {} : { forkOf: row.forkOf }),
     ...(row.movedBy === null ? {} : { movedBy: row.movedBy }),
     pr: newest?.pr ?? null,
@@ -1000,11 +1001,12 @@ export interface TaskConfig {
   effort?: Effort | null | undefined;
   lane?: string | null | undefined;
   autoDone?: boolean | undefined;
+  icon?: string | null | undefined;
   place?: { machine: string; workdir: string } | null | undefined;
 }
 
 /**
- * The user's edit of a task's settings, in one step. A priority works as `setPriority`. A model or an effort applies from the next run. A lane is refused while the task runs, which keeps the lane it started in. `autoDone` applies at once, in any status. A
+ * The user's edit of a task's settings, in one step. A priority works as `setPriority`. A model or an effort applies from the next run. An icon applies at once, in any status. A lane is refused while the task runs, which keeps the lane it started in. `autoDone` applies at once, in any status. A
  * new place (the machine and the sealed directory, or null for none) replaces the directory the task was created with and
  * drops the session: Claude Code keeps a session under its working directory, so it cannot be resumed from another one, and
  * the next run starts fresh there and reads the thread. A running or waiting task keeps its place, since a run holds it.
@@ -1012,7 +1014,7 @@ export interface TaskConfig {
 export async function configureTask(db: DbOrTx, taskId: string, config: TaskConfig, by: string): Promise<TaskRow> {
   return db.transaction(async (tx) => {
     const task = await lockTask(tx, taskId);
-    const { priority, model, effort, lane, autoDone, place } = config;
+    const { priority, model, effort, lane, autoDone, icon, place } = config;
     if (lane !== undefined && task.status === 'running')
       throw new AppError('CONFLICT', 'The task is running: it keeps its lane until its next start.');
     if (place !== undefined) {
@@ -1025,6 +1027,7 @@ export async function configureTask(db: DbOrTx, taskId: string, config: TaskConf
     if (effort !== undefined) set.effort = effort;
     if (lane !== undefined) set.requestedLane = lane;
     if (autoDone !== undefined) set.autoDone = autoDone;
+    if (icon !== undefined) set.icon = icon;
     if (place !== undefined) {
       const workdir = place?.workdir ?? null;
       // A pause or a wake belongs to the session that is gone, and so do the watches the old machine ran for it.

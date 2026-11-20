@@ -11,6 +11,7 @@ import {
   setDirectory,
   setLane,
   setEffort,
+  setIcon,
   setModel,
   setPrompt,
   setPriority,
@@ -33,17 +34,18 @@ export function registerTaskSettingsCommand(shared: ProgramShared): void {
         .command('task')
         .helpGroup(TASKS)
         .summary(
-          "show a task's settings, or change its priority, model, effort, lane, auto-done setting, directory or prompt",
+          "show a task's settings, or change its priority, model, effort, lane, auto-done setting, icon, directory or prompt",
         )
         .description(
           paragraphs(
-            "Without an action, print a task's settings: status, priority, model, effort, the lane it asks for, whether the agent may mark it done, agent, who made it, the machine it is pinned to and its directory, when it starts, its schedule, the task it was forked from, whether its next run resumes a session, and its PR. With --json, print the task as `board tasks --json` does.",
+            "Without an action, print a task's settings: status, priority, model, effort, the lane it asks for, whether the agent may mark it done, its icon, agent, who made it, the machine it is pinned to and its directory, when it starts, its schedule, the task it was forked from, whether its next run resumes a session, and its PR. With --json, print the task as `board tasks --json` does.",
             `\`set priority <${PRIORITIES.join('|')}>\` and \`set model <alias or model id>\` change the setting, \`unset model\` goes back to claude's default model. \`set effort <${EFFORTS.join('|')}>\` and \`unset effort\` do the same for claude's effort level. A model or an effort applies from the next run on; a run in progress keeps its own.`,
             '`set lane <name>` makes the task ask for that lane of the machine that runs it, `unset lane` for the default lane. A machine without a lane of that name runs the task in its default lane. A running task keeps its lane until its next start, so the change is refused while it runs.',
             '`set auto-done on` lets the agent move the task to Done itself when it judges that every acceptance criterion is met and nothing is left for you; `set auto-done off` (or `unset auto-done`) keeps the move to Done yours, and the agent ends in Needs me. It applies at once, also to a run in progress: an agent that tries to finish a task set to off is refused and moves it to Needs me instead.',
+            '`set icon <emoji>` shows one emoji at the left of the title on the board card, `unset icon` removes it. It applies at once, in any status, and nothing else reads it: the board applies no icon by itself.',
             "`set dir [path]` pins the task to this machine and the directory (default: the current one; a path is relative to it and `~` expands). `unset dir` removes the directory and the pin: any machine takes the task, in its default directory. Claude Code keeps a session under its working directory and cannot resume it from another one, so changing the directory drops the task's session: the next run starts fresh there and reads the thread. A running or waiting task is refused: stop it first. With a `dirs` list on this machine, the directory must be listed (`board dirs add`).",
             '`set prompt <text...>` changes the title and prompt of a task you created that no worker has claimed yet and that waits in Todo or Backlog; the old title and prompt stay in a note on the task. The text is every word after `prompt`, `-` reads it from stdin and `--file <path>` from a regular file in /tmp, for long text. `--title <title>` sets the title too; without it the title stays. A card of a repeating schedule is edited through its schedule (`board schedules edit`), and a task a worker started has its prompt in its thread: reply with `board comment`. Start a prompt that begins with dashes after `--`.',
-            "On a card of a repeating schedule a change applies to that card only: the next occurrence takes its priority, model, effort, auto-done setting, machine and directory from the schedule again, which the command says. `set dir` needs this machine's config.json, since it pins the task to the machine's name.",
+            "On a card of a repeating schedule a change applies to that card only: the next occurrence takes its priority, model, effort, auto-done setting, icon, machine and directory from the schedule again, which the command says. `set dir` needs this machine's config.json, since it pins the task to the machine's name.",
             '`set` and `unset` are not available inside a board run: only you change where a task runs, in which lane, with what, and whether its agent may mark it done, and what it says. Viewing works there.',
             ID_NOTE,
           ),
@@ -52,7 +54,7 @@ export function registerTaskSettingsCommand(shared: ProgramShared): void {
         .argument('<task>', TASK_ARGUMENT)
         .argument(
           '[action...]',
-          'set priority|model|effort|lane|auto-done|dir|prompt <value>, or unset model|effort|lane|auto-done|dir',
+          'set priority|model|effort|lane|auto-done|icon|dir|prompt <value>, or unset model|effort|lane|auto-done|icon|dir',
         )
         .option('--title <title>', 'with set prompt: the new title (default: keep the current one)')
         .option('--file <path>', 'with set prompt: the prompt from a regular file in /tmp')
@@ -69,6 +71,8 @@ export function registerTaskSettingsCommand(shared: ProgramShared): void {
             'board task Ab3 unset lane',
             'board task Ab3 set auto-done on',
             'board task Ab3 unset auto-done',
+            'board task Ab3 set icon 🚀',
+            'board task Ab3 unset icon',
             'board task Ab3 set dir',
             'board task Ab3 set dir ~/workspace/agent-board',
             'board task Ab3 unset dir',
@@ -106,10 +110,11 @@ export function registerTaskSettingsCommand(shared: ProgramShared): void {
       key !== 'effort' &&
       key !== 'lane' &&
       key !== 'auto-done' &&
+      key !== 'icon' &&
       key !== 'dir' &&
       key !== 'prompt'
     )
-      throw new UsageError(`board task ${action} takes priority, model, effort, lane, auto-done, dir or prompt`);
+      throw new UsageError(`board task ${action} takes priority, model, effort, lane, auto-done, icon, dir or prompt`);
     const id = await taskIdOf(context, arg);
     if (action === 'unset') {
       if (rest.length > 0) throw new UsageError(`board task unset ${key} takes nothing more`);
@@ -118,6 +123,7 @@ export function registerTaskSettingsCommand(shared: ProgramShared): void {
       if (key === 'auto-done') return setAutoDone(deps, id, 'off');
       if (key === 'lane') return setLane(deps, id, undefined);
       if (key === 'effort') return setEffort(deps, id, undefined);
+      if (key === 'icon') return setIcon(deps, id, undefined);
       return key === 'model' ? setModel(deps, id, undefined) : setDirectory(deps, id, null);
     }
     if (key === 'prompt') {
@@ -135,6 +141,7 @@ export function registerTaskSettingsCommand(shared: ProgramShared): void {
     if (key === 'auto-done') return setAutoDone(deps, id, value);
     if (key === 'lane') return setLane(deps, id, value);
     if (key === 'effort') return setEffort(deps, id, value);
+    if (key === 'icon') return setIcon(deps, id, value);
     return key === 'priority' ? setPriority(deps, id, value) : setModel(deps, id, value);
   });
 }

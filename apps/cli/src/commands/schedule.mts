@@ -1,4 +1,4 @@
-// `board schedule [--priority p] [--model m] [--effort e] [--lane l] [--auto-done] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
+// `board schedule [--priority p] [--model m] [--effort e] [--icon i] [--lane l] [--auto-done] [--agent a] [--title t] [--hold | --backlog] [--in <dur> | --at <time>] [--every <dur> | --cron <expr>]
 // [--times <n> | --until <time>] [--polish] [--new] [--key <k> [--version <v>]] <prompt...>`: a task from a prompt, written as you
 // would type it into Claude Code, bound to this machine and the directory it was scheduled from. Before it creates one, a quick
 // Haiku call checks whether an open task already covers it. With `--every` or `--cron` it creates a repeating schedule instead.
@@ -12,8 +12,10 @@ import {
   defaultTitle,
   describeRule,
   EFFORTS,
+  ICON_RULE,
   isAgentName,
   isEffort,
+  isEmojiIcon,
   isModelName,
   isPriority,
   isRecord,
@@ -41,6 +43,7 @@ export interface ScheduleArgs {
   model: string | undefined;
   // The effort level of the run; undefined is claude's default.
   effort: Effort | undefined;
+  icon: string | undefined;
   // The lane the task asks for; undefined is the default lane of the machine that takes it.
   lane: string | undefined;
   // The agent may move the task to Done itself; false leaves it unset.
@@ -80,6 +83,7 @@ export interface ScheduleFlags {
   priority?: string;
   model?: string;
   effort?: string;
+  icon?: string;
   lane?: string;
   autoDone?: boolean;
   agent?: string;
@@ -113,6 +117,7 @@ export function addScheduleOptions(command: Command): Command {
       `claude model alias or full name, e.g. ${MODEL_ALIASES.map((alias) => alias.value).join(', ')} (default: claude's default)`,
     )
     .option('--effort <level>', `claude effort level: ${EFFORTS.join(', ')} (default: claude's default)`)
+    .option('--icon <emoji>', 'one emoji shown at the left of the title on the board card (default: none)')
     .option(
       '--lane <name>',
       "the lane of the machine that runs the task (default: that machine's default lane; a machine without the lane uses its default one)",
@@ -208,6 +213,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
     priority: undefined,
     model: undefined,
     effort: undefined,
+    icon: undefined,
     lane: undefined,
     autoDone: flags.autoDone === true,
     agent: undefined,
@@ -231,6 +237,7 @@ export function parseScheduleArgs(flags: ScheduleFlags, words: string[], now: Da
   if (flags.priority !== undefined) result.priority = checkedPriority(flags.priority);
   if (flags.model !== undefined) result.model = checkedModel(flags.model);
   if (flags.effort !== undefined) result.effort = checkedEffort(flags.effort);
+  if (flags.icon !== undefined) result.icon = checkedIcon(flags.icon);
   if (flags.lane !== undefined) result.lane = checkedLane(flags.lane);
   if (flags.agent !== undefined) result.agent = checkedAgent(flags.agent);
   if (hold && backlog) throw new UsageError('--hold and --backlog cannot be combined');
@@ -279,6 +286,11 @@ export function checkedModel(value: string): string {
 export function checkedEffort(value: string): Effort {
   if (!isEffort(value))
     throw new UsageError(`unknown effort "${value.slice(0, 20)}"; use one of ${EFFORTS.join(', ')}`);
+  return value;
+}
+
+export function checkedIcon(value: string): string {
+  if (!isEmojiIcon(value)) throw new UsageError(`"${plainLine(value).slice(0, 20)}" is not an icon: give ${ICON_RULE}`);
   return value;
 }
 
@@ -513,6 +525,7 @@ async function addRepeat(deps: ScheduleDeps, args: ScheduleArgs): Promise<{ sche
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.effort === undefined ? {} : { effort: args.effort }),
+    ...(args.icon === undefined ? {} : { icon: args.icon }),
     ...(args.lane === undefined ? {} : { lane: args.lane }),
     ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
@@ -582,6 +595,7 @@ async function scheduleKeyed(deps: ScheduleDeps, args: ScheduleArgs, key: string
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.effort === undefined ? {} : { effort: args.effort }),
+    ...(args.icon === undefined ? {} : { icon: args.icon }),
     ...(args.lane === undefined ? {} : { lane: args.lane }),
     ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),
@@ -686,6 +700,10 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
           deps.print(
             `${existing.id} keeps its effort (${existing.effort ?? 'the default'}); --effort applies only to a new task`,
           );
+        if (args.icon !== undefined && args.icon !== existing.icon)
+          deps.print(
+            `${existing.id} keeps its icon (${existing.icon ?? 'none'}); --icon applies only to a new task: use \`board task ${existing.id} set icon ${args.icon}\``,
+          );
         if (args.lane !== undefined && args.lane !== existing.requestedLane)
           deps.print(
             `${existing.id} keeps its lane (${existing.requestedLane ?? 'the default'}); --lane applies only to a new task: use \`board task ${existing.id} set lane ${args.lane}\``,
@@ -735,6 +753,7 @@ export async function schedule(deps: ScheduleDeps, args: ScheduleArgs): Promise<
     ...(args.priority ? { priority: args.priority } : {}),
     ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.effort === undefined ? {} : { effort: args.effort }),
+    ...(args.icon === undefined ? {} : { icon: args.icon }),
     ...(args.lane === undefined ? {} : { lane: args.lane }),
     ...(args.autoDone ? { autoDone: true } : {}),
     ...(args.agent === undefined ? {} : { agent: args.agent }),

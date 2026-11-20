@@ -30,7 +30,14 @@ import { PriorityPicker } from '../components/PriorityPicker';
 import { PrStateIcon } from '../components/PrStateIcon';
 import { PolishItem } from '../components/PolishItem';
 import { TaskBadges } from '../components/TaskBadges';
-import { AutoDoneSetting, EffortPicker, LanePicker, ModelPicker, WorkdirSetting } from '../components/TaskSettings';
+import {
+  AutoDoneSetting,
+  EffortPicker,
+  LanePicker,
+  ModelPicker,
+  TaskIconPicker,
+  WorkdirSetting,
+} from '../components/TaskSettings';
 import { ThreadItem } from '../components/ThreadItem';
 import { TranscriptDrawer } from '../components/TranscriptDrawer';
 import { openQuestionOf } from '../lib/answers';
@@ -126,9 +133,12 @@ function TaskView({ id }: { id: string }) {
         </Breadcrumbs>
 
         <Stack gap="xs">
-          <Title order={3} className="wrap-anywhere">
-            {task.title}
-          </Title>
+          <Group gap="xs" wrap="nowrap" align="flex-start">
+            <TaskIconPicker task={task} size={24} />
+            <Title order={3} className="wrap-anywhere">
+              {task.title}
+            </Title>
+          </Group>
           <Group gap="xs">
             <Badge color={STATUS_COLOR[task.status]}>{task.closed ? 'Closed' : STATUS_LABEL[task.status]}</Badge>
             <PriorityPicker
