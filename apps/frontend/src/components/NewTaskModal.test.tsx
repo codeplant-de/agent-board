@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MachineCatalog, MachineDir } from '@agent-board/shared';
+import { LAST_DIRECTORY_KEY } from '../lib/lastDirectory';
 import type { Machine } from '../lib/opening';
 import { NewTaskModal } from './NewTaskModal';
 
@@ -89,6 +90,7 @@ beforeEach(() => {
   listed.catalogs = [];
   listed.failure = null;
   listed.schedules = [];
+  localStorage.clear();
 });
 
 describe('NewTaskModal Agent', () => {
@@ -551,6 +553,43 @@ describe('NewTaskModal working directory', () => {
     await userEvent.click(createButton());
     await waitFor(() => expect(create).toHaveBeenCalled());
     expect(sent()).toMatchObject({ when: { every: 7_200_000 }, place: { machine: 'laptop', workdir: '/work/a' } });
+  });
+});
+
+describe('NewTaskModal last working directory', () => {
+  const stored = () => localStorage.getItem(LAST_DIRECTORY_KEY);
+
+  it('remembers the machine and directory of the task it created', async () => {
+    listed.machines = [machine('laptop', ['/work/a']), machine('desktop', ['/work/a'])];
+    await open();
+    await waitFor(() => expect(directory()).toBeEnabled());
+    await pick('/work/a', 'desktop');
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    await waitFor(() => expect(stored()).toBe(JSON.stringify(['desktop', '/work/a'])));
+  });
+
+  it('opens with the remembered directory and sends it', async () => {
+    localStorage.setItem(LAST_DIRECTORY_KEY, JSON.stringify(['laptop', '/work/b']));
+    listed.machines = [machine('laptop', ['/work/a', '/work/b'])];
+    await open();
+    await waitFor(() => expect(directory()).toHaveValue('/work/b'));
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ place: { machine: 'laptop', workdir: '/work/b' } });
+  });
+
+  it('sends no place for a remembered directory no machine lists any more, and forgets it', async () => {
+    localStorage.setItem(LAST_DIRECTORY_KEY, JSON.stringify(['laptop', '/gone']));
+    listed.machines = [machine('laptop', ['/work/a'])];
+    await open();
+    await waitFor(() => expect(directory()).toBeEnabled());
+    expect(directory()).toHaveValue('');
+    expect(directory().closest('.mantine-Input-wrapper')?.querySelector('.mantine-InputClearButton-root')).toBeNull();
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).not.toHaveProperty('place');
+    await waitFor(() => expect(stored()).toBeNull());
   });
 });
 

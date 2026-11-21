@@ -329,6 +329,7 @@ The board's **New task** form takes a prompt the same way `board schedule` does.
 - A machine not seen for a day says when it was last seen. It stays selectable, and the task then waits in Todo for it.
 - Picking a directory pins the task to that machine and directory, as `board schedule` does from a terminal. Your browser seals the directory as yours.
 - Leave the field empty and the task runs in the default directory of whichever machine takes it. See [Where a task runs](workers.md#where-a-task-runs).
+- The form opens with the directory of the last task you created in this browser. Clear the field to create a task without one, and the next form opens empty too. A remembered directory that no machine lists any more is left out.
 - Revoked machines, machines that sent no list and a list the browser cannot read are not offered. The field names the machine whose list it could not read.
 - With no list at all the field is disabled and says to run `board dirs add`.
 
