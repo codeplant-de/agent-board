@@ -302,6 +302,7 @@ export const spawnInteractive: Spawner = (command, args, { cwd }) =>
 
 export interface AttachFlags {
   fork?: boolean;
+  desktop?: boolean;
 }
 
 // Opens the task's Claude session interactively, where it lives. The board decides who may: only the machine whose token
@@ -312,6 +313,7 @@ export async function attach(
   flags: AttachFlags = {},
   spawnClaude: Spawner = spawnInteractive,
 ): Promise<void> {
+  if (flags.desktop && flags.fork) throw new UsageError('--desktop and --fork cannot be combined');
   const { sessionId, workdir } = await context.backend.attachSession(id).catch((error: unknown) => {
     if (error instanceof BackendError && error.fromApi && (error.status === 409 || error.status === 403))
       throw new UsageError(error.message);
@@ -323,7 +325,12 @@ export async function attach(
         ? `the directory of ${id} is not there: ${plainLine(workdir)}`
         : `the directory of ${id} is unknown: it could not be read`,
     );
-  const args = ['--resume', sessionId, ...(flags.fork ? ['--fork-session'] : [])];
+  const args = [
+    ...(flags.desktop ? ['--desktop'] : []),
+    '--resume',
+    sessionId,
+    ...(flags.fork ? ['--fork-session'] : []),
+  ];
   if (context.dryRun) {
     context.print(`DRY claude ${args.join(' ')}  (in ${plainLine(workdir)})`);
     return;

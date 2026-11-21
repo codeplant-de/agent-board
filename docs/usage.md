@@ -672,13 +672,16 @@ Other tasks have no Stop.
 
 ### Attaching to a session
 
-To work in a session yourself, run `board attach <task> [--fork]`. It opens the task's Claude session interactively, in the task's directory, on the machine that ran it.
+To work in a session yourself, run `board attach <task> [--fork | --desktop]`. It opens the task's Claude session interactively, in the task's directory, on the machine that ran it. The session carries its whole history, every run and resume since the last fresh run.
 
 - The board hands the session only to the machine whose token ran the task.
 - It refuses while the task runs. Watch the Transcript on the task page instead.
 - It refuses on a task without a session.
 - Without `--fork`, the next resume of the task continues the session including what you did in it.
 - `--fork` starts a forked session, so the board's session stays as it was.
+- `--desktop` opens the session in the Claude Desktop app instead of the terminal, with `claude --desktop --resume`. That needs Claude Code 2.1.285 or newer and the Desktop app on the same machine. Desktop cannot fork a session, so `--desktop` and `--fork` are refused together.
+
+**The board does not know you are attached.** A task in Todo as a resume (answered, paused or woken) can start a run on the same session while you work in it, and both then write to one transcript. Attach to a task in Needs me or Done. A waiting task wakes into Todo when its event fires. A Desktop session stays open in the app after you stop typing, so finish there before you answer the task on the board.
 
 When the task's directory was a worktree that has since been deleted, a resume continues the session in the git checkout that held it, and the agent recreates the worktree there. See [Where a task runs](workers.md#where-a-task-runs).
 

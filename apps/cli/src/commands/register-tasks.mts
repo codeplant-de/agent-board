@@ -111,17 +111,22 @@ export function registerTaskCommands(shared: ProgramShared): void {
     program
       .command('attach')
       .helpGroup(TASKS)
-      .summary("open a task's Claude session in the terminal")
+      .summary("open a task's Claude session in the terminal or Claude Desktop")
       .description(
         paragraphs(
           "Run `claude --resume` on the task's session, interactively, in the directory the session ended in. The board hands the session only to the machine whose token ran the task, and not while the task runs: the headless run owns the session, so watch its Transcript on the task page.",
           'Without --fork, the next resume of the task continues the session with what you did in it. --fork starts a forked session, so the session of the board stays as it was. The exit status is that of claude. Not available inside a board run.',
+          '--desktop opens the session in the Claude Desktop app instead (claude --desktop), and the command returns once the app has it. Desktop cannot fork a session, so it cannot be combined with --fork. Leave the Desktop session idle before the task resumes on the board: both would write to the same session.',
           ID_NOTE,
         ),
       )
       .argument('<task>', TASK_ARGUMENT)
       .option('--fork', "fork the session (claude --fork-session) so the board's session stays as it was")
-      .addHelpText('after', examples('board attach 7sPf438z', 'board attach 7sPf --fork')),
+      .option('--desktop', 'open the session in the Claude Desktop app (claude --desktop) instead of the terminal')
+      .addHelpText(
+        'after',
+        examples('board attach 7sPf438z', 'board attach 7sPf --fork', 'board attach 7sPf --desktop'),
+      ),
   ).action(async (arg: string, flags: AttachFlags, command: Command) => {
     notInRun('board attach is not available inside a board run');
     const context = contextOf(command);
