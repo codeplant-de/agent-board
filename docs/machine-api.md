@@ -143,6 +143,7 @@ Capabilities and vocabulary have names. An additive change then needs no version
 | `schedule.update`         | The `settings` key of `edit-schedule`, see [`edit-schedule`](#edit-schedule).                                                                   |          |
 | `agents.shared`           | The `get-agents` and `set-agents` commands and `agentsVersion` in the `version` answer, see [Shared agents](#shared-agents).                    |          |
 | `task.effort`             | The `effort` key of `add-task`, `add-schedule`, `configure-task` and the `settings` of `edit-schedule`, and the field of a task and a schedule. |          |
+| `task.icon`               | The `icon` key of `add-task`, `add-schedule`, `configure-task` and the `settings` of `edit-schedule`, and the field of a task and a schedule.   |          |
 
 - The baseline (`BASELINE_SERVER_FEATURES`) is what the server of contract 9 has. A server that answers no `features` key is taken to have exactly the baseline.
 - A new server capability appends its name to `ADDED_SERVER_FEATURES` in the same commit that implements it.
@@ -346,6 +347,7 @@ The fields of the example are required, with these exceptions:
 | `prState`              | the server lacks `task.pr-state`            | `null`                          |
 | `prs`, `promptPrState` | the server lacks `task.prs`                 | `pr` and `prState` as one entry |
 | `agent`                | the task has no agent                       | no agent                        |
+| `icon`                 | the server lacks `task.icon`                | no icon                         |
 | `run`                  | the task is not running, or no `task.run`   | no run                          |
 | `stopRequested`        | the server lacks `run-inbox`                | `false`                         |
 | `noteCount`            | the server lacks `task.note-count`          | unknown                         |
@@ -364,6 +366,7 @@ The CLI's plaintext `Task` adds `labels` and `unreadable`.
 | `input`         | Sealed for the task and its creator, or for its schedule and `user` on an occurrence. What to work on.                                                      |
 | `createdBy`     | `user`, `agent` or `intake`. Part of the context of `input`, so a changed value makes the task unreadable.                                                  |
 | `agent`         | Sealed, or absent. The name of the agent the task runs as. Needs `task.agent`.                                                                              |
+| `icon`          | Sealed, or `null`. One emoji the user chose for the card. Display only: one that does not open as one emoji reads as none. Needs `task.icon`.               |
 | `model`         | The Claude model of the task's runs, or `null` for claude's default. Clear, not sealed: it is a choice, not content.                                        |
 | `effort`        | The effort level of the task's runs, or `null` for claude's default. Clear, not sealed: it is a choice, not content. Needs `task.effort`.                   |
 | `requestedLane` | The lane the user asked for, or `null` for the default lane. Clear, not sealed: it is routing. Needs `task.lane`. Not the lane it runs in, which is `lane`. |
@@ -551,7 +554,7 @@ Pickup order is the order of the array that `list-tasks` returns. Within a statu
 }
 ```
 
-The fields of the example are required. A missing `model`, from a server without `task.model`, reads as `null`, and so do a missing `effort` (without `task.effort`), a missing `requestedLane` (without `task.lane`), `after` and `maxConcurrent`. A missing `autoDone`, from a server without `task.auto-done`, reads as `false`. A schedule with an agent adds a sealed `agent`, which a server without `task.agent` leaves out.
+The fields of the example are required. A missing `model`, from a server without `task.model`, reads as `null`, and so do a missing `effort` (without `task.effort`), a missing `requestedLane` (without `task.lane`), `after` and `maxConcurrent`. A missing `autoDone`, from a server without `task.auto-done`, reads as `false`. A schedule with an agent adds a sealed `agent`, which a server without `task.agent` leaves out, and one with an icon a sealed `icon`, which a server without `task.icon` leaves out.
 
 | Field                       | Meaning                                                                                   |
 | --------------------------- | ----------------------------------------------------------------------------------------- |
@@ -744,6 +747,7 @@ Creates a task at the bottom of its status.
 | `createdBy`          | `intake`, `user` or `agent`. Defaults to `user`.                                                                                                                          |
 | `machine`, `workdir` | Come together and pin the task there. `workdir` is sealed.                                                                                                                |
 | `agent`              | Sealed. Only for a server that lists `task.agent`. The CLI refuses to send it otherwise.                                                                                  |
+| `icon`               | Sealed: one emoji. Only for a server that lists `task.icon`. The CLI refuses to send it otherwise.                                                                        |
 | `dedupeKey`          | The blind index of the key (`abh1.…`).                                                                                                                                    |
 | `head`               | The blind index of the sha (`abh1.…`).                                                                                                                                    |
 | `notBefore`          | ISO 8601. Accepted only with status `todo`.                                                                                                                               |
@@ -782,6 +786,7 @@ The user's edit of a task's settings, in one atomic step. It needs the `task.con
 - **`effort`** is an effort level (`low`, `medium`, `high`, `xhigh` or `max`), or `null` for claude's default. It applies from the next run on and is allowed in any status. It needs `task.effort`; the CLI refuses without it.
 - **`lane`** is a lane name (`isSafeLane`), or `null` for the default lane. It applies from the next start on and is refused with 409 while the task runs. It needs `task.lane`; the CLI refuses without it.
 - **`autoDone`** is a boolean. It applies at once and is allowed in any status, a running task included. It needs `task.auto-done`; the CLI refuses without it.
+- **`icon`** is the sealed emoji, or `null` for none. It applies at once, is allowed in any status and writes no note. It needs `task.icon`; the CLI refuses without it.
 - **`place`** is `{"workdir": <sealed>}` or `null`. The directory is sealed under the task's `workdir` binding.
 
 What `place` does:
@@ -1134,6 +1139,7 @@ Makes the schedule and its first card in one transaction.
 | `id`                        | The client's, as for `add-task`. 409 when taken.                                                              |
 | `title`, `input`, `workdir` | Sealed.                                                                                                       |
 | `agent`                     | Sealed. Only for a server that lists `task.agent`. The server copies it into every occurrence.                |
+| `icon`                      | Sealed. Only for a server that lists `task.icon`. The server copies it into every occurrence.                 |
 | `lane`                      | A lane name, as for `add-task`. Only for a server that lists `task.lane`. Copied into every occurrence.       |
 | `autoDone`                  | A boolean, default `false`. Only for a server that lists `task.auto-done`. Copied into every occurrence.      |
 | `machine`, `workdir`        | Come together.                                                                                                |
@@ -1175,7 +1181,7 @@ The user's new title and prompt for a schedule, and with `settings` every other 
 - The pending occurrence takes it too when it is in `todo`, open, and no worker ever claimed it. The answer says what became of it in `pending`: `updated`, `started` (it exists but was left alone) or `none` (the schedule is paused, or has nothing waiting).
 - No note is written. A schedule has no thread, so the old text is not kept.
 
-**With `settings`** the request replaces everything the user sets on the schedule, in one step, as the browser's `schedules.update` does (see [The Schedules page](usage.md#the-schedules-page)); a key that is not given is cleared or off, not kept, except `at`, `effort` and `lane`. Without `settings` the command behaves as above, and the agent stays.
+**With `settings`** the request replaces everything the user sets on the schedule, in one step, as the browser's `schedules.update` does (see [The Schedules page](usage.md#the-schedules-page)); a key that is not given is cleared or off, not kept, except `at`, `effort`, `lane` and `icon`. Without `settings` the command behaves as above, and the agent stays.
 
 | Key of `settings` | Value                                                                                                                                                                                 |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1185,6 +1191,7 @@ The user's new title and prompt for a schedule, and with `settings` every other 
 | `model`           | A model name, or `null` for claude's default.                                                                                                                                         |
 | `effort`?         | An effort level, or `null` for claude's default. Absent keeps the schedule's. Only for a server that lists `task.effort`.                                                             |
 | `lane`?           | A lane name, or `null` for the default lane. Absent keeps the schedule's. Only for a server that lists `task.lane`.                                                                   |
+| `icon`?           | The sealed emoji, or `null` for none. Absent keeps the schedule's. Only for a server that lists `task.icon`.                                                                          |
 | `autoDone`        | Boolean.                                                                                                                                                                              |
 | `repeat`          | Exactly one of `{"everyMs"}` (1 minute to 10 years), `{"cron", "moreCrons"?, "timezone"}` (up to 9 more expressions) or `{"after": {"scheduleId", "delayMs"}}` (0 to 10 years).       |
 | `at`?             | ISO date: the first run of an `everyMs` or `cron` rule. Absent keeps the schedule's. Not with `after`.                                                                                |
@@ -1192,8 +1199,8 @@ The user's new title and prompt for a schedule, and with `settings` every other 
 | `until`           | ISO date after which no occurrence starts, or `null`. Not with `runsLeft`.                                                                                                            |
 | `maxConcurrent`   | 1 to 100, or `null` for no limit.                                                                                                                                                     |
 
-- Every key but `agent`, `effort`, `lane` and `at` is required; an unknown key anywhere in `settings` is a 400, as are both `runsLeft` and `until`, an interval or delay outside its range, and a cron expression or time zone the server cannot read.
-- The pending occurrence takes the text, agent, directory, priority, model, effort, lane and auto-done while it is in `todo`, open and never claimed. It moves to the new next run when the rule, `at` or `until` changed. A rule that would never run before `until` is a 400, and so is an `after` that makes a circle or names a schedule that has ended.
+- Every key but `agent`, `effort`, `lane`, `icon` and `at` is required; an unknown key anywhere in `settings` is a 400, as are both `runsLeft` and `until`, an interval or delay outside its range, and a cron expression or time zone the server cannot read.
+- The pending occurrence takes the text, agent, directory, priority, model, effort, lane, icon and auto-done while it is in `todo`, open and never claimed. It moves to the new next run when the rule, `at` or `until` changed. A rule that would never run before `until` is a 400, and so is an `after` that makes a circle or names a schedule that has ended.
 - Moving from a rule of its own to `after` removes a pending occurrence that never started (`pending` is `removed`); moving back makes one (`created`). Only a request with `settings` answers `removed` or `created`.
 - A CLI sends `settings` only when the server lists `schedule.update`, and announces `schedule.after` with its other capabilities, so a schedule that runs after another is in the answer.
 

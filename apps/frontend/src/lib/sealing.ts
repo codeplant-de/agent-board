@@ -8,6 +8,7 @@ import {
   QuestionError,
   sealAnswers,
   sealFields,
+  sealIcon,
   sealInput,
   sealLinkRules,
   sealNote,
@@ -52,6 +53,7 @@ export interface NewTask {
   place?: { machine: string; workdir: string };
   /** The agent of the machine's config.json the task, or each occurrence of a repeat, runs as; absent runs it by its creator's rules. */
   agent?: string;
+  icon?: string;
 }
 
 /** What the shared sealing refuses (a text past the board's limit, answers that do not fit) is something to tell the user. */
@@ -79,11 +81,13 @@ export async function sealNewTask(keys: Keys, task: NewTask): Promise<CreateInpu
     : { kind: 'task', id, createdBy: 'user', scheduleId: null, agent, forkOf: null };
   const workdir = task.place?.workdir;
   const sealed = await checked(() => sealFields(sealerFor(keys), row, { title, input, workdir }));
+  const { icon } = task;
   return {
     id,
     title: sealed.title,
     input: sealed.input,
     ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
+    ...(icon === undefined ? {} : { icon: await checked(() => sealIcon(sealerFor(keys), row, icon)) }),
     ...(task.priority === undefined ? {} : { priority: task.priority }),
     ...(task.model === undefined ? {} : { model: task.model }),
     ...(task.effort === undefined ? {} : { effort: task.effort }),
@@ -228,6 +232,7 @@ export interface Configuration {
   /** A lane name, or null for the machine's default lane. */
   lane?: string | null;
   autoDone?: boolean;
+  icon?: string | null;
   place?: { machine: string; workdir: string } | null;
 }
 
@@ -236,7 +241,7 @@ export async function sealConfigure(
   keys: Keys,
   options: { task: ConfigureTarget } & Configuration,
 ): Promise<RouterInputs['tasks']['configure']> {
-  const { task, model, effort, lane, autoDone, place } = options;
+  const { task, model, effort, lane, autoDone, icon, place } = options;
   const row: RowRef = {
     kind: 'task',
     id: task.id,
@@ -250,6 +255,9 @@ export async function sealConfigure(
     ...(effort === undefined ? {} : { effort }),
     ...(lane === undefined ? {} : { lane }),
     ...(autoDone === undefined ? {} : { autoDone }),
+    ...(icon === undefined
+      ? {}
+      : { icon: icon === null ? null : await checked(() => sealIcon(sealerFor(keys), row, icon)) }),
     ...(place === undefined
       ? {}
       : {
@@ -400,7 +408,7 @@ export async function sealEdit(
 type ScheduleUpdateInput = RouterInputs['schedules']['update'];
 
 /** The schedule's settings as the Edit schedule form holds them: everything the board stores clear is as `schedules.update` takes it. */
-export type ScheduleUpdate = Omit<ScheduleUpdateInput, 'title' | 'input' | 'agent' | 'place'> & {
+export type ScheduleUpdate = Omit<ScheduleUpdateInput, 'title' | 'input' | 'agent' | 'icon' | 'place'> & {
   title: string;
   input: string;
   /** The name of the agent of the machine's config.json; null for none. */

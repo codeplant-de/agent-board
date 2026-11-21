@@ -496,12 +496,14 @@ export function registerTaskCommands(shared: ProgramShared): void {
           '--lane <name>',
           "the lane the task asks for once you start it (default: the default lane; it does not inherit this run's lane)",
         )
+        .option('--icon <emoji>', 'one emoji shown at the left of the title on the board card (default: none)')
         .option('--here', "run in this directory instead of the parent's")
         .addHelpText(
           'after',
           examples(
             'board add --title "Fix the flaky test" --file /tmp/prompt.md --parent Ab3dEf9x',
             'board add --title "Review the fix" --file /tmp/prompt.md --lane reviews',
+            'board add --title "Bump the CLI" --file /tmp/prompt.md --icon 📦',
           ),
         ),
     ),

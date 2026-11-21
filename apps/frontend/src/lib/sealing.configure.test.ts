@@ -1,7 +1,7 @@
-import { deriveKeys, openFields, type RowRef } from '@agent-board/shared';
+import { deriveKeys, openFields, openIcon, type RowRef } from '@agent-board/shared';
 import { describe, expect, it } from 'vitest';
 import { openerFor } from './opening';
-import { sealConfigure } from './sealing';
+import { sealConfigure, sealNewTask } from './sealing';
 
 const keys = await deriveKeys(
   Uint8Array.from({ length: 32 }, (_, i) => i),
@@ -54,5 +54,21 @@ describe('sealConfigure', () => {
       model: 'haiku',
       place: { machine: 'deskwork' },
     });
+  });
+});
+
+describe('the icon', () => {
+  it('is sealed for the task, and a schedule’s for its occurrences, so the page opens it', async () => {
+    const task = { id: 'task0001', createdBy: 'user', scheduleId: null } as const;
+    const sealed = await sealConfigure(keys, { task, icon: '🚀' });
+    expect(sealed.icon).toMatch(/^abe1\./);
+    expect(await openIcon(openerFor(keys), { kind: 'task', forkOf: null, ...task }, sealed.icon)).toBe('🚀');
+    expect(await sealConfigure(keys, { task, icon: null })).toEqual({ id: 'task0001', icon: null });
+    await expect(sealConfigure(keys, { task, icon: 'rocket' })).rejects.toThrow('an icon must be one emoji');
+
+    const repeat = await sealNewTask(keys, { input: '/sweep', icon: '🧹', when: { every: 3_600_000 } });
+    const occurrence: RowRef = { kind: 'task', id: 'occ00001', createdBy: 'user', scheduleId: repeat.id, forkOf: null };
+    expect(await openIcon(openerFor(keys), occurrence, repeat.icon)).toBe('🧹');
+    expect(await sealNewTask(keys, { input: '/sweep' })).not.toHaveProperty('icon');
   });
 });

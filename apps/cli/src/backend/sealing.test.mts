@@ -121,6 +121,7 @@ function fakeWire(): FakeWire {
         input: sent.input,
         workdir: sent.workdir ?? null,
         ...(sent.agent === undefined ? {} : { agent: sent.agent }),
+        ...(sent.icon === undefined ? {} : { icon: sent.icon }),
         head: sent.head ?? null,
         createdBy: sent.createdBy ?? 'user',
       };
@@ -140,6 +141,7 @@ function fakeWire(): FakeWire {
       const sent = parseWireTaskConfig(JSON.parse(record(state, body)));
       const found = state.tasks.find((t) => t.id === id)!;
       if (sent.place !== undefined) Object.assign(found, { workdir: sent.place?.workdir ?? null });
+      if (sent.icon !== undefined) found.icon = sent.icon;
       return found;
     },
     async editPrompt(id, body) {
@@ -259,6 +261,7 @@ function fakeWire(): FakeWire {
         input: sent.input,
         workdir: sent.workdir ?? null,
         ...(sent.agent === undefined ? {} : { agent: sent.agent }),
+        ...(sent.icon === undefined ? {} : { icon: sent.icon }),
       };
       state.schedules.push(added);
       return { schedule: added, task: await wireTask({ id: 'pending' }) };
@@ -275,6 +278,7 @@ function fakeWire(): FakeWire {
       Object.assign(found, text);
       if (settings !== undefined) {
         found.agent = settings.agent ?? null;
+        if (settings.icon !== undefined) found.icon = settings.icon;
         found.machine = settings.place?.machine ?? null;
         found.workdir = settings.place?.workdir ?? null;
         found.priority = settings.priority;
@@ -1316,6 +1320,37 @@ test('a schedule is sealed with its agent, and its occurrences open it', async (
   const copied = { ...(await wireTask({ id: 'occ1', scheduleId: made.id })), input, agent };
   const occurrence = await sealingBackend({ ...wire, getTask: async () => copied }, KEYS).getTask('occ1');
   assert.deepEqual([occurrence.agent, occurrence.input, occurrence.unreadable], ['sweeper', '/sweep', []]);
+});
+
+test('an icon is sealed for its task or schedule, never reaches the board in clear, and opens on the occurrences', async () => {
+  const wire = fakeWire();
+  const board = sealingBackend(wire, KEYS);
+  const { task } = await board.addTask({ title: 'Fix', input: '/fix', icon: '🐛' });
+  assert.equal(task.icon, '🐛');
+  assert.equal(await open(KEYS, 'icon', `task:${task.id}`, wire.tasks[0]!.icon!), '🐛');
+  await assert.rejects(board.addTask({ title: 'Fix', input: '/fix', icon: 'bug' }), /icon must be one emoji/);
+
+  const writer = { createdBy: 'user' as const, scheduleId: null, agent: null, forkOf: null };
+  await assert.rejects(board.configureTask(task.id, { icon: '🚀' }), /change\.seal/);
+  assert.equal((await board.configureTask(task.id, { icon: '🚀', seal: writer })).icon, '🚀');
+  assert.equal((await board.configureTask(task.id, { icon: null })).icon, null);
+
+  const { schedule: made } = await board.addSchedule({
+    title: 'Sweep',
+    input: '/sweep',
+    everyMs: 7_200_000,
+    icon: '🧹',
+  });
+  assert.equal(made.icon, '🧹');
+  const copied = { ...(await wireTask({ id: 'occ1', scheduleId: made.id })), icon: wire.schedules[0]!.icon! };
+  assert.equal((await sealingBackend({ ...wire, getTask: async () => copied }, KEYS).getTask('occ1')).icon, '🧹');
+  const elsewhere = { ...(await wireTask({ id: 'other' })), icon: wire.schedules[0]!.icon! };
+  const notOpened = await sealingBackend({ ...wire, getTask: async () => elsewhere }, KEYS).getTask('other');
+  assert.deepEqual([notOpened.icon, notOpened.unreadable], [null, []]);
+  assert.equal(
+    wire.requests.some((request) => /🐛|🚀|🧹/u.test(request)),
+    false,
+  );
 });
 
 test('an edited prompt is sealed as the user’s under the task’s row, and the old text is kept in a note of the user’s', async () => {

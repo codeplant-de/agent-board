@@ -37,7 +37,15 @@ import { SystemError } from '../setup/system.mts';
 import { requireTaskId } from '../task-id.mts';
 import { plainLine, plainText } from '../output/terminal.mts';
 import type { Style } from '../output/style.mts';
-import { haikuDuplicateCheck, localTime, parseScheduleArgs, parseStart, schedule, scheduleAfter } from './schedule.mts';
+import {
+  checkedIcon,
+  haikuDuplicateCheck,
+  localTime,
+  parseScheduleArgs,
+  parseStart,
+  schedule,
+  scheduleAfter,
+} from './schedule.mts';
 import { resolveScheduleId } from './ids.mts';
 import type { Choice, Scheduled, ScheduledAfter, ScheduleFlags } from './schedule.mts';
 import { publishWatches } from '../watch/publish.mts';
@@ -330,6 +338,7 @@ export interface AddFlags {
   parent?: string;
   priority?: string;
   lane?: string;
+  icon?: string;
   // Propose in the working directory instead of the parent's.
   here?: boolean;
 }
@@ -340,9 +349,11 @@ export function parseAddFlags(flags: AddFlags): {
   parent: string | undefined;
   priority: Priority | undefined;
   lane: string | undefined;
+  icon: string | undefined;
 } {
   const title = flags.title?.trim();
   const { file, parent, priority, lane } = flags;
+  const icon = flags.icon === undefined ? undefined : checkedIcon(flags.icon);
   if (!title) throw new UsageError('--title needs a title');
   if (!file) throw new UsageError('--file is required');
   if (parent !== undefined) requireTaskId(parent, UsageError);
@@ -350,7 +361,7 @@ export function parseAddFlags(flags: AddFlags): {
     throw new UsageError(`unknown priority "${priority.slice(0, 20)}"; use one of ${PRIORITIES.join(', ')}`);
   if (lane !== undefined && !isSafeLane(lane))
     throw new UsageError(`"${lane.slice(0, 40)}" is not a lane name (${MACHINE_NAME_RULE})`);
-  return { title, file, parent, priority, lane };
+  return { title, file, parent, priority, lane, icon };
 }
 
 /**
@@ -402,7 +413,7 @@ export async function add(
   // `runTask`: AGENT_BOARD_TASK, the task of the run that proposes.
   where: { cwd: string; startDir?: string; runTask?: string },
 ): Promise<Task> {
-  const { title, file, parent, priority, lane } = parseAddFlags(flags);
+  const { title, file, parent, priority, lane, icon } = parseAddFlags(flags);
   // A follow-up runs where its parent does, unless --here asks for this directory.
   const inherited = parent === undefined || flags.here === true ? undefined : await parentDir(context, parent, where);
   const workdir = inherited ?? proposalDir(context.config, where);
@@ -416,6 +427,7 @@ export async function add(
     ...(parent ? { parentId: parent } : {}),
     ...(priority ? { priority } : {}),
     ...(lane === undefined ? {} : { lane }),
+    ...(icon === undefined ? {} : { icon }),
   };
   const { task } = await context.backend.addTask(draft);
   confirm(context, `proposed ${task.id} ${context.taskLink(task.id)}`);

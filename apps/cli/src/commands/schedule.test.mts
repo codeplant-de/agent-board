@@ -37,6 +37,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     priority: 'high',
     model: undefined,
     effort: undefined,
+    icon: undefined,
     lane: undefined,
     autoDone: false,
     agent: undefined,
@@ -62,6 +63,7 @@ test("the board's flags come first; the rest is the prompt, its own flags includ
     priority: undefined,
     model: undefined,
     effort: undefined,
+    icon: undefined,
     lane: undefined,
     autoDone: false,
     agent: undefined,
@@ -437,6 +439,29 @@ test('--model is checked and sent for a plain task and for a repeat', async () =
     ?.task;
   assert.equal(first?.model, 'fable');
   assert.ok(repeat.backend.writes[0]?.endsWith('| here:/work/cosuno | model fable'));
+});
+
+test('--icon is checked and sent for a plain task and for a repeat, and a requeue says it was not applied', async () => {
+  assert.equal(parseScheduleArgs(['--icon', '🧪', 'x']).icon, '🧪');
+  assert.equal(parseScheduleArgs(['x']).icon, undefined);
+  for (const bad of ['test', '🧪🧪', ':test_tube:'])
+    assert.throws(() => parseScheduleArgs(['--icon', bad, 'x']), /not an icon: give one emoji/, bad);
+
+  const plain = setup(undefined);
+  assert.equal((await schedule(plain.deps, parseScheduleArgs(['--icon', '🧪', '--new', '/sweep'])))?.task.icon, '🧪');
+  const repeat = setup(undefined);
+  const first = (await schedule(repeat.deps, parseScheduleArgs(['--icon', '🧹', '--every', '2h', '/sweep'], NOW)))
+    ?.task;
+  assert.equal(first?.icon, '🧹');
+  assert.ok(repeat.backend.writes[0]?.includes('| icon 🧹'));
+
+  const requeue = setup({ taskId: 'old', reason: 'same PR' }, 'requeue');
+  await schedule(requeue.deps, parseScheduleArgs(['--icon', '🧪', '/review-pr', '17741']));
+  assert.ok(
+    requeue.printed.includes(
+      'old keeps its icon (none); --icon applies only to a new task: use `board task old set icon 🧪`',
+    ),
+  );
 });
 
 test('--effort is checked and sent for a plain task and for a repeat', async () => {

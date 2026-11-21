@@ -1,7 +1,8 @@
 import { DESKTOP_NOTIFICATIONS_PREFERENCE_KEY } from './desktopNotifications';
+import { RECENT_EMOJIS_KEY } from './emoji';
 
 /** The browser preferences an export carries and an import restores; a new preference is one more line here. */
-export const BOARD_PREF_KEYS: readonly string[] = [DESKTOP_NOTIFICATIONS_PREFERENCE_KEY];
+export const BOARD_PREF_KEYS: readonly string[] = [DESKTOP_NOTIFICATIONS_PREFERENCE_KEY, RECENT_EMOJIS_KEY];
 
 type PrefStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 

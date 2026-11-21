@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   ContractError,
   isEffort,
+  isEmojiIcon,
   isModelName,
   MAX_INTERVAL_MS,
   MAX_TASK_PRS,
@@ -228,6 +229,26 @@ test('a draft may carry a sealed agent, but not together with createdBy agent (a
   assert.throws(() => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, agent: 'reviewer' }), /agent/);
 });
 
+test('an icon is one emoji: a pictograph with its modifiers and joins, a flag or a keycap, and nothing else', () => {
+  for (const icon of ['🚀', '❤️', '👍🏽', '👨‍👩‍👧‍👦', '🏳️‍🌈', '🇵🇹', '🏴󠁧󠁢󠁳󠁣󠁴󠁿', '#️⃣', '1️⃣', '🧑🏻‍❤️‍💋‍🧑🏼']) assert.ok(isEmojiIcon(icon), icon);
+  for (const icon of ['', 'a', '1', '🚀🚀', ' 🚀', '🚀\n', 'x🚀', '🇵', '🇵🇹🇵🇹', '‍', '<b>', '👍🏽'.repeat(9)])
+    assert.ok(!isEmojiIcon(icon), JSON.stringify(icon));
+});
+
+test('the icon of a task, a draft, a config and a schedule draft is sealed, and null clears it', async () => {
+  const icon = await sealed('icon', '🚀');
+  assert.equal(parseWireTask({ ...task, icon }).icon, icon);
+  assert.equal('icon' in parseWireTask({ ...task, icon: null }), false);
+  assert.equal(parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, icon }).icon, icon);
+  assert.throws(() => parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, icon: '🚀' }), /icon must be encrypted/);
+  assert.deepEqual(parseWireTaskConfig({ icon }), { icon });
+  assert.deepEqual(parseWireTaskConfig({ icon: null }), { icon: null });
+  assert.throws(() => parseWireTaskConfig({ icon: '🚀' }), /config.icon must be encrypted/);
+  assert.throws(() => parseWireTaskConfig({ icon: `abe1.${'A'.repeat(1000)}` }), /config.icon is too long/);
+  const draft = parseWireScheduleDraft({ id: ID, title: TITLE, input: INPUT, everyMs: 60_000, icon });
+  assert.equal(draft.icon, icon);
+});
+
 test('a draft takes the dedupe key, parent and creator; unknown keys fail', () => {
   assert.deepEqual(
     parseWireTaskDraft({ id: ID, title: TITLE, input: INPUT, dedupeKey: KEY, parentId: 'abc', createdBy: 'agent' }),
@@ -275,7 +296,10 @@ test('a task config takes a priority, a model or null, and a place with a sealed
     priority: 'high',
     model: 'opus',
   });
-  assert.throws(() => parseWireTaskConfig({}), /config needs one of priority, model, effort, lane, autoDone, place/);
+  assert.throws(
+    () => parseWireTaskConfig({}),
+    /config needs one of priority, model, effort, lane, autoDone, icon, place/,
+  );
   assert.throws(() => parseWireTaskConfig([]), /must be a JSON object/);
   assert.throws(() => parseWireTaskConfig({ priority: 'asap' }), /priority must be one of/);
   for (const model of ['', 'not a model', '-x', 5, undefined])

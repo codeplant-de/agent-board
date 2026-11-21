@@ -75,8 +75,11 @@ test('board add needs a title and a file, and checks the parent and the priority
     parent: 'abc',
     priority: undefined,
     lane: undefined,
+    icon: undefined,
   });
   assert.equal(parseAddFlags({ title: 't', file: '/tmp/x', priority: 'high' }).priority, 'high');
+  assert.equal(parseAddFlags({ title: 't', file: '/tmp/x', icon: '🐛' }).icon, '🐛');
+  assert.throws(() => parseAddFlags({ title: 't', file: '/tmp/x', icon: 'bug' }), /not an icon: give one emoji/);
   assert.equal(parseAddFlags({ title: 't', file: '/tmp/x', lane: 'reviews' }).lane, 'reviews');
   assert.throws(() => parseAddFlags({ title: 't', file: '/tmp/x', lane: 'not a lane' }), /not a lane name/);
   assert.throws(() => parseAddFlags({ title: 't', file: '/tmp/x', priority: 'asap' }), /unknown priority "asap"/);
@@ -310,6 +313,7 @@ test('a url the server sends is never used (server-chosen task.url)', () => {
       watches: null,
       watchEvents: 0,
       watchStops: [],
+      icon: null,
     },
     [],
   );

@@ -77,6 +77,7 @@ export const taskRowSchema = z.object({
   workdir: nullable(sealed('workdir', 'workdir')),
   homeWorkdir: nullable(sealed('workdir', 'homeWorkdir')),
   agent: nullable(sealed('agent', 'agent')),
+  icon: nullable(sealed('icon', 'icon')),
   watches: nullable(sealed('watches', 'watches')),
   watchStops: z.array(z.string().refine(isWatchId, 'not a watch id')).max(256).default([]),
   prState: nullable(z.enum(prState.enumValues)),
@@ -119,6 +120,7 @@ const scheduleRowShape = z.object({
   machine: nullable(machineName),
   workdir: nullable(sealed('workdir', 'workdir')),
   agent: nullable(sealed('agent', 'agent')),
+  icon: nullable(sealed('icon', 'icon')),
   everyMs: nullable(z.number().int().positive().max(MAX_INTERVAL_MS)),
   cron: nullable(plainText(256)),
   moreCrons: z

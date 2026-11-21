@@ -21,6 +21,9 @@ import {
   dedupeKeyIndex,
   headIndex,
   agentBinding,
+  iconBinding,
+  openIcon,
+  sealIcon,
   inputBinding,
   machineCatalogBinding,
   machineCatalogIndex,
@@ -722,6 +725,22 @@ test('a transcript event of one task does not open under another task, run or po
     transcriptBinding('tr.output', TASK, RUN, 3),
   ])
     assert.equal(await opens(other, sealed), undefined);
+});
+
+test('an icon is bound to the origin, opens on the occurrences of its schedule, and only as one emoji', async () => {
+  assert.deepEqual(iconBinding(userTask), { field: 'icon', context: `task:${TASK}` });
+  assert.deepEqual(iconBinding(occurrence), iconBinding(schedule));
+  const sealed = await sealIcon(seals, schedule, '🚀');
+  assert.equal(await openIcon(opens, occurrence, sealed), '🚀');
+  assert.equal(await openIcon(opens, schedule, sealed), '🚀');
+  assert.equal(await openIcon(opens, userTask, sealed), null);
+  assert.equal(await openIcon(opens, userTask, null), null);
+  assert.equal(await openIcon(opens, userTask, undefined), null);
+  assert.equal(await openIcon(opens, userTask, '🚀'), null);
+  assert.equal(await openIcon(opens, userTask, await seal(keys, 'title', iconBinding(userTask).context, '🚀')), null);
+  assert.equal(await openIcon(opens, userTask, await seal(keys, 'icon', iconBinding(userTask).context, 'ab')), null);
+  for (const bad of ['', 'a', '🚀🚀', '🚀 ', 'x🚀'])
+    await assert.rejects(sealIcon(seals, userTask, bad), ContractError, JSON.stringify(bad));
 });
 
 const PR_URL = 'https://github.com/o/r/pull/7';

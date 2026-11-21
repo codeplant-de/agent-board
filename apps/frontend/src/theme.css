@@ -154,6 +154,42 @@ body {
   border-color: var(--mantine-color-indigo-4);
 }
 
+.emoji-add {
+  opacity: 0;
+}
+.task-card:hover .emoji-add,
+.emoji-add:focus-visible,
+.emoji-add[data-open] {
+  opacity: 1;
+}
+.emoji-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  line-height: 1;
+  border-radius: var(--mantine-radius-sm);
+}
+.emoji-trigger:hover,
+.emoji-option:hover,
+.emoji-option:focus-visible {
+  background: var(--mantine-color-default-hover);
+}
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+}
+.emoji-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  font-size: 20px;
+  line-height: 1;
+  border-radius: var(--mantine-radius-sm);
+}
+
 /* The board: one column on a phone, two on a tablet, five tracks on a wide screen (Waiting stacked above Todo in the second). */
 .board {
   display: grid;

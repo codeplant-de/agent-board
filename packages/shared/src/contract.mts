@@ -148,6 +148,8 @@ export interface Task {
   // of the context of `input`, so a task whose agent the server dropped or changed is unreadable. A worker that sees one runs
   // only that agent, or not at all.
   agent?: string | null;
+  // The emoji the user chose for the card, opened; null for none, and for one that does not open as a single emoji. Display only.
+  icon: string | null;
   closed: boolean;
   // The machine that claimed the task last; a resume runs only there, because the Claude session lives on it.
   machine: string | null;
@@ -304,6 +306,7 @@ export interface TaskDraft {
   workdir?: string;
   // The agent the task runs as (sealed on the wire); the sealer of `input` states it too, so it is part of that context.
   agent?: string;
+  icon?: string;
   // The PR head sha; the sealing backend turns it into its blind index.
   head?: string;
   // Only with status todo.
@@ -366,6 +369,7 @@ export interface Schedule {
   workdir: string | null;
   // The agent every occurrence runs as, by name; null for none.
   agent?: string | null;
+  icon: string | null;
   // The rule, exactly one of: an interval on the grid `anchorAt + k * everyMs`, a 5-field cron expression in `timezone`, or
   // `after` another schedule. `cron` is the first expression; `moreCrons` holds the others (up to 9), which a CLI that predates
   // them does not read. Absent when there is only one, and from a server without `schedule.crons`.
@@ -412,6 +416,7 @@ export interface ScheduleDraft {
   workdir?: string;
   // The agent every occurrence runs as (sealed on the wire).
   agent?: string;
+  icon?: string;
   // Exactly one of `everyMs`, `cron` and `after`; a cron expression needs its `timezone` (IANA name). `moreCrons` goes with
   // `cron` only: up to 9 more expressions in the same time zone, none the same as another.
   everyMs?: number;
@@ -572,7 +577,7 @@ export type UsageOnBoard = DirsOnBoard;
 // What the board server stores and returns: the sealed fields are envelopes (`abe1.…`) it cannot read. Values the server
 // returns may also be legacy plain text from before encryption; only what a client sends is checked to be sealed.
 
-type SealedTaskFields = 'title' | 'input' | 'workdir' | 'agent' | 'labels' | 'unreadable';
+type SealedTaskFields = 'title' | 'input' | 'workdir' | 'agent' | 'icon' | 'labels' | 'unreadable';
 type OpenedTaskFields = 'prs' | 'promptPrState' | 'watches' | 'watchEvents' | 'watchStops';
 
 /** What the states of `set-pr-states` and `setPrStates` name: the prompt's PR, and reported PRs by the id of their row. */
@@ -598,6 +603,7 @@ export type WireTask = Omit<Task, SealedTaskFields | OpenedTaskFields> & {
   input: string;
   workdir: string | null;
   agent?: string | null;
+  icon?: string | null;
   pr: string | null;
   prState: PrState | null;
   prs?: WireTaskPr[];
@@ -606,11 +612,12 @@ export type WireTask = Omit<Task, SealedTaskFields | OpenedTaskFields> & {
   watchStops?: string[];
 };
 
-export type WireSchedule = Omit<Schedule, 'title' | 'input' | 'workdir' | 'agent' | 'unreadable'> & {
+export type WireSchedule = Omit<Schedule, 'title' | 'input' | 'workdir' | 'agent' | 'icon' | 'unreadable'> & {
   title: string;
   input: string;
   workdir: string | null;
   agent?: string | null;
+  icon?: string | null;
 };
 
 export interface WireNote {
@@ -657,6 +664,8 @@ export interface TaskConfigChange {
   lane?: string | null;
   // Whether the agent may move the task to Done itself. Takes effect at once, also while the task runs.
   autoDone?: boolean;
+  // One emoji (`isEmojiIcon`), or null for none; sealed on the wire, so it needs `seal`.
+  icon?: string | null;
   // Where the task runs from now on. An object pins it to the directory on the calling machine and drops the session (it
   // cannot be resumed from another directory); null gives the task no directory of its own.
   place?: { workdir: string } | null;
@@ -701,6 +710,8 @@ export interface ScheduleSettings {
   effort?: Effort | null;
   // A lane name (`isSafeLane`); null is the default lane. Absent keeps the schedule's. Needs the `task.lane` feature.
   lane?: string | null;
+  // One emoji (`isEmojiIcon`); null is none. Absent keeps the schedule's. Needs the `task.icon` feature.
+  icon?: string | null;
   autoDone: boolean;
   repeat: ScheduleRepeat;
   // The first run of a rule of its own; absent keeps the schedule's.
@@ -732,6 +743,7 @@ export interface WirePromptEdit {
 // The settings of an edit-schedule body: the agent and the directory are sealed under the schedule, with the title and prompt.
 export type WireScheduleSettings = Omit<ScheduleSettings, 'agent' | 'place'> & {
   agent?: string;
+  icon?: string | null;
   place: { machine: string; workdir: string } | null;
 };
 
@@ -938,6 +950,7 @@ export const SEALED_LIMITS: Record<Field, number> = {
   input: 4 * 200_000,
   workdir: 4096,
   agent: 256,
+  icon: 128,
   pr: 1024,
   watches: 32 * 1024,
   'machine.dirs': 256 * 1024,
@@ -1021,6 +1034,19 @@ const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 // The name of an agent of a machine's config.json; it reaches a CLI flag and a file there, so nothing else is taken.
 export const isAgentName = (name: string): boolean => AGENT_NAME.test(name);
+
+export const MAX_ICON_LENGTH = 32;
+export const ICON_RULE = 'one emoji';
+const EMOJI_SHAPE =
+  /^(?:\p{Regional_Indicator}{2}|[0-9#*]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier}|[\u{E0020}-\u{E007F}])*(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})*)*)$/u;
+const GRAPHEMES = new Intl.Segmenter('en', { granularity: 'grapheme' });
+
+/** A task's icon: exactly one emoji (a pictograph with its modifiers and joins, a flag or a keycap), nothing else. */
+export function isEmojiIcon(value: string): boolean {
+  return (
+    value.length <= MAX_ICON_LENGTH && EMOJI_SHAPE.test(value) && Array.from(GRAPHEMES.segment(value)).length === 1
+  );
+}
 
 /** Whether a text holds a control character (the C0 ones and DEL): newlines and NULs that a line, a path or an argument must not carry. */
 export function hasControlCharacter(text: string): boolean {
@@ -1332,6 +1358,7 @@ export function parseWireTask(value: unknown): WireTask {
     sessionId: sessionId(nullableString(obj, 'sessionId', 'task'), 'task'),
     workdir: nullableString(obj, 'workdir', 'task'),
     ...(obj['agent'] == null ? {} : { agent: string(obj, 'agent', 'task') }),
+    ...(obj['icon'] == null ? {} : { icon: string(obj, 'icon', 'task') }),
     pr: obj['pr'] === undefined ? null : nullableString(obj, 'pr', 'task'),
     prState: PR_STATES.find((state) => state === obj['prState']) ?? null,
     ...(obj['prs'] === undefined ? {} : { prs: wireTaskPrs(obj['prs']) }),
@@ -1448,6 +1475,7 @@ export function parseWireSchedule(value: unknown): WireSchedule {
     machine,
     workdir: nullableString(obj, 'workdir', 'schedule'),
     ...(obj['agent'] == null ? {} : { agent: string(obj, 'agent', 'schedule') }),
+    ...(obj['icon'] == null ? {} : { icon: string(obj, 'icon', 'schedule') }),
     everyMs,
     cron,
     ...(moreCrons.length === 0 ? {} : { moreCrons }),
@@ -1824,6 +1852,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
       'machine',
       'workdir',
       'agent',
+      'icon',
       'head',
       'notBefore',
     ],
@@ -1849,6 +1878,7 @@ export function parseWireTaskDraft(value: unknown): WireTaskDraft {
   }
   if ('workdir' in obj) draft.workdir = sealedField(obj, 'workdir', 'draft', 'workdir');
   if ('agent' in obj) draft.agent = sealedField(obj, 'agent', 'draft', 'agent');
+  if ('icon' in obj) draft.icon = sealedField(obj, 'icon', 'draft', 'icon');
   if (draft.agent !== undefined && draft.createdBy === 'agent')
     throw new ContractError(
       'draft.agent cannot go with createdBy agent: a proposal runs under no agent until the user starts it',
@@ -1889,6 +1919,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
       'machine',
       'workdir',
       'agent',
+      'icon',
       'everyMs',
       'cron',
       'moreCrons',
@@ -1918,6 +1949,7 @@ export function parseWireScheduleDraft(value: unknown): WireScheduleDraft {
   }
   if ('workdir' in obj) draft.workdir = sealedField(obj, 'workdir', what, 'workdir');
   if ('agent' in obj) draft.agent = sealedField(obj, 'agent', what, 'agent');
+  if ('icon' in obj) draft.icon = sealedField(obj, 'icon', what, 'icon');
   if ((draft.machine === undefined) !== (draft.workdir === undefined))
     throw new ContractError('schedule draft.machine and schedule draft.workdir go together');
   if (['everyMs', 'cron', 'after'].filter((rule) => rule in obj).length !== 1)
@@ -1981,7 +2013,7 @@ export function parseWireTaskPatch(value: unknown): WireTaskPatch {
 // Body of configure-task. At least one key. `place` carries the sealed directory only: the machine is the token's.
 export function parseWireTaskConfig(value: unknown): WireTaskConfig {
   const obj = record(value, 'config');
-  const keys = ['priority', 'model', 'effort', 'lane', 'autoDone', 'place'];
+  const keys = ['priority', 'model', 'effort', 'lane', 'autoDone', 'icon', 'place'];
   rejectUnknownKeys(obj, keys, 'config');
   if (!keys.some((key) => key in obj)) throw new ContractError(`config needs one of ${keys.join(', ')}`);
   const config: WireTaskConfig = {};
@@ -1990,6 +2022,7 @@ export function parseWireTaskConfig(value: unknown): WireTaskConfig {
   if ('effort' in obj) config.effort = obj['effort'] === null ? null : effortLevel(obj, 'config');
   if ('lane' in obj) config.lane = obj['lane'] === null ? null : laneName(obj, 'config');
   if ('autoDone' in obj) config.autoDone = boolean(obj, 'autoDone', 'config');
+  if ('icon' in obj) config.icon = nullableSealedField(obj, 'icon', 'config', 'icon');
   if ('place' in obj) {
     if (obj['place'] === null) config.place = null;
     else {
@@ -2052,6 +2085,7 @@ function parseWireScheduleSettings(value: unknown, what: string): WireScheduleSe
       'model',
       'effort',
       'lane',
+      'icon',
       'autoDone',
       'repeat',
       'at',
@@ -2083,6 +2117,7 @@ function parseWireScheduleSettings(value: unknown, what: string): WireScheduleSe
   if ('agent' in obj) settings.agent = sealedField(obj, 'agent', what, 'agent');
   if ('effort' in obj) settings.effort = obj['effort'] === null ? null : effortLevel(obj, what);
   if ('lane' in obj) settings.lane = obj['lane'] === null ? null : laneName(obj, what);
+  if ('icon' in obj) settings.icon = nullableSealedField(obj, 'icon', what, 'icon');
   if ('at' in obj) {
     if ('after' in settings.repeat)
       throw new ContractError(`${what}.at does not go with a repeat after another schedule`);
