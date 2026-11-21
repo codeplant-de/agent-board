@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { skillsFor } from '../lib/catalog';
 import { DEFAULT_EFFORT, effortFromOption } from '../lib/effort';
 import { DEFAULT_LANE } from '../lib/lane';
+import { readLastDirectory, writeLastDirectory } from '../lib/lastDirectory';
 import { DEFAULT_MODEL } from '../lib/model';
 import { parseDelay, parseRepeatRule } from '../lib/repeat';
 import { errorMessage, useTRPC } from '../lib/trpc';
@@ -56,7 +57,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const [effort, setEffort] = useState(DEFAULT_EFFORT);
   const [lane, setLane] = useState(DEFAULT_LANE);
   const [autoDone, setAutoDone] = useState(false);
-  const [directory, setDirectory] = useState<string | null>(null);
+  const [directory, setDirectory] = useState<string | null>(readLastDirectory);
   const [agent, setAgent] = useState('');
   const directories = useDirectoryChoices();
   const catalogs = useQuery(trpc.machines.catalogs.queryOptions());
@@ -124,6 +125,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
       {
         onSuccess: (task) => {
           onCreated?.();
+          writeLastDirectory(place?.value ?? null);
           setTitle('');
           setInput('');
           setPriority('normal');
@@ -132,7 +134,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           setEffort(DEFAULT_EFFORT);
           setLane(DEFAULT_LANE);
           setAutoDone(false);
-          setDirectory(null);
+          setDirectory(place?.value ?? null);
           setAgent('');
           setAt('');
           setRuleLines(['']);
