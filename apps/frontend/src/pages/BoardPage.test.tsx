@@ -11,6 +11,7 @@ import { BacklogPage, BoardPage } from './BoardPage';
 const move = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const create = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const done = vi.hoisted(() => vi.fn(async (_: unknown) => null));
+const configure = vi.hoisted(() => vi.fn(async (_: unknown) => null));
 const listed = vi.hoisted(() => ({ tasks: [] as unknown[], machines: [] as unknown[], failure: null as Error | null }));
 
 vi.mock('../lib/trpc', () => ({
@@ -30,6 +31,7 @@ vi.mock('../lib/trpc', () => ({
       move: { mutationOptions: () => ({ mutationFn: move }) },
       create: { mutationOptions: () => ({ mutationFn: create }) },
       done: { mutationOptions: () => ({ mutationFn: done }) },
+      configure: { mutationOptions: () => ({ mutationFn: configure }) },
     },
     machines: {
       list: { queryOptions: () => ({ queryKey: ['machines.list'], queryFn: async () => listed.machines }) },

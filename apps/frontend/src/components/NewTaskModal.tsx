@@ -12,6 +12,7 @@ import { parseDelay, parseRepeatRule } from '../lib/repeat';
 import { errorMessage, useTRPC } from '../lib/trpc';
 import { useNow } from '../lib/useNow';
 import { DirectorySelect } from './DirectorySelect';
+import { EmojiPicker } from './EmojiPicker';
 import { MarkdownEditor } from './MarkdownEditor';
 import { RepeatFields, limitError, timesError } from './RepeatFields';
 import {
@@ -59,6 +60,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   const [autoDone, setAutoDone] = useState(false);
   const [directory, setDirectory] = useState<string | null>(readLastDirectory);
   const [agent, setAgent] = useState('');
+  const [icon, setIcon] = useState<string | null>(null);
   const directories = useDirectoryChoices();
   const catalogs = useQuery(trpc.machines.catalogs.queryOptions());
   const create = useMutation(trpc.tasks.create.mutationOptions());
@@ -121,6 +123,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
         ...(autoDone ? { autoDone } : {}),
         ...(place === undefined ? {} : { place: { machine: place.machine, workdir: place.path } }),
         ...(agentName === '' ? {} : { agent: agentName }),
+        ...(icon === null ? {} : { icon }),
       },
       {
         onSuccess: (task) => {
@@ -136,6 +139,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
           setAutoDone(false);
           setDirectory(place?.value ?? null);
           setAgent('');
+          setIcon(null);
           setAt('');
           setRuleLines(['']);
           setTimes('');
@@ -150,7 +154,17 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
   };
 
   return (
-    <Modal opened={opened} onClose={onClose} title="New task" size="lg">
+    <Modal
+      opened={opened}
+      onClose={onClose}
+      title={
+        <Group gap={6} wrap="nowrap">
+          <EmojiPicker value={icon} onChange={setIcon} size={18} label="New task icon" />
+          <span>New task</span>
+        </Group>
+      }
+      size="lg"
+    >
       <Stack>
         <MarkdownEditor
           label="Prompt"

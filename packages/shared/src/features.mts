@@ -36,6 +36,7 @@ export const ADDED_SERVER_FEATURES = [
   'schedule.update',
   'agents.shared',
   'task.effort',
+  'task.icon',
 ] as const;
 
 export const SERVER_FEATURES = [...BASELINE_SERVER_FEATURES, ...ADDED_SERVER_FEATURES] as const;
@@ -73,6 +74,7 @@ export const SERVER_FEATURE_LABELS: Record<ServerFeature, string> = {
   'schedule.update': 'changing every setting of a schedule',
   'agents.shared': 'agent definitions held on the board',
   'task.effort': 'choosing an effort level',
+  'task.icon': 'task icons',
   wait: 'waiting',
 };
 

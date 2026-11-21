@@ -7,6 +7,7 @@
 //   title          <origin>
 //   input          <origin>:<creator>, then :fork:<parentId> for a fork, then :agent:<name> with an agent
 //   agent          <origin> (the name of the agent the task runs as)
+//   icon           <origin> (the emoji the user chose for the card)
 //   workdir        <origin>, or for a scheduled task also task:<id>:schedule:<scheduleId> (the worker's rewrite)
 //   pr             task:<id>:agent (a PR URL the task's agent reported; every PR of the task has this binding)
 //   watches        task:<id>:agent (the watches of the task the machine's CLI runs for it, one JSON document)
@@ -39,7 +40,9 @@ import {
   checkSealedSize,
   ContractError,
   DIR_LABEL_RULE,
+  ICON_RULE,
   isAgentName,
+  isEmojiIcon,
   isSafeDirLabel,
   isSafeTaskId,
   isSafeWorkdir,
@@ -129,6 +132,21 @@ export function inputBinding(row: RowRef): Binding {
 
 /** The agent's name is bound to the row's origin, so a schedule's name is the one its occurrences open. */
 export const agentBinding = (row: RowRef): Binding => ({ field: 'agent', context: origin(row) });
+
+/** The icon is bound to the row's origin like the agent, so a schedule's icon is the one its occurrences open. */
+export const iconBinding = (row: RowRef): Binding => ({ field: 'icon', context: origin(row) });
+
+export async function sealIcon(seal: Sealer, row: RowRef, icon: string): Promise<string> {
+  if (!isEmojiIcon(icon)) throw new ContractError(`an icon must be ${ICON_RULE}`);
+  return sealChecked(seal, iconBinding(row), icon, 'the icon');
+}
+
+/** The icon of a task or schedule, or null when there is none or what opens is not one emoji. Display only, never acted on. */
+export async function openIcon(open: Opener, row: RowRef, wire: string | null | undefined): Promise<string | null> {
+  if (wire === null || wire === undefined) return null;
+  const icon = await open(iconBinding(row), wire);
+  return icon !== undefined && isEmojiIcon(icon) ? icon : null;
+}
 
 /** The binding a new directory is sealed under: an occurrence's own rewrite names its schedule, so it is only an occurrence's. */
 export function workdirBinding(row: RowRef): Binding {

@@ -154,6 +154,7 @@ function dryTask(draft: TaskDraft): Task {
     notBefore,
     model,
     effort,
+    icon,
     lane,
     autoDone,
     ...fields
@@ -166,6 +167,7 @@ function dryTask(draft: TaskDraft): Task {
     priority: draft.priority ?? 'normal',
     model: model ?? null,
     effort: effort ?? null,
+    icon: icon ?? null,
     requestedLane: lane ?? null,
     autoDone: autoDone ?? false,
     id: 'dry',
@@ -217,6 +219,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
               ...(draft.lane === undefined ? {} : { lane: draft.lane }),
               ...(draft.autoDone === undefined ? {} : { autoDone: draft.autoDone }),
               ...(draft.agent === undefined ? {} : { agent: draft.agent }),
+              ...(draft.icon === undefined ? {} : { icon: draft.icon }),
               ...(draft.machine !== undefined && draft.workdir !== undefined
                 ? { machine: draft.machine, workdir: draft.workdir }
                 : {}),
@@ -235,6 +238,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         machine: draft.machine ?? null,
         workdir: draft.workdir ?? null,
         ...(draft.agent === undefined ? {} : { agent: draft.agent }),
+        icon: draft.icon ?? null,
         everyMs: draft.everyMs ?? null,
         cron: draft.cron ?? null,
         ...(draft.moreCrons === undefined || draft.moreCrons.length === 0 ? {} : { moreCrons: draft.moreCrons }),
@@ -279,7 +283,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
     async configureTask(id, change) {
       const { seal: _seal, ...fields } = change;
       print(`DRY configure-task ${id} ${oneLine(JSON.stringify(fields), 160)}`);
-      const { priority, model, effort, autoDone, place } = change;
+      const { priority, model, effort, autoDone, icon, place } = change;
       const task = await inner.getTask(id);
       return {
         ...task,
@@ -287,6 +291,7 @@ export function dryRunBackend(inner: Backend, print: (line: string) => void): Ba
         ...(model === undefined ? {} : { model }),
         ...(effort === undefined ? {} : { effort }),
         ...(autoDone === undefined ? {} : { autoDone }),
+        ...(icon === undefined ? {} : { icon }),
         ...(place === undefined ? {} : { workdir: place?.workdir ?? null, sessionId: null, next: 'fresh' as const }),
       };
     },

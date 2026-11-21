@@ -9,6 +9,7 @@ import { useTRPC, type BoardTask } from '../lib/trpc';
 import { isCurrentPlace } from '../lib/workingDirectories';
 import { confirmPlace } from './confirmPlace';
 import { DirectorySelect } from './DirectorySelect';
+import { EmojiPicker } from './EmojiPicker';
 import { useDirectoryChoices } from './useDirectoryChoices';
 import { useLaneOptions } from './useLaneOptions';
 import { useModelOptions } from './useModelOptions';
@@ -76,6 +77,19 @@ export function LanePicker({ task }: { task: BoardTask }) {
       value={task.requestedLane ?? DEFAULT_LANE}
       onChange={(value) => value !== null && configure.mutate({ task, lane: laneFromOption(value) })}
       disabled={running || configure.isPending}
+    />
+  );
+}
+
+export function TaskIconPicker({ task, size }: { task: BoardTask; size: number }) {
+  const trpc = useTRPC();
+  const configure = useMutation(trpc.tasks.configure.mutationOptions());
+  return (
+    <EmojiPicker
+      value={task.icon ?? null}
+      onChange={(icon) => configure.mutate({ task, icon })}
+      disabled={configure.isPending}
+      size={size}
     />
   );
 }

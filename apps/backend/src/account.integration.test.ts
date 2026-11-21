@@ -416,6 +416,7 @@ describe('account.import', () => {
         task('baddate', { createdAt: 'yesterday' }),
         task('badmodel', { model: '--evil' }),
         task('badeffort', { effort: 'huge' }),
+        task('badicon', { icon: '🚀' }),
         task('badmachine', { machine: 'a b' }),
         task('badlane', { requestedLane: 'a b' }),
         task('badindex', { dedupeKey: 'abh1.short' }),
@@ -423,7 +424,7 @@ describe('account.import', () => {
         null,
       ],
     });
-    expect(result).toEqual({ inserted: 3, existing: 0, invalid: 11, orphaned: 0 });
+    expect(result).toEqual({ inserted: 3, existing: 0, invalid: 12, orphaned: 0 });
     const rows = await exportAll(jascha, 'task');
     expect(rows.map((row) => [row['id'], row['parentId']])).toEqual([
       ['good1', null],

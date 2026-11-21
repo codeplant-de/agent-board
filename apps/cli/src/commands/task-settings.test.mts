@@ -75,6 +75,7 @@ test('board task prints the settings: null model and directory read as the defau
     '  effort      default',
     '  lane        default',
     '  auto-done   off',
+    '  icon        none',
     '  agent       none',
     '  created by  user',
     '  machine     any',
@@ -233,12 +234,35 @@ test('set effort and unset effort change the effort from the next run on, in any
   await assert.rejects(run.go(['task', 'abc12345', 'set', 'effort']), UsageError);
 });
 
+test('set icon and unset icon change the icon at once, in any status, and only one emoji is taken', async (context) => {
+  const run = runner(context, [task({ id: 'abc12345', status: 'running' })]);
+  await run.go(['task', 'abc12345', 'set', 'icon', '🚀']);
+  assert.equal(said(run), 'abc12345 has the icon 🚀 now');
+  assert.equal(run.backend.tasks[0]?.icon, '🚀');
+  run.printed.length = 0;
+  await run.go(['task', 'abc12345', 'set', 'icon', '🚀']);
+  assert.equal(said(run), 'abc12345 already has the icon 🚀');
+  await run.go(['task', 'abc12345']);
+  assert.match(said(run), /icon {8}🚀/);
+  await run.go(['task', 'abc12345', 'unset', 'icon']);
+  assert.equal(run.backend.tasks[0]?.icon, null);
+  assert.deepEqual(writes(run), ['icon abc12345: 🚀', 'icon abc12345: none']);
+  for (const bad of ['rocket', '🚀🚀', ':rocket:'])
+    await assert.rejects(run.go(['task', 'abc12345', 'set', 'icon', bad]), /an icon is one emoji/, bad);
+  await assert.rejects(run.go(['task', 'abc12345', 'set', 'icon']), UsageError);
+  await assert.rejects(run.go(['task', 'abc12345', 'unset', 'icon', '🚀']), UsageError);
+  assert.equal(writes(run).length, 2);
+});
+
 test('set auto-done on and off, unset auto-done: from the next look on, in any status, with a note on a schedule’s card', async (context) => {
   const run = runner(context, [task({ id: 'abc12345', status: 'running', scheduleId: 'sched001' })]);
   await run.go(['task', 'abc12345', 'set', 'auto-done', 'on']);
   assert.equal(run.backend.tasks[0]?.autoDone, true);
   assert.match(said(run), /abc12345: its agent may move it to Done when it judges every acceptance criterion met/);
-  assert.match(said(run), /next occurrence takes priority, model, effort, lane, auto-done, machine and directory/);
+  assert.match(
+    said(run),
+    /next occurrence takes priority, model, effort, lane, auto-done, icon, machine and directory/,
+  );
   await run.go(['task', 'abc12345']);
   assert.match(said(run), /auto-done {3}on: the agent may move it to Done/);
   run.printed.length = 0;
@@ -292,7 +316,7 @@ test('a card of a schedule gets a note that the change is for it only, on priori
   );
   assert.match(
     said(run),
-    /next occurrence takes priority, model, effort, lane, auto-done, machine and directory from the schedule again/,
+    /next occurrence takes priority, model, effort, lane, auto-done, icon, machine and directory from the schedule again/,
   );
   const plain = runner(context, [task({ id: 'def12345' })]);
   await plain.go(['task', 'def12345', 'set', 'priority', 'high']);
@@ -453,7 +477,7 @@ test('unknown actions and keys are usage errors', async (context) => {
   await assert.rejects(run.go(['task', 'abc12345', 'frob']), /takes nothing, or set or unset/);
   await assert.rejects(
     run.go(['task', 'abc12345', 'set', 'colour', 'red']),
-    /takes priority, model, effort, lane, auto-done, dir or prompt/,
+    /takes priority, model, effort, lane, auto-done, icon, dir or prompt/,
   );
   await assert.rejects(run.go(['task', 'abc12345', 'set', 'dir', 'a', 'b']), /takes one path/);
   await assert.rejects(run.go(['task', 'abc12345', 'unset', 'model', 'x']), UsageError);

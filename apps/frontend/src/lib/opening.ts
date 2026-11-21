@@ -9,6 +9,7 @@ import {
   isSafeTaskId,
   isSessionId,
   openFields,
+  openIcon,
   openMachineCatalog,
   openMachineDirs,
   openMachineUsage,
@@ -71,9 +72,10 @@ interface SealedFields {
 
 export type BoardTask = Omit<
   WireBoardTask,
-  keyof SealedFields | 'pr' | 'prState' | 'prs' | 'promptPrState' | 'watches' | 'watchStops'
+  keyof SealedFields | 'icon' | 'pr' | 'prState' | 'prs' | 'promptPrState' | 'watches' | 'watchStops'
 > &
   SealedFields & {
+    icon: string | null;
     // The PRs its agent reported, those that open under their binding as a GitHub PR URL; see `prsOf`.
     prs: TaskPr[];
     promptPrState: PrState | null;
@@ -128,8 +130,9 @@ export interface TaskDetail {
   parent: BoardTask | null;
 }
 
-export type Schedule = Omit<WireSchedule, keyof SealedFields> &
+export type Schedule = Omit<WireSchedule, keyof SealedFields | 'icon'> &
   SealedFields & {
+    icon: string | null;
     unreadable: UnreadableField[];
     // The clear fields the board sent in a shape it does not promise; the page shows a placeholder for them.
     invalid: string[];
@@ -192,8 +195,9 @@ export async function openBoardTask(keys: Keys, wire: WireBoardTask): Promise<Bo
     scheduleId: shapes.scheduleId,
     forkOf: shapes.forkOf ?? null,
   } as const;
-  const [fields, prs, watches] = await Promise.all([
+  const [fields, icon, prs, watches] = await Promise.all([
     openFields(openerFor(keys), row, wire),
+    openIcon(openerFor(keys), row, wire.icon),
     openPrs(openerFor(keys), wire.id, wire.prs ?? []),
     openWatches(openerFor(keys), wire.id, wire.watches),
   ]);
@@ -202,6 +206,7 @@ export async function openBoardTask(keys: Keys, wire: WireBoardTask): Promise<Bo
     ...rest,
     ...shapes,
     ...fields,
+    icon,
     unreadable: watches.unreadable ? [...fields.unreadable, 'watches'] : fields.unreadable,
     prs,
     watches: watches.watches,
@@ -296,7 +301,10 @@ export async function openTaskDetail(keys: Keys, wire: RouterOutputs['tasks']['g
 
 export async function openSchedule(keys: Keys, wire: WireSchedule): Promise<Schedule> {
   const id = safeId(wire.id, 'schedule id');
-  const fields = await openFields(openerFor(keys), { kind: 'schedule', id }, wire);
+  const [fields, icon] = await Promise.all([
+    openFields(openerFor(keys), { kind: 'schedule', id }, wire),
+    openIcon(openerFor(keys), { kind: 'schedule', id }, wire.icon),
+  ]);
   const remainingOk = wire.remaining === null || isCount(wire.remaining);
   const everyOk = wire.everyMs === null || (isCount(wire.everyMs) && wire.everyMs > 0);
   const moreCrons = (wire.moreCrons ?? []).filter(isCronExpression);
@@ -308,6 +316,7 @@ export async function openSchedule(keys: Keys, wire: WireSchedule): Promise<Sche
   return {
     ...wire,
     ...fields,
+    icon,
     id,
     priority: isPriority(wire.priority) ? wire.priority : 'normal',
     machine: shownName(wire.machine),

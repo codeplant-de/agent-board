@@ -678,3 +678,25 @@ describe('NewTaskModal skills and models of the machines', () => {
     expect(await screen.findByRole('option', { name: 'Opus', hidden: true })).toBeInTheDocument();
   });
 });
+
+describe('NewTaskModal icon', () => {
+  it('sends no icon by default', async () => {
+    await open();
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).not.toHaveProperty('icon');
+  });
+
+  it('sends the emoji picked in front of the title', async () => {
+    await open();
+    await userEvent.click(screen.getByRole('button', { name: 'Add new task icon' }));
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Search emoji', hidden: true }), {
+      target: { value: 'rocket' },
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'rocket', hidden: true }));
+    expect(screen.getByRole('button', { name: 'New task icon: rocket. Change it' })).toHaveTextContent('🚀');
+    await userEvent.click(createButton());
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(sent()).toMatchObject({ icon: '🚀', when: 'now' });
+  });
+});

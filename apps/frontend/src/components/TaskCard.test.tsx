@@ -1,7 +1,8 @@
 import { MantineProvider } from '@mantine/core';
 import { render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { describe, expect, it, vi } from 'vitest';
 import type { PrState, TaskWatch } from '@agent-board/shared';
 import type { ListedTask } from '../lib/trpc';
 import { clock } from '../lib/time';
@@ -196,5 +197,59 @@ describe('TaskCard hold for usage', () => {
   it('shows none without a hold', () => {
     renderCard({ status: 'todo' });
     expect(screen.queryByText(/Held until/)).not.toBeInTheDocument();
+  });
+});
+
+describe('TaskCard icon', () => {
+  const renderWithPicker = (overrides: Partial<ListedTask>, onIconChange = vi.fn()) => {
+    const rendered = render(
+      <MemoryRouter initialEntries={['/']}>
+        <MantineProvider>
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <TaskCard
+                  task={task(overrides)}
+                  draggable={false}
+                  dragging={false}
+                  onDragStart={() => {}}
+                  onDragEnd={() => {}}
+                  onDragOver={() => {}}
+                  onIconChange={onIconChange}
+                />
+              }
+            />
+            <Route path="/t/:id" element={<p>Task page</p>} />
+          </Routes>
+        </MantineProvider>
+      </MemoryRouter>,
+    );
+    return { ...rendered, onIconChange };
+  };
+
+  it('shows the emoji at the left of the title, before the PR icons', () => {
+    const { container } = renderWithPicker({ icon: '🚀', prs: [pr(2)] });
+    const trigger = screen.getByRole('button', { name: /^Task icon: .*Change it$/ });
+    expect(trigger).toHaveTextContent('🚀');
+    const github = container.querySelector('.tabler-icon-brand-github');
+    expect(github).not.toBeNull();
+    expect(trigger.compareDocumentPosition(github as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(trigger.compareDocumentPosition(screen.getByText('A task')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('offers an add trigger without an icon, which opens the picker and not the task', async () => {
+    renderWithPicker({ icon: null });
+    const add = screen.getByRole('button', { name: 'Add task icon' });
+    expect(add).toHaveClass('emoji-add');
+    await userEvent.click(add);
+    expect(screen.queryByText('Task page')).not.toBeInTheDocument();
+    expect(await screen.findByRole('textbox', { name: 'Search emoji', hidden: true })).toBeInTheDocument();
+  });
+
+  it('shows the emoji without a way to change it when the board gives none', () => {
+    renderCard({ icon: '🐛' });
+    expect(screen.getByRole('img', { name: 'Task icon' })).toHaveTextContent('🐛');
+    expect(screen.queryByRole('button', { name: /icon/i })).not.toBeInTheDocument();
   });
 });

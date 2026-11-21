@@ -6,6 +6,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ago } from '../lib/time';
 import type { LastNote, ListedTask } from '../lib/trpc';
 import type { TaskHold } from '../lib/usageHold';
+import { EmojiPicker } from './EmojiPicker';
 import { LivenessText } from './LivenessText';
 import { PrStateIcon } from './PrStateIcon';
 import { TaskBadges } from './TaskBadges';
@@ -40,6 +41,7 @@ interface Props {
   onDragOver: (event: DragEvent) => void;
   /** Queues a polish of this Backlog task's prompt; absent when it cannot be polished. */
   onPolish?: () => void;
+  onIconChange?: (icon: string | null) => void;
   polishDisabled?: boolean;
   /** Why the task has not started for usage; absent when it is not held. */
   hold?: TaskHold | undefined;
@@ -53,6 +55,7 @@ export function TaskCard({
   onDragEnd,
   onDragOver,
   onPolish,
+  onIconChange,
   polishDisabled = false,
   hold,
 }: Props) {
@@ -77,6 +80,20 @@ export function TaskCard({
     >
       <Stack gap={6}>
         <Group gap={6} wrap="nowrap" align="flex-start">
+          {onIconChange ? (
+            <EmojiPicker value={task.icon ?? null} onChange={onIconChange} size={16} revealOnHover />
+          ) : (
+            task.icon && (
+              <span
+                className="emoji-trigger"
+                style={{ fontSize: 16, width: 20, height: 20 }}
+                role="img"
+                aria-label="Task icon"
+              >
+                {task.icon}
+              </span>
+            )
+          )}
           {prs.length > 0 && (
             <span style={{ display: 'flex', gap: 2, alignItems: 'center', marginTop: 2 }}>
               {prs.slice(0, MAX_PR_ICONS).map(({ url, state }) => (

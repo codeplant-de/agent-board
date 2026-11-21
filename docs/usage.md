@@ -54,7 +54,7 @@ board schedules
 ### `board schedule`
 
 ```text
-board schedule [--priority p] [--model m] [--effort e] [--lane l] [--auto-done] [--agent a] [--title t] [--hold | --backlog]
+board schedule [--priority p] [--model m] [--effort e] [--icon i] [--lane l] [--auto-done] [--agent a] [--title t] [--hold | --backlog]
                [--in <dur> | --at <time>] [--every <dur> | --cron "<expr>" ... | --after <schedule> [--delay <dur>]]
                [--times <n> | --until <time>] [--max-concurrent <n>] [--polish] [--new]
                [--key <key> [--version <v>]] <prompt...>
@@ -69,6 +69,7 @@ The board's flags come first. Everything from the first other word on is the pro
 | `--priority`                   | `urgent`, `high`, `normal` or `low`.                                                                                        |
 | `--model`                      | The Claude model of the task's runs. See [Model](#model).                                                                   |
 | `--effort`                     | The effort level of the task's runs. See [Effort](#effort).                                                                 |
+| `--icon`                       | One emoji at the left of the card's title. See [Icon](#icon).                                                               |
 | `--lane`                       | The lane of the machine that runs the task. See [Lane](#lane).                                                              |
 | `--auto-done`                  | Lets the agent move the task to Done itself. See [Letting the agent mark a task done](#letting-the-agent-mark-a-task-done). |
 | `--agent`                      | Runs the task as a named agent. See [Choosing an agent](#choosing-an-agent).                                                |
@@ -99,6 +100,18 @@ The New task form and the task page have a **Model** select for the same choice.
 Every run uses claude's default effort unless the task names a level. `--effort <level>` takes `low`, `medium`, `high`, `xhigh` or `max` and is passed to `claude` as `--effort`. With a repeat, every task the schedule makes uses it.
 
 The New task form, the schedule editor and the task page have an **Effort** select for the same choice. `xhigh` shows as **Extra high**. Like the model, the level is a choice and not content, so the board keeps it in clear.
+
+### Icon
+
+A task can show one emoji at the left of its title on the board card, before its pull request icons. It is yours to choose: the board never sets one by itself, and nothing reads it to decide how a task runs. With a repeat, every task the schedule makes shows it.
+
+- **On the board.** A card without an icon shows a faint smiley-plus button at the left of the title while you hover the card or focus the button. Clicking it, or the emoji of a card that has one, opens the picker without opening the task.
+- **On the task page.** The emoji, or the same button, sits in front of the title.
+- **In the New task form.** The button sits in front of the dialog's title.
+
+The picker lists every emoji by group with a search box, and the ones you picked last on top under **Recently used** (up to 24, kept in this browser). **Remove icon** takes the icon off.
+
+From a terminal, `board schedule --icon <emoji>` and `board add --icon <emoji>` set it on a new task, `board task <task> set icon <emoji>` and `unset icon` change it later, and `board schedules edit <id> --icon <emoji>` (`none` removes it) changes a schedule's. Anything but exactly one emoji is refused. The icon is sealed like the title. One that cannot be decrypted shows as no icon and does not stop the task from running.
 
 ### Lane
 
@@ -163,6 +176,7 @@ When you requeue the existing task:
 `board task <task>` prints a task's settings:
 
 - status, priority, model and effort (`default` for claude's)
+- its icon (`none` without one)
 - the lane it asks for (`default` for none), and the lane it runs in while it runs
 - whether its agent may mark it done (`auto-done`)
 - agent and who made it
@@ -184,10 +198,12 @@ A directory on this machine that the `dirs` list does not cover is marked "not l
 | `board task <task> unset lane`                               | Back to the default lane.                                                                                |
 | `board task <task> set auto-done <on\|off>`                  | Lets the agent move the task to Done itself, or not. Applies at once, to a running task too.             |
 | `board task <task> unset auto-done`                          | Same as `off`.                                                                                           |
+| `board task <task> set icon <emoji>`                         | One emoji at the left of the card's title. Applies at once, in every status.                             |
+| `board task <task> unset icon`                               | Removes the icon.                                                                                        |
 | `board task <task> set dir [path]`                           | Pins the task to this machine and a directory. The default is the current one.                           |
 | `board task <task> unset dir`                                | Removes the directory and the pin. Any machine takes the task in its default directory.                  |
 
-Priority, model, effort and auto-done changes work in every status; a lane change works in every status but Running. A model, effort, lane, auto-done or directory change writes no note.
+Priority, model, effort, auto-done and icon changes work in every status; a lane change works in every status but Running. A model, effort, lane, auto-done, icon or directory change writes no note.
 
 `set dir` accepts relative paths and `~`, and resolves symlinks. With a `dirs` list on this machine the directory must be listed, as for `board schedule`.
 
@@ -196,7 +212,7 @@ Priority, model, effort and auto-done changes work in every status; a lane chang
 - A running or waiting task refuses a directory change. Stop it first.
 - The new directory also becomes the one **Re-run fresh** goes back to.
 
-On a card of a repeating schedule, a change applies to that card only. The next occurrence takes priority, model, effort, lane, auto-done setting, machine and directory from the schedule again. The command says so, and so does the task page.
+On a card of a repeating schedule, a change applies to that card only. The next occurrence takes priority, model, effort, lane, auto-done setting, icon, machine and directory from the schedule again. The command says so, and so does the task page.
 
 `set` and `unset` are refused inside a board run, because an agent does not move a task, pick its model or grant itself the permission to finish it. Viewing works there.
 
@@ -294,6 +310,7 @@ The confirmation names the schedule and says its first task is made when a task 
 | `--effort <level>`                                                               | The effort level; `default` is claude's default. Needs the server feature `task.effort` besides `schedule.update`.                                                                                                |
 | `--lane <name>`                                                                  | The lane of the machine that runs the tasks; `default` is that machine's default lane. Needs the server feature `task.lane` besides `schedule.update`.                                                            |
 | `--auto-done on\|off`                                                            | Whether the agent may move the cards to Done itself.                                                                                                                                                              |
+| `--icon <emoji>`                                                                 | One emoji for the cards of the schedule; `none` removes it. Needs the server feature `task.icon` besides `schedule.update`.                                                                                       |
 | `--agent <name>`                                                                 | The agent, from this machine's `config.json` when the schedule runs here; `none` clears it.                                                                                                                       |
 | `--dir <path>`                                                                   | Pins the schedule to this machine and that directory, which must be listed in `board dirs` (as `board task <id> set dir` does); `none` is no machine and no directory.                                            |
 | `--every <duration>`, `--cron <expr>`, `--after <schedule> [--delay <duration>]` | The repeat; give at most one, and it replaces the old repeat. `--cron` can be given up to 10 times, in this machine's time zone. `--delay` alone changes the delay of a schedule that already runs after another. |
@@ -714,7 +731,7 @@ The dispatcher of every machine where `gh` is installed looks the state up on Gi
 An agent can propose follow-up work:
 
 ```text
-board add --title <t> --file <path> --parent <task> [--priority <p>] [--lane <name>] [--here]
+board add --title <t> --file <path> --parent <task> [--priority <p>] [--lane <name>] [--icon <emoji>] [--here]
 ```
 
 The file is the new task's prompt. Without `--priority` a proposal takes its parent's priority. It runs on the proposing agent's machine, in the working directory of its parent: the directory the parent's run started in when the parent is the proposing run's own task, else the parent's directory on the board. So a proposal made from a worktree runs in the checkout the parent belongs to. `--here` proposes in the agent's current directory instead, and so does a proposal without `--parent`, or one whose parent has no directory on this machine, one that no longer exists or one outside the machine's `dirs` list. Without `--lane` it asks for no lane, so it runs in the default lane once you start it: it does not take the lane of the task that proposed it.

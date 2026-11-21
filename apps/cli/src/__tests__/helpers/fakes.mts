@@ -49,6 +49,7 @@ export function task(overrides: Partial<Task> & { id: string }): Task {
     priority: 'normal',
     model: null,
     effort: null,
+    icon: null,
     requestedLane: null,
     autoDone: false,
     closed: false,
@@ -99,6 +100,7 @@ export function schedule(overrides: Partial<Schedule> & { id: string }): Schedul
     priority: 'normal',
     model: null,
     effort: null,
+    icon: null,
     requestedLane: null,
     autoDone: false,
     machine: null,
@@ -287,7 +289,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
     async configureTask(id, change) {
       const found = state.tasks.find((t) => t.id === id);
       if (!found) throw new BackendError(`configure-task: no task ${id}`, 404, true);
-      const { priority, model, effort, lane, autoDone, place } = change;
+      const { priority, model, effort, lane, autoDone, icon, place } = change;
       if (lane !== undefined && found.status === 'running') {
         state.writes.push(`configure ${id} refused: running`);
         throw new BackendError('the task is running: it keeps its lane until its next start.', 409, true);
@@ -299,6 +301,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
       if (priority !== undefined) state.writes.push(`priority ${id}: ${priority}`);
       if (model !== undefined) state.writes.push(`model ${id}: ${model ?? 'default'}`);
       if (effort !== undefined) state.writes.push(`effort ${id}: ${effort ?? 'default'}`);
+      if (icon !== undefined) state.writes.push(`icon ${id}: ${icon ?? 'none'}`);
       if (lane !== undefined) state.writes.push(`lane ${id}: ${lane ?? 'default'}`);
       if (autoDone !== undefined) state.writes.push(`auto-done ${id}: ${autoDone ? 'on' : 'off'}`);
       if (place !== undefined) state.writes.push(`place ${id}: ${place === null ? 'none' : place.workdir}`);
@@ -306,6 +309,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         ...(priority === undefined ? {} : { priority }),
         ...(model === undefined ? {} : { model }),
         ...(effort === undefined ? {} : { effort }),
+        ...(icon === undefined ? {} : { icon }),
         ...(lane === undefined ? {} : { requestedLane: lane }),
         ...(autoDone === undefined ? {} : { autoDone }),
         ...(place === undefined
@@ -538,7 +542,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         `add-schedule ${draft.title} | ${draft.input} | ${draft.everyMs ?? (draft.after ? 'after' : `${draft.cron} ${draft.timezone}`)}` +
           `${draft.startAt ? ` | start ${draft.startAt.toISOString()}` : ''}${draft.times ? ` | times ${draft.times}` : ''}` +
           `${draft.until ? ` | until ${draft.until.toISOString()}` : ''}${draft.machine ? ` | ${draft.machine}:${draft.workdir}` : ''}` +
-          `${draft.model ? ` | model ${draft.model}` : ''}${draft.effort ? ` | effort ${draft.effort}` : ''}${draft.lane ? ` | lane ${draft.lane}` : ''}${draft.agent ? ` | agent ${draft.agent}` : ''}${draft.autoDone ? ' | auto-done' : ''}` +
+          `${draft.model ? ` | model ${draft.model}` : ''}${draft.effort ? ` | effort ${draft.effort}` : ''}${draft.icon ? ` | icon ${draft.icon}` : ''}${draft.lane ? ` | lane ${draft.lane}` : ''}${draft.agent ? ` | agent ${draft.agent}` : ''}${draft.autoDone ? ' | auto-done' : ''}` +
           `${draft.moreCrons ? ` | more ${draft.moreCrons.join(' ; ')}` : ''}` +
           `${draft.after ? ` | after ${draft.after.scheduleId} +${draft.after.delayMs ?? 0}` : ''}` +
           `${draft.maxConcurrent ? ` | max ${draft.maxConcurrent}` : ''}`,
@@ -551,6 +555,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
             input: draft.input,
             model: draft.model ?? null,
             effort: draft.effort ?? null,
+            icon: draft.icon ?? null,
             requestedLane: draft.lane ?? null,
             autoDone: draft.autoDone ?? false,
             agent: draft.agent ?? null,
@@ -565,6 +570,7 @@ export function fakeBackend(tasks: Task[]): FakeBackend {
         input: draft.input,
         model: draft.model ?? null,
         effort: draft.effort ?? null,
+        icon: draft.icon ?? null,
         requestedLane: draft.lane ?? null,
         autoDone: draft.autoDone ?? false,
         agent: draft.agent ?? null,

@@ -11,6 +11,7 @@ import {
   newTaskId,
   open,
   openFields,
+  openIcon,
   openNote,
   openPrs,
   openSharedAgents,
@@ -21,6 +22,7 @@ import {
   seal,
   sealChecked,
   sealFields,
+  sealIcon,
   sealInput,
   sealMachineCatalog,
   sealMachineDirs,
@@ -125,8 +127,9 @@ function promptPrState(wire: WireTask): PrState | null {
 
 async function openTask(keys: Keys, wire: WireTask): Promise<Task> {
   const opener = openerFor(keys);
-  const [{ title, input, workdir, agent, unreadable }, prs, opened] = await Promise.all([
+  const [{ title, input, workdir, agent, unreadable }, icon, prs, opened] = await Promise.all([
     openFields(opener, taskRef(wire), wire),
+    openIcon(opener, taskRef(wire), wire.icon),
     openPrs(opener, wire.id, reportedPrs(wire)),
     openWatches(opener, wire.id, wire.watches),
   ]);
@@ -137,6 +140,7 @@ async function openTask(keys: Keys, wire: WireTask): Promise<Task> {
     input,
     workdir,
     agent,
+    icon,
     prs,
     promptPrState: promptPrState(wire),
     watches: opened.watches,
@@ -148,7 +152,10 @@ async function openTask(keys: Keys, wire: WireTask): Promise<Task> {
 }
 
 async function openSchedule(keys: Keys, wire: WireSchedule): Promise<Schedule> {
-  return { ...wire, ...(await openFields(openerFor(keys), { kind: 'schedule', id: wire.id }, wire)) };
+  const row: RowRef = { kind: 'schedule', id: wire.id };
+  const opener = openerFor(keys);
+  const [fields, icon] = await Promise.all([openFields(opener, row, wire), openIcon(opener, row, wire.icon)]);
+  return { ...wire, ...fields, icon };
 }
 
 /**
@@ -206,7 +213,7 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
     const title = draft.title.trim();
     if (title === '') throw invalid('add-task', 'draft.title must not be empty');
     requireAbsolute('add-task', draft.workdir);
-    const { dedupeKey, workdir, head, agent, id: chosen, ...rest } = draft;
+    const { dedupeKey, workdir, head, agent, icon, id: chosen, ...rest } = draft;
     const id = chosen ?? newTaskId();
     const row: RowRef = {
       kind: 'task',
@@ -217,11 +224,13 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       forkOf: null,
     };
     const sealed = await checked('add-task', () => sealFields(sealer, row, { title, input: draft.input, workdir }));
+    const sealedIcon = icon === undefined ? undefined : await checked('add-task', () => sealIcon(sealer, row, icon));
     const keysNow = await getKeys();
     return {
       ...rest,
       id,
       ...sealed,
+      ...(sealedIcon === undefined ? {} : { icon: sealedIcon }),
       ...(dedupeKey === undefined ? {} : { dedupeKey: await dedupeKeyIndex(keysNow, dedupeKey) }),
       ...(head === undefined ? {} : { head: await headIndex(keysNow, head) }),
     };
@@ -306,15 +315,28 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       return opened(await inner.updateTask(id, await sealPatch(id, patch)), openTask);
     },
     async configureTask(id, change) {
-      const { place, seal: writer, ...rest } = change;
-      if (place === undefined || place === null)
-        return opened(await inner.configureTask(id, place === null ? { ...rest, place } : rest), openTask);
-      requireAbsolute('configure-task', place.workdir);
-      if (writer === undefined)
-        throw invalid('configure-task', 'sealing a directory needs the task creator and schedule (change.seal)');
-      const row: RowRef = { kind: 'task', id, ...writer };
-      const workdir = await checked('configure-task', () => sealWorkdir(sealer, row, place.workdir));
-      return opened(await inner.configureTask(id, { ...rest, place: { workdir } }), openTask);
+      const { place, icon, seal: writer, ...rest } = change;
+      requireAbsolute('configure-task', place?.workdir);
+      if (writer === undefined && ((place !== undefined && place !== null) || (icon !== undefined && icon !== null)))
+        throw invalid(
+          'configure-task',
+          'sealing a directory or an icon needs the task creator and schedule (change.seal)',
+        );
+      const row: RowRef = {
+        kind: 'task',
+        id,
+        createdBy: writer?.createdBy ?? 'user',
+        scheduleId: writer?.scheduleId ?? null,
+        agent: writer?.agent ?? null,
+        forkOf: writer?.forkOf ?? null,
+      };
+      const sealed = await checked('configure-task', async () => ({
+        ...(place === undefined
+          ? {}
+          : { place: place === null ? null : { workdir: await sealWorkdir(sealer, row, place.workdir) } }),
+        ...(icon === undefined ? {} : { icon: icon === null ? null : await sealIcon(sealer, row, icon) }),
+      }));
+      return opened(await inner.configureTask(id, { ...rest, ...sealed }), openTask);
     },
     // The user's edit of a prompt: sealed as the user, as the browser does, under the row the server holds now.
     async editPrompt(id, edit) {
@@ -454,11 +476,13 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
       if (title === '') throw invalid('add-schedule', 'schedule draft.title must not be empty');
       if (draft.input.trim() === '') throw invalid('add-schedule', 'schedule draft.input must not be empty');
       requireAbsolute('add-schedule', draft.workdir);
-      const { workdir, agent, id: chosen, ...rest } = draft;
+      const { workdir, agent, icon, id: chosen, ...rest } = draft;
       const id = chosen ?? newTaskId();
-      const sealed = await checked('add-schedule', () =>
-        sealFields(sealer, { kind: 'schedule', id, agent: agent ?? null }, { title, input: draft.input, workdir }),
-      );
+      const row: RowRef = { kind: 'schedule', id, agent: agent ?? null };
+      const sealed = await checked('add-schedule', async () => ({
+        ...(await sealFields(sealer, row, { title, input: draft.input, workdir })),
+        ...(icon === undefined ? {} : { icon: await sealIcon(sealer, row, icon) }),
+      }));
       const { schedule, task } = await inner.addSchedule({ ...rest, id, ...sealed });
       return {
         schedule: await opened(schedule, openSchedule),
@@ -481,18 +505,16 @@ export function sealingBackend(inner: WireBackend, keys: Keys | (() => Promise<K
           const row: RowRef = { kind: 'schedule', id, agent: current.agent ?? null };
           return { title: await sealTitle(sealer, row, title), input: await sealInput(sealer, row, input) };
         }
-        const { agent, place, ...rest } = settings;
-        const sealed = await sealFields(
-          sealer,
-          { kind: 'schedule', id, agent: agent ?? null },
-          { title, input, workdir: place?.workdir },
-        );
+        const { agent, place, icon, ...rest } = settings;
+        const row: RowRef = { kind: 'schedule', id, agent: agent ?? null };
+        const sealed = await sealFields(sealer, row, { title, input, workdir: place?.workdir });
         return {
           title: sealed.title,
           input: sealed.input,
           settings: {
             ...rest,
             ...(sealed.agent === undefined ? {} : { agent: sealed.agent }),
+            ...(icon === undefined ? {} : { icon: icon === null ? null : await sealIcon(sealer, row, icon) }),
             place:
               place === null || sealed.workdir === undefined
                 ? null
