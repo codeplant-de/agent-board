@@ -59,6 +59,31 @@ test('attach resumes the session in the task directory, forked with --fork', asy
   }
 });
 
+test('attach --desktop opens the session in Claude Desktop, in the task directory', async () => {
+  const { dir, printed, spawns, go, cleanup } = setup({});
+  try {
+    await go(['attach', ID, '--desktop']);
+    assert.deepEqual(spawns, [{ command: 'claude', args: ['--desktop', '--resume', SESSION], cwd: dir }]);
+    await go(['attach', '--dry-run', ID, '--desktop']);
+    assert.deepEqual(printed, [`DRY claude --desktop --resume ${SESSION}  (in ${dir})`]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('attach refuses --desktop with --fork before it asks the board', async () => {
+  const { spawns, go, cleanup } = setup({ status: 'running' });
+  try {
+    await assert.rejects(
+      go(['attach', ID, '--desktop', '--fork']),
+      (error: unknown) => error instanceof UsageError && /--desktop and --fork cannot be combined/.test(error.message),
+    );
+    assert.deepEqual(spawns, []);
+  } finally {
+    cleanup();
+  }
+});
+
 test('attach --dry-run prints the command and starts nothing', async () => {
   const { dir, printed, spawns, go, cleanup } = setup({});
   try {
