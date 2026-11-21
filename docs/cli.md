@@ -23,7 +23,8 @@ Options:
 Tasks:
   tasks                      open tasks per status
   show <task>                a task and its thread as markdown
-  attach <task>              open a task's Claude session in the terminal
+  attach <task>              open a task's Claude session in the terminal or
+                             Claude Desktop
   comment <task> [text...]   add a note to a task
   pr <task> <url>            report a pull request for a task, or remove one
   move <task> <status...>    move a task to the bottom of a status
@@ -142,6 +143,11 @@ Without --fork, the next resume of the task continues the session with what you
 did in it. --fork starts a forked session, so the session of the board stays as
 it was. The exit status is that of claude. Not available inside a board run.
 
+--desktop opens the session in the Claude Desktop app instead (claude
+--desktop), and the command returns once the app has it. Desktop cannot fork a
+session, so it cannot be combined with --fork. Leave the Desktop session idle
+before the task resumes on the board: both would write to the same session.
+
 <task> can be the full id, a link to the task on this board (as the CLI prints
 it: `<web.json url>/t/<id>`), or the start of the id (3 to 11 characters, but
 not exactly 8, which counts as a whole older id; an exact-case match wins, else
@@ -154,12 +160,15 @@ Arguments:
 Options:
   --fork      fork the session (claude --fork-session) so the board's session
               stays as it was
+  --desktop   open the session in the Claude Desktop app (claude --desktop)
+              instead of the terminal
   --dry-run   read everything, print every write instead of doing it
   -h, --help  display help for command
 
 Examples:
   board attach 7sPf438z
   board attach 7sPf --fork
+  board attach 7sPf --desktop
 ```
 
 ### board comment
