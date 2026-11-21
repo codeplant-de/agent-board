@@ -585,6 +585,7 @@ describe('NewTaskModal last working directory', () => {
     await open();
     await waitFor(() => expect(directory()).toBeEnabled());
     expect(directory()).toHaveValue('');
+    expect(directory().closest('.mantine-Input-wrapper')?.querySelector('.mantine-InputClearButton-root')).toBeNull();
     await userEvent.click(createButton());
     await waitFor(() => expect(create).toHaveBeenCalled());
     expect(sent()).not.toHaveProperty('place');

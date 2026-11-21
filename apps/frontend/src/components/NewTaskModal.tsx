@@ -169,7 +169,7 @@ export function NewTaskModal({ opened, onClose, initial, onCreated }: Props) {
         <DirectorySelect
           label="Working directory"
           directories={directories}
-          value={directory}
+          value={place?.value ?? null}
           onChange={setDirectory}
         />
         <AgentField value={agent} onChange={setAgent} />
