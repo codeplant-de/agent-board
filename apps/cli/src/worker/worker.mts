@@ -125,8 +125,6 @@ export interface WorkerDeps extends Context {
   // The run reported the subscription's usage in a rate limit event: remembers it for the dispatcher. Called only when the
   // numbers differ from the last call of this run. Best effort, and what it throws goes in the log.
   recordUsage?: (reading: RateLimitReading) => void;
-  // The context windows this machine's runs reported, per model: read once when a run starts, recorded when a run's result
-  // reports them. Best effort, and what it throws goes in the log.
   contextWindows?: ContextWindowStore;
   // Makes the backend's calls for the task name this run, so the board refuses them once a later run holds the task.
   bindRun?: (scope: RunScope) => void;

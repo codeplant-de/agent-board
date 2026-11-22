@@ -171,15 +171,12 @@ function capBody(body: RunEventBody): RunEventBody {
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
 const num = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 
-/**
- * Turns stream-json lines into transcript events. Keeps the little state the stream needs across lines: the event
- * counter and the last thinking-token estimate, which arrives before the (empty) thinking block it belongs to.
- */
 export interface CondenserOptions {
   knownWindow?: (model: string) => number | null;
   autoCompactPct?: number | null;
 }
 
+/** Turns stream-json lines into transcript events. */
 export class StreamCondenser {
   private seq = 0;
   private thinkingTokens: number | null = null;
