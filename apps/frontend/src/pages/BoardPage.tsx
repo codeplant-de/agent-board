@@ -1,5 +1,5 @@
 import { isRecentFirst, type Status } from '@agent-board/shared';
-import { Badge, Box, Button, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
+import { Badge, Box, Button, Checkbox, Group, Paper, ScrollArea, Stack, Text } from '@mantine/core';
 import { IconGitMerge } from '@tabler/icons-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Fragment, useState, type DragEvent } from 'react';
@@ -13,6 +13,7 @@ import { canMoveMergedToDone } from '../lib/mergedPrs';
 import { canPolish, isOpenPolishOf } from '../lib/polish';
 import type { Proposal } from '../lib/sealing';
 import { STATUS_COLOR, STATUS_LABEL } from '../lib/status';
+import { readTodoShowAll, startsAfterToday, writeTodoShowAll } from '../lib/todoToday';
 import { POLL_MS, useTRPC, type ListedTask } from '../lib/trpc';
 import { heldTask } from '../lib/usageHold';
 import { useNow } from '../lib/useNow';
@@ -66,8 +67,12 @@ function BoardColumns({ only }: { only?: Status }) {
   const polish = usePolish();
   const [dragId, setDragId] = useState<string | null>(null);
   const [over, setOver] = useState<DropTarget | null>(null);
+  const [todoShowAll, setTodoShowAll] = useState(readTodoShowAll);
 
   const byStatus = (status: Status) => (tasks.data ?? []).filter((t) => t.status === status);
+  /** The cards a column lists: Todo leaves out the ones delayed or scheduled past today unless asked to show all. */
+  const shownIn = (status: Status) =>
+    status === 'todo' && !todoShowAll ? byStatus(status).filter((t) => !startsAfterToday(t, now)) : byStatus(status);
   const waitingShown = byStatus('waiting').length > 0;
 
   const moveMergedToDone = async () => {
@@ -82,7 +87,7 @@ function BoardColumns({ only }: { only?: Status }) {
     setOver(null);
     // A column sorted by recency has no order to change, so a drop back into it changes nothing.
     if (isRecentFirst(status) && task?.status === status) return;
-    const ids = byStatus(status).map((t) => t.id);
+    const ids = shownIn(status).map((t) => t.id);
     const neighbors = isRecentFirst(status)
       ? {}
       : dropNeighbors(ids, dragId, over?.status === status ? over.beforeId : undefined);
@@ -92,7 +97,8 @@ function BoardColumns({ only }: { only?: Status }) {
   };
 
   const renderColumn = (status: Status) => {
-    const column = byStatus(status);
+    const column = shownIn(status);
+    const later = status === 'todo' ? byStatus(status).filter((t) => startsAfterToday(t, now)).length : 0;
     return (
       <Paper
         withBorder
@@ -130,9 +136,25 @@ function BoardColumns({ only }: { only?: Status }) {
                 {column.length}
               </Text>
             </Group>
-            <Text size="xs" c="dimmed" ta="right" className="wrap-anywhere">
-              {HINT[status]}
-            </Text>
+            <Group gap="xs" wrap="nowrap" justify="flex-end">
+              <Text size="xs" c="dimmed" ta="right" className="wrap-anywhere">
+                {HINT[status]}
+              </Text>
+              {status === 'todo' && (
+                <Checkbox
+                  size="xs"
+                  label={later > 0 && !todoShowAll ? `All (+${later})` : 'All'}
+                  title="Also list the cards delayed or scheduled for a later day"
+                  checked={todoShowAll}
+                  onChange={(event) => {
+                    const on = event.currentTarget.checked;
+                    setTodoShowAll(on);
+                    writeTodoShowAll(on);
+                  }}
+                  styles={{ label: { whiteSpace: 'nowrap' } }}
+                />
+              )}
+            </Group>
           </Group>
           {status === 'needs-me' && column.some(canMoveMergedToDone) && (
             <Button
@@ -185,7 +207,7 @@ function BoardColumns({ only }: { only?: Status }) {
               ))}
               {column.length === 0 && tasks.data !== undefined && (
                 <Text size="sm" c="dimmed" ta="center" py="lg">
-                  {status === 'needs-me' ? 'Nothing waiting for you' : 'Empty'}
+                  {status === 'needs-me' ? 'Nothing waiting for you' : later > 0 ? 'Nothing for today' : 'Empty'}
                 </Text>
               )}
             </Stack>

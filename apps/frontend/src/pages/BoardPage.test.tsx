@@ -105,6 +105,7 @@ beforeEach(() => {
   done.mockClear();
   listed.machines = [];
   listed.failure = null;
+  localStorage.clear();
 });
 
 describe('BoardPage loading and errors', () => {
@@ -441,6 +442,51 @@ describe('BoardPage cards held for usage', () => {
     renderBoard();
     await screen.findByText('held work');
     expect(screen.queryByText(/^Held until /)).not.toBeInTheDocument();
+  });
+});
+
+describe('BoardPage Todo for today', () => {
+  const at = (day: number, hour: number) => {
+    const date = new Date();
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate() + day, hour).toISOString();
+  };
+  const todo = (id: string, title: string, notBefore: string | null) =>
+    task({ id, title, status: 'todo', proposed: false, createdBy: 'user', notBefore });
+
+  beforeEach(() => {
+    listed.tasks = [
+      todo('n1', 'due now', null),
+      todo('t1', 'late tonight', at(0, 23)),
+      todo('m1', 'tomorrow morning', at(1, 0)),
+      todo('w1', 'next week', at(7, 9)),
+    ];
+  });
+
+  it('lists the cards due now and those starting today, and hides the later days', async () => {
+    renderBoard();
+    await screen.findByText('due now');
+    expect(screen.getByText('late tonight')).toBeInTheDocument();
+    expect(screen.queryByText('tomorrow morning')).not.toBeInTheDocument();
+    expect(screen.queryByText('next week')).not.toBeInTheDocument();
+    expect(within(column('Todo')).getByLabelText('All (+2)')).not.toBeChecked();
+  });
+
+  it('shows every upcoming card once the box is checked, and remembers it', async () => {
+    const { unmount } = renderBoard();
+    await screen.findByText('due now');
+    await userEvent.click(within(column('Todo')).getByRole('checkbox'));
+    expect(screen.getByText('tomorrow morning')).toBeInTheDocument();
+    expect(screen.getByText('next week')).toBeInTheDocument();
+    unmount();
+    renderBoard();
+    expect(await screen.findByText('next week')).toBeInTheDocument();
+    expect(within(column('Todo')).getByRole('checkbox')).toBeChecked();
+  });
+
+  it('says there is nothing for today when every card starts later', async () => {
+    listed.tasks = [todo('w1', 'next week', at(7, 9))];
+    renderBoard();
+    expect(await within(column('Todo')).findByText('Nothing for today')).toBeInTheDocument();
   });
 });
 
