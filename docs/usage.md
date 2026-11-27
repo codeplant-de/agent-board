@@ -21,6 +21,8 @@ A run ends in `needs-me` with a report or a question. A run that fails, times ou
 
 Backlog is the first column. On a phone the board leaves it out, and the header has a Backlog entry that opens it as its own page. Waiting is a box above Todo in the same column, and it shows only while a task waits.
 
+Todo lists the cards that are due and the delayed or scheduled cards that start today. A card that starts on a later day is hidden. The **All** box on the right of the column's header shows them too, with the number it hides next to it, and the browser keeps the choice.
+
 ### Priorities
 
 There are four priorities: `urgent`, `high`, `normal` (the default) and `low`.
@@ -130,7 +132,7 @@ The setting concerns the run's own move only. `board move <task> done`, run by a
 
 ### Delays
 
-`--in <dur>` or `--at <time>` keeps the task in Todo until then. It sits last in the column with a "Starts in 4h" badge, and no worker takes it before. The confirmation line names the start time.
+`--in <dur>` or `--at <time>` keeps the task in Todo until then. It sits last in the column with a "Starts in 4h" badge, and no worker takes it before. On the board it is hidden until the day it starts, unless Todo's **All** box is checked. The confirmation line names the start time.
 
 The two exclude each other. Neither can be combined with `--hold` or `--backlog`, because a delay only exists in Todo.
 
@@ -854,7 +856,7 @@ Open the installed app and turn the switch on there. A phone pauses an app soon 
 - every task, schedule, note, pull request link and machine, the agents on the board, your link rules, and the transcripts, exactly as the server stores them (encrypted)
 - the wrapped key slots, which only your passphrase or recovery key opens
 - the hashes of the machine tokens
-- the notification setting of this browser
+- the notification setting and the Todo **All** box of this browser
 
 The checkbox **Include transcripts** is on by default. Transcripts are most of a board's size, and a file without them imports to a board with no transcripts. A bar shows the rows read out of the total, and **Cancel** stops the export without writing a file.
 
